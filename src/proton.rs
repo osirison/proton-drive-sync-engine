@@ -213,10 +213,10 @@ impl ProtonClient for ProtonDriveClient {
 
     fn delete(&self, remote_path: &Path) -> AppResult<()> {
         let output = self.run_proton_drive(
-            "delete",
+            "trash",
             &[
                 OsString::from("filesystem"),
-                OsString::from("delete"),
+                OsString::from("trash"),
                 remote_path.as_os_str().to_os_string(),
             ],
             1,
@@ -225,7 +225,7 @@ impl ProtonClient for ProtonDriveClient {
             Ok(())
         } else {
             Err(boxed_error(format!(
-                "proton-drive delete failed for {}: {}",
+                "proton-drive trash failed for {}: {}",
                 remote_path.display(),
                 String::from_utf8_lossy(&output.stderr)
             )))
@@ -971,7 +971,7 @@ create-folder:/my-files/demo/local-sub-directory:nested\n"
 
     #[cfg(unix)]
     #[test]
-    fn delete_uses_filesystem_path_command() {
+    fn delete_uses_filesystem_trash_command() {
         let directory = tempdir().expect("tempdir");
         let executable = write_script(
             directory.path(),
@@ -992,7 +992,7 @@ exit 0
 
         assert_eq!(
             fs::read_to_string(args_path(&executable)).expect("recorded args"),
-            "filesystem\ndelete\n/my-files/demo/removed.txt\n"
+            "filesystem\ntrash\n/my-files/demo/removed.txt\n"
         );
     }
 
