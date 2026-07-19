@@ -14,6 +14,7 @@ pub enum SyncAction {
     RemoteDelete,
     LocalDelete,
     Purge,
+    SkipUnsupported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -40,6 +41,7 @@ pub struct PlanSummary {
     pub remote_deletes: usize,
     pub local_deletes: usize,
     pub purges: usize,
+    pub skipped_unsupported: usize,
     pub destructive_actions: usize,
 }
 
@@ -50,6 +52,8 @@ enum FileDelta {
     Changed,
     /// Remote file exists but its hash is unavailable (e.g. no activeRevision digest).
     Unknown,
+    /// Remote file exists but the Proton CLI cannot download it as bytes.
+    Unsupported,
 }
 
 pub fn plan_sync(
@@ -83,9 +87,14 @@ fn plan_bootstrap_action(
 ) -> Option<PlannedAction> {
     match (local, remote) {
         (Some(_), None) => Some(PlannedAction::new(path, SyncAction::Upload, None)),
-        (None, Some(remote)) => Some(PlannedAction::new(
+        (None, Some(remote)) if remote.downloadable => Some(PlannedAction::new(
             path,
             SyncAction::Download,
+            Some(remote.id.clone()),
+        )),
+        (None, Some(remote)) => Some(PlannedAction::new(
+            path,
+            SyncAction::SkipUnsupported,
             Some(remote.id.clone()),
         )),
         (Some(local), Some(remote)) => {
@@ -95,8 +104,14 @@ fn plan_bootstrap_action(
                     SyncAction::AutoLink,
                     Some(remote.id.clone()),
                 ))
-            } else {
+            } else if remote.downloadable {
                 Some(PlannedAction::conflict(path, Some(remote.id.clone())))
+            } else {
+                Some(PlannedAction::new(
+                    path,
+                    SyncAction::SkipUnsupported,
+                    Some(remote.id.clone()),
+                ))
             }
         }
         (None, None) => None,
@@ -154,8 +169,17 @@ fn plan_ongoing_action(
             Some(PlannedAction::conflict(path, remote_id(remote, base)))
         }
         (FileDelta::Missing, FileDelta::Unknown) => None,
+        (FileDelta::Unchanged, FileDelta::Unsupported)
+        | (FileDelta::Changed, FileDelta::Unsupported)
+        | (FileDelta::Missing, FileDelta::Unsupported) => Some(PlannedAction::new(
+            path,
+            SyncAction::SkipUnsupported,
+            remote_id(remote, base),
+        )),
         // Unknown is only ever produced for the remote delta; this arm is unreachable.
-        (FileDelta::Unknown, _) => unreachable!("local delta is never Unknown"),
+        (FileDelta::Unknown | FileDelta::Unsupported, _) => {
+            unreachable!("local delta is never Unknown or Unsupported")
+        }
     }
 }
 
@@ -174,6 +198,7 @@ fn delta_from_base(current_hash: Option<&str>, base_hash: Option<&str>) -> FileD
 fn remote_file_delta(remote: Option<&RemoteFile>, base: &FileRecord) -> FileDelta {
     match remote {
         None => FileDelta::Missing,
+        Some(file) if !file.downloadable => FileDelta::Unsupported,
         Some(file) => match file.sha1_hash.as_deref() {
             None => FileDelta::Unknown,
             Some(hash) if hash == base.sha1_hash.as_str() => FileDelta::Unchanged,
@@ -232,6 +257,7 @@ impl PlanSummary {
                 SyncAction::RemoteDelete => summary.remote_deletes += 1,
                 SyncAction::LocalDelete => summary.local_deletes += 1,
                 SyncAction::Purge => summary.purges += 1,
+                SyncAction::SkipUnsupported => summary.skipped_unsupported += 1,
             }
         }
         summary.destructive_actions =
@@ -308,6 +334,14 @@ mod tests {
                 .unwrap_or(path)
                 .to_owned(),
             sha1_hash: hash.map(ToOwned::to_owned),
+            downloadable: true,
+        }
+    }
+
+    fn unsupported_remote(path: &str, id: &str) -> RemoteFile {
+        RemoteFile {
+            downloadable: false,
+            ..remote(path, id, None)
         }
     }
 
@@ -530,6 +564,38 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_remote_file_is_skipped_without_download_or_conflict() {
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("Untitled spreadsheet"),
+            unsupported_remote("Untitled spreadsheet", "sheet-id"),
+        );
+
+        let planned = plan_sync(&HashMap::new(), &remote_files, &HashMap::new());
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].action, SyncAction::SkipUnsupported);
+        assert_eq!(planned[0].remote_id.as_deref(), Some("sheet-id"));
+
+        let mut local_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(
+            PathBuf::from("Untitled spreadsheet"),
+            local("Untitled spreadsheet", "local-hash"),
+        );
+        base_index.insert(
+            PathBuf::from("Untitled spreadsheet"),
+            base("Untitled spreadsheet", Some("sheet-id"), "base-hash"),
+        );
+
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].action, SyncAction::SkipUnsupported);
+        assert_eq!(planned[0].remote_id.as_deref(), Some("sheet-id"));
+    }
+
+    #[test]
     fn remote_delete_uses_live_remote_id_when_base_id_is_missing() {
         let mut remote_files = HashMap::new();
         let mut base_index = HashMap::new();
@@ -587,14 +653,20 @@ mod tests {
                 Some("delete-id".to_owned()),
             ),
             PlannedAction::conflict(Path::new("conflict.txt"), Some("conflict-id".to_owned())),
+            PlannedAction::new(
+                Path::new("sheet"),
+                SyncAction::SkipUnsupported,
+                Some("sheet-id".to_owned()),
+            ),
         ]);
 
-        assert_eq!(report.summary.total, 4);
+        assert_eq!(report.summary.total, 5);
         assert_eq!(report.summary.uploads, 1);
         assert_eq!(report.summary.downloads, 1);
         assert_eq!(report.summary.remote_deletes, 1);
         assert_eq!(report.summary.conflicts, 1);
+        assert_eq!(report.summary.skipped_unsupported, 1);
         assert_eq!(report.summary.destructive_actions, 1);
-        assert_eq!(report.plan.len(), 4);
+        assert_eq!(report.plan.len(), 5);
     }
 }

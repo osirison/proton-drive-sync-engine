@@ -381,11 +381,13 @@ impl<C: ProtonClient> Daemon<C> {
                 }
                 SyncAction::Download => {
                     if let Some(remote_id) = action.remote_id.as_deref()
+                        && let Some(remote_path) =
+                            safe_remote_path(&self.config.remote_root, &action.path)
                         && let Some(destination) =
                             safe_local_path(&self.config.local_root, &action.path)
                     {
                         ensure_parent_directory(&destination)?;
-                        self.proton.download(remote_id, &destination)?;
+                        self.proton.download(&remote_path, &destination)?;
                         let local_state = local_file_state(&self.config.local_root, &destination)?;
                         let record = FileRecord::from_local(
                             action.path.clone(),
@@ -408,13 +410,15 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 SyncAction::Conflict => {
-                    if let Some(remote_id) = action.remote_id.as_deref()
+                    if action.remote_id.is_some()
+                        && let Some(remote_path) =
+                            safe_remote_path(&self.config.remote_root, &action.path)
                         && let Some(conflict_path) = action.conflict_path.as_ref()
                         && let Some(destination) =
                             safe_local_path(&self.config.local_root, conflict_path)
                     {
                         ensure_parent_directory(&destination)?;
-                        self.proton.download(remote_id, &destination)?;
+                        self.proton.download(&remote_path, &destination)?;
                     }
                     if let Some(local) = local_files.get(&action.path) {
                         let record = FileRecord::from_local(
@@ -431,8 +435,11 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 SyncAction::RemoteDelete => {
-                    if let Some(remote_id) = action.remote_id.as_deref() {
-                        self.proton.delete(remote_id)?;
+                    if action.remote_id.is_some()
+                        && let Some(remote_path) =
+                            safe_remote_path(&self.config.remote_root, &action.path)
+                    {
+                        self.proton.delete(&remote_path)?;
                     }
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
                 }
@@ -447,6 +454,13 @@ impl<C: ProtonClient> Daemon<C> {
                 }
                 SyncAction::Purge => {
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                }
+                SyncAction::SkipUnsupported => {
+                    warn!(
+                        path = %action.path.display(),
+                        remote_id = ?action.remote_id,
+                        "skipping unsupported Proton-native file"
+                    );
                 }
             }
             completed_paths.push(action.path.clone());
@@ -640,6 +654,10 @@ fn safe_local_path(local_root: &Path, relative: &Path) -> Option<PathBuf> {
     crate::validate_relative_path(relative).map(|safe| local_root.join(safe))
 }
 
+fn safe_remote_path(remote_root: &Path, relative: &Path) -> Option<PathBuf> {
+    crate::validate_relative_path(relative).map(|safe| remote_root.join(safe))
+}
+
 struct LockGuard {
     path: PathBuf,
     _file: File,
@@ -723,11 +741,11 @@ mod tests {
             relative_path: PathBuf,
         },
         Download {
-            remote_id: String,
+            remote_path: PathBuf,
             destination: PathBuf,
         },
         Delete {
-            remote_id: String,
+            remote_path: PathBuf,
         },
     }
 
@@ -797,27 +815,27 @@ mod tests {
             Ok(())
         }
 
-        fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()> {
+        fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()> {
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(destination, format!("downloaded:{remote_id}"))?;
+            fs::write(destination, format!("downloaded:{}", remote_path.display()))?;
             self.operations
                 .lock()
                 .expect("operations lock")
                 .push(RecordedOperation::Download {
-                    remote_id: remote_id.to_owned(),
+                    remote_path: remote_path.to_path_buf(),
                     destination: destination.to_path_buf(),
                 });
             Ok(())
         }
 
-        fn delete(&self, remote_id: &str) -> AppResult<()> {
+        fn delete(&self, remote_path: &Path) -> AppResult<()> {
             self.operations
                 .lock()
                 .expect("operations lock")
                 .push(RecordedOperation::Delete {
-                    remote_id: remote_id.to_owned(),
+                    remote_path: remote_path.to_path_buf(),
                 });
             Ok(())
         }
@@ -850,11 +868,11 @@ mod tests {
             Err(boxed_error("unexpected upload in fake client"))
         }
 
-        fn download(&self, _remote_id: &str, _destination: &Path) -> AppResult<()> {
+        fn download(&self, _remote_path: &Path, _destination: &Path) -> AppResult<()> {
             Err(boxed_error("unexpected download in fake client"))
         }
 
-        fn delete(&self, _remote_id: &str) -> AppResult<()> {
+        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
             Err(boxed_error("unexpected delete in fake client"))
         }
     }
@@ -873,7 +891,7 @@ mod tests {
             Err(boxed_error("unexpected upload in parent-checking client"))
         }
 
-        fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()> {
+        fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()> {
             let parent = destination
                 .parent()
                 .ok_or_else(|| boxed_error("download destination should have a parent"))?;
@@ -883,11 +901,11 @@ mod tests {
                     parent.display()
                 )));
             }
-            fs::write(destination, format!("downloaded:{remote_id}"))?;
+            fs::write(destination, format!("downloaded:{}", remote_path.display()))?;
             Ok(())
         }
 
-        fn delete(&self, _remote_id: &str) -> AppResult<()> {
+        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
             Err(boxed_error("unexpected delete in parent-checking client"))
         }
     }
@@ -906,11 +924,11 @@ mod tests {
             Err(boxed_error("unexpected upload in failing list client"))
         }
 
-        fn download(&self, _remote_id: &str, _destination: &Path) -> AppResult<()> {
+        fn download(&self, _remote_path: &Path, _destination: &Path) -> AppResult<()> {
             Err(boxed_error("unexpected download in failing list client"))
         }
 
-        fn delete(&self, _remote_id: &str) -> AppResult<()> {
+        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
             Err(boxed_error("unexpected delete in failing list client"))
         }
     }
@@ -929,6 +947,7 @@ mod tests {
                 id: "remote-id".to_owned(),
                 name: "remote.txt".to_owned(),
                 sha1_hash: Some("remote-hash".to_owned()),
+                downloadable: true,
             },
         );
         let config = DaemonConfig {
@@ -1009,11 +1028,11 @@ mod tests {
         let destination = local_root.join("remote-only.txt");
         assert_eq!(
             fs::read_to_string(&destination).expect("downloaded file"),
-            "downloaded:remote-id"
+            "downloaded:/Drive/RemoteFolder/remote-only.txt"
         );
         assert!(operations.lock().expect("operations lock").contains(
             &RecordedOperation::Download {
-                remote_id: "remote-id".to_owned(),
+                remote_path: PathBuf::from("/Drive/RemoteFolder/remote-only.txt"),
                 destination,
             }
         ));
@@ -1043,7 +1062,7 @@ mod tests {
         let destination = local_root.join("nested/remote-only.txt");
         assert_eq!(
             fs::read_to_string(&destination).expect("downloaded file"),
-            "downloaded:remote-id"
+            "downloaded:/Drive/RemoteFolder/nested/remote-only.txt"
         );
         let record = get_record(&daemon.connection, Path::new("nested/remote-only.txt"))
             .expect("index lookup")
@@ -1078,7 +1097,7 @@ mod tests {
                 .lock()
                 .expect("operations lock")
                 .contains(&RecordedOperation::Delete {
-                    remote_id: "remote-id".to_owned(),
+                    remote_path: PathBuf::from("/Drive/RemoteFolder/removed.txt"),
                 })
         );
         assert!(
@@ -1312,11 +1331,11 @@ mod tests {
         let conflict_path = local_root.join("notes.proton-cloud.txt");
         assert_eq!(
             fs::read_to_string(&conflict_path).expect("conflict sidecar"),
-            "downloaded:remote-id"
+            "downloaded:/Drive/RemoteFolder/notes.txt"
         );
         assert!(operations.lock().expect("operations lock").contains(
             &RecordedOperation::Download {
-                remote_id: "remote-id".to_owned(),
+                remote_path: PathBuf::from("/Drive/RemoteFolder/notes.txt"),
                 destination: conflict_path,
             }
         ));
@@ -1379,6 +1398,7 @@ mod tests {
                 .unwrap_or(path)
                 .to_owned(),
             sha1_hash: sha1_hash.map(ToOwned::to_owned),
+            downloadable: true,
         }
     }
 

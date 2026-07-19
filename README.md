@@ -194,6 +194,7 @@ Example output:
     "remote_deletes": 0,
     "local_deletes": 0,
     "purges": 0,
+    "skipped_unsupported": 0,
     "destructive_actions": 0
   },
   "plan": [
@@ -347,7 +348,7 @@ During the first run, the engine bootstraps state:
 * Matching local and remote files are linked in the index
 * Different local and remote content creates a conflict sidecar
 
-After bootstrap, the planner uses local and remote deltas to choose upload, download, local delete, remote delete, purge, or conflict actions. When a remote file exists but Proton Drive does not expose a usable SHA-1 digest, the planner avoids destructive assumptions and uses non-destructive handling.
+After bootstrap, the planner uses local and remote deltas to choose upload, download, local delete, remote delete, purge, or conflict actions. When a remote file exists but Proton Drive does not expose a usable SHA-1 digest, the planner avoids destructive assumptions and uses non-destructive handling. Proton Docs and Sheets are reported as unsupported skip actions because the Proton Drive CLI does not download those native document types as files.
 
 ## Conflict Files
 

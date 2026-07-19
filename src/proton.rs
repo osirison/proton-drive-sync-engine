@@ -31,6 +31,8 @@ pub struct ProtonNode {
     pub files: Vec<ProtonNode>,
     #[serde(default, deserialize_with = "deserialize_optional_active_revision")]
     pub active_revision: Option<ActiveRevision>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    pub media_type: Option<String>,
     #[serde(
         rename = "type",
         default,
@@ -59,6 +61,7 @@ pub struct RemoteFile {
     pub id: String,
     pub name: String,
     pub sha1_hash: Option<String>,
+    pub downloadable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -76,8 +79,8 @@ pub struct CommandPolicy {
 pub trait ProtonClient: Send + Sync {
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>>;
     fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
-    fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()>;
-    fn delete(&self, remote_id: &str) -> AppResult<()>;
+    fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()>;
+    fn delete(&self, remote_path: &Path) -> AppResult<()>;
 }
 
 impl ProtonDriveClient {
@@ -151,6 +154,7 @@ impl ProtonClient for ProtonDriveClient {
         let output = self.run_proton_drive(
             "upload",
             &[
+                OsString::from("filesystem"),
                 OsString::from("upload"),
                 local_path.as_os_str().to_os_string(),
                 remote_parent.as_os_str().to_os_string(),
@@ -168,14 +172,20 @@ impl ProtonClient for ProtonDriveClient {
         }
     }
 
-    fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()> {
+    fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()> {
+        let local_folder = destination.parent().ok_or_else(|| {
+            boxed_error(format!(
+                "download destination has no parent directory: {}",
+                destination.display()
+            ))
+        })?;
         let output = self.run_proton_drive(
             "download",
             &[
+                OsString::from("filesystem"),
                 OsString::from("download"),
-                OsString::from("--id"),
-                OsString::from(remote_id),
-                destination.as_os_str().to_os_string(),
+                remote_path.as_os_str().to_os_string(),
+                local_folder.as_os_str().to_os_string(),
             ],
             1,
         )?;
@@ -183,19 +193,20 @@ impl ProtonClient for ProtonDriveClient {
             Ok(())
         } else {
             Err(boxed_error(format!(
-                "proton-drive download failed for {remote_id}: {}",
+                "proton-drive download failed for {}: {}",
+                remote_path.display(),
                 String::from_utf8_lossy(&output.stderr)
             )))
         }
     }
 
-    fn delete(&self, remote_id: &str) -> AppResult<()> {
+    fn delete(&self, remote_path: &Path) -> AppResult<()> {
         let output = self.run_proton_drive(
             "delete",
             &[
+                OsString::from("filesystem"),
                 OsString::from("delete"),
-                OsString::from("--id"),
-                OsString::from(remote_id),
+                remote_path.as_os_str().to_os_string(),
             ],
             1,
         )?;
@@ -203,7 +214,8 @@ impl ProtonClient for ProtonDriveClient {
             Ok(())
         } else {
             Err(boxed_error(format!(
-                "proton-drive delete failed for {remote_id}: {}",
+                "proton-drive delete failed for {}: {}",
+                remote_path.display(),
                 String::from_utf8_lossy(&output.stderr)
             )))
         }
@@ -419,6 +431,7 @@ fn collect_node(
                     .as_ref()
                     .and_then(|revision| revision.claimed_digests.as_ref())
                     .and_then(|digests| digests.sha1.clone()),
+                downloadable: is_downloadable_media_type(node.media_type.as_deref()),
             },
         );
     }
@@ -440,6 +453,17 @@ fn collect_node(
     }
 
     Ok(())
+}
+
+fn is_downloadable_media_type(media_type: Option<&str>) -> bool {
+    let Some(media_type) = media_type else {
+        return true;
+    };
+    let normalized = media_type.to_ascii_lowercase();
+    !matches!(
+        normalized.as_str(),
+        "application/vnd.proton.doc" | "application/vnd.proton.sheet"
+    )
 }
 
 /// Normalize a Proton-reported path to a clean relative path within the sync
@@ -605,6 +629,41 @@ mod tests {
     }
 
     #[test]
+    fn marks_proton_native_sheets_as_not_downloadable() {
+        let json = r#"
+                [
+                    {
+                        "uid": "sheet-uid",
+                        "name": {
+                            "ok": true,
+                            "value": "Untitled spreadsheet"
+                        },
+                        "type": "file",
+                        "mediaType": "application/vnd.proton.sheet",
+                        "activeRevision": {
+                            "ok": true,
+                            "value": {
+                                "claimedDigests": {
+                                    "sha1Verified": false
+                                }
+                            }
+                        }
+                    }
+                ]
+                "#;
+
+        let files =
+            parse_remote_files(json, Path::new("/my-files/demo/")).expect("parse remote files");
+        let file = files
+            .get(Path::new("Untitled spreadsheet"))
+            .expect("Proton sheet");
+
+        assert_eq!(file.id, "sheet-uid");
+        assert_eq!(file.sha1_hash, None);
+        assert!(!file.downloadable);
+    }
+
+    #[test]
     fn parses_filesystem_list_fixture() {
         let json = include_str!("../tests/fixtures/proton-drive-filesystem-list.json");
 
@@ -752,6 +811,63 @@ printf '{"entries":[]}\n'
 
     #[cfg(unix)]
     #[test]
+    fn download_uses_filesystem_path_command() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .download(
+                Path::new("/my-files/demo/budget.xlsx"),
+                Path::new("/tmp/proton-sync-demo/budget.xlsx"),
+            )
+            .expect("download command");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "filesystem\ndownload\n/my-files/demo/budget.xlsx\n/tmp/proton-sync-demo\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_uses_filesystem_path_command() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .delete(Path::new("/my-files/demo/removed.txt"))
+            .expect("delete command");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "filesystem\ndelete\n/my-files/demo/removed.txt\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn list_retries_transient_cli_failure() {
         let directory = tempdir().expect("tempdir");
         let executable = write_script(
@@ -843,5 +959,10 @@ exit 75
     #[cfg(unix)]
     fn attempt_counter_path(executable: &Path) -> PathBuf {
         PathBuf::from(format!("{}.attempts", executable.display()))
+    }
+
+    #[cfg(unix)]
+    fn args_path(executable: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.args", executable.display()))
     }
 }
