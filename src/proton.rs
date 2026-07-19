@@ -78,6 +78,7 @@ pub struct CommandPolicy {
 
 pub trait ProtonClient: Send + Sync {
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>>;
+    fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
     fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
     fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()>;
     fn delete(&self, remote_path: &Path) -> AppResult<()>;
@@ -144,6 +145,16 @@ impl ProtonClient for ProtonDriveClient {
         }
         let stdout = String::from_utf8(output.stdout)?;
         parse_remote_files(&stdout, remote_root)
+    }
+
+    fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
+        let relative_path = crate::validate_relative_path(relative_path).ok_or_else(|| {
+            boxed_error(format!(
+                "unsafe remote directory path: {}",
+                relative_path.display()
+            ))
+        })?;
+        self.create_missing_directory_components(remote_root, &relative_path)
     }
 
     fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
@@ -223,11 +234,87 @@ impl ProtonClient for ProtonDriveClient {
 }
 
 impl ProtonDriveClient {
+    fn create_missing_directory_components(
+        &self,
+        remote_root: &Path,
+        relative_path: &Path,
+    ) -> AppResult<()> {
+        let mut parent = remote_root.to_path_buf();
+
+        for component in relative_path.components() {
+            let component_name = component.as_os_str();
+            let target = parent.join(component_name);
+
+            if self.remote_path_exists(&target)? {
+                parent = target;
+                continue;
+            }
+
+            let output = self.run_proton_drive_quiet(
+                "create-folder",
+                &[
+                    OsString::from("filesystem"),
+                    OsString::from("create-folder"),
+                    parent.as_os_str().to_os_string(),
+                    component_name.to_os_string(),
+                ],
+                1,
+            )?;
+            if output.status.success() {
+                parent = target;
+                continue;
+            }
+            if self.remote_path_exists(&target)? {
+                parent = target;
+                continue;
+            }
+            return Err(boxed_error(format!(
+                "proton-drive create-folder failed for {}: {}",
+                target.display(),
+                trimmed_stderr(&output)
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn remote_path_exists(&self, remote_path: &Path) -> AppResult<bool> {
+        let output = self.run_proton_drive_quiet(
+            "info",
+            &[
+                OsString::from("filesystem"),
+                OsString::from("info"),
+                remote_path.as_os_str().to_os_string(),
+            ],
+            1,
+        )?;
+        Ok(output.status.success())
+    }
+
     fn run_proton_drive(
         &self,
         operation: &str,
         args: &[OsString],
         attempts: usize,
+    ) -> AppResult<Output> {
+        self.run_proton_drive_with_logging(operation, args, attempts, true)
+    }
+
+    fn run_proton_drive_quiet(
+        &self,
+        operation: &str,
+        args: &[OsString],
+        attempts: usize,
+    ) -> AppResult<Output> {
+        self.run_proton_drive_with_logging(operation, args, attempts, false)
+    }
+
+    fn run_proton_drive_with_logging(
+        &self,
+        operation: &str,
+        args: &[OsString],
+        attempts: usize,
+        warn_on_unsuccessful_exit: bool,
     ) -> AppResult<Output> {
         let attempts = attempts.max(1);
         let mut last_error = None;
@@ -257,7 +344,7 @@ impl ProtonDriveClient {
                 }
             };
             if output.status.success() || attempt == attempts {
-                if !output.status.success() {
+                if !output.status.success() && warn_on_unsuccessful_exit {
                     warn!(
                         operation,
                         attempt,
@@ -270,14 +357,16 @@ impl ProtonDriveClient {
                 return Ok(output);
             }
             let stderr = trimmed_stderr(&output);
-            warn!(
-                operation,
-                attempt,
-                attempts,
-                exit_status = ?output.status.code(),
-                stderr = %stderr,
-                "retrying proton-drive command after unsuccessful exit"
-            );
+            if warn_on_unsuccessful_exit {
+                warn!(
+                    operation,
+                    attempt,
+                    attempts,
+                    exit_status = ?output.status.code(),
+                    stderr = %stderr,
+                    "retrying proton-drive command after unsuccessful exit"
+                );
+            }
             last_error = Some(format!("proton-drive {operation} failed: {stderr}"));
         }
         Err(boxed_error(last_error.unwrap_or_else(|| {
@@ -836,6 +925,47 @@ exit 0
         assert_eq!(
             fs::read_to_string(args_path(&executable)).expect("recorded args"),
             "filesystem\ndownload\n/my-files/demo/budget.xlsx\n/tmp/proton-sync-demo\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directory_creates_missing_components_in_order() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "info" ]; then
+  printf 'info:%s\n' "$3" >> "$0.args"
+  exit 1
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "create-folder" ]; then
+  printf 'create-folder:%s:%s\n' "$3" "$4" >> "$0.args"
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 64
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .ensure_directory(
+                Path::new("/my-files/demo"),
+                Path::new("local-sub-directory/nested"),
+            )
+            .expect("ensure remote directory");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "info:/my-files/demo/local-sub-directory\n\
+create-folder:/my-files/demo:local-sub-directory\n\
+info:/my-files/demo/local-sub-directory/nested\n\
+create-folder:/my-files/demo/local-sub-directory:nested\n"
         );
     }
 

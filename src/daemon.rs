@@ -361,6 +361,12 @@ impl<C: ProtonClient> Daemon<C> {
             match action.action {
                 SyncAction::Upload => {
                     if let Some(local) = local_files.get(&action.path) {
+                        if let Some(parent) = action.path.parent()
+                            && !parent.as_os_str().is_empty()
+                        {
+                            self.proton
+                                .ensure_directory(&self.config.remote_root, parent)?;
+                        }
                         self.proton.upload(
                             &local.absolute_path,
                             &self.config.remote_root,
@@ -735,6 +741,10 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum RecordedOperation {
+        EnsureDirectory {
+            remote_root: PathBuf,
+            relative_path: PathBuf,
+        },
         Upload {
             local_path: PathBuf,
             remote_root: PathBuf,
@@ -790,6 +800,16 @@ mod tests {
     impl ProtonClient for RecordingProtonClient {
         fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             Ok(self.remote_files.clone())
+        }
+
+        fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
+            self.operations.lock().expect("operations lock").push(
+                RecordedOperation::EnsureDirectory {
+                    remote_root: remote_root.to_path_buf(),
+                    relative_path: relative_path.to_path_buf(),
+                },
+            );
+            Ok(())
         }
 
         fn upload(
@@ -859,6 +879,10 @@ mod tests {
             Ok(self.remote_files.clone())
         }
 
+        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected ensure directory in fake client"))
+        }
+
         fn upload(
             &self,
             _local_path: &Path,
@@ -880,6 +904,12 @@ mod tests {
     impl ProtonClient for ParentCheckingDownloadClient {
         fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             Ok(self.remote_files.clone())
+        }
+
+        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+            Err(boxed_error(
+                "unexpected ensure directory in parent-checking client",
+            ))
         }
 
         fn upload(
@@ -913,6 +943,12 @@ mod tests {
     impl ProtonClient for FailingListProtonClient {
         fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             Err(boxed_error("list failed"))
+        }
+
+        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+            Err(boxed_error(
+                "unexpected ensure directory in failing list client",
+            ))
         }
 
         fn upload(
@@ -1006,6 +1042,44 @@ mod tests {
         let record = get_record(&daemon.connection, Path::new("local-only.txt"))
             .expect("index lookup")
             .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_uploads_nested_local_file_after_ensuring_remote_parent_directory() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("local-sub-directory")).expect("local nested root");
+        let local_path = local_root
+            .join("local-sub-directory")
+            .join("subdirectory-file.txt");
+        fs::write(&local_path, b"local").expect("nested local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            *operations.lock().expect("operations lock"),
+            vec![
+                RecordedOperation::EnsureDirectory {
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from("local-sub-directory"),
+                },
+                RecordedOperation::Upload {
+                    local_path,
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from("local-sub-directory/subdirectory-file.txt"),
+                },
+            ]
+        );
+        let record = get_record(
+            &daemon.connection,
+            Path::new("local-sub-directory/subdirectory-file.txt"),
+        )
+        .expect("index lookup")
+        .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 
