@@ -19,6 +19,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Status,
+    History,
     Pause,
     Resume,
     Syncnow,
@@ -29,7 +30,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     let socket_path = cli.socket_path.unwrap_or_else(default_socket_path);
     let command = match cli.command {
-        Commands::Status => ControlCommand::Status,
+        Commands::Status | Commands::History => ControlCommand::Status,
         Commands::Pause => ControlCommand::Pause,
         Commands::Resume => ControlCommand::Resume,
         Commands::Syncnow => ControlCommand::Syncnow,
@@ -37,10 +38,12 @@ async fn main() -> ExitCode {
 
     match send_command(&socket_path, command).await {
         Ok(response) => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&response).expect("serialize response")
-            );
+            let output = match cli.command {
+                Commands::History => serde_json::to_string_pretty(&response.status_history)
+                    .expect("serialize status history"),
+                _ => serde_json::to_string_pretty(&response).expect("serialize response"),
+            };
+            println!("{output}");
             ExitCode::SUCCESS
         }
         Err(error) => {

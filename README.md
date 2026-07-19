@@ -25,6 +25,7 @@ The project is designed as a focused sync core: local filesystem scanning, Proto
 * Supports include and exclude glob patterns for selective sync
 * Emits structured logs through `tracing` for daemon and dry-run diagnostics
 * Persists recent daemon status history next to the local sync state
+* Writes a local metrics snapshot JSON file next to the sync database
 * Prevents concurrent daemon instances with an advisory lockfile
 
 ## Current Scope
@@ -39,14 +40,16 @@ Supported today:
 * Conservative handling for remote files whose digest is unavailable
 * Manual control through the companion CLI
 * Include and exclude glob filters over relative sync paths
+* Release archive creation for binaries and user-service sample assets
+* Local metrics snapshot export for file-based operational inspection
 
 Not yet included:
 
 * Native package-manager packages
 * Cross-platform IPC for Windows
-* Automated live end-to-end sync tests against a Proton Drive account
-* Rename detection
-* Metrics, distributed tracing, or dashboards
+* Automated mutating live end-to-end sync tests against a Proton Drive account
+* Rename detection implementation
+* Distributed tracing or dashboards
 
 ## Requirements
 
@@ -101,6 +104,7 @@ Use the control CLI from another terminal:
 
 ```bash
 cargo run --bin proton-sync -- status
+cargo run --bin proton-sync -- history
 cargo run --bin proton-sync -- syncnow
 cargo run --bin proton-sync -- pause
 cargo run --bin proton-sync -- resume
@@ -255,12 +259,13 @@ When `--socket-path` is omitted, the control CLI uses the same default socket pa
 
 | Command | Behavior |
 | ------- | -------- |
-| `status` | Prints daemon status, pause state, pending change count, message, last sync timestamp, last error, and recent sync summaries |
+| `status` | Prints daemon status, pause state, pending change count, message, last sync timestamp, last error, recent sync summaries, and status history |
+| `history` | Prints only the recent status history array from the daemon status response |
 | `pause` | Pauses automatic and manual sync work until resumed |
 | `resume` | Resumes sync work |
 | `syncnow` | Triggers reconciliation immediately when the daemon is not paused |
 
-Responses are JSON so scripts can consume them directly:
+Responses are JSON so scripts can consume them directly. The `status`, `pause`, `resume`, and `syncnow` commands print the full response object:
 
 ```json
 {
@@ -276,7 +281,9 @@ Responses are JSON so scripts can consume them directly:
 }
 ```
 
-The daemon keeps the most recent status history entries in a JSON file next to the configured SQLite database. A restarted daemon reloads that history, so recent failures and successful summaries remain visible through `proton-sync status`.
+The `history` command prints only the `status_history` array. The daemon keeps the most recent status history entries in a JSON file next to the configured SQLite database. A restarted daemon reloads that history, so recent failures and successful summaries remain visible through `proton-sync status` and `proton-sync history`.
+
+The daemon also writes a metrics snapshot next to the configured SQLite database using the `.metrics.json` suffix. For the default `sync_index.db`, the metrics path is `sync_index.metrics.json`. This file is intended for local inspection by scripts or service monitors and is ignored by sync scans.
 
 ## Running as a User Service
 
@@ -316,6 +323,14 @@ proton-sync status
 Run a dry-run from the shell before enabling the service whenever you change `--local-root`, `--remote-root`, or `--proton-cli`.
 
 The minimal release asset manifest at [examples/packaging/release-assets.toml](examples/packaging/release-assets.toml) lists the binaries, sample config, systemd unit, and install helper expected in a user-service distribution.
+
+Build a release archive containing the binaries and service assets with:
+
+```bash
+examples/packaging/build-release-archive.sh
+```
+
+By default, the archive is written under `target/dist`. Use `--archive-path <PATH>` to choose another output path.
 
 ## Sync Behavior
 
@@ -358,6 +373,12 @@ Conflict sidecars are ignored by regular local scans so they do not create new s
 * Proton Drive CLI calls are bounded by a timeout so a hung subprocess cannot block reconciliation indefinitely.
 * Read-only remote listings may be retried after a transient CLI failure; uploads, downloads, and deletes are not automatically retried to avoid duplicate or surprising side effects.
 * Reconciliation commits SQLite index mutations only after all planned side effects succeed. If a later action fails, earlier successful actions are not marked as synced in the index.
+* Live end-to-end testing must follow the safety gates in [docs/live-e2e-test-plan.md](docs/live-e2e-test-plan.md) before enabling mutating Proton Drive scenarios.
+
+## Design Notes
+
+* [docs/live-e2e-test-plan.md](docs/live-e2e-test-plan.md) defines the opt-in safety gates and scenario matrix for future live upload, download, delete, and conflict tests.
+* [docs/rename-detection-design.md](docs/rename-detection-design.md) defines the planner and index approach for future safe rename detection.
 
 ## Project Layout
 
@@ -378,6 +399,9 @@ examples/
   packaging/         Minimal release asset manifest
   proton-sync.toml   Sample daemon config file
   systemd/           Sample systemd user service and install helper
+docs/
+  live-e2e-test-plan.md       Safety plan for mutating live tests
+  rename-detection-design.md  Design for future rename detection
 ```
 
 ## Development Workflow
@@ -399,6 +423,7 @@ cargo test daemon::tests
 cargo test --test dry_run_cli
 cargo test --test example_assets
 cargo test --test ipc_cli
+bash -n examples/packaging/build-release-archive.sh
 ```
 
 When changing sync behavior, add regression tests near the planner in `src/sync.rs`. When changing local filesystem or Proton JSON safety boundaries, add tests around the boundary that first accepts external paths.

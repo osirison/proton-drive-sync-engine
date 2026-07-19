@@ -56,6 +56,15 @@ mod unix_tests {
             synced["last_successful_sync_summary"]["total"].as_u64(),
             Some(0)
         );
+
+        let history = run_control(&socket_path, "history");
+        let history = history.as_array().expect("history JSON array");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["message"], "sync completed");
+        assert_eq!(
+            history[0]["successful_sync_summary"]["total"].as_u64(),
+            Some(0)
+        );
     }
 
     struct DaemonProcess {

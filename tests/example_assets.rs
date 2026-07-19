@@ -96,6 +96,7 @@ fn release_asset_manifest_points_at_existing_distribution_assets() {
         ["config", "sample"],
         ["systemd", "unit"],
         ["systemd", "install_helper"],
+        ["packaging", "archive_helper"],
     ] {
         let asset_path = manifest[key_path[0]][key_path[1]]
             .as_str()
@@ -104,6 +105,30 @@ fn release_asset_manifest_points_at_existing_distribution_assets() {
             fs::metadata(manifest_path(asset_path)).is_ok(),
             "missing release asset {asset_path}"
         );
+    }
+}
+
+#[test]
+fn release_archive_helper_has_expected_packaging_contract() {
+    let script_path = manifest_path("examples/packaging/build-release-archive.sh");
+    let script = fs::read_to_string(&script_path).expect("release archive helper");
+
+    assert!(script.starts_with("#!/usr/bin/env bash"));
+    assert!(script.contains("set -euo pipefail"));
+    assert!(script.contains("cargo build"));
+    assert!(script.contains("--release --bins --locked"));
+    assert!(script.contains("tar -C"));
+    assert!(script.contains("proton-syncd"));
+    assert!(script.contains("proton-sync"));
+    assert!(script.contains("install-user-service.sh"));
+
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(&script_path)
+            .expect("archive helper metadata")
+            .permissions()
+            .mode();
+        assert!(mode & 0o111 != 0, "archive helper should be executable");
     }
 }
 

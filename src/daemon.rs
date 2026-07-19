@@ -13,6 +13,7 @@ use crate::{AppResult, boxed_error};
 use fs2::FileExt;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -50,8 +51,22 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     last_plan_summary: Option<PlanSummary>,
     last_successful_sync_summary: Option<PlanSummary>,
     status_history_path: PathBuf,
+    metrics_path: PathBuf,
     status_history: Vec<StatusHistoryEntry>,
     _lock_guard: LockGuard,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsSnapshot {
+    generated_epoch_secs: u64,
+    status: String,
+    paused: bool,
+    pending_changes: usize,
+    last_sync_epoch_secs: Option<u64>,
+    last_error: Option<String>,
+    last_plan_summary: Option<PlanSummary>,
+    last_successful_sync_summary: Option<PlanSummary>,
+    status_history_entries: usize,
 }
 
 pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
@@ -108,6 +123,7 @@ impl<C: ProtonClient> Daemon<C> {
         let connection = open_database(&config.db_path)?;
         let scan_options = scan_options_from_config(&config)?;
         let status_history_path = status_history_path(&config.db_path);
+        let metrics_path = metrics_path(&config.db_path);
         let status_history = load_status_history(&status_history_path).unwrap_or_else(|error| {
             warn!(
                 path = %status_history_path.display(),
@@ -117,7 +133,7 @@ impl<C: ProtonClient> Daemon<C> {
             Vec::new()
         });
 
-        Ok(Self {
+        let daemon = Self {
             config,
             connection,
             proton,
@@ -129,9 +145,12 @@ impl<C: ProtonClient> Daemon<C> {
             last_plan_summary: None,
             last_successful_sync_summary: None,
             status_history_path,
+            metrics_path,
             status_history,
             _lock_guard: lock_guard,
-        })
+        };
+        daemon.write_metrics_snapshot()?;
+        Ok(daemon)
     }
 
     pub async fn run(mut self) -> AppResult<()> {
@@ -239,11 +258,13 @@ impl<C: ProtonClient> Daemon<C> {
             ControlCommand::Pause => {
                 self.paused = true;
                 info!("sync paused");
+                self.write_metrics_snapshot()?;
                 self.status_response("sync paused")
             }
             ControlCommand::Resume => {
                 self.paused = false;
                 info!("sync resumed");
+                self.write_metrics_snapshot()?;
                 self.status_response("sync resumed")
             }
             ControlCommand::Syncnow => {
@@ -273,10 +294,7 @@ impl<C: ProtonClient> Daemon<C> {
             paused: self.paused,
             pending_changes: self.pending_changes.len(),
             message: message.to_owned(),
-            last_sync_epoch_secs: self
-                .last_sync
-                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .map(|duration| duration.as_secs()),
+            last_sync_epoch_secs: self.last_sync_epoch_secs(),
             last_error: self.last_error.clone(),
             last_plan_summary: self.last_plan_summary.clone(),
             last_successful_sync_summary: self.last_successful_sync_summary.clone(),
@@ -469,6 +487,41 @@ impl<C: ProtonClient> Daemon<C> {
                 "failed to persist daemon status history"
             );
         }
+        if let Err(error) = self.write_metrics_snapshot() {
+            warn!(
+                path = %self.metrics_path.display(),
+                error = %error,
+                "failed to persist daemon metrics snapshot"
+            );
+        }
+    }
+
+    fn metrics_snapshot(&self) -> MetricsSnapshot {
+        MetricsSnapshot {
+            generated_epoch_secs: current_epoch_secs(),
+            status: if self.paused {
+                "paused".to_owned()
+            } else {
+                "running".to_owned()
+            },
+            paused: self.paused,
+            pending_changes: self.pending_changes.len(),
+            last_sync_epoch_secs: self.last_sync_epoch_secs(),
+            last_error: self.last_error.clone(),
+            last_plan_summary: self.last_plan_summary.clone(),
+            last_successful_sync_summary: self.last_successful_sync_summary.clone(),
+            status_history_entries: self.status_history.len(),
+        }
+    }
+
+    fn write_metrics_snapshot(&self) -> AppResult<()> {
+        write_metrics_snapshot(&self.metrics_path, &self.metrics_snapshot())
+    }
+
+    fn last_sync_epoch_secs(&self) -> Option<u64> {
+        self.last_sync
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
     }
 }
 
@@ -487,7 +540,11 @@ impl IndexMutation {
 }
 
 fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
-    let ignored_paths = vec![config.db_path.clone(), status_history_path(&config.db_path)];
+    let ignored_paths = vec![
+        config.db_path.clone(),
+        status_history_path(&config.db_path),
+        metrics_path(&config.db_path),
+    ];
     ScanOptions::new(
         &config.local_root,
         &ignored_paths,
@@ -498,6 +555,10 @@ fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
 
 fn status_history_path(db_path: &Path) -> PathBuf {
     db_path.with_extension("status.json")
+}
+
+fn metrics_path(db_path: &Path) -> PathBuf {
+    db_path.with_extension("metrics.json")
 }
 
 fn load_status_history(path: &Path) -> AppResult<Vec<StatusHistoryEntry>> {
@@ -511,6 +572,12 @@ fn load_status_history(path: &Path) -> AppResult<Vec<StatusHistoryEntry>> {
 fn write_status_history(path: &Path, history: &[StatusHistoryEntry]) -> AppResult<()> {
     ensure_parent_directory(path)?;
     fs::write(path, serde_json::to_vec_pretty(history)?)?;
+    Ok(())
+}
+
+fn write_metrics_snapshot(path: &Path, metrics: &MetricsSnapshot) -> AppResult<()> {
+    ensure_parent_directory(path)?;
+    fs::write(path, serde_json::to_vec_pretty(metrics)?)?;
     Ok(())
 }
 
@@ -1103,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn status_history_file_is_not_planned_for_sync() {
+    fn daemon_state_files_are_not_planned_for_sync() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
         fs::create_dir(&local_root).expect("local root");
@@ -1112,6 +1179,7 @@ mod tests {
             ..test_config(directory.path(), &local_root)
         };
         fs::write(status_history_path(&config.db_path), "[]").expect("status history file");
+        fs::write(metrics_path(&config.db_path), "{}").expect("metrics file");
 
         let plan = preview_plan_with_client(
             &config,
@@ -1123,8 +1191,34 @@ mod tests {
 
         assert!(
             plan.is_empty(),
-            "status history file must be ignored by sync planning: {plan:?}"
+            "daemon state files must be ignored by sync planning: {plan:?}"
         );
+    }
+
+    #[test]
+    fn daemon_writes_metrics_snapshot_after_reconcile() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let config = test_config(directory.path(), &local_root);
+        let metrics_path = metrics_path(&config.db_path);
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        let metrics = fs::read_to_string(metrics_path).expect("metrics snapshot");
+        let metrics: serde_json::Value = serde_json::from_str(&metrics).expect("metrics JSON");
+        assert_eq!(metrics["status"], "running");
+        assert_eq!(metrics["paused"], false);
+        assert!(metrics["last_sync_epoch_secs"].as_u64().is_some());
+        assert!(metrics["last_error"].is_null());
+        assert_eq!(metrics["last_plan_summary"]["total"].as_u64(), Some(0));
+        assert_eq!(
+            metrics["last_successful_sync_summary"]["total"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(metrics["status_history_entries"].as_u64(), Some(1));
     }
 
     #[test]

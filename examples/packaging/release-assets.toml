@@ -12,3 +12,7 @@ install_path = "~/.config/proton-sync/proton-sync.toml"
 unit = "examples/systemd/proton-syncd.service"
 install_helper = "examples/systemd/install-user-service.sh"
 user_unit_path = "~/.config/systemd/user/proton-syncd.service"
+
+[packaging]
+archive_helper = "examples/packaging/build-release-archive.sh"
+default_archive = "target/dist/proton-drive-sync-engine-0.1.0.tar.gz"
