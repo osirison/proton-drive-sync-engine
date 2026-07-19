@@ -349,6 +349,7 @@ impl<C: ProtonClient> Daemon<C> {
             uploads = plan_summary.uploads,
             downloads = plan_summary.downloads,
             conflicts = plan_summary.conflicts,
+            skipped_unsupported = plan_summary.skipped_unsupported,
             destructive_actions = plan_summary.destructive_actions,
             "sync plan computed"
         );
@@ -462,10 +463,10 @@ impl<C: ProtonClient> Daemon<C> {
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
                 }
                 SyncAction::SkipUnsupported => {
-                    warn!(
+                    debug!(
                         path = %action.path.display(),
                         remote_id = ?action.remote_id,
-                        "skipping unsupported Proton-native file"
+                        "skipping Proton-native file that proton-drive cannot download"
                     );
                 }
             }
