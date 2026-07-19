@@ -1,4 +1,4 @@
-use crate::index::{FileRecord, LocalFileState};
+use crate::index::{FileRecord, LocalFileState, SyncStatus};
 use crate::proton::RemoteFile;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -130,6 +130,13 @@ fn plan_ongoing_action(
     );
     let remote_delta = remote_file_delta(remote, base);
 
+    if base.sync_status == SyncStatus::Modified
+        && let Some(action) =
+            plan_modified_record_action(path, local, remote, base, local_delta, remote_delta)
+    {
+        return Some(action);
+    }
+
     match (local_delta, remote_delta) {
         (FileDelta::Changed, FileDelta::Unchanged) => Some(PlannedAction::new(
             path,
@@ -180,6 +187,41 @@ fn plan_ongoing_action(
         (FileDelta::Unknown | FileDelta::Unsupported, _) => {
             unreachable!("local delta is never Unknown or Unsupported")
         }
+    }
+}
+
+fn plan_modified_record_action(
+    path: &Path,
+    local: Option<&LocalFileState>,
+    remote: Option<&RemoteFile>,
+    base: &FileRecord,
+    local_delta: FileDelta,
+    remote_delta: FileDelta,
+) -> Option<PlannedAction> {
+    local?;
+
+    if base.proton_id.is_none() && remote.is_none() {
+        return Some(PlannedAction::new(path, SyncAction::Upload, None));
+    }
+
+    match (local_delta, remote_delta) {
+        (FileDelta::Unchanged, FileDelta::Unchanged) => Some(PlannedAction::new(
+            path,
+            SyncAction::AutoLink,
+            remote_id(remote, base),
+        )),
+        (FileDelta::Unchanged, FileDelta::Changed | FileDelta::Missing) => Some(
+            PlannedAction::new(path, SyncAction::Upload, remote_id(remote, base)),
+        ),
+        (FileDelta::Unchanged, FileDelta::Unknown) => {
+            Some(PlannedAction::conflict(path, remote_id(remote, base)))
+        }
+        (FileDelta::Unchanged, FileDelta::Unsupported) => Some(PlannedAction::new(
+            path,
+            SyncAction::SkipUnsupported,
+            remote_id(remote, base),
+        )),
+        _ => None,
     }
 }
 
@@ -353,6 +395,13 @@ mod tests {
             sha1_hash: hash.to_owned(),
             proton_id: id.map(ToOwned::to_owned),
             sync_status: SyncStatus::Synced,
+        }
+    }
+
+    fn modified_base(path: &str, id: Option<&str>, hash: &str) -> FileRecord {
+        FileRecord {
+            sync_status: SyncStatus::Modified,
+            ..base(path, id, hash)
         }
     }
 
@@ -561,6 +610,73 @@ mod tests {
                 "missing local + remote-no-hash must not destroy remote data"
             );
         }
+    }
+
+    #[test]
+    fn modified_new_local_record_uploads_instead_of_deleting_local_file() {
+        let mut local_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(PathBuf::from("new.txt"), local("new.txt", "new-hash"));
+        base_index.insert(
+            PathBuf::from("new.txt"),
+            modified_base("new.txt", None, "new-hash"),
+        );
+
+        let planned = plan_sync(&local_files, &HashMap::new(), &base_index);
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].path, PathBuf::from("new.txt"));
+        assert_eq!(planned[0].action, SyncAction::Upload);
+        assert_eq!(planned[0].remote_id, None);
+    }
+
+    #[test]
+    fn modified_conflict_resolution_uploads_local_when_remote_differs() {
+        let mut local_files = HashMap::new();
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(
+            PathBuf::from("notes.txt"),
+            local("notes.txt", "local-resolution"),
+        );
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some("remote-conflict")),
+        );
+        base_index.insert(
+            PathBuf::from("notes.txt"),
+            modified_base("notes.txt", Some("remote-id"), "local-resolution"),
+        );
+
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].path, PathBuf::from("notes.txt"));
+        assert_eq!(planned[0].action, SyncAction::Upload);
+        assert_eq!(planned[0].remote_id.as_deref(), Some("remote-id"));
+    }
+
+    #[test]
+    fn modified_existing_file_with_remote_change_still_conflicts() {
+        let mut local_files = HashMap::new();
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(PathBuf::from("notes.txt"), local("notes.txt", "local-new"));
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some("remote-new")),
+        );
+        base_index.insert(
+            PathBuf::from("notes.txt"),
+            modified_base("notes.txt", Some("remote-id"), "base-hash"),
+        );
+
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].path, PathBuf::from("notes.txt"));
+        assert_eq!(planned[0].action, SyncAction::Conflict);
+        assert_eq!(planned[0].remote_id.as_deref(), Some("remote-id"));
     }
 
     #[test]

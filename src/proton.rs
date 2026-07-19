@@ -4,13 +4,15 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 use tracing::warn;
 use wait_timeout::ChildExt;
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_LIST_ATTEMPTS: usize = 2;
+const EXECUTABLE_BUSY_SPAWN_ATTEMPTS: usize = 3;
+const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -406,11 +408,7 @@ impl ProtonDriveClient {
     }
 
     fn run_once(&self, operation: &str, args: &[OsString]) -> AppResult<Output> {
-        let mut child = Command::new(&self.executable)
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let mut child = self.spawn_once(args)?;
         if child.wait_timeout(self.command_policy.timeout)?.is_some() {
             return Ok(child.wait_with_output()?);
         }
@@ -425,6 +423,28 @@ impl ProtonDriveClient {
             "proton-drive {operation} timed out after {}",
             format_duration(self.command_policy.timeout)
         )))
+    }
+
+    fn spawn_once(&self, args: &[OsString]) -> AppResult<Child> {
+        let mut busy_attempts = 0;
+        loop {
+            match Command::new(&self.executable)
+                .args(args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => return Ok(child),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && busy_attempts < EXECUTABLE_BUSY_SPAWN_ATTEMPTS =>
+                {
+                    busy_attempts += 1;
+                    std::thread::sleep(EXECUTABLE_BUSY_RETRY_DELAY);
+                }
+                Err(error) => return Err(Box::new(error)),
+            }
+        }
     }
 }
 

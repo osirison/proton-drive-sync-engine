@@ -516,6 +516,12 @@ mod tests {
     }
 
     #[test]
+    fn path_keys_normalize_trailing_separators() {
+        assert_eq!(path_key(Path::new("dir/subdir")), "dir/subdir");
+        assert_eq!(path_key(Path::new("dir/subdir/")), "dir/subdir");
+    }
+
+    #[test]
     fn load_existing_index_returns_empty_for_missing_database() {
         let directory = tempdir().expect("tempdir");
         let db_path = directory.path().join("missing.db");
