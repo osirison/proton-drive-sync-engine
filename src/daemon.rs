@@ -233,8 +233,7 @@ impl Daemon {
                     {
                         ensure_parent_directory(&destination)?;
                         self.proton.download(remote_id, &destination)?;
-                        let local_state =
-                            local_file_state(&self.config.local_root, &destination)?;
+                        let local_state = local_file_state(&self.config.local_root, &destination)?;
                         let record = FileRecord::from_local(
                             action.path.clone(),
                             &local_state,
@@ -325,17 +324,12 @@ fn ensure_parent_directory(path: &Path) -> AppResult<()> {
 
 /// Join `relative` onto `local_root` only when it is safe to do so.
 ///
-/// Returns `None` (and the caller should skip the action) if `relative` contains
-/// any component that could cause the resulting path to escape `local_root`,
-/// such as absolute paths, `..` traversal, or OS-specific prefix components.
+/// Returns `None` (and the caller should skip the action) when `relative`
+/// contains components that could escape `local_root`.  Delegates to
+/// [`crate::validate_relative_path`] for consistent security semantics with
+/// the remote-path normalization in `proton.rs`.
 fn safe_local_path(local_root: &Path, relative: &Path) -> Option<PathBuf> {
-    for component in relative.components() {
-        match component {
-            std::path::Component::Normal(_) => {}
-            _ => return None,
-        }
-    }
-    Some(local_root.join(relative))
+    crate::validate_relative_path(relative).map(|safe| local_root.join(safe))
 }
 
 struct LockGuard {

@@ -227,9 +227,10 @@ fn collect_node(
 /// * contains `..` (parent-directory) components, or
 /// * contains any component (prefix, root dir) that could escape the local
 ///   sync directory when joined with `local_root`.
+///
+/// `CurDir` (`.`) components are stripped so the result only contains
+/// `Normal` components and is safe to use as a `HashMap` key.
 fn normalize_remote_path(path: &Path, remote_root: &Path) -> Option<PathBuf> {
-    use std::path::Component;
-
     let relative = if let Ok(stripped) = path.strip_prefix(remote_root) {
         stripped.to_path_buf()
     } else if let Some(root_name) = remote_root.file_name()
@@ -243,15 +244,7 @@ fn normalize_remote_path(path: &Path, remote_root: &Path) -> Option<PathBuf> {
         return None;
     };
 
-    // Reject any component that could escape the sync directory.
-    for component in relative.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            _ => return None,
-        }
-    }
-
-    Some(relative)
+    crate::validate_relative_path(&relative)
 }
 
 #[cfg(test)]
@@ -387,6 +380,13 @@ mod tests {
             normalize_remote_path(Path::new("/Drive/notes.txt"), Path::new("/Drive")),
             Some(PathBuf::from("notes.txt")),
             "absolute path under remote_root must be stripped correctly"
+        );
+
+        // CurDir (.) components must be stripped so the result is a canonical Normal-only path.
+        assert_eq!(
+            normalize_remote_path(Path::new("./Documents/notes.txt"), Path::new("/Drive")),
+            Some(PathBuf::from("Documents/notes.txt")),
+            "leading CurDir must be stripped"
         );
     }
 }

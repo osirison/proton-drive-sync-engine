@@ -134,7 +134,7 @@ fn plan_ongoing_action(
         }
         (FileDelta::Missing, FileDelta::Unknown) => None,
         // Unknown is only ever produced for the remote delta; this arm is unreachable.
-        (FileDelta::Unknown, _) => None,
+        (FileDelta::Unknown, _) => unreachable!("local delta is never Unknown"),
     }
 }
 
