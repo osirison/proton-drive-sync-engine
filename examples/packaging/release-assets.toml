@@ -1,0 +1,14 @@
+# Minimal release asset manifest for a user-service distribution.
+
+[binaries]
+daemon = "proton-syncd"
+control_cli = "proton-sync"
+
+[config]
+sample = "examples/proton-sync.toml"
+install_path = "~/.config/proton-sync/proton-sync.toml"
+
+[systemd]
+unit = "examples/systemd/proton-syncd.service"
+install_helper = "examples/systemd/install-user-service.sh"
+user_unit_path = "~/.config/systemd/user/proton-syncd.service"

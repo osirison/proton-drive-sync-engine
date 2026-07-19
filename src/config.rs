@@ -102,18 +102,18 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             .proton_cli
             .or(file_config.proton_cli)
             .unwrap_or_else(|| PathBuf::from("proton-drive")),
-        proton_timeout: Duration::from_secs(
-            input
-                .proton_timeout_secs
-                .or(file_config.proton_timeout_secs)
-                .unwrap_or(default_command_policy.timeout.as_secs())
-                .max(1),
-        ),
-        proton_list_attempts: input
-            .proton_list_attempts
-            .or(file_config.proton_list_attempts)
-            .unwrap_or(default_command_policy.list_attempts)
-            .max(1),
+        proton_timeout: resolve_positive_duration_secs(
+            input.proton_timeout_secs,
+            file_config.proton_timeout_secs,
+            default_command_policy.timeout.as_secs(),
+            "proton_timeout_secs",
+        )?,
+        proton_list_attempts: resolve_positive_usize(
+            input.proton_list_attempts,
+            file_config.proton_list_attempts,
+            default_command_policy.list_attempts,
+            "proton_list_attempts",
+        )?,
         include_patterns: merge_patterns(input.include_patterns, file_config.include_patterns),
         exclude_patterns: merge_patterns(input.exclude_patterns, file_config.exclude_patterns),
     };
@@ -147,6 +147,36 @@ fn resolve_path(local_root: &Path, path: PathBuf) -> PathBuf {
     } else {
         local_root.join(path)
     }
+}
+
+fn resolve_positive_duration_secs(
+    input_value: Option<u64>,
+    file_value: Option<u64>,
+    default_value: u64,
+    field_name: &str,
+) -> AppResult<Duration> {
+    let value = input_value.or(file_value).unwrap_or(default_value);
+    if value == 0 {
+        return Err(boxed_error(format!(
+            "{field_name} must be greater than zero"
+        )));
+    }
+    Ok(Duration::from_secs(value))
+}
+
+fn resolve_positive_usize(
+    input_value: Option<usize>,
+    file_value: Option<usize>,
+    default_value: usize,
+    field_name: &str,
+) -> AppResult<usize> {
+    let value = input_value.or(file_value).unwrap_or(default_value);
+    if value == 0 {
+        return Err(boxed_error(format!(
+            "{field_name} must be greater than zero"
+        )));
+    }
+    Ok(value)
 }
 
 fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
@@ -295,6 +325,38 @@ dry_run = true
                 .to_string()
                 .contains("invalid scan filter configuration"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn zero_proton_timeout_returns_targeted_config_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            proton_timeout_secs: Some(0),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("zero Proton timeout should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "proton_timeout_secs must be greater than zero"
+        );
+    }
+
+    #[test]
+    fn zero_proton_list_attempts_returns_targeted_config_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            proton_list_attempts: Some(0),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("zero Proton list attempts should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "proton_list_attempts must be greater than zero"
         );
     }
 

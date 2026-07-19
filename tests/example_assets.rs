@@ -4,6 +4,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use toml::Value;
 
 #[test]
 fn example_config_resolves_to_valid_daemon_config() {
@@ -73,6 +74,36 @@ fn example_systemd_installer_has_safe_defaults() {
             .permissions()
             .mode();
         assert!(mode & 0o111 != 0, "installer should be executable");
+    }
+}
+
+#[test]
+fn release_asset_manifest_points_at_existing_distribution_assets() {
+    let manifest = fs::read_to_string(manifest_path("examples/packaging/release-assets.toml"))
+        .expect("release asset manifest");
+    let manifest = toml::from_str::<Value>(&manifest).expect("parse release manifest");
+
+    assert_eq!(
+        manifest["binaries"]["daemon"].as_str(),
+        Some("proton-syncd")
+    );
+    assert_eq!(
+        manifest["binaries"]["control_cli"].as_str(),
+        Some("proton-sync")
+    );
+
+    for key_path in [
+        ["config", "sample"],
+        ["systemd", "unit"],
+        ["systemd", "install_helper"],
+    ] {
+        let asset_path = manifest[key_path[0]][key_path[1]]
+            .as_str()
+            .expect("manifest asset path");
+        assert!(
+            fs::metadata(manifest_path(asset_path)).is_ok(),
+            "missing release asset {asset_path}"
+        );
     }
 }
 

@@ -32,6 +32,16 @@ pub struct ControlResponse {
     pub last_error: Option<String>,
     pub last_plan_summary: Option<PlanSummary>,
     pub last_successful_sync_summary: Option<PlanSummary>,
+    pub status_history: Vec<StatusHistoryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatusHistoryEntry {
+    pub epoch_secs: u64,
+    pub message: String,
+    pub last_error: Option<String>,
+    pub plan_summary: Option<PlanSummary>,
+    pub successful_sync_summary: Option<PlanSummary>,
 }
 
 #[cfg(unix)]

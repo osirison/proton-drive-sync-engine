@@ -24,6 +24,7 @@ The project is designed as a focused sync core: local filesystem scanning, Proto
 * Loads daemon settings from a TOML config file with explicit CLI overrides
 * Supports include and exclude glob patterns for selective sync
 * Emits structured logs through `tracing` for daemon and dry-run diagnostics
+* Persists recent daemon status history next to the local sync state
 * Prevents concurrent daemon instances with an advisory lockfile
 
 ## Current Scope
@@ -163,7 +164,7 @@ dry_run = false
 
 Explicit CLI flags override values from the config file. For example, you can keep normal settings in `proton-sync.toml` and run one filtered preview with `--config proton-sync.toml --include 'Documents/**' --dry-run`. Use `--no-dry-run` when a config file sets `dry_run = true` but you want to start the daemon normally.
 
-The daemon validates empty roots and invalid include or exclude globs before starting. A sample config is available at [examples/proton-sync.toml](examples/proton-sync.toml).
+The daemon validates empty roots, invalid include or exclude globs, zero Proton command timeouts, and zero Proton list attempts before starting. A sample config is available at [examples/proton-sync.toml](examples/proton-sync.toml).
 
 ## Dry-Run Planning
 
@@ -226,6 +227,7 @@ Rules are applied consistently to local files, remote files, and existing index 
 * Exclude patterns always win over include patterns.
 * Conflict sidecars and index files are ignored even when they match an include pattern.
 * A custom `--db-path` under `local-root` is ignored so the sync index does not become sync data.
+* The persisted status history file next to the index is ignored for the same reason.
 
 Run a dry-run after changing filters to confirm the planned action set before enabling regular sync.
 
@@ -269,9 +271,12 @@ Responses are JSON so scripts can consume them directly:
   "last_sync_epoch_secs": null,
   "last_error": null,
   "last_plan_summary": null,
-  "last_successful_sync_summary": null
+  "last_successful_sync_summary": null,
+  "status_history": []
 }
 ```
+
+The daemon keeps the most recent status history entries in a JSON file next to the configured SQLite database. A restarted daemon reloads that history, so recent failures and successful summaries remain visible through `proton-sync status`.
 
 ## Running as a User Service
 
@@ -309,6 +314,8 @@ proton-sync status
 ```
 
 Run a dry-run from the shell before enabling the service whenever you change `--local-root`, `--remote-root`, or `--proton-cli`.
+
+The minimal release asset manifest at [examples/packaging/release-assets.toml](examples/packaging/release-assets.toml) lists the binaries, sample config, systemd unit, and install helper expected in a user-service distribution.
 
 ## Sync Behavior
 
@@ -368,6 +375,7 @@ src/
   proton.rs          Proton Drive CLI wrapper and remote JSON parser
   sync.rs            Sync planning matrix and conflict naming
 examples/
+  packaging/         Minimal release asset manifest
   proton-sync.toml   Sample daemon config file
   systemd/           Sample systemd user service and install helper
 ```
@@ -403,6 +411,7 @@ PROTON_SYNC_LIVE_REMOTE_ROOT=/Drive/RemoteFolder \
 ```
 
 Set `PROTON_SYNC_LIVE_CLI=/path/to/proton-drive` when the executable is not available as `proton-drive` on `PATH`.
+Set `PROTON_SYNC_LIVE_TIMEOUT_SECS` and `PROTON_SYNC_LIVE_LIST_ATTEMPTS` to tune the read-only listing policy for slower live environments. Both values must be greater than zero.
 
 ## Troubleshooting
 

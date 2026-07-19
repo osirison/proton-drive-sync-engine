@@ -4,7 +4,8 @@ use crate::index::{
     upsert_record,
 };
 use crate::ipc::{
-    ControlCommand, ControlRequest, ControlResponse, bind_listener, read_request, write_response,
+    ControlCommand, ControlRequest, ControlResponse, StatusHistoryEntry, bind_listener,
+    read_request, write_response,
 };
 use crate::proton::{CommandPolicy, ProtonClient, ProtonDriveClient, RemoteFile};
 use crate::sync::{PlanSummary, PlannedAction, SyncAction, original_from_conflict_copy, plan_sync};
@@ -18,7 +19,9 @@ use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+
+const STATUS_HISTORY_LIMIT: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -46,6 +49,8 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     last_error: Option<String>,
     last_plan_summary: Option<PlanSummary>,
     last_successful_sync_summary: Option<PlanSummary>,
+    status_history_path: PathBuf,
+    status_history: Vec<StatusHistoryEntry>,
     _lock_guard: LockGuard,
 }
 
@@ -102,6 +107,15 @@ impl<C: ProtonClient> Daemon<C> {
         let lock_guard = LockGuard::acquire(&config.lockfile_path)?;
         let connection = open_database(&config.db_path)?;
         let scan_options = scan_options_from_config(&config)?;
+        let status_history_path = status_history_path(&config.db_path);
+        let status_history = load_status_history(&status_history_path).unwrap_or_else(|error| {
+            warn!(
+                path = %status_history_path.display(),
+                error = %error,
+                "ignoring unreadable daemon status history"
+            );
+            Vec::new()
+        });
 
         Ok(Self {
             config,
@@ -114,6 +128,8 @@ impl<C: ProtonClient> Daemon<C> {
             last_error: None,
             last_plan_summary: None,
             last_successful_sync_summary: None,
+            status_history_path,
+            status_history,
             _lock_guard: lock_guard,
         })
     }
@@ -264,6 +280,7 @@ impl<C: ProtonClient> Daemon<C> {
             last_error: self.last_error.clone(),
             last_plan_summary: self.last_plan_summary.clone(),
             last_successful_sync_summary: self.last_successful_sync_summary.clone(),
+            status_history: self.status_history.clone(),
         }
     }
 
@@ -283,10 +300,17 @@ impl<C: ProtonClient> Daemon<C> {
 
     fn reconcile_blocking(&mut self) -> AppResult<()> {
         let result = self.reconcile_blocking_inner();
-        match &result {
-            Ok(()) => self.last_error = None,
-            Err(error) => self.last_error = Some(error.to_string()),
-        }
+        let message = match &result {
+            Ok(()) => {
+                self.last_error = None;
+                "sync completed"
+            }
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+                "sync failed"
+            }
+        };
+        self.record_status_history(message);
         result
     }
 
@@ -424,6 +448,28 @@ impl<C: ProtonClient> Daemon<C> {
         info!("reconciliation completed");
         Ok(())
     }
+
+    fn record_status_history(&mut self, message: &str) {
+        let entry = StatusHistoryEntry {
+            epoch_secs: current_epoch_secs(),
+            message: message.to_owned(),
+            last_error: self.last_error.clone(),
+            plan_summary: self.last_plan_summary.clone(),
+            successful_sync_summary: self.last_successful_sync_summary.clone(),
+        };
+        self.status_history.push(entry);
+        if self.status_history.len() > STATUS_HISTORY_LIMIT {
+            let remove_count = self.status_history.len() - STATUS_HISTORY_LIMIT;
+            self.status_history.drain(0..remove_count);
+        }
+        if let Err(error) = write_status_history(&self.status_history_path, &self.status_history) {
+            warn!(
+                path = %self.status_history_path.display(),
+                error = %error,
+                "failed to persist daemon status history"
+            );
+        }
+    }
 }
 
 enum IndexMutation {
@@ -441,12 +487,38 @@ impl IndexMutation {
 }
 
 fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
+    let ignored_paths = vec![config.db_path.clone(), status_history_path(&config.db_path)];
     ScanOptions::new(
         &config.local_root,
-        std::slice::from_ref(&config.db_path),
+        &ignored_paths,
         &config.include_patterns,
         &config.exclude_patterns,
     )
+}
+
+fn status_history_path(db_path: &Path) -> PathBuf {
+    db_path.with_extension("status.json")
+}
+
+fn load_status_history(path: &Path) -> AppResult<Vec<StatusHistoryEntry>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let history = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&history)?)
+}
+
+fn write_status_history(path: &Path, history: &[StatusHistoryEntry]) -> AppResult<()> {
+    ensure_parent_directory(path)?;
+    fs::write(path, serde_json::to_vec_pretty(history)?)?;
+    Ok(())
+}
+
+fn current_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 fn filter_remote_files(
@@ -689,6 +761,9 @@ mod tests {
         remote_files: HashMap<PathBuf, RemoteFile>,
     }
 
+    #[derive(Debug)]
+    struct FailingListProtonClient;
+
     impl ProtonClient for FakeProtonClient {
         fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             Ok(self.remote_files.clone())
@@ -709,6 +784,29 @@ mod tests {
 
         fn delete(&self, _remote_id: &str) -> AppResult<()> {
             Err(boxed_error("unexpected delete in fake client"))
+        }
+    }
+
+    impl ProtonClient for FailingListProtonClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            Err(boxed_error("list failed"))
+        }
+
+        fn upload(
+            &self,
+            _local_path: &Path,
+            _remote_root: &Path,
+            _relative_path: &Path,
+        ) -> AppResult<()> {
+            Err(boxed_error("unexpected upload in failing list client"))
+        }
+
+        fn download(&self, _remote_id: &str, _destination: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected download in failing list client"))
+        }
+
+        fn delete(&self, _remote_id: &str) -> AppResult<()> {
+            Err(boxed_error("unexpected delete in failing list client"))
         }
     }
 
@@ -938,6 +1036,95 @@ mod tests {
             Some(2)
         );
         assert!(status.last_successful_sync_summary.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scheduled_reconcile_failure_is_reported_without_stopping_daemon() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut daemon = Daemon::with_client(
+            test_config(directory.path(), &local_root),
+            FailingListProtonClient,
+        )
+        .expect("daemon");
+
+        daemon
+            .reconcile_if_needed()
+            .await
+            .expect("scheduled failure should not stop daemon");
+
+        assert_eq!(daemon.last_error.as_deref(), Some("list failed"));
+        assert!(daemon.last_sync.is_none());
+        assert!(daemon.last_plan_summary.is_none());
+        assert!(daemon.last_successful_sync_summary.is_none());
+        let status = daemon.status_response("daemon status");
+        assert_eq!(status.status, "running");
+        assert_eq!(status.last_error.as_deref(), Some("list failed"));
+        assert_eq!(status.status_history.len(), 1);
+        assert_eq!(status.status_history[0].message, "sync failed");
+        assert_eq!(
+            status.status_history[0].last_error.as_deref(),
+            Some("list failed")
+        );
+    }
+
+    #[test]
+    fn daemon_loads_persisted_status_history_on_restart() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let config = test_config(directory.path(), &local_root);
+        {
+            let (client, _) = RecordingProtonClient::new(HashMap::new());
+            let mut daemon = Daemon::with_client(config.clone(), client).expect("daemon");
+
+            daemon.reconcile_blocking().expect("reconcile");
+
+            let status = daemon.status_response("daemon status");
+            assert_eq!(status.status_history.len(), 1);
+            assert_eq!(status.status_history[0].message, "sync completed");
+            assert_eq!(
+                status.status_history[0]
+                    .successful_sync_summary
+                    .as_ref()
+                    .map(|summary| summary.total),
+                Some(0)
+            );
+        }
+
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(config, client).expect("restarted daemon");
+
+        let status = daemon.status_response("daemon status");
+        assert_eq!(status.status_history.len(), 1);
+        assert_eq!(status.status_history[0].message, "sync completed");
+        assert!(status.status_history[0].last_error.is_none());
+    }
+
+    #[test]
+    fn status_history_file_is_not_planned_for_sync() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let config = DaemonConfig {
+            db_path: local_root.join("sync_index.db"),
+            ..test_config(directory.path(), &local_root)
+        };
+        fs::write(status_history_path(&config.db_path), "[]").expect("status history file");
+
+        let plan = preview_plan_with_client(
+            &config,
+            &FakeProtonClient {
+                remote_files: HashMap::new(),
+            },
+        )
+        .expect("preview plan");
+
+        assert!(
+            plan.is_empty(),
+            "status history file must be ignored by sync planning: {plan:?}"
+        );
     }
 
     #[test]
