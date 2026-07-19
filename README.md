@@ -21,6 +21,7 @@ The project is designed as a focused sync core: local filesystem scanning, Proto
 * Creates conflict sidecar files using the `.proton-cloud` naming convention
 * Exposes `status`, `pause`, `resume`, and `syncnow` commands over a local Unix socket
 * Prints a dry-run sync plan without uploading, downloading, deleting, or updating the index
+* Loads daemon settings from a TOML config file with explicit CLI overrides
 * Supports include and exclude glob patterns for selective sync
 * Emits structured logs through `tracing` for daemon and dry-run diagnostics
 * Prevents concurrent daemon instances with an advisory lockfile
@@ -109,6 +110,7 @@ By default, the daemon stores `sync_index.db` under the local root and listens o
 
 ```bash
 cargo run --bin proton-syncd -- \
+  --config proton-sync.toml \
   --local-root /path/to/local/folder \
   --remote-root /Drive/RemoteFolder \
   --db-path sync_index.db \
@@ -123,8 +125,9 @@ cargo run --bin proton-syncd -- \
 
 | Flag | Default | Description |
 | ------ | ------- | ----------- |
-| `--local-root` | Required | Local directory to watch and reconcile |
-| `--remote-root` | Required | Proton Drive folder used as the remote sync root |
+| `--config <PATH>` | None | TOML file with daemon settings |
+| `--local-root` | Required unless configured | Local directory to watch and reconcile |
+| `--remote-root` | Required unless configured | Proton Drive folder used as the remote sync root |
 | `--db-path` | `sync_index.db` | SQLite index path; relative values are stored under `local-root` |
 | `--socket-path` | `/tmp/proton-sync.sock` | Unix socket used by `proton-sync` |
 | `--lockfile-path` | `/tmp/proton-sync.lock` | Advisory lockfile used to prevent duplicate daemon instances |
@@ -133,12 +136,32 @@ cargo run --bin proton-syncd -- \
 | `--exclude <GLOB>` | None | Excludes paths matching one or more relative glob patterns; exclude wins over include |
 | `--proton-cli` | `proton-drive` | Path to the Proton Drive CLI executable |
 | `--dry-run` | `false` | Prints the current sync plan as JSON and exits without changing local files, remote files, or the index |
+| `--no-dry-run` | None | Overrides `dry_run = true` from a config file |
 
 Stop the daemon with `Ctrl+C` or `SIGTERM`. On shutdown, the daemon removes its Unix socket.
 
+## Config File
+
+Use `--config <PATH>` to load daemon settings from TOML. This is the recommended shape for service managers because it keeps long paths and filter rules out of the unit file.
+
+```toml
+local_root = "/home/me/ProtonDrive"
+remote_root = "/Drive/RemoteFolder"
+db_path = ".local/state/proton-sync/sync_index.db"
+socket_path = "/run/user/1000/proton-sync.sock"
+lockfile_path = "/run/user/1000/proton-sync.lock"
+scan_interval_secs = 300
+proton_cli = "proton-drive"
+include = ["Documents/**"]
+exclude = ["**/*.tmp"]
+dry_run = true
+```
+
+Explicit CLI flags override values from the config file. For example, you can keep normal settings in `proton-sync.toml` and run one filtered preview with `--config proton-sync.toml --include 'Documents/**' --dry-run`. Use `--no-dry-run` when a config file sets `dry_run = true` but you want to start the daemon normally.
+
 ## Dry-Run Planning
 
-Use `--dry-run` before the first real sync, after changing roots, or before investigating unexpected behavior. Dry-run mode scans the local root, lists the remote root through `proton-drive filesystem list --json`, reads the existing SQLite index in read-only mode when it exists, prints the planned actions, and exits.
+Use `--dry-run` before the first real sync, after changing roots, or before investigating unexpected behavior. Dry-run mode scans the local root, lists the remote root through `proton-drive filesystem list --json`, reads the existing SQLite index in read-only mode when it exists, prints a summary plus the planned actions, and exits.
 
 ```bash
 cargo run --bin proton-syncd -- \
@@ -150,14 +173,27 @@ cargo run --bin proton-syncd -- \
 Example output:
 
 ```json
-[
-  {
-    "path": "notes.txt",
-    "action": "download",
-    "conflict_path": null,
-    "remote_id": "remote-file-id"
-  }
-]
+{
+  "summary": {
+    "total": 1,
+    "uploads": 0,
+    "downloads": 1,
+    "auto_links": 0,
+    "conflicts": 0,
+    "remote_deletes": 0,
+    "local_deletes": 0,
+    "purges": 0,
+    "destructive_actions": 0
+  },
+  "plan": [
+    {
+      "path": "notes.txt",
+      "action": "download",
+      "conflict_path": null,
+      "remote_id": "remote-file-id"
+    }
+  ]
+}
 ```
 
 Dry-run mode respects the configured `--include` and `--exclude` filters. It does not bind the IPC socket, take the daemon lock, execute uploads or downloads, delete files, or update `sync_index.db`. It still contacts Proton Drive through the configured CLI, so authentication and remote permissions must already work.
@@ -346,7 +382,7 @@ Useful focused commands:
 cargo test sync::tests
 cargo test proton::tests
 cargo test daemon::tests
-cargo test dry_run_cli_outputs_plan_without_creating_index
+cargo test --test dry_run_cli
 ```
 
 When changing sync behavior, add regression tests near the planner in `src/sync.rs`. When changing local filesystem or Proton JSON safety boundaries, add tests around the boundary that first accepts external paths.

@@ -48,14 +48,23 @@ pub struct ProtonDriveClient {
     executable: PathBuf,
 }
 
+pub trait ProtonClient: Send + Sync {
+    fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>>;
+    fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
+    fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()>;
+    fn delete(&self, remote_id: &str) -> AppResult<()>;
+}
+
 impl ProtonDriveClient {
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
         }
     }
+}
 
-    pub fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+impl ProtonClient for ProtonDriveClient {
+    fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
         let output = Command::new(&self.executable)
             .args(["filesystem", "list", "--json"])
             .arg(remote_root)
@@ -70,12 +79,7 @@ impl ProtonDriveClient {
         parse_remote_files(&stdout, remote_root)
     }
 
-    pub fn upload(
-        &self,
-        local_path: &Path,
-        remote_root: &Path,
-        relative_path: &Path,
-    ) -> AppResult<()> {
+    fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
         let remote_parent = relative_path
             .parent()
             .map(|parent| remote_root.join(parent))
@@ -96,7 +100,7 @@ impl ProtonDriveClient {
         }
     }
 
-    pub fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()> {
+    fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()> {
         let output = Command::new(&self.executable)
             .args(["download", "--id", remote_id])
             .arg(destination)
@@ -111,7 +115,7 @@ impl ProtonDriveClient {
         }
     }
 
-    pub fn delete(&self, remote_id: &str) -> AppResult<()> {
+    fn delete(&self, remote_id: &str) -> AppResult<()> {
         let output = Command::new(&self.executable)
             .args(["delete", "--id", remote_id])
             .output()?;

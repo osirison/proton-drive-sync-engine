@@ -6,7 +6,7 @@ use crate::index::{
 use crate::ipc::{
     ControlCommand, ControlRequest, ControlResponse, bind_listener, read_request, write_response,
 };
-use crate::proton::ProtonDriveClient;
+use crate::proton::{ProtonClient, ProtonDriveClient, RemoteFile};
 use crate::sync::{PlannedAction, SyncAction, original_from_conflict_copy, plan_sync};
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -33,10 +33,10 @@ pub struct DaemonConfig {
     pub exclude_patterns: Vec<String>,
 }
 
-pub struct Daemon {
+pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     config: DaemonConfig,
     connection: Connection,
-    proton: ProtonDriveClient,
+    proton: C,
     pending_changes: BTreeSet<PathBuf>,
     scan_options: ScanOptions,
     paused: bool,
@@ -45,6 +45,14 @@ pub struct Daemon {
 }
 
 pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
+    let client = ProtonDriveClient::new(config.proton_cli.clone());
+    preview_plan_with_client(config, &client)
+}
+
+pub fn preview_plan_with_client(
+    config: &DaemonConfig,
+    proton: &impl ProtonClient,
+) -> AppResult<Vec<PlannedAction>> {
     info!(
         local_root = %config.local_root.display(),
         remote_root = %config.remote_root.display(),
@@ -52,10 +60,7 @@ pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
     );
     let scan_options = scan_options_from_config(config)?;
     let local_files = scan_local_files_with_options(&config.local_root, &scan_options)?;
-    let remote_files = filter_remote_files(
-        ProtonDriveClient::new(config.proton_cli.clone()).list(&config.remote_root)?,
-        &scan_options,
-    );
+    let remote_files = filter_remote_files(proton.list(&config.remote_root)?, &scan_options);
     let base_index = load_existing_index(&config.db_path)?;
     let base_index = filter_base_index(base_index, &scan_options);
     let plan = plan_sync(&local_files, &remote_files, &base_index);
@@ -63,8 +68,15 @@ pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
     Ok(plan)
 }
 
-impl Daemon {
+impl Daemon<ProtonDriveClient> {
     pub fn new(config: DaemonConfig) -> AppResult<Self> {
+        let proton = ProtonDriveClient::new(config.proton_cli.clone());
+        Self::with_client(config, proton)
+    }
+}
+
+impl<C: ProtonClient> Daemon<C> {
+    pub fn with_client(config: DaemonConfig, proton: C) -> AppResult<Self> {
         fs::create_dir_all(&config.local_root)?;
         if let Some(parent) = config.db_path.parent()
             && !parent.as_os_str().is_empty()
@@ -78,7 +90,6 @@ impl Daemon {
         }
         let lock_guard = LockGuard::acquire(&config.lockfile_path)?;
         let connection = open_database(&config.db_path)?;
-        let proton = ProtonDriveClient::new(config.proton_cli.clone());
         let scan_options = scan_options_from_config(&config)?;
 
         Ok(Self {
@@ -369,9 +380,9 @@ fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
 }
 
 fn filter_remote_files(
-    remote_files: HashMap<PathBuf, crate::proton::RemoteFile>,
+    remote_files: HashMap<PathBuf, RemoteFile>,
     scan_options: &ScanOptions,
-) -> HashMap<PathBuf, crate::proton::RemoteFile> {
+) -> HashMap<PathBuf, RemoteFile> {
     remote_files
         .into_iter()
         .filter(|(path, _)| scan_options.allows_relative_file(path))
@@ -487,7 +498,80 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use tempfile::tempdir;
+
+    #[derive(Debug)]
+    struct FakeProtonClient {
+        remote_files: HashMap<PathBuf, RemoteFile>,
+    }
+
+    impl ProtonClient for FakeProtonClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            Ok(self.remote_files.clone())
+        }
+
+        fn upload(
+            &self,
+            _local_path: &Path,
+            _remote_root: &Path,
+            _relative_path: &Path,
+        ) -> AppResult<()> {
+            Err(boxed_error("unexpected upload in fake client"))
+        }
+
+        fn download(&self, _remote_id: &str, _destination: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected download in fake client"))
+        }
+
+        fn delete(&self, _remote_id: &str) -> AppResult<()> {
+            Err(boxed_error("unexpected delete in fake client"))
+        }
+    }
+
+    #[test]
+    fn preview_plan_uses_injected_proton_client() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("local.txt"), b"local").expect("local file");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("remote.txt"),
+            RemoteFile {
+                path: PathBuf::from("remote.txt"),
+                id: "remote-id".to_owned(),
+                name: "remote.txt".to_owned(),
+                sha1_hash: Some("remote-hash".to_owned()),
+            },
+        );
+        let config = DaemonConfig {
+            local_root,
+            remote_root: PathBuf::from("/Drive/RemoteFolder"),
+            db_path: directory.path().join("missing.db"),
+            socket_path: directory.path().join("daemon.sock"),
+            lockfile_path: directory.path().join("daemon.lock"),
+            scan_interval: Duration::from_secs(300),
+            proton_cli: PathBuf::from("proton-drive"),
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+        };
+
+        let plan = preview_plan_with_client(&config, &FakeProtonClient { remote_files })
+            .expect("preview plan");
+
+        assert!(
+            plan.iter()
+                .any(|action| action.path == Path::new("local.txt")
+                    && action.action == SyncAction::Upload)
+        );
+        assert!(
+            plan.iter()
+                .any(|action| action.path == Path::new("remote.txt")
+                    && action.action == SyncAction::Download
+                    && action.remote_id.as_deref() == Some("remote-id"))
+        );
+    }
 
     #[test]
     fn lock_guard_reuses_stale_lockfile() {

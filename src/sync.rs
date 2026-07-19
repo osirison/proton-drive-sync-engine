@@ -24,6 +24,25 @@ pub struct PlannedAction {
     pub remote_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DryRunReport {
+    pub summary: PlanSummary,
+    pub plan: Vec<PlannedAction>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct PlanSummary {
+    pub total: usize,
+    pub uploads: usize,
+    pub downloads: usize,
+    pub auto_links: usize,
+    pub conflicts: usize,
+    pub remote_deletes: usize,
+    pub local_deletes: usize,
+    pub purges: usize,
+    pub destructive_actions: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileDelta {
     Missing,
@@ -186,6 +205,38 @@ impl PlannedAction {
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
         }
+    }
+}
+
+impl DryRunReport {
+    pub fn new(plan: Vec<PlannedAction>) -> Self {
+        Self {
+            summary: PlanSummary::from_plan(&plan),
+            plan,
+        }
+    }
+}
+
+impl PlanSummary {
+    pub fn from_plan(plan: &[PlannedAction]) -> Self {
+        let mut summary = Self {
+            total: plan.len(),
+            ..Self::default()
+        };
+        for action in plan {
+            match action.action {
+                SyncAction::Upload => summary.uploads += 1,
+                SyncAction::Download => summary.downloads += 1,
+                SyncAction::AutoLink => summary.auto_links += 1,
+                SyncAction::Conflict => summary.conflicts += 1,
+                SyncAction::RemoteDelete => summary.remote_deletes += 1,
+                SyncAction::LocalDelete => summary.local_deletes += 1,
+                SyncAction::Purge => summary.purges += 1,
+            }
+        }
+        summary.destructive_actions =
+            summary.remote_deletes + summary.local_deletes + summary.purges;
+        summary
     }
 }
 
@@ -519,5 +570,31 @@ mod tests {
             json.contains(r#""remote_id":"remote-id""#),
             "dry-run JSON should include the remote identifier when available"
         );
+    }
+
+    #[test]
+    fn dry_run_report_summarizes_planned_actions() {
+        let report = DryRunReport::new(vec![
+            PlannedAction::new(Path::new("upload.txt"), SyncAction::Upload, None),
+            PlannedAction::new(
+                Path::new("download.txt"),
+                SyncAction::Download,
+                Some("remote-id".to_owned()),
+            ),
+            PlannedAction::new(
+                Path::new("delete.txt"),
+                SyncAction::RemoteDelete,
+                Some("delete-id".to_owned()),
+            ),
+            PlannedAction::conflict(Path::new("conflict.txt"), Some("conflict-id".to_owned())),
+        ]);
+
+        assert_eq!(report.summary.total, 4);
+        assert_eq!(report.summary.uploads, 1);
+        assert_eq!(report.summary.downloads, 1);
+        assert_eq!(report.summary.remote_deletes, 1);
+        assert_eq!(report.summary.conflicts, 1);
+        assert_eq!(report.summary.destructive_actions, 1);
+        assert_eq!(report.plan.len(), 4);
     }
 }
