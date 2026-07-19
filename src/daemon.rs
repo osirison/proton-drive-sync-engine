@@ -829,6 +829,11 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct ParentCheckingDownloadClient {
+        remote_files: HashMap<PathBuf, RemoteFile>,
+    }
+
+    #[derive(Debug)]
     struct FailingListProtonClient;
 
     impl ProtonClient for FakeProtonClient {
@@ -851,6 +856,39 @@ mod tests {
 
         fn delete(&self, _remote_id: &str) -> AppResult<()> {
             Err(boxed_error("unexpected delete in fake client"))
+        }
+    }
+
+    impl ProtonClient for ParentCheckingDownloadClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            Ok(self.remote_files.clone())
+        }
+
+        fn upload(
+            &self,
+            _local_path: &Path,
+            _remote_root: &Path,
+            _relative_path: &Path,
+        ) -> AppResult<()> {
+            Err(boxed_error("unexpected upload in parent-checking client"))
+        }
+
+        fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()> {
+            let parent = destination
+                .parent()
+                .ok_or_else(|| boxed_error("download destination should have a parent"))?;
+            if !parent.is_dir() {
+                return Err(boxed_error(format!(
+                    "download parent was not created: {}",
+                    parent.display()
+                )));
+            }
+            fs::write(destination, format!("downloaded:{remote_id}"))?;
+            Ok(())
+        }
+
+        fn delete(&self, _remote_id: &str) -> AppResult<()> {
+            Err(boxed_error("unexpected delete in parent-checking client"))
         }
     }
 
@@ -980,6 +1018,34 @@ mod tests {
             }
         ));
         let record = get_record(&daemon.connection, Path::new("remote-only.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_downloads_nested_remote_file_and_creates_parent_directories() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("nested/remote-only.txt"),
+            remote("nested/remote-only.txt", "remote-id", Some("remote-hash")),
+        );
+        let client = ParentCheckingDownloadClient { remote_files };
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        let destination = local_root.join("nested/remote-only.txt");
+        assert_eq!(
+            fs::read_to_string(&destination).expect("downloaded file"),
+            "downloaded:remote-id"
+        );
+        let record = get_record(&daemon.connection, Path::new("nested/remote-only.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));

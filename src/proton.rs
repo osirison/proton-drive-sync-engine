@@ -1,5 +1,5 @@
 use crate::{AppResult, boxed_error};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -15,8 +15,13 @@ const DEFAULT_LIST_ATTEMPTS: usize = 2;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtonNode {
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    pub uid: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub path: Option<String>,
     #[serde(default)]
     pub children: Vec<ProtonNode>,
@@ -24,8 +29,13 @@ pub struct ProtonNode {
     pub entries: Vec<ProtonNode>,
     #[serde(default)]
     pub files: Vec<ProtonNode>,
+    #[serde(default, deserialize_with = "deserialize_optional_active_revision")]
     pub active_revision: Option<ActiveRevision>,
-    #[serde(rename = "type")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "deserialize_optional_string"
+    )]
     pub kind: Option<String>,
     pub is_folder: Option<bool>,
     pub is_file: Option<bool>,
@@ -39,6 +49,7 @@ pub struct ActiveRevision {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClaimedDigests {
+    #[serde(default, deserialize_with = "deserialize_optional_digest_string")]
     pub sha1: Option<String>,
 }
 
@@ -297,6 +308,46 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+fn deserialize_optional_digest_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        Some(Value::String(value)) => Ok(Some(value)),
+        _ => Ok(None),
+    }
+}
+
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        Some(Value::String(value)) => Ok(Some(value)),
+        Some(Value::Object(object)) => Ok(object
+            .get("value")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)),
+        _ => Ok(None),
+    }
+}
+
+fn deserialize_optional_active_revision<'de, D>(
+    deserializer: D,
+) -> Result<Option<ActiveRevision>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let revision = match value {
+        Value::Object(mut object) => object.remove("value").unwrap_or(Value::Object(object)),
+        other => other,
+    };
+    Ok(serde_json::from_value(revision).ok())
+}
+
 pub fn parse_remote_files(
     json: &str,
     remote_root: &Path,
@@ -355,7 +406,8 @@ fn collect_node(
         || matches!(node.kind.as_deref(), Some("folder" | "directory"))
         || (!node.children.is_empty() || !node.entries.is_empty() || !node.files.is_empty());
 
-    if !is_folder && let (Some(id), Some(name)) = (node.id.as_deref(), node.name.as_deref()) {
+    let id = node.id.as_deref().or(node.uid.as_deref());
+    if !is_folder && let (Some(id), Some(name)) = (id, node.name.as_deref()) {
         files.insert(
             relative_path.clone(),
             RemoteFile {
@@ -482,6 +534,74 @@ mod tests {
         let file = files.get(Path::new("draft.txt")).expect("draft file");
 
         assert_eq!(file.sha1_hash, None);
+    }
+
+    #[test]
+    fn tolerates_non_string_claimed_sha1_digest() {
+        let json = r#"
+                [
+                    {
+                        "id": "file-1",
+                        "name": "budget.xlsx",
+                        "activeRevision": {
+                            "claimedDigests": {
+                                "sha1": {
+                                    "value": "1111111111111111111111111111111111111111"
+                                }
+                            }
+                        }
+                    }
+                ]
+                "#;
+
+        let files = parse_remote_files(json, Path::new("/Drive")).expect("parse remote files");
+        let file = files.get(Path::new("budget.xlsx")).expect("Excel file");
+
+        assert_eq!(file.sha1_hash, None);
+    }
+
+    #[test]
+    fn parses_wrapped_cli_metadata_fields() {
+        let json = r#"
+                [
+                    {
+                        "uid": "file-uid",
+                        "name": {
+                            "ok": true,
+                            "value": "budget.xlsx"
+                        },
+                        "type": "file",
+                        "activeRevision": {
+                            "ok": true,
+                            "value": {
+                                "claimedDigests": {
+                                    "sha1": "1111111111111111111111111111111111111111"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "uid": "folder-uid",
+                        "name": {
+                            "ok": true,
+                            "value": "Reports"
+                        },
+                        "type": "folder"
+                    }
+                ]
+                "#;
+
+        let files =
+            parse_remote_files(json, Path::new("/my-files/demo/")).expect("parse remote files");
+        let file = files.get(Path::new("budget.xlsx")).expect("Excel file");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(file.id, "file-uid");
+        assert_eq!(file.name, "budget.xlsx");
+        assert_eq!(
+            file.sha1_hash.as_deref(),
+            Some("1111111111111111111111111111111111111111")
+        );
     }
 
     #[test]
