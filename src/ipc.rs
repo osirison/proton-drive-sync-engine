@@ -1,5 +1,7 @@
 use crate::AppResult;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
@@ -33,7 +35,9 @@ pub async fn bind_listener(socket_path: &Path) -> AppResult<UnixListener> {
     if socket_path.exists() {
         std::fs::remove_file(socket_path)?;
     }
-    Ok(UnixListener::bind(socket_path)?)
+    let listener = UnixListener::bind(socket_path)?;
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
 }
 
 #[cfg(unix)]
@@ -66,4 +70,26 @@ pub async fn write_response(stream: &mut UnixStream, response: &ControlResponse)
         .write_all(format!("{}\n", serde_json::to_string(response)?).as_bytes())
         .await?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn bind_listener_restricts_socket_permissions() {
+        let directory = tempdir().expect("tempdir");
+        let socket_path = directory.path().join("daemon.sock");
+
+        let listener = bind_listener(&socket_path).await.expect("bind listener");
+        let mode = std::fs::metadata(&socket_path)
+            .expect("socket metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        drop(listener);
+        assert_eq!(mode, 0o600);
+    }
 }

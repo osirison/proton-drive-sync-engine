@@ -108,7 +108,7 @@ fn plan_ongoing_action(
         (FileDelta::Missing, FileDelta::Unchanged) => Some(PlannedAction::new(
             path,
             SyncAction::RemoteDelete,
-            base.proton_id.clone(),
+            remote_id(remote, base),
         )),
         (FileDelta::Unchanged, FileDelta::Missing) => Some(PlannedAction::new(
             path,
@@ -474,5 +474,28 @@ mod tests {
                 "missing local + remote-no-hash must not destroy remote data"
             );
         }
+    }
+
+    #[test]
+    fn remote_delete_uses_live_remote_id_when_base_id_is_missing() {
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("orphan-id.txt"),
+            remote("orphan-id.txt", "remote-id", Some("old-hash")),
+        );
+        base_index.insert(
+            PathBuf::from("orphan-id.txt"),
+            base("orphan-id.txt", None, "old-hash"),
+        );
+
+        let planned = plan_sync(&HashMap::new(), &remote_files, &base_index);
+
+        let action = planned
+            .iter()
+            .find(|action| action.path == Path::new("orphan-id.txt"))
+            .expect("remote delete action should be planned");
+        assert_eq!(action.action, SyncAction::RemoteDelete);
+        assert_eq!(action.remote_id.as_deref(), Some("remote-id"));
     }
 }

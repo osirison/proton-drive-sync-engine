@@ -8,6 +8,7 @@ use crate::ipc::{
 use crate::proton::ProtonDriveClient;
 use crate::sync::{SyncAction, original_from_conflict_copy, plan_sync};
 use crate::{AppResult, boxed_error};
+use fs2::FileExt;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use std::collections::BTreeSet;
@@ -199,6 +200,10 @@ impl Daemon {
     }
 
     async fn reconcile(&mut self) -> AppResult<()> {
+        tokio::task::block_in_place(|| self.reconcile_blocking())
+    }
+
+    fn reconcile_blocking(&mut self) -> AppResult<()> {
         let local_files = scan_local_files(&self.config.local_root)?;
         let remote_files = self.proton.list(&self.config.remote_root)?;
         let base_index = load_index(&self.connection)?;
@@ -345,22 +350,30 @@ impl LockGuard {
             fs::create_dir_all(parent)?;
         }
         let file = OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(path)
             .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    boxed_error(format!(
-                        "daemon already running; lockfile exists at {}",
-                        path.display()
-                    ))
-                } else {
-                    boxed_error(format!(
-                        "failed to acquire lockfile {}: {error}",
-                        path.display()
-                    ))
-                }
+                boxed_error(format!(
+                    "failed to open lockfile {}: {error}",
+                    path.display()
+                ))
             })?;
+        file.try_lock_exclusive().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                boxed_error(format!(
+                    "daemon already running; lockfile is locked at {}",
+                    path.display()
+                ))
+            } else {
+                boxed_error(format!(
+                    "failed to lock lockfile {}: {error}",
+                    path.display()
+                ))
+            }
+        })?;
         Ok(Self {
             path: path.to_path_buf(),
             _file: file,
@@ -370,6 +383,7 @@ impl LockGuard {
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
+        let _ = self._file.unlock();
         let _ = fs::remove_file(&self.path);
     }
 }
@@ -388,5 +402,38 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn lock_guard_reuses_stale_lockfile() {
+        let directory = tempdir().expect("tempdir");
+        let lock_path = directory.path().join("daemon.lock");
+        File::create(&lock_path).expect("stale lockfile");
+
+        let guard = LockGuard::acquire(&lock_path).expect("acquire stale lockfile");
+
+        drop(guard);
+        assert!(
+            !lock_path.exists(),
+            "released lock guard should remove stale lockfile"
+        );
+    }
+
+    #[test]
+    fn lock_guard_rejects_second_live_instance() {
+        let directory = tempdir().expect("tempdir");
+        let lock_path = directory.path().join("daemon.lock");
+        let guard = LockGuard::acquire(&lock_path).expect("first lock");
+
+        let second = LockGuard::acquire(&lock_path);
+
+        assert!(second.is_err(), "second live daemon must not acquire lock");
+        drop(guard);
     }
 }
