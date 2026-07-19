@@ -1,6 +1,7 @@
 use crate::daemon::DaemonConfig;
 use crate::index::ScanOptions;
 use crate::paths::{default_lockfile_path, default_socket_path, default_state_db_path};
+use crate::proton::CommandPolicy;
 use crate::{AppResult, boxed_error};
 use serde::Deserialize;
 use std::fs;
@@ -17,6 +18,8 @@ pub struct DaemonConfigInput {
     pub lockfile_path: Option<PathBuf>,
     pub scan_interval_secs: Option<u64>,
     pub proton_cli: Option<PathBuf>,
+    pub proton_timeout_secs: Option<u64>,
+    pub proton_list_attempts: Option<usize>,
     pub dry_run: bool,
     pub no_dry_run: bool,
     pub include_patterns: Vec<String>,
@@ -40,6 +43,10 @@ pub struct FileConfig {
     scan_interval_secs: Option<u64>,
     #[serde(alias = "proton-cli")]
     proton_cli: Option<PathBuf>,
+    #[serde(alias = "proton-timeout-secs")]
+    proton_timeout_secs: Option<u64>,
+    #[serde(alias = "proton-list-attempts")]
+    proton_list_attempts: Option<usize>,
     #[serde(default, alias = "include")]
     include_patterns: Option<Vec<String>>,
     #[serde(default, alias = "exclude")]
@@ -70,6 +77,7 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         .or(file_config.db_path)
         .map(|path| resolve_path(&local_root, path))
         .unwrap_or_else(|| default_state_db_path(&local_root));
+    let default_command_policy = CommandPolicy::default();
 
     let config = DaemonConfig {
         local_root,
@@ -94,6 +102,18 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             .proton_cli
             .or(file_config.proton_cli)
             .unwrap_or_else(|| PathBuf::from("proton-drive")),
+        proton_timeout: Duration::from_secs(
+            input
+                .proton_timeout_secs
+                .or(file_config.proton_timeout_secs)
+                .unwrap_or(default_command_policy.timeout.as_secs())
+                .max(1),
+        ),
+        proton_list_attempts: input
+            .proton_list_attempts
+            .or(file_config.proton_list_attempts)
+            .unwrap_or(default_command_policy.list_attempts)
+            .max(1),
         include_patterns: merge_patterns(input.include_patterns, file_config.include_patterns),
         exclude_patterns: merge_patterns(input.exclude_patterns, file_config.exclude_patterns),
     };
@@ -173,6 +193,8 @@ socket_path = "/tmp/from-config.sock"
 lockfile_path = "/tmp/from-config.lock"
 scan_interval_secs = 42
 proton_cli = "fake-proton-drive"
+proton_timeout_secs = 17
+proton_list_attempts = 4
 include = ["Documents/**"]
 exclude = ["**/*.tmp"]
 dry_run = true
@@ -192,6 +214,8 @@ dry_run = true
         assert_eq!(config.db_path, PathBuf::from("sync-root/state/index.db"));
         assert_eq!(config.scan_interval, Duration::from_secs(42));
         assert_eq!(config.proton_cli, PathBuf::from("fake-proton-drive"));
+        assert_eq!(config.proton_timeout, Duration::from_secs(17));
+        assert_eq!(config.proton_list_attempts, 4);
         assert_eq!(config.include_patterns, vec!["Documents/**"]);
         assert_eq!(config.exclude_patterns, vec!["**/*.tmp"]);
     }
@@ -205,6 +229,8 @@ dry_run = true
             r#"
 local_root = "config-root"
 remote_root = "/Drive/Config"
+proton_timeout_secs = 10
+proton_list_attempts = 2
 include = ["config/**"]
 "#,
         )
@@ -214,6 +240,8 @@ include = ["config/**"]
             config: Some(config_path),
             local_root: Some(PathBuf::from("cli-root")),
             remote_root: Some(PathBuf::from("/Drive/Cli")),
+            proton_timeout_secs: Some(22),
+            proton_list_attempts: Some(5),
             dry_run: true,
             include_patterns: vec!["cli/**".to_owned()],
             ..DaemonConfigInput::default()
@@ -223,6 +251,8 @@ include = ["config/**"]
         assert!(dry_run);
         assert_eq!(config.local_root, PathBuf::from("cli-root"));
         assert_eq!(config.remote_root, PathBuf::from("/Drive/Cli"));
+        assert_eq!(config.proton_timeout, Duration::from_secs(22));
+        assert_eq!(config.proton_list_attempts, 5);
         assert_eq!(config.include_patterns, vec!["cli/**"]);
     }
 

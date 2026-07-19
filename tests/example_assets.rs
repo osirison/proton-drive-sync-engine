@@ -1,5 +1,7 @@
 use proton_drive_sync_engine::config::{DaemonConfigInput, resolve_runtime_config};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -18,6 +20,8 @@ fn example_config_resolves_to_valid_daemon_config() {
     assert_eq!(config.remote_root, PathBuf::from("/Drive/RemoteFolder"));
     assert_eq!(config.scan_interval, Duration::from_secs(300));
     assert_eq!(config.proton_cli, PathBuf::from("proton-drive"));
+    assert_eq!(config.proton_timeout, Duration::from_secs(60));
+    assert_eq!(config.proton_list_attempts, 2);
     assert_eq!(
         config.include_patterns,
         vec!["Documents/**", "Projects/**/*.md"]
@@ -42,6 +46,34 @@ fn example_systemd_service_points_at_example_config_location() {
         !service.contains("--dry-run"),
         "sample service should run the daemon, not dry-run mode"
     );
+}
+
+#[test]
+fn example_systemd_installer_has_safe_defaults() {
+    let script_path = manifest_path("examples/systemd/install-user-service.sh");
+    let script = fs::read_to_string(&script_path).expect("example installer script");
+
+    assert!(script.starts_with("#!/usr/bin/env bash"));
+    assert!(script.contains("set -euo pipefail"));
+    assert!(script.contains("install -m 600"));
+    assert!(script.contains("install -m 644"));
+    assert!(script.contains("systemctl --user daemon-reload"));
+    assert!(script.contains("--force-config"));
+    assert!(script.contains("--enable"));
+    assert!(script.contains("--start"));
+    assert!(
+        !script.contains("sudo"),
+        "user service installer must not require elevated privileges"
+    );
+
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(&script_path)
+            .expect("installer metadata")
+            .permissions()
+            .mode();
+        assert!(mode & 0o111 != 0, "installer should be executable");
+    }
 }
 
 fn manifest_path(relative_path: &str) -> PathBuf {

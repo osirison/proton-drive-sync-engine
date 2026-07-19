@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
+use tracing::warn;
 use wait_timeout::ChildExt;
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
@@ -211,14 +212,50 @@ impl ProtonDriveClient {
             let output = match self.run_once(operation, args) {
                 Ok(output) => output,
                 Err(error) if attempt < attempts => {
+                    warn!(
+                        operation,
+                        attempt,
+                        attempts,
+                        error = %error,
+                        "retrying proton-drive command after error"
+                    );
                     last_error = Some(error.to_string());
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    warn!(
+                        operation,
+                        attempt,
+                        attempts,
+                        error = %error,
+                        "proton-drive command failed"
+                    );
+                    return Err(error);
+                }
             };
             if output.status.success() || attempt == attempts {
+                if !output.status.success() {
+                    warn!(
+                        operation,
+                        attempt,
+                        attempts,
+                        exit_status = ?output.status.code(),
+                        stderr = %trimmed_stderr(&output),
+                        "proton-drive command exited unsuccessfully"
+                    );
+                }
                 return Ok(output);
             }
+            let stderr = trimmed_stderr(&output);
+            warn!(
+                operation,
+                attempt,
+                attempts,
+                exit_status = ?output.status.code(),
+                stderr = %stderr,
+                "retrying proton-drive command after unsuccessful exit"
+            );
+            last_error = Some(format!("proton-drive {operation} failed: {stderr}"));
         }
         Err(boxed_error(last_error.unwrap_or_else(|| {
             format!("proton-drive {operation} failed")
@@ -236,11 +273,20 @@ impl ProtonDriveClient {
         }
         let _ = child.kill();
         let _ = child.wait_with_output();
+        warn!(
+            operation,
+            timeout_ms = self.command_policy.timeout.as_millis(),
+            "proton-drive command timed out"
+        );
         Err(boxed_error(format!(
             "proton-drive {operation} timed out after {}",
             format_duration(self.command_policy.timeout)
         )))
     }
+}
+
+fn trimmed_stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_owned()
 }
 
 fn format_duration(duration: Duration) -> String {

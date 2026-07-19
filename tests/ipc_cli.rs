@@ -30,6 +30,9 @@ mod unix_tests {
         let status = run_control(&socket_path, "status");
         assert_eq!(status["status"], "running");
         assert_eq!(status["paused"], false);
+        assert!(status["last_error"].is_null());
+        assert!(status["last_plan_summary"].is_null());
+        assert!(status["last_successful_sync_summary"].is_null());
 
         let paused = run_control(&socket_path, "pause");
         assert_eq!(paused["status"], "paused");
@@ -47,6 +50,12 @@ mod unix_tests {
         assert_eq!(synced["status"], "running");
         assert_eq!(synced["message"], "sync completed");
         assert!(synced["last_sync_epoch_secs"].as_u64().is_some());
+        assert!(synced["last_error"].is_null());
+        assert_eq!(synced["last_plan_summary"]["total"].as_u64(), Some(0));
+        assert_eq!(
+            synced["last_successful_sync_summary"]["total"].as_u64(),
+            Some(0)
+        );
     }
 
     struct DaemonProcess {

@@ -6,8 +6,8 @@ use crate::index::{
 use crate::ipc::{
     ControlCommand, ControlRequest, ControlResponse, bind_listener, read_request, write_response,
 };
-use crate::proton::{ProtonClient, ProtonDriveClient, RemoteFile};
-use crate::sync::{PlannedAction, SyncAction, original_from_conflict_copy, plan_sync};
+use crate::proton::{CommandPolicy, ProtonClient, ProtonDriveClient, RemoteFile};
+use crate::sync::{PlanSummary, PlannedAction, SyncAction, original_from_conflict_copy, plan_sync};
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -18,7 +18,7 @@ use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -29,6 +29,8 @@ pub struct DaemonConfig {
     pub lockfile_path: PathBuf,
     pub scan_interval: Duration,
     pub proton_cli: PathBuf,
+    pub proton_timeout: Duration,
+    pub proton_list_attempts: usize,
     pub include_patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
 }
@@ -41,11 +43,17 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     scan_options: ScanOptions,
     paused: bool,
     last_sync: Option<SystemTime>,
+    last_error: Option<String>,
+    last_plan_summary: Option<PlanSummary>,
+    last_successful_sync_summary: Option<PlanSummary>,
     _lock_guard: LockGuard,
 }
 
 pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
-    let client = ProtonDriveClient::new(config.proton_cli.clone());
+    let client = ProtonDriveClient::with_command_policy(
+        config.proton_cli.clone(),
+        command_policy_from_config(config),
+    );
     preview_plan_with_client(config, &client)
 }
 
@@ -70,7 +78,10 @@ pub fn preview_plan_with_client(
 
 impl Daemon<ProtonDriveClient> {
     pub fn new(config: DaemonConfig) -> AppResult<Self> {
-        let proton = ProtonDriveClient::new(config.proton_cli.clone());
+        let proton = ProtonDriveClient::with_command_policy(
+            config.proton_cli.clone(),
+            command_policy_from_config(&config),
+        );
         Self::with_client(config, proton)
     }
 }
@@ -100,6 +111,9 @@ impl<C: ProtonClient> Daemon<C> {
             scan_options,
             paused: false,
             last_sync: None,
+            last_error: None,
+            last_plan_summary: None,
+            last_successful_sync_summary: None,
             _lock_guard: lock_guard,
         })
     }
@@ -220,8 +234,13 @@ impl<C: ProtonClient> Daemon<C> {
                 if self.paused {
                     self.status_response("sync skipped because daemon is paused")
                 } else {
-                    self.reconcile().await?;
-                    self.status_response("sync completed")
+                    match self.reconcile().await {
+                        Ok(()) => self.status_response("sync completed"),
+                        Err(error) => {
+                            error!(%error, "manual reconciliation failed");
+                            self.status_response(&format!("sync failed: {error}"))
+                        }
+                    }
                 }
             }
         };
@@ -242,6 +261,9 @@ impl<C: ProtonClient> Daemon<C> {
                 .last_sync
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map(|duration| duration.as_secs()),
+            last_error: self.last_error.clone(),
+            last_plan_summary: self.last_plan_summary.clone(),
+            last_successful_sync_summary: self.last_successful_sync_summary.clone(),
         }
     }
 
@@ -249,7 +271,10 @@ impl<C: ProtonClient> Daemon<C> {
         if self.paused {
             return Ok(());
         }
-        self.reconcile().await
+        if let Err(error) = self.reconcile().await {
+            error!(%error, "scheduled reconciliation failed");
+        }
+        Ok(())
     }
 
     async fn reconcile(&mut self) -> AppResult<()> {
@@ -257,6 +282,15 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     fn reconcile_blocking(&mut self) -> AppResult<()> {
+        let result = self.reconcile_blocking_inner();
+        match &result {
+            Ok(()) => self.last_error = None,
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
+        result
+    }
+
+    fn reconcile_blocking_inner(&mut self) -> AppResult<()> {
         info!("starting reconciliation");
         let local_files =
             scan_local_files_with_options(&self.config.local_root, &self.scan_options)?;
@@ -266,7 +300,16 @@ impl<C: ProtonClient> Daemon<C> {
         );
         let base_index = filter_base_index(load_index(&self.connection)?, &self.scan_options);
         let plan = plan_sync(&local_files, &remote_files, &base_index);
-        info!(planned_actions = plan.len(), "sync plan computed");
+        let plan_summary = PlanSummary::from_plan(&plan);
+        self.last_plan_summary = Some(plan_summary.clone());
+        info!(
+            planned_actions = plan_summary.total,
+            uploads = plan_summary.uploads,
+            downloads = plan_summary.downloads,
+            conflicts = plan_summary.conflicts,
+            destructive_actions = plan_summary.destructive_actions,
+            "sync plan computed"
+        );
 
         let mut index_mutations = Vec::new();
         let mut completed_paths = Vec::new();
@@ -377,6 +420,7 @@ impl<C: ProtonClient> Daemon<C> {
         }
 
         self.last_sync = Some(SystemTime::now());
+        self.last_successful_sync_summary = Some(plan_summary);
         info!("reconciliation completed");
         Ok(())
     }
@@ -423,6 +467,10 @@ fn filter_base_index(
         .into_iter()
         .filter(|(path, _)| scan_options.allows_relative_file(path))
         .collect()
+}
+
+fn command_policy_from_config(config: &DaemonConfig) -> CommandPolicy {
+    CommandPolicy::new(config.proton_timeout, config.proton_list_attempts)
 }
 
 fn build_watcher(
@@ -688,6 +736,8 @@ mod tests {
             lockfile_path: directory.path().join("daemon.lock"),
             scan_interval: Duration::from_secs(300),
             proton_cli: PathBuf::from("proton-drive"),
+            proton_timeout: Duration::from_secs(60),
+            proton_list_attempts: 2,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
         };
@@ -863,6 +913,31 @@ mod tests {
             daemon.last_sync.is_none(),
             "failed reconciliation must not advance last_sync"
         );
+        assert_eq!(
+            daemon.last_error.as_deref(),
+            Some("upload failed for second.txt")
+        );
+        assert_eq!(
+            daemon
+                .last_plan_summary
+                .as_ref()
+                .map(|summary| summary.total),
+            Some(2)
+        );
+        assert!(daemon.last_successful_sync_summary.is_none());
+        let status = daemon.status_response("daemon status");
+        assert_eq!(
+            status.last_error.as_deref(),
+            Some("upload failed for second.txt")
+        );
+        assert_eq!(
+            status
+                .last_plan_summary
+                .as_ref()
+                .map(|summary| summary.total),
+            Some(2)
+        );
+        assert!(status.last_successful_sync_summary.is_none());
     }
 
     #[test]
@@ -940,6 +1015,8 @@ mod tests {
             lockfile_path: directory.join("daemon.lock"),
             scan_interval: Duration::from_secs(300),
             proton_cli: PathBuf::from("proton-drive"),
+            proton_timeout: Duration::from_secs(60),
+            proton_list_attempts: 2,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
         }

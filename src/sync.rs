@@ -1,6 +1,6 @@
 use crate::index::{FileRecord, LocalFileState};
 use crate::proton::RemoteFile;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -30,7 +30,7 @@ pub struct DryRunReport {
     pub plan: Vec<PlannedAction>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanSummary {
     pub total: usize,
     pub uploads: usize,

@@ -41,7 +41,7 @@ Supported today:
 
 Not yet included:
 
-* Native package-manager packaging or generated service units
+* Native package-manager packages
 * Cross-platform IPC for Windows
 * Automated live end-to-end sync tests against a Proton Drive account
 * Rename detection
@@ -121,6 +121,8 @@ cargo run --bin proton-syncd -- \
   --include 'Documents/**' \
   --exclude '**/*.tmp' \
   --proton-cli proton-drive \
+  --proton-timeout-secs 60 \
+  --proton-list-attempts 2 \
   --dry-run
 ```
 
@@ -136,6 +138,8 @@ cargo run --bin proton-syncd -- \
 | `--include <GLOB>` | None | Limits sync to paths matching one or more relative glob patterns |
 | `--exclude <GLOB>` | None | Excludes paths matching one or more relative glob patterns; exclude wins over include |
 | `--proton-cli` | `proton-drive` | Path to the Proton Drive CLI executable |
+| `--proton-timeout-secs` | `60` | Maximum time to wait for each Proton Drive CLI command |
+| `--proton-list-attempts` | `2` | Attempts for read-only remote listings; uploads, downloads, and deletes are not retried |
 | `--dry-run` | `false` | Prints the current sync plan as JSON and exits without changing local files, remote files, or the index |
 | `--no-dry-run` | None | Overrides `dry_run = true` from a config file |
 
@@ -150,6 +154,8 @@ local_root = "/home/me/ProtonDrive"
 remote_root = "/Drive/RemoteFolder"
 scan_interval_secs = 300
 proton_cli = "proton-drive"
+proton_timeout_secs = 60
+proton_list_attempts = 2
 include = ["Documents/**"]
 exclude = ["**/*.tmp"]
 dry_run = false
@@ -235,7 +241,7 @@ RUST_LOG=debug cargo run --bin proton-syncd -- \
   --remote-root /Drive/RemoteFolder
 ```
 
-Useful values include `error`, `warn`, `info`, and `debug`. When `RUST_LOG` is not set, the daemon uses `info` logging.
+Useful values include `error`, `warn`, `info`, and `debug`. When `RUST_LOG` is not set, the daemon uses `info` logging. Retry attempts, unsuccessful Proton Drive CLI exits, and command timeouts are logged with structured fields such as operation, attempt, exit status, stderr, and timeout milliseconds.
 
 ## Control CLI Usage
 
@@ -247,7 +253,7 @@ When `--socket-path` is omitted, the control CLI uses the same default socket pa
 
 | Command | Behavior |
 | ------- | -------- |
-| `status` | Prints daemon status, pause state, pending change count, message, and last sync timestamp |
+| `status` | Prints daemon status, pause state, pending change count, message, last sync timestamp, last error, and recent sync summaries |
 | `pause` | Pauses automatic and manual sync work until resumed |
 | `resume` | Resumes sync work |
 | `syncnow` | Triggers reconciliation immediately when the daemon is not paused |
@@ -260,7 +266,10 @@ Responses are JSON so scripts can consume them directly:
   "paused": false,
   "pending_changes": 0,
   "message": "daemon status",
-  "last_sync_epoch_secs": null
+  "last_sync_epoch_secs": null,
+  "last_error": null,
+  "last_plan_summary": null,
+  "last_successful_sync_summary": null
 }
 ```
 
@@ -273,6 +282,14 @@ cargo install --path .
 install -Dm600 examples/proton-sync.toml ~/.config/proton-sync/proton-sync.toml
 install -Dm644 examples/systemd/proton-syncd.service ~/.config/systemd/user/proton-syncd.service
 ```
+
+You can also install the sample assets with the helper script:
+
+```bash
+examples/systemd/install-user-service.sh
+```
+
+The helper installs the sample config with mode `0600`, installs the service with mode `0644`, reloads the user systemd manager, and keeps an existing config file unless you pass `--force-config`. Use `--enable` and `--start` when you want the helper to enable or start the service after installation.
 
 Edit `~/.config/proton-sync/proton-sync.toml` for your local and remote roots before enabling the service. The sample service calls `proton-syncd --config %h/.config/proton-sync/proton-sync.toml` and relies on the daemon's XDG defaults for the socket, lockfile, and index paths.
 
@@ -352,7 +369,7 @@ src/
   sync.rs            Sync planning matrix and conflict naming
 examples/
   proton-sync.toml   Sample daemon config file
-  systemd/           Sample systemd user service
+  systemd/           Sample systemd user service and install helper
 ```
 
 ## Development Workflow

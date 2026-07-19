@@ -1,4 +1,5 @@
 use crate::AppResult;
+use crate::sync::PlanSummary;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -28,6 +29,9 @@ pub struct ControlResponse {
     pub pending_changes: usize,
     pub message: String,
     pub last_sync_epoch_secs: Option<u64>,
+    pub last_error: Option<String>,
+    pub last_plan_summary: Option<PlanSummary>,
+    pub last_successful_sync_summary: Option<PlanSummary>,
 }
 
 #[cfg(unix)]

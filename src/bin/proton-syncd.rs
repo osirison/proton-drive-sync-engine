@@ -30,6 +30,10 @@ struct Cli {
     #[arg(long)]
     proton_cli: Option<PathBuf>,
     #[arg(long)]
+    proton_timeout_secs: Option<u64>,
+    #[arg(long)]
+    proton_list_attempts: Option<usize>,
+    #[arg(long)]
     dry_run: bool,
     #[arg(long = "no-dry-run", conflicts_with = "dry_run")]
     no_dry_run: bool,
@@ -102,6 +106,8 @@ impl From<Cli> for DaemonConfigInput {
             lockfile_path: cli.lockfile_path,
             scan_interval_secs: cli.scan_interval_secs,
             proton_cli: cli.proton_cli,
+            proton_timeout_secs: cli.proton_timeout_secs,
+            proton_list_attempts: cli.proton_list_attempts,
             dry_run: cli.dry_run,
             no_dry_run: cli.no_dry_run,
             include_patterns: cli.include_patterns,
@@ -135,5 +141,25 @@ mod tests {
         ]);
 
         assert!(result.is_err(), "conflicting dry-run flags must fail");
+    }
+
+    #[test]
+    fn proton_policy_flags_parse_into_config_input() {
+        let cli = Cli::parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--proton-timeout-secs",
+            "12",
+            "--proton-list-attempts",
+            "5",
+        ]);
+
+        let input = DaemonConfigInput::from(cli);
+
+        assert_eq!(input.proton_timeout_secs, Some(12));
+        assert_eq!(input.proton_list_attempts, Some(5));
     }
 }

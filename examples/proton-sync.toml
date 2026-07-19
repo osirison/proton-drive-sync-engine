@@ -4,6 +4,8 @@ local_root = "/home/me/ProtonDrive"
 remote_root = "/Drive/RemoteFolder"
 scan_interval_secs = 300
 proton_cli = "proton-drive"
+proton_timeout_secs = 60
+proton_list_attempts = 2
 
 # Optional selective sync rules. Paths are relative to local_root and remote_root.
 include = ["Documents/**", "Projects/**/*.md"]
