@@ -1,5 +1,6 @@
 use crate::{AppResult, boxed_error};
-use rusqlite::{Connection, OptionalExtension, params};
+use globset::{Glob, GlobSet, GlobSetBuilder};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fmt;
@@ -93,10 +94,79 @@ pub struct LocalFileState {
     pub sha1_hash: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ScanOptions {
+    ignored_relative_paths: Vec<PathBuf>,
+    include_patterns: GlobSet,
+    has_include_patterns: bool,
+    exclude_patterns: GlobSet,
+}
+
+impl ScanOptions {
+    pub fn new(
+        root: &Path,
+        ignored_paths: &[PathBuf],
+        include_patterns: &[String],
+        exclude_patterns: &[String],
+    ) -> AppResult<Self> {
+        let ignored_relative_paths = ignored_paths
+            .iter()
+            .filter_map(|path| normalize_ignored_path(root, path))
+            .collect();
+
+        Ok(Self {
+            ignored_relative_paths,
+            include_patterns: build_glob_set(include_patterns)?,
+            has_include_patterns: !include_patterns.is_empty(),
+            exclude_patterns: build_glob_set(exclude_patterns)?,
+        })
+    }
+
+    pub fn allows_relative_file(&self, relative_path: &Path) -> bool {
+        if should_ignore_relative_path(relative_path) || self.is_configured_ignored(relative_path) {
+            return false;
+        }
+        if self.matches(&self.exclude_patterns, relative_path) {
+            return false;
+        }
+        !self.has_include_patterns || self.matches(&self.include_patterns, relative_path)
+    }
+
+    fn allows_relative_directory(&self, relative_path: &Path) -> bool {
+        if relative_path.as_os_str().is_empty() {
+            return true;
+        }
+        !self.is_configured_ignored(relative_path)
+            && !self.matches(&self.exclude_patterns, relative_path)
+    }
+
+    fn is_configured_ignored(&self, relative_path: &Path) -> bool {
+        self.ignored_relative_paths
+            .iter()
+            .any(|ignored| ignored == relative_path)
+    }
+
+    fn matches(&self, patterns: &GlobSet, relative_path: &Path) -> bool {
+        if patterns.is_match(relative_path) {
+            return true;
+        }
+        let key = path_key(relative_path);
+        patterns.is_match(Path::new(&key))
+    }
+}
+
 pub fn open_database(path: &Path) -> AppResult<Connection> {
     let connection = Connection::open(path)?;
     initialize_schema(&connection)?;
     Ok(connection)
+}
+
+pub fn load_existing_index(path: &Path) -> AppResult<HashMap<PathBuf, FileRecord>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    load_index(&connection)
 }
 
 pub fn initialize_schema(connection: &Connection) -> AppResult<()> {
@@ -193,25 +263,43 @@ pub fn purge_record(connection: &Connection, relative_path: &Path) -> AppResult<
 }
 
 pub fn scan_local_files(root: &Path) -> AppResult<HashMap<PathBuf, LocalFileState>> {
+    let options = ScanOptions::new(root, &[], &[], &[])?;
+    scan_local_files_with_options(root, &options)
+}
+
+pub fn scan_local_files_with_options(
+    root: &Path,
+    options: &ScanOptions,
+) -> AppResult<HashMap<PathBuf, LocalFileState>> {
     let mut files = HashMap::new();
-    visit_directory(root, root, &mut files)?;
+    visit_directory(root, root, options, &mut files)?;
     Ok(files)
 }
 
 fn visit_directory(
     root: &Path,
     directory: &Path,
+    options: &ScanOptions,
     files: &mut HashMap<PathBuf, LocalFileState>,
 ) -> AppResult<()> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
+        let relative_path = path.strip_prefix(root).map_err(|err| {
+            boxed_error(format!(
+                "failed to compute relative path for {} against {}: {err}",
+                path.display(),
+                root.display()
+            ))
+        })?;
         if file_type.is_dir() {
-            visit_directory(root, &path, files)?;
+            if options.allows_relative_directory(relative_path) {
+                visit_directory(root, &path, options, files)?;
+            }
             continue;
         }
-        if !file_type.is_file() || should_ignore_path(&path) {
+        if !file_type.is_file() || !options.allows_relative_file(relative_path) {
             continue;
         }
         let state = local_file_state(root, &path)?;
@@ -221,13 +309,34 @@ fn visit_directory(
 }
 
 pub fn should_ignore_path(path: &Path) -> bool {
-    if crate::sync::is_conflict_copy(path) {
+    should_ignore_relative_path(path)
+}
+
+fn should_ignore_relative_path(relative_path: &Path) -> bool {
+    if crate::sync::is_conflict_copy(relative_path) {
         return true;
     }
     matches!(
-        path.file_name().and_then(|value| value.to_str()),
+        relative_path.file_name().and_then(|value| value.to_str()),
         Some("sync_index.db")
     )
+}
+
+fn normalize_ignored_path(root: &Path, path: &Path) -> Option<PathBuf> {
+    let relative_path = match path.strip_prefix(root) {
+        Ok(stripped) => stripped.to_path_buf(),
+        Err(_) if path.is_relative() => path.to_path_buf(),
+        Err(_) => return None,
+    };
+    crate::validate_relative_path(&relative_path)
+}
+
+fn build_glob_set(patterns: &[String]) -> AppResult<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(Glob::new(pattern)?);
+    }
+    Ok(builder.build()?)
 }
 
 pub fn local_file_state(root: &Path, absolute_path: &Path) -> AppResult<LocalFileState> {
@@ -318,6 +427,73 @@ mod tests {
     }
 
     #[test]
+    fn scan_options_ignore_configured_index_path() {
+        let directory = tempdir().expect("tempdir");
+        let state_directory = directory.path().join(".state");
+        fs::create_dir(&state_directory).expect("state dir");
+        let custom_db_path = state_directory.join("custom.db");
+        let keep_path = directory.path().join("keep.txt");
+        std::fs::write(&custom_db_path, b"db").expect("write custom db");
+        std::fs::write(&keep_path, b"keep").expect("write keep");
+        let options = ScanOptions::new(
+            directory.path(),
+            std::slice::from_ref(&custom_db_path),
+            &[],
+            &[],
+        )
+        .expect("scan options");
+
+        let files = scan_local_files_with_options(directory.path(), &options).expect("scan files");
+
+        assert_eq!(files.len(), 1);
+        assert!(files.contains_key(Path::new("keep.txt")));
+        assert!(
+            !files.contains_key(Path::new(".state/custom.db")),
+            "configured index path must not be considered sync data"
+        );
+    }
+
+    #[test]
+    fn scan_options_normalize_configured_index_below_relative_root() {
+        let options = ScanOptions::new(
+            Path::new("sync-root"),
+            &[PathBuf::from("sync-root/state/custom.db")],
+            &[],
+            &[],
+        )
+        .expect("scan options");
+
+        assert!(
+            !options.allows_relative_file(Path::new("state/custom.db")),
+            "relative db paths joined under a relative local root must be ignored"
+        );
+    }
+
+    #[test]
+    fn scan_options_apply_include_and_exclude_patterns() {
+        let directory = tempdir().expect("tempdir");
+        let docs = directory.path().join("docs");
+        let images = directory.path().join("images");
+        fs::create_dir(&docs).expect("docs dir");
+        fs::create_dir(&images).expect("images dir");
+        std::fs::write(docs.join("keep.md"), b"keep").expect("write keep");
+        std::fs::write(docs.join("drop.tmp"), b"drop").expect("write drop");
+        std::fs::write(images.join("skip.png"), b"skip").expect("write skip");
+        let options = ScanOptions::new(
+            directory.path(),
+            &[],
+            &["docs/**".to_owned()],
+            &["**/*.tmp".to_owned()],
+        )
+        .expect("scan options");
+
+        let files = scan_local_files_with_options(directory.path(), &options).expect("scan files");
+
+        assert_eq!(files.len(), 1);
+        assert!(files.contains_key(Path::new("docs/keep.md")));
+    }
+
+    #[test]
     fn database_round_trip_preserves_status() {
         let connection = Connection::open_in_memory().expect("connection");
         initialize_schema(&connection).expect("schema");
@@ -337,6 +513,23 @@ mod tests {
 
         assert_eq!(loaded.sync_status, SyncStatus::Modified);
         assert_eq!(loaded.proton_id.as_deref(), Some("remote-1"));
+    }
+
+    #[test]
+    fn load_existing_index_returns_empty_for_missing_database() {
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("missing.db");
+
+        let index = load_existing_index(&db_path).expect("load missing index");
+
+        assert!(
+            index.is_empty(),
+            "missing index should dry-run as bootstrap"
+        );
+        assert!(
+            !db_path.exists(),
+            "read-only dry-run index loading must not create a database file"
+        );
     }
 
     #[test]

@@ -1,21 +1,24 @@
 use crate::index::{
-    FileRecord, SyncStatus, get_record, load_index, local_file_state, mark_modified, open_database,
-    purge_record, scan_local_files, upsert_record,
+    FileRecord, ScanOptions, SyncStatus, get_record, load_existing_index, load_index,
+    local_file_state, mark_modified, open_database, purge_record, scan_local_files_with_options,
+    upsert_record,
 };
 use crate::ipc::{
     ControlCommand, ControlRequest, ControlResponse, bind_listener, read_request, write_response,
 };
 use crate::proton::ProtonDriveClient;
-use crate::sync::{SyncAction, original_from_conflict_copy, plan_sync};
+use crate::sync::{PlannedAction, SyncAction, original_from_conflict_copy, plan_sync};
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -26,6 +29,8 @@ pub struct DaemonConfig {
     pub lockfile_path: PathBuf,
     pub scan_interval: Duration,
     pub proton_cli: PathBuf,
+    pub include_patterns: Vec<String>,
+    pub exclude_patterns: Vec<String>,
 }
 
 pub struct Daemon {
@@ -33,9 +38,29 @@ pub struct Daemon {
     connection: Connection,
     proton: ProtonDriveClient,
     pending_changes: BTreeSet<PathBuf>,
+    scan_options: ScanOptions,
     paused: bool,
     last_sync: Option<SystemTime>,
     _lock_guard: LockGuard,
+}
+
+pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
+    info!(
+        local_root = %config.local_root.display(),
+        remote_root = %config.remote_root.display(),
+        "building dry-run sync plan"
+    );
+    let scan_options = scan_options_from_config(config)?;
+    let local_files = scan_local_files_with_options(&config.local_root, &scan_options)?;
+    let remote_files = filter_remote_files(
+        ProtonDriveClient::new(config.proton_cli.clone()).list(&config.remote_root)?,
+        &scan_options,
+    );
+    let base_index = load_existing_index(&config.db_path)?;
+    let base_index = filter_base_index(base_index, &scan_options);
+    let plan = plan_sync(&local_files, &remote_files, &base_index);
+    info!(planned_actions = plan.len(), "dry-run sync plan computed");
+    Ok(plan)
 }
 
 impl Daemon {
@@ -54,12 +79,14 @@ impl Daemon {
         let lock_guard = LockGuard::acquire(&config.lockfile_path)?;
         let connection = open_database(&config.db_path)?;
         let proton = ProtonDriveClient::new(config.proton_cli.clone());
+        let scan_options = scan_options_from_config(&config)?;
 
         Ok(Self {
             config,
             connection,
             proton,
             pending_changes: BTreeSet::new(),
+            scan_options,
             paused: false,
             last_sync: None,
             _lock_guard: lock_guard,
@@ -67,6 +94,12 @@ impl Daemon {
     }
 
     pub async fn run(mut self) -> AppResult<()> {
+        info!(
+            local_root = %self.config.local_root.display(),
+            remote_root = %self.config.remote_root.display(),
+            socket_path = %self.config.socket_path.display(),
+            "starting daemon"
+        );
         let listener = bind_listener(&self.config.socket_path).await?;
         let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
@@ -89,6 +122,7 @@ impl Daemon {
                 accepted = listener.accept() => {
                     let (stream, _) = accepted?;
                     let (request, mut stream) = read_request(stream).await?;
+                    debug!(command = ?request.command, "handling control request");
                     let response = self.handle_ipc_request(request).await?;
                     write_response(&mut stream, &response).await?;
                 }
@@ -104,6 +138,7 @@ impl Daemon {
         if self.config.socket_path.exists() {
             fs::remove_file(&self.config.socket_path)?;
         }
+        info!("daemon stopped");
         Ok(())
     }
 
@@ -116,6 +151,7 @@ impl Daemon {
                 if matches!(event.kind, EventKind::Remove(_))
                     && let Some(original) = original_from_conflict_copy(&path)
                     && let Ok(relative_path) = original.strip_prefix(&self.config.local_root)
+                    && self.scan_options.allows_relative_file(relative_path)
                 {
                     mark_modified(&self.connection, relative_path)?;
                     self.pending_changes.insert(relative_path.to_path_buf());
@@ -127,6 +163,10 @@ impl Daemon {
                 Ok(relative_path) => relative_path.to_path_buf(),
                 Err(_) => continue,
             };
+
+            if !self.scan_options.allows_relative_file(&relative_path) {
+                continue;
+            }
 
             match event.kind {
                 EventKind::Create(_) | EventKind::Modify(_) => {
@@ -157,10 +197,12 @@ impl Daemon {
             ControlCommand::Status => self.status_response("daemon status"),
             ControlCommand::Pause => {
                 self.paused = true;
+                info!("sync paused");
                 self.status_response("sync paused")
             }
             ControlCommand::Resume => {
                 self.paused = false;
+                info!("sync resumed");
                 self.status_response("sync resumed")
             }
             ControlCommand::Syncnow => {
@@ -204,12 +246,19 @@ impl Daemon {
     }
 
     fn reconcile_blocking(&mut self) -> AppResult<()> {
-        let local_files = scan_local_files(&self.config.local_root)?;
-        let remote_files = self.proton.list(&self.config.remote_root)?;
-        let base_index = load_index(&self.connection)?;
+        info!("starting reconciliation");
+        let local_files =
+            scan_local_files_with_options(&self.config.local_root, &self.scan_options)?;
+        let remote_files = filter_remote_files(
+            self.proton.list(&self.config.remote_root)?,
+            &self.scan_options,
+        );
+        let base_index = filter_base_index(load_index(&self.connection)?, &self.scan_options);
         let plan = plan_sync(&local_files, &remote_files, &base_index);
+        info!(planned_actions = plan.len(), "sync plan computed");
 
         for action in plan {
+            debug!(path = %action.path.display(), action = ?action.action, "executing sync action");
             match action.action {
                 SyncAction::Upload => {
                     if let Some(local) = local_files.get(&action.path) {
@@ -305,8 +354,38 @@ impl Daemon {
         }
 
         self.last_sync = Some(SystemTime::now());
+        info!("reconciliation completed");
         Ok(())
     }
+}
+
+fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
+    ScanOptions::new(
+        &config.local_root,
+        std::slice::from_ref(&config.db_path),
+        &config.include_patterns,
+        &config.exclude_patterns,
+    )
+}
+
+fn filter_remote_files(
+    remote_files: HashMap<PathBuf, crate::proton::RemoteFile>,
+    scan_options: &ScanOptions,
+) -> HashMap<PathBuf, crate::proton::RemoteFile> {
+    remote_files
+        .into_iter()
+        .filter(|(path, _)| scan_options.allows_relative_file(path))
+        .collect()
+}
+
+fn filter_base_index(
+    base_index: HashMap<PathBuf, FileRecord>,
+    scan_options: &ScanOptions,
+) -> HashMap<PathBuf, FileRecord> {
+    base_index
+        .into_iter()
+        .filter(|(path, _)| scan_options.allows_relative_file(path))
+        .collect()
 }
 
 fn build_watcher(

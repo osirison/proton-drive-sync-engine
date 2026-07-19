@@ -1,9 +1,11 @@
 use crate::index::{FileRecord, LocalFileState};
 use crate::proton::RemoteFile;
+use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SyncAction {
     Upload,
     Download,
@@ -14,7 +16,7 @@ pub enum SyncAction {
     Purge,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlannedAction {
     pub path: PathBuf,
     pub action: SyncAction,
@@ -497,5 +499,25 @@ mod tests {
             .expect("remote delete action should be planned");
         assert_eq!(action.action, SyncAction::RemoteDelete);
         assert_eq!(action.remote_id.as_deref(), Some("remote-id"));
+    }
+
+    #[test]
+    fn planned_action_serializes_for_dry_run_output() {
+        let action = PlannedAction::conflict(Path::new("notes.txt"), Some("remote-id".to_owned()));
+
+        let json = serde_json::to_string(&action).expect("serialize planned action");
+
+        assert!(
+            json.contains(r#""action":"conflict""#),
+            "dry-run JSON should expose a stable snake_case action name"
+        );
+        assert!(
+            json.contains(r#""conflict_path":"notes.proton-cloud.txt""#),
+            "dry-run JSON should expose the planned conflict destination"
+        );
+        assert!(
+            json.contains(r#""remote_id":"remote-id""#),
+            "dry-run JSON should include the remote identifier when available"
+        );
     }
 }

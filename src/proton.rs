@@ -309,6 +309,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_filesystem_list_fixture() {
+        let json = include_str!("../tests/fixtures/proton-drive-filesystem-list.json");
+
+        let files = parse_remote_files(json, Path::new("/Drive/RemoteFolder"))
+            .expect("parse filesystem list fixture");
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(
+            files
+                .get(Path::new("Documents/notes.txt"))
+                .expect("nested note")
+                .sha1_hash
+                .as_deref(),
+            Some("1111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            files
+                .get(Path::new("root.md"))
+                .expect("root markdown file")
+                .id,
+            "file-root"
+        );
+        assert!(
+            files
+                .get(Path::new("Drafts/digest-missing.txt"))
+                .expect("digest-missing file")
+                .sha1_hash
+                .is_none(),
+            "fixture should preserve remote files whose digest is unavailable"
+        );
+        assert!(
+            !files.contains_key(Path::new("passwd")),
+            "fixture path outside the configured root must be skipped"
+        );
+    }
+
+    #[test]
     fn nested_file_is_not_emitted_at_unqualified_root_path() {
         // Regression: the old collect_from_value walked entries/files/children before
         // calling collect_node, so nested files without an explicit `path` field were
