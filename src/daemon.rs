@@ -227,11 +227,14 @@ impl Daemon {
                     }
                 }
                 SyncAction::Download => {
-                    if let Some(remote_id) = action.remote_id.as_deref() {
-                        let destination = self.config.local_root.join(&action.path);
+                    if let Some(remote_id) = action.remote_id.as_deref()
+                        && let Some(destination) =
+                            safe_local_path(&self.config.local_root, &action.path)
+                    {
                         ensure_parent_directory(&destination)?;
                         self.proton.download(remote_id, &destination)?;
-                        let local_state = local_file_state(&self.config.local_root, &destination)?;
+                        let local_state =
+                            local_file_state(&self.config.local_root, &destination)?;
                         let record = FileRecord::from_local(
                             action.path.clone(),
                             &local_state,
@@ -255,8 +258,9 @@ impl Daemon {
                 SyncAction::Conflict => {
                     if let Some(remote_id) = action.remote_id.as_deref()
                         && let Some(conflict_path) = action.conflict_path.as_ref()
+                        && let Some(destination) =
+                            safe_local_path(&self.config.local_root, conflict_path)
                     {
-                        let destination = self.config.local_root.join(conflict_path);
                         ensure_parent_directory(&destination)?;
                         self.proton.download(remote_id, &destination)?;
                     }
@@ -281,8 +285,10 @@ impl Daemon {
                     purge_record(&self.connection, &action.path)?;
                 }
                 SyncAction::LocalDelete => {
-                    let destination = self.config.local_root.join(&action.path);
-                    if destination.exists() {
+                    if let Some(destination) =
+                        safe_local_path(&self.config.local_root, &action.path)
+                        && destination.exists()
+                    {
                         fs::remove_file(destination)?;
                     }
                     purge_record(&self.connection, &action.path)?;
@@ -315,6 +321,21 @@ fn ensure_parent_directory(path: &Path) -> AppResult<()> {
         fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+/// Join `relative` onto `local_root` only when it is safe to do so.
+///
+/// Returns `None` (and the caller should skip the action) if `relative` contains
+/// any component that could cause the resulting path to escape `local_root`,
+/// such as absolute paths, `..` traversal, or OS-specific prefix components.
+fn safe_local_path(local_root: &Path, relative: &Path) -> Option<PathBuf> {
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            _ => return None,
+        }
+    }
+    Some(local_root.join(relative))
 }
 
 struct LockGuard {

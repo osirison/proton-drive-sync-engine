@@ -27,6 +27,8 @@ enum FileDelta {
     Missing,
     Unchanged,
     Changed,
+    /// Remote file exists but its hash is unavailable (e.g. no activeRevision digest).
+    Unknown,
 }
 
 pub fn plan_sync(
@@ -90,10 +92,7 @@ fn plan_ongoing_action(
         local.map(|file| file.sha1_hash.as_str()),
         Some(base.sha1_hash.as_str()),
     );
-    let remote_delta = delta_from_base(
-        remote.and_then(|file| file.sha1_hash.as_deref()),
-        Some(base.sha1_hash.as_str()),
-    );
+    let remote_delta = remote_file_delta(remote, base);
 
     match (local_delta, remote_delta) {
         (FileDelta::Changed, FileDelta::Unchanged) => Some(PlannedAction::new(
@@ -127,6 +126,15 @@ fn plan_ongoing_action(
             base.proton_id.clone(),
         )),
         (FileDelta::Unchanged, FileDelta::Unchanged) => None,
+        // Remote file is present but its hash is unavailable – apply non-destructive handling
+        // to avoid destroying local or remote data based on incomplete information.
+        (FileDelta::Unchanged, FileDelta::Unknown) => None,
+        (FileDelta::Changed, FileDelta::Unknown) => {
+            Some(PlannedAction::conflict(path, remote_id(remote, base)))
+        }
+        (FileDelta::Missing, FileDelta::Unknown) => None,
+        // Unknown is only ever produced for the remote delta; this arm is unreachable.
+        (FileDelta::Unknown, _) => None,
     }
 }
 
@@ -136,6 +144,20 @@ fn delta_from_base(current_hash: Option<&str>, base_hash: Option<&str>) -> FileD
         (Some(_), _) => FileDelta::Changed,
         (None, Some(_)) => FileDelta::Missing,
         (None, None) => FileDelta::Missing,
+    }
+}
+
+/// Compute a remote file's delta against the base index, correctly distinguishing
+/// between a remote file that is absent (`Missing`) and one that exists but whose
+/// hash is unavailable (`Unknown`).
+fn remote_file_delta(remote: Option<&RemoteFile>, base: &FileRecord) -> FileDelta {
+    match remote {
+        None => FileDelta::Missing,
+        Some(file) => match file.sha1_hash.as_deref() {
+            None => FileDelta::Unknown,
+            Some(hash) if hash == base.sha1_hash.as_str() => FileDelta::Unchanged,
+            Some(_) => FileDelta::Changed,
+        },
     }
 }
 
@@ -377,5 +399,80 @@ mod tests {
                 .any(|action| action.path == Path::new("delete-remote.txt")
                     && action.action == SyncAction::RemoteDelete)
         );
+    }
+
+    #[test]
+    fn remote_present_without_hash_is_non_destructive() {
+        // A remote entry that exists but has no activeRevision digest must never
+        // trigger LocalDelete or Purge, regardless of local state.
+
+        // Case 1: local unchanged, remote present without hash → no action.
+        {
+            let mut local_files = HashMap::new();
+            let mut remote_files = HashMap::new();
+            let mut base_index = HashMap::new();
+            local_files.insert(PathBuf::from("stable.txt"), local("stable.txt", "hash"));
+            remote_files.insert(
+                PathBuf::from("stable.txt"),
+                remote("stable.txt", "id-1", None),
+            );
+            base_index.insert(
+                PathBuf::from("stable.txt"),
+                base("stable.txt", Some("id-1"), "hash"),
+            );
+            let planned = plan_sync(&local_files, &remote_files, &base_index);
+            assert!(
+                !planned.iter().any(|a| a.path == Path::new("stable.txt")
+                    && matches!(a.action, SyncAction::LocalDelete | SyncAction::Purge)),
+                "unchanged local + remote-no-hash must not delete local data"
+            );
+            assert!(
+                planned.iter().all(|a| a.path != Path::new("stable.txt")),
+                "unchanged local + remote-no-hash must produce no action"
+            );
+        }
+
+        // Case 2: local changed, remote present without hash → conflict (safe).
+        {
+            let mut local_files = HashMap::new();
+            let mut remote_files = HashMap::new();
+            let mut base_index = HashMap::new();
+            local_files.insert(PathBuf::from("edited.txt"), local("edited.txt", "new-hash"));
+            remote_files.insert(
+                PathBuf::from("edited.txt"),
+                remote("edited.txt", "id-2", None),
+            );
+            base_index.insert(
+                PathBuf::from("edited.txt"),
+                base("edited.txt", Some("id-2"), "old-hash"),
+            );
+            let planned = plan_sync(&local_files, &remote_files, &base_index);
+            assert!(
+                planned
+                    .iter()
+                    .any(|a| a.path == Path::new("edited.txt") && a.action == SyncAction::Conflict),
+                "changed local + remote-no-hash must resolve to Conflict"
+            );
+        }
+
+        // Case 3: local missing, remote present without hash → no destructive action.
+        {
+            let mut remote_files = HashMap::new();
+            let mut base_index = HashMap::new();
+            remote_files.insert(PathBuf::from("gone.txt"), remote("gone.txt", "id-3", None));
+            base_index.insert(
+                PathBuf::from("gone.txt"),
+                base("gone.txt", Some("id-3"), "hash"),
+            );
+            let planned = plan_sync(&HashMap::new(), &remote_files, &base_index);
+            assert!(
+                !planned.iter().any(|a| a.path == Path::new("gone.txt")
+                    && matches!(
+                        a.action,
+                        SyncAction::RemoteDelete | SyncAction::Purge | SyncAction::LocalDelete
+                    )),
+                "missing local + remote-no-hash must not destroy remote data"
+            );
+        }
     }
 }

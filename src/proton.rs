@@ -149,16 +149,7 @@ fn collect_from_value(
             }
         }
         Value::Object(object) => {
-            if let Some(entries) = object.get("entries") {
-                collect_from_value(entries, parent_path, remote_root, files)?;
-            }
-            if let Some(files_value) = object.get("files") {
-                collect_from_value(files_value, parent_path, remote_root, files)?;
-            }
-            if let Some(children) = object.get("children") {
-                collect_from_value(children, parent_path, remote_root, files)?;
-            }
-
+            // Deserialize once and let collect_node own all parent-path propagation.
             let node: ProtonNode = serde_json::from_value(Value::Object(object.clone()))?;
             collect_node(&node, parent_path, remote_root, files)?;
         }
@@ -179,18 +170,21 @@ fn collect_node(
         .map(PathBuf::from)
         .or_else(|| node.name.as_deref().map(|name| parent_path.join(name)));
 
-    let relative_path = candidate_path
-        .as_deref()
-        .map(|path| normalize_remote_path(path, remote_root))
-        .unwrap_or_default();
+    // If a path was provided but fails normalization (absolute path, `..` escape,
+    // or root component), skip the node and all of its descendants.
+    let relative_path = match candidate_path.as_deref() {
+        Some(p) => match normalize_remote_path(p, remote_root) {
+            Some(normalized) => normalized,
+            None => return Ok(()),
+        },
+        None => PathBuf::new(),
+    };
 
     let is_folder = node.is_folder.unwrap_or(false)
         || matches!(node.kind.as_deref(), Some("folder" | "directory"))
         || (!node.children.is_empty() || !node.entries.is_empty() || !node.files.is_empty());
 
-    if !is_folder
-        && let (Some(id), Some(name)) = (node.id.as_deref(), node.name.as_deref())
-    {
+    if !is_folder && let (Some(id), Some(name)) = (node.id.as_deref(), node.name.as_deref()) {
         files.insert(
             relative_path.clone(),
             RemoteFile {
@@ -225,16 +219,39 @@ fn collect_node(
     Ok(())
 }
 
-fn normalize_remote_path(path: &Path, remote_root: &Path) -> PathBuf {
-    if let Ok(stripped) = path.strip_prefix(remote_root) {
-        return stripped.to_path_buf();
-    }
-    if let Some(root_name) = remote_root.file_name()
+/// Normalize a Proton-reported path to a clean relative path within the sync
+/// directory.  Returns `None` (and the calling node is silently skipped) when
+/// the path:
+///
+/// * is absolute and does not start with `remote_root` or its basename,
+/// * contains `..` (parent-directory) components, or
+/// * contains any component (prefix, root dir) that could escape the local
+///   sync directory when joined with `local_root`.
+fn normalize_remote_path(path: &Path, remote_root: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    let relative = if let Ok(stripped) = path.strip_prefix(remote_root) {
+        stripped.to_path_buf()
+    } else if let Some(root_name) = remote_root.file_name()
         && let Ok(stripped) = path.strip_prefix(root_name)
     {
-        return stripped.to_path_buf();
+        stripped.to_path_buf()
+    } else if path.is_relative() {
+        path.to_path_buf()
+    } else {
+        // Absolute path that does not start with the expected remote root.
+        return None;
+    };
+
+    // Reject any component that could escape the sync directory.
+    for component in relative.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            _ => return None,
+        }
     }
-    path.to_path_buf()
+
+    Some(relative)
 }
 
 #[cfg(test)]
@@ -296,5 +313,80 @@ mod tests {
         let file = files.get(Path::new("draft.txt")).expect("draft file");
 
         assert_eq!(file.sha1_hash, None);
+    }
+
+    #[test]
+    fn nested_file_is_not_emitted_at_unqualified_root_path() {
+        // Regression: the old collect_from_value walked entries/files/children before
+        // calling collect_node, so nested files without an explicit `path` field were
+        // inserted twice – once under the unqualified root name and once under the
+        // correct parent-relative name.
+        let json = r#"
+        {
+          "entries": [
+            {
+              "name": "Docs",
+              "type": "folder",
+              "entries": [
+                {
+                  "id": "nested-1",
+                  "name": "nested.txt"
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let files = parse_remote_files(json, Path::new("/Drive")).expect("parse remote files");
+
+        // The file must appear only under its qualified path.
+        assert!(
+            files.contains_key(Path::new("Docs/nested.txt")),
+            "qualified path must be present"
+        );
+        // The bare, unqualified name must NOT appear as a separate entry.
+        assert!(
+            !files.contains_key(Path::new("nested.txt")),
+            "unqualified root-level duplicate must not be emitted"
+        );
+    }
+
+    #[test]
+    fn normalize_remote_path_rejects_traversal_and_absolute_paths() {
+        // Parent-directory component must be rejected.
+        assert_eq!(
+            normalize_remote_path(Path::new("../secret"), Path::new("/Drive")),
+            None,
+            "path with .. must be rejected"
+        );
+
+        // Absolute path that does not start with remote_root must be rejected.
+        assert_eq!(
+            normalize_remote_path(Path::new("/etc/passwd"), Path::new("/Drive")),
+            None,
+            "absolute path outside remote_root must be rejected"
+        );
+
+        // Nested .. disguised inside a longer path.
+        assert_eq!(
+            normalize_remote_path(Path::new("Documents/../../etc/passwd"), Path::new("/Drive")),
+            None,
+            "embedded .. must be rejected"
+        );
+
+        // A valid relative path must succeed.
+        assert_eq!(
+            normalize_remote_path(Path::new("Documents/notes.txt"), Path::new("/Drive")),
+            Some(PathBuf::from("Documents/notes.txt")),
+            "valid relative path must pass through"
+        );
+
+        // A valid absolute path rooted at remote_root must succeed.
+        assert_eq!(
+            normalize_remote_path(Path::new("/Drive/notes.txt"), Path::new("/Drive")),
+            Some(PathBuf::from("notes.txt")),
+            "absolute path under remote_root must be stripped correctly"
+        );
     }
 }
