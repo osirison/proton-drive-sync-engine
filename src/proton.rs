@@ -1,7 +1,7 @@
 use crate::{AppResult, boxed_error};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -62,6 +62,12 @@ pub struct RemoteFile {
     pub name: String,
     pub sha1_hash: Option<String>,
     pub downloadable: bool,
+}
+
+#[derive(Debug, Default)]
+struct RemoteListing {
+    files: HashMap<PathBuf, RemoteFile>,
+    folders: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,24 +133,49 @@ impl Default for CommandPolicy {
 
 impl ProtonClient for ProtonDriveClient {
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
-        let output = self.run_proton_drive(
-            "list",
-            &[
-                OsString::from("filesystem"),
-                OsString::from("list"),
-                OsString::from("--json"),
-                remote_root.as_os_str().to_os_string(),
-            ],
-            self.command_policy.list_attempts,
-        )?;
-        if !output.status.success() {
-            return Err(boxed_error(format!(
-                "proton-drive list failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+        let mut files = HashMap::new();
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![PathBuf::new()];
+
+        while let Some(relative_directory) = pending.pop() {
+            if !visited.insert(relative_directory.clone()) {
+                continue;
+            }
+
+            let remote_directory = if relative_directory.as_os_str().is_empty() {
+                remote_root.to_path_buf()
+            } else {
+                remote_root.join(&relative_directory)
+            };
+            let output = self.run_proton_drive(
+                "list",
+                &[
+                    OsString::from("filesystem"),
+                    OsString::from("list"),
+                    OsString::from("--json"),
+                    remote_directory.as_os_str().to_os_string(),
+                ],
+                self.command_policy.list_attempts,
+            )?;
+            if !output.status.success() {
+                return Err(boxed_error(format!(
+                    "proton-drive list failed for {}: {}",
+                    remote_directory.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            let stdout = String::from_utf8(output.stdout)?;
+            let listing = parse_remote_listing(&stdout, remote_root, &relative_directory)?;
+            files.extend(listing.files);
+            pending.extend(
+                listing
+                    .folders
+                    .into_iter()
+                    .filter(|folder| !visited.contains(folder)),
+            );
         }
-        let stdout = String::from_utf8(output.stdout)?;
-        parse_remote_files(&stdout, remote_root)
+
+        Ok(files)
     }
 
     fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
@@ -453,28 +484,36 @@ pub fn parse_remote_files(
     json: &str,
     remote_root: &Path,
 ) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+    Ok(parse_remote_listing(json, remote_root, Path::new(""))?.files)
+}
+
+fn parse_remote_listing(
+    json: &str,
+    remote_root: &Path,
+    parent_path: &Path,
+) -> AppResult<RemoteListing> {
     let value: Value = serde_json::from_str(json)?;
-    let mut files = HashMap::new();
-    collect_from_value(&value, Path::new(""), remote_root, &mut files)?;
-    Ok(files)
+    let mut listing = RemoteListing::default();
+    collect_from_value(&value, parent_path, remote_root, &mut listing)?;
+    Ok(listing)
 }
 
 fn collect_from_value(
     value: &Value,
     parent_path: &Path,
     remote_root: &Path,
-    files: &mut HashMap<PathBuf, RemoteFile>,
+    listing: &mut RemoteListing,
 ) -> AppResult<()> {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_from_value(item, parent_path, remote_root, files)?;
+                collect_from_value(item, parent_path, remote_root, listing)?;
             }
         }
         Value::Object(object) => {
             // Deserialize once and let collect_node own all parent-path propagation.
             let node: ProtonNode = serde_json::from_value(Value::Object(object.clone()))?;
-            collect_node(&node, parent_path, remote_root, files)?;
+            collect_node(&node, parent_path, remote_root, listing)?;
         }
         _ => {}
     }
@@ -485,7 +524,7 @@ fn collect_node(
     node: &ProtonNode,
     parent_path: &Path,
     remote_root: &Path,
-    files: &mut HashMap<PathBuf, RemoteFile>,
+    listing: &mut RemoteListing,
 ) -> AppResult<()> {
     let candidate_path = node
         .path
@@ -507,9 +546,13 @@ fn collect_node(
         || matches!(node.kind.as_deref(), Some("folder" | "directory"))
         || (!node.children.is_empty() || !node.entries.is_empty() || !node.files.is_empty());
 
+    if is_folder && !relative_path.as_os_str().is_empty() {
+        listing.folders.push(relative_path.clone());
+    }
+
     let id = node.id.as_deref().or(node.uid.as_deref());
     if !is_folder && let (Some(id), Some(name)) = (id, node.name.as_deref()) {
-        files.insert(
+        listing.files.insert(
             relative_path.clone(),
             RemoteFile {
                 path: relative_path.clone(),
@@ -532,13 +575,13 @@ fn collect_node(
     };
 
     for child in &node.entries {
-        collect_node(child, &next_parent, remote_root, files)?;
+        collect_node(child, &next_parent, remote_root, listing)?;
     }
     for child in &node.children {
-        collect_node(child, &next_parent, remote_root, files)?;
+        collect_node(child, &next_parent, remote_root, listing)?;
     }
     for child in &node.files {
-        collect_node(child, &next_parent, remote_root, files)?;
+        collect_node(child, &next_parent, remote_root, listing)?;
     }
 
     Ok(())
@@ -925,6 +968,97 @@ exit 0
         assert_eq!(
             fs::read_to_string(args_path(&executable)).expect("recorded args"),
             "filesystem\ndownload\n/my-files/demo/budget.xlsx\n/tmp/proton-sync-demo\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_recurses_into_remote_folders() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+    printf '%s\n' "$4" >> "$0.args"
+    if [ "$4" = "/my-files/demo" ]; then
+        cat <<'JSON'
+[
+    {
+        "uid": "folder-id",
+        "name": { "ok": true, "value": "cloud-folder" },
+        "type": "folder"
+    },
+    {
+        "uid": "root-id",
+        "name": { "ok": true, "value": "root.txt" },
+        "type": "file",
+        "activeRevision": {
+            "ok": true,
+            "value": {
+                "claimedDigests": {
+                    "sha1": "1111111111111111111111111111111111111111"
+                }
+            }
+        }
+    }
+]
+JSON
+        exit 0
+    fi
+    if [ "$4" = "/my-files/demo/cloud-folder" ]; then
+        cat <<'JSON'
+[
+    {
+        "uid": "nested-id",
+        "name": { "ok": true, "value": "nested.txt" },
+        "type": "file",
+        "activeRevision": {
+            "ok": true,
+            "value": {
+                "claimedDigests": {
+                    "sha1": "2222222222222222222222222222222222222222"
+                }
+            }
+        }
+    }
+]
+JSON
+        exit 0
+    fi
+fi
+echo "unexpected args: $*" >&2
+exit 64
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 2),
+        );
+
+        let files = client
+            .list(Path::new("/my-files/demo"))
+            .expect("recursive remote list");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded list paths"),
+            "/my-files/demo\n/my-files/demo/cloud-folder\n"
+        );
+        assert_eq!(
+            files
+                .get(Path::new("root.txt"))
+                .expect("root file")
+                .sha1_hash
+                .as_deref(),
+            Some("1111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            files
+                .get(Path::new("cloud-folder/nested.txt"))
+                .expect("nested file")
+                .sha1_hash
+                .as_deref(),
+            Some("2222222222222222222222222222222222222222")
         );
     }
 
