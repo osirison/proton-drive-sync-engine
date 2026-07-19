@@ -2,8 +2,14 @@ use crate::{AppResult, boxed_error};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
+
+const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_LIST_ATTEMPTS: usize = 2;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +52,13 @@ pub struct RemoteFile {
 #[derive(Debug, Clone)]
 pub struct ProtonDriveClient {
     executable: PathBuf,
+    command_policy: CommandPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandPolicy {
+    pub timeout: Duration,
+    pub list_attempts: usize,
 }
 
 pub trait ProtonClient: Send + Sync {
@@ -59,16 +72,55 @@ impl ProtonDriveClient {
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
+            command_policy: CommandPolicy::default(),
         }
+    }
+
+    pub fn with_timeout(executable: impl Into<PathBuf>, timeout: Duration) -> Self {
+        Self::with_command_policy(
+            executable,
+            CommandPolicy::new(timeout, DEFAULT_LIST_ATTEMPTS),
+        )
+    }
+
+    pub fn with_command_policy(
+        executable: impl Into<PathBuf>,
+        command_policy: CommandPolicy,
+    ) -> Self {
+        Self {
+            executable: executable.into(),
+            command_policy,
+        }
+    }
+}
+
+impl CommandPolicy {
+    pub fn new(timeout: Duration, list_attempts: usize) -> Self {
+        Self {
+            timeout,
+            list_attempts: list_attempts.max(1),
+        }
+    }
+}
+
+impl Default for CommandPolicy {
+    fn default() -> Self {
+        Self::new(DEFAULT_COMMAND_TIMEOUT, DEFAULT_LIST_ATTEMPTS)
     }
 }
 
 impl ProtonClient for ProtonDriveClient {
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
-        let output = Command::new(&self.executable)
-            .args(["filesystem", "list", "--json"])
-            .arg(remote_root)
-            .output()?;
+        let output = self.run_proton_drive(
+            "list",
+            &[
+                OsString::from("filesystem"),
+                OsString::from("list"),
+                OsString::from("--json"),
+                remote_root.as_os_str().to_os_string(),
+            ],
+            self.command_policy.list_attempts,
+        )?;
         if !output.status.success() {
             return Err(boxed_error(format!(
                 "proton-drive list failed: {}",
@@ -84,11 +136,15 @@ impl ProtonClient for ProtonDriveClient {
             .parent()
             .map(|parent| remote_root.join(parent))
             .unwrap_or_else(|| remote_root.to_path_buf());
-        let output = Command::new(&self.executable)
-            .arg("upload")
-            .arg(local_path)
-            .arg(remote_parent)
-            .output()?;
+        let output = self.run_proton_drive(
+            "upload",
+            &[
+                OsString::from("upload"),
+                local_path.as_os_str().to_os_string(),
+                remote_parent.as_os_str().to_os_string(),
+            ],
+            1,
+        )?;
         if output.status.success() {
             Ok(())
         } else {
@@ -101,10 +157,16 @@ impl ProtonClient for ProtonDriveClient {
     }
 
     fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()> {
-        let output = Command::new(&self.executable)
-            .args(["download", "--id", remote_id])
-            .arg(destination)
-            .output()?;
+        let output = self.run_proton_drive(
+            "download",
+            &[
+                OsString::from("download"),
+                OsString::from("--id"),
+                OsString::from(remote_id),
+                destination.as_os_str().to_os_string(),
+            ],
+            1,
+        )?;
         if output.status.success() {
             Ok(())
         } else {
@@ -116,9 +178,15 @@ impl ProtonClient for ProtonDriveClient {
     }
 
     fn delete(&self, remote_id: &str) -> AppResult<()> {
-        let output = Command::new(&self.executable)
-            .args(["delete", "--id", remote_id])
-            .output()?;
+        let output = self.run_proton_drive(
+            "delete",
+            &[
+                OsString::from("delete"),
+                OsString::from("--id"),
+                OsString::from(remote_id),
+            ],
+            1,
+        )?;
         if output.status.success() {
             Ok(())
         } else {
@@ -127,6 +195,59 @@ impl ProtonClient for ProtonDriveClient {
                 String::from_utf8_lossy(&output.stderr)
             )))
         }
+    }
+}
+
+impl ProtonDriveClient {
+    fn run_proton_drive(
+        &self,
+        operation: &str,
+        args: &[OsString],
+        attempts: usize,
+    ) -> AppResult<Output> {
+        let attempts = attempts.max(1);
+        let mut last_error = None;
+        for attempt in 1..=attempts {
+            let output = match self.run_once(operation, args) {
+                Ok(output) => output,
+                Err(error) if attempt < attempts => {
+                    last_error = Some(error.to_string());
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if output.status.success() || attempt == attempts {
+                return Ok(output);
+            }
+        }
+        Err(boxed_error(last_error.unwrap_or_else(|| {
+            format!("proton-drive {operation} failed")
+        })))
+    }
+
+    fn run_once(&self, operation: &str, args: &[OsString]) -> AppResult<Output> {
+        let mut child = Command::new(&self.executable)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if child.wait_timeout(self.command_policy.timeout)?.is_some() {
+            return Ok(child.wait_with_output()?);
+        }
+        let _ = child.kill();
+        let _ = child.wait_with_output();
+        Err(boxed_error(format!(
+            "proton-drive {operation} timed out after {}",
+            format_duration(self.command_policy.timeout)
+        )))
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_millis().is_multiple_of(1000) {
+        format!("{}s", duration.as_secs())
+    } else {
+        format!("{}ms", duration.as_millis())
     }
 }
 
@@ -254,6 +375,11 @@ fn normalize_remote_path(path: &Path, remote_root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use tempfile::tempdir;
 
     #[test]
     fn parses_nested_remote_files_and_sha1_values() {
@@ -429,5 +555,127 @@ mod tests {
             Some(PathBuf::from("Documents/notes.txt")),
             "leading CurDir must be stripped"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_times_out_when_cli_hangs() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+sleep 2
+printf '{"entries":[]}\n'
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_millis(100), 1),
+        );
+
+        let error = client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect_err("hung proton-drive should time out");
+
+        assert!(
+            error.to_string().contains("timed out after 100ms"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_retries_transient_cli_failure() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+counter="$0.attempts"
+attempts=0
+if [ -f "$counter" ]; then
+  attempts=$(cat "$counter")
+fi
+attempts=$((attempts + 1))
+printf '%s\n' "$attempts" > "$counter"
+if [ "$attempts" -eq 1 ]; then
+  echo "transient failure" >&2
+  exit 75
+fi
+printf '{"entries":[]}\n'
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 2),
+        );
+
+        let files = client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect("second list attempt should succeed");
+
+        assert!(files.is_empty());
+        assert_eq!(
+            fs::read_to_string(attempt_counter_path(&executable)).expect("attempt counter"),
+            "2\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_is_not_retried_after_cli_failure() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+counter="$0.attempts"
+attempts=0
+if [ -f "$counter" ]; then
+  attempts=$(cat "$counter")
+fi
+attempts=$((attempts + 1))
+printf '%s\n' "$attempts" > "$counter"
+echo "upload failed" >&2
+exit 75
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 3),
+        );
+
+        let error = client
+            .upload(
+                Path::new("/tmp/local.txt"),
+                Path::new("/Drive/RemoteFolder"),
+                Path::new("local.txt"),
+            )
+            .expect_err("failed upload should not be retried");
+
+        assert!(
+            error.to_string().contains("proton-drive upload failed"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            fs::read_to_string(attempt_counter_path(&executable)).expect("attempt counter"),
+            "1\n"
+        );
+    }
+
+    #[cfg(unix)]
+    fn write_script(directory: &Path, name: &str, content: &str) -> PathBuf {
+        let path = directory.join(name);
+        fs::write(&path, content).expect("write fake proton-drive");
+        let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).expect("script permissions");
+        path
+    }
+
+    #[cfg(unix)]
+    fn attempt_counter_path(executable: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.attempts", executable.display()))
     }
 }

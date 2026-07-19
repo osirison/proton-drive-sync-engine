@@ -43,7 +43,7 @@ Not yet included:
 
 * Native package-manager packaging or generated service units
 * Cross-platform IPC for Windows
-* End-to-end tests against a live Proton Drive account
+* Automated live end-to-end sync tests against a Proton Drive account
 * Rename detection
 * Metrics, distributed tracing, or dashboards
 
@@ -331,6 +331,9 @@ Conflict sidecars are ignored by regular local scans so they do not create new s
 * The IPC socket is restricted to mode `0600` after binding.
 * The advisory lockfile prevents two live daemon instances from using the same configuration at once.
 * The daemon shells out to the configured `proton-drive` executable. Use a trusted executable path.
+* Proton Drive CLI calls are bounded by a timeout so a hung subprocess cannot block reconciliation indefinitely.
+* Read-only remote listings may be retried after a transient CLI failure; uploads, downloads, and deletes are not automatically retried to avoid duplicate or surprising side effects.
+* Reconciliation commits SQLite index mutations only after all planned side effects succeed. If a later action fails, earlier successful actions are not marked as synced in the index.
 
 ## Project Layout
 
@@ -339,6 +342,7 @@ src/
   bin/
     proton-sync.rs   Control CLI entry point
     proton-syncd.rs  Daemon CLI entry point
+  config.rs          Daemon config loading, merge/default rules, and validation
   daemon.rs          Runtime loop, watcher, IPC handling, reconciliation execution
   index.rs           SQLite schema, local scanning, file hashing, index persistence
   ipc.rs             Unix socket request and response protocol
@@ -368,10 +372,20 @@ cargo test sync::tests
 cargo test proton::tests
 cargo test daemon::tests
 cargo test --test dry_run_cli
+cargo test --test example_assets
 cargo test --test ipc_cli
 ```
 
 When changing sync behavior, add regression tests near the planner in `src/sync.rs`. When changing local filesystem or Proton JSON safety boundaries, add tests around the boundary that first accepts external paths.
+
+The repository also includes an ignored live smoke test for authenticated Proton Drive CLI installations. It lists a configured remote root but does not upload, download, or delete data:
+
+```bash
+PROTON_SYNC_LIVE_REMOTE_ROOT=/Drive/RemoteFolder \
+  cargo test --test proton_live --all-features -- --ignored
+```
+
+Set `PROTON_SYNC_LIVE_CLI=/path/to/proton-drive` when the executable is not available as `proton-drive` on `PATH`.
 
 ## Troubleshooting
 

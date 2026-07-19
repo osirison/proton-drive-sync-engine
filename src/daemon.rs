@@ -268,7 +268,10 @@ impl<C: ProtonClient> Daemon<C> {
         let plan = plan_sync(&local_files, &remote_files, &base_index);
         info!(planned_actions = plan.len(), "sync plan computed");
 
-        for action in plan {
+        let mut index_mutations = Vec::new();
+        let mut completed_paths = Vec::new();
+
+        for action in &plan {
             debug!(path = %action.path.display(), action = ?action.action, "executing sync action");
             match action.action {
                 SyncAction::Upload => {
@@ -288,7 +291,7 @@ impl<C: ProtonClient> Daemon<C> {
                             }),
                             SyncStatus::Synced,
                         );
-                        upsert_record(&self.connection, &record)?;
+                        index_mutations.push(IndexMutation::Upsert(record));
                     }
                 }
                 SyncAction::Download => {
@@ -305,7 +308,7 @@ impl<C: ProtonClient> Daemon<C> {
                             Some(remote_id.to_owned()),
                             SyncStatus::Synced,
                         );
-                        upsert_record(&self.connection, &record)?;
+                        index_mutations.push(IndexMutation::Upsert(record));
                     }
                 }
                 SyncAction::AutoLink => {
@@ -316,7 +319,7 @@ impl<C: ProtonClient> Daemon<C> {
                             action.remote_id.clone(),
                             SyncStatus::Synced,
                         );
-                        upsert_record(&self.connection, &record)?;
+                        index_mutations.push(IndexMutation::Upsert(record));
                     }
                 }
                 SyncAction::Conflict => {
@@ -339,14 +342,14 @@ impl<C: ProtonClient> Daemon<C> {
                             }),
                             SyncStatus::Conflict,
                         );
-                        upsert_record(&self.connection, &record)?;
+                        index_mutations.push(IndexMutation::Upsert(record));
                     }
                 }
                 SyncAction::RemoteDelete => {
                     if let Some(remote_id) = action.remote_id.as_deref() {
                         self.proton.delete(remote_id)?;
                     }
-                    purge_record(&self.connection, &action.path)?;
+                    index_mutations.push(IndexMutation::Purge(action.path.clone()));
                 }
                 SyncAction::LocalDelete => {
                     if let Some(destination) =
@@ -355,18 +358,41 @@ impl<C: ProtonClient> Daemon<C> {
                     {
                         fs::remove_file(destination)?;
                     }
-                    purge_record(&self.connection, &action.path)?;
+                    index_mutations.push(IndexMutation::Purge(action.path.clone()));
                 }
                 SyncAction::Purge => {
-                    purge_record(&self.connection, &action.path)?;
+                    index_mutations.push(IndexMutation::Purge(action.path.clone()));
                 }
             }
-            self.pending_changes.remove(&action.path);
+            completed_paths.push(action.path.clone());
+        }
+
+        let transaction = self.connection.transaction()?;
+        for mutation in &index_mutations {
+            mutation.apply(&transaction)?;
+        }
+        transaction.commit()?;
+        for path in completed_paths {
+            self.pending_changes.remove(&path);
         }
 
         self.last_sync = Some(SystemTime::now());
         info!("reconciliation completed");
         Ok(())
+    }
+}
+
+enum IndexMutation {
+    Upsert(FileRecord),
+    Purge(PathBuf),
+}
+
+impl IndexMutation {
+    fn apply(&self, connection: &Connection) -> AppResult<()> {
+        match self {
+            Self::Upsert(record) => upsert_record(connection, record),
+            Self::Purge(path) => purge_record(connection, path),
+        }
     }
 }
 
@@ -522,6 +548,7 @@ mod tests {
     struct RecordingProtonClient {
         remote_files: HashMap<PathBuf, RemoteFile>,
         operations: Arc<Mutex<Vec<RecordedOperation>>>,
+        failed_uploads: BTreeSet<PathBuf>,
     }
 
     impl RecordingProtonClient {
@@ -533,6 +560,22 @@ mod tests {
                 Self {
                     remote_files,
                     operations: Arc::clone(&operations),
+                    failed_uploads: BTreeSet::new(),
+                },
+                operations,
+            )
+        }
+
+        fn with_failed_uploads(
+            remote_files: HashMap<PathBuf, RemoteFile>,
+            failed_uploads: BTreeSet<PathBuf>,
+        ) -> (Self, Arc<Mutex<Vec<RecordedOperation>>>) {
+            let operations = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    remote_files,
+                    operations: Arc::clone(&operations),
+                    failed_uploads,
                 },
                 operations,
             )
@@ -558,6 +601,12 @@ mod tests {
                     remote_root: remote_root.to_path_buf(),
                     relative_path: relative_path.to_path_buf(),
                 });
+            if self.failed_uploads.contains(relative_path) {
+                return Err(boxed_error(format!(
+                    "upload failed for {}",
+                    relative_path.display()
+                )));
+            }
             Ok(())
         }
 
@@ -756,6 +805,63 @@ mod tests {
                 .expect("index lookup")
                 .is_none(),
             "remote delete should purge the index record"
+        );
+    }
+
+    #[test]
+    fn reconcile_does_not_commit_index_when_later_action_fails() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let first_path = local_root.join("first.txt");
+        let second_path = local_root.join("second.txt");
+        fs::write(&first_path, b"first").expect("first file");
+        fs::write(&second_path, b"second").expect("second file");
+        let (client, operations) = RecordingProtonClient::with_failed_uploads(
+            HashMap::new(),
+            BTreeSet::from([PathBuf::from("second.txt")]),
+        );
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        let error = daemon
+            .reconcile_blocking()
+            .expect_err("second upload should fail");
+
+        assert!(
+            error.to_string().contains("upload failed for second.txt"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            *operations.lock().expect("operations lock"),
+            vec![
+                RecordedOperation::Upload {
+                    local_path: first_path,
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from("first.txt"),
+                },
+                RecordedOperation::Upload {
+                    local_path: second_path,
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from("second.txt"),
+                },
+            ]
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("first.txt"))
+                .expect("first index lookup")
+                .is_none(),
+            "a successful early action must not be committed when a later action fails"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("second.txt"))
+                .expect("second index lookup")
+                .is_none(),
+            "failed action must not be committed"
+        );
+        assert!(
+            daemon.last_sync.is_none(),
+            "failed reconciliation must not advance last_sync"
         );
     }
 
