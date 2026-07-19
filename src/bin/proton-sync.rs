@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use proton_drive_sync_engine::ipc::{ControlCommand, send_command};
+use proton_drive_sync_engine::paths::default_socket_path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -9,8 +10,8 @@ use std::process::ExitCode;
     about = "Frontend controller for the Proton Drive sync daemon"
 )]
 struct Cli {
-    #[arg(long, default_value = "/tmp/proton-sync.sock")]
-    socket_path: PathBuf,
+    #[arg(long)]
+    socket_path: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -26,6 +27,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    let socket_path = cli.socket_path.unwrap_or_else(default_socket_path);
     let command = match cli.command {
         Commands::Status => ControlCommand::Status,
         Commands::Pause => ControlCommand::Pause,
@@ -33,7 +35,7 @@ async fn main() -> ExitCode {
         Commands::Syncnow => ControlCommand::Syncnow,
     };
 
-    match send_command(&cli.socket_path, command).await {
+    match send_command(&socket_path, command).await {
         Ok(response) => {
             println!(
                 "{}",

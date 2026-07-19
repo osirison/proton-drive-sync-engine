@@ -1,6 +1,7 @@
 pub mod daemon;
 pub mod index;
 pub mod ipc;
+pub mod paths;
 pub mod proton;
 pub mod sync;
 

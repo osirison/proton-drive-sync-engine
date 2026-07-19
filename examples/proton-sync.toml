@@ -1,0 +1,20 @@
+# Copy this file to ~/.config/proton-sync/proton-sync.toml and edit the paths.
+
+local_root = "/home/me/ProtonDrive"
+remote_root = "/Drive/RemoteFolder"
+scan_interval_secs = 300
+proton_cli = "proton-drive"
+
+# Optional selective sync rules. Paths are relative to local_root and remote_root.
+include = ["Documents/**", "Projects/**/*.md"]
+exclude = ["**/*.tmp", "**/.DS_Store"]
+
+# Set true when you want the configured service to print a plan and exit.
+dry_run = false
+
+# Optional overrides. When omitted, the daemon uses XDG defaults:
+# db_path under $XDG_STATE_HOME/proton-drive-sync or ~/.local/state/proton-drive-sync
+# socket_path and lockfile_path under $XDG_RUNTIME_DIR, or the OS temp directory fallback
+# db_path = "/home/me/.local/state/proton-drive-sync/sync_index.db"
+# socket_path = "/run/user/1000/proton-sync.sock"
+# lockfile_path = "/run/user/1000/proton-sync.lock"

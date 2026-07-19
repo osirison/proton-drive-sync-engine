@@ -499,7 +499,93 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum RecordedOperation {
+        Upload {
+            local_path: PathBuf,
+            remote_root: PathBuf,
+            relative_path: PathBuf,
+        },
+        Download {
+            remote_id: String,
+            destination: PathBuf,
+        },
+        Delete {
+            remote_id: String,
+        },
+    }
+
+    #[derive(Debug, Clone)]
+    struct RecordingProtonClient {
+        remote_files: HashMap<PathBuf, RemoteFile>,
+        operations: Arc<Mutex<Vec<RecordedOperation>>>,
+    }
+
+    impl RecordingProtonClient {
+        fn new(
+            remote_files: HashMap<PathBuf, RemoteFile>,
+        ) -> (Self, Arc<Mutex<Vec<RecordedOperation>>>) {
+            let operations = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    remote_files,
+                    operations: Arc::clone(&operations),
+                },
+                operations,
+            )
+        }
+    }
+
+    impl ProtonClient for RecordingProtonClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            Ok(self.remote_files.clone())
+        }
+
+        fn upload(
+            &self,
+            local_path: &Path,
+            remote_root: &Path,
+            relative_path: &Path,
+        ) -> AppResult<()> {
+            self.operations
+                .lock()
+                .expect("operations lock")
+                .push(RecordedOperation::Upload {
+                    local_path: local_path.to_path_buf(),
+                    remote_root: remote_root.to_path_buf(),
+                    relative_path: relative_path.to_path_buf(),
+                });
+            Ok(())
+        }
+
+        fn download(&self, remote_id: &str, destination: &Path) -> AppResult<()> {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(destination, format!("downloaded:{remote_id}"))?;
+            self.operations
+                .lock()
+                .expect("operations lock")
+                .push(RecordedOperation::Download {
+                    remote_id: remote_id.to_owned(),
+                    destination: destination.to_path_buf(),
+                });
+            Ok(())
+        }
+
+        fn delete(&self, remote_id: &str) -> AppResult<()> {
+            self.operations
+                .lock()
+                .expect("operations lock")
+                .push(RecordedOperation::Delete {
+                    remote_id: remote_id.to_owned(),
+                });
+            Ok(())
+        }
+    }
 
     #[derive(Debug)]
     struct FakeProtonClient {
@@ -574,6 +660,145 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_uploads_local_only_file_and_records_index() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("local-only.txt");
+        fs::write(&local_path, b"local").expect("local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .contains(&RecordedOperation::Upload {
+                    local_path,
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from("local-only.txt"),
+                })
+        );
+        let record = get_record(&daemon.connection, Path::new("local-only.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_downloads_remote_only_file_and_records_index() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("remote-only.txt"),
+            remote("remote-only.txt", "remote-id", Some("remote-hash")),
+        );
+        let (client, operations) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        let destination = local_root.join("remote-only.txt");
+        assert_eq!(
+            fs::read_to_string(&destination).expect("downloaded file"),
+            "downloaded:remote-id"
+        );
+        assert!(operations.lock().expect("operations lock").contains(
+            &RecordedOperation::Download {
+                remote_id: "remote-id".to_owned(),
+                destination,
+            }
+        ));
+        let record = get_record(&daemon.connection, Path::new("remote-only.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_deletes_remote_file_when_local_synced_file_was_removed() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("removed.txt"),
+            remote("removed.txt", "remote-id", Some("base-hash")),
+        );
+        let (client, operations) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("removed.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .contains(&RecordedOperation::Delete {
+                    remote_id: "remote-id".to_owned(),
+                })
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("removed.txt"))
+                .expect("index lookup")
+                .is_none(),
+            "remote delete should purge the index record"
+        );
+    }
+
+    #[test]
+    fn reconcile_downloads_conflict_sidecar_and_marks_index_conflict() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("notes.txt"), b"local changed").expect("local file");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some("remote-changed")),
+        );
+        let (client, operations) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        let conflict_path = local_root.join("notes.proton-cloud.txt");
+        assert_eq!(
+            fs::read_to_string(&conflict_path).expect("conflict sidecar"),
+            "downloaded:remote-id"
+        );
+        assert!(operations.lock().expect("operations lock").contains(
+            &RecordedOperation::Download {
+                remote_id: "remote-id".to_owned(),
+                destination: conflict_path,
+            }
+        ));
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Conflict);
+    }
+
+    #[test]
     fn lock_guard_reuses_stale_lockfile() {
         let directory = tempdir().expect("tempdir");
         let lock_path = directory.path().join("daemon.lock");
@@ -598,5 +823,43 @@ mod tests {
 
         assert!(second.is_err(), "second live daemon must not acquire lock");
         drop(guard);
+    }
+
+    fn test_config(directory: &Path, local_root: &Path) -> DaemonConfig {
+        DaemonConfig {
+            local_root: local_root.to_path_buf(),
+            remote_root: PathBuf::from("/Drive/RemoteFolder"),
+            db_path: directory.join("sync_index.db"),
+            socket_path: directory.join("daemon.sock"),
+            lockfile_path: directory.join("daemon.lock"),
+            scan_interval: Duration::from_secs(300),
+            proton_cli: PathBuf::from("proton-drive"),
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+        }
+    }
+
+    fn remote(path: &str, id: &str, sha1_hash: Option<&str>) -> RemoteFile {
+        RemoteFile {
+            path: PathBuf::from(path),
+            id: id.to_owned(),
+            name: Path::new(path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(path)
+                .to_owned(),
+            sha1_hash: sha1_hash.map(ToOwned::to_owned),
+        }
+    }
+
+    fn base_record(path: &str, proton_id: Option<&str>, sha1_hash: &str) -> FileRecord {
+        FileRecord {
+            file_path: PathBuf::from(path),
+            file_size: 1,
+            mtime: 1,
+            sha1_hash: sha1_hash.to_owned(),
+            proton_id: proton_id.map(ToOwned::to_owned),
+            sync_status: SyncStatus::Synced,
+        }
     }
 }

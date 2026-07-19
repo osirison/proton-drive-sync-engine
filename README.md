@@ -53,6 +53,7 @@ Not yet included:
 * The `proton-drive` CLI installed, authenticated, and available on `PATH`
 * A Unix-like operating system with Unix socket support
 * A local folder reserved for sync testing
+* Optional XDG environment variables for runtime and state paths
 
 ## Install and Build
 
@@ -104,7 +105,7 @@ cargo run --bin proton-sync -- pause
 cargo run --bin proton-sync -- resume
 ```
 
-By default, the daemon stores `sync_index.db` under the local root and listens on `/tmp/proton-sync.sock`.
+By default, the daemon stores its index under `$XDG_STATE_HOME/proton-drive-sync` or `~/.local/state/proton-drive-sync`, and it listens on `$XDG_RUNTIME_DIR/proton-sync.sock` when that runtime directory is available.
 
 ## Daemon Usage
 
@@ -128,9 +129,9 @@ cargo run --bin proton-syncd -- \
 | `--config <PATH>` | None | TOML file with daemon settings |
 | `--local-root` | Required unless configured | Local directory to watch and reconcile |
 | `--remote-root` | Required unless configured | Proton Drive folder used as the remote sync root |
-| `--db-path` | `sync_index.db` | SQLite index path; relative values are stored under `local-root` |
-| `--socket-path` | `/tmp/proton-sync.sock` | Unix socket used by `proton-sync` |
-| `--lockfile-path` | `/tmp/proton-sync.lock` | Advisory lockfile used to prevent duplicate daemon instances |
+| `--db-path` | XDG state path | SQLite index path; relative values are stored under `local-root` |
+| `--socket-path` | XDG runtime path | Unix socket used by `proton-sync` |
+| `--lockfile-path` | XDG runtime path | Advisory lockfile used to prevent duplicate daemon instances |
 | `--scan-interval-secs` | `300` | Periodic reconciliation interval in seconds |
 | `--include <GLOB>` | None | Limits sync to paths matching one or more relative glob patterns |
 | `--exclude <GLOB>` | None | Excludes paths matching one or more relative glob patterns; exclude wins over include |
@@ -147,17 +148,16 @@ Use `--config <PATH>` to load daemon settings from TOML. This is the recommended
 ```toml
 local_root = "/home/me/ProtonDrive"
 remote_root = "/Drive/RemoteFolder"
-db_path = ".local/state/proton-sync/sync_index.db"
-socket_path = "/run/user/1000/proton-sync.sock"
-lockfile_path = "/run/user/1000/proton-sync.lock"
 scan_interval_secs = 300
 proton_cli = "proton-drive"
 include = ["Documents/**"]
 exclude = ["**/*.tmp"]
-dry_run = true
+dry_run = false
 ```
 
 Explicit CLI flags override values from the config file. For example, you can keep normal settings in `proton-sync.toml` and run one filtered preview with `--config proton-sync.toml --include 'Documents/**' --dry-run`. Use `--no-dry-run` when a config file sets `dry_run = true` but you want to start the daemon normally.
+
+The daemon validates empty roots and invalid include or exclude globs before starting. A sample config is available at [examples/proton-sync.toml](examples/proton-sync.toml).
 
 ## Dry-Run Planning
 
@@ -243,6 +243,8 @@ Useful values include `error`, `warn`, `info`, and `debug`. When `RUST_LOG` is n
 cargo run --bin proton-sync -- [--socket-path /tmp/proton-sync.sock] <command>
 ```
 
+When `--socket-path` is omitted, the control CLI uses the same default socket path as the daemon: `$XDG_RUNTIME_DIR/proton-sync.sock` or the OS temporary directory fallback.
+
 | Command | Behavior |
 | ------- | -------- |
 | `status` | Prints daemon status, pause state, pending change count, message, and last sync timestamp |
@@ -264,36 +266,15 @@ Responses are JSON so scripts can consume them directly:
 
 ## Running as a User Service
 
-For local testing on a systemd-based Linux workstation, install the binaries into your Cargo bin directory and run the daemon as a user service:
+For local testing on a systemd-based Linux workstation, install the binaries into your Cargo bin directory and run the daemon as a user service. The repository includes sample assets at [examples/proton-sync.toml](examples/proton-sync.toml) and [examples/systemd/proton-syncd.service](examples/systemd/proton-syncd.service).
 
 ```bash
 cargo install --path .
-mkdir -p ~/.config/systemd/user
+install -Dm600 examples/proton-sync.toml ~/.config/proton-sync/proton-sync.toml
+install -Dm644 examples/systemd/proton-syncd.service ~/.config/systemd/user/proton-syncd.service
 ```
 
-Create `~/.config/systemd/user/proton-syncd.service`:
-
-```ini
-[Unit]
-Description=Proton Drive Sync Daemon
-After=network-online.target
-
-[Service]
-Type=simple
-Environment=RUST_LOG=info
-ExecStart=%h/.cargo/bin/proton-syncd \
-  --local-root %h/ProtonDrive \
-  --remote-root /Drive/RemoteFolder \
-  --db-path %h/.local/state/proton-sync/sync_index.db \
-  --socket-path %t/proton-sync.sock \
-  --lockfile-path %t/proton-sync.lock \
-  --scan-interval-secs 300
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
+Edit `~/.config/proton-sync/proton-sync.toml` for your local and remote roots before enabling the service. The sample service calls `proton-syncd --config %h/.config/proton-sync/proton-sync.toml` and relies on the daemon's XDG defaults for the socket, lockfile, and index paths.
 
 Enable and inspect the service:
 
@@ -304,10 +285,10 @@ systemctl --user status proton-syncd.service
 journalctl --user -u proton-syncd.service -f
 ```
 
-Use the same runtime socket when controlling the service:
+Use the default runtime socket when controlling the service:
 
 ```bash
-proton-sync --socket-path "$XDG_RUNTIME_DIR/proton-sync.sock" status
+proton-sync status
 ```
 
 Run a dry-run from the shell before enabling the service whenever you change `--local-root`, `--remote-root`, or `--proton-cli`.
@@ -362,8 +343,12 @@ src/
   index.rs           SQLite schema, local scanning, file hashing, index persistence
   ipc.rs             Unix socket request and response protocol
   lib.rs             Shared result and path validation helpers
+  paths.rs           XDG-aware default state, socket, and lockfile paths
   proton.rs          Proton Drive CLI wrapper and remote JSON parser
   sync.rs            Sync planning matrix and conflict naming
+examples/
+  proton-sync.toml   Sample daemon config file
+  systemd/           Sample systemd user service
 ```
 
 ## Development Workflow
@@ -383,13 +368,14 @@ cargo test sync::tests
 cargo test proton::tests
 cargo test daemon::tests
 cargo test --test dry_run_cli
+cargo test --test ipc_cli
 ```
 
 When changing sync behavior, add regression tests near the planner in `src/sync.rs`. When changing local filesystem or Proton JSON safety boundaries, add tests around the boundary that first accepts external paths.
 
 ## Troubleshooting
 
-If `proton-sync` cannot connect, confirm the daemon is running and the client uses the same `--socket-path`.
+If `proton-sync` cannot connect, confirm the daemon is running and the client uses the same `--socket-path`. When no socket is configured, both binaries default to `$XDG_RUNTIME_DIR/proton-sync.sock` and fall back to the OS temporary directory.
 
 If the daemon exits with a lockfile error, another live daemon may already hold the advisory lock. Stop the running daemon or use a different `--lockfile-path` for an isolated test.
 

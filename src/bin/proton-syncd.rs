@@ -1,10 +1,14 @@
 use clap::Parser;
 use proton_drive_sync_engine::daemon::{Daemon, DaemonConfig, preview_plan};
+use proton_drive_sync_engine::index::ScanOptions;
+use proton_drive_sync_engine::paths::{
+    default_lockfile_path, default_socket_path, default_state_db_path,
+};
 use proton_drive_sync_engine::sync::DryRunReport;
 use proton_drive_sync_engine::{AppResult, boxed_error};
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 use tracing::{error, info};
@@ -139,41 +143,62 @@ fn resolve_runtime_config(cli: Cli) -> AppResult<(DaemonConfig, bool)> {
     let db_path = cli
         .db_path
         .or(file_config.db_path)
-        .unwrap_or_else(|| PathBuf::from("sync_index.db"));
-    let db_path = if db_path.is_absolute() {
-        db_path
-    } else {
-        local_root.join(db_path)
-    };
+        .map(|path| resolve_path(&local_root, path))
+        .unwrap_or_else(|| default_state_db_path(&local_root));
 
-    Ok((
-        DaemonConfig {
-            local_root,
-            remote_root,
-            db_path,
-            socket_path: cli
-                .socket_path
-                .or(file_config.socket_path)
-                .unwrap_or_else(|| PathBuf::from("/tmp/proton-sync.sock")),
-            lockfile_path: cli
-                .lockfile_path
-                .or(file_config.lockfile_path)
-                .unwrap_or_else(|| PathBuf::from("/tmp/proton-sync.lock")),
-            scan_interval: Duration::from_secs(
-                cli.scan_interval_secs
-                    .or(file_config.scan_interval_secs)
-                    .unwrap_or(300)
-                    .max(1),
-            ),
-            proton_cli: cli
-                .proton_cli
-                .or(file_config.proton_cli)
-                .unwrap_or_else(|| PathBuf::from("proton-drive")),
-            include_patterns: merge_patterns(cli.include_patterns, file_config.include_patterns),
-            exclude_patterns: merge_patterns(cli.exclude_patterns, file_config.exclude_patterns),
-        },
-        dry_run,
-    ))
+    let config = DaemonConfig {
+        local_root,
+        remote_root,
+        db_path,
+        socket_path: cli
+            .socket_path
+            .or(file_config.socket_path)
+            .unwrap_or_else(default_socket_path),
+        lockfile_path: cli
+            .lockfile_path
+            .or(file_config.lockfile_path)
+            .unwrap_or_else(default_lockfile_path),
+        scan_interval: Duration::from_secs(
+            cli.scan_interval_secs
+                .or(file_config.scan_interval_secs)
+                .unwrap_or(300)
+                .max(1),
+        ),
+        proton_cli: cli
+            .proton_cli
+            .or(file_config.proton_cli)
+            .unwrap_or_else(|| PathBuf::from("proton-drive")),
+        include_patterns: merge_patterns(cli.include_patterns, file_config.include_patterns),
+        exclude_patterns: merge_patterns(cli.exclude_patterns, file_config.exclude_patterns),
+    };
+    validate_runtime_config(&config)?;
+
+    Ok((config, dry_run))
+}
+
+fn resolve_path(local_root: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        local_root.join(path)
+    }
+}
+
+fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
+    if config.local_root.as_os_str().is_empty() {
+        return Err(boxed_error("local_root must not be empty"));
+    }
+    if config.remote_root.as_os_str().is_empty() {
+        return Err(boxed_error("remote_root must not be empty"));
+    }
+    ScanOptions::new(
+        &config.local_root,
+        std::slice::from_ref(&config.db_path),
+        &config.include_patterns,
+        &config.exclude_patterns,
+    )
+    .map_err(|error| boxed_error(format!("invalid scan filter configuration: {error}")))?;
+    Ok(())
 }
 
 fn load_file_config(path: Option<&PathBuf>) -> AppResult<FileConfig> {
@@ -307,5 +332,78 @@ dry_run = true
         .expect("runtime config");
 
         assert!(!dry_run);
+    }
+
+    #[test]
+    fn invalid_include_glob_returns_targeted_config_error() {
+        let error = resolve_runtime_config(Cli::parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--include",
+            "[",
+        ]))
+        .expect_err("invalid include glob should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid scan filter configuration"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn empty_local_root_returns_targeted_config_error() {
+        let error = resolve_runtime_config(cli_with_roots(
+            PathBuf::new(),
+            PathBuf::from("/Drive/Config"),
+        ))
+        .expect_err("empty local root should fail");
+
+        assert_eq!(error.to_string(), "local_root must not be empty");
+    }
+
+    #[test]
+    fn empty_remote_root_returns_targeted_config_error() {
+        let error =
+            resolve_runtime_config(cli_with_roots(PathBuf::from("sync-root"), PathBuf::new()))
+                .expect_err("empty remote root should fail");
+
+        assert_eq!(error.to_string(), "remote_root must not be empty");
+    }
+
+    #[test]
+    fn conflicting_dry_run_flags_are_rejected_by_cli_parser() {
+        let result = Cli::try_parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--dry-run",
+            "--no-dry-run",
+        ]);
+
+        assert!(result.is_err(), "conflicting dry-run flags must fail");
+    }
+
+    fn cli_with_roots(local_root: PathBuf, remote_root: PathBuf) -> Cli {
+        Cli {
+            config: None,
+            local_root: Some(local_root),
+            remote_root: Some(remote_root),
+            db_path: None,
+            socket_path: None,
+            lockfile_path: None,
+            scan_interval_secs: None,
+            proton_cli: None,
+            dry_run: false,
+            no_dry_run: false,
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+        }
     }
 }
