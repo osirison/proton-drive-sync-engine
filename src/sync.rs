@@ -100,6 +100,12 @@ pub fn plan_sync_entities(
         plan_file_path_transitions(local_entities, remote_entities, base_index);
 
     let bootstrap = base_index.is_empty();
+    let deletion_verdicts = compute_directory_deletion_verdicts(
+        local_entities,
+        remote_entities,
+        base_index,
+        &suppressed_paths,
+    );
     let mut plan = transition_actions;
     plan.extend(
         paths
@@ -126,10 +132,7 @@ pub fn plan_sync_entities(
                             local.and_then(LocalEntityState::as_directory),
                             remote.and_then(RemoteEntity::as_directory),
                             base,
-                            local_entities,
-                            remote_entities,
-                            base_index,
-                            &suppressed_paths,
+                            &deletion_verdicts,
                         )
                     }
                     Some(base) if !bootstrap => plan_ongoing_file_action(
@@ -736,16 +739,12 @@ fn plan_ongoing_file_action(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn plan_ongoing_directory_action(
     path: &Path,
     local: Option<&LocalDirectoryState>,
     remote: Option<&RemoteDirectory>,
     base: &FileRecord,
-    local_entities: &HashMap<PathBuf, LocalEntityState>,
-    remote_entities: &HashMap<PathBuf, RemoteEntity>,
-    base_index: &HashMap<PathBuf, FileRecord>,
-    suppressed_paths: &BTreeSet<PathBuf>,
+    deletion_verdicts: &HashMap<PathBuf, bool>,
 ) -> Option<PlannedAction> {
     match (local.is_some(), remote.is_some()) {
         // Both sides already agree the directory exists. Backfill the base record's
@@ -770,13 +769,7 @@ fn plan_ongoing_directory_action(
         // unless every tracked descendant independently proves the whole subtree was
         // cleanly removed remotely, in which case propagate the deletion locally.
         (true, false) => {
-            if directory_subtree_is_deletion_consistent(
-                path,
-                local_entities,
-                remote_entities,
-                base_index,
-                suppressed_paths,
-            ) {
+            if subtree_is_deletion_consistent(path, deletion_verdicts) {
                 Some(PlannedAction::new(
                     path,
                     SyncAction::LocalDelete,
@@ -799,13 +792,7 @@ fn plan_ongoing_directory_action(
             let remote_id = remote
                 .and_then(|directory| directory.id.clone())
                 .or_else(|| base.proton_id.clone());
-            if directory_subtree_is_deletion_consistent(
-                path,
-                local_entities,
-                remote_entities,
-                base_index,
-                suppressed_paths,
-            ) {
+            if subtree_is_deletion_consistent(path, deletion_verdicts) {
                 Some(PlannedAction::new(
                     path,
                     SyncAction::RemoteDelete,
@@ -830,52 +817,81 @@ fn plan_ongoing_directory_action(
     }
 }
 
-/// Returns true only when every base-index descendant of `directory_path` independently
-/// resolves to a deletion-consistent outcome (`RemoteDelete`, `LocalDelete`, or `Purge`).
-/// This proves it is safe to propagate the directory's one-sided absence as a recursive
-/// delete instead of recreating it; any descendant with a different resolution (upload,
-/// download, conflict, auto-link, a directory recreate, an unsupported skip, or a path
-/// transition) causes the proof to fail so the caller falls back to the non-destructive
-/// recreate behavior.
-fn directory_subtree_is_deletion_consistent(
+/// Reads the memoized verdict for whether `directory_path`'s whole subtree resolves to a
+/// clean one-sided deletion (see [`compute_directory_deletion_verdicts`]). A missing entry
+/// fails toward the non-destructive recreate behavior.
+fn subtree_is_deletion_consistent(
     directory_path: &Path,
+    deletion_verdicts: &HashMap<PathBuf, bool>,
+) -> bool {
+    deletion_verdicts
+        .get(directory_path)
+        .copied()
+        .unwrap_or(false)
+}
+
+/// Precomputes, for every base-index directory, whether its whole subtree resolves to a
+/// clean one-sided deletion: every descendant independently resolves to `RemoteDelete`,
+/// `LocalDelete`, or `Purge` (any other resolution — upload, download, conflict,
+/// auto-link, a directory recreate, an unsupported skip, or a path transition — fails the
+/// proof so the caller falls back to the non-destructive recreate).
+///
+/// Directories are processed deepest-first so that when a directory is evaluated, every
+/// descendant directory already has a cached verdict; evaluating a descendant directory
+/// via `plan_ongoing_directory_action` then reads that verdict instead of re-planning its
+/// whole subtree. This replaces a mutual recursion that re-planned each subtree once per
+/// ancestor — Θ(2^depth) on a nested one-sided deletion, enough to hang the daemon — with
+/// a single bottom-up pass.
+fn compute_directory_deletion_verdicts(
     local_entities: &HashMap<PathBuf, LocalEntityState>,
     remote_entities: &HashMap<PathBuf, RemoteEntity>,
     base_index: &HashMap<PathBuf, FileRecord>,
     suppressed_paths: &BTreeSet<PathBuf>,
-) -> bool {
-    base_index
+) -> HashMap<PathBuf, bool> {
+    let mut directories: Vec<&PathBuf> = base_index
         .iter()
-        .filter(|(path, _)| is_strict_descendant(directory_path, path))
-        .all(|(path, base)| {
-            if suppressed_paths.contains(path) {
-                return false;
-            }
-            let local = local_entities.get(path);
-            let remote = remote_entities.get(path);
-            let action = match base.entity_kind {
-                EntityKind::Directory => plan_ongoing_directory_action(
-                    path,
-                    local.and_then(LocalEntityState::as_directory),
-                    remote.and_then(RemoteEntity::as_directory),
-                    base,
-                    local_entities,
-                    remote_entities,
-                    base_index,
-                    suppressed_paths,
-                ),
-                EntityKind::File => plan_ongoing_file_action(
-                    path,
-                    local.and_then(LocalEntityState::as_file),
-                    remote.and_then(RemoteEntity::as_file),
-                    base,
-                ),
-            };
-            matches!(
-                action.map(|planned| planned.action),
-                Some(SyncAction::RemoteDelete | SyncAction::LocalDelete | SyncAction::Purge)
-            )
-        })
+        .filter(|(_, record)| record.entity_kind == EntityKind::Directory)
+        .map(|(path, _)| path)
+        .collect();
+    // Deepest first: a strict descendant always has more path components than its ancestor.
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+
+    let mut verdicts: HashMap<PathBuf, bool> = HashMap::new();
+    for directory_path in directories {
+        let consistent = base_index
+            .iter()
+            .filter(|(path, _)| is_strict_descendant(directory_path, path))
+            .all(|(path, base)| {
+                if suppressed_paths.contains(path) {
+                    return false;
+                }
+                let action = match base.entity_kind {
+                    EntityKind::Directory => plan_ongoing_directory_action(
+                        path,
+                        local_entities
+                            .get(path)
+                            .and_then(LocalEntityState::as_directory),
+                        remote_entities
+                            .get(path)
+                            .and_then(RemoteEntity::as_directory),
+                        base,
+                        &verdicts,
+                    ),
+                    EntityKind::File => plan_ongoing_file_action(
+                        path,
+                        local_entities.get(path).and_then(LocalEntityState::as_file),
+                        remote_entities.get(path).and_then(RemoteEntity::as_file),
+                        base,
+                    ),
+                };
+                matches!(
+                    action.map(|planned| planned.action),
+                    Some(SyncAction::RemoteDelete | SyncAction::LocalDelete | SyncAction::Purge)
+                )
+            });
+        verdicts.insert(directory_path.clone(), consistent);
+    }
+    verdicts
 }
 
 /// Returns true when `candidate` is strictly nested under `ancestor` (never equal to it).
@@ -2031,6 +2047,38 @@ mod tests {
         );
         assert_eq!(planned[0].path, PathBuf::from("docs"));
         assert_eq!(planned[0].action, SyncAction::RemoteDelete);
+    }
+
+    #[test]
+    fn deep_one_sided_directory_deletion_plans_in_bounded_time() {
+        // A deeply nested directory chain deleted on one side must plan in polynomial
+        // time. The previous mutual recursion was Θ(2^depth); at this depth it would not
+        // finish in the age of the universe, so merely completing proves the fix.
+        const DEPTH: usize = 60;
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        let mut path = PathBuf::new();
+        for level in 0..DEPTH {
+            path.push(format!("d{level}"));
+            let key = path.to_str().expect("utf-8 path");
+            let id = format!("id-{level}");
+            remote_entities.insert(path.clone(), remote_directory(key, Some(&id)));
+            base_index.insert(path.clone(), directory_base(key, Some(&id)));
+        }
+
+        // Locally the whole chain was removed while it still exists remotely.
+        let planned = plan_sync_entities(&HashMap::new(), &remote_entities, &base_index);
+
+        // The clean subtree deletion collapses to a single recursive RemoteDelete at the
+        // top, with every descendant suppressed.
+        assert_eq!(
+            planned.len(),
+            1,
+            "descendants must be suppressed: {planned:?}"
+        );
+        assert_eq!(planned[0].path, PathBuf::from("d0"));
+        assert_eq!(planned[0].action, SyncAction::RemoteDelete);
+        assert_eq!(planned[0].entity_kind, EntityKind::Directory);
     }
 
     #[test]
