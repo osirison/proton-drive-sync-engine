@@ -487,13 +487,15 @@ impl<C: ProtonClient> Daemon<C> {
                                 action.path.display()
                             ))
                         })?;
-                    let destination = safe_local_path(&self.config.local_root, &action.path)
-                        .ok_or_else(|| {
-                            boxed_error(format!(
-                                "planned download for {} has an unsafe local path",
-                                action.path.display()
-                            ))
-                        })?;
+                    let Some(destination) = safe_local_path(&self.config.local_root, &action.path)
+                    else {
+                        warn!(
+                            path = %action.path.display(),
+                            "skipping download: local destination escapes the sync root \
+                             (e.g. through a symlinked directory)"
+                        );
+                        continue;
+                    };
                     ensure_parent_directory(&destination)?;
                     self.proton.download(&remote_path, &destination)?;
                     let local_state = local_file_state(&self.config.local_root, &destination)?;
@@ -720,13 +722,15 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 SyncAction::LocalDelete => {
-                    let destination = safe_local_path(&self.config.local_root, &action.path)
-                        .ok_or_else(|| {
-                            boxed_error(format!(
-                                "planned local delete for {} has an unsafe local path",
-                                action.path.display()
-                            ))
-                        })?;
+                    let Some(destination) = safe_local_path(&self.config.local_root, &action.path)
+                    else {
+                        warn!(
+                            path = %action.path.display(),
+                            "skipping local delete: path escapes the sync root \
+                             (e.g. through a symlinked directory)"
+                        );
+                        continue;
+                    };
                     if destination.exists() {
                         if action.entity_kind == EntityKind::Directory {
                             fs::remove_dir_all(&destination)?;
@@ -991,7 +995,38 @@ fn ensure_parent_directory(path: &Path) -> AppResult<()> {
 /// [`crate::validate_relative_path`] for consistent security semantics with
 /// the remote-path normalization in `proton.rs`.
 fn safe_local_path(local_root: &Path, relative: &Path) -> Option<PathBuf> {
-    crate::validate_relative_path(relative).map(|safe| local_root.join(safe))
+    let destination = local_root.join(crate::validate_relative_path(relative)?);
+    if local_write_escapes_root(local_root, &destination) {
+        return None;
+    }
+    Some(destination)
+}
+
+/// Returns true when writing to `destination` (already lexically validated and joined onto
+/// `local_root`) would actually land outside `local_root` because a pre-existing intermediate
+/// component is a symlink pointing elsewhere.
+///
+/// `validate_relative_path` is purely lexical and cannot see this: a directory symlink such
+/// as `sub -> /outside` inside the sync root would otherwise let a remote entry `sub/foo` be
+/// created or downloaded straight through the symlink to `/outside/foo` (the scanner already
+/// skips symlinks, so the local side never balances it). This resolves the deepest existing
+/// ancestor of `destination` — which follows every symlink along the way — and requires it to
+/// stay within the canonicalized `local_root`. Fails closed: if `local_root` or the ancestor
+/// cannot be canonicalized, the write is treated as escaping.
+fn local_write_escapes_root(local_root: &Path, destination: &Path) -> bool {
+    let Ok(canonical_root) = fs::canonicalize(local_root) else {
+        return true;
+    };
+    let mut ancestor = destination;
+    loop {
+        match fs::canonicalize(ancestor) {
+            Ok(canonical) => return !canonical.starts_with(&canonical_root),
+            Err(_) => match ancestor.parent() {
+                Some(parent) => ancestor = parent,
+                None => return true,
+            },
+        }
+    }
 }
 
 fn safe_remote_path(remote_root: &Path, relative: &Path) -> Option<PathBuf> {
@@ -1981,6 +2016,58 @@ mod tests {
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
         assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_through_a_symlinked_directory_is_refused_not_written_outside_root() {
+        // local_root contains a pre-existing directory symlink `sub -> outside` (a common
+        // user setup). A remote file under `sub/` must not be written through the symlink to
+        // a location outside the sync root, and must not be recorded as synced.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let outside = directory.path().join("outside");
+        fs::create_dir(&local_root).expect("local root");
+        fs::create_dir(&outside).expect("outside dir");
+        std::os::unix::fs::symlink(&outside, local_root.join("sub")).expect("directory symlink");
+
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("sub/secret.txt"),
+            remote("sub/secret.txt", "remote-id", Some("hash")),
+        );
+        let mut remote_contents = HashMap::new();
+        remote_contents.insert(
+            PathBuf::from("/Drive/RemoteFolder/sub/secret.txt"),
+            b"exfiltrated".to_vec(),
+        );
+        let (client, operations) =
+            RecordingProtonClient::with_remote_contents(remote_files, remote_contents);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect("reconcile skips the unsafe entry rather than erroring");
+
+        assert!(
+            !outside.join("secret.txt").exists(),
+            "remote content must not be written outside the sync root through the symlink"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("sub/secret.txt"))
+                .expect("index lookup")
+                .is_none(),
+            "a refused download must not be recorded as synced"
+        );
+        assert!(
+            !operations
+                .lock()
+                .expect("operations lock")
+                .iter()
+                .any(|op| matches!(op, RecordedOperation::Download { .. })),
+            "no download should run for a path that escapes the sync root"
+        );
     }
 
     #[test]
