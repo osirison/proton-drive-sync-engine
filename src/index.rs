@@ -369,7 +369,7 @@ pub fn load_index(connection: &Connection) -> AppResult<HashMap<PathBuf, FileRec
         let kind: String = row.get(1)?;
         let status: String = row.get(6)?;
         Ok(FileRecord {
-            file_path: PathBuf::from(row.get::<_, String>(0)?),
+            file_path: read_index_key_column(row, 0)?,
             entity_kind: EntityKind::from_str(&kind).map_err(|err| {
                 rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, err)
             })?,
@@ -423,11 +423,11 @@ pub fn get_record(connection: &Connection, relative_path: &Path) -> AppResult<Op
         "SELECT file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status FROM file_index WHERE file_path = ?1",
     )?;
     let record = statement
-        .query_row(params![path_key(relative_path)], |row| {
+        .query_row(params![index_key(relative_path)], |row| {
             let kind: String = row.get(1)?;
             let status: String = row.get(6)?;
             Ok(FileRecord {
-                file_path: PathBuf::from(row.get::<_, String>(0)?),
+                file_path: read_index_key_column(row, 0)?,
                 entity_kind: EntityKind::from_str(&kind).map_err(|err| {
                     rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, err)
                 })?,
@@ -458,7 +458,7 @@ pub fn upsert_record(connection: &Connection, record: &FileRecord) -> AppResult<
             sync_status = excluded.sync_status
         "#,
         params![
-            path_key(&record.file_path),
+            index_key(&record.file_path),
             record.entity_kind.as_str(),
             record.file_size as i64,
             record.mtime,
@@ -473,7 +473,7 @@ pub fn upsert_record(connection: &Connection, record: &FileRecord) -> AppResult<
 pub fn mark_modified(connection: &Connection, relative_path: &Path) -> AppResult<()> {
     connection.execute(
         "UPDATE file_index SET sync_status = 'modified' WHERE file_path = ?1",
-        params![path_key(relative_path)],
+        params![index_key(relative_path)],
     )?;
     Ok(())
 }
@@ -481,7 +481,7 @@ pub fn mark_modified(connection: &Connection, relative_path: &Path) -> AppResult
 pub fn purge_record(connection: &Connection, relative_path: &Path) -> AppResult<()> {
     connection.execute(
         "DELETE FROM file_index WHERE file_path = ?1",
-        params![path_key(relative_path)],
+        params![index_key(relative_path)],
     )?;
     Ok(())
 }
@@ -645,6 +645,8 @@ pub fn local_directory_state(root: &Path, absolute_path: &Path) -> AppResult<Loc
 }
 
 pub fn compute_sha1(path: &Path) -> AppResult<String> {
+    use std::fmt::Write as _;
+
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha1::new();
@@ -659,7 +661,11 @@ pub fn compute_sha1(path: &Path) -> AppResult<String> {
     }
 
     let digest = hasher.finalize();
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(hex, "{byte:02x}").expect("writing hex digits to a String cannot fail");
+    }
+    Ok(hex)
 }
 
 pub fn path_key(path: &Path) -> String {
@@ -667,6 +673,43 @@ pub fn path_key(path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Byte-exact primary-key encoding for `file_index.file_path`, used for every SQL
+/// read/write of a specific row. Unlike `path_key` (which lossily converts each
+/// component to UTF-8 for glob-pattern matching), this preserves the original bytes
+/// of non-UTF-8 path components so two different non-UTF-8 paths can never collide on
+/// the same database key. Bound as a `Vec<u8>` parameter, it is stored using SQLite's
+/// BLOB storage class even in this TEXT-affinity column: SQLite's column-affinity
+/// rules only convert INTEGER/REAL input for a TEXT-affinity column, never TEXT or
+/// BLOB input, so no schema migration is required.
+fn index_key(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut key = Vec::new();
+    for component in path.components() {
+        if !key.is_empty() {
+            key.push(b'/');
+        }
+        key.extend_from_slice(component.as_os_str().as_bytes());
+    }
+    key
+}
+
+/// Reconstructs the `PathBuf` written by `index_key`. Reads the column as raw bytes
+/// regardless of whether it is stored using SQLite's TEXT or BLOB storage class, so
+/// rows written by older code (as TEXT, via `path_key`) remain readable without a
+/// migration.
+fn read_index_key_column(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let value = row.get_ref(index)?;
+    let data_type = value.data_type();
+    let bytes = value.as_bytes().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(index, data_type, Box::new(error))
+    })?;
+    Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
 }
 
 #[cfg(test)]
@@ -844,6 +887,66 @@ mod tests {
         assert_eq!(loaded.sha1_hash, None);
         assert_eq!(loaded.proton_id.as_deref(), Some("remote-dir-id"));
         assert_eq!(loaded.sync_status, SyncStatus::Synced);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_distinguishes_non_utf8_paths_that_collide_under_lossy_conversion() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+
+        let path_a = PathBuf::from(OsStr::from_bytes(b"fo\x80o.txt"));
+        let path_b = PathBuf::from(OsStr::from_bytes(b"fo\x81o.txt"));
+        assert_eq!(
+            path_a.to_string_lossy(),
+            path_b.to_string_lossy(),
+            "test paths must actually collide under lossy UTF-8 conversion for this \
+             test to be meaningful"
+        );
+
+        let record_a = FileRecord {
+            file_path: path_a.clone(),
+            entity_kind: EntityKind::File,
+            file_size: 1,
+            mtime: 1,
+            sha1_hash: Some("abcd".to_owned()),
+            proton_id: Some("remote-a".to_owned()),
+            sync_status: SyncStatus::Synced,
+        };
+        let record_b = FileRecord {
+            file_path: path_b.clone(),
+            entity_kind: EntityKind::File,
+            file_size: 2,
+            mtime: 2,
+            sha1_hash: Some("ef01".to_owned()),
+            proton_id: Some("remote-b".to_owned()),
+            sync_status: SyncStatus::Synced,
+        };
+
+        upsert_record(&connection, &record_a).expect("upsert a");
+        upsert_record(&connection, &record_b).expect("upsert b");
+
+        let loaded_a = get_record(&connection, &path_a)
+            .expect("get a")
+            .expect("a exists");
+        let loaded_b = get_record(&connection, &path_b)
+            .expect("get b")
+            .expect("b exists");
+
+        assert_eq!(loaded_a.file_path, path_a);
+        assert_eq!(loaded_a.proton_id.as_deref(), Some("remote-a"));
+        assert_eq!(loaded_b.file_path, path_b);
+        assert_eq!(loaded_b.proton_id.as_deref(), Some("remote-b"));
+
+        let index = load_index(&connection).expect("load index");
+        assert_eq!(
+            index.len(),
+            2,
+            "both non-UTF-8 paths must coexist as distinct rows instead of colliding"
+        );
     }
 
     #[test]

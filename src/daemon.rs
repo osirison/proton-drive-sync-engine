@@ -1,7 +1,7 @@
 use crate::index::{
-    EntityKind, FileRecord, LocalEntityState, ScanOptions, SyncStatus, get_record,
-    load_existing_index, load_index, local_directory_state, local_file_state, mark_modified,
-    open_database, purge_record, scan_local_entities_with_options, upsert_record,
+    EntityKind, FileRecord, LocalEntityState, ScanOptions, SyncStatus, load_existing_index,
+    load_index, local_directory_state, local_file_state, mark_modified, open_database,
+    purge_record, scan_local_entities_with_options, upsert_record,
 };
 use crate::ipc::{
     ControlCommand, ControlRequest, ControlResponse, StatusHistoryEntry, bind_listener,
@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -193,16 +194,31 @@ impl<C: ProtonClient> Daemon<C> {
         loop {
             tokio::select! {
                 maybe_event = watch_rx.recv() => {
-                    if let Some(event) = maybe_event {
-                        self.handle_fs_event(event?)?;
+                    match maybe_event {
+                        Some(Ok(event)) => {
+                            let outcome =
+                                tokio::task::block_in_place(|| self.handle_fs_event(event));
+                            if let Err(error) = outcome {
+                                warn!(%error, "failed to process filesystem event");
+                            }
+                        }
+                        Some(Err(error)) => {
+                            warn!(%error, "filesystem watcher reported an error");
+                        }
+                        None => break,
                     }
                 }
                 accepted = listener.accept() => {
-                    let (stream, _) = accepted?;
-                    let (request, mut stream) = read_request(stream).await?;
-                    debug!(command = ?request.command, "handling control request");
-                    let response = self.handle_ipc_request(request).await?;
-                    write_response(&mut stream, &response).await?;
+                    match accepted {
+                        Ok((stream, _)) => {
+                            if let Err(error) = self.handle_ipc_stream(stream).await {
+                                warn!(%error, "failed to handle control connection");
+                            }
+                        }
+                        Err(error) => {
+                            warn!(%error, "failed to accept control connection");
+                        }
+                    }
                 }
                 _ = interval.tick() => {
                     self.reconcile_if_needed().await?;
@@ -217,6 +233,14 @@ impl<C: ProtonClient> Daemon<C> {
             fs::remove_file(&self.config.socket_path)?;
         }
         info!("daemon stopped");
+        Ok(())
+    }
+
+    async fn handle_ipc_stream(&mut self, stream: UnixStream) -> AppResult<()> {
+        let (request, mut stream) = read_request(stream).await?;
+        debug!(command = ?request.command, "handling control request");
+        let response = self.handle_ipc_request(request).await?;
+        write_response(&mut stream, &response).await?;
         Ok(())
     }
 
@@ -248,21 +272,16 @@ impl<C: ProtonClient> Daemon<C> {
 
             match event.kind {
                 EventKind::Create(_) | EventKind::Modify(_) => {
-                    if path.exists() && path.is_file() {
-                        let local_state = local_file_state(&self.config.local_root, &path)?;
-                        let existing = get_record(&self.connection, &relative_path)?;
-                        if existing.is_some() {
-                            mark_modified(&self.connection, &relative_path)?;
-                        } else {
-                            let record = FileRecord::from_local(
-                                relative_path.clone(),
-                                &local_state,
-                                None,
-                                SyncStatus::Modified,
-                            );
-                            upsert_record(&self.connection, &record)?;
-                        }
-                    }
+                    // A brand-new file with no existing base-index record does not need
+                    // to be hashed and upserted here: the next full reconcile's
+                    // bootstrap planning already discovers and uploads it correctly
+                    // from the local scan alone. `mark_modified` is a targeted
+                    // `UPDATE ... WHERE file_path = ?` that is a safe no-op when no row
+                    // exists yet, so it is always safe to call unconditionally without
+                    // first checking whether the path exists, is a regular file, or
+                    // already has a record - this also avoids synchronously hashing
+                    // potentially large files on every raw filesystem event.
+                    mark_modified(&self.connection, &relative_path)?;
                     self.pending_changes.insert(relative_path);
                 }
                 EventKind::Remove(_) => {
@@ -378,7 +397,6 @@ impl<C: ProtonClient> Daemon<C> {
         );
 
         let mut index_mutations = Vec::new();
-        let mut completed_paths = Vec::new();
         let planned_remote_directories: BTreeSet<PathBuf> = plan
             .iter()
             .filter(|action| action.action == SyncAction::CreateRemoteDirectory)
@@ -416,23 +434,36 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 SyncAction::Download => {
-                    if let Some(remote_id) = action.remote_id.as_deref()
-                        && let Some(remote_path) =
-                            safe_remote_path(&self.config.remote_root, &action.path)
-                        && let Some(destination) =
-                            safe_local_path(&self.config.local_root, &action.path)
-                    {
-                        ensure_parent_directory(&destination)?;
-                        self.proton.download(&remote_path, &destination)?;
-                        let local_state = local_file_state(&self.config.local_root, &destination)?;
-                        let record = FileRecord::from_local(
-                            action.path.clone(),
-                            &local_state,
-                            Some(remote_id.to_owned()),
-                            SyncStatus::Synced,
-                        );
-                        index_mutations.push(IndexMutation::Upsert(record));
-                    }
+                    let remote_id = action.remote_id.as_deref().ok_or_else(|| {
+                        boxed_error(format!(
+                            "planned download for {} is missing a remote id",
+                            action.path.display()
+                        ))
+                    })?;
+                    let remote_path = safe_remote_path(&self.config.remote_root, &action.path)
+                        .ok_or_else(|| {
+                            boxed_error(format!(
+                                "planned download for {} has an unsafe remote path",
+                                action.path.display()
+                            ))
+                        })?;
+                    let destination = safe_local_path(&self.config.local_root, &action.path)
+                        .ok_or_else(|| {
+                            boxed_error(format!(
+                                "planned download for {} has an unsafe local path",
+                                action.path.display()
+                            ))
+                        })?;
+                    ensure_parent_directory(&destination)?;
+                    self.proton.download(&remote_path, &destination)?;
+                    let local_state = local_file_state(&self.config.local_root, &destination)?;
+                    let record = FileRecord::from_local(
+                        action.path.clone(),
+                        &local_state,
+                        Some(remote_id.to_owned()),
+                        SyncStatus::Synced,
+                    );
+                    index_mutations.push(IndexMutation::Upsert(record));
                 }
                 SyncAction::CreateRemoteDirectory => {
                     if let Some(LocalEntityState::Directory(local)) =
@@ -590,12 +621,20 @@ impl<C: ProtonClient> Daemon<C> {
                     );
                 }
                 SyncAction::RemoteDelete => {
-                    if action.remote_id.is_some()
-                        && let Some(remote_path) =
-                            safe_remote_path(&self.config.remote_root, &action.path)
-                    {
-                        self.proton.delete(&remote_path)?;
-                    }
+                    action.remote_id.as_deref().ok_or_else(|| {
+                        boxed_error(format!(
+                            "planned remote delete for {} is missing a remote id",
+                            action.path.display()
+                        ))
+                    })?;
+                    let remote_path = safe_remote_path(&self.config.remote_root, &action.path)
+                        .ok_or_else(|| {
+                            boxed_error(format!(
+                                "planned remote delete for {} has an unsafe remote path",
+                                action.path.display()
+                            ))
+                        })?;
+                    self.proton.delete(&remote_path)?;
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
                     if action.entity_kind == EntityKind::Directory {
                         for descendant in descendant_index_paths(&action.path, &base_index) {
@@ -604,10 +643,14 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 SyncAction::LocalDelete => {
-                    if let Some(destination) =
-                        safe_local_path(&self.config.local_root, &action.path)
-                        && destination.exists()
-                    {
+                    let destination = safe_local_path(&self.config.local_root, &action.path)
+                        .ok_or_else(|| {
+                            boxed_error(format!(
+                                "planned local delete for {} has an unsafe local path",
+                                action.path.display()
+                            ))
+                        })?;
+                    if destination.exists() {
                         if action.entity_kind == EntityKind::Directory {
                             fs::remove_dir_all(&destination)?;
                         } else {
@@ -632,7 +675,6 @@ impl<C: ProtonClient> Daemon<C> {
                     );
                 }
             }
-            completed_paths.push(action.path.clone());
         }
 
         let transaction = self.connection.transaction()?;
@@ -640,9 +682,16 @@ impl<C: ProtonClient> Daemon<C> {
             mutation.apply(&transaction)?;
         }
         transaction.commit()?;
-        for path in completed_paths {
-            self.pending_changes.remove(&path);
-        }
+        // `pending_changes` only drives status reporting - planning always performs a
+        // fresh full scan regardless of its contents - so it is safe, simpler, and
+        // leak-free to clear it unconditionally after every successful reconcile
+        // rather than removing entries one at a time keyed on the paths that happened
+        // to appear in this pass's plan. Per-path removal could miss paths that were
+        // inserted by a filesystem event but never produced a corresponding planned
+        // action (for example a misclassified directory removal, a non-regular-file
+        // event, or a path whose plan outcome was `None`), leaking them until the
+        // process restarted.
+        self.pending_changes.clear();
 
         self.last_sync = Some(SystemTime::now());
         self.last_successful_sync_summary = Some(plan_summary);
@@ -930,6 +979,7 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use crate::index::EntityKind;
+    use crate::index::get_record;
     use crate::proton::{RemoteDirectory, RemoteFile};
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
     use sha1::{Digest, Sha1};
@@ -2487,6 +2537,47 @@ mod tests {
             .expect("index record");
         assert_eq!(record.sha1_hash, Some(local_hash));
         assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn pending_change_that_plans_no_action_is_still_cleared_after_reconcile() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("stable.txt");
+        fs::write(&local_path, b"stable content").expect("local file");
+        let hash = crate::index::compute_sha1(&local_path).expect("hash");
+
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("stable.txt"),
+            remote("stable.txt", "id-1", Some(hash.as_str())),
+        );
+        let (client, _) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("stable.txt", Some("id-1"), hash.as_str()),
+        )
+        .expect("base record");
+
+        // Simulate a spurious filesystem event (for example a metadata-only touch)
+        // that queues a path in `pending_changes` even though the file never actually
+        // diverges from the synced base on either side. Because both sides are
+        // unchanged, planning produces no action at all for this path, so it can
+        // never appear in a plan-keyed "completed paths" list - only an unconditional
+        // clear after a successful commit reliably drops it instead of leaking it
+        // forever.
+        daemon.pending_changes.insert(PathBuf::from("stable.txt"));
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            daemon.pending_changes.is_empty(),
+            "pending_changes must not leak entries for paths that plan to no action: {:?}",
+            daemon.pending_changes
+        );
     }
 
     #[test]

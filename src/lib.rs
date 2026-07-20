@@ -1,3 +1,11 @@
+#[cfg(not(unix))]
+compile_error!(
+    "proton-drive-sync-engine only supports Unix targets: the control-plane IPC \
+     (src/ipc.rs), daemon socket handling, and path-safety helpers rely on Unix-only \
+     APIs (Unix domain sockets, std::os::unix::fs::FileTypeExt, \
+     std::os::unix::ffi::OsStrExt) and have not been validated on other platforms."
+);
+
 pub mod config;
 pub mod daemon;
 pub mod index;

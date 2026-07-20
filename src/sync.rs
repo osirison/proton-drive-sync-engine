@@ -4,6 +4,7 @@ use crate::index::{
 use crate::proton::{RemoteDirectory, RemoteEntity, RemoteFile};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -568,6 +569,16 @@ fn plan_ongoing_file_action(
         return Some(action);
     }
 
+    // An unresolved conflict sidecar already exists on disk; leave the base record
+    // alone until the user resolves it (editing or removing the sidecar marks the
+    // record `Modified`, which re-enters the ordinary planning flow above on the next
+    // reconcile). Without this early return, the very next reconcile would see local
+    // unchanged / remote changed and plan an ordinary `Download` straight over the
+    // original file, silently destroying the local content the sidecar protects.
+    if base.sync_status == SyncStatus::Conflict {
+        return None;
+    }
+
     match (local_delta, remote_delta) {
         (FileDelta::Changed, FileDelta::Unchanged) => Some(PlannedAction::new(
             path,
@@ -593,21 +604,43 @@ fn plan_ongoing_file_action(
             EntityKind::File,
             base.proton_id.clone(),
         )),
-        (FileDelta::Changed, FileDelta::Changed)
-        | (FileDelta::Changed, FileDelta::Missing)
-        | (FileDelta::Missing, FileDelta::Changed) => {
+        (FileDelta::Changed, FileDelta::Changed) | (FileDelta::Missing, FileDelta::Changed) => {
             Some(PlannedAction::conflict(path, remote_id(remote, base)))
         }
+        // Remote is confirmed missing (not merely unknown), so there is nothing to
+        // download for a conflict sidecar; `remote_id(remote, base)` would otherwise
+        // fall back to the stale base id and guarantee every reconcile attempt fails
+        // trying to download a file that is already gone. Preserve the local edit as
+        // a conflict copy without attempting a download.
+        (FileDelta::Changed, FileDelta::Missing) => Some(PlannedAction::conflict_without_download(
+            path,
+            base.proton_id.clone(),
+        )),
         (FileDelta::Missing, FileDelta::Missing) => Some(PlannedAction::new(
             path,
             SyncAction::Purge,
             EntityKind::File,
             base.proton_id.clone(),
         )),
-        (FileDelta::Unchanged, FileDelta::Unchanged) => None,
-        // Remote file is present but its hash is unavailable – apply non-destructive handling
-        // to avoid destroying local or remote data based on incomplete information.
-        (FileDelta::Unchanged, FileDelta::Unknown) => None,
+        // Remote file is present but its hash is unavailable – apply non-destructive
+        // handling to avoid destroying local or remote data based on incomplete
+        // information. Still backfill a missing/stale proton_id when the remote
+        // listing exposes one (mirroring the directory-level auto-link behavior),
+        // since discovering the id is safe even when the hash can't be compared yet.
+        (FileDelta::Unchanged, FileDelta::Unchanged)
+        | (FileDelta::Unchanged, FileDelta::Unknown) => {
+            let linked_id = remote_id(remote, base);
+            if linked_id.is_some() && linked_id != base.proton_id {
+                Some(PlannedAction::new(
+                    path,
+                    SyncAction::AutoLink,
+                    EntityKind::File,
+                    linked_id,
+                ))
+            } else {
+                None
+            }
+        }
         (FileDelta::Changed, FileDelta::Unknown) => {
             Some(PlannedAction::conflict(path, remote_id(remote, base)))
         }
@@ -910,6 +943,20 @@ impl PlannedAction {
         }
     }
 
+    /// Like `conflict`, but leaves `conflict_path` unset so the daemon's execution
+    /// step skips attempting a sidecar download. Used when the remote side is
+    /// confirmed missing (not merely unknown), so there is nothing to download.
+    fn conflict_without_download(path: &Path, remote_id: Option<String>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            destination_path: None,
+            action: SyncAction::Conflict,
+            entity_kind: EntityKind::File,
+            conflict_path: None,
+            remote_id,
+        }
+    }
+
     fn move_local(
         path: &Path,
         destination_path: &Path,
@@ -983,44 +1030,107 @@ impl PlanSummary {
 
 pub fn conflict_copy_path(path: &Path) -> PathBuf {
     let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
-    let stem = path.file_stem().and_then(|value| value.to_str());
-    let extension = path.extension().and_then(|value| value.to_str());
 
-    let file_name = match (stem, extension) {
-        (Some(stem), Some(extension)) => format!("{stem}.proton-cloud.{extension}"),
-        _ => match path.file_name().and_then(|value| value.to_str()) {
-            Some(name) => format!("{name}.proton-cloud"),
-            None => "proton-cloud".to_owned(),
-        },
+    let Some(file_name) = path.file_name() else {
+        return parent.join("proton-cloud");
     };
 
-    parent.join(file_name)
+    if let Some(name) = file_name.to_str() {
+        let stem = path.file_stem().and_then(|value| value.to_str());
+        let extension = path.extension().and_then(|value| value.to_str());
+        let renamed = match (stem, extension) {
+            (Some(stem), Some(extension)) => format!("{stem}.proton-cloud.{extension}"),
+            _ => format!("{name}.proton-cloud"),
+        };
+        return parent.join(renamed);
+    }
+
+    // `file_name` is not valid UTF-8: fall back to a byte-safe transform instead of
+    // collapsing every non-UTF-8 name onto the same fixed "proton-cloud" literal,
+    // which would make two different non-UTF-8-named conflicts collide onto the same
+    // sidecar path.
+    parent.join(conflict_copy_os_string(file_name))
+}
+
+/// Byte-safe fallback used by `conflict_copy_path` when `file_name` is not valid
+/// UTF-8. Splices the same `.proton-cloud.`/`.proton-cloud` marker used by the UTF-8
+/// fast path into the raw bytes, so distinct non-UTF-8 names never collapse onto the
+/// same sidecar path.
+fn conflict_copy_os_string(file_name: &OsStr) -> OsString {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    let bytes = file_name.as_bytes();
+    let mut result = Vec::new();
+    match bytes.iter().rposition(|&byte| byte == b'.') {
+        // A leading dot (e.g. ".env") is not treated as an extension separator here,
+        // matching `Path::extension`'s own behavior for dotfiles.
+        Some(index) if index > 0 => {
+            result.extend_from_slice(&bytes[..index]);
+            result.extend_from_slice(b".proton-cloud.");
+            result.extend_from_slice(&bytes[index + 1..]);
+        }
+        _ => {
+            result.extend_from_slice(bytes);
+            result.extend_from_slice(b".proton-cloud");
+        }
+    }
+    OsString::from_vec(result)
 }
 
 pub fn is_conflict_copy(path: &Path) -> bool {
-    match path.file_name().and_then(|value| value.to_str()) {
-        Some(name) => name.contains(".proton-cloud.") || name.ends_with(".proton-cloud"),
-        None => false,
-    }
+    let Some(file_name) = path.file_name() else {
+        return false;
+    };
+    // `to_string_lossy` is safe here: the ASCII marker below always survives lossy
+    // conversion unchanged, since only genuinely invalid byte spans elsewhere in the
+    // name are replaced with the Unicode replacement character.
+    let name = file_name.to_string_lossy();
+    name.contains(".proton-cloud.") || name.ends_with(".proton-cloud")
 }
 
 pub fn original_from_conflict_copy(path: &Path) -> Option<PathBuf> {
-    let file_name = path.file_name()?.to_str()?;
-    if let Some((stem, extension)) = file_name.rsplit_once(".proton-cloud.") {
-        return Some(
-            path.parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_default()
-                .join(format!("{stem}.{extension}")),
-        );
+    let file_name = path.file_name()?;
+    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+
+    if let Some(name) = file_name.to_str() {
+        if let Some((stem, extension)) = name.rsplit_once(".proton-cloud.") {
+            return Some(parent.join(format!("{stem}.{extension}")));
+        }
+        let stem = name.strip_suffix(".proton-cloud")?;
+        return Some(parent.join(stem));
     }
-    let stem = file_name.strip_suffix(".proton-cloud")?;
-    Some(
-        path.parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default()
-            .join(stem),
-    )
+
+    original_from_conflict_copy_os_string(file_name).map(|name| parent.join(name))
+}
+
+/// Byte-safe fallback used by `original_from_conflict_copy` when `file_name` is not
+/// valid UTF-8. Mirrors `conflict_copy_os_string`'s marker placement in reverse so a
+/// conflict sidecar for a non-UTF-8-named original file can still be recognized and
+/// resolved.
+fn original_from_conflict_copy_os_string(file_name: &OsStr) -> Option<OsString> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    let bytes = file_name.as_bytes();
+    const MID_MARKER: &[u8] = b".proton-cloud.";
+    if let Some(index) = bytes
+        .windows(MID_MARKER.len())
+        .rposition(|window| window == MID_MARKER)
+    {
+        let mut result = Vec::new();
+        result.extend_from_slice(&bytes[..index]);
+        result.push(b'.');
+        result.extend_from_slice(&bytes[index + MID_MARKER.len()..]);
+        return Some(OsString::from_vec(result));
+    }
+
+    const SUFFIX_MARKER: &[u8] = b".proton-cloud";
+    if bytes.ends_with(SUFFIX_MARKER) {
+        return Some(OsString::from_vec(
+            bytes[..bytes.len() - SUFFIX_MARKER.len()].to_vec(),
+        ));
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -1122,6 +1232,120 @@ mod tests {
             Some(PathBuf::from("notes.txt"))
         );
         assert!(is_conflict_copy(Path::new("nested/notes.proton-cloud.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conflict_copy_naming_is_byte_safe_for_non_utf8_file_names() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let name_a = PathBuf::from(OsStr::from_bytes(b"fo\x80o.txt"));
+        let name_b = PathBuf::from(OsStr::from_bytes(b"fo\x81o.txt"));
+        assert_eq!(
+            name_a.to_string_lossy(),
+            name_b.to_string_lossy(),
+            "test paths must actually collide under lossy UTF-8 conversion for this \
+             test to be meaningful"
+        );
+
+        let copy_a = conflict_copy_path(&name_a);
+        let copy_b = conflict_copy_path(&name_b);
+        assert_ne!(
+            copy_a, copy_b,
+            "distinct non-UTF-8 names must not collapse onto the same conflict-copy path"
+        );
+
+        assert!(is_conflict_copy(&copy_a));
+        assert!(is_conflict_copy(&copy_b));
+
+        assert_eq!(original_from_conflict_copy(&copy_a), Some(name_a));
+        assert_eq!(original_from_conflict_copy(&copy_b), Some(name_b));
+    }
+
+    #[test]
+    fn conflict_status_record_is_never_replanned_as_download() {
+        let mut local_files = HashMap::new();
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_files.insert(
+            PathBuf::from("notes.txt"),
+            local("notes.txt", "local-unchanged"),
+        );
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "id-1", Some("remote-changed")),
+        );
+        let conflicted = FileRecord {
+            sync_status: SyncStatus::Conflict,
+            ..base("notes.txt", Some("id-1"), "local-unchanged")
+        };
+        base_index.insert(PathBuf::from("notes.txt"), conflicted);
+
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+
+        assert!(
+            planned
+                .iter()
+                .all(|action| action.path != Path::new("notes.txt")),
+            "an unresolved conflict record must not be replanned until its sidecar is \
+             resolved, and must never be silently overwritten by a Download"
+        );
+    }
+
+    #[test]
+    fn backfills_file_proton_id_once_remote_exposes_it() {
+        let mut local_files = HashMap::new();
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_files.insert(PathBuf::from("linked.txt"), local("linked.txt", "same"));
+        remote_files.insert(
+            PathBuf::from("linked.txt"),
+            remote("linked.txt", "id-newly-known", Some("same")),
+        );
+        base_index.insert(
+            PathBuf::from("linked.txt"),
+            base("linked.txt", None, "same"),
+        );
+
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+
+        let action = planned
+            .iter()
+            .find(|action| action.path == Path::new("linked.txt"))
+            .expect("a backfill action must be planned once the id becomes known");
+        assert_eq!(action.action, SyncAction::AutoLink);
+        assert_eq!(action.remote_id.as_deref(), Some("id-newly-known"));
+    }
+
+    #[test]
+    fn locally_edited_file_missing_remotely_conflicts_without_a_download_target() {
+        let mut local_files = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_files.insert(
+            PathBuf::from("edited-then-remote-removed.txt"),
+            local("edited-then-remote-removed.txt", "new-local-hash"),
+        );
+        base_index.insert(
+            PathBuf::from("edited-then-remote-removed.txt"),
+            base("edited-then-remote-removed.txt", Some("id-1"), "old-hash"),
+        );
+
+        let planned = plan_sync(&local_files, &HashMap::new(), &base_index);
+
+        let action = planned
+            .iter()
+            .find(|action| action.path == Path::new("edited-then-remote-removed.txt"))
+            .expect("a conflict must be planned");
+        assert_eq!(action.action, SyncAction::Conflict);
+        assert_eq!(
+            action.conflict_path, None,
+            "no sidecar download should be attempted when the remote file is confirmed missing"
+        );
+        assert_eq!(action.remote_id.as_deref(), Some("id-1"));
     }
 
     #[test]

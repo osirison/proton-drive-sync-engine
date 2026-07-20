@@ -3,7 +3,9 @@ mod unix_tests {
     use proton_drive_sync_engine::index::load_existing_index;
     use serde_json::Value;
     use std::fs;
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, ExitStatus, Stdio};
     use std::sync::mpsc;
@@ -67,6 +69,49 @@ mod unix_tests {
             history[0]["successful_sync_summary"]["total"].as_u64(),
             Some(0)
         );
+    }
+
+    #[test]
+    fn malformed_control_request_does_not_crash_the_daemon() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_fake_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+
+        // Send an invalid (non-JSON) request line and drop the connection without
+        // reading a response. Before the fix, `read_request`'s parse error propagated
+        // out of the `run()` select loop via `?` and terminated the whole daemon
+        // process; a well-behaved daemon must instead log the error and keep serving
+        // subsequent connections.
+        let mut malformed = UnixStream::connect(&socket_path).expect("connect malformed");
+        malformed
+            .write_all(b"not valid json\n")
+            .expect("write malformed request");
+        drop(malformed);
+
+        // An abrupt disconnect with no data at all (immediate EOF) must be tolerated
+        // the same way.
+        let abrupt = UnixStream::connect(&socket_path).expect("connect abrupt");
+        drop(abrupt);
+
+        assert!(
+            daemon.child.try_wait().expect("daemon status").is_none(),
+            "daemon must still be running after malformed control requests"
+        );
+
+        let status = run_control(&socket_path, "status");
+        assert_eq!(status["status"], "running");
     }
 
     #[test]

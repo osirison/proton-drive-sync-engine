@@ -291,6 +291,12 @@ impl ProtonClient for ProtonDriveClient {
     }
 
     fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
+        let relative_path = crate::validate_relative_path(relative_path).ok_or_else(|| {
+            boxed_error(format!(
+                "unsafe remote upload path: {}",
+                relative_path.display()
+            ))
+        })?;
         let remote_parent = relative_path
             .parent()
             .map(|parent| remote_root.join(parent))
@@ -430,7 +436,21 @@ impl ProtonClient for ProtonDriveClient {
         old_relative_path: &Path,
         new_relative_path: &Path,
     ) -> AppResult<()> {
-        let old_remote_path = remote_root.join(old_relative_path);
+        let old_relative_path =
+            crate::validate_relative_path(old_relative_path).ok_or_else(|| {
+                boxed_error(format!(
+                    "unsafe remote rename/move source path: {}",
+                    old_relative_path.display()
+                ))
+            })?;
+        let new_relative_path =
+            crate::validate_relative_path(new_relative_path).ok_or_else(|| {
+                boxed_error(format!(
+                    "unsafe remote rename/move destination path: {}",
+                    new_relative_path.display()
+                ))
+            })?;
+        let old_remote_path = remote_root.join(&old_relative_path);
         let new_name = new_relative_path.file_name().ok_or_else(|| {
             boxed_error(format!(
                 "rename/move destination has no file name: {}",
@@ -2041,6 +2061,65 @@ exit 0
              for a strategy whenever the destination already has a same-named file, and \
              defaults to skipping the file - while still exiting 0 - when that prompt \
              sees immediate EOF)"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_rejects_unsafe_relative_path() {
+        let client = ProtonDriveClient::with_command_policy(
+            PathBuf::from("/does/not/matter"),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        let error = client
+            .upload(
+                Path::new("/tmp/local/notes.txt"),
+                Path::new("/my-files/demo"),
+                Path::new("../escape.txt"),
+            )
+            .expect_err("upload must reject a relative path that could escape remote_root");
+
+        assert!(
+            error.to_string().contains("unsafe remote upload path"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_or_move_rejects_unsafe_relative_paths() {
+        let client = ProtonDriveClient::with_command_policy(
+            PathBuf::from("/does/not/matter"),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        let source_error = client
+            .rename_or_move(
+                Path::new("/Drive/RemoteFolder"),
+                Path::new("../escape.txt"),
+                Path::new("safe.txt"),
+            )
+            .expect_err("rename_or_move must reject an unsafe source path");
+        assert!(
+            source_error
+                .to_string()
+                .contains("unsafe remote rename/move source path"),
+            "unexpected error: {source_error}"
+        );
+
+        let destination_error = client
+            .rename_or_move(
+                Path::new("/Drive/RemoteFolder"),
+                Path::new("safe.txt"),
+                Path::new("/absolute/escape.txt"),
+            )
+            .expect_err("rename_or_move must reject an unsafe destination path");
+        assert!(
+            destination_error
+                .to_string()
+                .contains("unsafe remote rename/move destination path"),
+            "unexpected error: {destination_error}"
         );
     }
 
