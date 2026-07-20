@@ -1,5 +1,7 @@
-use crate::index::{FileRecord, LocalFileState, SyncStatus};
-use crate::proton::RemoteFile;
+use crate::index::{
+    EntityKind, FileRecord, LocalDirectoryState, LocalEntityState, LocalFileState, SyncStatus,
+};
+use crate::proton::{RemoteDirectory, RemoteEntity, RemoteFile};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -9,8 +11,13 @@ use std::path::{Path, PathBuf};
 pub enum SyncAction {
     Upload,
     Download,
+    CreateRemoteDirectory,
+    CreateLocalDirectory,
+    MoveLocal,
+    MoveUnsupported,
     AutoLink,
     Conflict,
+    TypeConflict,
     RemoteDelete,
     LocalDelete,
     Purge,
@@ -20,7 +27,9 @@ pub enum SyncAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlannedAction {
     pub path: PathBuf,
+    pub destination_path: Option<PathBuf>,
     pub action: SyncAction,
+    pub entity_kind: EntityKind,
     pub conflict_path: Option<PathBuf>,
     pub remote_id: Option<String>,
 }
@@ -36,8 +45,13 @@ pub struct PlanSummary {
     pub total: usize,
     pub uploads: usize,
     pub downloads: usize,
+    pub remote_directories_created: usize,
+    pub local_directories_created: usize,
+    pub local_moves: usize,
+    pub unsupported_moves: usize,
     pub auto_links: usize,
     pub conflicts: usize,
+    pub type_conflicts: usize,
     pub remote_deletes: usize,
     pub local_deletes: usize,
     pub purges: usize,
@@ -61,40 +75,334 @@ pub fn plan_sync(
     remote_files: &HashMap<PathBuf, RemoteFile>,
     base_index: &HashMap<PathBuf, FileRecord>,
 ) -> Vec<PlannedAction> {
-    let mut paths = BTreeSet::new();
-    paths.extend(local_files.keys().cloned());
-    paths.extend(remote_files.keys().cloned());
-    paths.extend(base_index.keys().cloned());
-
-    let bootstrap = base_index.is_empty();
-    paths
-        .into_iter()
-        .filter_map(|path| {
-            let local = local_files.get(&path);
-            let remote = remote_files.get(&path);
-            match base_index.get(&path) {
-                Some(base) if !bootstrap => plan_ongoing_action(&path, local, remote, base),
-                _ => plan_bootstrap_action(&path, local, remote),
-            }
-        })
-        .collect()
+    let local_entities = local_files
+        .iter()
+        .map(|(path, file)| (path.clone(), LocalEntityState::File(file.clone())))
+        .collect();
+    let remote_entities = remote_files
+        .iter()
+        .map(|(path, file)| (path.clone(), RemoteEntity::File(file.clone())))
+        .collect();
+    plan_sync_entities(&local_entities, &remote_entities, base_index)
 }
 
-fn plan_bootstrap_action(
+pub fn plan_sync_entities(
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> Vec<PlannedAction> {
+    let mut paths = BTreeSet::new();
+    paths.extend(local_entities.keys().cloned());
+    paths.extend(remote_entities.keys().cloned());
+    paths.extend(base_index.keys().cloned());
+    let (transition_actions, suppressed_paths) =
+        plan_file_path_transitions(local_entities, remote_entities, base_index);
+
+    let bootstrap = base_index.is_empty();
+    let mut plan = transition_actions;
+    plan.extend(
+        paths
+            .into_iter()
+            .filter(|path| !suppressed_paths.contains(path))
+            .filter_map(|path| {
+                let local = local_entities.get(&path);
+                let remote = remote_entities.get(&path);
+                if is_type_conflict(local, remote, base_index.get(&path)) {
+                    return Some(PlannedAction::new(
+                        &path,
+                        SyncAction::TypeConflict,
+                        entity_kind_for_path(local, remote, base_index.get(&path)),
+                        remote.and_then(RemoteEntity::remote_id),
+                    ));
+                }
+                match base_index.get(&path) {
+                    Some(base) if base.entity_kind == EntityKind::Directory && !bootstrap => {
+                        plan_ongoing_directory_action(
+                            &path,
+                            local.and_then(LocalEntityState::as_directory),
+                            remote.and_then(RemoteEntity::as_directory),
+                            base,
+                        )
+                    }
+                    Some(base) if !bootstrap => plan_ongoing_file_action(
+                        &path,
+                        local.and_then(LocalEntityState::as_file),
+                        remote.and_then(RemoteEntity::as_file),
+                        base,
+                    ),
+                    _ => plan_bootstrap_entity_action(&path, local, remote),
+                }
+            }),
+    );
+    plan
+}
+
+fn plan_file_path_transitions(
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> (Vec<PlannedAction>, BTreeSet<PathBuf>) {
+    let mut actions = Vec::new();
+    let mut suppressed_paths = BTreeSet::new();
+    let mut paths: Vec<_> = base_index.keys().cloned().collect();
+    paths.sort();
+
+    for path in paths {
+        if suppressed_paths.contains(&path) {
+            continue;
+        }
+        let Some(base) = base_index.get(&path) else {
+            continue;
+        };
+        let action =
+            plan_remote_file_move(&path, local_entities, remote_entities, base_index, base)
+                .or_else(|| {
+                    plan_unsupported_local_file_move(
+                        &path,
+                        local_entities,
+                        remote_entities,
+                        base_index,
+                        base,
+                    )
+                });
+        if let Some(action) = action {
+            suppressed_paths.insert(action.path.clone());
+            if let Some(destination_path) = action.destination_path.clone() {
+                suppressed_paths.insert(destination_path);
+            }
+            actions.push(action);
+        }
+    }
+
+    (actions, suppressed_paths)
+}
+
+fn plan_remote_file_move(
+    old_path: &Path,
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+    base: &FileRecord,
+) -> Option<PlannedAction> {
+    let base_hash = base_file_hash(base)?;
+    let local = local_entities.get(old_path)?.as_file()?;
+    if local.sha1_hash != base_hash || remote_entities.contains_key(old_path) {
+        return None;
+    }
+    let (new_path, remote) = unique_remote_move_destination(
+        old_path,
+        base,
+        base_hash,
+        local_entities,
+        remote_entities,
+        base_index,
+    )?;
+    Some(PlannedAction::move_local(
+        old_path,
+        &new_path,
+        Some(remote.id.clone()),
+    ))
+}
+
+fn plan_unsupported_local_file_move(
+    old_path: &Path,
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+    base: &FileRecord,
+) -> Option<PlannedAction> {
+    let base_hash = base_file_hash(base)?;
+    if local_entities.contains_key(old_path) {
+        return None;
+    }
+    let remote = remote_entities.get(old_path)?.as_file()?;
+    if remote.sha1_hash.as_deref() != Some(base_hash) {
+        return None;
+    }
+    let new_path = unique_local_move_destination(
+        old_path,
+        base_hash,
+        local_entities,
+        remote_entities,
+        base_index,
+    )?;
+    Some(PlannedAction::move_unsupported(
+        old_path,
+        Some(&new_path),
+        Some(remote.id.clone()),
+    ))
+}
+
+fn base_file_hash(base: &FileRecord) -> Option<&str> {
+    if base.entity_kind == EntityKind::File {
+        base.sha1_hash.as_deref()
+    } else {
+        None
+    }
+}
+
+fn unique_remote_move_destination<'a>(
+    old_path: &Path,
+    base: &FileRecord,
+    base_hash: &str,
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &'a HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> Option<(PathBuf, &'a RemoteFile)> {
+    let candidates: Vec<_> = remote_entities
+        .iter()
+        .filter_map(|(path, entity)| {
+            let remote = entity.as_file()?;
+            if path == old_path
+                || local_entities.contains_key(path)
+                || base_index.contains_key(path)
+                || remote.sha1_hash.as_deref() != Some(base_hash)
+            {
+                return None;
+            }
+            if let Some(base_id) = base.proton_id.as_deref()
+                && remote.id != base_id
+            {
+                return None;
+            }
+            Some((path.clone(), remote))
+        })
+        .collect();
+    if candidates.len() == 1 {
+        candidates.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn unique_local_move_destination(
+    old_path: &Path,
+    base_hash: &str,
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> Option<PathBuf> {
+    let candidates: Vec<_> = local_entities
+        .iter()
+        .filter_map(|(path, entity)| {
+            let local = entity.as_file()?;
+            if path == old_path
+                || remote_entities.contains_key(path)
+                || base_index.contains_key(path)
+                || local.sha1_hash != base_hash
+            {
+                return None;
+            }
+            Some(path.clone())
+        })
+        .collect();
+    if candidates.len() == 1 {
+        candidates.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn is_type_conflict(
+    local: Option<&LocalEntityState>,
+    remote: Option<&RemoteEntity>,
+    base: Option<&FileRecord>,
+) -> bool {
+    let local_kind = local.map(LocalEntityState::kind);
+    let remote_kind = remote.map(remote_entity_kind);
+    if local_kind.is_some() && remote_kind.is_some() && local_kind != remote_kind {
+        return true;
+    }
+    let Some(base_kind) = base.map(|record| record.entity_kind) else {
+        return false;
+    };
+    local_kind.is_some_and(|kind| kind != base_kind)
+        || remote_kind.is_some_and(|kind| kind != base_kind)
+}
+
+fn entity_kind_for_path(
+    local: Option<&LocalEntityState>,
+    remote: Option<&RemoteEntity>,
+    base: Option<&FileRecord>,
+) -> EntityKind {
+    local
+        .map(LocalEntityState::kind)
+        .or_else(|| remote.map(remote_entity_kind))
+        .or_else(|| base.map(|record| record.entity_kind))
+        .unwrap_or(EntityKind::File)
+}
+
+fn remote_entity_kind(remote: &RemoteEntity) -> EntityKind {
+    match remote {
+        RemoteEntity::File(_) => EntityKind::File,
+        RemoteEntity::Directory(_) => EntityKind::Directory,
+    }
+}
+
+fn plan_bootstrap_entity_action(
+    path: &Path,
+    local: Option<&LocalEntityState>,
+    remote: Option<&RemoteEntity>,
+) -> Option<PlannedAction> {
+    match (local, remote) {
+        (Some(LocalEntityState::Directory(_)), None) => Some(PlannedAction::new(
+            path,
+            SyncAction::CreateRemoteDirectory,
+            EntityKind::Directory,
+            None,
+        )),
+        (None, Some(RemoteEntity::Directory(remote))) => Some(PlannedAction::new(
+            path,
+            SyncAction::CreateLocalDirectory,
+            EntityKind::Directory,
+            remote.id.clone(),
+        )),
+        (Some(LocalEntityState::Directory(_)), Some(RemoteEntity::Directory(remote))) => {
+            Some(PlannedAction::new(
+                path,
+                SyncAction::AutoLink,
+                EntityKind::Directory,
+                remote.id.clone(),
+            ))
+        }
+        (Some(LocalEntityState::File(local)), remote) => {
+            plan_bootstrap_file_action(path, Some(local), remote.and_then(RemoteEntity::as_file))
+        }
+        (None, Some(RemoteEntity::File(remote))) => {
+            plan_bootstrap_file_action(path, None, Some(remote))
+        }
+        (Some(_), Some(remote)) => Some(PlannedAction::new(
+            path,
+            SyncAction::TypeConflict,
+            entity_kind_for_path(local, Some(remote), None),
+            remote.remote_id(),
+        )),
+        (None, None) => None,
+    }
+}
+
+fn plan_bootstrap_file_action(
     path: &Path,
     local: Option<&LocalFileState>,
     remote: Option<&RemoteFile>,
 ) -> Option<PlannedAction> {
     match (local, remote) {
-        (Some(_), None) => Some(PlannedAction::new(path, SyncAction::Upload, None)),
+        (Some(_), None) => Some(PlannedAction::new(
+            path,
+            SyncAction::Upload,
+            EntityKind::File,
+            None,
+        )),
         (None, Some(remote)) if remote.downloadable => Some(PlannedAction::new(
             path,
             SyncAction::Download,
+            EntityKind::File,
             Some(remote.id.clone()),
         )),
         (None, Some(remote)) => Some(PlannedAction::new(
             path,
             SyncAction::SkipUnsupported,
+            EntityKind::File,
             Some(remote.id.clone()),
         )),
         (Some(local), Some(remote)) => {
@@ -102,6 +410,7 @@ fn plan_bootstrap_action(
                 Some(PlannedAction::new(
                     path,
                     SyncAction::AutoLink,
+                    EntityKind::File,
                     Some(remote.id.clone()),
                 ))
             } else if remote.downloadable {
@@ -110,6 +419,7 @@ fn plan_bootstrap_action(
                 Some(PlannedAction::new(
                     path,
                     SyncAction::SkipUnsupported,
+                    EntityKind::File,
                     Some(remote.id.clone()),
                 ))
             }
@@ -118,16 +428,14 @@ fn plan_bootstrap_action(
     }
 }
 
-fn plan_ongoing_action(
+fn plan_ongoing_file_action(
     path: &Path,
     local: Option<&LocalFileState>,
     remote: Option<&RemoteFile>,
     base: &FileRecord,
 ) -> Option<PlannedAction> {
-    let local_delta = delta_from_base(
-        local.map(|file| file.sha1_hash.as_str()),
-        Some(base.sha1_hash.as_str()),
-    );
+    let base_hash = base.sha1_hash.as_deref()?;
+    let local_delta = delta_from_base(local.map(|file| file.sha1_hash.as_str()), Some(base_hash));
     let remote_delta = remote_file_delta(remote, base);
 
     if base.sync_status == SyncStatus::Modified
@@ -141,21 +449,25 @@ fn plan_ongoing_action(
         (FileDelta::Changed, FileDelta::Unchanged) => Some(PlannedAction::new(
             path,
             SyncAction::Upload,
+            EntityKind::File,
             base.proton_id.clone(),
         )),
         (FileDelta::Unchanged, FileDelta::Changed) => Some(PlannedAction::new(
             path,
             SyncAction::Download,
+            EntityKind::File,
             remote_id(remote, base),
         )),
         (FileDelta::Missing, FileDelta::Unchanged) => Some(PlannedAction::new(
             path,
             SyncAction::RemoteDelete,
+            EntityKind::File,
             remote_id(remote, base),
         )),
         (FileDelta::Unchanged, FileDelta::Missing) => Some(PlannedAction::new(
             path,
             SyncAction::LocalDelete,
+            EntityKind::File,
             base.proton_id.clone(),
         )),
         (FileDelta::Changed, FileDelta::Changed)
@@ -166,6 +478,7 @@ fn plan_ongoing_action(
         (FileDelta::Missing, FileDelta::Missing) => Some(PlannedAction::new(
             path,
             SyncAction::Purge,
+            EntityKind::File,
             base.proton_id.clone(),
         )),
         (FileDelta::Unchanged, FileDelta::Unchanged) => None,
@@ -181,12 +494,44 @@ fn plan_ongoing_action(
         | (FileDelta::Missing, FileDelta::Unsupported) => Some(PlannedAction::new(
             path,
             SyncAction::SkipUnsupported,
+            EntityKind::File,
             remote_id(remote, base),
         )),
         // Unknown is only ever produced for the remote delta; this arm is unreachable.
         (FileDelta::Unknown | FileDelta::Unsupported, _) => {
             unreachable!("local delta is never Unknown or Unsupported")
         }
+    }
+}
+
+fn plan_ongoing_directory_action(
+    path: &Path,
+    local: Option<&LocalDirectoryState>,
+    remote: Option<&RemoteDirectory>,
+    base: &FileRecord,
+) -> Option<PlannedAction> {
+    match (local.is_some(), remote.is_some()) {
+        (true, true) => None,
+        (true, false) => Some(PlannedAction::new(
+            path,
+            SyncAction::CreateRemoteDirectory,
+            EntityKind::Directory,
+            base.proton_id.clone(),
+        )),
+        (false, true) => Some(PlannedAction::new(
+            path,
+            SyncAction::CreateLocalDirectory,
+            EntityKind::Directory,
+            remote
+                .and_then(|directory| directory.id.clone())
+                .or_else(|| base.proton_id.clone()),
+        )),
+        (false, false) => Some(PlannedAction::new(
+            path,
+            SyncAction::Purge,
+            EntityKind::Directory,
+            base.proton_id.clone(),
+        )),
     }
 }
 
@@ -201,24 +546,36 @@ fn plan_modified_record_action(
     local?;
 
     if base.proton_id.is_none() && remote.is_none() {
-        return Some(PlannedAction::new(path, SyncAction::Upload, None));
+        return Some(PlannedAction::new(
+            path,
+            SyncAction::Upload,
+            EntityKind::File,
+            None,
+        ));
     }
 
     match (local_delta, remote_delta) {
         (FileDelta::Unchanged, FileDelta::Unchanged) => Some(PlannedAction::new(
             path,
             SyncAction::AutoLink,
+            EntityKind::File,
             remote_id(remote, base),
         )),
-        (FileDelta::Unchanged, FileDelta::Changed | FileDelta::Missing) => Some(
-            PlannedAction::new(path, SyncAction::Upload, remote_id(remote, base)),
-        ),
+        (FileDelta::Unchanged, FileDelta::Changed | FileDelta::Missing) => {
+            Some(PlannedAction::new(
+                path,
+                SyncAction::Upload,
+                EntityKind::File,
+                remote_id(remote, base),
+            ))
+        }
         (FileDelta::Unchanged, FileDelta::Unknown) => {
             Some(PlannedAction::conflict(path, remote_id(remote, base)))
         }
         (FileDelta::Unchanged, FileDelta::Unsupported) => Some(PlannedAction::new(
             path,
             SyncAction::SkipUnsupported,
+            EntityKind::File,
             remote_id(remote, base),
         )),
         _ => None,
@@ -238,12 +595,15 @@ fn delta_from_base(current_hash: Option<&str>, base_hash: Option<&str>) -> FileD
 /// between a remote file that is absent (`Missing`) and one that exists but whose
 /// hash is unavailable (`Unknown`).
 fn remote_file_delta(remote: Option<&RemoteFile>, base: &FileRecord) -> FileDelta {
+    let Some(base_hash) = base.sha1_hash.as_deref() else {
+        return FileDelta::Unknown;
+    };
     match remote {
         None => FileDelta::Missing,
         Some(file) if !file.downloadable => FileDelta::Unsupported,
         Some(file) => match file.sha1_hash.as_deref() {
             None => FileDelta::Unknown,
-            Some(hash) if hash == base.sha1_hash.as_str() => FileDelta::Unchanged,
+            Some(hash) if hash == base_hash => FileDelta::Unchanged,
             Some(_) => FileDelta::Changed,
         },
     }
@@ -256,10 +616,17 @@ fn remote_id(remote: Option<&RemoteFile>, base: &FileRecord) -> Option<String> {
 }
 
 impl PlannedAction {
-    fn new(path: &Path, action: SyncAction, remote_id: Option<String>) -> Self {
+    fn new(
+        path: &Path,
+        action: SyncAction,
+        entity_kind: EntityKind,
+        remote_id: Option<String>,
+    ) -> Self {
         Self {
             path: path.to_path_buf(),
+            destination_path: None,
             action,
+            entity_kind,
             conflict_path: None,
             remote_id,
         }
@@ -268,8 +635,36 @@ impl PlannedAction {
     fn conflict(path: &Path, remote_id: Option<String>) -> Self {
         Self {
             path: path.to_path_buf(),
+            destination_path: None,
             action: SyncAction::Conflict,
+            entity_kind: EntityKind::File,
             conflict_path: Some(conflict_copy_path(path)),
+            remote_id,
+        }
+    }
+
+    fn move_local(path: &Path, destination_path: &Path, remote_id: Option<String>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            destination_path: Some(destination_path.to_path_buf()),
+            action: SyncAction::MoveLocal,
+            entity_kind: EntityKind::File,
+            conflict_path: None,
+            remote_id,
+        }
+    }
+
+    fn move_unsupported(
+        path: &Path,
+        destination_path: Option<&Path>,
+        remote_id: Option<String>,
+    ) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            destination_path: destination_path.map(Path::to_path_buf),
+            action: SyncAction::MoveUnsupported,
+            entity_kind: EntityKind::File,
+            conflict_path: None,
             remote_id,
         }
     }
@@ -294,8 +689,13 @@ impl PlanSummary {
             match action.action {
                 SyncAction::Upload => summary.uploads += 1,
                 SyncAction::Download => summary.downloads += 1,
+                SyncAction::CreateRemoteDirectory => summary.remote_directories_created += 1,
+                SyncAction::CreateLocalDirectory => summary.local_directories_created += 1,
+                SyncAction::MoveLocal => summary.local_moves += 1,
+                SyncAction::MoveUnsupported => summary.unsupported_moves += 1,
                 SyncAction::AutoLink => summary.auto_links += 1,
                 SyncAction::Conflict => summary.conflicts += 1,
+                SyncAction::TypeConflict => summary.type_conflicts += 1,
                 SyncAction::RemoteDelete => summary.remote_deletes += 1,
                 SyncAction::LocalDelete => summary.local_deletes += 1,
                 SyncAction::Purge => summary.purges += 1,
@@ -353,8 +753,8 @@ pub fn original_from_conflict_copy(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::{FileRecord, LocalFileState, SyncStatus};
-    use crate::proton::RemoteFile;
+    use crate::index::{EntityKind, FileRecord, LocalDirectoryState, LocalFileState, SyncStatus};
+    use crate::proton::{RemoteDirectory, RemoteEntity, RemoteFile};
 
     fn local(path: &str, hash: &str) -> LocalFileState {
         LocalFileState {
@@ -387,12 +787,33 @@ mod tests {
         }
     }
 
+    fn local_directory(path: &str) -> LocalEntityState {
+        LocalEntityState::Directory(LocalDirectoryState {
+            relative_path: PathBuf::from(path),
+            absolute_path: PathBuf::from(format!("/tmp/{path}")),
+            mtime: 1,
+        })
+    }
+
+    fn remote_directory(path: &str, id: Option<&str>) -> RemoteEntity {
+        RemoteEntity::Directory(RemoteDirectory {
+            path: PathBuf::from(path),
+            id: id.map(ToOwned::to_owned),
+            name: Path::new(path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(path)
+                .to_owned(),
+        })
+    }
+
     fn base(path: &str, id: Option<&str>, hash: &str) -> FileRecord {
         FileRecord {
             file_path: PathBuf::from(path),
+            entity_kind: EntityKind::File,
             file_size: 1,
             mtime: 1,
-            sha1_hash: hash.to_owned(),
+            sha1_hash: Some(hash.to_owned()),
             proton_id: id.map(ToOwned::to_owned),
             sync_status: SyncStatus::Synced,
         }
@@ -402,6 +823,18 @@ mod tests {
         FileRecord {
             sync_status: SyncStatus::Modified,
             ..base(path, id, hash)
+        }
+    }
+
+    fn directory_base(path: &str, id: Option<&str>) -> FileRecord {
+        FileRecord {
+            file_path: PathBuf::from(path),
+            entity_kind: EntityKind::Directory,
+            file_size: 0,
+            mtime: 1,
+            sha1_hash: None,
+            proton_id: id.map(ToOwned::to_owned),
+            sync_status: SyncStatus::Synced,
         }
     }
 
@@ -712,6 +1145,159 @@ mod tests {
     }
 
     #[test]
+    fn directory_entities_plan_safe_create_and_purge_actions() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("local-empty"), local_directory("local-empty"));
+        remote_entities.insert(
+            PathBuf::from("remote-empty"),
+            remote_directory("remote-empty", Some("remote-dir-id")),
+        );
+        local_entities.insert(PathBuf::from("linked"), local_directory("linked"));
+        remote_entities.insert(
+            PathBuf::from("linked"),
+            remote_directory("linked", Some("linked-id")),
+        );
+        base_index.insert(
+            PathBuf::from("deleted-empty"),
+            directory_base("deleted-empty", Some("deleted-id")),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(planned.iter().any(|action| {
+            action.path == Path::new("local-empty")
+                && action.action == SyncAction::CreateRemoteDirectory
+                && action.entity_kind == EntityKind::Directory
+        }));
+        assert!(planned.iter().any(|action| {
+            action.path == Path::new("remote-empty")
+                && action.action == SyncAction::CreateLocalDirectory
+                && action.remote_id.as_deref() == Some("remote-dir-id")
+        }));
+        assert!(planned.iter().any(|action| {
+            action.path == Path::new("linked")
+                && action.action == SyncAction::AutoLink
+                && action.entity_kind == EntityKind::Directory
+        }));
+        assert!(planned.iter().any(|action| {
+            action.path == Path::new("deleted-empty") && action.action == SyncAction::Purge
+        }));
+    }
+
+    #[test]
+    fn mixed_file_and_directory_entities_plan_type_conflict() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        local_entities.insert(PathBuf::from("same-name"), local_directory("same-name"));
+        remote_entities.insert(
+            PathBuf::from("same-name"),
+            RemoteEntity::File(remote("same-name", "file-id", Some("hash"))),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &HashMap::new());
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].path, PathBuf::from("same-name"));
+        assert_eq!(planned[0].action, SyncAction::TypeConflict);
+        assert_eq!(planned[0].remote_id.as_deref(), Some("file-id"));
+    }
+
+    #[test]
+    fn remote_file_rename_plans_local_move_when_id_and_hash_are_unique() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_entities.insert(
+            PathBuf::from("old-name.txt"),
+            LocalEntityState::File(local("old-name.txt", "same-hash")),
+        );
+        remote_entities.insert(
+            PathBuf::from("new-name.txt"),
+            RemoteEntity::File(remote("new-name.txt", "stable-id", Some("same-hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("old-name.txt"),
+            base("old-name.txt", Some("stable-id"), "same-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].action, SyncAction::MoveLocal);
+        assert_eq!(planned[0].path, PathBuf::from("old-name.txt"));
+        assert_eq!(
+            planned[0].destination_path.as_deref(),
+            Some(Path::new("new-name.txt"))
+        );
+        assert_eq!(planned[0].remote_id.as_deref(), Some("stable-id"));
+    }
+
+    #[test]
+    fn local_file_rename_is_reported_unsupported_without_remote_move_contract() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_entities.insert(
+            PathBuf::from("new-name.txt"),
+            LocalEntityState::File(local("new-name.txt", "same-hash")),
+        );
+        remote_entities.insert(
+            PathBuf::from("old-name.txt"),
+            RemoteEntity::File(remote("old-name.txt", "stable-id", Some("same-hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("old-name.txt"),
+            base("old-name.txt", Some("stable-id"), "same-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].action, SyncAction::MoveUnsupported);
+        assert_eq!(planned[0].path, PathBuf::from("old-name.txt"));
+        assert_eq!(
+            planned[0].destination_path.as_deref(),
+            Some(Path::new("new-name.txt"))
+        );
+        assert_eq!(planned[0].remote_id.as_deref(), Some("stable-id"));
+    }
+
+    #[test]
+    fn ambiguous_file_rename_candidates_are_not_inferred() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_entities.insert(
+            PathBuf::from("old-name.txt"),
+            LocalEntityState::File(local("old-name.txt", "same-hash")),
+        );
+        remote_entities.insert(
+            PathBuf::from("candidate-a.txt"),
+            RemoteEntity::File(remote("candidate-a.txt", "candidate-a", Some("same-hash"))),
+        );
+        remote_entities.insert(
+            PathBuf::from("candidate-b.txt"),
+            RemoteEntity::File(remote("candidate-b.txt", "candidate-b", Some("same-hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("old-name.txt"),
+            base("old-name.txt", None, "same-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            planned
+                .iter()
+                .all(|action| action.action != SyncAction::MoveLocal),
+            "ambiguous content matches must not be inferred as a rename: {planned:?}"
+        );
+    }
+
+    #[test]
     fn remote_delete_uses_live_remote_id_when_base_id_is_missing() {
         let mut remote_files = HashMap::new();
         let mut base_index = HashMap::new();
@@ -757,21 +1343,29 @@ mod tests {
     #[test]
     fn dry_run_report_summarizes_planned_actions() {
         let report = DryRunReport::new(vec![
-            PlannedAction::new(Path::new("upload.txt"), SyncAction::Upload, None),
+            PlannedAction::new(
+                Path::new("upload.txt"),
+                SyncAction::Upload,
+                EntityKind::File,
+                None,
+            ),
             PlannedAction::new(
                 Path::new("download.txt"),
                 SyncAction::Download,
+                EntityKind::File,
                 Some("remote-id".to_owned()),
             ),
             PlannedAction::new(
                 Path::new("delete.txt"),
                 SyncAction::RemoteDelete,
+                EntityKind::File,
                 Some("delete-id".to_owned()),
             ),
             PlannedAction::conflict(Path::new("conflict.txt"), Some("conflict-id".to_owned())),
             PlannedAction::new(
                 Path::new("sheet"),
                 SyncAction::SkipUnsupported,
+                EntityKind::File,
                 Some("sheet-id".to_owned()),
             ),
         ]);

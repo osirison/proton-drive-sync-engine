@@ -52,19 +52,20 @@ Normal `cargo test` runs simulated daemon reconciliation tests with an injected 
 | Matrix Area | Current Coverage | Remaining Gap |
 | ----------- | ---------------- | ------------- |
 | Bootstrap files | B-01, B-02, B-03, and B-04 file behavior are covered through daemon tests | B-04 records the primary path as `conflict`; the schema does not yet store a separate sidecar row |
-| Nested files | SD-01, SD-02, and SD-08 file transfer behavior are covered | Folder rows for each path component are not modeled yet |
-| Steady-state files | SS-01 through SS-06 are covered through daemon and planner tests | SS-07 and SS-08 need rename and move actions |
-| Conflict files | CF-01, CF-02, and CF-03 are covered through daemon and planner tests | Type-clash conflicts in SD-09 need directory entities |
+| Nested files | SD-01, SD-02, SD-03, SD-04, and SD-08 safe create behavior are covered | Recursive directory deletion is still disabled until subtree proof and live folder-trash behavior are verified |
+| Steady-state files | SS-01 through SS-06 are covered through daemon and planner tests. Remote-only rename convergence is covered as a local move when Proton ID and SHA-1 evidence are unique | Local-to-remote rename and move execution remains blocked until Proton CLI move or rename command semantics are verified |
+| Conflict files | CF-01, CF-02, CF-03, and SD-09 type-clash no-mutation behavior are covered through daemon and planner tests | A richer type-conflict resolution workflow remains future work |
 | Edge cases | EG-01 is covered by the empty-file SHA-1 test; EG-02 is covered by path-safe command construction patterns | A dedicated special-character rename test still needs rename support |
 | Control IPC | IC-01 and IC-02 are covered by the IPC integration test plus watcher regression tests | A live daemon pause/resume test with real Proton traffic remains pending |
-| Interruption safety | Failed side-effect handling verifies that successful early actions are not committed after a later upload failure | A real `SIGINT` during a large live upload remains pending |
+| Interruption safety | Failed side-effect handling verifies that successful early actions are not committed after a later upload failure. An IPC process test covers failed upload behavior across the daemon and control CLI boundary | A real `SIGINT` during a large live upload remains pending |
+| Mutating live gate | Unit tests validate the opt-in gate, disposable-root prefix, and unique run-folder naming | Actual upload, download, delete, conflict, and cleanup live tests are still pending |
 
 ## Full Matrix Gaps
 
-The current engine is file-level. Full matrix coverage requires these implementation milestones before the corresponding E2E tests can be honest end-to-end validations:
+Full matrix coverage still requires these implementation milestones before the corresponding E2E tests can be honest end-to-end validations:
 
-* Add directory entities to scanning, remote listing, planning, and the SQLite schema before implementing SD-03, SD-04, SD-05, and SD-09.
-* Add rename and move planner actions, executor support, and cascading SQLite path updates before implementing SS-07, SS-08, SD-06, and SD-07.
+* Verify recursive folder trash semantics and subtree state before enabling SD-05 or any destructive directory propagation.
+* Verify the Proton CLI command contract for remote rename and move before implementing local-to-remote SS-07, SS-08, SD-06, and SD-07 execution.
 * Verify the Proton CLI command contract for parent-folder identifiers before enforcing targeted parent IDs for nested uploads and moves.
 * Add safety-gated mutating live tests before marking live upload, download, delete, conflict, pause/resume, and `SIGINT` scenarios as complete.
 

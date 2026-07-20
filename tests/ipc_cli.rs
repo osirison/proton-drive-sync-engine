@@ -1,5 +1,6 @@
 #[cfg(unix)]
 mod unix_tests {
+    use proton_drive_sync_engine::index::load_existing_index;
     use serde_json::Value;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -64,6 +65,51 @@ mod unix_tests {
         assert_eq!(
             history[0]["successful_sync_summary"]["total"].as_u64(),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn failed_upload_syncnow_does_not_commit_partial_index_state() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("first.txt"), b"first").expect("first file");
+        fs::write(local_root.join("second.txt"), b"second").expect("second file");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive =
+            write_failing_upload_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+
+        let synced = run_control(&socket_path, "syncnow");
+
+        assert_eq!(synced["status"], "running");
+        assert!(
+            synced["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("sync failed"),
+            "syncnow should report failure: {synced}"
+        );
+        assert!(
+            synced["last_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("proton-drive upload failed"),
+            "daemon should expose upload failure: {synced}"
+        );
+        let index = load_existing_index(&db_path).expect("load index after failed upload");
+        assert!(
+            index.is_empty(),
+            "failed upload must not commit any synced rows: {index:?}"
         );
     }
 
@@ -158,6 +204,36 @@ exit 64
             ),
         )
         .expect("fake proton-drive script");
+        let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).expect("script permissions");
+        path
+    }
+
+    fn write_failing_upload_proton_drive(directory: &Path, remote_root: &str) -> PathBuf {
+        let path = directory.join("fake-failing-upload-proton-drive");
+        fs::write(
+                        &path,
+                        format!(
+                                r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ] && [ "$4" = "{remote_root}" ]; then
+    printf '{{"entries":[]}}\n'
+    exit 0
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "upload" ]; then
+    printf 'upload:%s:%s\n' "$3" "$4" >> "$0.args"
+    if [ "$(basename "$3")" = "second.txt" ]; then
+        echo "simulated interrupted upload" >&2
+        exit 130
+    fi
+    exit 0
+fi
+echo "unexpected proton-drive args: $*" >&2
+exit 64
+"#
+                        ),
+                )
+                .expect("fake proton-drive script");
         let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&path, permissions).expect("script permissions");

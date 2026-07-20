@@ -1,6 +1,7 @@
 use crate::{AppResult, boxed_error};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use serde::Serialize;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fmt;
@@ -13,13 +14,48 @@ use std::time::UNIX_EPOCH;
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS file_index (
     file_path TEXT PRIMARY KEY,
+    entity_kind TEXT NOT NULL DEFAULT 'file',
     file_size INTEGER NOT NULL,
     mtime INTEGER NOT NULL,
-    sha1_hash TEXT NOT NULL,
+    sha1_hash TEXT,
     proton_id TEXT,
     sync_status TEXT NOT NULL
 );
 "#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityKind {
+    File,
+    Directory,
+}
+
+impl EntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+        }
+    }
+}
+
+impl fmt::Display for EntityKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for EntityKind {
+    type Err = Box<dyn std::error::Error + Send + Sync>;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "file" => Ok(Self::File),
+            "directory" => Ok(Self::Directory),
+            other => Err(boxed_error(format!("unknown entity kind: {other}"))),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStatus {
@@ -60,9 +96,10 @@ impl FromStr for SyncStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRecord {
     pub file_path: PathBuf,
+    pub entity_kind: EntityKind,
     pub file_size: u64,
     pub mtime: i64,
-    pub sha1_hash: String,
+    pub sha1_hash: Option<String>,
     pub proton_id: Option<String>,
     pub sync_status: SyncStatus,
 }
@@ -76,9 +113,27 @@ impl FileRecord {
     ) -> Self {
         Self {
             file_path: relative_path,
+            entity_kind: EntityKind::File,
             file_size: local.file_size,
             mtime: local.mtime,
-            sha1_hash: local.sha1_hash.clone(),
+            sha1_hash: Some(local.sha1_hash.clone()),
+            proton_id,
+            sync_status,
+        }
+    }
+
+    pub fn from_local_directory(
+        relative_path: PathBuf,
+        local: &LocalDirectoryState,
+        proton_id: Option<String>,
+        sync_status: SyncStatus,
+    ) -> Self {
+        Self {
+            file_path: relative_path,
+            entity_kind: EntityKind::Directory,
+            file_size: 0,
+            mtime: local.mtime,
+            sha1_hash: None,
             proton_id,
             sync_status,
         }
@@ -94,10 +149,54 @@ pub struct LocalFileState {
     pub sha1_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDirectoryState {
+    pub relative_path: PathBuf,
+    pub absolute_path: PathBuf,
+    pub mtime: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalEntityState {
+    File(LocalFileState),
+    Directory(LocalDirectoryState),
+}
+
+impl LocalEntityState {
+    pub fn relative_path(&self) -> &Path {
+        match self {
+            Self::File(file) => &file.relative_path,
+            Self::Directory(directory) => &directory.relative_path,
+        }
+    }
+
+    pub fn kind(&self) -> EntityKind {
+        match self {
+            Self::File(_) => EntityKind::File,
+            Self::Directory(_) => EntityKind::Directory,
+        }
+    }
+
+    pub fn as_file(&self) -> Option<&LocalFileState> {
+        match self {
+            Self::File(file) => Some(file),
+            Self::Directory(_) => None,
+        }
+    }
+
+    pub fn as_directory(&self) -> Option<&LocalDirectoryState> {
+        match self {
+            Self::File(_) => None,
+            Self::Directory(directory) => Some(directory),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
     ignored_relative_paths: Vec<PathBuf>,
     include_patterns: GlobSet,
+    include_pattern_strings: Vec<String>,
     has_include_patterns: bool,
     exclude_patterns: GlobSet,
 }
@@ -117,6 +216,7 @@ impl ScanOptions {
         Ok(Self {
             ignored_relative_paths,
             include_patterns: build_glob_set(include_patterns)?,
+            include_pattern_strings: include_patterns.to_vec(),
             has_include_patterns: !include_patterns.is_empty(),
             exclude_patterns: build_glob_set(exclude_patterns)?,
         })
@@ -132,12 +232,36 @@ impl ScanOptions {
         !self.has_include_patterns || self.matches(&self.include_patterns, relative_path)
     }
 
-    fn allows_relative_directory(&self, relative_path: &Path) -> bool {
-        if relative_path.as_os_str().is_empty() {
+    /// Whether a directory subtree should be traversed while scanning.
+    ///
+    /// Traversal only honors ignore/exclude rules so that include patterns
+    /// scoped to files deeper in the tree (including unanchored patterns
+    /// such as `**/*.md`) are still discovered during the walk.
+    fn allows_directory_traversal(&self, relative_path: &Path) -> bool {
+        relative_path.as_os_str().is_empty()
+            || (!self.is_configured_ignored(relative_path)
+                && !self.matches(&self.exclude_patterns, relative_path))
+    }
+
+    /// Whether a directory itself should be planned as a sync entity (for
+    /// example, created remotely or locally when empty). This additionally
+    /// honors include patterns so directories outside the included scope are
+    /// not planned as entities even though ignore/exclude checks alone would
+    /// allow traversal through them.
+    pub fn allows_relative_directory(&self, relative_path: &Path) -> bool {
+        if !self.allows_directory_traversal(relative_path) {
+            return false;
+        }
+        if relative_path.as_os_str().is_empty() || !self.has_include_patterns {
             return true;
         }
-        !self.is_configured_ignored(relative_path)
-            && !self.matches(&self.exclude_patterns, relative_path)
+        if self.matches(&self.include_patterns, relative_path) {
+            return true;
+        }
+        let prefix = format!("{}/", path_key(relative_path));
+        self.include_pattern_strings
+            .iter()
+            .any(|pattern| pattern.starts_with(&prefix))
     }
 
     fn is_configured_ignored(&self, relative_path: &Path) -> bool {
@@ -171,10 +295,103 @@ pub fn load_existing_index(path: &Path) -> AppResult<HashMap<PathBuf, FileRecord
 
 pub fn initialize_schema(connection: &Connection) -> AppResult<()> {
     connection.execute_batch(SCHEMA)?;
+    migrate_file_index_schema(connection)?;
     Ok(())
 }
 
+fn migrate_file_index_schema(connection: &Connection) -> AppResult<()> {
+    let columns = table_columns(connection, "file_index")?;
+    let has_entity_kind = columns.iter().any(|column| column == "entity_kind");
+    let sha1_not_null = table_column_not_null(connection, "file_index", "sha1_hash")?;
+    if has_entity_kind && !sha1_not_null {
+        return Ok(());
+    }
+
+    connection.execute_batch(
+        r#"
+        ALTER TABLE file_index RENAME TO file_index_old;
+        CREATE TABLE file_index (
+            file_path TEXT PRIMARY KEY,
+            entity_kind TEXT NOT NULL DEFAULT 'file',
+            file_size INTEGER NOT NULL,
+            mtime INTEGER NOT NULL,
+            sha1_hash TEXT,
+            proton_id TEXT,
+            sync_status TEXT NOT NULL
+        );
+        INSERT INTO file_index (file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status)
+        SELECT file_path, 'file', file_size, mtime, sha1_hash, proton_id, sync_status
+        FROM file_index_old;
+        DROP TABLE file_index_old;
+        "#,
+    )?;
+    Ok(())
+}
+
+fn table_columns(connection: &Connection, table_name: &str) -> AppResult<Vec<String>> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = Vec::new();
+    for row in rows {
+        columns.push(row?);
+    }
+    Ok(columns)
+}
+
+fn table_column_not_null(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> AppResult<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)? != 0))
+    })?;
+    for row in rows {
+        let (name, not_null) = row?;
+        if name == column_name {
+            return Ok(not_null);
+        }
+    }
+    Ok(false)
+}
+
 pub fn load_index(connection: &Connection) -> AppResult<HashMap<PathBuf, FileRecord>> {
+    let columns = table_columns(connection, "file_index")?;
+    if !columns.iter().any(|column| column == "entity_kind") {
+        return load_legacy_file_index(connection);
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status FROM file_index",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let kind: String = row.get(1)?;
+        let status: String = row.get(6)?;
+        Ok(FileRecord {
+            file_path: PathBuf::from(row.get::<_, String>(0)?),
+            entity_kind: EntityKind::from_str(&kind).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, err)
+            })?,
+            file_size: row.get::<_, i64>(2)? as u64,
+            mtime: row.get(3)?,
+            sha1_hash: row.get(4)?,
+            proton_id: row.get(5)?,
+            sync_status: SyncStatus::from_str(&status).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, err)
+            })?,
+        })
+    })?;
+
+    let mut index = HashMap::new();
+    for row in rows {
+        let record = row?;
+        index.insert(record.file_path.clone(), record);
+    }
+    Ok(index)
+}
+
+fn load_legacy_file_index(connection: &Connection) -> AppResult<HashMap<PathBuf, FileRecord>> {
     let mut statement = connection.prepare(
         "SELECT file_path, file_size, mtime, sha1_hash, proton_id, sync_status FROM file_index",
     )?;
@@ -182,9 +399,10 @@ pub fn load_index(connection: &Connection) -> AppResult<HashMap<PathBuf, FileRec
         let status: String = row.get(5)?;
         Ok(FileRecord {
             file_path: PathBuf::from(row.get::<_, String>(0)?),
+            entity_kind: EntityKind::File,
             file_size: row.get::<_, i64>(1)? as u64,
             mtime: row.get(2)?,
-            sha1_hash: row.get(3)?,
+            sha1_hash: Some(row.get(3)?),
             proton_id: row.get(4)?,
             sync_status: SyncStatus::from_str(&status).map_err(|err| {
                 rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, err)
@@ -202,19 +420,23 @@ pub fn load_index(connection: &Connection) -> AppResult<HashMap<PathBuf, FileRec
 
 pub fn get_record(connection: &Connection, relative_path: &Path) -> AppResult<Option<FileRecord>> {
     let mut statement = connection.prepare(
-        "SELECT file_path, file_size, mtime, sha1_hash, proton_id, sync_status FROM file_index WHERE file_path = ?1",
+        "SELECT file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status FROM file_index WHERE file_path = ?1",
     )?;
     let record = statement
         .query_row(params![path_key(relative_path)], |row| {
-            let status: String = row.get(5)?;
+            let kind: String = row.get(1)?;
+            let status: String = row.get(6)?;
             Ok(FileRecord {
                 file_path: PathBuf::from(row.get::<_, String>(0)?),
-                file_size: row.get::<_, i64>(1)? as u64,
-                mtime: row.get(2)?,
-                sha1_hash: row.get(3)?,
-                proton_id: row.get(4)?,
+                entity_kind: EntityKind::from_str(&kind).map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, err)
+                })?,
+                file_size: row.get::<_, i64>(2)? as u64,
+                mtime: row.get(3)?,
+                sha1_hash: row.get(4)?,
+                proton_id: row.get(5)?,
                 sync_status: SyncStatus::from_str(&status).map_err(|err| {
-                    rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, err)
+                    rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, err)
                 })?,
             })
         })
@@ -225,9 +447,10 @@ pub fn get_record(connection: &Connection, relative_path: &Path) -> AppResult<Op
 pub fn upsert_record(connection: &Connection, record: &FileRecord) -> AppResult<()> {
     connection.execute(
         r#"
-        INSERT INTO file_index (file_path, file_size, mtime, sha1_hash, proton_id, sync_status)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        INSERT INTO file_index (file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ON CONFLICT(file_path) DO UPDATE SET
+            entity_kind = excluded.entity_kind,
             file_size = excluded.file_size,
             mtime = excluded.mtime,
             sha1_hash = excluded.sha1_hash,
@@ -236,6 +459,7 @@ pub fn upsert_record(connection: &Connection, record: &FileRecord) -> AppResult<
         "#,
         params![
             path_key(&record.file_path),
+            record.entity_kind.as_str(),
             record.file_size as i64,
             record.mtime,
             record.sha1_hash,
@@ -271,16 +495,34 @@ pub fn scan_local_files_with_options(
     root: &Path,
     options: &ScanOptions,
 ) -> AppResult<HashMap<PathBuf, LocalFileState>> {
-    let mut files = HashMap::new();
-    visit_directory(root, root, options, &mut files)?;
-    Ok(files)
+    Ok(scan_local_entities_with_options(root, options)?
+        .into_iter()
+        .filter_map(|(path, state)| match state {
+            LocalEntityState::File(file) => Some((path, file)),
+            LocalEntityState::Directory(_) => None,
+        })
+        .collect())
+}
+
+pub fn scan_local_entities_with_options(
+    root: &Path,
+    options: &ScanOptions,
+) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
+    let mut entities = HashMap::new();
+    visit_directory(root, root, options, &mut entities)?;
+    Ok(entities)
+}
+
+pub fn scan_local_entities(root: &Path) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
+    let options = ScanOptions::new(root, &[], &[], &[])?;
+    scan_local_entities_with_options(root, &options)
 }
 
 fn visit_directory(
     root: &Path,
     directory: &Path,
     options: &ScanOptions,
-    files: &mut HashMap<PathBuf, LocalFileState>,
+    entities: &mut HashMap<PathBuf, LocalEntityState>,
 ) -> AppResult<()> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
@@ -294,8 +536,15 @@ fn visit_directory(
             ))
         })?;
         if file_type.is_dir() {
-            if options.allows_relative_directory(relative_path) {
-                visit_directory(root, &path, options, files)?;
+            if options.allows_directory_traversal(relative_path) {
+                if options.allows_relative_directory(relative_path) {
+                    let state = local_directory_state(root, &path)?;
+                    entities.insert(
+                        state.relative_path.clone(),
+                        LocalEntityState::Directory(state),
+                    );
+                }
+                visit_directory(root, &path, options, entities)?;
             }
             continue;
         }
@@ -303,7 +552,7 @@ fn visit_directory(
             continue;
         }
         let state = local_file_state(root, &path)?;
-        files.insert(state.relative_path.clone(), state);
+        entities.insert(state.relative_path.clone(), LocalEntityState::File(state));
     }
     Ok(())
 }
@@ -368,6 +617,33 @@ pub fn local_file_state(root: &Path, absolute_path: &Path) -> AppResult<LocalFil
     })
 }
 
+pub fn local_directory_state(root: &Path, absolute_path: &Path) -> AppResult<LocalDirectoryState> {
+    let metadata = fs::metadata(absolute_path)?;
+    let mtime = metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| {
+            boxed_error(format!(
+                "mtime before epoch for {}: {err}",
+                absolute_path.display()
+            ))
+        })?
+        .as_secs() as i64;
+    let relative_path = absolute_path.strip_prefix(root).map_err(|err| {
+        boxed_error(format!(
+            "failed to compute relative path for {} against {}: {err}",
+            absolute_path.display(),
+            root.display()
+        ))
+    })?;
+
+    Ok(LocalDirectoryState {
+        relative_path: relative_path.to_path_buf(),
+        absolute_path: absolute_path.to_path_buf(),
+        mtime,
+    })
+}
+
 pub fn compute_sha1(path: &Path) -> AppResult<String> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -424,6 +700,33 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert!(files.contains_key(Path::new("keep.txt")));
+    }
+
+    #[test]
+    fn scans_directory_entities_including_empty_directories() {
+        let directory = tempdir().expect("tempdir");
+        fs::create_dir(directory.path().join("empty")).expect("empty dir");
+        fs::create_dir(directory.path().join("with-file")).expect("with-file dir");
+        fs::write(directory.path().join("with-file/note.txt"), b"note").expect("note file");
+
+        let entities = scan_local_entities(directory.path()).expect("scan entities");
+
+        assert!(matches!(
+            entities.get(Path::new("empty")),
+            Some(LocalEntityState::Directory(_))
+        ));
+        assert!(matches!(
+            entities.get(Path::new("with-file")),
+            Some(LocalEntityState::Directory(_))
+        ));
+        assert!(matches!(
+            entities.get(Path::new("with-file/note.txt")),
+            Some(LocalEntityState::File(_))
+        ));
+        assert!(
+            !entities.contains_key(Path::new("")),
+            "scanner must not emit the sync root as a directory entity"
+        );
     }
 
     #[test]
@@ -499,9 +802,10 @@ mod tests {
         initialize_schema(&connection).expect("schema");
         let record = FileRecord {
             file_path: PathBuf::from("notes.txt"),
+            entity_kind: EntityKind::File,
             file_size: 4,
             mtime: 123,
-            sha1_hash: "abcd".to_owned(),
+            sha1_hash: Some("abcd".to_owned()),
             proton_id: Some("remote-1".to_owned()),
             sync_status: SyncStatus::Conflict,
         };
@@ -513,6 +817,33 @@ mod tests {
 
         assert_eq!(loaded.sync_status, SyncStatus::Modified);
         assert_eq!(loaded.proton_id.as_deref(), Some("remote-1"));
+    }
+
+    #[test]
+    fn database_round_trip_preserves_directory_records_without_hashes() {
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+        let directory_state = LocalDirectoryState {
+            relative_path: PathBuf::from("empty"),
+            absolute_path: PathBuf::from("/tmp/empty"),
+            mtime: 123,
+        };
+        let record = FileRecord::from_local_directory(
+            PathBuf::from("empty"),
+            &directory_state,
+            Some("remote-dir-id".to_owned()),
+            SyncStatus::Synced,
+        );
+
+        upsert_record(&connection, &record).expect("upsert directory");
+        let loaded = get_record(&connection, Path::new("empty"))
+            .expect("get record")
+            .expect("record exists");
+
+        assert_eq!(loaded.entity_kind, EntityKind::Directory);
+        assert_eq!(loaded.sha1_hash, None);
+        assert_eq!(loaded.proton_id.as_deref(), Some("remote-dir-id"));
+        assert_eq!(loaded.sync_status, SyncStatus::Synced);
     }
 
     #[test]

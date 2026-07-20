@@ -1,14 +1,16 @@
 use crate::index::{
-    FileRecord, ScanOptions, SyncStatus, get_record, load_existing_index, load_index,
-    local_file_state, mark_modified, open_database, purge_record, scan_local_files_with_options,
-    upsert_record,
+    EntityKind, FileRecord, LocalEntityState, ScanOptions, SyncStatus, get_record,
+    load_existing_index, load_index, local_directory_state, local_file_state, mark_modified,
+    open_database, purge_record, scan_local_entities_with_options, upsert_record,
 };
 use crate::ipc::{
     ControlCommand, ControlRequest, ControlResponse, StatusHistoryEntry, bind_listener,
     read_request, write_response,
 };
-use crate::proton::{CommandPolicy, ProtonClient, ProtonDriveClient, RemoteFile};
-use crate::sync::{PlanSummary, PlannedAction, SyncAction, original_from_conflict_copy, plan_sync};
+use crate::proton::{CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity};
+use crate::sync::{
+    PlanSummary, PlannedAction, SyncAction, original_from_conflict_copy, plan_sync_entities,
+};
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -87,11 +89,12 @@ pub fn preview_plan_with_client(
         "building dry-run sync plan"
     );
     let scan_options = scan_options_from_config(config)?;
-    let local_files = scan_local_files_with_options(&config.local_root, &scan_options)?;
-    let remote_files = filter_remote_files(proton.list(&config.remote_root)?, &scan_options);
+    let local_entities = scan_local_entities_with_options(&config.local_root, &scan_options)?;
+    let remote_entities =
+        filter_remote_entities(proton.list_entities(&config.remote_root)?, &scan_options);
     let base_index = load_existing_index(&config.db_path)?;
     let base_index = filter_base_index(base_index, &scan_options);
-    let plan = plan_sync(&local_files, &remote_files, &base_index);
+    let plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
     info!(planned_actions = plan.len(), "dry-run sync plan computed");
     Ok(plan)
 }
@@ -338,14 +341,15 @@ impl<C: ProtonClient> Daemon<C> {
 
     fn reconcile_blocking_inner(&mut self) -> AppResult<()> {
         info!("starting reconciliation");
-        let local_files =
-            scan_local_files_with_options(&self.config.local_root, &self.scan_options)?;
-        let remote_files = filter_remote_files(
-            self.proton.list(&self.config.remote_root)?,
+        let local_entities =
+            scan_local_entities_with_options(&self.config.local_root, &self.scan_options)?;
+        let local_files = local_files_from_entities(&local_entities);
+        let remote_entities = filter_remote_entities(
+            self.proton.list_entities(&self.config.remote_root)?,
             &self.scan_options,
         );
         let base_index = filter_base_index(load_index(&self.connection)?, &self.scan_options);
-        let plan = plan_sync(&local_files, &remote_files, &base_index);
+        let plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
         let plan_summary = PlanSummary::from_plan(&plan);
         self.last_plan_summary = Some(plan_summary.clone());
         info!(
@@ -360,6 +364,11 @@ impl<C: ProtonClient> Daemon<C> {
 
         let mut index_mutations = Vec::new();
         let mut completed_paths = Vec::new();
+        let planned_remote_directories: BTreeSet<PathBuf> = plan
+            .iter()
+            .filter(|action| action.action == SyncAction::CreateRemoteDirectory)
+            .map(|action| action.path.clone())
+            .collect();
 
         for action in &plan {
             debug!(path = %action.path.display(), action = ?action.action, "executing sync action");
@@ -368,6 +377,7 @@ impl<C: ProtonClient> Daemon<C> {
                     if let Some(local) = local_files.get(&action.path) {
                         if let Some(parent) = action.path.parent()
                             && !parent.as_os_str().is_empty()
+                            && !planned_remote_directories.contains(parent)
                         {
                             self.proton
                                 .ensure_directory(&self.config.remote_root, parent)?;
@@ -409,8 +419,69 @@ impl<C: ProtonClient> Daemon<C> {
                         index_mutations.push(IndexMutation::Upsert(record));
                     }
                 }
-                SyncAction::AutoLink => {
-                    if let Some(local) = local_files.get(&action.path) {
+                SyncAction::CreateRemoteDirectory => {
+                    if let Some(LocalEntityState::Directory(local)) =
+                        local_entities.get(&action.path)
+                    {
+                        self.proton
+                            .ensure_directory(&self.config.remote_root, &action.path)?;
+                        let record = FileRecord::from_local_directory(
+                            action.path.clone(),
+                            local,
+                            action.remote_id.clone().or_else(|| {
+                                base_index
+                                    .get(&action.path)
+                                    .and_then(|record| record.proton_id.clone())
+                            }),
+                            SyncStatus::Synced,
+                        );
+                        index_mutations.push(IndexMutation::Upsert(record));
+                    }
+                }
+                SyncAction::CreateLocalDirectory => {
+                    if let Some(destination) =
+                        safe_local_path(&self.config.local_root, &action.path)
+                    {
+                        fs::create_dir_all(&destination)?;
+                        let local_state =
+                            local_directory_state(&self.config.local_root, &destination)?;
+                        let record = FileRecord::from_local_directory(
+                            action.path.clone(),
+                            &local_state,
+                            action.remote_id.clone(),
+                            SyncStatus::Synced,
+                        );
+                        index_mutations.push(IndexMutation::Upsert(record));
+                    }
+                }
+                SyncAction::MoveLocal => {
+                    if let Some(destination_path) = action.destination_path.as_ref()
+                        && let Some(source) = safe_local_path(&self.config.local_root, &action.path)
+                        && let Some(destination) =
+                            safe_local_path(&self.config.local_root, destination_path)
+                    {
+                        ensure_parent_directory(&destination)?;
+                        fs::rename(&source, &destination)?;
+                        let local_state = local_file_state(&self.config.local_root, &destination)?;
+                        let record = FileRecord::from_local(
+                            destination_path.clone(),
+                            &local_state,
+                            action.remote_id.clone(),
+                            SyncStatus::Synced,
+                        );
+                        index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                        index_mutations.push(IndexMutation::Upsert(record));
+                    }
+                }
+                SyncAction::MoveUnsupported => {
+                    warn!(
+                        path = %action.path.display(),
+                        destination_path = ?action.destination_path,
+                        "skipping local-to-remote move because Proton move command semantics are not verified"
+                    );
+                }
+                SyncAction::AutoLink => match local_entities.get(&action.path) {
+                    Some(LocalEntityState::File(local)) => {
                         let record = FileRecord::from_local(
                             action.path.clone(),
                             local,
@@ -419,7 +490,17 @@ impl<C: ProtonClient> Daemon<C> {
                         );
                         index_mutations.push(IndexMutation::Upsert(record));
                     }
-                }
+                    Some(LocalEntityState::Directory(local)) => {
+                        let record = FileRecord::from_local_directory(
+                            action.path.clone(),
+                            local,
+                            action.remote_id.clone(),
+                            SyncStatus::Synced,
+                        );
+                        index_mutations.push(IndexMutation::Upsert(record));
+                    }
+                    None => {}
+                },
                 SyncAction::Conflict => {
                     if action.remote_id.is_some()
                         && let Some(remote_path) =
@@ -444,6 +525,12 @@ impl<C: ProtonClient> Daemon<C> {
                         );
                         index_mutations.push(IndexMutation::Upsert(record));
                     }
+                }
+                SyncAction::TypeConflict => {
+                    warn!(
+                        path = %action.path.display(),
+                        "skipping sync action because local and remote entity types differ"
+                    );
                 }
                 SyncAction::RemoteDelete => {
                     if action.remote_id.is_some()
@@ -613,13 +700,28 @@ fn current_epoch_secs() -> u64 {
         .unwrap_or_default()
 }
 
-fn filter_remote_files(
-    remote_files: HashMap<PathBuf, RemoteFile>,
+fn filter_remote_entities(
+    remote_entities: HashMap<PathBuf, RemoteEntity>,
     scan_options: &ScanOptions,
-) -> HashMap<PathBuf, RemoteFile> {
-    remote_files
+) -> HashMap<PathBuf, RemoteEntity> {
+    remote_entities
         .into_iter()
-        .filter(|(path, _)| scan_options.allows_relative_file(path))
+        .filter(|(path, entity)| match entity {
+            RemoteEntity::File(_) => scan_options.allows_relative_file(path),
+            RemoteEntity::Directory(_) => scan_options.allows_relative_directory(path),
+        })
+        .collect()
+}
+
+fn local_files_from_entities(
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+) -> HashMap<PathBuf, crate::index::LocalFileState> {
+    local_entities
+        .iter()
+        .filter_map(|(path, entity)| match entity {
+            LocalEntityState::File(file) => Some((path.clone(), file.clone())),
+            LocalEntityState::Directory(_) => None,
+        })
         .collect()
 }
 
@@ -629,7 +731,10 @@ fn filter_base_index(
 ) -> HashMap<PathBuf, FileRecord> {
     base_index
         .into_iter()
-        .filter(|(path, _)| scan_options.allows_relative_file(path))
+        .filter(|(path, record)| match record.entity_kind {
+            EntityKind::File => scan_options.allows_relative_file(path),
+            EntityKind::Directory => scan_options.allows_relative_directory(path),
+        })
         .collect()
 }
 
@@ -740,6 +845,8 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::EntityKind;
+    use crate::proton::{RemoteDirectory, RemoteFile};
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
     use sha1::{Digest, Sha1};
     use std::collections::HashMap;
@@ -769,6 +876,7 @@ mod tests {
     #[derive(Debug, Clone)]
     struct RecordingProtonClient {
         remote_files: HashMap<PathBuf, RemoteFile>,
+        remote_entities: HashMap<PathBuf, RemoteEntity>,
         remote_contents: HashMap<PathBuf, Vec<u8>>,
         operations: Arc<Mutex<Vec<RecordedOperation>>>,
         failed_uploads: BTreeSet<PathBuf>,
@@ -781,6 +889,7 @@ mod tests {
             let operations = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
+                    remote_entities: remote_entities_from_files(&remote_files),
                     remote_files,
                     remote_contents: HashMap::new(),
                     operations: Arc::clone(&operations),
@@ -797,6 +906,7 @@ mod tests {
             let operations = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
+                    remote_entities: remote_entities_from_files(&remote_files),
                     remote_files,
                     remote_contents,
                     operations: Arc::clone(&operations),
@@ -813,10 +923,34 @@ mod tests {
             let operations = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
+                    remote_entities: remote_entities_from_files(&remote_files),
                     remote_files,
                     remote_contents: HashMap::new(),
                     operations: Arc::clone(&operations),
                     failed_uploads,
+                },
+                operations,
+            )
+        }
+
+        fn with_remote_entities(
+            remote_entities: HashMap<PathBuf, RemoteEntity>,
+        ) -> (Self, Arc<Mutex<Vec<RecordedOperation>>>) {
+            let remote_files = remote_entities
+                .iter()
+                .filter_map(|(path, entity)| match entity {
+                    RemoteEntity::File(file) => Some((path.clone(), file.clone())),
+                    RemoteEntity::Directory(_) => None,
+                })
+                .collect();
+            let operations = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    remote_files,
+                    remote_entities,
+                    remote_contents: HashMap::new(),
+                    operations: Arc::clone(&operations),
+                    failed_uploads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -826,6 +960,10 @@ mod tests {
     impl ProtonClient for RecordingProtonClient {
         fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             Ok(self.remote_files.clone())
+        }
+
+        fn list_entities(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            Ok(self.remote_entities.clone())
         }
 
         fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
@@ -890,6 +1028,15 @@ mod tests {
                 });
             Ok(())
         }
+    }
+
+    fn remote_entities_from_files(
+        remote_files: &HashMap<PathBuf, RemoteFile>,
+    ) -> HashMap<PathBuf, RemoteEntity> {
+        remote_files
+            .iter()
+            .map(|(path, file)| (path.clone(), RemoteEntity::File(file.clone())))
+            .collect()
     }
 
     #[derive(Debug)]
@@ -1112,6 +1259,191 @@ mod tests {
         .expect("index lookup")
         .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Synced);
+        let directory_record = get_record(&daemon.connection, Path::new("local-sub-directory"))
+            .expect("directory index lookup")
+            .expect("directory index record");
+        assert_eq!(directory_record.entity_kind, EntityKind::Directory);
+        assert_eq!(directory_record.sha1_hash, None);
+        assert_eq!(directory_record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_creates_remote_empty_directory_and_records_index() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("empty-local-dir")).expect("local empty directory");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            *operations.lock().expect("operations lock"),
+            vec![RecordedOperation::EnsureDirectory {
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                relative_path: PathBuf::from("empty-local-dir"),
+            }]
+        );
+        let record = get_record(&daemon.connection, Path::new("empty-local-dir"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.entity_kind, EntityKind::Directory);
+        assert_eq!(record.sha1_hash, None);
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_creates_local_empty_directory_from_remote_entity() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("empty-remote-dir"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("empty-remote-dir"),
+                id: Some("remote-dir-id".to_owned()),
+                name: "empty-remote-dir".to_owned(),
+            }),
+        );
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations.lock().expect("operations lock").is_empty(),
+            "remote directory bootstrap should not upload, download, or delete file content"
+        );
+        assert!(
+            local_root.join("empty-remote-dir").is_dir(),
+            "remote-only directory should be created locally"
+        );
+        let record = get_record(&daemon.connection, Path::new("empty-remote-dir"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.entity_kind, EntityKind::Directory);
+        assert_eq!(record.proton_id.as_deref(), Some("remote-dir-id"));
+        assert_eq!(record.sha1_hash, None);
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_skips_type_conflict_without_mutating_local_or_remote() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("same-name")).expect("local directory");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("same-name"),
+            RemoteEntity::File(remote("same-name", "remote-file-id", Some("hash"))),
+        );
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations.lock().expect("operations lock").is_empty(),
+            "type conflict must not upload, download, or delete"
+        );
+        assert!(local_root.join("same-name").is_dir());
+        assert!(
+            get_record(&daemon.connection, Path::new("same-name"))
+                .expect("index lookup")
+                .is_none(),
+            "type conflicts should not be marked synced"
+        );
+    }
+
+    #[test]
+    fn reconcile_applies_verified_remote_rename_as_local_move() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let old_path = local_root.join("old-name.txt");
+        fs::write(&old_path, b"same content").expect("old local file");
+        let hash = crate::index::compute_sha1(&old_path).expect("old hash");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("new-name.txt"),
+            RemoteEntity::File(remote("new-name.txt", "stable-id", Some(hash.as_str()))),
+        );
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("old-name.txt", Some("stable-id"), hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations.lock().expect("operations lock").is_empty(),
+            "remote rename convergence should not upload, download, or delete"
+        );
+        assert!(!old_path.exists(), "old local path should be moved away");
+        assert!(local_root.join("new-name.txt").is_file());
+        assert!(
+            get_record(&daemon.connection, Path::new("old-name.txt"))
+                .expect("old index lookup")
+                .is_none(),
+            "old path should be purged from the index"
+        );
+        let record = get_record(&daemon.connection, Path::new("new-name.txt"))
+            .expect("new index lookup")
+            .expect("new index record");
+        assert_eq!(record.proton_id.as_deref(), Some("stable-id"));
+        assert_eq!(record.sha1_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_skips_local_rename_until_remote_move_contract_exists() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let new_path = local_root.join("new-name.txt");
+        fs::write(&new_path, b"same content").expect("new local file");
+        let hash = crate::index::compute_sha1(&new_path).expect("new hash");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("old-name.txt"),
+            RemoteEntity::File(remote("old-name.txt", "stable-id", Some(hash.as_str()))),
+        );
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("old-name.txt", Some("stable-id"), hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations.lock().expect("operations lock").is_empty(),
+            "local rename should not mutate Proton until a move command is verified"
+        );
+        assert!(new_path.is_file());
+        assert!(
+            get_record(&daemon.connection, Path::new("old-name.txt"))
+                .expect("old index lookup")
+                .is_some(),
+            "unsupported local rename should leave the existing baseline untouched"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("new-name.txt"))
+                .expect("new index lookup")
+                .is_none(),
+            "unsupported local rename should not mark the new path synced"
+        );
     }
 
     #[test]
@@ -1141,7 +1473,7 @@ mod tests {
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
-        assert_eq!(record.sha1_hash, local_hash);
+        assert_eq!(record.sha1_hash, Some(local_hash));
         assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 
@@ -1183,7 +1515,7 @@ mod tests {
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
-        assert_eq!(record.sha1_hash, local_hash);
+        assert_eq!(record.sha1_hash, Some(local_hash));
         assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 
@@ -1264,7 +1596,7 @@ mod tests {
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
-        assert_eq!(record.sha1_hash, remote_hash);
+        assert_eq!(record.sha1_hash, Some(remote_hash));
         assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 
@@ -1699,7 +2031,7 @@ mod tests {
         let record = get_record(&daemon.connection, Path::new("created-while-running.txt"))
             .expect("index lookup")
             .expect("index record");
-        assert_eq!(record.sha1_hash, local_hash);
+        assert_eq!(record.sha1_hash, Some(local_hash));
         assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 
@@ -1745,7 +2077,7 @@ mod tests {
         let queued_record = get_record(&daemon.connection, Path::new("edited-while-running.txt"))
             .expect("queued index lookup")
             .expect("queued index record");
-        assert_eq!(queued_record.sha1_hash, base_hash);
+        assert_eq!(queued_record.sha1_hash, Some(base_hash));
         assert_eq!(queued_record.sync_status, SyncStatus::Modified);
 
         daemon.reconcile_blocking().expect("reconcile");
@@ -1763,7 +2095,7 @@ mod tests {
         let record = get_record(&daemon.connection, Path::new("edited-while-running.txt"))
             .expect("index lookup")
             .expect("index record");
-        assert_eq!(record.sha1_hash, local_hash);
+        assert_eq!(record.sha1_hash, Some(local_hash));
         assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 
@@ -1839,7 +2171,7 @@ mod tests {
         let record = get_record(&daemon.connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
-        assert_eq!(record.sha1_hash, local_hash);
+        assert_eq!(record.sha1_hash, Some(local_hash));
         assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 
@@ -1903,9 +2235,10 @@ mod tests {
     fn base_record(path: &str, proton_id: Option<&str>, sha1_hash: &str) -> FileRecord {
         FileRecord {
             file_path: PathBuf::from(path),
+            entity_kind: EntityKind::File,
             file_size: 1,
             mtime: 1,
-            sha1_hash: sha1_hash.to_owned(),
+            sha1_hash: Some(sha1_hash.to_owned()),
             proton_id: proton_id.map(ToOwned::to_owned),
             sync_status: SyncStatus::Synced,
         }

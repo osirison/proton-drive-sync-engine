@@ -66,10 +66,60 @@ pub struct RemoteFile {
     pub downloadable: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteDirectory {
+    pub path: PathBuf,
+    pub id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteEntity {
+    File(RemoteFile),
+    Directory(RemoteDirectory),
+}
+
+impl RemoteEntity {
+    pub fn as_file(&self) -> Option<&RemoteFile> {
+        match self {
+            Self::File(file) => Some(file),
+            Self::Directory(_) => None,
+        }
+    }
+
+    pub fn as_directory(&self) -> Option<&RemoteDirectory> {
+        match self {
+            Self::File(_) => None,
+            Self::Directory(directory) => Some(directory),
+        }
+    }
+
+    pub fn remote_id(&self) -> Option<String> {
+        match self {
+            Self::File(file) => Some(file.id.clone()),
+            Self::Directory(directory) => directory.id.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct RemoteListing {
     files: HashMap<PathBuf, RemoteFile>,
-    folders: Vec<PathBuf>,
+    directories: HashMap<PathBuf, RemoteDirectory>,
+}
+
+impl RemoteListing {
+    fn into_entities(self) -> HashMap<PathBuf, RemoteEntity> {
+        self.directories
+            .into_iter()
+            .map(|(path, directory)| (path, RemoteEntity::Directory(directory)))
+            .chain(
+                self.files
+                    .into_iter()
+                    .map(|(path, file)| (path, RemoteEntity::File(file))),
+            )
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +136,13 @@ pub struct CommandPolicy {
 
 pub trait ProtonClient: Send + Sync {
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>>;
+    fn list_entities(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+        Ok(self
+            .list(remote_root)?
+            .into_iter()
+            .map(|(path, file)| (path, RemoteEntity::File(file)))
+            .collect())
+    }
     fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
     fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
     fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()>;
@@ -135,7 +192,16 @@ impl Default for CommandPolicy {
 
 impl ProtonClient for ProtonDriveClient {
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+        Ok(self
+            .list_entities(remote_root)?
+            .into_iter()
+            .filter_map(|(path, entity)| entity.as_file().cloned().map(|file| (path, file)))
+            .collect())
+    }
+
+    fn list_entities(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
         let mut files = HashMap::new();
+        let mut directories = HashMap::new();
         let mut visited = BTreeSet::new();
         let mut pending = vec![PathBuf::new()];
 
@@ -171,13 +237,15 @@ impl ProtonClient for ProtonDriveClient {
             files.extend(listing.files);
             pending.extend(
                 listing
-                    .folders
-                    .into_iter()
-                    .filter(|folder| !visited.contains(folder)),
+                    .directories
+                    .keys()
+                    .filter(|folder| !visited.contains(*folder))
+                    .cloned(),
             );
+            directories.extend(listing.directories);
         }
 
-        Ok(files)
+        Ok(RemoteListing { files, directories }.into_entities())
     }
 
     fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
@@ -507,6 +575,13 @@ pub fn parse_remote_files(
     Ok(parse_remote_listing(json, remote_root, Path::new(""))?.files)
 }
 
+pub fn parse_remote_entities(
+    json: &str,
+    remote_root: &Path,
+) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+    Ok(parse_remote_listing(json, remote_root, Path::new(""))?.into_entities())
+}
+
 fn parse_remote_listing(
     json: &str,
     remote_root: &Path,
@@ -566,11 +641,28 @@ fn collect_node(
         || matches!(node.kind.as_deref(), Some("folder" | "directory"))
         || (!node.children.is_empty() || !node.entries.is_empty() || !node.files.is_empty());
 
+    let id = node.id.as_deref().or(node.uid.as_deref());
     if is_folder && !relative_path.as_os_str().is_empty() {
-        listing.folders.push(relative_path.clone());
+        let name = node
+            .name
+            .clone()
+            .or_else(|| {
+                relative_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| relative_path.display().to_string());
+        listing.directories.insert(
+            relative_path.clone(),
+            RemoteDirectory {
+                path: relative_path.clone(),
+                id: id.map(ToOwned::to_owned),
+                name,
+            },
+        );
     }
 
-    let id = node.id.as_deref().or(node.uid.as_deref());
     if !is_folder && let (Some(id), Some(name)) = (id, node.name.as_deref()) {
         listing.files.insert(
             relative_path.clone(),

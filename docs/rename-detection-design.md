@@ -9,7 +9,11 @@ Rename detection should reduce unnecessary delete and upload work when a file mo
 
 ## Current Behavior
 
-The planner keys local, remote, and base index records by relative path. When a synced local file moves from `old.txt` to `new.txt`, the current planner sees one missing path and one new path. That becomes a remote delete plus an upload, even when the SHA-1 hash is unchanged.
+The planner keys local, remote, and base index records by relative path. It now has a conservative path-transition pass for file renames:
+
+* A remote-only rename can converge locally when the old local file is unchanged, the remote destination is absent locally, and the Proton ID plus SHA-1 evidence identify one destination.
+* A local-only rename is reported as `move_unsupported` and does not mutate Proton Drive until the CLI move or rename command contract is verified.
+* Ambiguous same-hash candidates are not inferred as renames.
 
 ## Design Constraints
 
@@ -17,11 +21,12 @@ The planner keys local, remote, and base index records by relative path. When a 
 * Remote entries without usable SHA-1 digests cannot participate in rename inference.
 * Cross-directory renames must remain inside the configured sync root and respect include and exclude filters.
 * Conflicts take precedence over rename inference when either side also changed content.
-* The first implementation should support local-only renames before remote rename operations are added.
+* The first implementation supports remote-only rename convergence as a local filesystem move because it requires no Proton mutation.
+* Local-to-remote rename execution must wait for a verified Proton CLI move or rename command.
 
 ## Index Changes
 
-The current `file_index` table stores path, size, mtime, hash, Proton ID, and status. Local rename detection can start without a schema migration by grouping base records and current local files by SHA-1 plus file size. Remote rename support will likely need either a Proton move command or a way to update indexed paths after detecting a remote path move.
+The `file_index` table stores path, entity kind, size, mtime, optional hash, Proton ID, and status. Rename inference currently groups file records and current entities by SHA-1 plus Proton ID evidence. Directory records do not participate because they have no content hash.
 
 Future schema changes should consider adding:
 
@@ -31,20 +36,24 @@ Future schema changes should consider adding:
 
 ## Planner Algorithm
 
-1. Compute ordinary path-based local and remote deltas.
-2. Collect local rename candidates where one base path is missing locally and one new local path has the same SHA-1 and size.
-3. Reject candidate groups with more than one missing source or more than one new destination.
-4. Replace the source path remote-delete and destination upload actions with one local rename action when the remote side is unchanged.
-5. Keep existing conflict behavior when the remote side changed or has unknown hash state.
+1. Scan local entities, remote entities, and base records by relative path.
+2. Before ordinary path-based planning, look for base file paths that moved on exactly one side.
+3. Plan `move_local` when the remote destination has the same Proton ID and SHA-1 as the base, the local source is unchanged, and the destination is unique.
+4. Plan `move_unsupported` when the local destination is unique but remote mutation would be required.
+5. Reject ambiguous candidate groups and fall back to normal path-based planning.
+6. Keep existing conflict behavior when either side changed content or exposes unknown hash state.
 
 ## Execution Model
 
-The first safe execution path should avoid remote mutation. For local-only renames, update the index path from the old relative path to the new relative path after validating that the remote record still points at the same Proton ID and hash. A later remote rename feature can add a Proton client method only after the CLI command contract is verified.
+The first safe execution path avoids remote mutation. Remote-only renames execute as local filesystem moves, then purge the old index row and upsert the new path after the local move succeeds. Local-to-remote renames are logged as unsupported and leave the baseline untouched.
+
+A later remote rename feature can add a Proton client method only after the CLI command contract is verified in a disposable live folder.
 
 ## Test Plan
 
-* Unit-test single local rename planning with unchanged remote state.
+* Unit-test remote-only rename planning with unchanged local state and stable Proton ID evidence.
+* Unit-test local-only rename planning as unsupported until a remote move command is verified.
 * Unit-test ambiguous same-hash candidates and confirm they fall back to current behavior.
 * Unit-test filtered paths so excluded rename candidates are ignored.
-* Add a daemon reconciliation test that updates the index only after the rename action succeeds.
+* Add a daemon reconciliation test that updates the index only after the local move succeeds.
 * Add a live E2E rename scenario only after the Proton CLI move or rename behavior is verified in a disposable remote folder.

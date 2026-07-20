@@ -206,7 +206,15 @@ dry_run = true
         let report = parse_report(&output.stdout);
         let plan = plan(&report);
 
-        assert_eq!(report["summary"]["total"].as_u64(), Some(2));
+        assert_eq!(report["summary"]["total"].as_u64(), Some(3));
+        assert_eq!(
+            report["summary"]["remote_directories_created"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            report["summary"]["local_directories_created"].as_u64(),
+            Some(0)
+        );
         assert!(
             plan.iter().any(|action| {
                 action["path"] == "Documents/local-keep.md" && action["action"] == "upload"
@@ -218,6 +226,14 @@ dry_run = true
                 action["path"] == "Documents/remote-keep.md" && action["action"] == "download"
             }),
             "included remote file should be planned for download: {plan:?}"
+        );
+        assert!(
+            plan.iter().any(|action| {
+                action["path"] == "Documents"
+                    && action["action"] == "create_remote_directory"
+                    && action["entity_kind"] == "directory"
+            }),
+            "included local directory should be planned for remote creation: {plan:?}"
         );
         assert!(
             plan.iter().all(|action| !action["path"]
