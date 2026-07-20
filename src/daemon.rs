@@ -1,7 +1,7 @@
 use crate::index::{
     EntityKind, FileRecord, LocalEntityState, ScanOptions, SyncStatus, load_existing_index,
     load_index, local_directory_state, local_file_state, mark_modified, open_database,
-    purge_record, scan_local_entities_with_options, upsert_record,
+    purge_record, scan_local_entities_reusing_hashes, upsert_record,
 };
 use crate::ipc::{
     ControlCommand, ControlRequest, ControlResponse, StatusHistoryEntry, bind_listener,
@@ -101,10 +101,12 @@ pub fn preview_plan_with_client(
         "building dry-run sync plan"
     );
     let scan_options = scan_options_from_config(config)?;
-    let local_entities = scan_local_entities_with_options(&config.local_root, &scan_options)?;
+    let base_records = load_existing_index(&config.db_path)?;
+    let local_entities =
+        scan_local_entities_reusing_hashes(&config.local_root, &scan_options, &base_records)?;
     let (remote_entities, remote_root_missing) =
         load_remote_entities(proton, &config.remote_root, &scan_options)?;
-    let mut base_index = filter_base_index(load_existing_index(&config.db_path)?, &scan_options);
+    let mut base_index = filter_base_index(base_records, &scan_options);
     if remote_root_missing {
         base_index.clear();
     }
@@ -413,12 +415,18 @@ impl<C: ProtonClient> Daemon<C> {
 
     fn reconcile_blocking_inner(&mut self) -> AppResult<()> {
         info!("starting reconciliation");
-        let local_entities =
-            scan_local_entities_with_options(&self.config.local_root, &self.scan_options)?;
+        // Load the baseline before scanning so the scan can reuse each unchanged file's
+        // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
+        let base_records = load_index(&self.connection)?;
+        let local_entities = scan_local_entities_reusing_hashes(
+            &self.config.local_root,
+            &self.scan_options,
+            &base_records,
+        )?;
         let local_files = local_files_from_entities(&local_entities);
         let (remote_entities, remote_root_missing) =
             load_remote_entities(&self.proton, &self.config.remote_root, &self.scan_options)?;
-        let mut base_index = filter_base_index(load_index(&self.connection)?, &self.scan_options);
+        let mut base_index = filter_base_index(base_records, &self.scan_options);
         if remote_root_missing {
             base_index.clear();
         }

@@ -547,8 +547,20 @@ pub fn scan_local_entities_with_options(
     root: &Path,
     options: &ScanOptions,
 ) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
+    scan_local_entities_reusing_hashes(root, options, &HashMap::new())
+}
+
+/// Like [`scan_local_entities_with_options`] but reuses each file's recorded SHA-1 when its
+/// size and mtime are unchanged from `known` (the loaded base index), so an unchanged tree
+/// is not fully re-hashed on every periodic reconcile. See [`local_file_state_reusing_hash`]
+/// for the quick-check and its trade-off.
+pub fn scan_local_entities_reusing_hashes(
+    root: &Path,
+    options: &ScanOptions,
+    known: &HashMap<PathBuf, FileRecord>,
+) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
     let mut entities = HashMap::new();
-    visit_directory(root, root, options, &mut entities)?;
+    visit_directory(root, root, options, known, &mut entities)?;
     Ok(entities)
 }
 
@@ -561,6 +573,7 @@ fn visit_directory(
     root: &Path,
     directory: &Path,
     options: &ScanOptions,
+    known: &HashMap<PathBuf, FileRecord>,
     entities: &mut HashMap<PathBuf, LocalEntityState>,
 ) -> AppResult<()> {
     for entry in fs::read_dir(directory)? {
@@ -583,14 +596,14 @@ fn visit_directory(
                         LocalEntityState::Directory(state),
                     );
                 }
-                visit_directory(root, &path, options, entities)?;
+                visit_directory(root, &path, options, known, entities)?;
             }
             continue;
         }
         if !file_type.is_file() || !options.allows_relative_file(relative_path) {
             continue;
         }
-        let state = local_file_state(root, &path)?;
+        let state = local_file_state_reusing_hash(root, &path, known)?;
         entities.insert(state.relative_path.clone(), LocalEntityState::File(state));
     }
     Ok(())
@@ -647,6 +660,24 @@ fn build_glob_set(patterns: &[String]) -> AppResult<GlobSet> {
 }
 
 pub fn local_file_state(root: &Path, absolute_path: &Path) -> AppResult<LocalFileState> {
+    local_file_state_reusing_hash(root, absolute_path, &HashMap::new())
+}
+
+/// Like [`local_file_state`] but consults `known` (a `relative_path -> FileRecord` map,
+/// typically the loaded base index) as an rsync-style quick-check: when the file's current
+/// size and mtime both match the recorded values, its stored SHA-1 is reused instead of
+/// re-streaming the entire file through the hasher. A missing record, a type change, or a
+/// size/mtime change forces a re-hash.
+///
+/// mtime is compared at the second resolution the record stores, so a content change that
+/// preserves both the size and the mtime-second is not detected until the next
+/// size/mtime-changing edit — the standard quick-check trade-off, taken here to avoid
+/// re-reading and re-hashing an unchanged multi-gigabyte tree on every periodic reconcile.
+pub fn local_file_state_reusing_hash(
+    root: &Path,
+    absolute_path: &Path,
+    known: &HashMap<PathBuf, FileRecord>,
+) -> AppResult<LocalFileState> {
     let metadata = fs::metadata(absolute_path)?;
     let mtime = metadata
         .modified()?
@@ -665,13 +696,28 @@ pub fn local_file_state(root: &Path, absolute_path: &Path) -> AppResult<LocalFil
             root.display()
         ))
     })?;
+    let file_size = metadata.len();
+
+    let sha1_hash = match known.get(relative_path) {
+        Some(record)
+            if record.entity_kind == EntityKind::File
+                && record.file_size == file_size
+                && record.mtime == mtime =>
+        {
+            match &record.sha1_hash {
+                Some(hash) => hash.clone(),
+                None => compute_sha1(absolute_path)?,
+            }
+        }
+        _ => compute_sha1(absolute_path)?,
+    };
 
     Ok(LocalFileState {
         relative_path: relative_path.to_path_buf(),
         absolute_path: absolute_path.to_path_buf(),
-        file_size: metadata.len(),
+        file_size,
         mtime,
-        sha1_hash: compute_sha1(absolute_path)?,
+        sha1_hash,
     })
 }
 
@@ -1090,6 +1136,81 @@ mod tests {
         let state = local_file_state(directory.path(), &file_path).expect("state");
 
         assert_eq!(state.relative_path, PathBuf::from("nested/file.txt"));
+    }
+
+    fn known_file_record(path: &str, size: u64, mtime: i64, sha1: &str) -> FileRecord {
+        FileRecord {
+            file_path: PathBuf::from(path),
+            entity_kind: EntityKind::File,
+            file_size: size,
+            mtime,
+            sha1_hash: Some(sha1.to_owned()),
+            proton_id: None,
+            sync_status: SyncStatus::Synced,
+        }
+    }
+
+    #[test]
+    fn scan_reuses_stored_hash_when_size_and_mtime_match() {
+        let directory = tempdir().expect("tempdir");
+        let file_path = directory.path().join("stable.txt");
+        fs::write(&file_path, b"content").expect("file");
+        let actual = local_file_state(directory.path(), &file_path).expect("state");
+
+        // A base record with the same size + mtime but a sentinel hash: the quick-check
+        // must reuse the sentinel instead of re-streaming the file through SHA-1.
+        let mut known = HashMap::new();
+        known.insert(
+            PathBuf::from("stable.txt"),
+            known_file_record(
+                "stable.txt",
+                actual.file_size,
+                actual.mtime,
+                "reused-sentinel",
+            ),
+        );
+        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let entities =
+            scan_local_entities_reusing_hashes(directory.path(), &options, &known).expect("scan");
+
+        match entities.get(Path::new("stable.txt")) {
+            Some(LocalEntityState::File(file)) => assert_eq!(
+                file.sha1_hash, "reused-sentinel",
+                "an unchanged file must reuse its recorded hash, not re-hash"
+            ),
+            other => panic!("expected a file entity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scan_recomputes_hash_when_mtime_differs() {
+        let directory = tempdir().expect("tempdir");
+        let file_path = directory.path().join("edited.txt");
+        fs::write(&file_path, b"content").expect("file");
+        let actual = local_file_state(directory.path(), &file_path).expect("state");
+
+        // Same size but a stale mtime must force a real re-hash, not reuse the stale one.
+        let mut known = HashMap::new();
+        known.insert(
+            PathBuf::from("edited.txt"),
+            known_file_record(
+                "edited.txt",
+                actual.file_size,
+                actual.mtime - 1,
+                "stale-sentinel",
+            ),
+        );
+        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let entities =
+            scan_local_entities_reusing_hashes(directory.path(), &options, &known).expect("scan");
+
+        match entities.get(Path::new("edited.txt")) {
+            Some(LocalEntityState::File(file)) => assert_eq!(
+                file.sha1_hash, actual.sha1_hash,
+                "a size/mtime mismatch must recompute the real hash, not reuse the stale one"
+            ),
+            other => panic!("expected a file entity, got {other:?}"),
+        }
     }
 
     /// Inserts a row keyed the way pre-BLOB builds did: a Rust `String` bind, stored
