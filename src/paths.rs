@@ -44,21 +44,50 @@ fn default_runtime_path(file_name: &str, runtime_dir: Option<PathBuf>) -> PathBu
 /// and will surface a clear I/O error themselves the moment they actually try to
 /// create the socket or lockfile there.
 fn fallback_runtime_dir() -> PathBuf {
-    let dir = env::temp_dir().join(APP_STATE_DIR);
+    // Suffix the shared-temp fallback with the effective uid so two local users never
+    // contend for the same directory: the first user to create a single shared
+    // `proton-drive-sync` at mode 0700 would otherwise lock everyone else out of their own
+    // fallback runtime path.
+    let dir = env::temp_dir().join(format!("{APP_STATE_DIR}-{}", effective_uid()));
     if let Err(error) = fs::create_dir_all(&dir) {
         warn!(
             path = %dir.display(),
             %error,
             "failed to create fallback runtime directory"
         );
-    } else if let Err(error) = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)) {
-        warn!(
+        return dir;
+    }
+    // `set_permissions` follows symlinks, so a symlink (or any non-directory) swapped in at
+    // this predictable path would have its target chmod'd instead. Inspect the link itself
+    // and only tighten permissions on a real directory; otherwise leave it alone and warn.
+    match fs::symlink_metadata(&dir) {
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            if let Err(error) = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)) {
+                warn!(
+                    path = %dir.display(),
+                    %error,
+                    "failed to restrict fallback runtime directory permissions"
+                );
+            }
+        }
+        Ok(_) => warn!(
+            path = %dir.display(),
+            "fallback runtime directory path is not a real directory; leaving permissions unchanged"
+        ),
+        Err(error) => warn!(
             path = %dir.display(),
             %error,
-            "failed to restrict fallback runtime directory permissions"
-        );
+            "failed to inspect fallback runtime directory; leaving permissions unchanged"
+        ),
     }
     dir
+}
+
+/// The effective user id, used to give each local user a private fallback runtime
+/// directory under the shared temporary directory.
+fn effective_uid() -> u32 {
+    // SAFETY: `geteuid` takes no arguments, never fails, and touches no memory.
+    unsafe { libc::geteuid() }
 }
 
 fn default_state_dir(xdg_state_home: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
@@ -87,10 +116,17 @@ mod tests {
         let path = default_runtime_path("proton-sync.sock", None);
 
         let parent = path.parent().expect("parent directory");
-        assert_eq!(
-            parent.file_name().and_then(|name| name.to_str()),
-            Some(APP_STATE_DIR),
-            "the fallback socket path must live under an app-namespaced subdirectory"
+        let parent_name = parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("fallback directory name");
+        assert!(
+            parent_name.starts_with(APP_STATE_DIR),
+            "the fallback socket path must live under an app-namespaced subdirectory, got {parent_name}"
+        );
+        assert_ne!(
+            parent_name, APP_STATE_DIR,
+            "the fallback directory must be per-user (uid-suffixed) to avoid cross-user collisions"
         );
         assert_ne!(
             parent,

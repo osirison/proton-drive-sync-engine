@@ -243,9 +243,7 @@ impl<C: ProtonClient> Daemon<C> {
             }
         }
 
-        if self.config.socket_path.exists() {
-            fs::remove_file(&self.config.socket_path)?;
-        }
+        remove_control_socket(&self.config.socket_path);
         info!("daemon stopped");
         Ok(())
     }
@@ -994,6 +992,37 @@ fn ensure_parent_directory(path: &Path) -> AppResult<()> {
         fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+/// Removes the control socket on shutdown, but only when the path is still an actual Unix
+/// socket. Uses `symlink_metadata` (not `exists()`) so a regular file or symlink swapped in
+/// at runtime — by misconfiguration or a malicious replacement — is left in place with a
+/// warning rather than deleted, mirroring the safety check in `ipc::bind_listener`.
+/// Best-effort: a cleanup failure never fails the daemon's exit.
+fn remove_control_socket(socket_path: &Path) {
+    use std::os::unix::fs::FileTypeExt;
+
+    match fs::symlink_metadata(socket_path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            if let Err(error) = fs::remove_file(socket_path) {
+                warn!(
+                    path = %socket_path.display(),
+                    %error,
+                    "failed to remove control socket on shutdown"
+                );
+            }
+        }
+        Ok(_) => warn!(
+            path = %socket_path.display(),
+            "control socket path is not a socket at shutdown; leaving it in place"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => warn!(
+            path = %socket_path.display(),
+            %error,
+            "failed to inspect control socket on shutdown"
+        ),
+    }
 }
 
 /// Join `relative` onto `local_root` only when it is safe to do so.
@@ -2982,6 +3011,41 @@ mod tests {
         drop(control_client);
 
         outcome.expect("dropping an idle control connection is a clean, non-error outcome");
+    }
+
+    #[test]
+    fn shutdown_socket_removal_only_deletes_actual_sockets() {
+        let directory = tempdir().expect("tempdir");
+
+        // A real Unix socket left on disk is removed.
+        let socket_path = directory.path().join("daemon.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind socket");
+        drop(listener);
+        assert!(
+            socket_path.exists(),
+            "binding leaves the socket file on disk"
+        );
+        remove_control_socket(&socket_path);
+        assert!(
+            !socket_path.exists(),
+            "a real control socket must be removed on shutdown"
+        );
+
+        // A non-socket file swapped in at the socket path is left untouched.
+        let regular = directory.path().join("not-a-socket");
+        fs::write(&regular, b"important").expect("write regular file");
+        remove_control_socket(&regular);
+        assert!(
+            regular.exists(),
+            "a non-socket path must never be deleted on shutdown"
+        );
+        assert_eq!(
+            fs::read(&regular).expect("regular file preserved"),
+            b"important"
+        );
+
+        // A missing path is a clean no-op.
+        remove_control_socket(&directory.path().join("missing.sock"));
     }
 
     #[test]
