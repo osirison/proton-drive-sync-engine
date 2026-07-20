@@ -627,10 +627,42 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 SyncAction::TypeConflict => {
-                    warn!(
-                        path = %action.path.display(),
-                        "skipping sync action because local and remote entity types differ"
-                    );
+                    if action.entity_kind == EntityKind::Directory
+                        && let Some(conflict_path) = action.conflict_path.as_ref()
+                        && let Some(LocalEntityState::Directory(local_directory)) =
+                            local_entities.get(&action.path)
+                    {
+                        if action.remote_id.is_some()
+                            && let Some(remote_path) =
+                                safe_remote_path(&self.config.remote_root, &action.path)
+                            && let Some(destination) =
+                                safe_local_path(&self.config.local_root, conflict_path)
+                        {
+                            ensure_parent_directory(&destination)?;
+                            self.proton.download(&remote_path, &destination)?;
+                            let local_state =
+                                local_file_state(&self.config.local_root, &destination)?;
+                            let sidecar_record = FileRecord::from_local(
+                                conflict_path.clone(),
+                                &local_state,
+                                action.remote_id.clone(),
+                                SyncStatus::Conflict,
+                            );
+                            index_mutations.push(IndexMutation::Upsert(sidecar_record));
+                        }
+                        let directory_record = FileRecord::from_local_directory(
+                            action.path.clone(),
+                            local_directory,
+                            None,
+                            SyncStatus::Synced,
+                        );
+                        index_mutations.push(IndexMutation::Upsert(directory_record));
+                    } else {
+                        warn!(
+                            path = %action.path.display(),
+                            "skipping sync action because local and remote entity types differ"
+                        );
+                    }
                 }
                 SyncAction::RemoteDelete => {
                     action.remote_id.as_deref().ok_or_else(|| {
@@ -1672,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_skips_type_conflict_without_mutating_local_or_remote() {
+    fn reconcile_resolves_directory_file_type_conflict_with_a_sidecar_download() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
         fs::create_dir_all(local_root.join("same-name")).expect("local directory");
@@ -1687,16 +1719,35 @@ mod tests {
 
         daemon.reconcile_blocking().expect("reconcile");
 
-        assert!(
-            operations.lock().expect("operations lock").is_empty(),
-            "type conflict must not upload, download, or delete"
+        let conflict_path = local_root.join("same-name.proton-cloud");
+        assert_eq!(
+            fs::read_to_string(&conflict_path).expect("conflict sidecar"),
+            "downloaded:/Drive/RemoteFolder/same-name"
         );
-        assert!(local_root.join("same-name").is_dir());
         assert!(
-            get_record(&daemon.connection, Path::new("same-name"))
-                .expect("index lookup")
-                .is_none(),
-            "type conflicts should not be marked synced"
+            local_root.join("same-name").is_dir(),
+            "the local directory must win the clash and stay in place"
+        );
+        let directory_record = get_record(&daemon.connection, Path::new("same-name"))
+            .expect("directory index lookup")
+            .expect("directory index record");
+        assert_eq!(directory_record.entity_kind, EntityKind::Directory);
+        assert_eq!(directory_record.sync_status, SyncStatus::Synced);
+        assert_eq!(directory_record.proton_id, None);
+        let sidecar_record = get_record(&daemon.connection, Path::new("same-name.proton-cloud"))
+            .expect("sidecar index lookup")
+            .expect("sidecar index record");
+        assert_eq!(sidecar_record.entity_kind, EntityKind::File);
+        assert_eq!(sidecar_record.sync_status, SyncStatus::Conflict);
+        assert_eq!(sidecar_record.proton_id.as_deref(), Some("remote-file-id"));
+
+        daemon.reconcile_blocking().expect("second reconcile");
+
+        assert_eq!(
+            operations.lock().expect("operations lock").len(),
+            1,
+            "an already-resolved directory/file clash must not re-download the sidecar \
+             on a subsequent reconcile"
         );
     }
 

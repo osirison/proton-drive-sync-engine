@@ -2006,6 +2006,37 @@ exit 0
 
     #[cfg(unix)]
     #[test]
+    fn rename_or_move_passes_spaces_and_special_characters_through_a_single_argument() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .rename_or_move(
+                Path::new("/my-files/demo"),
+                Path::new("weird name (v1) & co's file!.txt"),
+                Path::new("weird name (v2) [final] $$ *.txt"),
+            )
+            .expect("rename command");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "filesystem\nrename\n/my-files/demo/weird name (v1) & co's file!.txt\nweird name (v2) [final] $$ *.txt\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn rename_or_move_moves_when_only_parent_changes() {
         let directory = tempdir().expect("tempdir");
         let executable = write_script(

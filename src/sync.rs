@@ -108,15 +108,18 @@ pub fn plan_sync_entities(
             .filter_map(|path| {
                 let local = local_entities.get(&path);
                 let remote = remote_entities.get(&path);
-                if is_type_conflict(local, remote, base_index.get(&path)) {
-                    return Some(PlannedAction::new(
-                        &path,
-                        SyncAction::TypeConflict,
-                        entity_kind_for_path(local, remote, base_index.get(&path)),
-                        remote.and_then(RemoteEntity::remote_id),
-                    ));
+                let base = base_index.get(&path);
+                if is_reconciled_directory_file_clash(local, remote, base) {
+                    // A directory already permanently claimed this path against a
+                    // clashing remote file on a prior reconcile (see SD-09); the
+                    // remote file's continued presence is a tolerated, already
+                    // resolved state, not a fresh conflict to reprocess every pass.
+                    return None;
                 }
-                match base_index.get(&path) {
+                if is_type_conflict(local, remote, base) {
+                    return Some(plan_type_conflict_action(&path, local, remote, base));
+                }
+                match base {
                     Some(base) if base.entity_kind == EntityKind::Directory && !bootstrap => {
                         plan_ongoing_directory_action(
                             &path,
@@ -442,6 +445,47 @@ fn is_type_conflict(
     };
     local_kind.is_some_and(|kind| kind != base_kind)
         || remote_kind.is_some_and(|kind| kind != base_kind)
+}
+
+/// True once a local directory has already permanently claimed `path` against a
+/// persistently clashing remote file: the base record already agrees with the
+/// local directory's kind, so the remote file's continued presence here is a
+/// tolerated, already-resolved state (see `plan_type_conflict_action`) rather
+/// than a fresh type conflict to reprocess on every reconcile.
+fn is_reconciled_directory_file_clash(
+    local: Option<&LocalEntityState>,
+    remote: Option<&RemoteEntity>,
+    base: Option<&FileRecord>,
+) -> bool {
+    matches!(local, Some(LocalEntityState::Directory(_)))
+        && matches!(remote, Some(RemoteEntity::File(_)))
+        && base.is_some_and(|record| record.entity_kind == EntityKind::Directory)
+}
+
+/// Plans the action for a path where the local and remote entity kinds
+/// conflict. A local directory clashing with a same-named remote file (SD-09
+/// in the E2E test-spec matrix) keeps the local directory and preserves the
+/// clashing remote file's content as a separately tracked conflict sidecar
+/// outside the directory, instead of silently discarding it. Every other kind
+/// mismatch keeps the existing non-mutating skip behavior.
+fn plan_type_conflict_action(
+    path: &Path,
+    local: Option<&LocalEntityState>,
+    remote: Option<&RemoteEntity>,
+    base: Option<&FileRecord>,
+) -> PlannedAction {
+    if let (Some(LocalEntityState::Directory(_)), Some(RemoteEntity::File(_))) = (local, remote) {
+        return PlannedAction::type_conflict_with_sidecar(
+            path,
+            remote.and_then(RemoteEntity::remote_id),
+        );
+    }
+    PlannedAction::new(
+        path,
+        SyncAction::TypeConflict,
+        entity_kind_for_path(local, remote, base),
+        remote.and_then(RemoteEntity::remote_id),
+    )
 }
 
 fn entity_kind_for_path(
@@ -975,6 +1019,21 @@ impl PlannedAction {
             action: SyncAction::Conflict,
             entity_kind: EntityKind::File,
             conflict_path: None,
+            remote_id,
+        }
+    }
+
+    /// A local directory permanently keeps `path` against a same-named remote
+    /// file (SD-09): `conflict_path` points at the sidecar location the
+    /// clashing remote file's content is downloaded to instead of being
+    /// silently discarded.
+    fn type_conflict_with_sidecar(path: &Path, remote_id: Option<String>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            destination_path: None,
+            action: SyncAction::TypeConflict,
+            entity_kind: EntityKind::Directory,
+            conflict_path: Some(conflict_copy_path(path)),
             remote_id,
         }
     }
@@ -1992,7 +2051,38 @@ mod tests {
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].path, PathBuf::from("same-name"));
         assert_eq!(planned[0].action, SyncAction::TypeConflict);
+        assert_eq!(planned[0].entity_kind, EntityKind::Directory);
         assert_eq!(planned[0].remote_id.as_deref(), Some("file-id"));
+        assert_eq!(
+            planned[0].conflict_path.as_deref(),
+            Some(Path::new("same-name.proton-cloud")),
+            "the clashing remote file must be downloadable as a sidecar outside the \
+             kept local directory"
+        );
+    }
+
+    #[test]
+    fn reconciled_directory_file_clash_is_not_replanned() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_entities.insert(PathBuf::from("same-name"), local_directory("same-name"));
+        remote_entities.insert(
+            PathBuf::from("same-name"),
+            RemoteEntity::File(remote("same-name", "file-id", Some("hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("same-name"),
+            directory_base("same-name", None),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            planned.is_empty(),
+            "an already-resolved directory/file clash must not be replanned or \
+             re-downloaded on every reconcile: {planned:?}"
+        );
     }
 
     #[test]
@@ -2051,6 +2141,47 @@ mod tests {
         assert_eq!(
             planned[0].destination_path.as_deref(),
             Some(Path::new("new-name.txt"))
+        );
+        assert_eq!(planned[0].remote_id.as_deref(), Some("stable-id"));
+    }
+
+    #[test]
+    fn local_file_rename_with_spaces_and_special_characters_plans_verified_remote_move() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_entities.insert(
+            PathBuf::from("weird name (v2) [final] $$.txt"),
+            LocalEntityState::File(local("weird name (v2) [final] $$.txt", "same-hash")),
+        );
+        remote_entities.insert(
+            PathBuf::from("weird name (v1) & co's file!.txt"),
+            RemoteEntity::File(remote(
+                "weird name (v1) & co's file!.txt",
+                "stable-id",
+                Some("same-hash"),
+            )),
+        );
+        base_index.insert(
+            PathBuf::from("weird name (v1) & co's file!.txt"),
+            base(
+                "weird name (v1) & co's file!.txt",
+                Some("stable-id"),
+                "same-hash",
+            ),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].action, SyncAction::MoveRemote);
+        assert_eq!(
+            planned[0].path,
+            PathBuf::from("weird name (v1) & co's file!.txt")
+        );
+        assert_eq!(
+            planned[0].destination_path.as_deref(),
+            Some(Path::new("weird name (v2) [final] $$.txt"))
         );
         assert_eq!(planned[0].remote_id.as_deref(), Some("stable-id"));
     }
