@@ -10,7 +10,7 @@ description: Developer and user guide for the Rust Proton Drive bidirectional sy
 The project is designed as a focused sync core: local filesystem scanning, Proton Drive CLI integration, SQLite-backed sync state, Unix socket IPC, and deterministic sync planning live in separate modules so behavior can be tested and evolved safely.
 
 > [!CAUTION]
-> This is an early prototype. Test it with disposable folders and verified backups before pointing it at data you cannot afford to lose.
+> This is an early prototype. Test it with disposable folders and verified backups before pointing it at data you cannot afford to lose. Sync is bidirectional and deletions propagate: removing a previously synced file on one side removes it from the other. A file or folder deleted on Proton Drive is deleted from your local disk **permanently** — it is not moved to your OS trash, and folder deletions remove the whole subtree. Always preview with `--dry-run` and check the `destructive_actions` count before running the daemon unattended. The very first run against an existing remote is a non-destructive two-way merge (nothing is deleted); see [Sync Behavior](#sync-behavior).
 
 ## What It Does
 
@@ -50,6 +50,7 @@ Not yet included:
 * Cross-platform IPC for Windows
 * Automated mutating live end-to-end test for the pause/resume scenario
 * Rename or move detection for directories renamed or moved on the local side
+* Symbolic link synchronization (symlinks under the local root are skipped)
 * Distributed tracing or dashboards
 
 ## Requirements
@@ -59,6 +60,14 @@ Not yet included:
 * A Unix-like operating system with Unix socket support
 * A local folder reserved for sync testing
 * Optional XDG environment variables for runtime and state paths
+
+This engine does not talk to Proton Drive directly — it shells out to the separate `proton-drive` CLI for every remote operation. Install and authenticate that CLI following its own documentation, then confirm it works before starting the daemon:
+
+```bash
+proton-drive filesystem list --json /Drive/RemoteFolder
+```
+
+If that command fails, the daemon will fail the same way. Point the daemon at a different executable with `--proton-cli /path/to/proton-drive` when it is not on `PATH`.
 
 ## Install and Build
 
@@ -84,21 +93,21 @@ Create a local test folder:
 mkdir -p /tmp/proton-sync-demo
 ```
 
-Start the daemon in one terminal:
-
-```bash
-cargo run --bin proton-syncd -- \
-  --local-root /tmp/proton-sync-demo \
-  --remote-root /Drive/RemoteFolder
-```
-
-Preview the sync plan first when testing a new folder:
+Preview the sync plan first — always do this before the first real sync of a new folder, so you can see (and sanity-check) what the daemon would upload, download, or delete without changing anything:
 
 ```bash
 cargo run --bin proton-syncd -- \
   --local-root /tmp/proton-sync-demo \
   --remote-root /Drive/RemoteFolder \
   --dry-run
+```
+
+Once the plan looks right, start the daemon in one terminal:
+
+```bash
+cargo run --bin proton-syncd -- \
+  --local-root /tmp/proton-sync-demo \
+  --remote-root /Drive/RemoteFolder
 ```
 
 Use the control CLI from another terminal:
@@ -149,6 +158,8 @@ cargo run --bin proton-syncd -- \
 | `--dry-run` | `false` | Prints the current sync plan as JSON and exits without changing local files, remote files, or the index |
 | `--no-dry-run` | None | Overrides `dry_run = true` from a config file |
 
+`--remote-root` is an absolute path inside your Proton Drive (for example `/Drive/RemoteFolder`), the same path you would pass to `proton-drive filesystem list`. If that folder does not exist yet, the daemon creates it and uploads your local content into it — so a mistyped remote root silently starts populating a brand-new folder rather than failing. Confirm the path with `proton-drive filesystem list --json <remote-root>` first.
+
 Stop the daemon with `Ctrl+C` or `SIGTERM`. On shutdown, the daemon removes its Unix socket.
 
 ## Config File
@@ -167,9 +178,11 @@ exclude = ["**/*.tmp"]
 dry_run = false
 ```
 
-Explicit CLI flags override values from the config file. For example, you can keep normal settings in `proton-sync.toml` and run one filtered preview with `--config proton-sync.toml --include 'Documents/**' --dry-run`. Use `--no-dry-run` when a config file sets `dry_run = true` but you want to start the daemon normally.
+Every daemon flag has a matching config key. In addition to the keys shown above, `db_path`, `socket_path`, and `lockfile_path` may be set in the config file; when omitted they fall back to the XDG defaults. Keys also accept hyphenated aliases (for example `local-root`), and unknown keys are rejected so typos fail fast.
 
-The daemon validates empty roots, invalid include or exclude globs, zero Proton command timeouts, and zero Proton list attempts before starting. A sample config is available at [examples/proton-sync.toml](examples/proton-sync.toml).
+Explicit CLI flags override values from the config file. For example, you can keep normal settings in `proton-sync.toml` and run one filtered preview with `--config proton-sync.toml --include 'Documents/**' --dry-run`. Use `--no-dry-run` when a config file sets `dry_run = true` but you want to start the daemon normally. Note that `--include` and `--exclude` are each all-or-nothing: passing `--include` on the command line replaces the config file's include list entirely (and, independently, `--exclude` replaces the exclude list) rather than adding to it, so repeat every pattern in that list you still want. The two lists are independent — passing only `--include` leaves the config file's `exclude` patterns in effect.
+
+The daemon validates empty roots, invalid include or exclude globs, zero Proton command timeouts, and zero Proton list attempts before starting. `scan_interval_secs` is clamped to a minimum of 1 second. A sample config is available at [examples/proton-sync.toml](examples/proton-sync.toml).
 
 ## Dry-Run Planning
 
@@ -190,8 +203,13 @@ Example output:
     "total": 1,
     "uploads": 0,
     "downloads": 1,
+    "remote_directories_created": 0,
+    "local_directories_created": 0,
+    "local_moves": 0,
+    "remote_moves": 0,
     "auto_links": 0,
     "conflicts": 0,
+    "type_conflicts": 0,
     "remote_deletes": 0,
     "local_deletes": 0,
     "purges": 0,
@@ -201,13 +219,17 @@ Example output:
   "plan": [
     {
       "path": "notes.txt",
+      "destination_path": null,
       "action": "download",
+      "entity_kind": "file",
       "conflict_path": null,
       "remote_id": "remote-file-id"
     }
   ]
 }
 ```
+
+Every field is always present in the output, so scripts can rely on a fixed shape. Unused summary counters are `0`, and the optional plan fields `destination_path`, `conflict_path`, and `remote_id` are `null` when they do not apply. `entity_kind` is `"file"` or `"directory"`; `destination_path` is populated only for move actions. The possible `action` values are `upload`, `download`, `create_remote_directory`, `create_local_directory`, `move_local`, `move_remote`, `auto_link`, `conflict`, `type_conflict`, `remote_delete`, `local_delete`, `purge`, and `skip_unsupported`. `destructive_actions` is the sum of `remote_deletes`, `local_deletes`, and `purges` — the number worth a second look before running for real.
 
 Dry-run mode respects the configured `--include` and `--exclude` filters. It does not bind the IPC socket, take the daemon lock, execute uploads or downloads, delete files, or update `sync_index.db`. It still contacts Proton Drive through the configured CLI, so authentication and remote permissions must already work.
 
@@ -233,7 +255,8 @@ Rules are applied consistently to local files, remote files, and existing index 
 * Exclude patterns always win over include patterns.
 * Conflict sidecars and index files are ignored even when they match an include pattern.
 * A custom `--db-path` under `local-root` is ignored so the sync index does not become sync data.
-* The persisted status history file next to the index is ignored for the same reason.
+* The persisted status history (`.status.json`) and metrics (`.metrics.json`) files next to the index are ignored for the same reason.
+* The daemon's own download staging directories (any path component starting with `.proton-sync-download-`) are ignored, so a partial download left behind by a crash is never uploaded.
 
 Run a dry-run after changing filters to confirm the planned action set before enabling regular sync.
 
@@ -283,7 +306,7 @@ Responses are JSON so scripts can consume them directly. The `status`, `pause`, 
 }
 ```
 
-The `history` command prints only the `status_history` array. The daemon keeps the most recent status history entries in a JSON file next to the configured SQLite database. A restarted daemon reloads that history, so recent failures and successful summaries remain visible through `proton-sync status` and `proton-sync history`.
+The `history` command prints only the `status_history` array. Each entry has `epoch_secs`, `message`, `last_error`, `plan_summary`, and `successful_sync_summary` fields. The daemon keeps the most recent entries in a JSON file next to the configured SQLite database. A restarted daemon reloads that history, so recent failures and successful summaries remain visible through `proton-sync status` and `proton-sync history`.
 
 The daemon also writes a metrics snapshot next to the configured SQLite database using the `.metrics.json` suffix. For the default `sync_index.db`, the metrics path is `sync_index.metrics.json`. This file is intended for local inspection by scripts or service monitors and is ignored by sync scans.
 
@@ -342,34 +365,60 @@ The sync planner compares three sources of truth:
 * Current remote files returned by `proton-drive filesystem list --json <remote-root>`
 * The last synced state stored in SQLite
 
-During the first run, the engine bootstraps state:
+During the first run, the engine bootstraps state. Bootstrap is **non-destructive** — it never deletes anything on either side:
 
 * Local-only files are uploaded
 * Remote-only files are downloaded
 * Matching local and remote files are linked in the index
-* Different local and remote content creates a conflict sidecar
+* Different local and remote content creates a conflict sidecar, keeping both versions
+* Empty directories are created to match on the other side
 
-After bootstrap, the planner uses local and remote deltas to choose upload, download, local delete, remote delete, purge, or conflict actions. When a remote file exists but Proton Drive does not expose a usable SHA-1 digest, the planner avoids destructive assumptions and uses non-destructive handling. Proton Docs and Sheets are reported as unsupported skip actions because the Proton Drive CLI does not download those native document types as files.
+After bootstrap, the planner compares each side against the last synced state and chooses per path: upload, download, create a local or remote directory, move/rename, auto-link (record that both sides already match), conflict, remote delete, local delete, or purge (drop a stale index row once both sides are already gone). When a remote file exists but Proton Drive does not expose a usable SHA-1 digest, the planner avoids destructive assumptions and uses non-destructive handling.
+
+### Deletions and the delete/edit safeguard
+
+Once a file has been synced, deleting it on one side propagates the deletion to the other on the next reconcile:
+
+* Deleting a local file removes it from Proton Drive by moving it to Proton's **trash**, where it stays recoverable.
+* Deleting a file or folder on Proton Drive removes it from your local disk **permanently** — a direct filesystem delete, not a move to your OS trash. Folder deletions are recursive and remove the entire subtree.
+
+A deletion is only propagated when the other side has **not** changed since the last sync. If you delete a file locally but it was edited on Proton Drive since the last sync, the remote edit is restored to your local folder rather than the remote copy being deleted; to make the deletion stick, delete it again once the file is back in sync on both sides. In the mirror case — you edit a file locally that was deleted on Proton Drive — your local edit is preserved rather than erased. Either way the surviving edit wins over the delete.
+
+Preview any run with `--dry-run` and check the `destructive_actions` count before letting the daemon run unattended.
+
+### Change detection
+
+Changes are detected by SHA-1 content hash where Proton Drive exposes a digest. To avoid re-reading and re-hashing an unchanged tree on every periodic scan, the daemon uses a quick-check: a local file whose size and modification time both match the last synced record is assumed unchanged and its stored hash is reused. As a consequence, a change that somehow preserves both the byte size and the whole-second mtime of a file is not noticed until the next size- or mtime-changing edit — the same trade-off `rsync` makes by default.
+
+### What is and isn't synced
+
+* Regular files and directories under `local-root` are synced. **Symbolic links are skipped** in both directions: the scanner does not follow or upload them, and the daemon refuses to write a remote entry through a symlinked directory that would lead outside the sync root.
+* Proton Docs and Sheets are reported as unsupported skip actions and left untouched on both sides, because the Proton Drive CLI cannot download those native document types as files.
 
 ## Conflict Files
 
-When both sides changed, the daemon preserves the local file and downloads the remote version into a sidecar path:
+When both sides changed to different content, the daemon preserves the local file and downloads the remote version into a sidecar path (if both sides changed to the *same* content, it simply links them with no sidecar):
 
 ```text
 notes.txt -> notes.proton-cloud.txt
 archive -> archive.proton-cloud
 ```
 
-Conflict sidecars are ignored by regular local scans so they do not create new sync records. Removing a sidecar marks the original file as modified for a future reconciliation pass.
+Conflict sidecars are ignored by regular local scans so they do not create new sync records. To resolve a conflict:
+
+* **Keep your local version:** delete the `.proton-cloud` sidecar. Removing it marks the original file as modified, and the next reconcile uploads your local version over the remote.
+* **Adopt the remote version:** replace your local file with the sidecar's contents (for example, move the sidecar over the original), then delete any leftover sidecar. The daemon treats the updated file as your new local version and syncs it.
+
+Until you resolve it, the conflicting path is left as-is on both sides so no edit is lost.
 
 ## Safety and Security Notes
 
 * Start with a disposable folder until you understand the sync plan and Proton Drive CLI behavior.
 * Keep external backups for important files.
 * The daemon rejects absolute, parent-directory, and root-escaping remote paths before joining them to the local sync root.
-* Local destination joins are guarded by the same relative-path validation.
+* Local destination writes are also symlink-aware: before writing a downloaded or created entry, the daemon resolves the deepest existing parent and refuses the write if it would land outside the sync root through a symlinked directory. (The scanner likewise skips symlinks, so they are never uploaded.)
 * Selective sync filters are applied before planning, so excluded index records are not purged as missing files.
-* The IPC socket is restricted to mode `0600` after binding.
+* The IPC socket is restricted to mode `0600` after binding, and control-connection reads and writes are bounded by a timeout so an idle or stalled client cannot stall the daemon.
 * The advisory lockfile prevents two live daemon instances from using the same configuration at once.
 * The daemon shells out to the configured `proton-drive` executable. Use a trusted executable path.
 * Proton Drive CLI calls are bounded by a timeout so a hung subprocess cannot block reconciliation indefinitely; a shutdown signal can also interrupt a stuck call directly, well before its full timeout would otherwise elapse.
@@ -449,11 +498,11 @@ If the daemon exits with a lockfile error, another live daemon may already hold 
 
 If remote operations fail, run the equivalent `proton-drive` command directly to confirm authentication, permissions, and remote folder names.
 
-If sync behavior looks unexpected, pause the daemon and inspect the local folder plus the SQLite index before resuming:
+If sync behavior looks unexpected, pause the daemon and inspect the local folder plus the SQLite index before resuming. The index lives at your `--db-path`, which defaults to `$XDG_STATE_HOME/proton-drive-sync/sync_index.db` (usually `~/.local/state/proton-drive-sync/sync_index.db`) — not inside the local folder unless you set a relative `--db-path`:
 
 ```bash
 cargo run --bin proton-sync -- pause
-sqlite3 /path/to/local/folder/sync_index.db 'select * from file_index order by file_path;'
+sqlite3 ~/.local/state/proton-drive-sync/sync_index.db 'select * from file_index order by file_path;'
 ```
 
 ## License
