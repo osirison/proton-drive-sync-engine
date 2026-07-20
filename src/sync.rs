@@ -668,11 +668,21 @@ fn plan_ongoing_file_action(
             }
             _ => Some(PlannedAction::conflict(path, remote_id(remote, base))),
         },
-        // Local is absent, so there is no local content to compare; the remote change
-        // cannot be safely discarded, so preserve it as a conflict.
-        (FileDelta::Missing, FileDelta::Changed) => {
-            Some(PlannedAction::conflict(path, remote_id(remote, base)))
-        }
+        // Local was deleted while the remote was edited since the baseline. There is no
+        // local content left to preserve, so a `.proton-cloud` sidecar would only strand
+        // the remote's sole surviving copy under an odd name — and, with no local file to
+        // upsert, the daemon could never record the resolution, re-downloading that
+        // sidecar on every reconcile forever. Treat the remote edit as authoritative and
+        // restore it at the original path; the delete/edit ambiguity resolves in favor of
+        // the surviving content and converges in a single pass. A user who still wants it
+        // gone can delete it again once the remote is unchanged, which then propagates
+        // cleanly as `(Missing, Unchanged)` -> RemoteDelete.
+        (FileDelta::Missing, FileDelta::Changed) => Some(PlannedAction::new(
+            path,
+            SyncAction::Download,
+            EntityKind::File,
+            remote_id(remote, base),
+        )),
         // Remote is confirmed missing (not merely unknown), so there is nothing to
         // download for a conflict sidecar; `remote_id(remote, base)` would otherwise
         // fall back to the stale base id and guarantee every reconcile attempt fails
@@ -1449,6 +1459,36 @@ mod tests {
     }
 
     #[test]
+    fn locally_deleted_file_edited_remotely_restores_the_remote_edit() {
+        // notes.txt was synced at base A, then deleted locally while the remote copy was
+        // edited to B. With no local content left to preserve, the remote edit is
+        // authoritative and is restored via Download (not stranded in a sidecar that the
+        // daemon could never record, which used to re-download every reconcile).
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "id-1", Some("hash-b")),
+        );
+        base_index.insert(
+            PathBuf::from("notes.txt"),
+            base("notes.txt", Some("id-1"), "hash-a"),
+        );
+
+        let planned = plan_sync(&HashMap::new(), &remote_files, &base_index);
+        let action = planned
+            .iter()
+            .find(|action| action.path == Path::new("notes.txt"))
+            .expect("an action must be planned");
+        assert_eq!(action.action, SyncAction::Download);
+        assert_eq!(action.remote_id.as_deref(), Some("id-1"));
+        assert_eq!(
+            action.conflict_path, None,
+            "the resurrect path is a plain download, not a conflict sidecar"
+        );
+    }
+
+    #[test]
     fn locally_edited_file_missing_remotely_conflicts_without_a_download_target() {
         let mut local_files = HashMap::new();
         let mut base_index = HashMap::new();
@@ -2000,9 +2040,9 @@ mod tests {
         let mut base_index = HashMap::new();
 
         // "docs" is gone locally, but its child file was independently modified on
-        // the remote side after the last sync, so this is a genuine conflict rather
-        // than a clean subtree deletion. The directory must not be recursively
-        // deleted out from under the diverging descendant.
+        // the remote side after the last sync, so the subtree was not cleanly removed.
+        // The directory must not be recursively deleted out from under the diverging
+        // descendant; instead it is recreated locally and the remote edit is restored.
         remote_entities.insert(
             PathBuf::from("docs"),
             remote_directory("docs", Some("docs-id")),
@@ -2031,8 +2071,9 @@ mod tests {
             planned
                 .iter()
                 .any(|action| action.path == Path::new("docs/report.txt")
-                    && action.action == SyncAction::Conflict),
-            "the diverging descendant should still be reported as its own conflict: {planned:?}"
+                    && action.action == SyncAction::Download),
+            "the diverging descendant (locally deleted, remotely edited) must restore the \
+             remote edit rather than be swept up in a subtree delete: {planned:?}"
         );
     }
 

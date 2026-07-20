@@ -2696,6 +2696,84 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_restores_remotely_edited_file_deleted_locally_and_then_converges() {
+        // A synced file is deleted locally while the remote copy is edited. The first
+        // reconcile must restore the remote edit at the original path and record it, and
+        // the second reconcile must be a no-op instead of re-downloading forever.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let remote_content = b"remotely edited content".to_vec();
+        // The sha1 the daemon will record for the restored bytes; the fake remote must
+        // advertise the same hash so the second reconcile sees the file as converged.
+        let hash_probe = directory.path().join("hash-probe");
+        fs::write(&hash_probe, &remote_content).expect("hash probe");
+        let remote_hash = crate::index::compute_sha1(&hash_probe).expect("remote hash");
+        fs::remove_file(&hash_probe).ok();
+
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some(remote_hash.as_str())),
+        );
+        let mut remote_contents = HashMap::new();
+        remote_contents.insert(
+            PathBuf::from("/Drive/RemoteFolder/notes.txt"),
+            remote_content.clone(),
+        );
+        let (client, operations) =
+            RecordingProtonClient::with_remote_contents(remote_files, remote_contents);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        // Baseline records notes.txt as previously synced at a stale hash; the file is
+        // absent on disk (deleted locally).
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash-a"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("first reconcile");
+
+        let restored = local_root.join("notes.txt");
+        assert_eq!(
+            fs::read(&restored).expect("restored file"),
+            remote_content,
+            "the remote edit must be restored at the original path"
+        );
+        assert!(
+            !local_root.join("notes.proton-cloud.txt").exists(),
+            "restoring must not create a conflict sidecar"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+        assert_eq!(record.sha1_hash.as_deref(), Some(remote_hash.as_str()));
+        let downloads = |ops: &Arc<Mutex<Vec<RecordedOperation>>>| {
+            ops.lock()
+                .expect("operations lock")
+                .iter()
+                .filter(|op| matches!(op, RecordedOperation::Download { .. }))
+                .count()
+        };
+        assert_eq!(
+            downloads(&operations),
+            1,
+            "the first reconcile restores the remote edit with exactly one download"
+        );
+
+        daemon.reconcile_blocking().expect("second reconcile");
+
+        assert_eq!(
+            downloads(&operations),
+            1,
+            "a restored, converged file must not be re-downloaded on the next reconcile"
+        );
+    }
+
+    #[test]
     fn watcher_ignores_conflict_sidecar_create_events() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
