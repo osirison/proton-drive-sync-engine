@@ -38,6 +38,7 @@ Supported today:
 * File-level synchronization
 * SHA-1 based change detection where Proton Drive exposes a file digest
 * Conservative handling for remote files whose digest is unavailable
+* Rename and move detection for files in either direction, and for directories renamed or moved on the remote side
 * Manual control through the companion CLI
 * Include and exclude glob filters over relative sync paths
 * Release archive creation for binaries and user-service sample assets
@@ -47,8 +48,8 @@ Not yet included:
 
 * Native package-manager packages
 * Cross-platform IPC for Windows
-* Automated mutating live end-to-end sync tests against a Proton Drive account
-* Rename detection implementation
+* Automated mutating live end-to-end test for the pause/resume scenario
+* Rename or move detection for directories renamed or moved on the local side
 * Distributed tracing or dashboards
 
 ## Requirements
@@ -371,15 +372,16 @@ Conflict sidecars are ignored by regular local scans so they do not create new s
 * The IPC socket is restricted to mode `0600` after binding.
 * The advisory lockfile prevents two live daemon instances from using the same configuration at once.
 * The daemon shells out to the configured `proton-drive` executable. Use a trusted executable path.
-* Proton Drive CLI calls are bounded by a timeout so a hung subprocess cannot block reconciliation indefinitely.
+* Proton Drive CLI calls are bounded by a timeout so a hung subprocess cannot block reconciliation indefinitely; a shutdown signal can also interrupt a stuck call directly, well before its full timeout would otherwise elapse.
+* When a command is cancelled or times out, the daemon terminates the CLI process's entire process group (not just the directly spawned process), so a subprocess that has forked helpers of its own cannot keep running unnoticed after the daemon has already reported the operation as cancelled.
 * Read-only remote listings may be retried after a transient CLI failure; uploads, downloads, and deletes are not automatically retried to avoid duplicate or surprising side effects.
 * Reconciliation commits SQLite index mutations only after all planned side effects succeed. If a later action fails, earlier successful actions are not marked as synced in the index.
 * Live end-to-end testing must follow the safety gates in [docs/live-e2e-test-plan.md](docs/live-e2e-test-plan.md) before enabling mutating Proton Drive scenarios.
 
 ## Design Notes
 
-* [docs/live-e2e-test-plan.md](docs/live-e2e-test-plan.md) defines the opt-in safety gates and scenario matrix for future live upload, download, delete, and conflict tests.
-* [docs/rename-detection-design.md](docs/rename-detection-design.md) defines the planner and index approach for future safe rename detection.
+* [docs/live-e2e-test-plan.md](docs/live-e2e-test-plan.md) defines the opt-in safety gates and scenario matrix for live upload, download, rename, move, delete, directory id/trash/rename, and conflict tests, plus the still-pending pause/resume scenario.
+* [docs/rename-detection-design.md](docs/rename-detection-design.md) defines the planner and index approach for safe rename and move detection, including the directory-level remote-to-local design and its local-to-remote limitation.
 
 ## Project Layout
 
@@ -402,7 +404,7 @@ examples/
   systemd/           Sample systemd user service and install helper
 docs/
   live-e2e-test-plan.md       Safety plan for mutating live tests
-  rename-detection-design.md  Design for future rename detection
+  rename-detection-design.md  Design for rename and move detection
 ```
 
 ## Development Workflow

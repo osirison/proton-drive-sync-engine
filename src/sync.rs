@@ -168,11 +168,30 @@ fn plan_file_path_transitions(
                         base_index,
                         base,
                     )
+                })
+                .or_else(|| {
+                    plan_remote_directory_move(
+                        &path,
+                        local_entities,
+                        remote_entities,
+                        base_index,
+                        base,
+                    )
                 });
         if let Some(action) = action {
             suppressed_paths.insert(action.path.clone());
             if let Some(destination_path) = action.destination_path.clone() {
-                suppressed_paths.insert(destination_path);
+                suppressed_paths.insert(destination_path.clone());
+                if action.entity_kind == EntityKind::Directory {
+                    for (old_descendant, new_descendant) in directory_move_descendant_path_pairs(
+                        &action.path,
+                        &destination_path,
+                        base_index,
+                    ) {
+                        suppressed_paths.insert(old_descendant);
+                        suppressed_paths.insert(new_descendant);
+                    }
+                }
             }
             actions.push(action);
         }
@@ -204,6 +223,7 @@ fn plan_remote_file_move(
     Some(PlannedAction::move_local(
         old_path,
         &new_path,
+        EntityKind::File,
         Some(remote.id.clone()),
     ))
 }
@@ -233,6 +253,7 @@ fn plan_local_rename_as_remote_move(
     Some(PlannedAction::move_remote(
         old_path,
         Some(&new_path),
+        EntityKind::File,
         Some(remote.id.clone()),
     ))
 }
@@ -243,6 +264,104 @@ fn base_file_hash(base: &FileRecord) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// Detects a directory that was renamed or moved on the remote side and converges the
+/// local side to match via a zero-mutation local filesystem rename, mirroring
+/// `plan_remote_file_move`. Directories have no content hash, so the base record's
+/// `proton_id` (see the backfill logic in `plan_ongoing_directory_action`) is the sole
+/// and required matching key; a directory whose id was never backfilled correctly,
+/// conservatively never matches here and keeps today's non-destructive recreate
+/// fallback.
+///
+/// Local-to-remote directory rename detection (the inverse direction) is a deliberate
+/// non-goal: a local directory has no stable identity of its own (unlike a file, which
+/// can be matched by content hash), so detecting "this new local directory is the same
+/// one that used to be at the old path" purely from local state is not reliable to infer
+/// with the same rigor used everywhere else in this planner. See
+/// `docs/rename-detection-design.md` for the full rationale.
+fn plan_remote_directory_move(
+    old_path: &Path,
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+    base: &FileRecord,
+) -> Option<PlannedAction> {
+    let base_id = base_directory_id(base)?;
+    local_entities.get(old_path)?.as_directory()?;
+    if remote_entities.contains_key(old_path) {
+        return None;
+    }
+    let new_path = unique_remote_directory_move_destination(
+        old_path,
+        base_id,
+        local_entities,
+        remote_entities,
+        base_index,
+    )?;
+    Some(PlannedAction::move_local(
+        old_path,
+        &new_path,
+        EntityKind::Directory,
+        Some(base_id.to_owned()),
+    ))
+}
+
+fn base_directory_id(base: &FileRecord) -> Option<&str> {
+    if base.entity_kind == EntityKind::Directory {
+        base.proton_id.as_deref()
+    } else {
+        None
+    }
+}
+
+fn unique_remote_directory_move_destination(
+    old_path: &Path,
+    base_id: &str,
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> Option<PathBuf> {
+    let candidates: Vec<_> = remote_entities
+        .iter()
+        .filter_map(|(path, entity)| {
+            let remote = entity.as_directory()?;
+            if path == old_path
+                || local_entities.contains_key(path)
+                || base_index.contains_key(path)
+                || remote.id.as_deref() != Some(base_id)
+            {
+                return None;
+            }
+            Some(path.clone())
+        })
+        .collect();
+    if candidates.len() == 1 {
+        candidates.into_iter().next()
+    } else {
+        None
+    }
+}
+
+/// For every base-index path strictly nested under `old_path`, compute the path it
+/// should move to once `old_path` itself moves to `new_path`, preserving the relative
+/// suffix under the directory. Used both to suppress ordinary per-path planning for a
+/// moved directory's descendants (`plan_file_path_transitions`) and to rewrite their
+/// index rows at execution time (`Daemon::reconcile_blocking_inner`), so the two stay
+/// perfectly consistent with each other.
+pub(crate) fn directory_move_descendant_path_pairs(
+    old_path: &Path,
+    new_path: &Path,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> Vec<(PathBuf, PathBuf)> {
+    base_index
+        .keys()
+        .filter(|path| is_strict_descendant(old_path, path))
+        .filter_map(|path| {
+            let relative = path.strip_prefix(old_path).ok()?;
+            Some((path.clone(), new_path.join(relative)))
+        })
+        .collect()
 }
 
 fn unique_remote_move_destination<'a>(
@@ -520,7 +639,24 @@ fn plan_ongoing_directory_action(
     suppressed_paths: &BTreeSet<PathBuf>,
 ) -> Option<PlannedAction> {
     match (local.is_some(), remote.is_some()) {
-        (true, true) => None,
+        // Both sides already agree the directory exists. Backfill the base record's
+        // `proton_id` when the remote listing now exposes an id that the base record
+        // does not already have recorded (this is the only time a locally-first-created
+        // directory's id is ever discovered, since `ensure_directory` itself returns no
+        // id). Once the ids already match, no further action is emitted.
+        (true, true) => {
+            let remote_id = remote.and_then(|directory| directory.id.clone());
+            if remote_id.is_some() && remote_id != base.proton_id {
+                Some(PlannedAction::new(
+                    path,
+                    SyncAction::AutoLink,
+                    EntityKind::Directory,
+                    remote_id,
+                ))
+            } else {
+                None
+            }
+        }
         // Directory still exists locally but is gone remotely. Recreate it remotely
         // unless every tracked descendant independently proves the whole subtree was
         // cleanly removed remotely, in which case propagate the deletion locally.
@@ -774,12 +910,17 @@ impl PlannedAction {
         }
     }
 
-    fn move_local(path: &Path, destination_path: &Path, remote_id: Option<String>) -> Self {
+    fn move_local(
+        path: &Path,
+        destination_path: &Path,
+        entity_kind: EntityKind,
+        remote_id: Option<String>,
+    ) -> Self {
         Self {
             path: path.to_path_buf(),
             destination_path: Some(destination_path.to_path_buf()),
             action: SyncAction::MoveLocal,
-            entity_kind: EntityKind::File,
+            entity_kind,
             conflict_path: None,
             remote_id,
         }
@@ -788,13 +929,14 @@ impl PlannedAction {
     fn move_remote(
         path: &Path,
         destination_path: Option<&Path>,
+        entity_kind: EntityKind,
         remote_id: Option<String>,
     ) -> Self {
         Self {
             path: path.to_path_buf(),
             destination_path: destination_path.map(Path::to_path_buf),
             action: SyncAction::MoveRemote,
-            entity_kind: EntityKind::File,
+            entity_kind,
             conflict_path: None,
             remote_id,
         }
@@ -1276,6 +1418,98 @@ mod tests {
     }
 
     #[test]
+    fn backfills_directory_proton_id_once_remote_exposes_it() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        // "docs" was created locally-first (`ensure_directory` returns no id), so its
+        // base record has `proton_id: None` even though the directory now genuinely
+        // exists remotely with a real id once discovered on this reconcile's listing.
+        local_entities.insert(PathBuf::from("docs"), local_directory("docs"));
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        base_index.insert(PathBuf::from("docs"), directory_base("docs", None));
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        let action = planned
+            .iter()
+            .find(|action| action.path == Path::new("docs"))
+            .expect("docs directory should backfill its proton_id");
+        assert_eq!(action.action, SyncAction::AutoLink);
+        assert_eq!(action.entity_kind, EntityKind::Directory);
+        assert_eq!(action.remote_id.as_deref(), Some("docs-id"));
+    }
+
+    #[test]
+    fn does_not_re_backfill_directory_proton_id_once_already_linked() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("docs"), local_directory("docs"));
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            !planned
+                .iter()
+                .any(|action| action.path == Path::new("docs")),
+            "an already-linked directory with agreeing ids should plan no action: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn backfilling_one_directorys_id_never_touches_a_different_directorys_record() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("docs"), local_directory("docs"));
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        base_index.insert(PathBuf::from("docs"), directory_base("docs", None));
+
+        local_entities.insert(PathBuf::from("archive"), local_directory("archive"));
+        remote_entities.insert(
+            PathBuf::from("archive"),
+            remote_directory("archive", Some("archive-id")),
+        );
+        base_index.insert(
+            PathBuf::from("archive"),
+            directory_base("archive", Some("archive-id")),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        let docs_action = planned
+            .iter()
+            .find(|action| action.path == Path::new("docs"))
+            .expect("docs directory should backfill its own proton_id");
+        assert_eq!(docs_action.remote_id.as_deref(), Some("docs-id"));
+        assert!(
+            !planned
+                .iter()
+                .any(|action| action.path == Path::new("archive")),
+            "an unrelated, already-linked directory must never be touched by another \
+             directory's backfill: {planned:?}"
+        );
+    }
+
+    #[test]
     fn directory_entities_plan_safe_create_and_purge_actions() {
         let mut local_entities = HashMap::new();
         let mut remote_entities = HashMap::new();
@@ -1557,6 +1791,150 @@ mod tests {
                 .iter()
                 .all(|action| action.action != SyncAction::MoveLocal),
             "ambiguous content matches must not be inferred as a rename: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn remote_directory_rename_plans_local_move_when_id_is_unique() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("old-docs"), local_directory("old-docs"));
+        remote_entities.insert(
+            PathBuf::from("new-docs"),
+            remote_directory("new-docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("old-docs"),
+            directory_base("old-docs", Some("docs-id")),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert_eq!(planned.len(), 1, "{planned:?}");
+        assert_eq!(planned[0].action, SyncAction::MoveLocal);
+        assert_eq!(planned[0].entity_kind, EntityKind::Directory);
+        assert_eq!(planned[0].path, PathBuf::from("old-docs"));
+        assert_eq!(
+            planned[0].destination_path.as_deref(),
+            Some(Path::new("new-docs"))
+        );
+        assert_eq!(planned[0].remote_id.as_deref(), Some("docs-id"));
+    }
+
+    #[test]
+    fn remote_directory_move_suppresses_nested_file_and_subdirectory_from_independent_planning() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("old-docs"), local_directory("old-docs"));
+        remote_entities.insert(
+            PathBuf::from("new-docs"),
+            remote_directory("new-docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("old-docs"),
+            directory_base("old-docs", Some("docs-id")),
+        );
+        // A nested file and a nested subdirectory "along for the ride" inside the
+        // moved directory: their base records still reference the OLD prefix, since
+        // this reconcile's local/remote listings only reflect the top-level move.
+        base_index.insert(
+            PathBuf::from("old-docs/report.txt"),
+            base("old-docs/report.txt", Some("report-id"), "same-hash"),
+        );
+        base_index.insert(
+            PathBuf::from("old-docs/sub"),
+            directory_base("old-docs/sub", Some("sub-id")),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert_eq!(
+            planned.len(),
+            1,
+            "the directory move should be the only planned action; descendants must be \
+             suppressed rather than independently replanned: {planned:?}"
+        );
+        assert_eq!(planned[0].path, PathBuf::from("old-docs"));
+        assert_eq!(planned[0].action, SyncAction::MoveLocal);
+    }
+
+    #[test]
+    fn directory_move_is_not_inferred_without_a_backfilled_proton_id() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("old-docs"), local_directory("old-docs"));
+        // A locally-modified descendant keeps the subtree from looking "cleanly
+        // deleted", isolating this test to the move-inference decision itself rather
+        // than the pre-existing empty-directory delete-propagation behavior.
+        local_entities.insert(
+            PathBuf::from("old-docs/report.txt"),
+            LocalEntityState::File(local("old-docs/report.txt", "changed-locally")),
+        );
+        remote_entities.insert(
+            PathBuf::from("new-docs"),
+            remote_directory("new-docs", Some("docs-id")),
+        );
+        base_index.insert(PathBuf::from("old-docs"), directory_base("old-docs", None));
+        base_index.insert(
+            PathBuf::from("old-docs/report.txt"),
+            base("old-docs/report.txt", Some("report-id"), "original-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            planned
+                .iter()
+                .all(|action| action.action != SyncAction::MoveLocal),
+            "a directory without a backfilled proton_id must not infer a move: {planned:?}"
+        );
+        let directory_action = planned
+            .iter()
+            .find(|action| action.path == Path::new("old-docs"))
+            .expect("old-docs directory should still be planned");
+        assert_eq!(
+            directory_action.action,
+            SyncAction::CreateRemoteDirectory,
+            "without a proton_id to match, the directory should keep the existing \
+             non-destructive recreate fallback: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_directory_move_candidates_are_not_inferred() {
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        // Two different directories share the same (corrupted/duplicated) id in this
+        // remote listing; the move must not be inferred from ambiguous evidence.
+        local_entities.insert(PathBuf::from("old-docs"), local_directory("old-docs"));
+        remote_entities.insert(
+            PathBuf::from("candidate-a"),
+            remote_directory("candidate-a", Some("docs-id")),
+        );
+        remote_entities.insert(
+            PathBuf::from("candidate-b"),
+            remote_directory("candidate-b", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("old-docs"),
+            directory_base("old-docs", Some("docs-id")),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            planned
+                .iter()
+                .all(|action| action.action != SyncAction::MoveLocal),
+            "ambiguous id matches must not be inferred as a directory move: {planned:?}"
         );
     }
 

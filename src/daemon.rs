@@ -9,8 +9,8 @@ use crate::ipc::{
 };
 use crate::proton::{CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity};
 use crate::sync::{
-    PlanSummary, PlannedAction, SyncAction, is_strict_descendant, original_from_conflict_copy,
-    plan_sync_entities,
+    PlanSummary, PlannedAction, SyncAction, directory_move_descendant_path_pairs,
+    is_strict_descendant, original_from_conflict_copy, plan_sync_entities,
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -21,6 +21,8 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -164,6 +166,18 @@ impl<C: ProtonClient> Daemon<C> {
             socket_path = %self.config.socket_path.display(),
             "starting daemon"
         );
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.proton.install_cancel_flag(Arc::clone(&cancel_flag));
+        // Runs independently of the select! loop below so it can still observe a
+        // shutdown signal and flip the flag while the main task is blocked inside
+        // `reconcile()`'s synchronous `block_in_place` call, letting an in-flight
+        // proton-drive command be cancelled promptly instead of only being noticed
+        // once that blocking call returns control to this task.
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            cancel_flag.store(true, Ordering::SeqCst);
+        });
+
         let listener = bind_listener(&self.config.socket_path).await?;
         let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
@@ -463,15 +477,45 @@ impl<C: ProtonClient> Daemon<C> {
                     {
                         ensure_parent_directory(&destination)?;
                         fs::rename(&source, &destination)?;
-                        let local_state = local_file_state(&self.config.local_root, &destination)?;
-                        let record = FileRecord::from_local(
-                            destination_path.clone(),
-                            &local_state,
-                            action.remote_id.clone(),
-                            SyncStatus::Synced,
-                        );
-                        index_mutations.push(IndexMutation::Purge(action.path.clone()));
-                        index_mutations.push(IndexMutation::Upsert(record));
+                        if action.entity_kind == EntityKind::Directory {
+                            let local_state =
+                                local_directory_state(&self.config.local_root, &destination)?;
+                            let record = FileRecord::from_local_directory(
+                                destination_path.clone(),
+                                &local_state,
+                                action.remote_id.clone(),
+                                SyncStatus::Synced,
+                            );
+                            index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                            index_mutations.push(IndexMutation::Upsert(record));
+                            for (old_descendant, new_descendant) in
+                                directory_move_descendant_path_pairs(
+                                    &action.path,
+                                    destination_path,
+                                    &base_index,
+                                )
+                            {
+                                if let Some(descendant_record) = base_index.get(&old_descendant) {
+                                    index_mutations
+                                        .push(IndexMutation::Purge(old_descendant.clone()));
+                                    index_mutations.push(IndexMutation::Upsert(FileRecord {
+                                        file_path: new_descendant,
+                                        ..descendant_record.clone()
+                                    }));
+                                }
+                            }
+                        } else {
+                            let local_state =
+                                local_file_state(&self.config.local_root, &destination)?;
+                            let record = FileRecord::from_local(
+                                destination_path.clone(),
+                                &local_state,
+                                action.remote_id.clone(),
+                                SyncStatus::Synced,
+                            );
+                            index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                            index_mutations.push(IndexMutation::Upsert(record));
+                        }
                     }
                 }
                 SyncAction::MoveRemote => {
@@ -1912,6 +1956,169 @@ mod tests {
                 .expect("index lookup")
                 .is_none(),
             "recursive local delete should purge descendant index records too"
+        );
+    }
+
+    #[test]
+    fn reconcile_moves_local_directory_and_rewrites_descendant_index_rows() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("old-docs")).expect("local old-docs directory");
+        let file_path = local_root.join("old-docs").join("report.txt");
+        fs::write(&file_path, b"same content").expect("nested local file");
+        let file_hash = crate::index::compute_sha1(&file_path).expect("nested file hash");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("new-docs"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("new-docs"),
+                id: Some("docs-id".to_owned()),
+                name: "new-docs".to_owned(),
+            }),
+        );
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &FileRecord {
+                file_path: PathBuf::from("old-docs"),
+                entity_kind: EntityKind::Directory,
+                file_size: 0,
+                mtime: 1,
+                sha1_hash: None,
+                proton_id: Some("docs-id".to_owned()),
+                sync_status: SyncStatus::Synced,
+            },
+        )
+        .expect("directory base record");
+        upsert_record(
+            &daemon.connection,
+            &base_record("old-docs/report.txt", Some("report-id"), file_hash.as_str()),
+        )
+        .expect("nested file base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations.lock().expect("operations lock").is_empty(),
+            "remote directory rename convergence should not call any Proton mutation"
+        );
+        assert!(
+            !local_root.join("old-docs").exists(),
+            "old local directory path should be moved away"
+        );
+        assert!(local_root.join("new-docs").is_dir());
+        assert!(local_root.join("new-docs").join("report.txt").is_file());
+        assert!(
+            get_record(&daemon.connection, Path::new("old-docs"))
+                .expect("old directory index lookup")
+                .is_none(),
+            "old directory path should be purged from the index"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("old-docs/report.txt"))
+                .expect("old descendant index lookup")
+                .is_none(),
+            "old descendant path should be purged from the index"
+        );
+        let directory_record = get_record(&daemon.connection, Path::new("new-docs"))
+            .expect("new directory index lookup")
+            .expect("new directory index record");
+        assert_eq!(directory_record.entity_kind, EntityKind::Directory);
+        assert_eq!(directory_record.proton_id.as_deref(), Some("docs-id"));
+        let descendant_record = get_record(&daemon.connection, Path::new("new-docs/report.txt"))
+            .expect("new descendant index lookup")
+            .expect("new descendant index record");
+        assert_eq!(descendant_record.proton_id.as_deref(), Some("report-id"));
+        assert_eq!(
+            descendant_record.sha1_hash.as_deref(),
+            Some(file_hash.as_str())
+        );
+        assert_eq!(descendant_record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_does_not_commit_directory_move_when_later_action_fails() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("old-docs")).expect("local old-docs directory");
+        let file_path = local_root.join("old-docs").join("report.txt");
+        fs::write(&file_path, b"same content").expect("nested local file");
+        let file_hash = crate::index::compute_sha1(&file_path).expect("nested file hash");
+        fs::write(local_root.join("will-fail.txt"), b"fails").expect("failing upload file");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("new-docs"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("new-docs"),
+                id: Some("docs-id".to_owned()),
+                name: "new-docs".to_owned(),
+            }),
+        );
+        let (mut client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        client.failed_uploads = BTreeSet::from([PathBuf::from("will-fail.txt")]);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &FileRecord {
+                file_path: PathBuf::from("old-docs"),
+                entity_kind: EntityKind::Directory,
+                file_size: 0,
+                mtime: 1,
+                sha1_hash: None,
+                proton_id: Some("docs-id".to_owned()),
+                sync_status: SyncStatus::Synced,
+            },
+        )
+        .expect("directory base record");
+        upsert_record(
+            &daemon.connection,
+            &base_record("old-docs/report.txt", Some("report-id"), file_hash.as_str()),
+        )
+        .expect("nested file base record");
+
+        let error = daemon
+            .reconcile_blocking()
+            .expect_err("later upload should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("upload failed for will-fail.txt"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .iter()
+                .any(|operation| matches!(operation, RecordedOperation::Upload { .. })),
+            "the later upload attempt should still have been made"
+        );
+        assert!(
+            !local_root.join("old-docs").exists(),
+            "the directory rename side effect happens before the later failure"
+        );
+        assert!(local_root.join("new-docs").join("report.txt").is_file());
+        assert!(
+            get_record(&daemon.connection, Path::new("old-docs"))
+                .expect("old directory index lookup")
+                .is_some(),
+            "a successful directory move must not be committed when a later action fails"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("old-docs/report.txt"))
+                .expect("old descendant index lookup")
+                .is_some(),
+            "descendant rewrites queued by an earlier action must not be committed either"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("new-docs"))
+                .expect("new directory index lookup")
+                .is_none(),
+            "no new index row should appear until the whole reconcile succeeds"
         );
     }
 

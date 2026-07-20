@@ -116,12 +116,15 @@ mod unix_tests {
 
     // Regression test for real SIGINT handling during a blocked sync. The daemon's
     // main loop is a single tokio task that runs its reconcile step via
-    // `block_in_place`, so a SIGINT that arrives while a proton-drive call is stuck
-    // is only *observed* once that call returns control to the loop - it is not
-    // acted on the instant the signal is delivered. This test proves the daemon
-    // still reaches a clean, bounded shutdown once its own command timeout kills
-    // the stuck CLI process, and that the interruption leaves no partial index
-    // state and releases the lockfile.
+    // `block_in_place`, so a SIGINT is observed by a separate, always-running task
+    // that flips a shared cancel flag the instant the signal arrives; `run_once`'s
+    // polling loop (see `src/proton.rs`) then notices that flag within its short
+    // poll interval and kills the stuck CLI's whole process group, letting the
+    // blocked reconcile call return well before the CLI's own command timeout
+    // would otherwise elapse. This test proves the daemon reaches a clean,
+    // tightly bounded shutdown - not just eventually, or only once its own
+    // command timeout kills the stuck CLI process - and that the interruption
+    // leaves no partial index state and releases the lockfile.
     #[test]
     fn sigint_during_blocked_upload_exits_cleanly_without_partial_index_state() {
         let directory = tempdir().expect("tempdir");
@@ -165,7 +168,7 @@ mod unix_tests {
         assert!(status.success(), "kill -INT should succeed");
 
         let synced = result_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(3))
             .expect("syncnow should still receive a response once the blocked CLI call times out");
         assert!(
             synced["message"]
@@ -175,7 +178,7 @@ mod unix_tests {
             "an interrupted upload should be reported as a failed sync: {synced}"
         );
 
-        let exit_status = wait_for_exit(&mut daemon.child, Duration::from_secs(5))
+        let exit_status = wait_for_exit(&mut daemon.child, Duration::from_secs(2))
             .expect("daemon should exit promptly once it re-observes the already-delivered SIGINT");
         assert!(
             exit_status.success(),
@@ -363,8 +366,8 @@ if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ] && [ "$4"
     exit 0
 fi
 if [ "$1" = "filesystem" ] && [ "$2" = "upload" ]; then
-    printf 'upload:%s:%s\n' "$3" "$4" >> "$0.args"
-    if [ "$(basename "$3")" = "second.txt" ]; then
+    printf 'upload:%s:%s\n' "$5" "$6" >> "$0.args"
+    if [ "$(basename "$5")" = "second.txt" ]; then
         echo "simulated interrupted upload" >&2
         exit 130
     fi

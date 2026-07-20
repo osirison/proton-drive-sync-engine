@@ -3,9 +3,12 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::warn;
 use wait_timeout::ChildExt;
 
@@ -13,6 +16,11 @@ const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_LIST_ATTEMPTS: usize = 2;
 const EXECUTABLE_BUSY_SPAWN_ATTEMPTS: usize = 3;
 const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
+/// How often `run_once` checks the shared cancellation flag while waiting for a
+/// `proton-drive` child process to exit. Bounds how long a cooperative shutdown
+/// takes to notice a cancellation request; it does not change the total timeout
+/// budget enforced by `CommandPolicy::timeout`.
+const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +134,7 @@ impl RemoteListing {
 pub struct ProtonDriveClient {
     executable: PathBuf,
     command_policy: CommandPolicy,
+    cancel_flag: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +172,11 @@ pub trait ProtonClient: Send + Sync {
             new_relative_path.display()
         )))
     }
+    /// Installs a shared cancellation flag that this client may poll to abort an
+    /// in-flight command promptly instead of running to completion or timeout. The
+    /// default implementation is a no-op, so test doubles are unaffected unless they
+    /// choose to opt in.
+    fn install_cancel_flag(&mut self, _cancel_flag: Arc<AtomicBool>) {}
 }
 
 impl ProtonDriveClient {
@@ -170,6 +184,7 @@ impl ProtonDriveClient {
         Self {
             executable: executable.into(),
             command_policy: CommandPolicy::default(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -187,6 +202,7 @@ impl ProtonDriveClient {
         Self {
             executable: executable.into(),
             command_policy,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -279,11 +295,24 @@ impl ProtonClient for ProtonDriveClient {
             .parent()
             .map(|parent| remote_root.join(parent))
             .unwrap_or_else(|| remote_root.to_path_buf());
+        // `filesystem upload` prompts interactively for a conflict strategy whenever the
+        // destination folder already contains a file with the same name (i.e. every time
+        // the planner uploads a new revision of a previously synced file). With stdin
+        // wired to `Stdio::null()` that prompt sees immediate EOF and the CLI silently
+        // *skips* the file while still exiting 0 - the remote content is never updated,
+        // yet the daemon would record the path as `SyncStatus::Synced`. Always pass an
+        // explicit `--file-conflict-strategy replace` so a same-named upload creates a
+        // new revision instead of hitting that prompt; this matches the planner's own
+        // intent, since `SyncAction::Upload` is only ever chosen after the local content
+        // has already been determined (via SHA-1 comparison) to be the version that
+        // should win.
         let output = self.run_proton_drive(
             "upload",
             &[
                 OsString::from("filesystem"),
                 OsString::from("upload"),
+                OsString::from("--file-conflict-strategy"),
+                OsString::from("replace"),
                 local_path.as_os_str().to_os_string(),
                 remote_parent.as_os_str().to_os_string(),
             ],
@@ -307,25 +336,71 @@ impl ProtonClient for ProtonDriveClient {
                 destination.display()
             ))
         })?;
+
+        // `filesystem download <remotePath> <localFolder>` always names the downloaded
+        // file after `remotePath`'s own basename inside `localFolder`; it does not
+        // rename the result to `destination`'s basename. Most callers pass a
+        // `destination` whose basename already matches the remote source (plain
+        // `SyncAction::Download`), so this quirk is invisible there. But conflict
+        // resolution intentionally downloads the remote's competing revision under a
+        // *different* local name (the `.proton-cloud.` sidecar), specifically so the
+        // caller's own conflicting file is left untouched. Downloading straight into
+        // `local_folder` in that case would silently overwrite whatever file already
+        // has the remote's basename there - for a conflict sidecar, that is exactly the
+        // file this download is supposed to preserve. To make `download`'s contract
+        // safe for every caller ("the content ends up at exactly `destination`, and
+        // nothing else is touched"), always stage the download in a private scratch
+        // directory first and move the single resulting entry into place with one
+        // rename, rather than trusting the CLI to name it correctly on the first try.
+        let scratch_dir = local_folder.join(format!(
+            ".proton-sync-download-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&scratch_dir).map_err(|error| {
+            boxed_error(format!(
+                "failed to create scratch download directory {}: {error}",
+                scratch_dir.display()
+            ))
+        })?;
+        let _scratch_guard = ScratchDirGuard::new(&scratch_dir);
+
         let output = self.run_proton_drive(
             "download",
             &[
                 OsString::from("filesystem"),
                 OsString::from("download"),
                 remote_path.as_os_str().to_os_string(),
-                local_folder.as_os_str().to_os_string(),
+                scratch_dir.as_os_str().to_os_string(),
             ],
             1,
         )?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(boxed_error(format!(
+        if !output.status.success() {
+            return Err(boxed_error(format!(
                 "proton-drive download failed for {}: {}",
                 remote_path.display(),
                 String::from_utf8_lossy(&output.stderr)
-            )))
+            )));
         }
+
+        let downloaded_path = single_entry_in_directory(&scratch_dir).map_err(|error| {
+            boxed_error(format!(
+                "download of {} did not produce exactly one file in the scratch \
+                 directory {}: {error}",
+                remote_path.display(),
+                scratch_dir.display()
+            ))
+        })?;
+        fs::rename(&downloaded_path, destination).map_err(|error| {
+            boxed_error(format!(
+                "downloaded {} to a scratch location but failed to move it to {}: {error}",
+                remote_path.display(),
+                destination.display()
+            ))
+        })
     }
 
     fn delete(&self, remote_path: &Path) -> AppResult<()> {
@@ -387,6 +462,10 @@ impl ProtonClient for ProtonDriveClient {
         self.move_remote_entry(&old_remote_path, &new_parent_remote)?;
         let moved_remote_path = new_parent_remote.join(old_name);
         self.rename_remote_entry(&moved_remote_path, new_name)
+    }
+
+    fn install_cancel_flag(&mut self, cancel_flag: Arc<AtomicBool>) {
+        self.cancel_flag = cancel_flag;
     }
 }
 
@@ -577,32 +656,61 @@ impl ProtonDriveClient {
 
     fn run_once(&self, operation: &str, args: &[OsString]) -> AppResult<Output> {
         let mut child = self.spawn_once(args)?;
-        if child.wait_timeout(self.command_policy.timeout)?.is_some() {
-            return Ok(child.wait_with_output()?);
+        let deadline = Instant::now() + self.command_policy.timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                terminate_child_tree(&mut child);
+                warn!(
+                    operation,
+                    timeout_ms = self.command_policy.timeout.as_millis(),
+                    "proton-drive command timed out"
+                );
+                return Err(boxed_error(format!(
+                    "proton-drive {operation} timed out after {}",
+                    format_duration(self.command_policy.timeout)
+                )));
+            }
+            let poll_interval = remaining.min(CANCELLATION_POLL_INTERVAL);
+            if child.wait_timeout(poll_interval)?.is_some() {
+                return Ok(child.wait_with_output()?);
+            }
+            if self.cancel_flag.load(Ordering::SeqCst) {
+                terminate_child_tree(&mut child);
+                warn!(
+                    operation,
+                    "proton-drive command cancelled before completion"
+                );
+                return Err(boxed_error(format!(
+                    "proton-drive {operation} cancelled before completion"
+                )));
+            }
         }
-        let _ = child.kill();
-        let _ = child.wait_with_output();
-        warn!(
-            operation,
-            timeout_ms = self.command_policy.timeout.as_millis(),
-            "proton-drive command timed out"
-        );
-        Err(boxed_error(format!(
-            "proton-drive {operation} timed out after {}",
-            format_duration(self.command_policy.timeout)
-        )))
     }
 
     fn spawn_once(&self, args: &[OsString]) -> AppResult<Child> {
         let mut busy_attempts = 0;
         loop {
-            match Command::new(&self.executable)
+            let mut command = Command::new(&self.executable);
+            command
                 .args(args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
+                .stderr(Stdio::piped());
+            // Put the child in its own process group (group id == its own pid) so
+            // that a timed-out or cancelled command can be terminated as a whole
+            // tree via `terminate_child_tree`. Without this, killing only the
+            // directly spawned process (for example a shell wrapper) leaves any
+            // grandchildren it forked (for example a `sleep` invoked mid-script)
+            // running and still holding the piped stdout/stderr file descriptors
+            // open, which blocks output collection until those orphans exit on
+            // their own instead of returning promptly.
+            #[cfg(unix)]
             {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            match command.spawn() {
                 Ok(child) => return Ok(child),
                 Err(error)
                     if error.kind() == std::io::ErrorKind::ExecutableFileBusy
@@ -617,8 +725,77 @@ impl ProtonDriveClient {
     }
 }
 
+/// Terminates a spawned `proton-drive` command and every descendant it may have
+/// forked, then reaps the direct child without reading its output.
+///
+/// `spawn_once` places the child in its own process group, so on Unix this signals
+/// the whole group (`kill(-pid, SIGKILL)`) instead of only the directly tracked
+/// process. This matters because shell-wrapped or multi-step commands can fork
+/// grandchildren that inherit the piped stdout/stderr file descriptors; killing
+/// only the direct child would leave those descendants running; reading output
+/// via `wait_with_output` would then block until every holder of the pipe's
+/// write end exits on its own, defeating the purpose of a prompt timeout or
+/// cancellation. Using `wait` (not `wait_with_output`) here avoids that same
+/// blocking read for the direct child's own pipes.
+fn terminate_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: `kill` only sends a signal to the process group headed by
+        // `pid`; it does not dereference any pointers and cannot cause undefined
+        // behavior regardless of whether that group still exists.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn trimmed_stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_owned()
+}
+
+/// Removes its scratch directory (recursively) when dropped, including on early
+/// returns via `?`. Best-effort: a failure to clean up is silently ignored rather
+/// than masking the caller's real result, since leftover scratch directories are
+/// harmless clutter, not a correctness or safety problem.
+struct ScratchDirGuard {
+    path: PathBuf,
+}
+
+impl ScratchDirGuard {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for ScratchDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Returns the path of the single entry inside `directory`, failing if it contains
+/// zero or more than one entry. Used to locate a just-downloaded file without
+/// assuming the exact name the `proton-drive` CLI chose for it.
+fn single_entry_in_directory(directory: &Path) -> AppResult<PathBuf> {
+    let mut entries = fs::read_dir(directory)?;
+    let first = entries.next().transpose()?;
+    let second = entries.next().transpose()?;
+    match (first, second) {
+        (Some(entry), None) => Ok(entry.path()),
+        (None, None) => Err(boxed_error(format!(
+            "no entries were found in {}",
+            directory.display()
+        ))),
+        _ => Err(boxed_error(format!(
+            "expected exactly one entry in {}, found more than one",
+            directory.display()
+        ))),
+    }
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -974,6 +1151,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_remote_directory_id_from_wrapped_cli_metadata() {
+        let json = r#"
+                [
+                    {
+                        "uid": "folder-uid",
+                        "name": {
+                            "ok": true,
+                            "value": "Reports"
+                        },
+                        "type": "folder"
+                    }
+                ]
+                "#;
+
+        let entities = parse_remote_entities(json, Path::new("/my-files/demo/"))
+            .expect("parse remote entities");
+        let directory = entities
+            .get(Path::new("Reports"))
+            .and_then(RemoteEntity::as_directory)
+            .expect("Reports directory entity");
+
+        assert_eq!(directory.id.as_deref(), Some("folder-uid"));
+        assert_eq!(directory.name, "Reports");
+    }
+
+    #[test]
+    fn parses_remote_directory_with_no_id_as_none() {
+        let json = r#"
+                [
+                    {
+                        "name": "Documents",
+                        "type": "folder"
+                    }
+                ]
+                "#;
+
+        let entities =
+            parse_remote_entities(json, Path::new("/Drive")).expect("parse remote entities");
+        let directory = entities
+            .get(Path::new("Documents"))
+            .and_then(RemoteEntity::as_directory)
+            .expect("Documents directory entity");
+
+        assert_eq!(directory.id, None);
+    }
+
+    #[test]
     fn marks_proton_native_sheets_as_not_downloadable() {
         let json = r#"
                 [
@@ -1144,6 +1368,7 @@ printf '{"entries":[]}\n'
             CommandPolicy::new(Duration::from_millis(100), 1),
         );
 
+        let started = Instant::now();
         let error = client
             .list(Path::new("/Drive/RemoteFolder"))
             .expect_err("hung proton-drive should time out");
@@ -1151,6 +1376,96 @@ printf '{"entries":[]}\n'
         assert!(
             error.to_string().contains("timed out after 100ms"),
             "unexpected error: {error}"
+        );
+        // Regression guard: the timed-out command's process group must actually be
+        // killed, not just the direct child. Previously `child.kill()` only reaped
+        // the shell wrapper while an orphaned `sleep` grandchild kept the piped
+        // stdout/stderr open, so `wait_with_output()` blocked until the full 2s
+        // sleep elapsed even though the error already claimed a 100ms timeout.
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "timing out should not block on the fake CLI's full hang duration, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    // Regression guard for the cooperative-cancellation polling loop in `run_once`:
+    // a command that is never cancelled and completes well before its timeout must
+    // behave exactly as before (no added latency from the new short polling interval).
+    #[cfg(unix)]
+    #[test]
+    fn list_completes_normally_when_never_cancelled() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '{"entries":[]}\n'
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(5), 1),
+        );
+
+        let started = Instant::now();
+        client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect("an uncancelled, quickly completing command should still succeed");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "an immediately completing command must not be delayed by the cancellation \
+             polling loop"
+        );
+    }
+
+    // Proves the cooperative-cancellation feature this polling loop exists for: setting
+    // the shared cancel flag while a command is genuinely blocked (the fake CLI sleeps
+    // far longer than the poll interval) causes `run_once` to notice within about one
+    // poll interval and kill the child, instead of waiting for the full configured
+    // timeout or for the child to exit on its own.
+    #[cfg(unix)]
+    #[test]
+    fn list_is_cancelled_promptly_instead_of_waiting_for_the_full_timeout() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+sleep 5
+printf '{"entries":[]}\n'
+"#,
+        );
+        let mut client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(30), 1),
+        );
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        client.install_cancel_flag(Arc::clone(&cancel_flag));
+
+        std::thread::spawn({
+            let cancel_flag = Arc::clone(&cancel_flag);
+            move || {
+                std::thread::sleep(Duration::from_millis(150));
+                cancel_flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        let started = Instant::now();
+        let error = client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect_err("a cancelled command should return an error");
+        let elapsed = started.elapsed();
+
+        assert!(
+            error.to_string().contains("cancelled before completion"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "cancellation should be noticed within about one poll interval, not the full \
+             30s configured timeout or the fake CLI's 5s sleep; elapsed: {elapsed:?}"
         );
     }
 
@@ -1198,13 +1513,15 @@ printf '{"entries":[]}\n'
 
     #[cfg(unix)]
     #[test]
-    fn download_uses_filesystem_path_command() {
+    fn download_stages_through_a_scratch_directory_and_moves_the_result_into_place() {
         let directory = tempdir().expect("tempdir");
         let executable = write_script(
             directory.path(),
             "fake-proton-drive",
             r#"#!/bin/sh
 printf '%s\n' "$@" > "$0.args"
+target_dir="$4"
+printf 'downloaded content\n' > "$target_dir/budget.xlsx"
 exit 0
 "#,
         );
@@ -1213,16 +1530,122 @@ exit 0
             CommandPolicy::new(Duration::from_secs(1), 1),
         );
 
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        let destination = local_folder.join("budget.xlsx");
+
         client
-            .download(
-                Path::new("/my-files/demo/budget.xlsx"),
-                Path::new("/tmp/proton-sync-demo/budget.xlsx"),
-            )
+            .download(Path::new("/my-files/demo/budget.xlsx"), &destination)
+            .expect("download command");
+
+        let recorded_args = fs::read_to_string(args_path(&executable)).expect("recorded args");
+        let mut lines = recorded_args.lines();
+        assert_eq!(lines.next(), Some("filesystem"));
+        assert_eq!(lines.next(), Some("download"));
+        assert_eq!(lines.next(), Some("/my-files/demo/budget.xlsx"));
+        let scratch_dir = lines.next().expect("scratch directory argument");
+        let scratch_prefix = local_folder.join(".proton-sync-download-");
+        assert!(
+            scratch_dir.starts_with(scratch_prefix.to_str().expect("utf-8 scratch prefix")),
+            "download should stage into a private scratch directory under the \
+             destination's own parent folder, not the parent folder directly: {scratch_dir}"
+        );
+        assert!(
+            lines.next().is_none(),
+            "no further CLI arguments were expected"
+        );
+
+        assert_eq!(
+            fs::read_to_string(&destination).expect("downloaded file at destination"),
+            "downloaded content\n",
+            "the downloaded content should end up at exactly the requested destination path"
+        );
+        assert!(
+            !Path::new(scratch_dir).exists(),
+            "the scratch directory should be cleaned up after a successful download"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_to_a_sidecar_name_does_not_clobber_a_file_matching_the_remote_basename() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+target_dir="$4"
+printf 'remote content\n' > "$target_dir/notes.txt"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        let local_folder = directory.path().join("run");
+        fs::create_dir_all(&local_folder).expect("create local run folder");
+        // A local file already exists with the same basename the remote source has.
+        // This models conflict resolution: the caller deliberately requests a
+        // *different* local name for the download (a `.proton-cloud.` sidecar)
+        // specifically so this file is left untouched. Regression test for a bug
+        // where `download()` trusted the CLI to name the result after `destination`,
+        // when the real CLI always names it after the remote source instead - which
+        // silently overwrote the very file conflict resolution was supposed to
+        // preserve.
+        let existing_local_path = local_folder.join("notes.txt");
+        fs::write(&existing_local_path, "locally edited content\n").expect("write local edit");
+        let sidecar_destination = local_folder.join("notes.proton-cloud.txt");
+
+        client
+            .download(Path::new("/my-files/run/notes.txt"), &sidecar_destination)
             .expect("download command");
 
         assert_eq!(
-            fs::read_to_string(args_path(&executable)).expect("recorded args"),
-            "filesystem\ndownload\n/my-files/demo/budget.xlsx\n/tmp/proton-sync-demo\n"
+            fs::read_to_string(&existing_local_path).expect("read local file"),
+            "locally edited content\n",
+            "downloading a conflicting remote revision under a sidecar name must never \
+             touch the local file that shares the remote's own basename"
+        );
+        assert_eq!(
+            fs::read_to_string(&sidecar_destination).expect("read sidecar file"),
+            "remote content\n",
+            "the remote's content should land at exactly the requested sidecar destination"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_fails_cleanly_when_the_cli_produces_no_file() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        let destination = local_folder.join("budget.xlsx");
+
+        let error = client
+            .download(Path::new("/my-files/demo/budget.xlsx"), &destination)
+            .expect_err("a CLI that produces no file should be reported as an error");
+
+        assert!(
+            error.to_string().contains("no entries were found"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !destination.exists(),
+            "no file should appear at the destination when the download produced nothing"
         );
     }
 
@@ -1581,6 +2004,43 @@ printf '{"entries":[]}\n'
         assert_eq!(
             fs::read_to_string(attempt_counter_path(&executable)).expect("attempt counter"),
             "2\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_passes_a_file_conflict_strategy_to_avoid_the_interactive_prompt() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .upload(
+                Path::new("/tmp/local/notes.txt"),
+                Path::new("/my-files/demo"),
+                Path::new("notes.txt"),
+            )
+            .expect("upload command");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "filesystem\nupload\n--file-conflict-strategy\nreplace\n/tmp/local/notes.txt\n/my-files/demo/\n",
+            "upload must always pass an explicit conflict strategy so revising an \
+             already-synced file replaces its content instead of silently skipping it \
+             behind a stdin-less interactive prompt (the real proton-drive CLI prompts \
+             for a strategy whenever the destination already has a same-named file, and \
+             defaults to skipping the file - while still exiting 0 - when that prompt \
+             sees immediate EOF)"
         );
     }
 

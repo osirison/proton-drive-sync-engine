@@ -568,6 +568,7 @@ dependencies = [
  "clap",
  "fs2",
  "globset",
+ "libc",
  "notify",
  "rusqlite",
  "serde",

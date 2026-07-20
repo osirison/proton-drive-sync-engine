@@ -1,5 +1,13 @@
-use proton_drive_sync_engine::index::compute_sha1;
-use proton_drive_sync_engine::proton::{CommandPolicy, ProtonClient, ProtonDriveClient};
+use proton_drive_sync_engine::index::{
+    FileRecord, SyncStatus, compute_sha1, local_file_state, scan_local_entities,
+};
+use proton_drive_sync_engine::proton::{
+    CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity,
+};
+use proton_drive_sync_engine::sync::{
+    SyncAction, is_conflict_copy, original_from_conflict_copy, plan_sync_entities,
+};
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -303,6 +311,371 @@ fn mutating_live_e2e_exercises_upload_download_rename_move_delete() {
 
     cleanup.completed = true;
 }
+
+/// Ensures the disposable prefix root exists (creating it against its own parent if this
+/// is a fresh account) and creates a fresh, uniquely named run folder underneath it,
+/// returning the run folder's full path relative to nothing (i.e. the absolute remote
+/// path). Shared by every mutating live E2E test added after the original upload/
+/// download/rename/move/delete scenario, to avoid repeating the same root-bootstrap
+/// dance in each one.
+fn ensure_live_run_root(
+    client: &ProtonDriveClient,
+    config: &LiveE2eConfig,
+    test_name: &str,
+) -> PathBuf {
+    let root_parent = config
+        .remote_root
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .expect("PROTON_SYNC_LIVE_REMOTE_ROOT must have a parent folder");
+    let root_name = config
+        .remote_root
+        .file_name()
+        .map(PathBuf::from)
+        .expect("PROTON_SYNC_LIVE_REMOTE_ROOT must have a folder name");
+    client
+        .ensure_directory(root_parent, &root_name)
+        .expect("disposable live E2E root should be creatable");
+
+    let run_folder = unique_live_run_folder(
+        test_name,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("current time after epoch")
+            .as_secs(),
+        std::process::id(),
+    );
+    client
+        .ensure_directory(&config.remote_root, &run_folder)
+        .expect("unique live E2E run folder should be creatable");
+    config.remote_root.join(&run_folder)
+}
+
+#[test]
+#[ignore = "requires PROTON_SYNC_LIVE_E2E=1 and a disposable Proton Drive folder"]
+fn mutating_live_e2e_verifies_directory_id_exposure() {
+    let config = live_e2e_config_from_env().expect("safe mutating live E2E configuration");
+    let client = ProtonDriveClient::with_command_policy(
+        config.executable.clone(),
+        CommandPolicy::new(
+            Duration::from_secs(config.timeout_secs),
+            config.list_attempts,
+        ),
+    );
+    let run_root = ensure_live_run_root(
+        &client,
+        &config,
+        "mutating-live-e2e-verifies-directory-id-exposure",
+    );
+    let mut cleanup = LiveRunCleanup {
+        client: &client,
+        run_root: run_root.clone(),
+        completed: false,
+    };
+
+    client
+        .ensure_directory(&run_root, Path::new("docs"))
+        .expect("live nested folder creation should succeed");
+
+    let entities = client
+        .list_entities(&run_root)
+        .expect("live list_entities should succeed");
+    let docs = entities
+        .get(Path::new("docs"))
+        .and_then(RemoteEntity::as_directory)
+        .expect("the created folder should be listed as a directory entity");
+    assert!(
+        docs.id.as_deref().is_some_and(|id| !id.is_empty()),
+        "a real Proton Drive folder should expose a non-empty id, which the directory \
+         proton_id backfill and directory rename/move detection both depend on"
+    );
+
+    cleanup.completed = true;
+}
+
+#[test]
+#[ignore = "requires PROTON_SYNC_LIVE_E2E=1 and a disposable Proton Drive folder"]
+fn mutating_live_e2e_trashes_nested_folder_contents() {
+    let config = live_e2e_config_from_env().expect("safe mutating live E2E configuration");
+    let client = ProtonDriveClient::with_command_policy(
+        config.executable.clone(),
+        CommandPolicy::new(
+            Duration::from_secs(config.timeout_secs),
+            config.list_attempts,
+        ),
+    );
+    let run_root = ensure_live_run_root(
+        &client,
+        &config,
+        "mutating-live-e2e-trashes-nested-folder-contents",
+    );
+    let mut cleanup = LiveRunCleanup {
+        client: &client,
+        run_root: run_root.clone(),
+        completed: false,
+    };
+
+    client
+        .ensure_directory(&run_root, Path::new("folder-to-trash"))
+        .expect("live nested folder creation should succeed");
+    let local_dir = tempdir().expect("local temp directory");
+    let nested_upload_path = local_dir.path().join("nested.txt");
+    fs::write(
+        &nested_upload_path,
+        b"nested file inside a folder to be trashed\n",
+    )
+    .expect("write nested upload fixture");
+    client
+        .upload(
+            &nested_upload_path,
+            &run_root,
+            Path::new("folder-to-trash/nested.txt"),
+        )
+        .expect("live nested upload should succeed");
+
+    let before_trash = client
+        .list_entities(&run_root)
+        .expect("list_entities before trash");
+    assert!(
+        before_trash.contains_key(Path::new("folder-to-trash")),
+        "the folder should be listed before it is trashed"
+    );
+    assert!(
+        before_trash.contains_key(Path::new("folder-to-trash/nested.txt")),
+        "the nested file should be listed before its parent folder is trashed"
+    );
+
+    client
+        .delete(&run_root.join("folder-to-trash"))
+        .expect("live folder trash should succeed");
+
+    let after_trash = client
+        .list_entities(&run_root)
+        .expect("list_entities after trash");
+    assert!(
+        !after_trash.contains_key(Path::new("folder-to-trash")),
+        "the trashed folder itself should no longer be listed: {after_trash:?}"
+    );
+    assert!(
+        !after_trash.contains_key(Path::new("folder-to-trash/nested.txt")),
+        "the trashed folder's nested file should no longer be listed: {after_trash:?}"
+    );
+
+    cleanup.completed = true;
+}
+
+#[test]
+#[ignore = "requires PROTON_SYNC_LIVE_E2E=1 and a disposable Proton Drive folder"]
+fn mutating_live_e2e_verifies_directory_rename_and_move() {
+    let config = live_e2e_config_from_env().expect("safe mutating live E2E configuration");
+    let client = ProtonDriveClient::with_command_policy(
+        config.executable.clone(),
+        CommandPolicy::new(
+            Duration::from_secs(config.timeout_secs),
+            config.list_attempts,
+        ),
+    );
+    let run_root = ensure_live_run_root(
+        &client,
+        &config,
+        "mutating-live-e2e-verifies-directory-rename-and-move",
+    );
+    let mut cleanup = LiveRunCleanup {
+        client: &client,
+        run_root: run_root.clone(),
+        completed: false,
+    };
+
+    client
+        .ensure_directory(&run_root, Path::new("old-folder"))
+        .expect("live folder creation should succeed");
+    let created_id = client
+        .list_entities(&run_root)
+        .expect("list_entities after create")
+        .get(Path::new("old-folder"))
+        .and_then(RemoteEntity::as_directory)
+        .expect("the created folder should be listed as a directory entity")
+        .id
+        .clone();
+
+    // Rename in place.
+    client
+        .rename_or_move(&run_root, Path::new("old-folder"), Path::new("new-folder"))
+        .expect("live folder rename should succeed");
+    let after_rename = client
+        .list_entities(&run_root)
+        .expect("list_entities after rename");
+    assert!(
+        !after_rename.contains_key(Path::new("old-folder")),
+        "the old folder name should no longer be listed after a rename"
+    );
+    let renamed = after_rename
+        .get(Path::new("new-folder"))
+        .and_then(RemoteEntity::as_directory)
+        .expect("the new folder name should be listed after a rename");
+    assert_eq!(
+        renamed.id, created_id,
+        "renaming a folder should preserve its remote identity"
+    );
+
+    // Move into a subfolder.
+    client
+        .ensure_directory(&run_root, Path::new("parent"))
+        .expect("live parent folder creation should succeed");
+    client
+        .rename_or_move(
+            &run_root,
+            Path::new("new-folder"),
+            Path::new("parent/new-folder"),
+        )
+        .expect("live folder move should succeed");
+    let after_move = client
+        .list_entities(&run_root)
+        .expect("list_entities after move");
+    assert!(
+        !after_move.contains_key(Path::new("new-folder")),
+        "the old parent location should no longer be listed after a move"
+    );
+    let moved = after_move
+        .get(Path::new("parent/new-folder"))
+        .and_then(RemoteEntity::as_directory)
+        .expect("the new nested location should be listed after a move");
+    assert_eq!(
+        moved.id, created_id,
+        "moving a folder should preserve its remote identity"
+    );
+
+    cleanup.completed = true;
+}
+
+#[test]
+#[ignore = "requires PROTON_SYNC_LIVE_E2E=1 and a disposable Proton Drive folder"]
+fn mutating_live_e2e_resolves_conflict_by_downloading_a_sidecar_copy() {
+    let config = live_e2e_config_from_env().expect("safe mutating live E2E configuration");
+    let client = ProtonDriveClient::with_command_policy(
+        config.executable.clone(),
+        CommandPolicy::new(
+            Duration::from_secs(config.timeout_secs),
+            config.list_attempts,
+        ),
+    );
+    let run_root = ensure_live_run_root(
+        &client,
+        &config,
+        "mutating-live-e2e-resolves-conflict-by-downloading-a-sidecar-copy",
+    );
+    let mut cleanup = LiveRunCleanup {
+        client: &client,
+        run_root: run_root.clone(),
+        completed: false,
+    };
+
+    // Establish a synced baseline that both sides start from, mirroring what the
+    // daemon's SQLite index would hold after a prior successful reconcile.
+    let local_dir = tempdir().expect("local temp directory");
+    let local_path = local_dir.path().join("notes.txt");
+    fs::write(&local_path, b"synced baseline content\n").expect("write baseline fixture");
+    client
+        .upload(&local_path, &run_root, Path::new("notes.txt"))
+        .expect("live baseline upload should succeed");
+    let baseline_local =
+        local_file_state(local_dir.path(), &local_path).expect("scan baseline local file state");
+    let baseline_remote_id = client
+        .list(&run_root)
+        .expect("list after baseline upload")
+        .get(Path::new("notes.txt"))
+        .expect("baseline file should be listed")
+        .id
+        .clone();
+    let mut base_index = HashMap::new();
+    base_index.insert(
+        PathBuf::from("notes.txt"),
+        FileRecord::from_local(
+            PathBuf::from("notes.txt"),
+            &baseline_local,
+            Some(baseline_remote_id),
+            SyncStatus::Synced,
+        ),
+    );
+
+    // Diverge the local copy from the baseline.
+    fs::write(&local_path, b"locally edited content\n").expect("write local divergence");
+
+    // Diverge the remote copy from the baseline by re-uploading a same-named file from
+    // a separate source directory (`upload` always names the remote file after the
+    // local source's own basename). This exercises upload-to-an-existing-path
+    // revisioning, which the daemon relies on whenever a previously synced file
+    // changes again.
+    let remote_divergence_dir = tempdir().expect("remote divergence source directory");
+    let remote_divergence_path = remote_divergence_dir.path().join("notes.txt");
+    fs::write(&remote_divergence_path, b"remotely edited content\n")
+        .expect("write remote divergence fixture");
+    client
+        .upload(&remote_divergence_path, &run_root, Path::new("notes.txt"))
+        .expect("live remote divergence upload should succeed");
+    let after_remote_divergence = client
+        .list(&run_root)
+        .expect("list after remote divergence upload");
+    assert_eq!(
+        after_remote_divergence.len(),
+        1,
+        "re-uploading to an existing remote path should update it in place rather than \
+         create a duplicate entry, but the run folder now lists: {after_remote_divergence:?}"
+    );
+
+    // Capture real local/remote state exactly as the daemon would before reconciling.
+    let local_entities =
+        scan_local_entities(local_dir.path()).expect("scan local entities before reconcile");
+    let remote_entities = client
+        .list_entities(&run_root)
+        .expect("list_entities before reconcile");
+
+    let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+    let conflict = planned
+        .iter()
+        .find(|action| action.path == Path::new("notes.txt"))
+        .expect("notes.txt should have a planned action");
+    assert_eq!(
+        conflict.action,
+        SyncAction::Conflict,
+        "diverging both sides from a synced baseline should plan a conflict: {planned:?}"
+    );
+    let conflict_path = conflict
+        .conflict_path
+        .clone()
+        .expect("a conflict action should carry a sidecar conflict_path");
+    assert!(
+        is_conflict_copy(&conflict_path),
+        "the planned conflict_path should look like a conflict sidecar: {}",
+        conflict_path.display()
+    );
+    assert_eq!(
+        original_from_conflict_copy(&conflict_path).as_deref(),
+        Some(Path::new("notes.txt")),
+        "the conflict sidecar name should map back to the original path"
+    );
+
+    // Execute the conflict resolution against the real service the same way the
+    // daemon's `SyncAction::Conflict` execution arm does: download the remote's
+    // competing version into the sidecar path, leaving the local file untouched.
+    let sidecar_destination = local_dir.path().join(&conflict_path);
+    client
+        .download(&run_root.join("notes.txt"), &sidecar_destination)
+        .expect("live conflict sidecar download should succeed");
+    let sidecar_content = fs::read(&sidecar_destination).expect("read downloaded sidecar");
+    assert_eq!(
+        sidecar_content, b"remotely edited content\n",
+        "the sidecar copy should contain the remote's competing content"
+    );
+    let local_content = fs::read(&local_path).expect("read local file after conflict resolution");
+    assert_eq!(
+        local_content, b"locally edited content\n",
+        "the original local file should be left untouched by conflict resolution"
+    );
+
+    cleanup.completed = true;
+}
+
 fn parse_live_e2e_config(
     enabled: Option<OsString>,
     remote_root: Option<OsString>,
