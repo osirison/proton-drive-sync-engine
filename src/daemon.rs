@@ -31,6 +31,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 const STATUS_HISTORY_LIMIT: usize = 20;
+/// Time budget for a single control-connection read or write. Bounds how long a stalled
+/// or idle client can occupy the daemon's single-threaded event loop before it is
+/// dropped, so a silent client cannot indefinitely block reconciles, filesystem events,
+/// or graceful shutdown.
+const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -61,6 +66,7 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     status_history_path: PathBuf,
     metrics_path: PathBuf,
     status_history: Vec<StatusHistoryEntry>,
+    ipc_io_timeout: Duration,
     _lock_guard: LockGuard,
 }
 
@@ -159,6 +165,7 @@ impl<C: ProtonClient> Daemon<C> {
             status_history_path,
             metrics_path,
             status_history,
+            ipc_io_timeout: IPC_IO_TIMEOUT,
             _lock_guard: lock_guard,
         };
         daemon.write_metrics_snapshot()?;
@@ -242,10 +249,36 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     async fn handle_ipc_stream(&mut self, stream: UnixStream) -> AppResult<()> {
-        let (request, mut stream) = read_request(stream).await?;
+        // Time-bound the request read so a client that connects but never sends a
+        // complete request line cannot park the single-threaded select! loop (and with it
+        // periodic scans, filesystem events, and graceful shutdown) indefinitely. The
+        // read is also length-bounded in `read_request`. Request *processing* below is
+        // deliberately not time-bounded: a `Syncnow` triggers a full reconcile that may
+        // legitimately take a long time.
+        let (request, mut stream) =
+            match tokio::time::timeout(self.ipc_io_timeout, read_request(stream)).await {
+                Ok(result) => result?,
+                Err(_elapsed) => {
+                    warn!(
+                        timeout_secs = self.ipc_io_timeout.as_secs(),
+                        "control connection did not send a request within the timeout; dropping it"
+                    );
+                    return Ok(());
+                }
+            };
         debug!(command = ?request.command, "handling control request");
         let response = self.handle_ipc_request(request).await?;
-        write_response(&mut stream, &response).await?;
+        // Time-bound the response write too, so a client that sends a valid request then
+        // never reads cannot wedge the loop on a full send buffer.
+        match tokio::time::timeout(self.ipc_io_timeout, write_response(&mut stream, &response))
+            .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => warn!(
+                timeout_secs = self.ipc_io_timeout.as_secs(),
+                "control client did not read the response within the timeout; dropping it"
+            ),
+        }
         Ok(())
     }
 
@@ -2827,6 +2860,33 @@ mod tests {
                 .is_none(),
             "downloaded conflict sidecars must not be indexed as sync data"
         );
+    }
+
+    #[tokio::test]
+    async fn idle_ipc_client_is_dropped_after_the_io_timeout_instead_of_blocking() {
+        // A client that connects to the control socket but never sends a request line
+        // must not park the daemon's single-threaded event loop forever (which would
+        // freeze reconciles, filesystem events, and graceful shutdown). handle_ipc_stream
+        // must return after the IO timeout rather than hang.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        daemon.ipc_io_timeout = Duration::from_millis(50);
+
+        let (control_client, server) = UnixStream::pair().expect("socket pair");
+
+        // The outer timeout is a generous test-only guard: if the handler regressed to
+        // blocking forever it fails here instead of hanging the suite.
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(5), daemon.handle_ipc_stream(server))
+                .await
+                .expect("an idle control connection must be dropped after the IO timeout");
+        drop(control_client);
+
+        outcome.expect("dropping an idle control connection is a clean, non-error outcome");
     }
 
     #[test]

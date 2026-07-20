@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 
@@ -86,13 +86,19 @@ pub async fn send_command(
     Ok(serde_json::from_str(response.trim())?)
 }
 
+/// Upper bound on the bytes read while parsing a single control request. A control
+/// request is a short JSON line, so capping the read keeps a client that streams bytes
+/// without ever sending a newline from growing the read buffer without bound. Reaching
+/// the cap yields an incomplete line that fails to parse, dropping the connection.
+const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+
 #[cfg(unix)]
 pub async fn read_request(stream: UnixStream) -> AppResult<(ControlRequest, UnixStream)> {
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(stream).take(MAX_REQUEST_BYTES);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     let request = serde_json::from_str(line.trim())?;
-    Ok((request, reader.into_inner()))
+    Ok((request, reader.into_inner().into_inner()))
 }
 
 #[cfg(unix)]
@@ -165,5 +171,25 @@ mod tests {
             .await
             .expect("rebinding over a stale socket must succeed");
         drop(listener);
+    }
+
+    #[tokio::test]
+    async fn read_request_rejects_an_unterminated_oversized_line() {
+        let (mut client, server) = UnixStream::pair().expect("socket pair");
+        // Flood the connection with more than the cap and never send a newline or close,
+        // mimicking a client that streams bytes to grow the read buffer without bound.
+        let writer = tokio::spawn(async move {
+            let junk = vec![b'x'; MAX_REQUEST_BYTES as usize + 1024];
+            let _ = client.write_all(&junk).await;
+            std::future::pending::<()>().await;
+        });
+
+        let result = read_request(server).await;
+        writer.abort();
+
+        assert!(
+            result.is_err(),
+            "an over-length request with no newline must be rejected, not read unbounded"
+        );
     }
 }
