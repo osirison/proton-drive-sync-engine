@@ -14,6 +14,17 @@ pub mod paths;
 pub mod proton;
 pub mod sync;
 
+/// Filename prefix for the private per-download staging directory that
+/// `ProtonDriveClient::download` creates next to each download destination (so the final
+/// move onto the destination is an atomic same-filesystem rename). Because that places
+/// the directory inside the synced local root, the scanner, base-index filter, and
+/// filesystem watcher all skip any path containing a component with this prefix, so a
+/// scratch directory orphaned by a hard crash mid-download is never scanned or uploaded
+/// to the remote as junk. Kept here as the single source of truth shared by the code
+/// that creates the directory (`src/proton.rs`) and the code that ignores it
+/// (`src/index.rs`).
+pub const DOWNLOAD_SCRATCH_PREFIX: &str = ".proton-sync-download-";
+
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 pub fn boxed_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {

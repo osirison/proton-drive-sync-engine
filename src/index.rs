@@ -239,7 +239,8 @@ impl ScanOptions {
     /// such as `**/*.md`) are still discovered during the walk.
     fn allows_directory_traversal(&self, relative_path: &Path) -> bool {
         relative_path.as_os_str().is_empty()
-            || (!self.is_configured_ignored(relative_path)
+            || (!is_download_scratch_path(relative_path)
+                && !self.is_configured_ignored(relative_path)
                 && !self.matches(&self.exclude_patterns, relative_path))
     }
 
@@ -600,13 +601,32 @@ pub fn should_ignore_path(path: &Path) -> bool {
 }
 
 fn should_ignore_relative_path(relative_path: &Path) -> bool {
-    if crate::sync::is_conflict_copy(relative_path) {
+    if crate::sync::is_conflict_copy(relative_path) || is_download_scratch_path(relative_path) {
         return true;
     }
     matches!(
         relative_path.file_name().and_then(|value| value.to_str()),
         Some("sync_index.db")
     )
+}
+
+/// True when any component of `relative_path` is (or lives inside) a download-staging
+/// scratch directory created by `ProtonDriveClient::download` (see
+/// [`crate::DOWNLOAD_SCRATCH_PREFIX`]). Such a directory lives inside the synced root so
+/// the final download move is an atomic same-filesystem rename; it is normally removed
+/// once the download completes, but a hard crash mid-download can leave one behind.
+/// Ignoring the prefix in the scanner, the base-index filter, and the watcher keeps a
+/// leftover scratch directory and its partial file from being uploaded to the remote as
+/// junk. Matched byte-exactly so a component is compared regardless of UTF-8 validity.
+fn is_download_scratch_path(relative_path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    relative_path.components().any(|component| {
+        component
+            .as_os_str()
+            .as_bytes()
+            .starts_with(crate::DOWNLOAD_SCRATCH_PREFIX.as_bytes())
+    })
 }
 
 fn normalize_ignored_path(root: &Path, path: &Path) -> Option<PathBuf> {
@@ -781,6 +801,54 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert!(files.contains_key(Path::new("keep.txt")));
+    }
+
+    #[test]
+    fn scanner_ignores_orphaned_download_scratch_directories() {
+        // A download scratch directory left behind by a hard crash (SIGKILL/OOM/power
+        // loss) mid-download persists inside the synced root. It must never be scanned or
+        // planned, otherwise the bootstrap planner would upload the junk directory and
+        // its partial file to the remote. Scratch dirs appear next to their download
+        // target, so cover both a top-level and a nested one.
+        let directory = tempdir().expect("tempdir");
+        let scratch_top = directory
+            .path()
+            .join(format!("{}1234-9876", crate::DOWNLOAD_SCRATCH_PREFIX));
+        let nested_parent = directory.path().join("reports");
+        let scratch_nested = nested_parent.join(format!("{}5-6", crate::DOWNLOAD_SCRATCH_PREFIX));
+        fs::create_dir(&scratch_top).expect("top scratch dir");
+        fs::create_dir_all(&scratch_nested).expect("nested scratch dir");
+        fs::write(scratch_top.join("budget.xlsx"), b"partial").expect("top partial");
+        fs::write(scratch_nested.join("deep.bin"), b"partial").expect("nested partial");
+        fs::write(nested_parent.join("real.txt"), b"real").expect("real file");
+        fs::write(directory.path().join("keep.txt"), b"keep").expect("keep file");
+
+        let entities = scan_local_entities(directory.path()).expect("scan entities");
+
+        assert!(entities.contains_key(Path::new("keep.txt")));
+        assert!(entities.contains_key(Path::new("reports/real.txt")));
+        assert!(
+            entities.keys().all(|path| !is_download_scratch_path(path)),
+            "no scratch directory or its contents may be scanned: {entities:?}"
+        );
+    }
+
+    #[test]
+    fn scan_options_reject_download_scratch_paths() {
+        let options = ScanOptions::new(Path::new("/root"), &[], &[], &[]).expect("scan options");
+        let scratch_file =
+            PathBuf::from(format!("{}9-9/budget.xlsx", crate::DOWNLOAD_SCRATCH_PREFIX));
+        let scratch_dir = PathBuf::from(format!("{}9-9", crate::DOWNLOAD_SCRATCH_PREFIX));
+        assert!(
+            !options.allows_relative_file(&scratch_file),
+            "the watcher and base-index filter must skip scratch-dir files"
+        );
+        assert!(!options.allows_relative_directory(&scratch_dir));
+        // A nested scratch directory (staged next to a deep download target) is skipped too.
+        let nested = PathBuf::from(format!("reports/{}9-9", crate::DOWNLOAD_SCRATCH_PREFIX));
+        assert!(!options.allows_relative_directory(&nested));
+        // A normally-named path is still allowed.
+        assert!(options.allows_relative_file(Path::new("reports/real.txt")));
     }
 
     #[test]

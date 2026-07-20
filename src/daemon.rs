@@ -2582,6 +2582,33 @@ mod tests {
     }
 
     #[test]
+    fn leftover_download_scratch_directory_is_not_planned_for_upload() {
+        // A crash-orphaned download scratch directory inside the synced root must never
+        // be planned for upload; otherwise the junk directory and its partial file would
+        // be pushed to the remote and propagated to every other client.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let scratch_dir = local_root.join(format!("{}1234-9876", crate::DOWNLOAD_SCRATCH_PREFIX));
+        fs::create_dir(&scratch_dir).expect("scratch dir");
+        fs::write(scratch_dir.join("budget.xlsx"), b"partial download").expect("partial file");
+        let config = test_config(directory.path(), &local_root);
+
+        let plan = preview_plan_with_client(
+            &config,
+            &FakeProtonClient {
+                remote_files: HashMap::new(),
+            },
+        )
+        .expect("preview plan");
+
+        assert!(
+            plan.is_empty(),
+            "an orphaned download scratch directory must never be planned: {plan:?}"
+        );
+    }
+
+    #[test]
     fn daemon_writes_metrics_snapshot_after_reconcile() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");

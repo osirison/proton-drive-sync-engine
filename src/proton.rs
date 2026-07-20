@@ -424,7 +424,8 @@ impl ProtonClient for ProtonDriveClient {
         // directory first and move the single resulting entry into place with one
         // rename, rather than trusting the CLI to name it correctly on the first try.
         let scratch_dir = local_folder.join(format!(
-            ".proton-sync-download-{}-{}",
+            "{}{}-{}",
+            crate::DOWNLOAD_SCRATCH_PREFIX,
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1665,7 +1666,7 @@ exit 0
         assert_eq!(lines.next(), Some("download"));
         assert_eq!(lines.next(), Some("/my-files/demo/budget.xlsx"));
         let scratch_dir = lines.next().expect("scratch directory argument");
-        let scratch_prefix = local_folder.join(".proton-sync-download-");
+        let scratch_prefix = local_folder.join(crate::DOWNLOAD_SCRATCH_PREFIX);
         assert!(
             scratch_dir.starts_with(scratch_prefix.to_str().expect("utf-8 scratch prefix")),
             "download should stage into a private scratch directory under the \
