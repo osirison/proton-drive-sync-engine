@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -87,6 +87,12 @@ pub enum RemoteEntity {
     Directory(RemoteDirectory),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteListingStatus {
+    Found(HashMap<PathBuf, RemoteEntity>),
+    RootMissing,
+}
+
 impl RemoteEntity {
     pub fn as_file(&self) -> Option<&RemoteFile> {
         match self {
@@ -151,6 +157,15 @@ pub trait ProtonClient: Send + Sync {
             .into_iter()
             .map(|(path, file)| (path, RemoteEntity::File(file)))
             .collect())
+    }
+    fn list_entities_or_missing_root(&self, remote_root: &Path) -> AppResult<RemoteListingStatus> {
+        Ok(RemoteListingStatus::Found(self.list_entities(remote_root)?))
+    }
+    fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
+        Err(boxed_error(format!(
+            "creating remote root directories is not supported by this Proton client: {}",
+            remote_root.display()
+        )))
     }
     fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
     fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
@@ -224,14 +239,29 @@ impl Default for CommandPolicy {
 
 impl ProtonClient for ProtonDriveClient {
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
-        Ok(self
-            .list_entities(remote_root)?
-            .into_iter()
-            .filter_map(|(path, entity)| entity.as_file().cloned().map(|file| (path, file)))
-            .collect())
+        match self.list_entities_or_missing_root(remote_root)? {
+            RemoteListingStatus::Found(entities) => Ok(entities
+                .into_iter()
+                .filter_map(|(path, entity)| entity.as_file().cloned().map(|file| (path, file)))
+                .collect()),
+            RemoteListingStatus::RootMissing => Err(boxed_error(format!(
+                "remote root does not exist: {}",
+                remote_root.display()
+            ))),
+        }
     }
 
     fn list_entities(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+        match self.list_entities_or_missing_root(remote_root)? {
+            RemoteListingStatus::Found(entities) => Ok(entities),
+            RemoteListingStatus::RootMissing => Err(boxed_error(format!(
+                "remote root does not exist: {}",
+                remote_root.display()
+            ))),
+        }
+    }
+
+    fn list_entities_or_missing_root(&self, remote_root: &Path) -> AppResult<RemoteListingStatus> {
         let mut files = HashMap::new();
         let mut directories = HashMap::new();
         let mut visited = BTreeSet::new();
@@ -258,6 +288,9 @@ impl ProtonClient for ProtonDriveClient {
                 self.command_policy.list_attempts,
             )?;
             if !output.status.success() {
+                if relative_directory.as_os_str().is_empty() && is_node_not_found(&output) {
+                    return Ok(RemoteListingStatus::RootMissing);
+                }
                 return Err(boxed_error(format!(
                     "proton-drive list failed for {}: {}",
                     remote_directory.display(),
@@ -277,7 +310,39 @@ impl ProtonClient for ProtonDriveClient {
             directories.extend(listing.directories);
         }
 
-        Ok(RemoteListing { files, directories }.into_entities())
+        Ok(RemoteListingStatus::Found(
+            RemoteListing { files, directories }.into_entities(),
+        ))
+    }
+
+    fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
+        let remote_root = clean_remote_root_path(remote_root).ok_or_else(|| {
+            boxed_error(format!(
+                "unsafe remote root path: {}",
+                remote_root.display()
+            ))
+        })?;
+        if self.remote_path_exists(&remote_root)? {
+            return Ok(());
+        }
+        let existing_parent = self
+            .deepest_existing_remote_parent(&remote_root)?
+            .ok_or_else(|| {
+                boxed_error(format!(
+                    "remote root parent does not exist for {}",
+                    remote_root.display()
+                ))
+            })?;
+        let relative_path = remote_root
+            .strip_prefix(&existing_parent)
+            .map_err(|error| {
+                boxed_error(format!(
+                    "failed to compute remote root path {} relative to existing parent {}: {error}",
+                    remote_root.display(),
+                    existing_parent.display()
+                ))
+            })?;
+        self.create_missing_directory_components(&existing_parent, relative_path)
     }
 
     fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
@@ -591,6 +656,20 @@ impl ProtonDriveClient {
         Ok(output.status.success())
     }
 
+    fn deepest_existing_remote_parent(&self, remote_path: &Path) -> AppResult<Option<PathBuf>> {
+        let mut candidate = remote_path.parent();
+        while let Some(parent) = candidate {
+            if parent.as_os_str().is_empty() {
+                break;
+            }
+            if self.remote_path_exists(parent)? {
+                return Ok(Some(parent.to_path_buf()));
+            }
+            candidate = parent.parent();
+        }
+        Ok(None)
+    }
+
     fn run_proton_drive(
         &self,
         operation: &str,
@@ -774,6 +853,28 @@ fn terminate_child_tree(child: &mut Child) {
 
 fn trimmed_stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_owned()
+}
+
+fn is_node_not_found(output: &Output) -> bool {
+    trimmed_stderr(output)
+        .to_ascii_lowercase()
+        .contains("node not found")
+}
+
+fn clean_remote_root_path(path: &Path) -> Option<PathBuf> {
+    let mut clean_path = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::Normal(_) => clean_path.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) => return None,
+        }
+    }
+    if clean_path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(clean_path)
+    }
 }
 
 /// Removes its scratch directory (recursively) when dropped, including on early
@@ -1798,6 +1899,50 @@ exit 64
 create-folder:/my-files/demo:local-sub-directory\n\
 info:/my-files/demo/local-sub-directory/nested\n\
 create-folder:/my-files/demo/local-sub-directory:nested\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_root_directory_creates_missing_components_below_existing_parent() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "info" ]; then
+    printf 'info:%s\n' "$3" >> "$0.args"
+    if [ "$3" = "/my-files" ]; then
+        exit 0
+    fi
+    exit 1
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "create-folder" ]; then
+    printf 'create-folder:%s:%s\n' "$3" "$4" >> "$0.args"
+    exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 64
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .ensure_root_directory(Path::new("/my-files/demo/nested"))
+            .expect("ensure missing remote root directory");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "info:/my-files/demo/nested\n\
+info:/my-files/demo\n\
+info:/my-files\n\
+info:/my-files/demo\n\
+create-folder:/my-files:demo\n\
+info:/my-files/demo/nested\n\
+create-folder:/my-files/demo:nested\n"
         );
     }
 

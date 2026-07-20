@@ -72,6 +72,55 @@ mod unix_tests {
     }
 
     #[test]
+    fn dry_run_cli_plans_remote_root_creation_when_root_is_missing() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let db_path = local_root.join("custom-index.db");
+        let fake_proton_drive = write_missing_root_proton_drive(
+            directory.path(),
+            "/my-files/demo/",
+            "Node not found: demo",
+        );
+
+        let output = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
+            .arg("--local-root")
+            .arg(&local_root)
+            .arg("--remote-root")
+            .arg("/my-files/demo/")
+            .arg("--db-path")
+            .arg(&db_path)
+            .arg("--proton-cli")
+            .arg(&fake_proton_drive)
+            .arg("--dry-run")
+            .env("RUST_LOG", "error")
+            .output()
+            .expect("run proton-syncd dry-run with missing remote root");
+
+        assert_success(&output);
+        assert!(
+            !db_path.exists(),
+            "dry-run must not create or update the configured index"
+        );
+        let report = parse_report(&output.stdout);
+        let plan = plan(&report);
+
+        assert_eq!(report["summary"]["total"].as_u64(), Some(1));
+        assert_eq!(
+            report["summary"]["remote_directories_created"].as_u64(),
+            Some(1)
+        );
+        assert!(
+            plan.iter().any(|action| {
+                action["path"] == ""
+                    && action["action"] == "create_remote_directory"
+                    && action["entity_kind"] == "directory"
+            }),
+            "missing configured remote root should be represented as a remote directory creation: {plan:?}"
+        );
+    }
+
+    #[test]
     fn config_file_drives_dry_run_cli() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
@@ -289,6 +338,32 @@ exit 64
             ),
         )
         .expect("fake proton-drive script");
+        let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).expect("script permissions");
+        path
+    }
+
+    fn write_missing_root_proton_drive(
+        directory: &Path,
+        remote_root: &str,
+        stderr: &str,
+    ) -> PathBuf {
+        let path = directory.join("fake-proton-drive-missing-root");
+        fs::write(
+            &path,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ] && [ "$4" = "{remote_root}" ]; then
+  echo "{stderr}" >&2
+  exit 1
+fi
+echo "unexpected proton-drive args: $*" >&2
+exit 64
+"#
+            ),
+        )
+        .expect("fake missing-root proton-drive script");
         let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&path, permissions).expect("script permissions");

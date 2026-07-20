@@ -916,7 +916,7 @@ fn remote_id(remote: Option<&RemoteFile>, base: &FileRecord) -> Option<String> {
 }
 
 impl PlannedAction {
-    fn new(
+    pub(crate) fn new(
         path: &Path,
         action: SyncAction,
         entity_kind: EntityKind,

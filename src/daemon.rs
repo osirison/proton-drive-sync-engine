@@ -7,7 +7,9 @@ use crate::ipc::{
     ControlCommand, ControlRequest, ControlResponse, StatusHistoryEntry, bind_listener,
     read_request, write_response,
 };
-use crate::proton::{CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity};
+use crate::proton::{
+    CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity, RemoteListingStatus,
+};
 use crate::sync::{
     PlanSummary, PlannedAction, SyncAction, directory_move_descendant_path_pairs,
     is_strict_descendant, original_from_conflict_copy, plan_sync_entities,
@@ -94,11 +96,14 @@ pub fn preview_plan_with_client(
     );
     let scan_options = scan_options_from_config(config)?;
     let local_entities = scan_local_entities_with_options(&config.local_root, &scan_options)?;
-    let remote_entities =
-        filter_remote_entities(proton.list_entities(&config.remote_root)?, &scan_options);
-    let base_index = load_existing_index(&config.db_path)?;
-    let base_index = filter_base_index(base_index, &scan_options);
-    let plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+    let (remote_entities, remote_root_missing) =
+        load_remote_entities(proton, &config.remote_root, &scan_options)?;
+    let mut base_index = filter_base_index(load_existing_index(&config.db_path)?, &scan_options);
+    if remote_root_missing {
+        base_index.clear();
+    }
+    let mut plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+    prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
     info!(planned_actions = plan.len(), "dry-run sync plan computed");
     Ok(plan)
 }
@@ -378,12 +383,14 @@ impl<C: ProtonClient> Daemon<C> {
         let local_entities =
             scan_local_entities_with_options(&self.config.local_root, &self.scan_options)?;
         let local_files = local_files_from_entities(&local_entities);
-        let remote_entities = filter_remote_entities(
-            self.proton.list_entities(&self.config.remote_root)?,
-            &self.scan_options,
-        );
-        let base_index = filter_base_index(load_index(&self.connection)?, &self.scan_options);
-        let plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+        let (remote_entities, remote_root_missing) =
+            load_remote_entities(&self.proton, &self.config.remote_root, &self.scan_options)?;
+        let mut base_index = filter_base_index(load_index(&self.connection)?, &self.scan_options);
+        if remote_root_missing {
+            base_index.clear();
+        }
+        let mut plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+        prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
         let plan_summary = PlanSummary::from_plan(&plan);
         self.last_plan_summary = Some(plan_summary.clone());
         info!(
@@ -466,6 +473,11 @@ impl<C: ProtonClient> Daemon<C> {
                     index_mutations.push(IndexMutation::Upsert(record));
                 }
                 SyncAction::CreateRemoteDirectory => {
+                    if action.path.as_os_str().is_empty() {
+                        self.proton
+                            .ensure_root_directory(&self.config.remote_root)?;
+                        continue;
+                    }
                     if let Some(LocalEntityState::Directory(local)) =
                         local_entities.get(&action.path)
                     {
@@ -833,6 +845,33 @@ fn filter_remote_entities(
         .collect()
 }
 
+fn load_remote_entities(
+    proton: &impl ProtonClient,
+    remote_root: &Path,
+    scan_options: &ScanOptions,
+) -> AppResult<(HashMap<PathBuf, RemoteEntity>, bool)> {
+    match proton.list_entities_or_missing_root(remote_root)? {
+        RemoteListingStatus::Found(remote_entities) => {
+            Ok((filter_remote_entities(remote_entities, scan_options), false))
+        }
+        RemoteListingStatus::RootMissing => Ok((HashMap::new(), true)),
+    }
+}
+
+fn prepend_remote_root_creation_if_missing(plan: &mut Vec<PlannedAction>, root_missing: bool) {
+    if root_missing {
+        plan.insert(
+            0,
+            PlannedAction::new(
+                Path::new(""),
+                SyncAction::CreateRemoteDirectory,
+                EntityKind::Directory,
+                None,
+            ),
+        );
+    }
+}
+
 fn local_files_from_entities(
     local_entities: &HashMap<PathBuf, LocalEntityState>,
 ) -> HashMap<PathBuf, crate::index::LocalFileState> {
@@ -989,6 +1028,9 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum RecordedOperation {
+        EnsureRootDirectory {
+            remote_root: PathBuf,
+        },
         EnsureDirectory {
             remote_root: PathBuf,
             relative_path: PathBuf,
@@ -1207,6 +1249,11 @@ mod tests {
     #[derive(Debug)]
     struct FailingListProtonClient;
 
+    #[derive(Debug, Clone)]
+    struct MissingRootProtonClient {
+        operations: Arc<Mutex<Vec<RecordedOperation>>>,
+    }
+
     impl ProtonClient for FakeProtonClient {
         fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             Ok(self.remote_files.clone())
@@ -1302,6 +1349,59 @@ mod tests {
         }
     }
 
+    impl ProtonClient for MissingRootProtonClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            Err(boxed_error("list should use missing-root status"))
+        }
+
+        fn list_entities_or_missing_root(
+            &self,
+            _remote_root: &Path,
+        ) -> AppResult<RemoteListingStatus> {
+            Ok(RemoteListingStatus::RootMissing)
+        }
+
+        fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
+            self.operations.lock().expect("operations lock").push(
+                RecordedOperation::EnsureRootDirectory {
+                    remote_root: remote_root.to_path_buf(),
+                },
+            );
+            Ok(())
+        }
+
+        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+            Err(boxed_error(
+                "unexpected ensure directory in missing-root client",
+            ))
+        }
+
+        fn upload(
+            &self,
+            local_path: &Path,
+            remote_root: &Path,
+            relative_path: &Path,
+        ) -> AppResult<()> {
+            self.operations
+                .lock()
+                .expect("operations lock")
+                .push(RecordedOperation::Upload {
+                    local_path: local_path.to_path_buf(),
+                    remote_root: remote_root.to_path_buf(),
+                    relative_path: relative_path.to_path_buf(),
+                });
+            Ok(())
+        }
+
+        fn download(&self, _remote_path: &Path, _destination: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected download in missing-root client"))
+        }
+
+        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected delete in missing-root client"))
+        }
+    }
+
     #[test]
     fn preview_plan_uses_injected_proton_client() {
         let directory = tempdir().expect("tempdir");
@@ -1346,6 +1446,92 @@ mod tests {
                 .any(|action| action.path == Path::new("remote.txt")
                     && action.action == SyncAction::Download
                     && action.remote_id.as_deref() == Some("remote-id"))
+        );
+    }
+
+    #[test]
+    fn reconcile_creates_missing_remote_root_before_uploading() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("local-only.txt");
+        fs::write(&local_path, b"local").expect("local file");
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let client = MissingRootProtonClient {
+            operations: Arc::clone(&operations),
+        };
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        let operations = operations.lock().expect("operations lock");
+        assert_eq!(
+            operations.first(),
+            Some(&RecordedOperation::EnsureRootDirectory {
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+            }),
+            "remote root must be created before any upload runs"
+        );
+        assert!(
+            operations.contains(&RecordedOperation::Upload {
+                local_path,
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                relative_path: PathBuf::from("local-only.txt"),
+            }),
+            "local files should still upload after creating the missing remote root"
+        );
+        assert_eq!(daemon.last_error, None);
+        assert_eq!(
+            daemon
+                .last_successful_sync_summary
+                .as_ref()
+                .map(|summary| summary.remote_directories_created),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn missing_remote_root_bootstraps_from_local_even_with_existing_index() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("stable.txt");
+        fs::write(&local_path, b"stable").expect("local file");
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let client = MissingRootProtonClient {
+            operations: Arc::clone(&operations),
+        };
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let hash = sha1_bytes(b"stable");
+        upsert_record(
+            &daemon.connection,
+            &base_record("stable.txt", Some("stale-remote-id"), hash.as_str()),
+        )
+        .expect("base index record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        let operations = operations.lock().expect("operations lock");
+        assert!(
+            operations.contains(&RecordedOperation::Upload {
+                local_path: local_path.clone(),
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                relative_path: PathBuf::from("stable.txt"),
+            }),
+            "missing configured root should bootstrap from local files instead of deleting them"
+        );
+        assert!(
+            local_path.exists(),
+            "local data must not be deleted just because the configured remote root is missing"
+        );
+        assert_eq!(
+            daemon
+                .last_successful_sync_summary
+                .as_ref()
+                .map(|summary| summary.local_deletes),
+            Some(0)
         );
     }
 
