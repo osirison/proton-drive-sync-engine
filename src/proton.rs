@@ -547,7 +547,38 @@ impl ProtonClient for ProtonDriveClient {
         })?;
         self.move_remote_entry(&old_remote_path, &new_parent_remote)?;
         let moved_remote_path = new_parent_remote.join(old_name);
-        self.rename_remote_entry(&moved_remote_path, new_name)
+        let Err(rename_error) = self.rename_remote_entry(&moved_remote_path, new_name) else {
+            return Ok(());
+        };
+        // The move succeeded but the rename did not, stranding the entity at
+        // `new_parent/old_name`. Left there, the next reconcile can no longer recognize
+        // this as a resumable rename (the source is gone from its old path), so it
+        // re-uploads the new local name and re-downloads the moved entity, permanently
+        // duplicating the file on both sides. Best-effort move it back to its original
+        // parent so the operation is atomic-or-nothing and the next pass replans the
+        // whole rename+move cleanly; surface both errors if even the rollback fails.
+        let old_parent_remote = match old_parent {
+            Some(parent) if !parent.as_os_str().is_empty() => remote_root.join(parent),
+            _ => remote_root.to_path_buf(),
+        };
+        Err(
+            match self.move_remote_entry(&moved_remote_path, &old_parent_remote) {
+                Ok(()) => boxed_error(format!(
+                    "proton-drive rename after move failed for {}: {rename_error}; rolled the \
+                 move back to {} so the next reconcile can retry the rename cleanly",
+                    moved_remote_path.display(),
+                    old_remote_path.display()
+                )),
+                Err(rollback_error) => boxed_error(format!(
+                    "proton-drive rename after move failed for {}: {rename_error}; additionally \
+                 failed to roll the move back to {}: {rollback_error} — the entity is left \
+                 at {} and may need manual cleanup",
+                    moved_remote_path.display(),
+                    old_parent_remote.display(),
+                    moved_remote_path.display()
+                )),
+            },
+        )
     }
 
     fn install_cancel_flag(&mut self, cancel_flag: Arc<AtomicBool>) {
@@ -2135,6 +2166,59 @@ exit 64
             fs::read_to_string(args_path(&executable)).expect("recorded args"),
             "move:/my-files/demo/old-folder/old-name.txt:/my-files/demo/new-folder\n\
              rename:/my-files/demo/new-folder/old-name.txt:new-name.txt\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_or_move_rolls_the_move_back_when_the_rename_fails() {
+        // When both the parent and the name change, rename_or_move moves first, then
+        // renames. If the rename fails after the move succeeded, the entity is stranded
+        // at new-folder/old-name.txt. Without a rollback the next reconcile would
+        // duplicate the file on both sides, so rename_or_move must move it back to its
+        // original parent and report the failure.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+if [ "$2" = "move" ]; then
+  printf 'move:%s:%s\n' "$3" "$4" >> "$0.args"
+  exit 0
+fi
+if [ "$2" = "rename" ]; then
+  printf 'rename:%s:%s\n' "$3" "$4" >> "$0.args"
+  echo "rename boom" >&2
+  exit 1
+fi
+echo "unexpected args: $*" >&2
+exit 64
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        let error = client
+            .rename_or_move(
+                Path::new("/my-files/demo"),
+                Path::new("old-folder/old-name.txt"),
+                Path::new("new-folder/new-name.txt"),
+            )
+            .expect_err("a failed rename after a successful move must return an error");
+
+        assert!(
+            error.to_string().contains("rename boom") && error.to_string().contains("rolled the"),
+            "the error must surface the rename failure and note the rollback: {error}"
+        );
+        // The move ran, the rename failed, then the entity was moved back to its original
+        // parent (old-folder) rather than left stranded under new-folder.
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "move:/my-files/demo/old-folder/old-name.txt:/my-files/demo/new-folder\n\
+             rename:/my-files/demo/new-folder/old-name.txt:new-name.txt\n\
+             move:/my-files/demo/new-folder/old-name.txt:/my-files/demo/old-folder\n"
         );
     }
 
