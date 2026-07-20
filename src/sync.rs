@@ -14,7 +14,7 @@ pub enum SyncAction {
     CreateRemoteDirectory,
     CreateLocalDirectory,
     MoveLocal,
-    MoveUnsupported,
+    MoveRemote,
     AutoLink,
     Conflict,
     TypeConflict,
@@ -48,7 +48,7 @@ pub struct PlanSummary {
     pub remote_directories_created: usize,
     pub local_directories_created: usize,
     pub local_moves: usize,
-    pub unsupported_moves: usize,
+    pub remote_moves: usize,
     pub auto_links: usize,
     pub conflicts: usize,
     pub type_conflicts: usize,
@@ -122,6 +122,10 @@ pub fn plan_sync_entities(
                             local.and_then(LocalEntityState::as_directory),
                             remote.and_then(RemoteEntity::as_directory),
                             base,
+                            local_entities,
+                            remote_entities,
+                            base_index,
+                            &suppressed_paths,
                         )
                     }
                     Some(base) if !bootstrap => plan_ongoing_file_action(
@@ -134,7 +138,7 @@ pub fn plan_sync_entities(
                 }
             }),
     );
-    plan
+    suppress_actions_covered_by_directory_deletes(plan)
 }
 
 fn plan_file_path_transitions(
@@ -157,7 +161,7 @@ fn plan_file_path_transitions(
         let action =
             plan_remote_file_move(&path, local_entities, remote_entities, base_index, base)
                 .or_else(|| {
-                    plan_unsupported_local_file_move(
+                    plan_local_rename_as_remote_move(
                         &path,
                         local_entities,
                         remote_entities,
@@ -204,7 +208,7 @@ fn plan_remote_file_move(
     ))
 }
 
-fn plan_unsupported_local_file_move(
+fn plan_local_rename_as_remote_move(
     old_path: &Path,
     local_entities: &HashMap<PathBuf, LocalEntityState>,
     remote_entities: &HashMap<PathBuf, RemoteEntity>,
@@ -226,7 +230,7 @@ fn plan_unsupported_local_file_move(
         remote_entities,
         base_index,
     )?;
-    Some(PlannedAction::move_unsupported(
+    Some(PlannedAction::move_remote(
         old_path,
         Some(&new_path),
         Some(remote.id.clone()),
@@ -504,28 +508,74 @@ fn plan_ongoing_file_action(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_ongoing_directory_action(
     path: &Path,
     local: Option<&LocalDirectoryState>,
     remote: Option<&RemoteDirectory>,
     base: &FileRecord,
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+    suppressed_paths: &BTreeSet<PathBuf>,
 ) -> Option<PlannedAction> {
     match (local.is_some(), remote.is_some()) {
         (true, true) => None,
-        (true, false) => Some(PlannedAction::new(
-            path,
-            SyncAction::CreateRemoteDirectory,
-            EntityKind::Directory,
-            base.proton_id.clone(),
-        )),
-        (false, true) => Some(PlannedAction::new(
-            path,
-            SyncAction::CreateLocalDirectory,
-            EntityKind::Directory,
-            remote
+        // Directory still exists locally but is gone remotely. Recreate it remotely
+        // unless every tracked descendant independently proves the whole subtree was
+        // cleanly removed remotely, in which case propagate the deletion locally.
+        (true, false) => {
+            if directory_subtree_is_deletion_consistent(
+                path,
+                local_entities,
+                remote_entities,
+                base_index,
+                suppressed_paths,
+            ) {
+                Some(PlannedAction::new(
+                    path,
+                    SyncAction::LocalDelete,
+                    EntityKind::Directory,
+                    base.proton_id.clone(),
+                ))
+            } else {
+                Some(PlannedAction::new(
+                    path,
+                    SyncAction::CreateRemoteDirectory,
+                    EntityKind::Directory,
+                    base.proton_id.clone(),
+                ))
+            }
+        }
+        // Directory still exists remotely but is gone locally. Recreate it locally
+        // unless the subtree proof shows the whole tree was cleanly removed locally,
+        // in which case propagate the deletion remotely.
+        (false, true) => {
+            let remote_id = remote
                 .and_then(|directory| directory.id.clone())
-                .or_else(|| base.proton_id.clone()),
-        )),
+                .or_else(|| base.proton_id.clone());
+            if directory_subtree_is_deletion_consistent(
+                path,
+                local_entities,
+                remote_entities,
+                base_index,
+                suppressed_paths,
+            ) {
+                Some(PlannedAction::new(
+                    path,
+                    SyncAction::RemoteDelete,
+                    EntityKind::Directory,
+                    remote_id,
+                ))
+            } else {
+                Some(PlannedAction::new(
+                    path,
+                    SyncAction::CreateLocalDirectory,
+                    EntityKind::Directory,
+                    remote_id,
+                ))
+            }
+        }
         (false, false) => Some(PlannedAction::new(
             path,
             SyncAction::Purge,
@@ -533,6 +583,87 @@ fn plan_ongoing_directory_action(
             base.proton_id.clone(),
         )),
     }
+}
+
+/// Returns true only when every base-index descendant of `directory_path` independently
+/// resolves to a deletion-consistent outcome (`RemoteDelete`, `LocalDelete`, or `Purge`).
+/// This proves it is safe to propagate the directory's one-sided absence as a recursive
+/// delete instead of recreating it; any descendant with a different resolution (upload,
+/// download, conflict, auto-link, a directory recreate, an unsupported skip, or a path
+/// transition) causes the proof to fail so the caller falls back to the non-destructive
+/// recreate behavior.
+fn directory_subtree_is_deletion_consistent(
+    directory_path: &Path,
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+    suppressed_paths: &BTreeSet<PathBuf>,
+) -> bool {
+    base_index
+        .iter()
+        .filter(|(path, _)| is_strict_descendant(directory_path, path))
+        .all(|(path, base)| {
+            if suppressed_paths.contains(path) {
+                return false;
+            }
+            let local = local_entities.get(path);
+            let remote = remote_entities.get(path);
+            let action = match base.entity_kind {
+                EntityKind::Directory => plan_ongoing_directory_action(
+                    path,
+                    local.and_then(LocalEntityState::as_directory),
+                    remote.and_then(RemoteEntity::as_directory),
+                    base,
+                    local_entities,
+                    remote_entities,
+                    base_index,
+                    suppressed_paths,
+                ),
+                EntityKind::File => plan_ongoing_file_action(
+                    path,
+                    local.and_then(LocalEntityState::as_file),
+                    remote.and_then(RemoteEntity::as_file),
+                    base,
+                ),
+            };
+            matches!(
+                action.map(|planned| planned.action),
+                Some(SyncAction::RemoteDelete | SyncAction::LocalDelete | SyncAction::Purge)
+            )
+        })
+}
+
+/// Returns true when `candidate` is strictly nested under `ancestor` (never equal to it).
+pub(crate) fn is_strict_descendant(ancestor: &Path, candidate: &Path) -> bool {
+    candidate != ancestor && candidate.starts_with(ancestor)
+}
+
+/// Removes any planned action whose path is nested under a directory that is itself
+/// planned for a recursive `RemoteDelete`/`LocalDelete`, since the recursive removal
+/// already covers every descendant and re-applying an individual action for it would
+/// be redundant (and could fail if the recursive removal already ran first).
+fn suppress_actions_covered_by_directory_deletes(plan: Vec<PlannedAction>) -> Vec<PlannedAction> {
+    let deleted_directories: Vec<PathBuf> = plan
+        .iter()
+        .filter(|action| {
+            action.entity_kind == EntityKind::Directory
+                && matches!(
+                    action.action,
+                    SyncAction::RemoteDelete | SyncAction::LocalDelete
+                )
+        })
+        .map(|action| action.path.clone())
+        .collect();
+    if deleted_directories.is_empty() {
+        return plan;
+    }
+    plan.into_iter()
+        .filter(|action| {
+            !deleted_directories
+                .iter()
+                .any(|directory| is_strict_descendant(directory, &action.path))
+        })
+        .collect()
 }
 
 fn plan_modified_record_action(
@@ -654,7 +785,7 @@ impl PlannedAction {
         }
     }
 
-    fn move_unsupported(
+    fn move_remote(
         path: &Path,
         destination_path: Option<&Path>,
         remote_id: Option<String>,
@@ -662,7 +793,7 @@ impl PlannedAction {
         Self {
             path: path.to_path_buf(),
             destination_path: destination_path.map(Path::to_path_buf),
-            action: SyncAction::MoveUnsupported,
+            action: SyncAction::MoveRemote,
             entity_kind: EntityKind::File,
             conflict_path: None,
             remote_id,
@@ -692,7 +823,7 @@ impl PlanSummary {
                 SyncAction::CreateRemoteDirectory => summary.remote_directories_created += 1,
                 SyncAction::CreateLocalDirectory => summary.local_directories_created += 1,
                 SyncAction::MoveLocal => summary.local_moves += 1,
-                SyncAction::MoveUnsupported => summary.unsupported_moves += 1,
+                SyncAction::MoveRemote => summary.remote_moves += 1,
                 SyncAction::AutoLink => summary.auto_links += 1,
                 SyncAction::Conflict => summary.conflicts += 1,
                 SyncAction::TypeConflict => summary.type_conflicts += 1,
@@ -1188,6 +1319,138 @@ mod tests {
     }
 
     #[test]
+    fn clean_directory_deletion_propagates_recursively_to_remote() {
+        let local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        // "docs" and its only child were previously synced; both are now gone locally
+        // (e.g. `rm -rf docs`) while the remote side is unchanged.
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            RemoteEntity::File(remote("docs/report.txt", "report-id", Some("same-hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs/report.txt"),
+            base("docs/report.txt", Some("report-id"), "same-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert_eq!(
+            planned.len(),
+            1,
+            "the descendant file's own delete should be suppressed by the recursive \
+             directory delete: {planned:?}"
+        );
+        assert_eq!(planned[0].path, PathBuf::from("docs"));
+        assert_eq!(planned[0].action, SyncAction::RemoteDelete);
+        assert_eq!(planned[0].entity_kind, EntityKind::Directory);
+        assert_eq!(planned[0].remote_id.as_deref(), Some("docs-id"));
+    }
+
+    #[test]
+    fn clean_nested_directory_deletion_propagates_through_multiple_levels() {
+        let local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        // "docs" contains "docs/archive", which contains "docs/archive/report.txt".
+        // The whole tree was removed locally in one operation, so only the topmost
+        // directory should be recursively deleted remotely.
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/archive"),
+            remote_directory("docs/archive", Some("archive-id")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/archive/report.txt"),
+            RemoteEntity::File(remote(
+                "docs/archive/report.txt",
+                "report-id",
+                Some("same-hash"),
+            )),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs/archive"),
+            directory_base("docs/archive", Some("archive-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs/archive/report.txt"),
+            base("docs/archive/report.txt", Some("report-id"), "same-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert_eq!(
+            planned.len(),
+            1,
+            "only the top-level directory delete should remain after suppressing \
+             covered descendants: {planned:?}"
+        );
+        assert_eq!(planned[0].path, PathBuf::from("docs"));
+        assert_eq!(planned[0].action, SyncAction::RemoteDelete);
+    }
+
+    #[test]
+    fn directory_deletion_falls_back_to_recreate_when_descendant_diverges() {
+        let local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        // "docs" is gone locally, but its child file was independently modified on
+        // the remote side after the last sync, so this is a genuine conflict rather
+        // than a clean subtree deletion. The directory must not be recursively
+        // deleted out from under the diverging descendant.
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            RemoteEntity::File(remote("docs/report.txt", "report-id", Some("changed-hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs/report.txt"),
+            base("docs/report.txt", Some("report-id"), "original-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            planned.iter().any(|action| action.path == Path::new("docs")
+                && action.action == SyncAction::CreateLocalDirectory),
+            "an ambiguous descendant must keep the directory recreate fallback: {planned:?}"
+        );
+        assert!(
+            planned
+                .iter()
+                .any(|action| action.path == Path::new("docs/report.txt")
+                    && action.action == SyncAction::Conflict),
+            "the diverging descendant should still be reported as its own conflict: {planned:?}"
+        );
+    }
+
+    #[test]
     fn mixed_file_and_directory_entities_plan_type_conflict() {
         let mut local_entities = HashMap::new();
         let mut remote_entities = HashMap::new();
@@ -1236,7 +1499,7 @@ mod tests {
     }
 
     #[test]
-    fn local_file_rename_is_reported_unsupported_without_remote_move_contract() {
+    fn local_file_rename_plans_verified_remote_move() {
         let mut local_entities = HashMap::new();
         let mut remote_entities = HashMap::new();
         let mut base_index = HashMap::new();
@@ -1256,7 +1519,7 @@ mod tests {
         let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
 
         assert_eq!(planned.len(), 1);
-        assert_eq!(planned[0].action, SyncAction::MoveUnsupported);
+        assert_eq!(planned[0].action, SyncAction::MoveRemote);
         assert_eq!(planned[0].path, PathBuf::from("old-name.txt"));
         assert_eq!(
             planned[0].destination_path.as_deref(),

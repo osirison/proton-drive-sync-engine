@@ -9,7 +9,8 @@ use crate::ipc::{
 };
 use crate::proton::{CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity};
 use crate::sync::{
-    PlanSummary, PlannedAction, SyncAction, original_from_conflict_copy, plan_sync_entities,
+    PlanSummary, PlannedAction, SyncAction, is_strict_descendant, original_from_conflict_copy,
+    plan_sync_entities,
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -473,12 +474,24 @@ impl<C: ProtonClient> Daemon<C> {
                         index_mutations.push(IndexMutation::Upsert(record));
                     }
                 }
-                SyncAction::MoveUnsupported => {
-                    warn!(
-                        path = %action.path.display(),
-                        destination_path = ?action.destination_path,
-                        "skipping local-to-remote move because Proton move command semantics are not verified"
-                    );
+                SyncAction::MoveRemote => {
+                    if let Some(destination_path) = action.destination_path.as_ref()
+                        && let Some(local) = local_files.get(destination_path)
+                    {
+                        self.proton.rename_or_move(
+                            &self.config.remote_root,
+                            &action.path,
+                            destination_path,
+                        )?;
+                        let record = FileRecord::from_local(
+                            destination_path.clone(),
+                            local,
+                            action.remote_id.clone(),
+                            SyncStatus::Synced,
+                        );
+                        index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                        index_mutations.push(IndexMutation::Upsert(record));
+                    }
                 }
                 SyncAction::AutoLink => match local_entities.get(&action.path) {
                     Some(LocalEntityState::File(local)) => {
@@ -540,15 +553,29 @@ impl<C: ProtonClient> Daemon<C> {
                         self.proton.delete(&remote_path)?;
                     }
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                    if action.entity_kind == EntityKind::Directory {
+                        for descendant in descendant_index_paths(&action.path, &base_index) {
+                            index_mutations.push(IndexMutation::Purge(descendant));
+                        }
+                    }
                 }
                 SyncAction::LocalDelete => {
                     if let Some(destination) =
                         safe_local_path(&self.config.local_root, &action.path)
                         && destination.exists()
                     {
-                        fs::remove_file(destination)?;
+                        if action.entity_kind == EntityKind::Directory {
+                            fs::remove_dir_all(&destination)?;
+                        } else {
+                            fs::remove_file(&destination)?;
+                        }
                     }
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                    if action.entity_kind == EntityKind::Directory {
+                        for descendant in descendant_index_paths(&action.path, &base_index) {
+                            index_mutations.push(IndexMutation::Purge(descendant));
+                        }
+                    }
                 }
                 SyncAction::Purge => {
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
@@ -774,6 +801,19 @@ fn safe_remote_path(remote_root: &Path, relative: &Path) -> Option<PathBuf> {
     crate::validate_relative_path(relative).map(|safe| remote_root.join(safe))
 }
 
+/// Returns every base-index path strictly nested under `directory_path`, used to purge
+/// the whole subtree from the index in one commit when a directory is recursively deleted.
+fn descendant_index_paths(
+    directory_path: &Path,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> Vec<PathBuf> {
+    base_index
+        .keys()
+        .filter(|path| is_strict_descendant(directory_path, path))
+        .cloned()
+        .collect()
+}
+
 struct LockGuard {
     path: PathBuf,
     _file: File,
@@ -870,6 +910,11 @@ mod tests {
         },
         Delete {
             remote_path: PathBuf,
+        },
+        RenameOrMove {
+            remote_root: PathBuf,
+            old_relative_path: PathBuf,
+            new_relative_path: PathBuf,
         },
     }
 
@@ -1026,6 +1071,22 @@ mod tests {
                 .push(RecordedOperation::Delete {
                     remote_path: remote_path.to_path_buf(),
                 });
+            Ok(())
+        }
+
+        fn rename_or_move(
+            &self,
+            remote_root: &Path,
+            old_relative_path: &Path,
+            new_relative_path: &Path,
+        ) -> AppResult<()> {
+            self.operations.lock().expect("operations lock").push(
+                RecordedOperation::RenameOrMove {
+                    remote_root: remote_root.to_path_buf(),
+                    old_relative_path: old_relative_path.to_path_buf(),
+                    new_relative_path: new_relative_path.to_path_buf(),
+                },
+            );
             Ok(())
         }
     }
@@ -1404,7 +1465,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_skips_local_rename_until_remote_move_contract_exists() {
+    fn reconcile_executes_verified_local_rename_as_remote_move() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
         fs::create_dir(&local_root).expect("local root");
@@ -1427,23 +1488,28 @@ mod tests {
 
         daemon.reconcile_blocking().expect("reconcile");
 
-        assert!(
-            operations.lock().expect("operations lock").is_empty(),
-            "local rename should not mutate Proton until a move command is verified"
+        assert_eq!(
+            operations.lock().expect("operations lock").as_slice(),
+            [RecordedOperation::RenameOrMove {
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                old_relative_path: PathBuf::from("old-name.txt"),
+                new_relative_path: PathBuf::from("new-name.txt"),
+            }],
+            "verified local rename should execute exactly one remote rename/move"
         );
         assert!(new_path.is_file());
         assert!(
             get_record(&daemon.connection, Path::new("old-name.txt"))
                 .expect("old index lookup")
-                .is_some(),
-            "unsupported local rename should leave the existing baseline untouched"
-        );
-        assert!(
-            get_record(&daemon.connection, Path::new("new-name.txt"))
-                .expect("new index lookup")
                 .is_none(),
-            "unsupported local rename should not mark the new path synced"
+            "old path should be purged from the index"
         );
+        let record = get_record(&daemon.connection, Path::new("new-name.txt"))
+            .expect("new index lookup")
+            .expect("new index record");
+        assert_eq!(record.proton_id.as_deref(), Some("stable-id"));
+        assert_eq!(record.sha1_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 
     #[test]
@@ -1729,6 +1795,123 @@ mod tests {
                 .expect("index lookup")
                 .is_none(),
             "ghost state resolution should purge the index record"
+        );
+    }
+
+    #[test]
+    fn reconcile_recursively_deletes_remote_directory_and_purges_descendant_index_rows() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("docs"),
+                id: Some("docs-id".to_owned()),
+                name: "docs".to_owned(),
+            }),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            RemoteEntity::File(remote("docs/report.txt", "report-id", Some("same-hash"))),
+        );
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &FileRecord {
+                file_path: PathBuf::from("docs"),
+                entity_kind: EntityKind::Directory,
+                file_size: 0,
+                mtime: 1,
+                sha1_hash: None,
+                proton_id: Some("docs-id".to_owned()),
+                sync_status: SyncStatus::Synced,
+            },
+        )
+        .expect("directory base record");
+        upsert_record(
+            &daemon.connection,
+            &base_record("docs/report.txt", Some("report-id"), "same-hash"),
+        )
+        .expect("file base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            *operations.lock().expect("operations lock"),
+            vec![RecordedOperation::Delete {
+                remote_path: PathBuf::from("/Drive/RemoteFolder/docs"),
+            }],
+            "the whole subtree should be removed with a single recursive delete call"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs"))
+                .expect("index lookup")
+                .is_none(),
+            "recursive remote delete should purge the directory's own index record"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs/report.txt"))
+                .expect("index lookup")
+                .is_none(),
+            "recursive remote delete should purge descendant index records too"
+        );
+    }
+
+    #[test]
+    fn reconcile_recursively_deletes_local_directory_and_purges_descendant_index_rows() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("docs")).expect("local docs directory");
+        let file_path = local_root.join("docs").join("report.txt");
+        fs::write(&file_path, b"same content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&file_path).expect("base hash");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &FileRecord {
+                file_path: PathBuf::from("docs"),
+                entity_kind: EntityKind::Directory,
+                file_size: 0,
+                mtime: 1,
+                sha1_hash: None,
+                proton_id: Some("docs-id".to_owned()),
+                sync_status: SyncStatus::Synced,
+            },
+        )
+        .expect("directory base record");
+        upsert_record(
+            &daemon.connection,
+            &base_record("docs/report.txt", Some("report-id"), base_hash.as_str()),
+        )
+        .expect("file base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations.lock().expect("operations lock").is_empty(),
+            "recursive local delete reconciliation must not call Proton mutations"
+        );
+        assert!(
+            !local_root.join("docs").exists(),
+            "the whole local directory subtree should be removed"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs"))
+                .expect("index lookup")
+                .is_none(),
+            "recursive local delete should purge the directory's own index record"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs/report.txt"))
+                .expect("index lookup")
+                .is_none(),
+            "recursive local delete should purge descendant index records too"
         );
     }
 

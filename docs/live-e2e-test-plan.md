@@ -52,22 +52,27 @@ Normal `cargo test` runs simulated daemon reconciliation tests with an injected 
 | Matrix Area | Current Coverage | Remaining Gap |
 | ----------- | ---------------- | ------------- |
 | Bootstrap files | B-01, B-02, B-03, and B-04 file behavior are covered through daemon tests | B-04 records the primary path as `conflict`; the schema does not yet store a separate sidecar row |
-| Nested files | SD-01, SD-02, SD-03, SD-04, and SD-08 safe create behavior are covered | Recursive directory deletion is still disabled until subtree proof and live folder-trash behavior are verified |
-| Steady-state files | SS-01 through SS-06 are covered through daemon and planner tests. Remote-only rename convergence is covered as a local move when Proton ID and SHA-1 evidence are unique | Local-to-remote rename and move execution remains blocked until Proton CLI move or rename command semantics are verified |
+| Nested files | SD-01, SD-02, SD-03, SD-04, and SD-08 safe create behavior are covered. SD-05 recursive directory deletion is implemented and covered by deterministic daemon/planner tests (subtree-proof propagation; ambiguous subtrees fall back to recreate) | Recursive directory *trash* behavior against the real Proton Drive service is not yet live-verified (the mutating live E2E test exercises file-level delete, not a directory subtree) |
+| Steady-state files | SS-01 through SS-06 are covered through daemon and planner tests. Remote-only rename convergence is covered as a local move when Proton ID and SHA-1 evidence are unique. SS-07 and SS-08 local-to-remote rename and move execute via the verified `filesystem rename` / `filesystem move` CLI contract and are covered by fake-CLI, daemon, and live E2E tests | None outstanding for file-level rename/move; SD-06/SD-07 directory-level rename/move still fall back to today's non-destructive behavior |
 | Conflict files | CF-01, CF-02, CF-03, and SD-09 type-clash no-mutation behavior are covered through daemon and planner tests | A richer type-conflict resolution workflow remains future work |
 | Edge cases | EG-01 is covered by the empty-file SHA-1 test; EG-02 is covered by path-safe command construction patterns | A dedicated special-character rename test still needs rename support |
 | Control IPC | IC-01 and IC-02 are covered by the IPC integration test plus watcher regression tests | A live daemon pause/resume test with real Proton traffic remains pending |
-| Interruption safety | Failed side-effect handling verifies that successful early actions are not committed after a later upload failure. An IPC process test covers failed upload behavior across the daemon and control CLI boundary | A real `SIGINT` during a large live upload remains pending |
-| Mutating live gate | Unit tests validate the opt-in gate, disposable-root prefix, and unique run-folder naming | Actual upload, download, delete, conflict, and cleanup live tests are still pending |
+| Interruption safety | Failed side-effect handling verifies that successful early actions are not committed after a later upload failure. An IPC process test covers failed upload behavior across the daemon and control CLI boundary. A real `SIGINT` sent to the daemon process during a blocked upload is covered by a deterministic integration test (`tests/ipc_cli.rs::sigint_during_blocked_upload_exits_cleanly_without_partial_index_state`): it proves the daemon reaches a clean, bounded shutdown, commits no partial index state, and releases its lockfile | The test uses a fake CLI blocked on a sentinel file, not a real large upload against the live Proton Drive service; see the note below the table for why this is sufficient |
+| Mutating live gate | Unit tests validate the opt-in gate, disposable-root prefix, and unique run-folder naming. The mutating live E2E test (`tests/proton_live.rs::mutating_live_e2e_exercises_upload_download_rename_move_delete`) has been executed against a real, disposable Proton Drive folder and passed end-to-end (upload, download, rename in place, move into a subfolder, delete) | Conflict-scenario and pause/resume live tests remain pending; directory-subtree live trash behavior is untested |
+
+SIGINT note: the daemon's main loop runs its reconcile step via `tokio::task::block_in_place`, so a `SIGINT` delivered while a proton-drive call is genuinely stuck is only observed once that call returns control to the loop - in practice, once the stuck call's own `CommandPolicy` timeout kills it. The deterministic test validates exactly this real, bounded behavior (not instantaneous mid-syscall interruption) and already proves the properties that matter for data safety: the daemon does not hang forever, no partial index state is committed, and the lockfile is released. A live, large-upload variant of this scenario would exercise the same code path and is not expected to behave differently; it has not been run live because it offers no additional coverage over the deterministic test while consuming real account quota and time.
 
 ## Full Matrix Gaps
 
 Full matrix coverage still requires these implementation milestones before the corresponding E2E tests can be honest end-to-end validations:
 
-* Verify recursive folder trash semantics and subtree state before enabling SD-05 or any destructive directory propagation.
-* Verify the Proton CLI command contract for remote rename and move before implementing local-to-remote SS-07, SS-08, SD-06, and SD-07 execution.
+* Live-verify recursive folder trash semantics against the real Proton Drive service (deterministic subtree-proof propagation is already implemented and tested; only the live folder-trash call itself is unverified).
 * Verify the Proton CLI command contract for parent-folder identifiers before enforcing targeted parent IDs for nested uploads and moves.
-* Add safety-gated mutating live tests before marking live upload, download, delete, conflict, pause/resume, and `SIGINT` scenarios as complete.
+* Add safety-gated mutating live tests for the conflict and pause/resume scenarios; upload, download, rename, move, delete, and `SIGINT` interruption are now covered (the last two deterministically, the first five live).
+
+## Resolved Risks
+
+* **CLI subprocess stdin inheritance (fixed):** `spawn_once` in `src/proton.rs` previously spawned the `proton-drive` CLI without configuring its stdin, so it inherited whatever stdin the calling process had. When that stdin was a live interactive terminal, the Node.js-based CLI kept an event-loop handle open waiting for input that would never arrive, hanging every caller until `CommandPolicy`'s timeout forcibly killed the child. This was found via live E2E execution (fast fake-CLI tests never exercise real subprocess stdio inheritance) and fixed by always setting `.stdin(Stdio::null())`. A permanent regression test (`proton::tests::spawned_commands_do_not_inherit_an_open_stdin`) now guards against a recurrence.
 
 ## Implementation Sequence
 

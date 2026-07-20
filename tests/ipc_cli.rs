@@ -5,7 +5,8 @@ mod unix_tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
@@ -113,6 +114,86 @@ mod unix_tests {
         );
     }
 
+    // Regression test for real SIGINT handling during a blocked sync. The daemon's
+    // main loop is a single tokio task that runs its reconcile step via
+    // `block_in_place`, so a SIGINT that arrives while a proton-drive call is stuck
+    // is only *observed* once that call returns control to the loop - it is not
+    // acted on the instant the signal is delivered. This test proves the daemon
+    // still reaches a clean, bounded shutdown once its own command timeout kills
+    // the stuck CLI process, and that the interruption leaves no partial index
+    // state and releases the lockfile.
+    #[test]
+    fn sigint_during_blocked_upload_exits_cleanly_without_partial_index_state() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("blocking.txt"), b"content").expect("write fixture");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive =
+            write_blocking_upload_proton_drive(directory.path(), "/Drive/RemoteFolder");
+
+        // Keep the CLI's own timeout short: it bounds how long the daemon's
+        // reconcile call can stay blocked before it forcibly kills the stuck
+        // upload and re-observes the SIGINT it already received.
+        let mut daemon = DaemonProcess::spawn_with_proton_timeout(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+            2,
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+        let pid = daemon.child.id();
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let syncnow_socket_path = socket_path.clone();
+        thread::spawn(move || {
+            let _ = result_tx.send(run_control(&syncnow_socket_path, "syncnow"));
+        });
+
+        let started_marker = PathBuf::from(format!("{}.started", fake_proton_drive.display()));
+        wait_for_marker(&started_marker, &mut daemon.child);
+
+        let status = Command::new("kill")
+            .arg("-INT")
+            .arg(pid.to_string())
+            .status()
+            .expect("send SIGINT to daemon");
+        assert!(status.success(), "kill -INT should succeed");
+
+        let synced = result_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("syncnow should still receive a response once the blocked CLI call times out");
+        assert!(
+            synced["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("sync failed"),
+            "an interrupted upload should be reported as a failed sync: {synced}"
+        );
+
+        let exit_status = wait_for_exit(&mut daemon.child, Duration::from_secs(5))
+            .expect("daemon should exit promptly once it re-observes the already-delivered SIGINT");
+        assert!(
+            exit_status.success(),
+            "daemon should shut down cleanly after SIGINT: {exit_status:?}"
+        );
+
+        let index = load_existing_index(&db_path).expect("load index after interrupted upload");
+        assert!(
+            index.is_empty(),
+            "an interrupted upload must not leave partial index state: {index:?}"
+        );
+
+        assert!(
+            !lockfile_path.exists(),
+            "lockfile should be removed after a clean SIGINT-triggered shutdown"
+        );
+    }
+
     struct DaemonProcess {
         child: Child,
     }
@@ -147,6 +228,39 @@ mod unix_tests {
                 .expect("spawn proton-syncd");
             Self { child }
         }
+
+        fn spawn_with_proton_timeout(
+            local_root: &Path,
+            socket_path: &Path,
+            lockfile_path: &Path,
+            db_path: &Path,
+            proton_cli: &Path,
+            proton_timeout_secs: u64,
+        ) -> Self {
+            let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
+                .arg("--local-root")
+                .arg(local_root)
+                .arg("--remote-root")
+                .arg("/Drive/RemoteFolder")
+                .arg("--socket-path")
+                .arg(socket_path)
+                .arg("--lockfile-path")
+                .arg(lockfile_path)
+                .arg("--db-path")
+                .arg(db_path)
+                .arg("--proton-cli")
+                .arg(proton_cli)
+                .arg("--scan-interval-secs")
+                .arg("60")
+                .arg("--proton-timeout-secs")
+                .arg(proton_timeout_secs.to_string())
+                .env("RUST_LOG", "error")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn proton-syncd");
+            Self { child }
+        }
     }
 
     impl Drop for DaemonProcess {
@@ -171,6 +285,34 @@ mod unix_tests {
             "timed out waiting for daemon socket at {}",
             socket_path.display()
         );
+    }
+
+    fn wait_for_marker(marker_path: &Path, child: &mut Child) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if marker_path.exists() {
+                return;
+            }
+            if let Some(status) = child.try_wait().expect("daemon status") {
+                panic!("proton-syncd exited before reaching the expected marker: {status}");
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!(
+            "timed out waiting for marker file at {}",
+            marker_path.display()
+        );
+    }
+
+    fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Some(status) = child.try_wait().expect("daemon status") {
+                return Some(status);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        None
     }
 
     fn run_control(socket_path: &Path, command: &str) -> Value {
@@ -234,6 +376,35 @@ exit 64
                         ),
                 )
                 .expect("fake proton-drive script");
+        let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).expect("script permissions");
+        path
+    }
+
+    fn write_blocking_upload_proton_drive(directory: &Path, remote_root: &str) -> PathBuf {
+        let path = directory.join("fake-blocking-upload-proton-drive");
+        fs::write(
+            &path,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ] && [ "$4" = "{remote_root}" ]; then
+    printf '{{"entries":[]}}\n'
+    exit 0
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "upload" ]; then
+    touch "$0.started"
+    while [ ! -f "$0.release" ]; do
+        sleep 0.05
+    done
+    exit 0
+fi
+echo "unexpected proton-drive args: $*" >&2
+exit 64
+"#
+            ),
+        )
+        .expect("fake proton-drive script");
         let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&path, permissions).expect("script permissions");

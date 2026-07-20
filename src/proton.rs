@@ -147,6 +147,22 @@ pub trait ProtonClient: Send + Sync {
     fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
     fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()>;
     fn delete(&self, remote_path: &Path) -> AppResult<()>;
+    /// Renames and/or moves a remote entry from `old_relative_path` to
+    /// `new_relative_path`, both resolved against `remote_root`. Implementations
+    /// that cannot yet perform this safely should return an error; the default
+    /// implementation does so.
+    fn rename_or_move(
+        &self,
+        _remote_root: &Path,
+        old_relative_path: &Path,
+        new_relative_path: &Path,
+    ) -> AppResult<()> {
+        Err(boxed_error(format!(
+            "rename/move is not supported by this Proton client ({} -> {})",
+            old_relative_path.display(),
+            new_relative_path.display()
+        )))
+    }
 }
 
 impl ProtonDriveClient {
@@ -332,9 +348,93 @@ impl ProtonClient for ProtonDriveClient {
             )))
         }
     }
+
+    fn rename_or_move(
+        &self,
+        remote_root: &Path,
+        old_relative_path: &Path,
+        new_relative_path: &Path,
+    ) -> AppResult<()> {
+        let old_remote_path = remote_root.join(old_relative_path);
+        let new_name = new_relative_path.file_name().ok_or_else(|| {
+            boxed_error(format!(
+                "rename/move destination has no file name: {}",
+                new_relative_path.display()
+            ))
+        })?;
+        let old_parent = old_relative_path.parent();
+        let new_parent = new_relative_path.parent();
+
+        if old_parent == new_parent {
+            return self.rename_remote_entry(&old_remote_path, new_name);
+        }
+
+        let new_parent_remote = match new_parent {
+            Some(parent) if !parent.as_os_str().is_empty() => remote_root.join(parent),
+            _ => remote_root.to_path_buf(),
+        };
+
+        if old_relative_path.file_name() == Some(new_name) {
+            return self.move_remote_entry(&old_remote_path, &new_parent_remote);
+        }
+
+        let old_name = old_relative_path.file_name().ok_or_else(|| {
+            boxed_error(format!(
+                "rename/move source has no file name: {}",
+                old_relative_path.display()
+            ))
+        })?;
+        self.move_remote_entry(&old_remote_path, &new_parent_remote)?;
+        let moved_remote_path = new_parent_remote.join(old_name);
+        self.rename_remote_entry(&moved_remote_path, new_name)
+    }
 }
 
 impl ProtonDriveClient {
+    fn rename_remote_entry(&self, remote_path: &Path, new_name: &std::ffi::OsStr) -> AppResult<()> {
+        let output = self.run_proton_drive(
+            "rename",
+            &[
+                OsString::from("filesystem"),
+                OsString::from("rename"),
+                remote_path.as_os_str().to_os_string(),
+                new_name.to_os_string(),
+            ],
+            1,
+        )?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(boxed_error(format!(
+                "proton-drive rename failed for {}: {}",
+                remote_path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            )))
+        }
+    }
+
+    fn move_remote_entry(&self, remote_path: &Path, target_parent: &Path) -> AppResult<()> {
+        let output = self.run_proton_drive(
+            "move",
+            &[
+                OsString::from("filesystem"),
+                OsString::from("move"),
+                remote_path.as_os_str().to_os_string(),
+                target_parent.as_os_str().to_os_string(),
+            ],
+            1,
+        )?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(boxed_error(format!(
+                "proton-drive move failed for {}: {}",
+                remote_path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            )))
+        }
+    }
+
     fn create_missing_directory_components(
         &self,
         remote_root: &Path,
@@ -498,6 +598,7 @@ impl ProtonDriveClient {
         loop {
             match Command::new(&self.executable)
                 .args(args)
+                .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -1053,6 +1154,48 @@ printf '{"entries":[]}\n'
         );
     }
 
+    // Regression test for a real bug found via live E2E testing: `spawn_once` did not
+    // configure the child's stdin, so it inherited whatever stdin the calling process
+    // happened to have. When that stdin was a live, interactive terminal, the real
+    // proton-drive CLI (a Node.js process) kept an event-loop handle open waiting for
+    // input that would never arrive, so the process never exited even though the
+    // requested operation had already completed - causing every caller to hang until
+    // `CommandPolicy`'s timeout forcibly killed the child. The fix is to always give the
+    // child a closed stdin (`Stdio::null()`), since this is a non-interactive CLI wrapper
+    // that never needs to read input from its caller.
+    #[cfg(unix)]
+    #[test]
+    fn spawned_commands_do_not_inherit_an_open_stdin() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+if read line; then
+    echo "unexpected stdin data: $line" > "$0.stdin_result"
+else
+    echo "stdin closed" > "$0.stdin_result"
+fi
+printf '{"entries":[]}\n'
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(2), 1),
+        );
+
+        client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect("list should complete promptly regardless of the caller's own stdin");
+
+        let stdin_result_path = PathBuf::from(format!("{}.stdin_result", executable.display()));
+        assert_eq!(
+            fs::read_to_string(&stdin_result_path).expect("recorded stdin observation"),
+            "stdin closed\n",
+            "the child process must always receive a closed stdin, never an inherited one"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn download_uses_filesystem_path_command() {
@@ -1240,6 +1383,167 @@ exit 0
             fs::read_to_string(args_path(&executable)).expect("recorded args"),
             "filesystem\ntrash\n/my-files/demo/removed.txt\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_or_move_renames_in_place_when_parent_is_unchanged() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .rename_or_move(
+                Path::new("/my-files/demo"),
+                Path::new("old-name.txt"),
+                Path::new("new-name.txt"),
+            )
+            .expect("rename command");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "filesystem\nrename\n/my-files/demo/old-name.txt\nnew-name.txt\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_or_move_moves_when_only_parent_changes() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .rename_or_move(
+                Path::new("/my-files/demo"),
+                Path::new("old-folder/report.txt"),
+                Path::new("new-folder/report.txt"),
+            )
+            .expect("move command");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "filesystem\nmove\n/my-files/demo/old-folder/report.txt\n/my-files/demo/new-folder\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_or_move_moves_to_root_when_new_parent_is_empty() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .rename_or_move(
+                Path::new("/my-files/demo"),
+                Path::new("nested/report.txt"),
+                Path::new("report.txt"),
+            )
+            .expect("move command");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "filesystem\nmove\n/my-files/demo/nested/report.txt\n/my-files/demo\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_or_move_moves_then_renames_when_parent_and_name_change() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+if [ "$2" = "move" ]; then
+  printf 'move:%s:%s\n' "$3" "$4" >> "$0.args"
+  exit 0
+fi
+if [ "$2" = "rename" ]; then
+  printf 'rename:%s:%s\n' "$3" "$4" >> "$0.args"
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 64
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        client
+            .rename_or_move(
+                Path::new("/my-files/demo"),
+                Path::new("old-folder/old-name.txt"),
+                Path::new("new-folder/new-name.txt"),
+            )
+            .expect("move then rename command");
+
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded args"),
+            "move:/my-files/demo/old-folder/old-name.txt:/my-files/demo/new-folder\n\
+             rename:/my-files/demo/new-folder/old-name.txt:new-name.txt\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_or_move_reports_cli_failure() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+echo "boom" >&2
+exit 1
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+
+        let error = client
+            .rename_or_move(
+                Path::new("/my-files/demo"),
+                Path::new("old-name.txt"),
+                Path::new("new-name.txt"),
+            )
+            .expect_err("rename command should fail");
+
+        assert!(error.to_string().contains("boom"));
     }
 
     #[cfg(unix)]
