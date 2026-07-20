@@ -1,0 +1,50 @@
+{
+  "entries": [
+    {
+      "name": "RemoteFolder",
+      "type": "folder",
+      "entries": [
+        {
+          "name": "Documents",
+          "type": "folder",
+          "entries": [
+            {
+              "id": "file-notes",
+              "name": "notes.txt",
+              "activeRevision": {
+                "claimedDigests": {
+                  "sha1": "1111111111111111111111111111111111111111"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "file-root",
+          "name": "root.md",
+          "path": "/Drive/RemoteFolder/root.md",
+          "activeRevision": {
+            "claimedDigests": {
+              "sha1": "2222222222222222222222222222222222222222"
+            }
+          }
+        },
+        {
+          "name": "Drafts",
+          "type": "folder",
+          "files": [
+            {
+              "id": "file-no-digest",
+              "name": "digest-missing.txt"
+            }
+          ]
+        },
+        {
+          "id": "file-escape",
+          "name": "passwd",
+          "path": "/etc/passwd"
+        }
+      ]
+    }
+  ]
+}

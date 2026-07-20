@@ -1,0 +1,80 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Overview
+
+Rust prototype for bidirectional file sync between a local folder and Proton Drive. Ships two binaries backed by one library crate (`proton_drive_sync_engine`):
+
+- `proton-syncd` (`src/bin/proton-syncd.rs`) — long-running daemon; also hosts the one-shot `--dry-run` path.
+- `proton-sync` (`src/bin/proton-sync.rs`) — thin control CLI that talks to the daemon over a Unix socket.
+
+Unix-only today: control-plane IPC uses Unix domain sockets (`#[cfg(unix)]` guards in `src/ipc.rs`). Edition 2024 toolchain required.
+
+## Commands
+
+```bash
+cargo build --all-targets
+
+# Full validation suite (run before committing)
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+
+# Focused tests
+cargo test sync::tests          # planner unit tests (src/sync.rs)
+cargo test proton::tests        # remote JSON parsing / CLI wrapper
+cargo test daemon::tests        # reconciliation with injected fake ProtonClient
+cargo test --test dry_run_cli   # integration test in tests/
+cargo test --test ipc_cli
+cargo test --test example_assets
+cargo test computes_empty_file_sha1   # single test by name substring
+```
+
+`clippy` runs with `-D warnings` — warnings are build failures in CI. Keep `cargo fmt` clean.
+
+The live smoke test against a real authenticated Proton Drive account is `#[ignore]` and read-only:
+
+```bash
+PROTON_SYNC_LIVE_REMOTE_ROOT=/Drive/RemoteFolder \
+  cargo test --test proton_live --all-features -- --ignored
+# Set PROTON_SYNC_LIVE_CLI=/path/to/proton-drive if not on PATH
+```
+
+## Architecture
+
+The engine reconciles **three sources of truth** into a plan, then executes it:
+
+1. Local files under `local-root` (`index::scan_local_files_with_options`, SHA-1 hashed)
+2. Remote files from `proton-drive filesystem list --json` (`proton::ProtonClient::list`)
+3. The last-synced baseline in SQLite (`index::load_index`)
+
+Data flow: **scan → `sync::plan_sync` → execute actions → commit index**. This is the spine; changes to sync behavior almost always start in `src/sync.rs`.
+
+### Module responsibilities
+
+- `src/sync.rs` — **pure** planner. `plan_sync` produces `Vec<PlannedAction>` with no I/O. Bootstrap (empty index) vs ongoing logic are separate; ongoing decisions come from a `(local_delta, remote_delta)` matrix in `plan_ongoing_action`. Also owns conflict-sidecar naming (`.proton-cloud` convention).
+- `src/daemon.rs` — the runtime. `run()` is a `tokio::select!` loop over filesystem-watch events (`notify`), IPC connections, a periodic scan interval, and shutdown signals. `reconcile_blocking_inner` executes the plan and is where all side effects happen. Holds an advisory lockfile (`LockGuard`) to prevent duplicate instances.
+- `src/proton.rs` — `ProtonClient` trait + `ProtonDriveClient` impl that shells out to the `proton-drive` executable. Parses the tree-shaped remote JSON (nodes may nest under `children`/`entries`/`files`). Extracts SHA-1 from `activeRevision.claimedDigests.sha1` when present. `CommandPolicy` governs per-command timeout and list retry attempts.
+- `src/index.rs` — SQLite schema (`file_index` table), local directory scanning, SHA-1 hashing, `ScanOptions` (include/exclude globs + ignore rules), and record CRUD.
+- `src/config.rs` — layered config resolution. Precedence: **explicit CLI flag > TOML file value > XDG default**. `resolve_runtime_config` merges `DaemonConfigInput` (from clap) with `FileConfig` (from `--config`), validates roots/globs, and resolves `dry_run` (`--no-dry-run` beats `--dry-run` beats file `dry_run`).
+- `src/ipc.rs` — JSON-line request/response protocol over the Unix socket; binds with mode `0600`.
+- `src/paths.rs` — XDG-aware defaults for state DB, socket, and lockfile.
+- `src/lib.rs` — `AppResult<T>` alias, `boxed_error`, and `validate_relative_path` (the shared path-safety guard).
+
+### Invariants to preserve
+
+- **Commit-after-side-effects.** `reconcile_blocking_inner` collects `IndexMutation`s while performing uploads/downloads/deletes, then applies them in a single SQLite transaction *after* all actions succeed. If any action fails mid-plan, earlier successes are **not** recorded in the index (they replan next pass). Do not move index writes ahead of their side effect.
+- **Path-safety at boundaries.** Every relative path from an external source (remote listing, local scan, conflict target) must pass `validate_relative_path` / `safe_local_path` before being joined onto a root. Absolute, `..`, and prefix components are rejected to prevent root escape. When adding a boundary that accepts external paths, guard it and add a test there.
+- **Non-destructive on unknown digests.** When a remote file exists but exposes no usable SHA-1, `remote_file_delta` returns `FileDelta::Unknown` and the planner avoids destructive actions (see the `Unknown` match arms in `plan_ongoing_action`). Preserve this conservatism.
+- **Selective-sync filters apply everywhere.** Include/exclude globs (`ScanOptions`) filter local files, remote files, *and* base-index records before planning, so excluded records are never purged as "missing." Conflict sidecars and the index DB itself are always ignored.
+
+### Testing pattern
+
+`Daemon<C: ProtonClient>` is generic over the client. Tests inject fake `ProtonClient` implementations (see the fakes in `src/daemon.rs` tests — including one that fails uploads to exercise the no-partial-commit invariant) so reconciliation is tested without a real Proton Drive. The planner in `src/sync.rs` is pure and tested directly with in-memory maps. Prefer adding regression tests next to the logic you change (planner tests in `sync.rs`, boundary tests where external paths first enter).
+
+## Conventions
+
+- Errors use `AppResult<T>` = `Result<T, Box<dyn Error + Send + Sync>>`; construct ad-hoc errors with `boxed_error(...)`.
+- Structured logging via `tracing` to **stderr** (stdout is reserved for machine-readable dry-run JSON). Control verbosity with `RUST_LOG`; default is `info`.
+- Uploads/downloads/deletes are never auto-retried (avoids duplicate side effects); only read-only remote listings retry per `proton_list_attempts`.
