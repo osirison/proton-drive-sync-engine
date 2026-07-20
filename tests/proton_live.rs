@@ -706,6 +706,11 @@ fn parse_live_e2e_config(
 }
 
 fn validate_live_e2e_remote_root(remote_root: &Path) -> Result<(), String> {
+    if !remote_root.is_absolute() {
+        return Err("PROTON_SYNC_LIVE_REMOTE_ROOT must be an absolute path \
+             (e.g. /Drive/proton-sync-e2e-demo)"
+            .to_owned());
+    }
     let name = remote_root
         .file_name()
         .and_then(|value| value.to_str())
@@ -793,6 +798,24 @@ fn mutating_live_e2e_gate_requires_disposable_remote_root_prefix() {
             None,
         ),
         Err("PROTON_SYNC_LIVE_REMOTE_ROOT basename must start with proton-sync-e2e-".to_owned())
+    );
+}
+
+#[test]
+fn mutating_live_e2e_gate_rejects_a_relative_remote_root() {
+    // A value with the disposable prefix but no leading `/` must still be refused, since a
+    // relative path could be resolved by the proton-drive CLI against an unintended base.
+    assert_eq!(
+        parse_live_e2e_config(
+            Some(OsString::from("1")),
+            Some(OsString::from("proton-sync-e2e-demo")),
+            None,
+            None,
+            None,
+        ),
+        Err("PROTON_SYNC_LIVE_REMOTE_ROOT must be an absolute path \
+             (e.g. /Drive/proton-sync-e2e-demo)"
+            .to_owned())
     );
 }
 

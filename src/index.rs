@@ -346,8 +346,13 @@ fn migrate_file_index_schema(connection: &Connection) -> AppResult<()> {
         return Ok(());
     }
 
+    // Wrap the rename/create/copy/drop sequence in a single transaction. SQLite DDL is
+    // transactional, so if the process crashes partway through, the whole migration rolls
+    // back to the original `file_index` rather than leaving it renamed away but not yet
+    // recreated (which would break daemon startup or lose the baseline).
     connection.execute_batch(
         r#"
+        BEGIN;
         ALTER TABLE file_index RENAME TO file_index_old;
         CREATE TABLE file_index (
             file_path TEXT PRIMARY KEY,
@@ -362,6 +367,7 @@ fn migrate_file_index_schema(connection: &Connection) -> AppResult<()> {
         SELECT file_path, 'file', file_size, mtime, sha1_hash, proton_id, sync_status
         FROM file_index_old;
         DROP TABLE file_index_old;
+        COMMIT;
         "#,
     )?;
     Ok(())
@@ -1337,5 +1343,65 @@ mod tests {
             "the newer BLOB row must win the dedup"
         );
         assert_eq!(record.proton_id.as_deref(), Some("pid-new"));
+    }
+
+    #[test]
+    fn legacy_schema_without_entity_kind_is_migrated_in_place() {
+        // Exercises the actual rebuild path in migrate_file_index_schema (a pre-entity_kind
+        // table with a NOT NULL sha1_hash), which the other migration tests skip because
+        // they start from the current schema. Also confirms the now-transactional rebuild
+        // preserves rows and drops the temporary table.
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE file_index (
+                        file_path TEXT PRIMARY KEY,
+                        file_size INTEGER NOT NULL,
+                        mtime INTEGER NOT NULL,
+                        sha1_hash TEXT NOT NULL,
+                        proton_id TEXT,
+                        sync_status TEXT NOT NULL
+                    );
+                    "#,
+                )
+                .expect("legacy schema");
+            connection
+                .execute(
+                    "INSERT INTO file_index \
+                     (file_path, file_size, mtime, sha1_hash, proton_id, sync_status) \
+                     VALUES (?1, 5, 9, 'hash', 'pid', 'synced')",
+                    params![path_key(Path::new("notes.txt"))],
+                )
+                .expect("legacy row");
+        }
+
+        // Reopen through the real entry point, which migrates the legacy table.
+        let connection = open_database(&db_path).expect("open database");
+
+        let columns = table_columns(&connection, "file_index").expect("columns");
+        assert!(
+            columns.iter().any(|column| column == "entity_kind"),
+            "the entity_kind column must be added by migration: {columns:?}"
+        );
+        assert!(
+            table_columns(&connection, "file_index_old")
+                .expect("old table query")
+                .is_empty(),
+            "the temporary migration table must be dropped"
+        );
+
+        let record = get_record(&connection, Path::new("notes.txt"))
+            .expect("get_record")
+            .expect("the row must survive migration");
+        assert_eq!(record.entity_kind, EntityKind::File);
+        assert_eq!(record.file_size, 5);
+        assert_eq!(record.mtime, 9);
+        assert_eq!(record.sha1_hash.as_deref(), Some("hash"));
+        assert_eq!(record.proton_id.as_deref(), Some("pid"));
+        assert_eq!(record.sync_status, SyncStatus::Synced);
     }
 }
