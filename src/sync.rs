@@ -2082,6 +2082,67 @@ mod tests {
     }
 
     #[test]
+    fn sibling_clean_and_diverging_subtrees_do_not_share_a_deletion_verdict() {
+        // Under "top", the "gone" subtree was cleanly removed while the "kept" subtree has a
+        // remotely-edited (diverging) descendant. The clean sibling must still delete, but
+        // its `true` verdict must not leak to the diverging sibling or the shared parent,
+        // which must both be recreated. Guards the per-path deletion-verdict memoization.
+        let local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        for dir in ["top", "top/gone", "top/kept"] {
+            remote_entities.insert(PathBuf::from(dir), remote_directory(dir, Some(dir)));
+            base_index.insert(PathBuf::from(dir), directory_base(dir, Some(dir)));
+        }
+        // Clean subtree: remote file unchanged from base -> RemoteDelete.
+        remote_entities.insert(
+            PathBuf::from("top/gone/clean.txt"),
+            RemoteEntity::File(remote("top/gone/clean.txt", "clean-id", Some("same"))),
+        );
+        base_index.insert(
+            PathBuf::from("top/gone/clean.txt"),
+            base("top/gone/clean.txt", Some("clean-id"), "same"),
+        );
+        // Diverging subtree: remote file edited since base -> not a clean deletion.
+        remote_entities.insert(
+            PathBuf::from("top/kept/diverged.txt"),
+            RemoteEntity::File(remote("top/kept/diverged.txt", "kept-id", Some("changed"))),
+        );
+        base_index.insert(
+            PathBuf::from("top/kept/diverged.txt"),
+            base("top/kept/diverged.txt", Some("kept-id"), "original"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+        let action_for = |path: &str| {
+            planned
+                .iter()
+                .find(|action| action.path == Path::new(path))
+                .map(|action| action.action.clone())
+        };
+
+        assert_eq!(
+            action_for("top/gone"),
+            Some(SyncAction::RemoteDelete),
+            "the cleanly-removed sibling subtree must still delete: {planned:?}"
+        );
+        assert_eq!(
+            action_for("top"),
+            Some(SyncAction::CreateLocalDirectory),
+            "the shared parent must be recreated (not deleted) because a sibling diverges: \
+             {planned:?}"
+        );
+        assert!(
+            !matches!(
+                action_for("top/kept"),
+                Some(SyncAction::RemoteDelete | SyncAction::LocalDelete)
+            ),
+            "the diverging sibling must not be deleted: {planned:?}"
+        );
+    }
+
+    #[test]
     fn directory_deletion_falls_back_to_recreate_when_descendant_diverges() {
         let local_entities = HashMap::new();
         let mut remote_entities = HashMap::new();
