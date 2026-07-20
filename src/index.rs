@@ -296,6 +296,44 @@ pub fn load_existing_index(path: &Path) -> AppResult<HashMap<PathBuf, FileRecord
 pub fn initialize_schema(connection: &Connection) -> AppResult<()> {
     connection.execute_batch(SCHEMA)?;
     migrate_file_index_schema(connection)?;
+    normalize_legacy_text_keys(connection)?;
+    Ok(())
+}
+
+/// Normalizes any `file_index.file_path` primary key still stored using SQLite's TEXT
+/// storage class to the byte-exact BLOB encoding that [`index_key`] produces and every
+/// point query ([`get_record`], [`upsert_record`], [`mark_modified`], [`purge_record`])
+/// binds.
+///
+/// Builds predating the byte-exact key encoding wrote keys as TEXT (via the lossy
+/// [`path_key`]). SQLite compares a BLOB-bound parameter against a TEXT-stored value as
+/// unequal — BLOB sorts after TEXT, and TEXT affinity does not coerce a BLOB operand to
+/// text — so after an upgrade every point query silently misses those legacy rows:
+/// `mark_modified`/`purge_record` become no-ops and `upsert_record` inserts a second
+/// BLOB-keyed row instead of updating, leaving orphaned and duplicated baseline rows.
+/// (The full-table scan in [`load_index`] is unaffected because
+/// [`read_index_key_column`] reads either storage class as raw bytes.)
+///
+/// Runs on every `initialize_schema` and is idempotent: once no TEXT keys remain, both
+/// statements match nothing. A partially upgraded database can already hold a stale TEXT
+/// row and a newer BLOB row for the same logical path (the duplicate an upgraded build
+/// wrote); the delete drops the stale TEXT twin first so the `CAST` cannot hit a PRIMARY
+/// KEY conflict, keeping the newer BLOB row.
+fn normalize_legacy_text_keys(connection: &Connection) -> AppResult<()> {
+    connection.execute_batch(
+        r#"
+        BEGIN;
+        DELETE FROM file_index
+         WHERE typeof(file_path) = 'text'
+           AND CAST(file_path AS BLOB) IN (
+               SELECT file_path FROM file_index WHERE typeof(file_path) = 'blob'
+           );
+        UPDATE file_index
+           SET file_path = CAST(file_path AS BLOB)
+         WHERE typeof(file_path) = 'text';
+        COMMIT;
+        "#,
+    )?;
     Ok(())
 }
 
@@ -984,5 +1022,131 @@ mod tests {
         let state = local_file_state(directory.path(), &file_path).expect("state");
 
         assert_eq!(state.relative_path, PathBuf::from("nested/file.txt"));
+    }
+
+    /// Inserts a row keyed the way pre-BLOB builds did: a Rust `String` bind, stored
+    /// under SQLite's TEXT storage class.
+    fn insert_legacy_text_row(connection: &Connection, relative_path: &str, sha1: &str, id: &str) {
+        connection
+            .execute(
+                "INSERT INTO file_index \
+                 (file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status) \
+                 VALUES (?1, 'file', 3, 7, ?2, ?3, 'synced')",
+                params![path_key(Path::new(relative_path)), sha1, id],
+            )
+            .expect("insert legacy text row");
+    }
+
+    fn key_storage_class(connection: &Connection) -> String {
+        connection
+            .query_row(
+                "SELECT typeof(file_path) FROM file_index LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("typeof(file_path)")
+    }
+
+    #[test]
+    fn migration_normalizes_legacy_text_keys_so_point_queries_match() {
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection.execute_batch(SCHEMA).expect("schema");
+            insert_legacy_text_row(&connection, "dir/notes.txt", "hash", "pid");
+            assert_eq!(
+                key_storage_class(&connection),
+                "text",
+                "pre-upgrade builds stored the key as TEXT"
+            );
+        }
+
+        // Reopen through the real daemon entry point, which runs the migration.
+        let connection = open_database(&db_path).expect("open database");
+        assert_eq!(
+            key_storage_class(&connection),
+            "blob",
+            "the migration must normalize legacy TEXT keys to BLOB storage"
+        );
+
+        let record = get_record(&connection, Path::new("dir/notes.txt"))
+            .expect("get_record")
+            .expect("legacy row must be found via a BLOB point query after migration");
+        assert_eq!(record.sha1_hash.as_deref(), Some("hash"));
+        assert_eq!(record.proton_id.as_deref(), Some("pid"));
+
+        // upsert must update in place, not insert a duplicate BLOB row.
+        let mut updated = record.clone();
+        updated.sha1_hash = Some("hash2".to_owned());
+        updated.sync_status = SyncStatus::Modified;
+        upsert_record(&connection, &updated).expect("upsert");
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM file_index", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(
+            count, 1,
+            "upsert against a migrated key must update in place"
+        );
+        assert_eq!(
+            get_record(&connection, Path::new("dir/notes.txt"))
+                .expect("get_record")
+                .expect("record")
+                .sha1_hash
+                .as_deref(),
+            Some("hash2")
+        );
+
+        // purge must remove the row.
+        purge_record(&connection, Path::new("dir/notes.txt")).expect("purge");
+        assert!(
+            get_record(&connection, Path::new("dir/notes.txt"))
+                .expect("get_record")
+                .is_none(),
+            "purge must delete the migrated row"
+        );
+    }
+
+    #[test]
+    fn migration_dedups_text_twin_when_a_newer_blob_row_exists() {
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection.execute_batch(SCHEMA).expect("schema");
+            // A stale TEXT row plus the newer BLOB duplicate an upgraded build wrote for
+            // the same logical path.
+            insert_legacy_text_row(&connection, "a.txt", "old", "pid-old");
+            connection
+                .execute(
+                    "INSERT INTO file_index \
+                     (file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status) \
+                     VALUES (?1, 'file', 3, 7, 'new', 'pid-new', 'synced')",
+                    params![index_key(Path::new("a.txt"))],
+                )
+                .expect("insert newer blob row");
+            let count: i64 = connection
+                .query_row("SELECT count(*) FROM file_index", [], |row| row.get(0))
+                .expect("count");
+            assert_eq!(count, 2, "both a TEXT and a BLOB row exist pre-migration");
+        }
+
+        let connection = open_database(&db_path).expect("open database");
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM file_index", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(
+            count, 1,
+            "the stale TEXT twin must be dropped, keeping the newer BLOB row"
+        );
+        let record = get_record(&connection, Path::new("a.txt"))
+            .expect("get_record")
+            .expect("surviving row");
+        assert_eq!(
+            record.sha1_hash.as_deref(),
+            Some("new"),
+            "the newer BLOB row must win the dedup"
+        );
+        assert_eq!(record.proton_id.as_deref(), Some("pid-new"));
     }
 }

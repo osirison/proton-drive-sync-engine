@@ -604,7 +604,29 @@ fn plan_ongoing_file_action(
             EntityKind::File,
             base.proton_id.clone(),
         )),
-        (FileDelta::Changed, FileDelta::Changed) | (FileDelta::Missing, FileDelta::Changed) => {
+        // Both sides diverged from the baseline. If they nonetheless reached
+        // byte-identical content — two independent identical edits, or a transfer that
+        // landed on disk before its deferred index commit was rolled back by a later
+        // failing action (the commit-after-side-effects invariant) — they already agree,
+        // so adopt the shared content as the new baseline via AutoLink instead of
+        // fabricating a spurious `.proton-cloud` sidecar and a permanently stuck Conflict
+        // record. Mirrors the identical-content handling in `plan_bootstrap_file_action`.
+        (FileDelta::Changed, FileDelta::Changed) => match (local, remote) {
+            (Some(local), Some(remote))
+                if remote.sha1_hash.as_deref() == Some(local.sha1_hash.as_str()) =>
+            {
+                Some(PlannedAction::new(
+                    path,
+                    SyncAction::AutoLink,
+                    EntityKind::File,
+                    remote_id(Some(remote), base),
+                ))
+            }
+            _ => Some(PlannedAction::conflict(path, remote_id(remote, base))),
+        },
+        // Local is absent, so there is no local content to compare; the remote change
+        // cannot be safely discarded, so preserve it as a conflict.
+        (FileDelta::Missing, FileDelta::Changed) => {
             Some(PlannedAction::conflict(path, remote_id(remote, base)))
         }
         // Remote is confirmed missing (not merely unknown), so there is nothing to
@@ -1318,6 +1340,53 @@ mod tests {
             .expect("a backfill action must be planned once the id becomes known");
         assert_eq!(action.action, SyncAction::AutoLink);
         assert_eq!(action.remote_id.as_deref(), Some("id-newly-known"));
+    }
+
+    #[test]
+    fn ongoing_changed_changed_with_identical_content_autolinks_instead_of_conflicting() {
+        // Base hash A; local and remote independently converged on identical content B.
+        // This happens after two identical edits, or when a transfer lands on disk but a
+        // later failing action rolls back the deferred index commit (leaving base at A).
+        let mut local_files = HashMap::new();
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(PathBuf::from("notes.txt"), local("notes.txt", "hash-b"));
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "id-1", Some("hash-b")),
+        );
+        base_index.insert(
+            PathBuf::from("notes.txt"),
+            base("notes.txt", Some("id-1"), "hash-a"),
+        );
+
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+        let action = planned
+            .iter()
+            .find(|action| action.path == Path::new("notes.txt"))
+            .expect("an action must be planned");
+        assert_eq!(
+            action.action,
+            SyncAction::AutoLink,
+            "identical local and remote content must auto-link, not fabricate a conflict"
+        );
+        assert_eq!(action.remote_id.as_deref(), Some("id-1"));
+
+        // Genuinely divergent content on both sides must still conflict.
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "id-1", Some("hash-c")),
+        );
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+        let action = planned
+            .iter()
+            .find(|action| action.path == Path::new("notes.txt"))
+            .expect("an action must be planned");
+        assert_eq!(
+            action.action,
+            SyncAction::Conflict,
+            "divergent local and remote content must still conflict"
+        );
     }
 
     #[test]

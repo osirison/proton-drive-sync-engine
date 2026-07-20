@@ -2596,6 +2596,55 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_autolinks_identical_local_and_remote_content_instead_of_conflicting() {
+        // Reproduces the state left after a partial reconcile rolls back its deferred
+        // index commit (see reconcile_does_not_commit_index_when_later_action_fails):
+        // the baseline is stale at A while local and remote already agree on content B.
+        // The next reconcile must recover cleanly by auto-linking, not fabricate a
+        // spurious conflict sidecar and a permanently stuck Conflict record.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"converged content").expect("local file");
+        let local_hash = crate::index::compute_sha1(&local_path).expect("local hash");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some(local_hash.as_str())),
+        );
+        let (client, operations) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "stale-base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations.lock().expect("operations lock").is_empty(),
+            "identical local and remote content must auto-link without any network \
+             transfer or sidecar download"
+        );
+        assert!(
+            !local_root.join("notes.proton-cloud.txt").exists(),
+            "no spurious conflict sidecar must be created when both sides already agree"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sha1_hash, Some(local_hash));
+        assert_eq!(
+            record.sync_status,
+            SyncStatus::Synced,
+            "the converged baseline must be recorded as Synced, not stuck in Conflict"
+        );
+    }
+
+    #[test]
     fn watcher_ignores_conflict_sidecar_create_events() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
