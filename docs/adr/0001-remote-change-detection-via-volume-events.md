@@ -5,6 +5,11 @@
 - **Issue:** #18 (spike + ADR) · Epic #16 · Related: #23 (CLI not concurrency-safe)
 - **Supersedes framing of:** #17 (parallel `filesystem list` BFS — deferred)
 
+> **Amended 2026-07-21 (#20 spike) — see [Addendum](#addendum-2026-07-21--event-detection-is-auth-only-20).**
+> The cost analysis below overstated auth: **detecting** the change delta needs only a Proton
+> *session*, not the `account`/unlocked-keys/PGP the full SDK client demands. The decision
+> (use the volume events API) stands; the implementation vehicle is now more open.
+
 ## Context
 
 The engine reconciles the remote tree by walking it with the `proton-drive` CLI —
@@ -176,3 +181,76 @@ mutation (corroborating, not a controlled proof — see caveat above), and the S
 `.d.ts` (API + delta schema). The auth **supply** surface was resolved by reading the SDK
 deps/README and npm (above); the residual unknown is narrowed to candidate (1)'s feasibility
 (keyring session reuse), which is #20's first task.
+
+## Addendum 2026-07-21 — event detection is auth-only (#20)
+
+Spiking #20's auth question turned up a finding that **narrows** (does not remove) the auth
+cost above and reopens the implementation choice. Verified by reading the SDK source, not a
+live run.
+
+### Finding: deriving the delta needs no decryption
+
+`dist/internal/events/apiService.js` imports only `../uids` and `./interface` — **no crypto,
+no account, no `decrypt`.** `getVolumeEvents` builds every `DriveEvent` from **server-cleartext**
+fields of the raw API response:
+
+```js
+// GET drive/v2/volumes/{volumeId}/events/{eventId}  →  { EventID, More, Refresh, Events[] }
+events: result.Events.map((event) => ({
+    type:          VOLUME_EVENT_TYPE_MAP[event.EventType],   // 0=del 1=create 2,3=update
+    nodeUid:       makeNodeUid(volumeId, event.Link.LinkID),        // string composition, not crypto
+    parentNodeUid: event.Link.ParentLinkID ? makeNodeUid(volumeId, event.Link.ParentLinkID) : undefined,
+    isTrashed:     event.Link.IsTrashed,
+    isShared:      event.Link.IsShared,
+    eventId:       event.EventID,
+    treeEventScopeId: volumeId,
+}));
+// getVolumeLatestEventId: GET drive/volumes/{volumeId}/events/latest → result.EventID
+```
+
+The node **name is not in the event at all** — events carry IDs, parent IDs, type, and the
+trashed/shared flags, all cleartext.
+
+### What this changes (and what it doesn't)
+
+1. **Auth is narrowed, not removed.** The earlier claim — "needs an `account` with unlocked
+   private keys + the PGP module" — is **false for detection**. The true requirement is a
+   Proton **session**: `x-pm-uid`, `Authorization: Bearer <access>`, app version, and 401→
+   refresh. That is a real reduction (session tokens ≪ unlocked key material + crypto), but
+   **obtaining and refreshing a session is still the dominant cost.** Auth stays central.
+
+2. **The saving is "bypass the SDK for detection," not "`iterateEvents` is cheap."** Public
+   `iterateEvents` still hangs off a `ProtonDriveClient` whose constructor demands `account`
+   + crypto, so going *through* the SDK saves nothing. The unlock is that the mapping above is
+   trivial and now known verbatim, so a **thin auth-only client** (Rust-native, or a tiny
+   sidecar) can call `drive/volumes/{id}/events/latest` + `drive/v2/volumes/{id}/events/{cursor}`
+   and derive the delta itself — no SDK, no PGP.
+
+3. **Detection ≠ full sync — the residual crypto.** Events give `nodeUid`, not names. For
+   **known** nodes (delete / update / move) we resolve `nodeUid → local path` from our own
+   index (#19). For a **newly-created** node, its name is still encrypted and must be decrypted
+   (`ProtonDriveClient.getNode(uid)` or a targeted parent `filesystem list`). So crypto does
+   not disappear — it shrinks from "decrypt the whole tree every scan" to "decrypt the names of
+   nodes that just appeared."
+
+### Consequence for #20
+
+Because decryption dropped out of the **detection** path, detection no longer forces a
+Node/SDK host. The host/language choice is now driven purely by **where a Proton session is
+easiest to obtain and refresh**:
+
+- **Thin auth sidecar (Node + keytar):** smallest new code; reuses the CLI's keyring session
+  (candidate 1). Still the leading option.
+- **Rust-native events client:** no sidecar at all for detection — but the engine must hold a
+  Proton session in Rust (reuse the CLI's, or implement SRP + refresh). This is a **partial**
+  revival of rejected option (c): its **PGP objection is gone**; its **Proton-auth objection
+  stands** (SRP/refresh is still real work).
+- **Full SDK sidecar:** no longer required *just to detect changes*. It re-enters only for
+  new-node **name decryption** and for content up/download — features beyond detection.
+
+Session-reuse feasibility (candidate 1) is unchanged in importance but re-scoped to **session
+tokens, not key material**. Note: `secret-tool` did not surface the CLI's wallet entry here,
+but that is a *tooling* limitation (guessed attributes vs KWallet) — **not** evidence that
+reuse is infeasible. The real probe is a Node process using `keytar` with the CLI's own
+service name; that is #20's first concrete task, now clearly scoped: **obtain a session →
+one authenticated GET to `…/events/latest` → derive a delta from cleartext fields.**
