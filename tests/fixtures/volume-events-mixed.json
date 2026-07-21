@@ -1,0 +1,39 @@
+{
+  "Code": 1000,
+  "EventID": "cursor-mixed",
+  "More": true,
+  "Refresh": false,
+  "ConvertibleExternalInvitations": [],
+  "Events": [
+    {
+      "EventID": "evt-del",
+      "EventType": 0,
+      "Link": {
+        "LinkID": "node-gone",
+        "ParentLinkID": "node-root",
+        "IsShared": false,
+        "IsTrashed": false
+      }
+    },
+    {
+      "EventID": "evt-upd",
+      "EventType": 2,
+      "Link": {
+        "LinkID": "node-updated",
+        "ParentLinkID": null,
+        "IsShared": true,
+        "IsTrashed": false
+      }
+    },
+    {
+      "EventID": "evt-future",
+      "EventType": 99,
+      "Link": {
+        "LinkID": "node-future",
+        "ParentLinkID": "node-root",
+        "IsShared": false,
+        "IsTrashed": false
+      }
+    }
+  ]
+}

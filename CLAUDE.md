@@ -24,6 +24,7 @@ cargo test --all-targets --all-features
 # Focused tests
 cargo test sync::tests          # planner unit tests (src/sync.rs)
 cargo test proton::tests        # remote JSON parsing / CLI wrapper
+cargo test events::tests        # volume-events delta parsing + EventsClient 401/refresh logic
 cargo test daemon::tests        # reconciliation with injected fake ProtonClient
 cargo test --test dry_run_cli   # integration test in tests/
 cargo test --test ipc_cli
@@ -41,6 +42,17 @@ PROTON_SYNC_LIVE_REMOTE_ROOT=/Drive/RemoteFolder \
 # Set PROTON_SYNC_LIVE_CLI=/path/to/proton-drive if not on PATH
 ```
 
+There is also a `#[ignore]`, read-only live check for the volume-events **detection** path
+(`tests/events_live.rs`) that drives the real `EventsClient` via a temporary reuse-session
+harness (reads the logged-in CLI's session from the OS keyring, shells `curl` for HTTP):
+
+```bash
+PROTON_SYNC_EVENTS_VOLUME=<volumeId> \
+  cargo test --test events_live -- --ignored --nocapture
+# volumeId is a key under "drive" in ~/.local/share/proton-drive-cli/events.json
+# Needs the desktop keyring unlocked and DBUS_SESSION_BUS_ADDRESS set.
+```
+
 ## Architecture
 
 The engine reconciles **three sources of truth** into a plan, then executes it:
@@ -56,6 +68,7 @@ Data flow: **scan → `sync::plan_sync` → execute actions → commit index**. 
 - `src/sync.rs` — **pure** planner. `plan_sync` produces `Vec<PlannedAction>` with no I/O. Bootstrap (empty index) vs ongoing logic are separate; ongoing decisions come from a `(local_delta, remote_delta)` matrix in `plan_ongoing_action`. Also owns conflict-sidecar naming (`.proton-cloud` convention).
 - `src/daemon.rs` — the runtime. `run()` is a `tokio::select!` loop over filesystem-watch events (`notify`), IPC connections, a periodic scan interval, and shutdown signals. `reconcile_blocking_inner` executes the plan and is where all side effects happen. Holds an advisory lockfile (`LockGuard`) to prevent duplicate instances.
 - `src/proton.rs` — `ProtonClient` trait + `ProtonDriveClient` impl that shells out to the `proton-drive` executable. Parses the tree-shaped remote JSON (nodes may nest under `children`/`entries`/`files`). Extracts SHA-1 from `activeRevision.claimedDigests.sha1` when present. `CommandPolicy` governs per-command timeout and list retry attempts.
+- `src/events.rs` — **remote change detection** via Proton's volume event stream (the O(changes) alternative to the O(folders) `proton.rs` full walk). Pure, transport-agnostic: `parse_volume_events` normalizes the cleartext event delta (`RemoteChange`: created/updated/deleted + `trashed` flag — note a *trash* is `Updated`+`trashed`, not `Deleted`), and `EventsClient<T: HttpTransport, S: SessionProvider>` fetches it, refreshing once on `401`. Detection needs only a session (no decryption); the concrete HTTP transport and session provider (an independent forked session) are injected, so the crate ships no networking dependency. See `docs/adr/0001-*`.
 - `src/index.rs` — SQLite schema (`file_index` table), local directory scanning, SHA-1 hashing, `ScanOptions` (include/exclude globs + ignore rules), and record CRUD.
 - `src/config.rs` — layered config resolution. Precedence: **explicit CLI flag > TOML file value > XDG default**. `resolve_runtime_config` merges `DaemonConfigInput` (from clap) with `FileConfig` (from `--config`), validates roots/globs, and resolves `dry_run` (`--no-dry-run` beats `--dry-run` beats file `dry_run`).
 - `src/ipc.rs` — JSON-line request/response protocol over the Unix socket; binds with mode `0600`.
