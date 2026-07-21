@@ -190,6 +190,18 @@ impl<T: HttpTransport, S: SessionProvider> EventsClient<T, S> {
     }
 }
 
+/// Composes a Proton **node uid** from a volume id and a raw node id, matching the identifier
+/// that `filesystem list` reports and that the index stores as `proton_id`.
+///
+/// Volume events carry only a raw `LinkID` (e.g. `39NX…`), whereas a listing reports the
+/// composed `volumeId~nodeId` (e.g. `v45s…==~39NX…==`). To resolve an event back to a local
+/// path via [`crate::index::path_for_proton_id`], bridge its `node_id`/`parent_id` through
+/// this helper. The `~`-join was verified against live data (a node's listed uid equals its
+/// volume id joined to the `ParentLinkID` its child's create event reported).
+pub fn node_uid(volume_id: &str, node_id: &str) -> String {
+    format!("{volume_id}~{node_id}")
+}
+
 /// Parses a `.../events/latest` response into its cursor.
 pub fn parse_latest_event_id(json: &str) -> AppResult<String> {
     let raw: RawLatest = serde_json::from_str(json)?;
@@ -413,6 +425,13 @@ mod tests {
             parse_latest_event_id(LATEST).expect("parse latest"),
             "the-current-latest"
         );
+    }
+
+    #[test]
+    fn node_uid_composes_the_volume_and_node_ids_like_a_listing() {
+        // Must match the composed `volumeId~nodeId` that `filesystem list` reports and the
+        // index stores as `proton_id`, so an event's raw LinkID resolves to a path.
+        assert_eq!(node_uid("v45s==", "39NX=="), "v45s==~39NX==");
     }
 
     #[test]
