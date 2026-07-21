@@ -184,12 +184,32 @@ needs no password/CAPTCHA. It is HTTP + symmetric crypto only (no PGP), so it st
 Rust-native and drops in behind `SessionProvider`.
 
 **Remaining before #21 (daemon wiring):**
-- Implement `ForkedSessionProvider` (fork exchange + persist the child session + `401`→
-  `/auth/refresh`). This replaces the temporary reuse harness.
-- Provide a production `HttpTransport` (a real client behind the trait; the crate can add one
-  dependency then, or keep shelling `curl`).
 - Name resolution for newly-created nodes (`nodeUid`→name) remains the one place decryption is
   still required (SDK/CLI), per the addendum.
+
+## Status 2026-07-21 (cont.) — session ownership: reuse now, independent login deferred
+
+Investigating the independent-session ("own login") build surfaced a decision-changing fact:
+**Proton has no headless "fork from the CLI's local session" path.** The CLI's `auth login`
+is a *browser* flow — it calls the unauthenticated `sessionForksInit` (`GET
+/auth/v4/sessions/forks`), opens `account.proton.me` with its app id (`this.authClientId`) +
+`UserCode`, then **polls** `sessionForksStatus` until the user signs in, and consumes the
+fork. The CLI is a fork *consumer*; the *producer* is an authenticated web session. So a truly
+independent session **requires an interactive browser login** (and, lacking our own registered
+client id, would use the CLI's app identity) — it cannot be minted headlessly.
+
+Given that, the choice was taken to the user, who chose **reuse now, independent login later**:
+
+- **Landed:** `src/session.rs` — `CliKeyringSession` (reuses the CLI's keyring session,
+  read-only; `refresh` re-reads the keyring rather than owning a token refresh) + a dependency-
+  free `CurlHttpTransport`. Verified end-to-end via the live test. This unblocks #21/#22.
+- **Accepted limitation:** the daemon is only as fresh as the CLI keeps the session — if the
+  CLI is idle and the token expires, a pass `401`s and is skipped until the CLI refreshes.
+  `proton-drive` is, for now, the auth owner by design.
+- **Deferred (own login):** an independent session provider that replicates the browser fork
+  flow (init → browser → poll → consume/decrypt), dropped in behind the same `SessionProvider`
+  trait. Its cost/robustness (interactive-only, reverse-engineered fork crypto, CLI app id) is
+  why it is a later, isolated piece rather than a blocker.
 
 ## Downstream impact (feeds #19 / #20 / #22)
 
