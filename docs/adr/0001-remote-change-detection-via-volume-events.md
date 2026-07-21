@@ -160,6 +160,37 @@ This reorders the auth approach for #20, in preference:
 `iterateEvents` call). If it fails, the effort/licensing profile jumps to (2), which is worth
 knowing before #21/#22 are scheduled.
 
+## Status 2026-07-21 — detection core built; own-session = session forking
+
+Two concrete outcomes from the #20 work:
+
+**1. The detection core is implemented and verified (`src/events.rs`).** A pure,
+transport-agnostic `EventsClient<T: HttpTransport, S: SessionProvider>` fetches
+`.../events/latest` + `.../v2/volumes/{id}/events/{cursor}` and normalizes the cleartext
+delta into `RemoteChange` values (created / updated / deleted, with a `trashed` flag —
+recording the subtlety that a **trash arrives as `Updated` + `trashed=true`, not `Deleted`**).
+It refreshes once on `401`. Verified by unit tests against real-shaped fixtures **and** an
+`#[ignore]` live test (`tests/events_live.rs`) that ran green against the real API through a
+temporary session-reuse harness. The crate stays networking-dependency-free — the concrete
+transport/session are injected.
+
+**2. "Own login" resolves to session *forking*, not SRP.** Rather than reuse the CLI's tokens
+(which couples the two over refresh-token rotation) or re-implement SRP+2FA+CAPTCHA (heavy,
+unverifiable, wrong `x-pm-appversion`), the engine will mint an **independent** session by
+forking the CLI's existing login: `POST /auth/v4/sessions/forks` → `GET
+/auth/v4/sessions/forks/{selector}` (endpoints confirmed present in the CLI). A forked session
+has its own UID/tokens and its own refresh lifecycle — the clean, decoupled architecture — and
+needs no password/CAPTCHA. It is HTTP + symmetric crypto only (no PGP), so it stays
+Rust-native and drops in behind `SessionProvider`.
+
+**Remaining before #21 (daemon wiring):**
+- Implement `ForkedSessionProvider` (fork exchange + persist the child session + `401`→
+  `/auth/refresh`). This replaces the temporary reuse harness.
+- Provide a production `HttpTransport` (a real client behind the trait; the crate can add one
+  dependency then, or keep shelling `curl`).
+- Name resolution for newly-created nodes (`nodeUid`→name) remains the one place decryption is
+  still required (SDK/CLI), per the addendum.
+
 ## Downstream impact (feeds #19 / #20 / #22)
 
 - **#19 (persistence):** store per-volume `lastEventId` (+ the `core` cursor) exactly as

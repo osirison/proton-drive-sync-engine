@@ -1,0 +1,18 @@
+{
+  "Code": 1000,
+  "EventID": "cursor-after-trash",
+  "More": false,
+  "Refresh": false,
+  "Events": [
+    {
+      "EventID": "evt-trash-1",
+      "EventType": 3,
+      "Link": {
+        "LinkID": "node-trashed",
+        "ParentLinkID": "node-root",
+        "IsShared": false,
+        "IsTrashed": true
+      }
+    }
+  ]
+}

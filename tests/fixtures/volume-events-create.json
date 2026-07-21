@@ -1,0 +1,20 @@
+{
+  "Code": 1000,
+  "EventID": "cursor-after-create",
+  "More": false,
+  "Refresh": false,
+  "DisableSdkQuotaChecks": false,
+  "ConvertibleExternalInvitations": [],
+  "Events": [
+    {
+      "EventID": "evt-create-1",
+      "EventType": 1,
+      "Link": {
+        "LinkID": "node-created",
+        "ParentLinkID": "node-root",
+        "IsShared": false,
+        "IsTrashed": false
+      }
+    }
+  ]
+}
