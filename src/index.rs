@@ -21,7 +21,18 @@ CREATE TABLE IF NOT EXISTS file_index (
     proton_id TEXT,
     sync_status TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS remote_event_cursor (
+    scope_id TEXT PRIMARY KEY,
+    last_event_id TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 "#;
+
+/// Speeds up [`path_for_proton_id`] (turning a volume event's node id into its local path).
+/// Created *after* [`migrate_file_index_schema`] because that migration rebuilds `file_index`
+/// and would otherwise drop an index created alongside the table.
+const PROTON_ID_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_file_index_proton_id ON file_index(proton_id);";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -298,6 +309,8 @@ pub fn initialize_schema(connection: &Connection) -> AppResult<()> {
     connection.execute_batch(SCHEMA)?;
     migrate_file_index_schema(connection)?;
     normalize_legacy_text_keys(connection)?;
+    // After any file_index rebuild, so the index survives the migration.
+    connection.execute_batch(PROTON_ID_INDEX)?;
     Ok(())
 }
 
@@ -527,6 +540,85 @@ pub fn purge_record(connection: &Connection, relative_path: &Path) -> AppResult<
     connection.execute(
         "DELETE FROM file_index WHERE file_path = ?1",
         params![index_key(relative_path)],
+    )?;
+    Ok(())
+}
+
+/// Resolves a remote node id (`proton_id` — the composed `volumeId~nodeId` that a
+/// `filesystem list` reports and the reconcile stores) to its indexed relative path.
+///
+/// This is the reverse of the normal path-keyed lookups and exists for **event-driven
+/// reconcile**: a volume event carries only node ids, so a deletion/update/move must be mapped
+/// back to a local path via the baseline index. A volume event's raw `LinkID` is bridged into
+/// this id space with [`crate::events::node_uid`]. Returns `None` when no synced record holds
+/// that id (e.g. a node created since the last full listing, whose id we have not recorded
+/// yet — the caller then falls back to a targeted listing or a full scan).
+pub fn path_for_proton_id(connection: &Connection, proton_id: &str) -> AppResult<Option<PathBuf>> {
+    let mut statement =
+        connection.prepare("SELECT file_path FROM file_index WHERE proton_id = ?1 LIMIT 1")?;
+    let path = statement
+        .query_row(params![proton_id], |row| read_index_key_column(row, 0))
+        .optional()?;
+    Ok(path)
+}
+
+/// A persisted remote-event-stream cursor for one event scope. `scope_id` is Proton's
+/// `treeEventScopeId` — a volume id for volume events (or `"core"` for the account stream).
+/// `last_event_id` is the point the engine has fully processed; `updated_at` (epoch seconds,
+/// supplied by the caller) records when, so freshness/age checks stay out of this pure layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventCursor {
+    pub scope_id: String,
+    pub last_event_id: String,
+    pub updated_at: i64,
+}
+
+/// Loads the stored cursor for `scope_id`, or `None` if none has been recorded yet.
+pub fn load_event_cursor(
+    connection: &Connection,
+    scope_id: &str,
+) -> AppResult<Option<EventCursor>> {
+    let mut statement = connection.prepare(
+        "SELECT scope_id, last_event_id, updated_at FROM remote_event_cursor WHERE scope_id = ?1",
+    )?;
+    let cursor = statement
+        .query_row(params![scope_id], |row| {
+            Ok(EventCursor {
+                scope_id: row.get(0)?,
+                last_event_id: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        })
+        .optional()?;
+    Ok(cursor)
+}
+
+/// Records (inserts or replaces) the cursor for `scope_id`.
+pub fn store_event_cursor(
+    connection: &Connection,
+    scope_id: &str,
+    last_event_id: &str,
+    updated_at: i64,
+) -> AppResult<()> {
+    connection.execute(
+        r#"
+        INSERT INTO remote_event_cursor (scope_id, last_event_id, updated_at)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(scope_id) DO UPDATE SET
+            last_event_id = excluded.last_event_id,
+            updated_at = excluded.updated_at
+        "#,
+        params![scope_id, last_event_id, updated_at],
+    )?;
+    Ok(())
+}
+
+/// Drops the cursor for `scope_id`, forcing the next pass to re-bootstrap from the latest
+/// event id (used when the server signals a required full refresh).
+pub fn clear_event_cursor(connection: &Connection, scope_id: &str) -> AppResult<()> {
+    connection.execute(
+        "DELETE FROM remote_event_cursor WHERE scope_id = ?1",
+        params![scope_id],
     )?;
     Ok(())
 }
@@ -1104,6 +1196,196 @@ mod tests {
             index.len(),
             2,
             "both non-UTF-8 paths must coexist as distinct rows instead of colliding"
+        );
+    }
+
+    #[test]
+    fn event_cursor_round_trips_and_clears() {
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+
+        assert!(
+            load_event_cursor(&connection, "vol-1")
+                .expect("load absent")
+                .is_none(),
+            "an unrecorded scope has no cursor"
+        );
+
+        store_event_cursor(&connection, "vol-1", "cursor-a", 100).expect("store");
+        let loaded = load_event_cursor(&connection, "vol-1")
+            .expect("load")
+            .expect("cursor exists");
+        assert_eq!(
+            loaded,
+            EventCursor {
+                scope_id: "vol-1".to_owned(),
+                last_event_id: "cursor-a".to_owned(),
+                updated_at: 100,
+            }
+        );
+
+        // Upsert in place, not a duplicate row.
+        store_event_cursor(&connection, "vol-1", "cursor-b", 200).expect("update");
+        assert_eq!(
+            load_event_cursor(&connection, "vol-1")
+                .expect("load")
+                .expect("cursor")
+                .last_event_id,
+            "cursor-b"
+        );
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM remote_event_cursor", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(
+            count, 1,
+            "storing must update the existing scope row in place"
+        );
+
+        // A second scope is independent.
+        store_event_cursor(&connection, "core", "core-cursor", 300).expect("store core");
+        assert_eq!(
+            load_event_cursor(&connection, "core")
+                .expect("load core")
+                .expect("core cursor")
+                .last_event_id,
+            "core-cursor"
+        );
+
+        clear_event_cursor(&connection, "vol-1").expect("clear");
+        assert!(
+            load_event_cursor(&connection, "vol-1")
+                .expect("load after clear")
+                .is_none(),
+            "clearing removes the cursor"
+        );
+        assert!(
+            load_event_cursor(&connection, "core")
+                .expect("load core")
+                .is_some(),
+            "clearing one scope must not affect another"
+        );
+    }
+
+    #[test]
+    fn path_for_proton_id_resolves_a_node_id_and_misses_cleanly() {
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+        let record = FileRecord {
+            file_path: PathBuf::from("docs/report.txt"),
+            entity_kind: EntityKind::File,
+            file_size: 3,
+            mtime: 7,
+            sha1_hash: Some("abcd".to_owned()),
+            proton_id: Some("vol~node-42".to_owned()),
+            sync_status: SyncStatus::Synced,
+        };
+        upsert_record(&connection, &record).expect("upsert");
+
+        assert_eq!(
+            path_for_proton_id(&connection, "vol~node-42").expect("lookup"),
+            Some(PathBuf::from("docs/report.txt"))
+        );
+        assert_eq!(
+            path_for_proton_id(&connection, "vol~unknown").expect("lookup missing"),
+            None,
+            "an unrecorded node id resolves to None"
+        );
+
+        // A record without a proton_id must never be matched by an id lookup.
+        let no_id = FileRecord {
+            file_path: PathBuf::from("local-only.txt"),
+            entity_kind: EntityKind::File,
+            file_size: 1,
+            mtime: 1,
+            sha1_hash: Some("ef01".to_owned()),
+            proton_id: None,
+            sync_status: SyncStatus::Modified,
+        };
+        upsert_record(&connection, &no_id).expect("upsert no-id");
+        assert_eq!(
+            path_for_proton_id(&connection, "vol~node-42").expect("lookup"),
+            Some(PathBuf::from("docs/report.txt")),
+            "the id lookup is unaffected by rows lacking a proton_id"
+        );
+
+        // After purge the id no longer resolves.
+        purge_record(&connection, Path::new("docs/report.txt")).expect("purge");
+        assert_eq!(
+            path_for_proton_id(&connection, "vol~node-42").expect("lookup after purge"),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_for_proton_id_reads_non_utf8_paths() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+        let path = PathBuf::from(OsStr::from_bytes(b"weird\x80name.bin"));
+        let record = FileRecord {
+            file_path: path.clone(),
+            entity_kind: EntityKind::File,
+            file_size: 1,
+            mtime: 1,
+            sha1_hash: Some("abcd".to_owned()),
+            proton_id: Some("vol~n1".to_owned()),
+            sync_status: SyncStatus::Synced,
+        };
+        upsert_record(&connection, &record).expect("upsert");
+        assert_eq!(
+            path_for_proton_id(&connection, "vol~n1").expect("lookup"),
+            Some(path),
+            "the reverse lookup must reconstruct non-UTF-8 paths like the point queries do"
+        );
+    }
+
+    #[test]
+    fn cursor_table_and_proton_id_index_are_added_to_a_pre_existing_database() {
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            // A database with only the original file_index table (no cursor table / index).
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE file_index (
+                        file_path TEXT PRIMARY KEY,
+                        entity_kind TEXT NOT NULL DEFAULT 'file',
+                        file_size INTEGER NOT NULL,
+                        mtime INTEGER NOT NULL,
+                        sha1_hash TEXT,
+                        proton_id TEXT,
+                        sync_status TEXT NOT NULL
+                    );"#,
+                )
+                .expect("legacy schema");
+        }
+
+        // Reopen through the real entry point, which must add the new table and index.
+        let connection = open_database(&db_path).expect("open database");
+        store_event_cursor(&connection, "vol", "c1", 1).expect("cursor table usable after upgrade");
+        assert_eq!(
+            load_event_cursor(&connection, "vol")
+                .expect("load")
+                .expect("cursor")
+                .last_event_id,
+            "c1"
+        );
+        let has_index: bool = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_file_index_proton_id'",
+                [],
+                |row| Ok(row.get::<_, i64>(0)? > 0),
+            )
+            .expect("index query");
+        assert!(
+            has_index,
+            "the proton_id lookup index must be created on upgrade"
         );
     }
 
