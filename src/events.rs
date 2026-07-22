@@ -202,6 +202,35 @@ pub fn node_uid(volume_id: &str, node_id: &str) -> String {
     format!("{volume_id}~{node_id}")
 }
 
+/// Extracts the volume id from a composed `proton_id` (`volumeId~nodeId`), the inverse of the
+/// volume half of [`node_uid`]. Returns `None` for a value that carries no `~` separator (e.g. a
+/// legacy raw id), which the caller treats as "volume not yet derivable".
+pub fn volume_id_from_proton_id(proton_id: &str) -> Option<&str> {
+    proton_id.split_once('~').map(|(volume, _)| volume)
+}
+
+/// A source of remote volume events. Abstracts the concrete [`EventsClient`] so the daemon can
+/// hold it as a trait object (`Box<dyn EventSource>`) and tests can inject a fake without a
+/// network. The two methods mirror [`EventsClient::latest_cursor`] and
+/// [`EventsClient::events_since`].
+pub trait EventSource: Send + Sync {
+    /// The current latest event id for `volume_id` — the cursor to start from when there is no
+    /// stored cursor yet.
+    fn latest_cursor(&self, volume_id: &str) -> AppResult<String>;
+    /// The delta for `volume_id` since `cursor`, normalized into a [`VolumeEventPage`].
+    fn events_since(&self, volume_id: &str, cursor: &str) -> AppResult<VolumeEventPage>;
+}
+
+impl<T: HttpTransport, S: SessionProvider> EventSource for EventsClient<T, S> {
+    fn latest_cursor(&self, volume_id: &str) -> AppResult<String> {
+        EventsClient::latest_cursor(self, volume_id)
+    }
+
+    fn events_since(&self, volume_id: &str, cursor: &str) -> AppResult<VolumeEventPage> {
+        EventsClient::events_since(self, volume_id, cursor)
+    }
+}
+
 /// Parses a `.../events/latest` response into its cursor.
 pub fn parse_latest_event_id(json: &str) -> AppResult<String> {
     let raw: RawLatest = serde_json::from_str(json)?;
@@ -432,6 +461,19 @@ mod tests {
         // Must match the composed `volumeId~nodeId` that `filesystem list` reports and the
         // index stores as `proton_id`, so an event's raw LinkID resolves to a path.
         assert_eq!(node_uid("v45s==", "39NX=="), "v45s==~39NX==");
+    }
+
+    #[test]
+    fn volume_id_from_proton_id_splits_the_composed_uid() {
+        // The inverse of node_uid's volume half — used to derive the volume id from any stored
+        // composed proton_id. A round trip must recover the original volume.
+        assert_eq!(volume_id_from_proton_id("v45s==~39NX=="), Some("v45s=="));
+        assert_eq!(
+            volume_id_from_proton_id(&node_uid("VOL", "node")),
+            Some("VOL")
+        );
+        // A value with no separator (e.g. a legacy raw id) is not derivable.
+        assert_eq!(volume_id_from_proton_id("no-separator"), None);
     }
 
     #[test]

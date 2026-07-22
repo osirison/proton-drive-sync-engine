@@ -1,7 +1,9 @@
+use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
-    EntityKind, FileRecord, LocalEntityState, ScanOptions, SyncStatus, load_existing_index,
-    load_index, local_directory_state, local_file_state, mark_modified, open_database,
-    purge_record, scan_local_entities_reusing_hashes, upsert_record,
+    EntityKind, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
+    load_event_cursor, load_existing_index, load_index, local_directory_state, local_file_state,
+    mark_modified, open_database, path_for_proton_id, purge_record,
+    scan_local_entities_reusing_hashes, store_event_cursor, upsert_record,
 };
 use crate::ipc::{
     ControlCommand, ControlRequest, ControlResponse, StatusHistoryEntry, bind_listener,
@@ -10,6 +12,8 @@ use crate::ipc::{
 use crate::proton::{
     CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity, RemoteListingStatus,
 };
+use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
+use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
     PlanSummary, PlannedAction, SyncAction, directory_move_descendant_path_pairs,
     is_strict_descendant, original_from_conflict_copy, plan_sync_entities,
@@ -36,6 +40,10 @@ const STATUS_HISTORY_LIMIT: usize = 20;
 /// dropped, so a silent client cannot indefinitely block reconciles, filesystem events,
 /// or graceful shutdown.
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the daemon polls the volume event stream when `events_driven` is enabled. Matches
+/// the ~30s cadence Proton's own client uses (ADR 0001). Only the incremental (O(changes)) path
+/// runs this often; full-tree snapshots stay on `scan_interval` and the periodic safety resync.
+const EVENTS_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -50,6 +58,14 @@ pub struct DaemonConfig {
     pub proton_list_attempts: usize,
     pub include_patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
+    /// Opt-in: detect remote changes from Proton's volume event stream (O(changes)) instead of
+    /// re-walking the whole remote tree (O(folders)) every pass. Default `false` keeps today's
+    /// full-scan behavior byte-for-byte. See `docs/adr/0001-*`.
+    pub events_driven: bool,
+    /// When event-driven, force a full-tree reconvergence snapshot every N incremental passes.
+    /// Bounds any completeness gap inherited from a missed snapshot item or the reuse-session
+    /// staleness window, and backfills `proton_id` for just-uploaded nodes. Clamped to `>= 1`.
+    pub events_full_scan_every: u64,
 }
 
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
@@ -67,6 +83,13 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     metrics_path: PathBuf,
     status_history: Vec<StatusHistoryEntry>,
     ipc_io_timeout: Duration,
+    /// Remote change detection via the volume event stream. `None` when `events_driven` is off
+    /// (or the session could not be read), in which case every reconcile is a full-tree snapshot
+    /// exactly as before this feature.
+    event_source: Option<Box<dyn EventSource>>,
+    /// Number of successful incremental (event-driven) passes since the last full-tree snapshot.
+    /// Drives the mandatory periodic safety resync (`events_full_scan_every`).
+    incremental_passes_since_full_scan: u64,
     _lock_guard: LockGuard,
 }
 
@@ -122,12 +145,21 @@ impl Daemon<ProtonDriveClient> {
             config.proton_cli.clone(),
             command_policy_from_config(&config),
         );
-        Self::with_client(config, proton)
+        let event_source = build_event_source(&config);
+        Self::with_client_and_event_source(config, proton, event_source)
     }
 }
 
 impl<C: ProtonClient> Daemon<C> {
     pub fn with_client(config: DaemonConfig, proton: C) -> AppResult<Self> {
+        Self::with_client_and_event_source(config, proton, None)
+    }
+
+    pub fn with_client_and_event_source(
+        config: DaemonConfig,
+        proton: C,
+        event_source: Option<Box<dyn EventSource>>,
+    ) -> AppResult<Self> {
         fs::create_dir_all(&config.local_root)?;
         if let Some(parent) = config.db_path.parent()
             && !parent.as_os_str().is_empty()
@@ -168,6 +200,8 @@ impl<C: ProtonClient> Daemon<C> {
             metrics_path,
             status_history,
             ipc_io_timeout: IPC_IO_TIMEOUT,
+            event_source,
+            incremental_passes_since_full_scan: 0,
             _lock_guard: lock_guard,
         };
         daemon.write_metrics_snapshot()?;
@@ -202,6 +236,16 @@ impl<C: ProtonClient> Daemon<C> {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
 
+        // A faster poll cadence for event-driven mode: an incremental pass is O(changes) and
+        // usually idle, so polling the stream often keeps remote-change latency low without the
+        // cost of a full-tree walk. The arm is gated on `events_driven`, so with the feature off
+        // it never fires and the loop behaves exactly as before. Using an interval arm (rather
+        // than a separate event-fetching task) keeps the single owner of `event_source` and the
+        // SQLite connection inside the loop, avoiding shared-state hazards.
+        let mut events_poll = tokio::time::interval(EVENTS_POLL_INTERVAL);
+        events_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        events_poll.tick().await;
+
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
 
@@ -235,6 +279,9 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 _ = interval.tick() => {
+                    self.reconcile_if_needed().await?;
+                }
+                _ = events_poll.tick(), if self.config.events_driven => {
                     self.reconcile_if_needed().await?;
                 }
                 _ = &mut shutdown => {
@@ -416,6 +463,176 @@ impl<C: ProtonClient> Daemon<C> {
         // Load the baseline before scanning so the scan can reuse each unchanged file's
         // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
         let base_records = load_index(&self.connection)?;
+
+        // Event-driven steady state: attempt an incremental pass (O(changes)) before resorting to
+        // a full-tree snapshot (O(folders)). Any doubt — no cursor, a server refresh, an events
+        // error, or an unresolvable node — falls through to the snapshot below, which is exactly
+        // today's behavior. When `events_driven` is off this predicate is always false.
+        if self.should_try_incremental(&base_records) {
+            match self.try_incremental_reconcile(&base_records)? {
+                IncrementalOutcome::Committed | IncrementalOutcome::Idle => return Ok(()),
+                IncrementalOutcome::Fallback(reason) => {
+                    info!(%reason, "event-driven pass fell back to a full-tree snapshot");
+                }
+            }
+        }
+
+        self.bootstrap_reconcile(base_records)
+    }
+
+    /// Whether an incremental (event-stream) pass may be attempted this cycle. Requires the
+    /// feature on with a usable event source, a volume id derivable from a previously-stored
+    /// composed `proton_id`, a stored cursor to replay from, and that the mandatory periodic
+    /// safety resync is not currently due.
+    fn should_try_incremental(&self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
+        if !self.config.events_driven || self.event_source.is_none() {
+            return false;
+        }
+        if self.incremental_passes_since_full_scan >= self.config.events_full_scan_every {
+            return false;
+        }
+        let Some(volume) = derive_volume_id(base_records) else {
+            return false;
+        };
+        matches!(load_event_cursor(&self.connection, volume), Ok(Some(_)))
+    }
+
+    /// One incremental pass: fetch the event delta, reconstruct the complete remote map as
+    /// `base ⊕ delta`, plan, execute, and advance the cursor inside the post-side-effects commit.
+    /// Returns [`IncrementalOutcome::Fallback`] (without committing) whenever the delta cannot be
+    /// turned into a complete map, so the caller re-bootstraps.
+    fn try_incremental_reconcile(
+        &mut self,
+        base_records: &HashMap<PathBuf, FileRecord>,
+    ) -> AppResult<IncrementalOutcome> {
+        let volume = derive_volume_id(base_records)
+            .expect("should_try_incremental guarantees a derivable volume id")
+            .to_owned();
+        let cursor = match load_event_cursor(&self.connection, &volume)? {
+            Some(cursor) => cursor,
+            None => return Ok(IncrementalOutcome::Fallback("no stored cursor".to_owned())),
+        };
+
+        // Fetch the delta (paginating) *before* the local scan so a fully idle cycle does no work.
+        let delta = match self.fetch_event_delta(&volume, &cursor.last_event_id) {
+            Ok(delta) => delta,
+            Err(error) => {
+                return Ok(IncrementalOutcome::Fallback(format!(
+                    "events fetch failed: {error}"
+                )));
+            }
+        };
+        if delta.refresh {
+            return Ok(IncrementalOutcome::Fallback(
+                "server requested a full refresh".to_owned(),
+            ));
+        }
+
+        // Idle: no remote changes and no pending local changes → advance the cursor and skip the
+        // local stat-walk and planning entirely.
+        if delta.changes.is_empty() && self.pending_changes.is_empty() {
+            if delta.latest_event_id != cursor.last_event_id {
+                store_event_cursor(
+                    &self.connection,
+                    &volume,
+                    &delta.latest_event_id,
+                    current_epoch_secs() as i64,
+                )?;
+            }
+            self.incremental_passes_since_full_scan += 1;
+            info!("event-driven pass idle; no remote or local changes");
+            return Ok(IncrementalOutcome::Idle);
+        }
+
+        let local_entities = scan_local_entities_reusing_hashes(
+            &self.config.local_root,
+            &self.scan_options,
+            base_records,
+        )?;
+        let local_files = local_files_from_entities(&local_entities);
+        let base_index = filter_base_index(base_records.clone(), &self.scan_options);
+
+        let remote_entities = {
+            let resolver = TargetedResolver {
+                proton: &self.proton,
+                connection: &self.connection,
+                remote_root: &self.config.remote_root,
+                volume_id: &volume,
+            };
+            match reconstruct_remote(
+                &base_index,
+                &delta.changes,
+                &volume,
+                &self.scan_options,
+                &resolver,
+            ) {
+                Reconstruction::Complete(map) => map,
+                Reconstruction::FallbackToSnapshot(reason) => {
+                    return Ok(IncrementalOutcome::Fallback(reason));
+                }
+            }
+        };
+
+        self.execute_plan_and_commit(
+            &local_entities,
+            &local_files,
+            &remote_entities,
+            &base_index,
+            false,
+            Some(CursorUpdate {
+                scope_id: volume,
+                last_event_id: delta.latest_event_id,
+            }),
+        )?;
+        self.incremental_passes_since_full_scan += 1;
+        Ok(IncrementalOutcome::Committed)
+    }
+
+    /// Fetches and concatenates the volume event delta from `from_cursor`, following `more`
+    /// pagination. Surfaces a `refresh` signal and the final cursor to persist.
+    fn fetch_event_delta(&self, volume: &str, from_cursor: &str) -> AppResult<EventDelta> {
+        // A generous bound purely to stop a misbehaving stream from looping forever; real deltas
+        // paginate in a handful of pages.
+        const MAX_PAGES: usize = 10_000;
+        let source = self
+            .event_source
+            .as_ref()
+            .expect("should_try_incremental guarantees an event source");
+        let mut changes = Vec::new();
+        let mut cursor = from_cursor.to_owned();
+        for _ in 0..MAX_PAGES {
+            let page = source.events_since(volume, &cursor)?;
+            if page.refresh {
+                return Ok(EventDelta {
+                    changes,
+                    latest_event_id: page.latest_event_id,
+                    refresh: true,
+                });
+            }
+            changes.extend(page.changes);
+            if !page.more {
+                return Ok(EventDelta {
+                    changes,
+                    latest_event_id: page.latest_event_id,
+                    refresh: false,
+                });
+            }
+            cursor = page.latest_event_id;
+        }
+        Err(boxed_error(
+            "volume event stream did not finish paginating within the page limit",
+        ))
+    }
+
+    /// Full-tree snapshot reconcile — the original behavior, plus (when event-driven) capturing
+    /// and persisting the replay cursor `C0`. Resets the periodic-resync counter.
+    fn bootstrap_reconcile(&mut self, base_records: HashMap<PathBuf, FileRecord>) -> AppResult<()> {
+        // Market-data recovery: capture the cursor *before* the snapshot when the volume is
+        // already known, so a change landing during the walk is re-delivered (idempotently) by
+        // the next incremental pass. On the first-ever bootstrap the volume is only known after
+        // the walk, and the mandatory periodic resync bounds that one-time gap.
+        let pre_snapshot_cursor = self.capture_pre_snapshot_cursor(&base_records);
+
         let local_entities = scan_local_entities_reusing_hashes(
             &self.config.local_root,
             &self.scan_options,
@@ -428,7 +645,92 @@ impl<C: ProtonClient> Daemon<C> {
         if remote_root_missing {
             base_index.clear();
         }
-        let mut plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        let cursor_update = self.resolve_bootstrap_cursor_update(
+            pre_snapshot_cursor,
+            &remote_entities,
+            remote_root_missing,
+        );
+
+        self.execute_plan_and_commit(
+            &local_entities,
+            &local_files,
+            &remote_entities,
+            &base_index,
+            remote_root_missing,
+            cursor_update,
+        )?;
+        self.incremental_passes_since_full_scan = 0;
+        Ok(())
+    }
+
+    /// Reads the current latest cursor before a snapshot, when event-driven and the volume is
+    /// already derivable from the baseline. Best-effort: a failure just defers cursor capture to
+    /// after the snapshot.
+    fn capture_pre_snapshot_cursor(
+        &self,
+        base_records: &HashMap<PathBuf, FileRecord>,
+    ) -> Option<CursorUpdate> {
+        if !self.config.events_driven {
+            return None;
+        }
+        let source = self.event_source.as_ref()?;
+        let volume = derive_volume_id(base_records)?.to_owned();
+        match source.latest_cursor(&volume) {
+            Ok(last_event_id) => Some(CursorUpdate {
+                scope_id: volume,
+                last_event_id,
+            }),
+            Err(error) => {
+                warn!(%error, "could not capture the pre-snapshot events cursor; deriving it after the snapshot instead");
+                None
+            }
+        }
+    }
+
+    /// Chooses the cursor to persist with a bootstrap: the pre-snapshot one if captured, else
+    /// (first-ever bootstrap) the volume derived from the fresh snapshot with its latest cursor
+    /// read now. Returns `None` when event-driven is off or nothing can be anchored yet.
+    fn resolve_bootstrap_cursor_update(
+        &self,
+        pre_snapshot_cursor: Option<CursorUpdate>,
+        remote_entities: &HashMap<PathBuf, RemoteEntity>,
+        remote_root_missing: bool,
+    ) -> Option<CursorUpdate> {
+        if !self.config.events_driven || remote_root_missing {
+            return None;
+        }
+        if let Some(cursor) = pre_snapshot_cursor {
+            return Some(cursor);
+        }
+        let source = self.event_source.as_ref()?;
+        let volume = derive_volume_id_from_entities(remote_entities)?;
+        match source.latest_cursor(&volume) {
+            Ok(last_event_id) => Some(CursorUpdate {
+                scope_id: volume,
+                last_event_id,
+            }),
+            Err(error) => {
+                warn!(%error, "could not capture the post-snapshot events cursor; incremental sync stays off until the next successful bootstrap");
+                None
+            }
+        }
+    }
+
+    /// Plans against the given complete remote map, executes every action performing all side
+    /// effects, then commits the resulting index mutations — and, when `cursor_update` is set, the
+    /// advanced event cursor — in a **single** post-success transaction (the commit-after-side-
+    /// effects invariant: a mid-plan failure leaves both the index and the cursor unadvanced).
+    fn execute_plan_and_commit(
+        &mut self,
+        local_entities: &HashMap<PathBuf, LocalEntityState>,
+        local_files: &HashMap<PathBuf, LocalFileState>,
+        remote_entities: &HashMap<PathBuf, RemoteEntity>,
+        base_index: &HashMap<PathBuf, FileRecord>,
+        remote_root_missing: bool,
+        cursor_update: Option<CursorUpdate>,
+    ) -> AppResult<()> {
+        let mut plan = plan_sync_entities(local_entities, remote_entities, base_index);
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
         let plan_summary = PlanSummary::from_plan(&plan);
         self.last_plan_summary = Some(plan_summary.clone());
@@ -576,7 +878,7 @@ impl<C: ProtonClient> Daemon<C> {
                                 directory_move_descendant_path_pairs(
                                     &action.path,
                                     destination_path,
-                                    &base_index,
+                                    base_index,
                                 )
                             {
                                 if let Some(descendant_record) = base_index.get(&old_descendant) {
@@ -722,7 +1024,7 @@ impl<C: ProtonClient> Daemon<C> {
                     self.proton.delete(&remote_path)?;
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
                     if action.entity_kind == EntityKind::Directory {
-                        for descendant in descendant_index_paths(&action.path, &base_index) {
+                        for descendant in descendant_index_paths(&action.path, base_index) {
                             index_mutations.push(IndexMutation::Purge(descendant));
                         }
                     }
@@ -746,7 +1048,7 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                     index_mutations.push(IndexMutation::Purge(action.path.clone()));
                     if action.entity_kind == EntityKind::Directory {
-                        for descendant in descendant_index_paths(&action.path, &base_index) {
+                        for descendant in descendant_index_paths(&action.path, base_index) {
                             index_mutations.push(IndexMutation::Purge(descendant));
                         }
                     }
@@ -767,6 +1069,18 @@ impl<C: ProtonClient> Daemon<C> {
         let transaction = self.connection.transaction()?;
         for mutation in &index_mutations {
             mutation.apply(&transaction)?;
+        }
+        // Advance the event cursor in the SAME transaction as the index mutations: it must move
+        // only after every side effect of this plan has succeeded, so a mid-plan failure (which
+        // returns early above, before this commit) replays the same events next pass rather than
+        // silently skipping them. Reprocessing events is idempotent; skipping them loses changes.
+        if let Some(cursor_update) = &cursor_update {
+            store_event_cursor(
+                &transaction,
+                &cursor_update.scope_id,
+                &cursor_update.last_event_id,
+                current_epoch_secs() as i64,
+            )?;
         }
         transaction.commit()?;
         // `pending_changes` only drives status reporting - planning always performs a
@@ -976,6 +1290,131 @@ fn command_policy_from_config(config: &DaemonConfig) -> CommandPolicy {
     CommandPolicy::new(config.proton_timeout, config.proton_list_attempts)
 }
 
+/// `x-pm-appversion` sent on events requests. Matches the value the live detection harness uses
+/// (`tests/events_live.rs`); Proton validates it.
+const EVENTS_APP_VERSION: &str = "cli-drive@0.5.0";
+
+/// Builds the real [`EventSource`] (an [`EventsClient`] over `curl` + the reused CLI keyring
+/// session) when `events_driven` is on. Returns `None` — falling back to full-tree snapshots —
+/// when the feature is off or the CLI session cannot be read, so a missing/locked keyring
+/// degrades gracefully instead of failing daemon startup.
+fn build_event_source(config: &DaemonConfig) -> Option<Box<dyn EventSource>> {
+    if !config.events_driven {
+        return None;
+    }
+    match CliKeyringSession::from_cli_keyring() {
+        Ok(session) => Some(Box::new(EventsClient::new(
+            CurlHttpTransport::new(),
+            session,
+            EVENTS_APP_VERSION,
+        ))),
+        Err(error) => {
+            warn!(
+                %error,
+                "events_driven is enabled but the reused CLI session could not be read; \
+                 falling back to full-tree remote scans"
+            );
+            None
+        }
+    }
+}
+
+/// Result of an attempted incremental (event-driven) reconcile pass.
+enum IncrementalOutcome {
+    /// Changes were planned, executed, and committed with the cursor advanced.
+    Committed,
+    /// Nothing to do (no remote or local changes); the cursor was advanced without side effects.
+    Idle,
+    /// The delta could not be turned into a complete map; the caller must full-tree snapshot. The
+    /// string is a human-readable reason for logging.
+    Fallback(String),
+}
+
+/// A concatenated, paginated volume event delta plus the cursor to persist afterwards.
+struct EventDelta {
+    changes: Vec<RemoteChange>,
+    latest_event_id: String,
+    /// The server asked the client to discard its cursor and reconverge with a full scan.
+    refresh: bool,
+}
+
+/// The event cursor to persist alongside a reconcile's index mutations, in the same transaction.
+struct CursorUpdate {
+    scope_id: String,
+    last_event_id: String,
+}
+
+/// Resolves a created/updated node to its current `(relative path, entity)` by listing just the
+/// node's parent directory (an O(1) call), the targeted alternative to a full-tree walk.
+struct TargetedResolver<'a, C: ProtonClient> {
+    proton: &'a C,
+    connection: &'a Connection,
+    remote_root: &'a Path,
+    volume_id: &'a str,
+}
+
+impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
+    fn resolve(&self, change: &RemoteChange) -> AppResult<Option<(PathBuf, RemoteEntity)>> {
+        let target_uid = node_uid(self.volume_id, &change.node_id);
+
+        // Prefer listing the event's parent directory when it is indexed (the common nested case).
+        if let Some(parent_id) = change.parent_id.as_deref() {
+            let parent_uid = node_uid(self.volume_id, parent_id);
+            if let Some(parent_path) = path_for_proton_id(self.connection, &parent_uid)? {
+                let listing = self.proton.list_directory(self.remote_root, &parent_path)?;
+                // Absent from its stated parent → let the reconstruction drop any stale location.
+                return Ok(find_entity_by_uid(listing, &target_uid));
+            }
+        }
+
+        // The parent is not indexed (e.g. a top-level node whose parent is the remote root, which
+        // has no index record). Fall back to listing the root; if the node is not there either we
+        // cannot place it without a full walk, so signal a snapshot.
+        let root_listing = self
+            .proton
+            .list_directory(self.remote_root, Path::new(""))?;
+        match find_entity_by_uid(root_listing, &target_uid) {
+            Some(resolved) => Ok(Some(resolved)),
+            None => Err(boxed_error(format!(
+                "changed node {} is not under any indexed parent or the remote root",
+                change.node_id
+            ))),
+        }
+    }
+}
+
+fn find_entity_by_uid(
+    listing: HashMap<PathBuf, RemoteEntity>,
+    target_uid: &str,
+) -> Option<(PathBuf, RemoteEntity)> {
+    listing
+        .into_iter()
+        .find(|(_, entity)| entity.remote_id().as_deref() == Some(target_uid))
+}
+
+/// Derives the volume id from any baseline record carrying a composed `proton_id`
+/// (`volumeId~nodeId`). `None` when nothing has been synced with a composed id yet.
+fn derive_volume_id(base_records: &HashMap<PathBuf, FileRecord>) -> Option<&str> {
+    base_records
+        .values()
+        .filter_map(|record| record.proton_id.as_deref())
+        .find_map(volume_id_from_proton_id)
+}
+
+/// Derives the volume id from a fresh snapshot's remote entities (used on the first-ever bootstrap
+/// when no baseline composed id exists yet).
+fn derive_volume_id_from_entities(
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+) -> Option<String> {
+    remote_entities.values().find_map(|entity| {
+        let id = match entity {
+            RemoteEntity::File(file) => Some(file.id.as_str()),
+            RemoteEntity::Directory(directory) => directory.id.as_deref(),
+        }?;
+        volume_id_from_proton_id(id).map(ToOwned::to_owned)
+    })
+}
+
 fn build_watcher(
     watch_tx: mpsc::UnboundedSender<notify::Result<Event>>,
 ) -> AppResult<RecommendedWatcher> {
@@ -1154,12 +1593,14 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::{RemoteChangeKind, VolumeEventPage};
     use crate::index::EntityKind;
     use crate::index::get_record;
     use crate::proton::{RemoteDirectory, RemoteFile};
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
     use sha1::{Digest, Sha1};
     use std::collections::HashMap;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -1568,6 +2009,8 @@ mod tests {
             proton_list_attempts: 2,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
+            events_driven: false,
+            events_full_scan_every: 20,
         };
 
         let plan = preview_plan_with_client(&config, &FakeProtonClient { remote_files })
@@ -3306,6 +3749,8 @@ mod tests {
             proton_list_attempts: 2,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
+            events_driven: false,
+            events_full_scan_every: 20,
         }
     }
 
@@ -3343,5 +3788,588 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+
+    // --- event-driven (incremental) reconcile tests ---------------------------------------
+
+    /// A Proton client that counts full-tree walks vs targeted single-directory lists, so tests
+    /// can prove an incremental pass never re-walks the whole tree.
+    #[derive(Clone)]
+    struct EventFakeClient {
+        remote_entities: HashMap<PathBuf, RemoteEntity>,
+        full_walks: Arc<AtomicUsize>,
+        directory_lists: Arc<AtomicUsize>,
+        failed_uploads: BTreeSet<PathBuf>,
+    }
+
+    impl EventFakeClient {
+        fn new(remote_entities: HashMap<PathBuf, RemoteEntity>) -> Self {
+            Self {
+                remote_entities,
+                full_walks: Arc::new(AtomicUsize::new(0)),
+                directory_lists: Arc::new(AtomicUsize::new(0)),
+                failed_uploads: BTreeSet::new(),
+            }
+        }
+    }
+
+    impl ProtonClient for EventFakeClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            self.full_walks.fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .remote_entities
+                .iter()
+                .filter_map(|(path, entity)| {
+                    entity.as_file().cloned().map(|file| (path.clone(), file))
+                })
+                .collect())
+        }
+
+        fn list_entities_or_missing_root(
+            &self,
+            _remote_root: &Path,
+        ) -> AppResult<RemoteListingStatus> {
+            self.full_walks.fetch_add(1, Ordering::SeqCst);
+            Ok(RemoteListingStatus::Found(self.remote_entities.clone()))
+        }
+
+        fn list_directory(
+            &self,
+            _remote_root: &Path,
+            relative_directory: &Path,
+        ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            self.directory_lists.fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .remote_entities
+                .iter()
+                .filter(|(path, _)| path.parent() == Some(relative_directory))
+                .map(|(path, entity)| (path.clone(), entity.clone()))
+                .collect())
+        }
+
+        fn ensure_root_directory(&self, _remote_root: &Path) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn upload(
+            &self,
+            _local_path: &Path,
+            _remote_root: &Path,
+            relative_path: &Path,
+        ) -> AppResult<()> {
+            if self.failed_uploads.contains(relative_path) {
+                return Err(boxed_error(format!(
+                    "upload failed for {}",
+                    relative_path.display()
+                )));
+            }
+            Ok(())
+        }
+
+        fn download(&self, _remote_path: &Path, destination: &Path) -> AppResult<()> {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(destination, b"downloaded")?;
+            Ok(())
+        }
+
+        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn rename_or_move(&self, _r: &Path, _o: &Path, _n: &Path) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    /// A scriptable [`EventSource`]: `events_since` replays a queue of pages (an empty queue means
+    /// "no changes"), `latest_cursor` returns a fixed cursor. Optionally fails to exercise the
+    /// events-error fallback.
+    struct FakeEventSource {
+        pages: Mutex<Vec<VolumeEventPage>>,
+        latest: String,
+        fail_since: bool,
+    }
+
+    impl FakeEventSource {
+        fn new(latest: &str) -> Self {
+            Self {
+                pages: Mutex::new(Vec::new()),
+                latest: latest.to_owned(),
+                fail_since: false,
+            }
+        }
+
+        fn with_pages(latest: &str, pages: Vec<VolumeEventPage>) -> Self {
+            Self {
+                pages: Mutex::new(pages),
+                latest: latest.to_owned(),
+                fail_since: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                pages: Mutex::new(Vec::new()),
+                latest: "c0".to_owned(),
+                fail_since: true,
+            }
+        }
+    }
+
+    impl EventSource for FakeEventSource {
+        fn latest_cursor(&self, _volume_id: &str) -> AppResult<String> {
+            Ok(self.latest.clone())
+        }
+
+        fn events_since(&self, _volume_id: &str, cursor: &str) -> AppResult<VolumeEventPage> {
+            if self.fail_since {
+                return Err(boxed_error("events fetch boom"));
+            }
+            let mut pages = self.pages.lock().expect("pages lock");
+            if pages.is_empty() {
+                Ok(VolumeEventPage {
+                    latest_event_id: cursor.to_owned(),
+                    more: false,
+                    refresh: false,
+                    changes: Vec::new(),
+                })
+            } else {
+                Ok(pages.remove(0))
+            }
+        }
+    }
+
+    fn event_config(directory: &Path, local_root: &Path) -> DaemonConfig {
+        DaemonConfig {
+            events_driven: true,
+            events_full_scan_every: 20,
+            ..test_config(directory, local_root)
+        }
+    }
+
+    fn remote_dir(path: &str, id: &str) -> RemoteEntity {
+        RemoteEntity::Directory(RemoteDirectory {
+            path: PathBuf::from(path),
+            id: Some(id.to_owned()),
+            name: Path::new(path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(path)
+                .to_owned(),
+        })
+    }
+
+    fn remote_file_entity(path: &str, id: &str, sha1_hash: &str) -> RemoteEntity {
+        RemoteEntity::File(remote(path, id, Some(sha1_hash)))
+    }
+
+    fn change(
+        kind: RemoteChangeKind,
+        node_id: &str,
+        parent_id: Option<&str>,
+        trashed: bool,
+    ) -> RemoteChange {
+        RemoteChange {
+            kind,
+            node_id: node_id.to_owned(),
+            parent_id: parent_id.map(ToOwned::to_owned),
+            trashed,
+            shared: false,
+            event_id: format!("evt-{node_id}"),
+        }
+    }
+
+    fn one_page(latest: &str, changes: Vec<RemoteChange>) -> VolumeEventPage {
+        VolumeEventPage {
+            latest_event_id: latest.to_owned(),
+            more: false,
+            refresh: false,
+            changes,
+        }
+    }
+
+    #[test]
+    fn bootstrap_captures_cursor_then_idle_incremental_does_no_full_walk() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("a.txt"),
+            remote_file_entity("a.txt", "vol~na", "h"),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+
+        // First pass: no baseline → bootstrap snapshot, which captures and stores the cursor.
+        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "bootstrap performs one full walk"
+        );
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor persisted by bootstrap");
+        assert_eq!(cursor.last_event_id, "cursor-0");
+        assert_eq!(daemon.incremental_passes_since_full_scan, 0);
+
+        // Second pass: stored cursor + derivable volume + no changes → idle incremental, no walk.
+        daemon
+            .reconcile_blocking()
+            .expect("idle incremental reconcile");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "an idle incremental pass must not re-walk the whole tree"
+        );
+        assert_eq!(daemon.incremental_passes_since_full_scan, 1);
+    }
+
+    #[test]
+    fn single_remote_change_plans_one_action_with_zero_full_walks() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("dir")).expect("local dir");
+        let old = sha1_bytes(b"old");
+        fs::write(local_root.join("dir/a.txt"), b"old").expect("local file");
+
+        // Remote reflects the *new* content; the fake resolves it via a targeted parent list.
+        let remote_entities = HashMap::from([
+            (PathBuf::from("dir"), remote_dir("dir", "vol~ndir")),
+            (
+                PathBuf::from("dir/a.txt"),
+                remote_file_entity("dir/a.txt", "vol~na", &sha1_bytes(b"new")),
+            ),
+        ]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Updated, "na", Some("ndir"), false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![page],
+            ))),
+        )
+        .expect("daemon");
+
+        // Seed a synced baseline + stored cursor so the very first pass is incremental.
+        upsert_record(
+            &daemon.connection,
+            &directory_record("dir", Some("vol~ndir")),
+        )
+        .expect("seed dir record");
+        upsert_record(
+            &daemon.connection,
+            &base_record("dir/a.txt", Some("vol~na"), old.as_str()),
+        )
+        .expect("seed file record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+
+        daemon.reconcile_blocking().expect("incremental reconcile");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "a single nested change must be planned without any full-tree walk"
+        );
+        assert!(
+            directory_lists.load(Ordering::SeqCst) >= 1,
+            "the parent was listed"
+        );
+        // The change was applied (download overwrote the local file) and the cursor advanced.
+        assert_eq!(
+            fs::read(local_root.join("dir/a.txt")).expect("read local"),
+            b"downloaded"
+        );
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor present");
+        assert_eq!(
+            cursor.last_event_id, "cursor-1",
+            "cursor advanced after success"
+        );
+    }
+
+    #[test]
+    fn mid_plan_failure_leaves_index_and_cursor_unadvanced() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        // A synced baseline file (so the volume is derivable) plus a new local file that will fail
+        // to upload.
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        fs::write(local_root.join("new.txt"), b"new").expect("new file");
+
+        let mut client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        client.failed_uploads = BTreeSet::from([PathBuf::from("new.txt")]);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        // Make the pass non-idle so it scans + plans the failing upload.
+        daemon.pending_changes.insert(PathBuf::from("new.txt"));
+
+        let result = daemon.reconcile_blocking();
+        assert!(result.is_err(), "a failed upload must fail the reconcile");
+
+        // Neither the index nor the cursor advanced; the events replay next pass.
+        assert!(
+            get_record(&daemon.connection, Path::new("new.txt"))
+                .expect("get record")
+                .is_none(),
+            "the failed file must not be recorded (no partial commit)"
+        );
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor present");
+        assert_eq!(
+            cursor.last_event_id, "cursor-0",
+            "cursor must NOT advance on failure"
+        );
+        assert_eq!(daemon.incremental_passes_since_full_scan, 0);
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "the incremental path took no full walk"
+        );
+    }
+
+    #[test]
+    fn excluded_path_in_delta_is_never_downloaded_or_recorded() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+
+        // A created remote node under an excluded path; resolvable via the root listing.
+        let remote_entities = HashMap::from([
+            (
+                PathBuf::from("keep.txt"),
+                remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+            ),
+            (
+                PathBuf::from("secret/x.txt"),
+                remote_file_entity("secret/x.txt", "vol~ns", "h"),
+            ),
+            (PathBuf::from("secret"), remote_dir("secret", "vol~nsec")),
+        ]);
+        let client = EventFakeClient::new(remote_entities);
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Created, "ns", Some("nsec"), false)],
+        );
+        let mut config = event_config(directory.path(), &local_root);
+        config.exclude_patterns = vec!["secret/**".to_owned()];
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![page],
+            ))),
+        )
+        .expect("daemon");
+        // Rebuild scan options so the exclude pattern actually applies (the daemon caches them).
+        daemon.scan_options = scan_options_from_config(&daemon.config).expect("scan options");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        // The excluded parent is not indexed, forcing resolution via the root listing.
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+
+        daemon.reconcile_blocking().expect("incremental reconcile");
+
+        assert!(
+            !local_root.join("secret/x.txt").exists(),
+            "an excluded remote file must never be downloaded"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("secret/x.txt"))
+                .expect("get record")
+                .is_none(),
+            "an excluded path must never be recorded"
+        );
+    }
+
+    #[test]
+    fn server_refresh_falls_back_to_a_full_snapshot() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let refresh_page = VolumeEventPage {
+            latest_event_id: "cursor-1".to_owned(),
+            more: false,
+            refresh: true,
+            changes: Vec::new(),
+        };
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![refresh_page],
+            ))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+
+        daemon
+            .reconcile_blocking()
+            .expect("reconcile falls back cleanly");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "a server refresh signal must trigger a full-tree snapshot"
+        );
+    }
+
+    #[test]
+    fn events_fetch_error_falls_back_to_a_full_snapshot() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::failing())),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+
+        daemon
+            .reconcile_blocking()
+            .expect("reconcile falls back cleanly");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "an events fetch error must trigger a full-tree snapshot"
+        );
+    }
+
+    #[test]
+    fn periodic_safety_resync_forces_a_full_snapshot() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut config = event_config(directory.path(), &local_root);
+        config.events_full_scan_every = 1;
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        // Already at the resync threshold → this pass must snapshot, not go incremental.
+        daemon.incremental_passes_since_full_scan = 1;
+
+        daemon
+            .reconcile_blocking()
+            .expect("forced resync reconcile");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "reaching events_full_scan_every must force a full-tree snapshot"
+        );
+        assert_eq!(
+            daemon.incremental_passes_since_full_scan, 0,
+            "the resync counter resets after a full snapshot"
+        );
+    }
+
+    fn directory_record(path: &str, proton_id: Option<&str>) -> FileRecord {
+        FileRecord {
+            file_path: PathBuf::from(path),
+            entity_kind: EntityKind::Directory,
+            file_size: 0,
+            mtime: 1,
+            sha1_hash: None,
+            proton_id: proton_id.map(ToOwned::to_owned),
+            sync_status: SyncStatus::Synced,
+        }
     }
 }

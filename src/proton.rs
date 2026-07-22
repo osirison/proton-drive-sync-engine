@@ -161,6 +161,21 @@ pub trait ProtonClient: Send + Sync {
     fn list_entities_or_missing_root(&self, remote_root: &Path) -> AppResult<RemoteListingStatus> {
         Ok(RemoteListingStatus::Found(self.list_entities(remote_root)?))
     }
+    /// Lists a **single** remote directory (non-recursively) relative to `remote_root`, returning
+    /// its immediate entries keyed by relative path. This is the O(1) targeted sibling of the
+    /// O(folders) [`Self::list_entities_or_missing_root`] BFS, used by event-driven reconcile to
+    /// resolve just the parent of a changed node instead of re-walking the whole tree. The
+    /// default implementation errors; clients that can target a single directory override it.
+    fn list_directory(
+        &self,
+        _remote_root: &Path,
+        relative_directory: &Path,
+    ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+        Err(boxed_error(format!(
+            "single-directory listing is not supported by this Proton client: {}",
+            relative_directory.display()
+        )))
+    }
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
         Err(boxed_error(format!(
             "creating remote root directories is not supported by this Proton client: {}",
@@ -313,6 +328,40 @@ impl ProtonClient for ProtonDriveClient {
         Ok(RemoteListingStatus::Found(
             RemoteListing { files, directories }.into_entities(),
         ))
+    }
+
+    fn list_directory(
+        &self,
+        remote_root: &Path,
+        relative_directory: &Path,
+    ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+        let remote_directory = if relative_directory.as_os_str().is_empty() {
+            remote_root.to_path_buf()
+        } else {
+            remote_root.join(relative_directory)
+        };
+        let output = self.run_proton_drive(
+            "list",
+            &[
+                OsString::from("filesystem"),
+                OsString::from("list"),
+                OsString::from("--json"),
+                remote_directory.as_os_str().to_os_string(),
+            ],
+            self.command_policy.list_attempts,
+        )?;
+        if !output.status.success() {
+            return Err(boxed_error(format!(
+                "proton-drive list failed for {}: {}",
+                remote_directory.display(),
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let stdout = String::from_utf8(output.stdout)?;
+        // Non-recursive: `parse_remote_listing` over a single directory's JSON yields that
+        // directory's immediate entries, which is all the resolver needs to locate the changed
+        // node among its siblings.
+        Ok(parse_remote_listing(&stdout, remote_root, relative_directory)?.into_entities())
     }
 
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
