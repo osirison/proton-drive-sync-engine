@@ -25,7 +25,8 @@ cargo test --all-targets --all-features
 cargo test sync::tests          # planner unit tests (src/sync.rs)
 cargo test proton::tests        # remote JSON parsing / CLI wrapper
 cargo test events::tests        # volume-events delta parsing + EventsClient 401/refresh logic
-cargo test daemon::tests        # reconciliation with injected fake ProtonClient
+cargo test reconstruct::tests   # base ⊕ delta remote-map reconstruction (event-driven)
+cargo test daemon::tests        # reconciliation with injected fake ProtonClient + fake EventSource
 cargo test --test dry_run_cli   # integration test in tests/
 cargo test --test ipc_cli
 cargo test --test example_assets
@@ -53,6 +54,18 @@ PROTON_SYNC_EVENTS_VOLUME=<volumeId> \
 # Needs the desktop keyring unlocked and DBUS_SESSION_BUS_ADDRESS set.
 ```
 
+**Event-driven reconcile id-identity gate (`tests/events_identity_live.rs`).** A `#[ignore]` HARD
+GATE that must pass on a real account **before enabling `events_driven`**: it proves a stored
+`proton_id` (composed `volumeId~nodeId`) equals `events::node_uid(volume, LinkID)` for the same
+node — the bridge the incremental resolver relies on. A read-only check verifies the composed-id
+round trip and volume derivation; an opt-in write round trip (`PROTON_SYNC_LIVE_WRITE=1`) uploads a
+probe, matches its live `Created` event, then deletes it.
+
+```bash
+PROTON_SYNC_EVENTS_VOLUME=<volumeId> PROTON_SYNC_LIVE_REMOTE_ROOT=/Drive/RemoteFolder \
+  cargo test --test events_identity_live -- --ignored --nocapture
+```
+
 ## Architecture
 
 The engine reconciles **three sources of truth** into a plan, then executes it:
@@ -66,8 +79,9 @@ Data flow: **scan → `sync::plan_sync` → execute actions → commit index**. 
 ### Module responsibilities
 
 - `src/sync.rs` — **pure** planner. `plan_sync` produces `Vec<PlannedAction>` with no I/O. Bootstrap (empty index) vs ongoing logic are separate; ongoing decisions come from a `(local_delta, remote_delta)` matrix in `plan_ongoing_action`. Also owns conflict-sidecar naming (`.proton-cloud` convention).
-- `src/daemon.rs` — the runtime. `run()` is a `tokio::select!` loop over filesystem-watch events (`notify`), IPC connections, a periodic scan interval, and shutdown signals. `reconcile_blocking_inner` executes the plan and is where all side effects happen. Holds an advisory lockfile (`LockGuard`) to prevent duplicate instances.
-- `src/proton.rs` — `ProtonClient` trait + `ProtonDriveClient` impl that shells out to the `proton-drive` executable. Parses the tree-shaped remote JSON (nodes may nest under `children`/`entries`/`files`). Extracts SHA-1 from `activeRevision.claimedDigests.sha1` when present. `CommandPolicy` governs per-command timeout and list retry attempts.
+- `src/daemon.rs` — the runtime. `run()` is a `tokio::select!` loop over filesystem-watch events (`notify`), IPC connections, a periodic scan interval, an (opt-in) faster events-poll interval, and shutdown signals. `reconcile_blocking_inner` dispatches between `bootstrap_reconcile` (full-tree snapshot, the default) and `try_incremental_reconcile` (event-driven, O(changes)); both funnel side effects + the single post-success commit through `execute_plan_and_commit`. The event cursor advances **only** inside that commit, and only when `events_driven` is on (default off = byte-identical to the snapshot path). Holds an advisory lockfile (`LockGuard`) to prevent duplicate instances.
+- `src/reconstruct.rs` — **pure** `reconstruct_remote(base ⊕ delta)`: overlays a volume-event delta onto the last-known remote view (the baseline `file_index`) to hand the planner a *complete* remote map without a full walk. Removals (delete / `Updated`+`trashed`) resolve from the baseline; created/updated nodes resolve via an injected `RemoteChangeResolver` (a targeted parent list); anything unresolvable returns `Reconstruction::FallbackToSnapshot` so the daemon re-bootstraps rather than plan against an incomplete map. Selective-sync filters apply to the delta.
+- `src/proton.rs` — `ProtonClient` trait + `ProtonDriveClient` impl that shells out to the `proton-drive` executable. Parses the tree-shaped remote JSON (nodes may nest under `children`/`entries`/`files`). Extracts SHA-1 from `activeRevision.claimedDigests.sha1` when present. `CommandPolicy` governs per-command timeout and list retry attempts. `list_directory` is the non-recursive, single-directory list used for targeted event resolution (the O(1) sibling of the O(folders) BFS).
 - `src/events.rs` — **remote change detection** via Proton's volume event stream (the O(changes) alternative to the O(folders) `proton.rs` full walk). Pure, transport-agnostic: `parse_volume_events` normalizes the cleartext event delta (`RemoteChange`: created/updated/deleted + `trashed` flag — note a *trash* is `Updated`+`trashed`, not `Deleted`), and `EventsClient<T: HttpTransport, S: SessionProvider>` fetches it, refreshing once on `401`. Detection needs only a session (no decryption); the concrete HTTP transport and session provider (an independent forked session) are injected, so the crate ships no networking dependency. See `docs/adr/0001-*`.
 - `src/index.rs` — SQLite schema (`file_index` table + `remote_event_cursor`), local directory scanning, SHA-1 hashing, `ScanOptions` (include/exclude globs + ignore rules), and record CRUD. For event-driven reconcile it also persists the per-scope events cursor (`EventCursor` load/store/clear) and resolves a remote node id back to a local path (`path_for_proton_id`, keyed by the stored `proton_id` = composed `volumeId~nodeId`; bridge an event's raw `LinkID` with `events::node_uid`).
 - `src/session.rs` — concrete impls of the `events` seams for the **current CLI-session-reuse** approach: `CliKeyringSession` (a `SessionProvider` that reuses the logged-in `proton-drive` CLI's session from the OS keyring via `secret-tool`; `refresh` re-reads the keyring rather than owning a token refresh) and `CurlHttpTransport` (a dependency-free `HttpTransport` shelling `curl`). Independent (browser-forked) auth is deferred by decision — see `docs/adr/0001-*`.
@@ -82,6 +96,7 @@ Data flow: **scan → `sync::plan_sync` → execute actions → commit index**. 
 - **Path-safety at boundaries.** Every relative path from an external source (remote listing, local scan, conflict target) must pass `validate_relative_path` / `safe_local_path` before being joined onto a root. Absolute, `..`, and prefix components are rejected to prevent root escape. When adding a boundary that accepts external paths, guard it and add a test there.
 - **Non-destructive on unknown digests.** When a remote file exists but exposes no usable SHA-1, `remote_file_delta` returns `FileDelta::Unknown` and the planner avoids destructive actions (see the `Unknown` match arms in `plan_ongoing_action`). Preserve this conservatism.
 - **Selective-sync filters apply everywhere.** Include/exclude globs (`ScanOptions`) filter local files, remote files, *and* base-index records before planning, so excluded records are never purged as "missing." Conflict sidecars and the index DB itself are always ignored.
+- **Startup snapshots first (event-driven).** The first reconcile after process startup always full-scans, never an incremental pass — `incremental_passes_since_full_scan` is seeded at `events_full_scan_every` in the constructor. A fresh process has an empty `pending_changes` (`notify` does not replay pre-existing files), so an incremental pass would idle-skip a file edited while the daemon was down. Do not reset that counter to 0 at construction. (Guard: `first_reconcile_after_startup_full_scans_even_with_a_persisted_cursor`.)
 
 ### Testing pattern
 

@@ -13,6 +13,7 @@ pub mod index;
 pub mod ipc;
 pub mod paths;
 pub mod proton;
+pub mod reconstruct;
 pub mod session;
 pub mod sync;
 
