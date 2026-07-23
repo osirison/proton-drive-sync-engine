@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%" role="img" aria-label="Proton Drive Sync Engine">
+  <defs>
+    <!-- Brand gradients -->
+    <linearGradient id="orbit-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E55B2B" />
+      <stop offset="100%" stop-color="#F59E0B" />
+    </linearGradient>
+    <linearGradient id="accent-grad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06B6D4" />
+      <stop offset="100%" stop-color="#3B82F6" />
+    </linearGradient>
+  </defs>
+
+  <!-- Outer protective hexagon container -->
+  <polygon points="64,10 110,36 110,92 64,118 18,92 18,36"
+           fill="none"
+           stroke="url(#orbit-grad)"
+           stroke-width="7"
+           stroke-linejoin="round"/>
+
+  <!-- Right sync arc: curves from top to bottom through the far right,
+       radius/endpoints chosen so the arc is tangent-continuous with its arrowhead -->
+  <path d="M 70.99,37.92 A 27,27 0 0,1 70.99,90.08"
+        fill="none"
+        stroke="url(#orbit-grad)"
+        stroke-width="7"
+        stroke-linecap="round"/>
+  <polygon points="63.26,92.15 72.21,83.03 75.57,95.58" fill="#F59E0B"/>
+
+  <!-- Left sync arc: mirror of the right arc, curving bottom to top through the far left -->
+  <path d="M 57.01,90.08 A 27,27 0 0,1 57.01,37.92"
+        fill="none"
+        stroke="url(#accent-grad)"
+        stroke-width="7"
+        stroke-linecap="round"/>
+  <polygon points="64.74,35.85 55.79,44.97 52.43,32.42" fill="#06B6D4"/>
+
+  <!-- Center data node: the local index anchoring the two sync directions -->
+  <circle cx="64" cy="64" r="8" fill="#1E293B" stroke="url(#orbit-grad)" stroke-width="3"/>
+</svg>
