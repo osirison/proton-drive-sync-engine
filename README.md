@@ -5,6 +5,8 @@ description: Developer and user guide for the Rust Proton Drive bidirectional sy
 
 ## Proton Drive Sync Engine
 
+<img src="assets/icon.svg" alt="Proton Drive Sync Engine icon" width="96" height="96">
+
 `proton-drive-sync-engine` is a Rust prototype for bidirectional file synchronization between a local folder and Proton Drive. It is split into a long-running daemon, `proton-syncd`, and a small control CLI, `proton-sync`.
 
 The project is designed as a focused sync core: local filesystem scanning, Proton Drive CLI integration, SQLite-backed sync state, Unix socket IPC, and deterministic sync planning live in separate modules so behavior can be tested and evolved safely.
