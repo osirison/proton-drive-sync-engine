@@ -185,6 +185,14 @@ impl<C: ProtonClient> Daemon<C> {
             Vec::new()
         });
 
+        // Force a full-tree snapshot on the *first* reconcile after startup (the design-note
+        // backstop). A fresh process has an empty `pending_changes` — `notify` never replays
+        // pre-existing files — so an incremental pass would idle-skip a local file that was edited
+        // while the daemon was down, stranding it until the periodic K-floor. Seeding the counter
+        // at the resync threshold makes `should_try_incremental` false on the first pass, so it
+        // snapshots (the market-data "get truth first" step), then resets the counter to 0 and
+        // streams from there.
+        let incremental_passes_since_full_scan = config.events_full_scan_every;
         let daemon = Self {
             config,
             connection,
@@ -201,7 +209,7 @@ impl<C: ProtonClient> Daemon<C> {
             status_history,
             ipc_io_timeout: IPC_IO_TIMEOUT,
             event_source,
-            incremental_passes_since_full_scan: 0,
+            incremental_passes_since_full_scan,
             _lock_guard: lock_guard,
         };
         daemon.write_metrics_snapshot()?;
@@ -491,6 +499,11 @@ impl<C: ProtonClient> Daemon<C> {
         if self.incremental_passes_since_full_scan >= self.config.events_full_scan_every {
             return false;
         }
+        // Safe degradation: if no base record carries a composed `proton_id` yet — a brand-new sync
+        // that has recorded nothing, or a remote that is entirely Proton-native (unsupported files
+        // get no index row) — the volume cannot be derived and the daemon stays on full-tree walks
+        // (exactly today's behavior). It self-heals the moment any supported file is synced+recorded.
+        // Tracked as #32 (derive the volume from the snapshot for the gate too).
         let Some(volume) = derive_volume_id(base_records) else {
             return false;
         };
@@ -4082,6 +4095,8 @@ mod tests {
         )
         .expect("seed file record");
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        // Simulate the mandatory startup bootstrap having already run, so this pass streams.
+        daemon.incremental_passes_since_full_scan = 0;
 
         daemon.reconcile_blocking().expect("incremental reconcile");
 
@@ -4138,6 +4153,8 @@ mod tests {
         )
         .expect("seed keep record");
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        // Simulate the mandatory startup bootstrap having already run, so this pass streams.
+        daemon.incremental_passes_since_full_scan = 0;
         // Make the pass non-idle so it scans + plans the failing upload.
         daemon.pending_changes.insert(PathBuf::from("new.txt"));
 
@@ -4212,6 +4229,8 @@ mod tests {
         .expect("seed keep record");
         // The excluded parent is not indexed, forcing resolution via the root listing.
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        // Simulate the mandatory startup bootstrap having already run, so this pass streams.
+        daemon.incremental_passes_since_full_scan = 0;
 
         daemon.reconcile_blocking().expect("incremental reconcile");
 
@@ -4263,6 +4282,9 @@ mod tests {
         )
         .expect("seed keep record");
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        // Simulate the mandatory startup bootstrap having already run, so this pass streams
+        // (and then falls back to a snapshot for the reason under test, not the startup floor).
+        daemon.incremental_passes_since_full_scan = 0;
 
         daemon
             .reconcile_blocking()
@@ -4302,6 +4324,9 @@ mod tests {
         )
         .expect("seed keep record");
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        // Simulate the mandatory startup bootstrap having already run, so this pass streams
+        // (and then falls back to a snapshot for the reason under test, not the startup floor).
+        daemon.incremental_passes_since_full_scan = 0;
 
         daemon
             .reconcile_blocking()
@@ -4361,6 +4386,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn first_reconcile_after_startup_full_scans_even_with_a_persisted_cursor() {
+        // Restart regression. The daemon was down, a synced file was edited locally, then the
+        // daemon restarts with its event cursor still persisted. `notify` never replays the
+        // pre-existing file, so `pending_changes` is empty and the remote delta is empty — a naive
+        // incremental pass would take the idle branch and strand the edit until the K-floor
+        // (~events_full_scan_every poll intervals later). The startup floor must override the
+        // persisted cursor and force a snapshot ("get truth first") on the very first pass.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let old = sha1_bytes(b"keep");
+        let edited = sha1_bytes(b"edited while the daemon was down");
+        // The on-disk file already differs from the baseline (it was edited while down).
+        fs::write(
+            local_root.join("keep.txt"),
+            b"edited while the daemon was down",
+        )
+        .expect("local file");
+
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", old.as_str()),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+
+        // A persisted cursor + a synced baseline is everything an incremental pass needs. Crucially
+        // the counter is NOT reset here (unlike the steady-state tests): this is a fresh-process
+        // first pass, so the startup floor must still force a full scan.
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), old.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+
+        daemon.reconcile_blocking().expect("startup reconcile");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the first reconcile after startup must full-scan, not idle-skip on a persisted cursor"
+        );
+        // The edit was detected and uploaded: the baseline record now carries the new digest
+        // (commit-after-side-effects), proving the change was not stranded until the K-floor.
+        let record = get_record(&daemon.connection, Path::new("keep.txt"))
+            .expect("get record")
+            .expect("keep.txt still recorded");
+        assert_eq!(
+            record.sha1_hash,
+            Some(edited),
+            "the locally-edited file must sync on the first pass, not wait for the K-floor"
+        );
+    }
+
     fn directory_record(path: &str, proton_id: Option<&str>) -> FileRecord {
         FileRecord {
             file_path: PathBuf::from(path),
@@ -4370,6 +4458,279 @@ mod tests {
             sha1_hash: None,
             proton_id: proton_id.map(ToOwned::to_owned),
             sync_status: SyncStatus::Synced,
+        }
+    }
+
+    /// Wraps a real [`ProtonDriveClient`], delegating every call but counting the two listing
+    /// shapes so a live test can prove *how* the remote was read: `full_walks` is the O(folders)
+    /// bootstrap/snapshot walk, `directory_lists` is the O(1) targeted resolution the incremental
+    /// path uses. Exactly one full walk across a whole run means the create was found purely by the
+    /// event stream, with no fallback snapshot.
+    struct WalkCountingClient {
+        inner: ProtonDriveClient,
+        full_walks: Arc<AtomicUsize>,
+        directory_lists: Arc<AtomicUsize>,
+    }
+
+    impl ProtonClient for WalkCountingClient {
+        fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            self.inner.list(remote_root)
+        }
+        fn list_entities(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            self.inner.list_entities(remote_root)
+        }
+        fn list_entities_or_missing_root(
+            &self,
+            remote_root: &Path,
+        ) -> AppResult<RemoteListingStatus> {
+            self.full_walks.fetch_add(1, Ordering::SeqCst);
+            self.inner.list_entities_or_missing_root(remote_root)
+        }
+        fn list_directory(
+            &self,
+            remote_root: &Path,
+            relative_directory: &Path,
+        ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            self.directory_lists.fetch_add(1, Ordering::SeqCst);
+            self.inner.list_directory(remote_root, relative_directory)
+        }
+        fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
+            self.inner.ensure_root_directory(remote_root)
+        }
+        fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
+            self.inner.ensure_directory(remote_root, relative_path)
+        }
+        fn upload(
+            &self,
+            local_path: &Path,
+            remote_root: &Path,
+            relative_path: &Path,
+        ) -> AppResult<()> {
+            self.inner.upload(local_path, remote_root, relative_path)
+        }
+        fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()> {
+            self.inner.download(remote_path, destination)
+        }
+        fn delete(&self, remote_path: &Path) -> AppResult<()> {
+            self.inner.delete(remote_path)
+        }
+        fn rename_or_move(
+            &self,
+            remote_root: &Path,
+            old_relative_path: &Path,
+            new_relative_path: &Path,
+        ) -> AppResult<()> {
+            self.inner
+                .rename_or_move(remote_root, old_relative_path, new_relative_path)
+        }
+        fn install_cancel_flag(&mut self, cancel_flag: Arc<AtomicBool>) {
+            self.inner.install_cancel_flag(cancel_flag);
+        }
+    }
+
+    /// **Phase 4 — flag-on live e2e.** Drives a real [`Daemon`] (real CLI client + real event
+    /// source) through the market-data recovery shape end to end: bootstrap ("get truth" — one
+    /// full-tree snapshot that captures the replay cursor), then a *remote* create the daemon must
+    /// discover from the volume event stream alone and download via the O(1) targeted path — with
+    /// **zero** further full walks. Also characterizes the listing-lag race the resolver is exposed
+    /// to (a just-created node briefly absent from its parent listing): if the create only lands
+    /// after a fallback snapshot, `full_walks` climbs past 1 and this test says so.
+    ///
+    /// ```bash
+    /// PROTON_SYNC_EVENTS_VOLUME=<volumeId> \
+    /// PROTON_SYNC_LIVE_REMOTE_ROOT=/my-files/<disposable-folder> \
+    /// PROTON_SYNC_LIVE_WRITE=1 \
+    ///   cargo test --lib daemon::tests::live_event_driven_reconcile -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "live e2e: real CLI + keyring; set PROTON_SYNC_EVENTS_VOLUME, a disposable PROTON_SYNC_LIVE_REMOTE_ROOT, and PROTON_SYNC_LIVE_WRITE=1"]
+    fn live_event_driven_reconcile_downloads_a_remote_create_without_a_full_walk() {
+        if std::env::var("PROTON_SYNC_LIVE_WRITE").ok().as_deref() != Some("1") {
+            eprintln!(
+                "skipping live e2e: set PROTON_SYNC_LIVE_WRITE=1 (uploads then trashes a probe)"
+            );
+            return;
+        }
+        // Surface the daemon's own tracing (fallback reasons, plan summaries) under --nocapture.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_test_writer()
+            .try_init();
+        let volume =
+            std::env::var("PROTON_SYNC_EVENTS_VOLUME").expect("set PROTON_SYNC_EVENTS_VOLUME");
+        let remote_root = PathBuf::from(
+            std::env::var("PROTON_SYNC_LIVE_REMOTE_ROOT")
+                .expect("set PROTON_SYNC_LIVE_REMOTE_ROOT"),
+        );
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let mut config = test_config(directory.path(), &local_root);
+        config.remote_root = remote_root.clone();
+        config.events_driven = true;
+        // Keep the periodic resync out of reach so a downloaded create can only be explained by the
+        // incremental (event-stream) path, never a forced full walk.
+        config.events_full_scan_every = 1000;
+
+        let full_walks = Arc::new(AtomicUsize::new(0));
+        let directory_lists = Arc::new(AtomicUsize::new(0));
+        let client = WalkCountingClient {
+            inner: ProtonDriveClient::new(config.proton_cli.clone()),
+            full_walks: Arc::clone(&full_walks),
+            directory_lists: Arc::clone(&directory_lists),
+        };
+        // A separate, UNCOUNTED client used only to poll for propagation, so waiting on the
+        // eventually-consistent listing never inflates the targeted-list counter the assertions
+        // rely on.
+        let watcher = ProtonDriveClient::new(config.proton_cli.clone());
+        let event_source =
+            build_event_source(&config).expect("build a real event source from the CLI keyring");
+        let mut daemon = Daemon::with_client_and_event_source(config, client, Some(event_source))
+            .expect("daemon");
+
+        // Per-run unique names keep the test hermetic: a prior run's node that is trashed but still
+        // briefly listed (server lag) can never collide with this run's.
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let seed_rel = PathBuf::from(format!("proton-sync-e2e-seed-{unique}.txt"));
+        let probe_rel = PathBuf::from(format!("proton-sync-e2e-probe-{unique}.txt"));
+        let seed_scratch = std::env::temp_dir().join(seed_rel.file_name().unwrap());
+        let probe_scratch = std::env::temp_dir().join(probe_rel.file_name().unwrap());
+
+        // Phase A0 — seed a SUPPORTED (downloadable) file so the bootstrap indexes a record carrying
+        // a composed proton_id. Event-driven mode derives the volume from *base* records, so without
+        // one the gate never engages and every pass silently full-walks (safe, but not what we are
+        // exercising). Wait until it is listable so the bootstrap snapshot includes it.
+        fs::write(&seed_scratch, b"e2e seed payload").expect("write seed scratch");
+        daemon
+            .proton
+            .upload(&seed_scratch, &remote_root, &seed_rel)
+            .expect("upload the seed");
+        assert!(
+            wait_until_listed(&watcher, &remote_root, &seed_rel, Duration::from_secs(60)),
+            "the seed file must become listable before bootstrap"
+        );
+
+        // Phase A — bootstrap ("get truth"): the startup floor forces exactly one full-tree
+        // snapshot, which downloads + records the seed (base now carries a proton_id → the volume is
+        // derivable), captures the replay cursor, and resets the resync counter.
+        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "bootstrap performs exactly one full-tree walk"
+        );
+        assert_eq!(
+            daemon.incremental_passes_since_full_scan, 0,
+            "bootstrap resets the resync counter"
+        );
+        assert_eq!(
+            derive_volume_id(&load_index(&daemon.connection).expect("load index")),
+            Some(volume.as_str()),
+            "the seed gave the base index a composed proton_id so the incremental gate can engage"
+        );
+        let bootstrap_cursor = load_event_cursor(&daemon.connection, &volume)
+            .expect("load cursor")
+            .expect("bootstrap captured a cursor")
+            .last_event_id;
+        eprintln!("bootstrap OK: one full walk, cursor = {bootstrap_cursor}");
+
+        // Phase B — make a REMOTE create the daemon can only learn about from the event stream.
+        fs::write(&probe_scratch, b"event-driven e2e probe payload").expect("write probe scratch");
+        daemon
+            .proton
+            .upload(&probe_scratch, &remote_root, &probe_rel)
+            .expect("upload the probe");
+        // Readiness gate (raw, uncounted): wait until the probe is listable so the targeted resolve
+        // cannot hit the listing-lag race. This isolates the wiring proof (does the real
+        // event→resolve→download chain work) from propagation timing (which this test must not gate
+        // on against an eventually-consistent service).
+        assert!(
+            wait_until_listed(&watcher, &remote_root, &probe_rel, Duration::from_secs(60)),
+            "the probe must become listable within the propagation window"
+        );
+
+        // Phase C — stream: reconcile until the probe is downloaded. Event delivery can still lag the
+        // listing by a beat, so an early pass may be idle; none of these passes is a full walk.
+        let local_probe = local_root.join(&probe_rel);
+        let dir_lists_before = directory_lists.load(Ordering::SeqCst);
+        let mut picked_up_on_pass = None;
+        for pass in 1..=10 {
+            daemon.reconcile_blocking().expect("incremental reconcile");
+            if local_probe.exists() {
+                picked_up_on_pass = Some(pass);
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(3));
+        }
+
+        // Snapshot the observations, then clean up BOTH nodes BEFORE asserting so a failure never
+        // leaves the account dirty.
+        let walks = full_walks.load(Ordering::SeqCst);
+        let dir_lists_during = directory_lists.load(Ordering::SeqCst) - dir_lists_before;
+        let final_counter = daemon.incremental_passes_since_full_scan;
+        let final_cursor = load_event_cursor(&daemon.connection, &volume)
+            .ok()
+            .flatten()
+            .map(|cursor| cursor.last_event_id);
+        let _ = daemon.proton.delete(&remote_root.join(&probe_rel));
+        let _ = daemon.proton.delete(&remote_root.join(&seed_rel));
+        let _ = fs::remove_file(&probe_scratch);
+        let _ = fs::remove_file(&seed_scratch);
+
+        let pass = picked_up_on_pass
+            .expect("the remote-created probe must be downloaded by an incremental pass");
+        assert!(
+            dir_lists_during >= 1,
+            "the incremental phase must resolve the create via a targeted directory listing"
+        );
+        assert_eq!(
+            walks, 1,
+            "the create must be found via the event stream with NO fallback full walk"
+        );
+        assert_ne!(
+            final_cursor.as_deref(),
+            Some(bootstrap_cursor.as_str()),
+            "the cursor must advance past the create event"
+        );
+        eprintln!(
+            "live e2e OK: remote create downloaded on incremental pass {pass}; \
+             full_walks={walks}, targeted_lists_during_stream={dir_lists_during}, \
+             resync_counter={final_counter}, cursor {bootstrap_cursor} -> {final_cursor:?}"
+        );
+    }
+
+    /// Polls a remote directory (raw, uncounted) until `relative` appears in the root listing or the
+    /// timeout elapses. Used by the live e2e to wait out the CLI's eventual-consistency lag without
+    /// disturbing the targeted-list counter under test.
+    fn wait_until_listed(
+        client: &ProtonDriveClient,
+        remote_root: &Path,
+        relative: &Path,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Ok(listing) = client.list_directory(remote_root, Path::new(""))
+                && listing.contains_key(relative)
+            {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_secs(2));
         }
     }
 }

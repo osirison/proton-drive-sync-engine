@@ -1,9 +1,48 @@
 # Design note — event-driven reconcile (#21)
 
-- **Status:** Proposed (design; implementation staged below)
-- **Date:** 2026-07-21
+- **Status:** Implemented & verified (opt-in `events_driven`, default **off**)
+- **Date:** 2026-07-21 (design); verified 2026-07-23
 - **Issue:** #21 · Epic #16 · builds on #19 (cursor + `path_for_proton_id` + `events::node_uid`),
   #20 (`EventsClient`, `CliKeyringSession`, `CurlHttpTransport`) · ADR `docs/adr/0001-*`
+
+## Implementation status (2026-07-23)
+
+Both stages landed together in `src/reconstruct.rs` (pure `reconstruct_remote` = `base ⊕ delta`,
+Stage 2's "reconstruct-and-plan"), `src/daemon.rs` (bootstrap vs `try_incremental_reconcile`
+split, dedicated events-poll `select!` arm), `src/events.rs` (`EventSource`), `src/proton.rs`
+(`list_directory`), plus the `events_driven` / `events_full_scan_every` config. Verified in strict
+order before enabling:
+
+1. **build / clippy / full test suite** — green (incl. `reconstruct` unit tests + daemon
+   fake-`EventSource` tests).
+2. **Live id-identity HARD GATE** (`tests/events_identity_live.rs`) — passed read-only **and** the
+   write round-trip: a stored composed `proton_id` equals `node_uid(volume, event.LinkID)` for the
+   same node against the real account. The stream-only design's core identity holds.
+3. **Adversarial spine review** — found and fixed the **startup-floor regression** (below); the
+   commit-after-side-effects, cursor-before-snapshot, idle-skip, and off-is-identical invariants
+   otherwise hold.
+4. **Flag-on live e2e** (`daemon::tests::live_event_driven_reconcile_*`, `#[ignore]`) — a real
+   remote create was discovered from the event stream alone, resolved via **one targeted directory
+   listing**, and downloaded with **zero** full-tree walks beyond the bootstrap; the cursor advanced.
+
+### Fix applied during verification — startup floor
+
+The first reconcile *after process startup* must full-scan, not go incremental: a fresh process has
+an empty `pending_changes` (`notify` never replays pre-existing files), so an incremental pass would
+idle-skip a file edited **while the daemon was down** until the K-floor. `incremental_passes_since_full_scan`
+is now seeded at `events_full_scan_every` so the first pass snapshots ("get truth"), then streams.
+Guard: `daemon::tests::first_reconcile_after_startup_full_scans_even_with_a_persisted_cursor`.
+
+### Known limitations (filed as follow-ups, none is data loss)
+
+- **#30** — a nested `Created` whose indexed-parent listing lags returns `Ok(None)` → dropped +
+  cursor-advanced → deferred to the K-floor (bounded latency). Top-level creates re-anchor instead;
+  the two paths should be made consistent.
+- **#31** — a node listed but trashed/deleted before its download fails the whole reconcile pass
+  (TOCTOU); self-heals next pass but should be a per-node skip.
+- **#32** — the incremental gate derives the volume from *base* records, so an all-Proton-native (or
+  not-yet-recorded) remote can't engage the gate and safely stays on full walks even though a cursor
+  exists.
 
 ## Goal
 

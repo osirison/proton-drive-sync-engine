@@ -96,6 +96,7 @@ Data flow: **scan → `sync::plan_sync` → execute actions → commit index**. 
 - **Path-safety at boundaries.** Every relative path from an external source (remote listing, local scan, conflict target) must pass `validate_relative_path` / `safe_local_path` before being joined onto a root. Absolute, `..`, and prefix components are rejected to prevent root escape. When adding a boundary that accepts external paths, guard it and add a test there.
 - **Non-destructive on unknown digests.** When a remote file exists but exposes no usable SHA-1, `remote_file_delta` returns `FileDelta::Unknown` and the planner avoids destructive actions (see the `Unknown` match arms in `plan_ongoing_action`). Preserve this conservatism.
 - **Selective-sync filters apply everywhere.** Include/exclude globs (`ScanOptions`) filter local files, remote files, *and* base-index records before planning, so excluded records are never purged as "missing." Conflict sidecars and the index DB itself are always ignored.
+- **Startup snapshots first (event-driven).** The first reconcile after process startup always full-scans, never an incremental pass — `incremental_passes_since_full_scan` is seeded at `events_full_scan_every` in the constructor. A fresh process has an empty `pending_changes` (`notify` does not replay pre-existing files), so an incremental pass would idle-skip a file edited while the daemon was down. Do not reset that counter to 0 at construction. (Guard: `first_reconcile_after_startup_full_scans_even_with_a_persisted_cursor`.)
 
 ### Testing pattern
 
