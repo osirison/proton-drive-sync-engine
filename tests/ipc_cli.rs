@@ -269,6 +269,9 @@ mod unix_tests {
                 .arg(proton_cli)
                 .arg("--scan-interval-secs")
                 .arg("60")
+                // Keep these process-level tests on the full-tree snapshot path (the default is
+                // now event-driven, which would try to read the CLI keyring session at startup).
+                .arg("--no-events-driven")
                 .env("RUST_LOG", "error")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -300,6 +303,9 @@ mod unix_tests {
                 .arg(proton_cli)
                 .arg("--scan-interval-secs")
                 .arg("60")
+                // Keep these process-level tests on the full-tree snapshot path (the default is
+                // now event-driven, which would try to read the CLI keyring session at startup).
+                .arg("--no-events-driven")
                 .arg("--proton-timeout-secs")
                 .arg(proton_timeout_secs.to_string())
                 .env("RUST_LOG", "error")

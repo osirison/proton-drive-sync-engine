@@ -42,8 +42,13 @@ struct Cli {
     #[arg(long = "exclude", value_name = "GLOB")]
     exclude_patterns: Vec<String>,
     /// Detect remote changes from Proton's volume event stream instead of a full-tree walk.
+    /// This is the default; the flag is kept for explicitness and to override a config-file
+    /// `events_driven = false`.
     #[arg(long = "events-driven")]
     events_driven: bool,
+    /// Opt out of event-driven detection and use full-tree-walk-only remote change detection.
+    #[arg(long = "no-events-driven", conflicts_with = "events_driven")]
+    no_events_driven: bool,
     /// Force a full-tree resync every N incremental passes (event-driven mode only).
     #[arg(long = "events-full-scan-every", value_name = "N")]
     events_full_scan_every: Option<u64>,
@@ -119,6 +124,7 @@ impl From<Cli> for DaemonConfigInput {
             include_patterns: cli.include_patterns,
             exclude_patterns: cli.exclude_patterns,
             events_driven: cli.events_driven,
+            no_events_driven: cli.no_events_driven,
             events_full_scan_every: cli.events_full_scan_every,
         }
     }

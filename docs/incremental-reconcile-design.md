@@ -1,6 +1,9 @@
 # Design note — event-driven reconcile (#21)
 
-- **Status:** Implemented & verified (opt-in `events_driven`, default **off**)
+- **Status:** Implemented & verified. `events_driven` is now **on by default** (opt out with
+  `--no-events-driven` / `events_driven = false`). It degrades to full-tree snapshots at runtime
+  when the reused CLI session/keyring is unavailable. Note the pre-enable gate below
+  (`events_identity_live.rs`) still governs correctness on a real account.
 - **Date:** 2026-07-21 (design); verified 2026-07-23
 - **Issue:** #21 · Epic #16 · builds on #19 (cursor + `path_for_proton_id` + `events::node_uid`),
   #20 (`EventsClient`, `CliKeyringSession`, `CurlHttpTransport`) · ADR `docs/adr/0001-*`
