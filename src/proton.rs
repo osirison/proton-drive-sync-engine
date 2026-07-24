@@ -975,13 +975,20 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
 /// Joins a [`spawn_pipe_reader`] thread, surfacing a read error or a reader-thread panic as an
 /// `AppResult`. Only called once the child has exited (so the read is already complete and the
 /// join returns promptly); the timeout/cancel paths deliberately drop the handle without joining.
+///
+/// A `None` handle is an invariant violation (`spawn_once` always sets stdout/stderr to
+/// `Stdio::piped()`, so `child.stdout`/`stderr` are always present) and is reported as an error
+/// rather than silently yielding empty output — the latter would only resurface as a confusing
+/// downstream JSON parse failure.
 fn join_pipe_reader(reader: Option<JoinHandle<io::Result<Vec<u8>>>>) -> AppResult<Vec<u8>> {
-    match reader {
-        Some(handle) => match handle.join() {
-            Ok(result) => Ok(result?),
-            Err(_) => Err(boxed_error("proton-drive output reader thread panicked")),
-        },
-        None => Ok(Vec::new()),
+    let handle = reader.ok_or_else(|| {
+        boxed_error(
+            "proton-drive child output pipe was not captured (expected a piped stdout/stderr)",
+        )
+    })?;
+    match handle.join() {
+        Ok(result) => Ok(result?),
+        Err(_) => Err(boxed_error("proton-drive output reader thread panicked")),
     }
 }
 
