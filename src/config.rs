@@ -29,6 +29,7 @@ pub struct DaemonConfigInput {
     pub include_patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
     pub events_driven: bool,
+    pub no_events_driven: bool,
     pub events_full_scan_every: Option<u64>,
 }
 
@@ -73,6 +74,18 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         true
     } else {
         file_config.dry_run.unwrap_or(false)
+    };
+    // Event-driven ("snapshot + stream") remote sync is the default. `--no-events-driven` (or
+    // `events_driven = false` in the config file) opts back into full-tree-walk-only detection.
+    // Precedence mirrors `dry_run`: explicit opt-out flag > explicit opt-in flag > file value >
+    // default (on). When the reused CLI session/keyring is unavailable the daemon still degrades
+    // to full-tree snapshots at runtime (see `build_event_source`), so defaulting on is safe.
+    let events_driven = if input.no_events_driven {
+        false
+    } else if input.events_driven {
+        true
+    } else {
+        file_config.events_driven.unwrap_or(true)
     };
     let local_root = input
         .local_root
@@ -126,7 +139,7 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         )?,
         include_patterns: merge_patterns(input.include_patterns, file_config.include_patterns),
         exclude_patterns: merge_patterns(input.exclude_patterns, file_config.exclude_patterns),
-        events_driven: input.events_driven || file_config.events_driven.unwrap_or(false),
+        events_driven,
         events_full_scan_every: input
             .events_full_scan_every
             .or(file_config.events_full_scan_every)
@@ -311,7 +324,7 @@ include = ["config/**"]
             r#"
 local_root = "sync-root"
 remote_root = "/Drive/RemoteFolder"
-events_driven = true
+events_driven = false
 "#,
         )
         .expect("write config");
@@ -323,12 +336,54 @@ events_driven = true
         .expect("runtime config");
 
         assert!(
-            config.events_driven,
-            "events_driven must come from the file"
+            !config.events_driven,
+            "an explicit `events_driven = false` in the file must override the default-on"
         );
         assert_eq!(
             config.events_full_scan_every, DEFAULT_EVENTS_FULL_SCAN_EVERY,
             "an unset periodic-resync interval falls back to the default"
+        );
+    }
+
+    #[test]
+    fn events_driven_defaults_on_when_unset() {
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert!(
+            config.events_driven,
+            "event-driven sync is on by default when neither flag nor config value is set"
+        );
+    }
+
+    #[test]
+    fn explicit_no_events_driven_overrides_default_and_config_file() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "config-root"
+remote_root = "/Drive/Config"
+events_driven = true
+"#,
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            no_events_driven: true,
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert!(
+            !config.events_driven,
+            "--no-events-driven must override both the default-on and a config-file opt-in"
         );
     }
 
