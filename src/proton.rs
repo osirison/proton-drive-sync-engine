@@ -284,6 +284,9 @@ impl ProtonClient for ProtonDriveClient {
         let mut visited = BTreeSet::new();
         let mut pending = vec![PathBuf::new()];
 
+        // Sequential by design: these per-directory `list` calls must NOT be parallelized. The
+        // `proton-drive` CLI is not concurrency-safe (shared SQLite → `SQLITE_BUSY`); see the
+        // concurrency note on `run_proton_drive` and issues #23 / #17.
         while let Some(relative_directory) = pending.pop() {
             if !visited.insert(relative_directory.clone()) {
                 continue;
@@ -753,6 +756,35 @@ impl ProtonDriveClient {
         Ok(None)
     }
 
+    /// Runs a single `proton-drive` subcommand (with `attempts` bounded retries).
+    ///
+    /// ## The CLI is not safe to run concurrently — issue #23
+    ///
+    /// The vendored `proton-drive` CLI keeps shared, writable SQLite cache stores
+    /// (`~/.cache/proton-drive-cli`). Two overlapping invocations race on those stores and one
+    /// aborts with `SQLITE_BUSY: database is locked` — a non-zero exit plus a `====` banner and JS
+    /// stack trace printed to its output, which would then also fail our JSON parse.
+    ///
+    /// The engine never triggers this itself: reconcile is **single-flight** (serialized on
+    /// `&mut self` via `block_in_place` in the daemon `select!` loop) and event polling shells
+    /// `curl` (`session.rs`), not this CLI — so at most one `proton-drive` process runs at a time.
+    /// The only way to reach `SQLITE_BUSY` is an *external* writer of the same cache. On Linux — the
+    /// platform this project targets, precisely because there is no Proton desktop client — that
+    /// reduces to the user running `proton-drive` by hand while the daemon is live. Narrow, but not
+    /// impossible; hence this note rather than a fix.
+    ///
+    /// Defenses already in place, by command class:
+    /// - **Read-only** listings (`list` / `list_directory`) pass `list_attempts` (> 1), so a
+    ///   transient busy crash is retried and usually self-heals.
+    /// - **Mutating** commands (upload/download/trash/rename/move/create-folder) pass `attempts = 1`
+    ///   and are never auto-retried, so a busy crash mid-write fails the reconcile cleanly — no
+    ///   partial commit, because index writes happen only after all side effects succeed — and
+    ///   replans next cycle.
+    ///
+    /// The real fix — one long-lived process owning the cache instead of many short-lived CLI
+    /// spawns fighting over shared SQLite — is the SDK-sidecar tracked in #18. Until then, do **not**
+    /// add engine-side parallelism across `proton-drive` invocations (this is also why #17,
+    /// parallelizing the list BFS, stays deferred).
     fn run_proton_drive(
         &self,
         operation: &str,
