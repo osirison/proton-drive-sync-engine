@@ -158,6 +158,24 @@ mod tests {
     }
 
     #[test]
+    fn conflicting_events_driven_flags_are_rejected_by_cli_parser() {
+        let result = Cli::try_parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--events-driven",
+            "--no-events-driven",
+        ]);
+
+        assert!(
+            result.is_err(),
+            "passing both --events-driven and --no-events-driven must fail"
+        );
+    }
+
+    #[test]
     fn proton_policy_flags_parse_into_config_input() {
         let cli = Cli::parse_from([
             "proton-syncd",
