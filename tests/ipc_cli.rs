@@ -8,7 +8,6 @@ mod unix_tests {
     use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, ExitStatus, Stdio};
-    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
@@ -35,8 +34,15 @@ mod unix_tests {
         assert_eq!(status["status"], "running");
         assert_eq!(status["paused"], false);
         assert!(status["last_error"].is_null());
-        assert!(status["last_plan_summary"].is_null());
-        assert!(status["last_successful_sync_summary"].is_null());
+        // The daemon reconciles once on startup (remote and local are both empty here), so an
+        // empty plan and a matching successful-sync summary are already present before any
+        // manual syncnow.
+        assert_eq!(status["last_plan_summary"]["total"].as_u64(), Some(0));
+        assert_eq!(
+            status["last_successful_sync_summary"]["total"].as_u64(),
+            Some(0)
+        );
+        assert!(status["last_sync_epoch_secs"].as_u64().is_some());
 
         let paused = run_control(&socket_path, "pause");
         assert_eq!(paused["status"], "paused");
@@ -63,10 +69,13 @@ mod unix_tests {
 
         let history = run_control(&socket_path, "history");
         let history = history.as_array().expect("history JSON array");
-        assert_eq!(history.len(), 1);
+        // Two entries: the startup reconcile, then the manual syncnow after resume. (The syncnow
+        // issued while paused is skipped without reconciling, so it records no history entry.)
+        assert_eq!(history.len(), 2);
         assert_eq!(history[0]["message"], "sync completed");
+        assert_eq!(history[1]["message"], "sync completed");
         assert_eq!(
-            history[0]["successful_sync_summary"]["total"].as_u64(),
+            history[1]["successful_sync_summary"]["total"].as_u64(),
             Some(0)
         );
     }
@@ -170,6 +179,11 @@ mod unix_tests {
     // tightly bounded shutdown - not just eventually, or only once its own
     // command timeout kills the stuck CLI process - and that the interruption
     // leaves no partial index state and releases the lockfile.
+    //
+    // The daemon reconciles on startup, so the pre-seeded `blocking.txt` drives the blocking
+    // upload directly (the startup reconcile *is* the blocked sync); no syncnow is needed. This
+    // also exercises the startup path specifically: a SIGINT delivered while the very first
+    // reconcile is stuck must still be latched by the loop's shutdown future and exit cleanly.
     #[test]
     fn sigint_during_blocked_upload_exits_cleanly_without_partial_index_state() {
         let directory = tempdir().expect("tempdir");
@@ -196,12 +210,8 @@ mod unix_tests {
         wait_for_socket(&socket_path, &mut daemon.child);
         let pid = daemon.child.id();
 
-        let (result_tx, result_rx) = mpsc::channel();
-        let syncnow_socket_path = socket_path.clone();
-        thread::spawn(move || {
-            let _ = result_tx.send(run_control(&syncnow_socket_path, "syncnow"));
-        });
-
+        // The startup reconcile's upload is now the blocked call; its marker proves we are wedged
+        // inside the (interruptible) reconcile before the signal is sent.
         let started_marker = PathBuf::from(format!("{}.started", fake_proton_drive.display()));
         wait_for_marker(&started_marker, &mut daemon.child);
 
@@ -212,18 +222,7 @@ mod unix_tests {
             .expect("send SIGINT to daemon");
         assert!(status.success(), "kill -INT should succeed");
 
-        let synced = result_rx
-            .recv_timeout(Duration::from_secs(3))
-            .expect("syncnow should still receive a response once the blocked CLI call times out");
-        assert!(
-            synced["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("sync failed"),
-            "an interrupted upload should be reported as a failed sync: {synced}"
-        );
-
-        let exit_status = wait_for_exit(&mut daemon.child, Duration::from_secs(2))
+        let exit_status = wait_for_exit(&mut daemon.child, Duration::from_secs(4))
             .expect("daemon should exit promptly once it re-observes the already-delivered SIGINT");
         assert!(
             exit_status.success(),
