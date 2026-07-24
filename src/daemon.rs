@@ -46,6 +46,11 @@ const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// the ~30s cadence Proton's own client uses (ADR 0001). Only the incremental (O(changes)) path
 /// runs this often; full-tree snapshots stay on `scan_interval` and the periodic safety resync.
 const EVENTS_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// Dedicated `tracing` target for the per-file upload/download log lines, so operators can filter
+/// or silence the (potentially high-volume, filename-bearing) transfer trace independently of the
+/// daemon's other info-level lifecycle logs — e.g. `RUST_LOG=proton_drive_sync_engine::transfer=warn`
+/// to suppress them, or `=debug` on just this target to isolate them.
+const TRANSFER_LOG_TARGET: &str = "proton_drive_sync_engine::transfer";
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -800,6 +805,7 @@ impl<C: ProtonClient> Daemon<C> {
                         );
                         if spinner.is_none() {
                             info!(
+                                target: TRANSFER_LOG_TARGET,
                                 path = %action.path.display(),
                                 size_bytes = local.file_size,
                                 "uploading file to Proton Drive"
@@ -860,6 +866,7 @@ impl<C: ProtonClient> Daemon<C> {
                     );
                     if spinner.is_none() {
                         info!(
+                            target: TRANSFER_LOG_TARGET,
                             path = %action.path.display(),
                             remote_id,
                             "downloading file from Proton Drive"
