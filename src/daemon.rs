@@ -776,6 +776,11 @@ impl<C: ProtonClient> Daemon<C> {
                             self.proton
                                 .ensure_directory(&self.config.remote_root, parent)?;
                         }
+                        info!(
+                            path = %action.path.display(),
+                            size_bytes = local.file_size,
+                            "uploading file to Proton Drive"
+                        );
                         self.proton.upload(
                             &local.absolute_path,
                             &self.config.remote_root,
@@ -818,6 +823,11 @@ impl<C: ProtonClient> Daemon<C> {
                         continue;
                     };
                     ensure_parent_directory(&destination)?;
+                    info!(
+                        path = %action.path.display(),
+                        remote_id,
+                        "downloading file from Proton Drive"
+                    );
                     self.proton.download(&remote_path, &destination)?;
                     let local_state = local_file_state(&self.config.local_root, &destination)?;
                     let record = FileRecord::from_local(
