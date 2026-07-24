@@ -3205,7 +3205,14 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // Abort and then await the handle so the daemon task is fully torn down (its DB
+        // connection, lockfile, and watcher on `directory` released) before the assertions and
+        // the tempdir cleanup at end of scope — otherwise the aborted task could still be
+        // unwinding, leaking resources and making the suite flaky. The task is idle in its
+        // `select!` loop by now (the download already landed), so the abort takes effect
+        // promptly; the `JoinError::Cancelled` from the abort is expected and ignored.
         handle.abort();
+        let _ = handle.await;
 
         assert!(
             appeared,
