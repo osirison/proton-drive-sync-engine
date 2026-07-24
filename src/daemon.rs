@@ -20,12 +20,14 @@ use crate::sync::{
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +46,11 @@ const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// the ~30s cadence Proton's own client uses (ADR 0001). Only the incremental (O(changes)) path
 /// runs this often; full-tree snapshots stay on `scan_interval` and the periodic safety resync.
 const EVENTS_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// Dedicated `tracing` target for the per-file upload/download log lines, so operators can filter
+/// or silence the (potentially high-volume, filename-bearing) transfer trace independently of the
+/// daemon's other info-level lifecycle logs — e.g. `RUST_LOG=proton_drive_sync_engine::transfer=warn`
+/// to suppress them, or `=debug` on just this target to isolate them.
+const TRANSFER_LOG_TARGET: &str = "proton_drive_sync_engine::transfer";
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -794,6 +801,17 @@ impl<C: ProtonClient> Daemon<C> {
             .map(|action| action.path.clone())
             .collect();
 
+        // Foreground progress: show a live per-file spinner when stderr is a terminal, counting
+        // `[i/N]` through the transfers in this plan. Under systemd/journald stderr is not a
+        // terminal, so `begin_transfer_spinner` returns `None` and each arm falls back to its
+        // `info!` trace line instead (no progress-bar escape codes in the journal).
+        let interactive_progress = std::io::stderr().is_terminal();
+        let transfer_total = plan
+            .iter()
+            .filter(|action| matches!(action.action, SyncAction::Upload | SyncAction::Download))
+            .count();
+        let mut transfer_index = 0usize;
+
         for action in &plan {
             debug!(path = %action.path.display(), action = ?action.action, "executing sync action");
             match action.action {
@@ -806,11 +824,30 @@ impl<C: ProtonClient> Daemon<C> {
                             self.proton
                                 .ensure_directory(&self.config.remote_root, parent)?;
                         }
-                        self.proton.upload(
+                        transfer_index += 1;
+                        let spinner = begin_transfer_spinner(
+                            interactive_progress,
+                            transfer_index,
+                            transfer_total,
+                            "uploading",
+                            &action.path,
+                            Some(local.file_size),
+                        );
+                        if spinner.is_none() {
+                            info!(
+                                target: TRANSFER_LOG_TARGET,
+                                path = %action.path.display(),
+                                size_bytes = local.file_size,
+                                "uploading file to Proton Drive"
+                            );
+                        }
+                        let result = self.proton.upload(
                             &local.absolute_path,
                             &self.config.remote_root,
                             &action.path,
-                        )?;
+                        );
+                        finish_transfer_spinner(spinner);
+                        result?;
                         let record = FileRecord::from_local(
                             action.path.clone(),
                             local,
@@ -848,7 +885,26 @@ impl<C: ProtonClient> Daemon<C> {
                         continue;
                     };
                     ensure_parent_directory(&destination)?;
-                    self.proton.download(&remote_path, &destination)?;
+                    transfer_index += 1;
+                    let spinner = begin_transfer_spinner(
+                        interactive_progress,
+                        transfer_index,
+                        transfer_total,
+                        "downloading",
+                        &action.path,
+                        None,
+                    );
+                    if spinner.is_none() {
+                        info!(
+                            target: TRANSFER_LOG_TARGET,
+                            path = %action.path.display(),
+                            remote_id,
+                            "downloading file from Proton Drive"
+                        );
+                    }
+                    let result = self.proton.download(&remote_path, &destination);
+                    finish_transfer_spinner(spinner);
+                    result?;
                     let local_state = local_file_state(&self.config.local_root, &destination)?;
                     let record = FileRecord::from_local(
                         action.path.clone(),
@@ -1474,6 +1530,44 @@ fn ensure_parent_directory(path: &Path) -> AppResult<()> {
         fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+/// Starts a foreground progress spinner for an in-flight file transfer, `[index/total] verb path
+/// (size)` with elapsed time, but only when `interactive` (stderr is a terminal). Under
+/// systemd/journald it returns `None` and the caller falls back to a structured `info!` line, so
+/// the journal never sees progress-bar escape codes. The `proton-drive` CLI exposes no byte
+/// counter while a transfer runs, so this is an indeterminate spinner (elapsed), not a percentage.
+fn begin_transfer_spinner(
+    interactive: bool,
+    index: usize,
+    total: usize,
+    verb: &str,
+    path: &Path,
+    size_bytes: Option<u64>,
+) -> Option<ProgressBar> {
+    if !interactive {
+        return None;
+    }
+    let size = size_bytes
+        .map(|bytes| format!(" ({})", indicatif::HumanBytes(bytes)))
+        .unwrap_or_default();
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::with_template("{spinner:.cyan} {msg} [{elapsed}]")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+    );
+    spinner.set_message(format!("[{index}/{total}] {verb} {}{size}", path.display()));
+    spinner.enable_steady_tick(Duration::from_millis(120));
+    Some(spinner)
+}
+
+/// Clears a transfer spinner once its transfer finishes (or fails). A no-op when there was no
+/// spinner (headless runs). Called before propagating any transfer error so the spinner never
+/// lingers on screen after a failed upload/download.
+fn finish_transfer_spinner(spinner: Option<ProgressBar>) {
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
 }
 
 /// Removes the control socket on shutdown, but only when the path is still an actual Unix
