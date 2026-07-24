@@ -100,6 +100,11 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         .or(file_config.db_path)
         .map(|path| resolve_path(&local_root, path))
         .unwrap_or_else(|| default_state_db_path(&local_root));
+    // Resolved before the struct literal below (which moves `local_root`), mirroring `db_path`.
+    let lockfile_path = input
+        .lockfile_path
+        .or(file_config.lockfile_path)
+        .unwrap_or_else(|| default_lockfile_path(&local_root));
     let default_command_policy = CommandPolicy::default();
 
     let config = DaemonConfig {
@@ -110,10 +115,7 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             .socket_path
             .or(file_config.socket_path)
             .unwrap_or_else(default_socket_path),
-        lockfile_path: input
-            .lockfile_path
-            .or(file_config.lockfile_path)
-            .unwrap_or_else(default_lockfile_path),
+        lockfile_path,
         scan_interval: Duration::from_secs(
             input
                 .scan_interval_secs
