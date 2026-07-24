@@ -8,6 +8,8 @@ const APP_STATE_DIR: &str = "proton-drive-sync";
 const DEFAULT_SOCKET_NAME: &str = "proton-sync.sock";
 const DEFAULT_LOCKFILE_NAME: &str = "proton-sync.lock";
 const DEFAULT_INDEX_NAME: &str = "sync_index.db";
+/// Filename of the user-global single-instance lock (see [`default_global_lock_path`]).
+const GLOBAL_LOCK_NAME: &str = "single-instance.lock";
 /// Name of the per-sync-root directory that holds all of the engine's persistent state (the SQLite
 /// index and its status/metrics sidecars) plus the instance lockfile. It lives at the top of
 /// `local_root` (like `.git`) and is ignored by scanning, planning, the base-index filter, and the
@@ -37,6 +39,39 @@ pub fn default_lockfile_path(local_root: &Path) -> PathBuf {
 /// in the per-root `.sync` directory.
 pub fn default_state_db_path(local_root: &Path) -> PathBuf {
     sync_state_dir(local_root).join(DEFAULT_INDEX_NAME)
+}
+
+/// The **user-global** single-instance lock: the same path for every `proton-syncd` this user
+/// runs, regardless of session, `XDG_RUNTIME_DIR`, sync root, or `--socket-path`. It admits at
+/// most one daemon per user account, because every daemon shells the same `proton-drive` CLI —
+/// whose SQLite cache **and** session store are shared per user and are not safe for concurrent
+/// use (`SQLITE_BUSY`; see the concurrency note on `ProtonDriveClient::run_proton_drive` and #23).
+///
+/// Deliberately keyed on `$XDG_STATE_HOME` (→ `~/.local/state`) — a *per-user*, always-resolvable
+/// location — and **not** on the per-session runtime dir: `$XDG_RUNTIME_DIR` is unset or differs
+/// across sessions (SSH without pam_systemd, many containers), so a session-keyed lock would let a
+/// second daemon slip through in exactly those cases and still contend on the shared cache. This
+/// complements the *per-root* [`default_lockfile_path`], which stops two daemons on the same root.
+pub fn default_global_lock_path() -> PathBuf {
+    global_lock_path_in(user_state_dir())
+}
+
+/// The global lock's layout under a given state directory. Split out so it can be tested without
+/// mutating process-wide environment variables (which races other tests).
+fn global_lock_path_in(state_dir: PathBuf) -> PathBuf {
+    state_dir.join(APP_STATE_DIR).join(GLOBAL_LOCK_NAME)
+}
+
+/// `$XDG_STATE_HOME`, falling back to `~/.local/state`, then — if even `HOME` is unset (unusual) —
+/// to the per-uid temp directory so the path stays user-private rather than shared.
+fn user_state_dir() -> PathBuf {
+    if let Some(dir) = env_path("XDG_STATE_HOME") {
+        dir
+    } else if let Some(home) = env_path("HOME") {
+        home.join(".local").join("state")
+    } else {
+        fallback_runtime_dir()
+    }
 }
 
 fn default_runtime_path(file_name: &str, runtime_dir: Option<PathBuf>) -> PathBuf {
@@ -172,6 +207,18 @@ mod tests {
         assert_eq!(
             sync_state_dir(&local_root),
             PathBuf::from("/home/me/Proton/.sync")
+        );
+    }
+
+    #[test]
+    fn global_lock_is_user_scoped_under_the_state_dir() {
+        // The user-global single-instance lock lives under the per-user state dir, namespaced by
+        // the app dir — the same path for every daemon this user runs, independent of sync root or
+        // socket. This is what lets it admit at most one daemon per user (the proton-drive CLI's
+        // cache/session store are shared per user; see #23).
+        assert_eq!(
+            global_lock_path_in(PathBuf::from("/home/me/.local/state")),
+            PathBuf::from("/home/me/.local/state/proton-drive-sync/single-instance.lock"),
         );
     }
 

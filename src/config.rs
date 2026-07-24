@@ -1,6 +1,8 @@
 use crate::daemon::DaemonConfig;
 use crate::index::ScanOptions;
-use crate::paths::{default_lockfile_path, default_socket_path, default_state_db_path};
+use crate::paths::{
+    default_global_lock_path, default_lockfile_path, default_socket_path, default_state_db_path,
+};
 use crate::proton::CommandPolicy;
 use crate::{AppResult, boxed_error};
 use serde::Deserialize;
@@ -119,6 +121,9 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             .or(file_config.socket_path)
             .unwrap_or_else(default_socket_path),
         lockfile_path,
+        // Not user-overridable: the single-instance guarantee must key on a fixed per-user path so
+        // it holds regardless of --socket-path / --local-root (see `default_global_lock_path`).
+        global_lock_path: default_global_lock_path(),
         scan_interval: Duration::from_secs(
             input
                 .scan_interval_secs
