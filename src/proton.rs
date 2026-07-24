@@ -4,10 +4,12 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::warn;
 use wait_timeout::ChildExt;
@@ -836,6 +838,15 @@ impl ProtonDriveClient {
 
     fn run_once(&self, operation: &str, args: &[OsString]) -> AppResult<Output> {
         let mut child = self.spawn_once(args)?;
+        // Drain stdout and stderr on separate threads *while the child runs*. A `proton-drive`
+        // command whose output exceeds the OS pipe buffer (~64 KiB) fills that buffer and then
+        // blocks on `write`, making no further progress, because nothing reads the pipe until the
+        // child has exited — so the output is silently truncated to whatever was buffered and the
+        // JSON listing fails to parse (issue #40). Reading concurrently keeps the pipe drained so
+        // the full output is captured. `wait_with_output` can't be used here: it gives no way to
+        // poll the cancellation flag / enforce the timeout while it reads.
+        let stdout_reader = spawn_pipe_reader(child.stdout.take());
+        let stderr_reader = spawn_pipe_reader(child.stderr.take());
         let deadline = Instant::now() + self.command_policy.timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -852,8 +863,17 @@ impl ProtonDriveClient {
                 )));
             }
             let poll_interval = remaining.min(CANCELLATION_POLL_INTERVAL);
-            if child.wait_timeout(poll_interval)?.is_some() {
-                return Ok(child.wait_with_output()?);
+            if let Some(status) = child.wait_timeout(poll_interval)? {
+                // The child has exited, so both pipe write ends are closed and the reader threads
+                // have (or will imminently) hit EOF — joining them returns promptly with the full,
+                // untruncated output.
+                let stdout = join_pipe_reader(stdout_reader)?;
+                let stderr = join_pipe_reader(stderr_reader)?;
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             if self.cancel_flag.load(Ordering::SeqCst) {
                 terminate_child_tree(&mut child);
@@ -866,6 +886,11 @@ impl ProtonDriveClient {
                 )));
             }
         }
+        // Note: the timeout and cancellation paths above intentionally drop the reader handles
+        // without joining. `terminate_child_tree` SIGKILLs the whole process group, closing the
+        // pipe write ends so the detached readers finish on their own; not joining preserves the
+        // guarantee that a rogue grandchild still holding the pipe can never block a prompt
+        // timeout/cancel return (the same reason `terminate_child_tree` avoids `wait_with_output`).
     }
 
     fn spawn_once(&self, args: &[OsString]) -> AppResult<Child> {
@@ -930,6 +955,34 @@ fn terminate_child_tree(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Spawns a thread that reads a child pipe to EOF and returns its full contents. Draining the pipe
+/// concurrently with the running child is what keeps a large (> OS pipe buffer) `proton-drive`
+/// output from blocking and being truncated (issue #40). Returns `None` when the handle is absent
+/// (`Child::stdout`/`stderr` are `Option`; they are always present for a piped child).
+fn spawn_pipe_reader<R: Read + Send + 'static>(
+    reader: Option<R>,
+) -> Option<JoinHandle<io::Result<Vec<u8>>>> {
+    reader.map(|mut reader| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            reader.read_to_end(&mut buffer).map(|_| buffer)
+        })
+    })
+}
+
+/// Joins a [`spawn_pipe_reader`] thread, surfacing a read error or a reader-thread panic as an
+/// `AppResult`. Only called once the child has exited (so the read is already complete and the
+/// join returns promptly); the timeout/cancel paths deliberately drop the handle without joining.
+fn join_pipe_reader(reader: Option<JoinHandle<io::Result<Vec<u8>>>>) -> AppResult<Vec<u8>> {
+    match reader {
+        Some(handle) => match handle.join() {
+            Ok(result) => Ok(result?),
+            Err(_) => Err(boxed_error("proton-drive output reader thread panicked")),
+        },
+        None => Ok(Vec::new()),
+    }
 }
 
 fn trimmed_stderr(output: &Output) -> String {
@@ -1588,6 +1641,49 @@ printf '{"entries":[]}\n'
             started.elapsed() < Duration::from_secs(1),
             "timing out should not block on the fake CLI's full hang duration, took {:?}",
             started.elapsed()
+        );
+    }
+
+    // Regression guard for issue #40: a `filesystem list` output larger than the OS pipe buffer
+    // (~64 KiB) must be captured in full. `run_once` used to read the child's stdout only *after*
+    // the child exited, so a large listing filled the pipe, the child blocked on `write`, and the
+    // output was truncated mid-JSON — corrupting the parse (and, once the child wedged, timing out).
+    // Draining stdout concurrently on a thread fixes it. The fake CLI emits ~105 KiB of valid JSON.
+    #[cfg(unix)]
+    #[test]
+    fn list_captures_output_larger_than_the_pipe_buffer() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '['
+i=0
+while [ "$i" -lt 800 ]; do
+    if [ "$i" -gt 0 ]; then printf ','; fi
+    printf '{"name":"file-%04d.txt","uid":"vol~node-%04d","activeRevision":{"claimedDigests":{"sha1":"da39a3ee5e6b4b0d3255bfef95601890afd80709"}}}' "$i" "$i"
+    i=$((i + 1))
+done
+printf ']\n'
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(10), 1),
+        );
+
+        let listing = client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect("a listing larger than the pipe buffer must be captured and parsed in full");
+
+        assert_eq!(
+            listing.len(),
+            800,
+            "every node from the >64 KiB listing must be present (truncation would drop the tail)"
+        );
+        assert!(
+            listing.contains_key(Path::new("file-0799.txt")),
+            "the final node must survive — the tail is exactly what truncation loses"
         );
     }
 
