@@ -257,6 +257,36 @@ impl<C: ProtonClient> Daemon<C> {
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
 
+        // Reconcile once immediately on startup so a fresh sync (or one restarted after
+        // downtime) converges right away instead of waiting a full `scan_interval` for the first
+        // periodic tick. Both interval arms above consumed their immediate first tick, and
+        // filesystem-watch events only accumulate `pending_changes` (they never trigger a
+        // reconcile), so the periodic tick is otherwise the sole automatic sync trigger — without
+        // this, a freshly started daemon downloads/uploads nothing until `scan_interval` (default
+        // 5 minutes) elapses. This is also the "first reconcile after startup" the constructor
+        // seeds to be a full-tree snapshot.
+        //
+        // Run it inside a `biased` select against `shutdown` so the signal future is *polled and
+        // registered before* this (synchronous, `block_in_place`) reconcile starts. A SIGINT that
+        // arrives while the first reconcile is stuck is flipped into the cancel flag by the task
+        // spawned above (unblocking the reconcile); the loop below then re-polls this same
+        // `shutdown` future and latches that already-delivered signal to exit cleanly. Without the
+        // pre-registration, a signal delivered during the very first reconcile would be missed and
+        // the daemon would fail to shut down. `reconcile_if_needed` respects `paused` and
+        // logs-then-swallows reconcile errors, so a flaky first sync retries at the interval
+        // instead of aborting startup.
+        let mut shutdown_during_startup = false;
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => shutdown_during_startup = true,
+            result = self.reconcile_if_needed() => result?,
+        }
+        if shutdown_during_startup {
+            remove_control_socket(&self.config.socket_path);
+            info!("daemon stopped");
+            return Ok(());
+        }
+
         loop {
             tokio::select! {
                 maybe_event = watch_rx.recv() => {
@@ -3132,6 +3162,66 @@ mod tests {
         assert_eq!(
             status.status_history[0].last_error.as_deref(),
             Some("list failed")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_reconciles_once_on_startup_before_the_first_interval_tick() {
+        // Regression: a fresh daemon must converge immediately when `run()` starts, not sit
+        // idle until the first periodic `scan_interval` tick. The event loop consumes the
+        // interval's immediate first tick, and filesystem-watch events only accumulate
+        // `pending_changes` (they never trigger a reconcile), so the periodic tick is the sole
+        // automatic sync trigger. Without a startup reconcile, a fresh sync from a populated
+        // remote downloads *nothing* until `scan_interval` (default 5 minutes) elapses.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some("remote-hash")),
+        );
+        let client = ParentCheckingDownloadClient { remote_files };
+
+        // A scan interval far longer than the poll window below, so if the file ever appears
+        // locally only the startup reconcile — never a periodic tick — could have produced it.
+        let config = DaemonConfig {
+            scan_interval: Duration::from_secs(3600),
+            ..test_config(directory.path(), &local_root)
+        };
+        let daemon = Daemon::with_client(config, client).expect("daemon");
+
+        let downloaded = local_root.join("notes.txt");
+        let handle = tokio::spawn(daemon.run());
+
+        // Poll for the startup reconcile to land the file. Generous bound; in practice the
+        // reconcile completes within milliseconds of `run()` starting.
+        let mut appeared = false;
+        for _ in 0..100 {
+            if downloaded.exists() {
+                appeared = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // Abort and then await the handle so the daemon task is fully torn down (its DB
+        // connection, lockfile, and watcher on `directory` released) before the assertions and
+        // the tempdir cleanup at end of scope — otherwise the aborted task could still be
+        // unwinding, leaking resources and making the suite flaky. The task is idle in its
+        // `select!` loop by now (the download already landed), so the abort takes effect
+        // promptly; the `JoinError::Cancelled` from the abort is expected and ignored.
+        handle.abort();
+        let _ = handle.await;
+
+        assert!(
+            appeared,
+            "a fresh daemon must reconcile on startup and download the remote file, not wait \
+             for the first scan-interval tick"
+        );
+        assert_eq!(
+            fs::read_to_string(&downloaded).expect("downloaded file"),
+            "downloaded:/Drive/RemoteFolder/notes.txt"
         );
     }
 
