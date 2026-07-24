@@ -251,6 +251,7 @@ impl ScanOptions {
     fn allows_directory_traversal(&self, relative_path: &Path) -> bool {
         relative_path.as_os_str().is_empty()
             || (!is_download_scratch_path(relative_path)
+                && !is_sync_state_path(relative_path)
                 && !self.is_configured_ignored(relative_path)
                 && !self.matches(&self.exclude_patterns, relative_path))
     }
@@ -712,13 +713,28 @@ pub fn should_ignore_path(path: &Path) -> bool {
 }
 
 fn should_ignore_relative_path(relative_path: &Path) -> bool {
-    if crate::sync::is_conflict_copy(relative_path) || is_download_scratch_path(relative_path) {
+    if crate::sync::is_conflict_copy(relative_path)
+        || is_download_scratch_path(relative_path)
+        || is_sync_state_path(relative_path)
+    {
         return true;
     }
     matches!(
         relative_path.file_name().and_then(|value| value.to_str()),
         Some("sync_index.db")
     )
+}
+
+/// True when `relative_path` is the per-root `.sync` state directory or anything inside it (the
+/// engine's own SQLite index, its status/metrics sidecars, and the instance lockfile — see
+/// [`crate::paths::sync_state_dir`]). Only a *top-level* `.sync` is the state directory; a `.sync`
+/// nested deeper in the tree is ordinary user data and syncs normally, so only the first path
+/// component is checked. Honoring it in the scanner, the base-index filter, and the watcher keeps
+/// the engine's own state from ever being planned for upload.
+fn is_sync_state_path(relative_path: &Path) -> bool {
+    relative_path.components().next().is_some_and(|component| {
+        component.as_os_str() == std::ffi::OsStr::new(crate::paths::SYNC_STATE_DIR_NAME)
+    })
 }
 
 /// True when any component of `relative_path` is (or lives inside) a download-staging
@@ -1063,6 +1079,49 @@ mod tests {
             !options.allows_relative_file(Path::new("state/custom.db")),
             "relative db paths joined under a relative local root must be ignored"
         );
+    }
+
+    #[test]
+    fn scan_ignores_top_level_sync_state_dir_but_keeps_nested_dot_sync() {
+        let directory = tempdir().expect("tempdir");
+        // Engine state under the top-level .sync/ must never be treated as sync data.
+        let state = directory.path().join(".sync");
+        fs::create_dir(&state).expect("state dir");
+        std::fs::write(state.join("sync_index.db"), b"db").expect("db");
+        std::fs::write(state.join("proton-sync.lock"), b"lock").expect("lock");
+        std::fs::write(state.join("sync_index.status.json"), b"[]").expect("status");
+        // A .sync directory nested deeper in the tree is ordinary user data and must sync normally.
+        let nested = directory.path().join("docs").join(".sync");
+        fs::create_dir_all(&nested).expect("nested dir");
+        std::fs::write(nested.join("notes.txt"), b"notes").expect("nested file");
+        std::fs::write(directory.path().join("keep.txt"), b"keep").expect("keep");
+
+        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("scan options");
+        let files = scan_local_files_with_options(directory.path(), &options).expect("scan files");
+
+        assert!(files.contains_key(Path::new("keep.txt")));
+        assert!(
+            files.contains_key(Path::new("docs/.sync/notes.txt")),
+            "a .sync directory nested below the root is user data and must be synced"
+        );
+        assert!(
+            !files.keys().any(|path| path.starts_with(".sync")),
+            "nothing under the top-level .sync state directory may be planned: {:?}",
+            files.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn scan_options_reject_the_sync_state_dir_and_its_contents() {
+        let options = ScanOptions::new(Path::new("root"), &[], &[], &[]).expect("scan options");
+
+        assert!(!options.allows_relative_directory(Path::new(".sync")));
+        assert!(!options.allows_relative_file(Path::new(".sync/sync_index.db")));
+        assert!(!options.allows_relative_file(Path::new(".sync/proton-sync.lock")));
+        assert!(!options.allows_relative_file(Path::new(".sync/nested/anything")));
+        // Only the *top-level* .sync is the state directory; a nested one is user data.
+        assert!(options.allows_relative_directory(Path::new("docs/.sync")));
+        assert!(options.allows_relative_file(Path::new("docs/.sync/notes.txt")));
     }
 
     #[test]

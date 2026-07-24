@@ -178,6 +178,13 @@ impl<C: ProtonClient> Daemon<C> {
         {
             fs::create_dir_all(parent)?;
         }
+        // Ensure the lockfile's directory (the `.sync` state dir by default) exists before
+        // acquiring the lock, so a first-ever run on a fresh root does not fail here.
+        if let Some(parent) = config.lockfile_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
+        }
         let lock_guard = LockGuard::acquire(&config.lockfile_path)?;
         let connection = open_database(&config.db_path)?;
         let scan_options = scan_options_from_config(&config)?;
@@ -1272,10 +1279,15 @@ impl IndexMutation {
 }
 
 fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
+    // The default state paths all live under `<local_root>/.sync`, which `ScanOptions` ignores as a
+    // subtree. These explicit entries additionally cover a state path relocated *out* of `.sync`
+    // via `--db-path`/`--lockfile-path` but still inside the sync root, so it is never planned for
+    // upload. (A path outside the root normalizes to `None` and is simply dropped.)
     let ignored_paths = vec![
         config.db_path.clone(),
         status_history_path(&config.db_path),
         metrics_path(&config.db_path),
+        config.lockfile_path.clone(),
     ];
     ScanOptions::new(
         &config.local_root,

@@ -87,7 +87,7 @@ Data flow: **scan → `sync::plan_sync` → execute actions → commit index**. 
 - `src/session.rs` — concrete impls of the `events` seams for the **current CLI-session-reuse** approach: `CliKeyringSession` (a `SessionProvider` that reuses the logged-in `proton-drive` CLI's session from the OS keyring via `secret-tool`; `refresh` re-reads the keyring rather than owning a token refresh) and `CurlHttpTransport` (a dependency-free `HttpTransport` shelling `curl`). Independent (browser-forked) auth is deferred by decision — see `docs/adr/0001-*`.
 - `src/config.rs` — layered config resolution. Precedence: **explicit CLI flag > TOML file value > XDG default**. `resolve_runtime_config` merges `DaemonConfigInput` (from clap) with `FileConfig` (from `--config`), validates roots/globs, and resolves `dry_run` (`--no-dry-run` beats `--dry-run` beats file `dry_run`).
 - `src/ipc.rs` — JSON-line request/response protocol over the Unix socket; binds with mode `0600`.
-- `src/paths.rs` — XDG-aware defaults for state DB, socket, and lockfile.
+- `src/paths.rs` — default state paths. The SQLite index (plus its status/metrics sidecars) and the instance lockfile default to the per-root `<local_root>/.sync` state directory, which the engine ignores everywhere (`index::should_ignore_path` → `is_sync_state_path`; only a *top-level* `.sync` is treated as state). The control socket stays in `$XDG_RUNTIME_DIR` — the XDG home for sockets — since it is a session-scoped runtime endpoint (not persistent state), must stay short for the `sun_path` limit, and must be locatable by the control CLI without knowing the sync root.
 - `src/lib.rs` — `AppResult<T>` alias, `boxed_error`, and `validate_relative_path` (the shared path-safety guard).
 
 ### Invariants to preserve

@@ -100,6 +100,14 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         .or(file_config.db_path)
         .map(|path| resolve_path(&local_root, path))
         .unwrap_or_else(|| default_state_db_path(&local_root));
+    // Resolved before the struct literal below (which moves `local_root`), mirroring `db_path`:
+    // a relative override joins under `local_root` (so it lands where `scan_options_from_config`
+    // ignores it), an absolute one is used as-is, and the default is the per-root `.sync` path.
+    let lockfile_path = input
+        .lockfile_path
+        .or(file_config.lockfile_path)
+        .map(|path| resolve_path(&local_root, path))
+        .unwrap_or_else(|| default_lockfile_path(&local_root));
     let default_command_policy = CommandPolicy::default();
 
     let config = DaemonConfig {
@@ -110,10 +118,7 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             .socket_path
             .or(file_config.socket_path)
             .unwrap_or_else(default_socket_path),
-        lockfile_path: input
-            .lockfile_path
-            .or(file_config.lockfile_path)
-            .unwrap_or_else(default_lockfile_path),
+        lockfile_path,
         scan_interval: Duration::from_secs(
             input
                 .scan_interval_secs
@@ -313,6 +318,46 @@ include = ["config/**"]
         assert_eq!(config.proton_timeout, Duration::from_secs(22));
         assert_eq!(config.proton_list_attempts, 5);
         assert_eq!(config.include_patterns, vec!["cli/**"]);
+    }
+
+    #[test]
+    fn relative_db_and_lockfile_overrides_resolve_under_local_root() {
+        // A relative override for either state path must land under `local_root` (where the scanner
+        // ignores it), consistent with each other — not relative to the process CWD.
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("/home/me/Proton")),
+            remote_root: Some(PathBuf::from("/Drive/X")),
+            db_path: Some(PathBuf::from("state/custom.db")),
+            lockfile_path: Some(PathBuf::from("state/custom.lock")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert_eq!(
+            config.db_path,
+            PathBuf::from("/home/me/Proton/state/custom.db")
+        );
+        assert_eq!(
+            config.lockfile_path,
+            PathBuf::from("/home/me/Proton/state/custom.lock"),
+            "a relative lockfile override must resolve under local_root like db_path"
+        );
+    }
+
+    #[test]
+    fn absolute_lockfile_override_is_used_as_is() {
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("/home/me/Proton")),
+            remote_root: Some(PathBuf::from("/Drive/X")),
+            lockfile_path: Some(PathBuf::from("/run/user/1000/custom.lock")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert_eq!(
+            config.lockfile_path,
+            PathBuf::from("/run/user/1000/custom.lock")
+        );
     }
 
     #[test]

@@ -122,7 +122,7 @@ cargo run --bin proton-sync -- pause
 cargo run --bin proton-sync -- resume
 ```
 
-By default, the daemon stores its index under `$XDG_STATE_HOME/proton-drive-sync` or `~/.local/state/proton-drive-sync`, and it listens on `$XDG_RUNTIME_DIR/proton-sync.sock` when that runtime directory is available.
+By default, the daemon keeps all of its persistent state — the SQLite index, its status/metrics sidecars, and the instance lockfile — in a `.sync` directory at the top of your local sync folder (`<local-root>/.sync`), which the engine always ignores when scanning and planning. The control socket stays in `$XDG_RUNTIME_DIR/proton-sync.sock` (a session-scoped runtime endpoint, not persistent state) when that runtime directory is available.
 
 ## Daemon Usage
 
@@ -500,11 +500,11 @@ If the daemon exits with a lockfile error, another live daemon may already hold 
 
 If remote operations fail, run the equivalent `proton-drive` command directly to confirm authentication, permissions, and remote folder names.
 
-If sync behavior looks unexpected, pause the daemon and inspect the local folder plus the SQLite index before resuming. The index lives at your `--db-path`, which defaults to `$XDG_STATE_HOME/proton-drive-sync/sync_index.db` (usually `~/.local/state/proton-drive-sync/sync_index.db`) — not inside the local folder unless you set a relative `--db-path`:
+If sync behavior looks unexpected, pause the daemon and inspect the local folder plus the SQLite index before resuming. The index lives at your `--db-path`, which defaults to `<local-root>/.sync/sync_index.db` (the `.sync` state directory is ignored by scanning, so it is never uploaded):
 
 ```bash
 cargo run --bin proton-sync -- pause
-sqlite3 ~/.local/state/proton-drive-sync/sync_index.db 'select * from file_index order by file_path;'
+sqlite3 <local-root>/.sync/sync_index.db 'select * from file_index order by file_path;'
 ```
 
 ## License

@@ -8,20 +8,35 @@ const APP_STATE_DIR: &str = "proton-drive-sync";
 const DEFAULT_SOCKET_NAME: &str = "proton-sync.sock";
 const DEFAULT_LOCKFILE_NAME: &str = "proton-sync.lock";
 const DEFAULT_INDEX_NAME: &str = "sync_index.db";
+/// Name of the per-sync-root directory that holds all of the engine's persistent state (the SQLite
+/// index and its status/metrics sidecars) plus the instance lockfile. It lives at the top of
+/// `local_root` (like `.git`) and is ignored by scanning, planning, the base-index filter, and the
+/// filesystem watcher (see `index::should_ignore_path`).
+pub const SYNC_STATE_DIR_NAME: &str = ".sync";
 
+/// The `<local_root>/.sync` state directory.
+pub fn sync_state_dir(local_root: &Path) -> PathBuf {
+    local_root.join(SYNC_STATE_DIR_NAME)
+}
+
+/// The control socket stays in `$XDG_RUNTIME_DIR` — the XDG-designated home for sockets/IPC. It is
+/// a session-scoped runtime endpoint, not persistent state; it must stay short to respect the
+/// `sun_path` length limit; and the control CLI locates it there without needing to know the sync
+/// root. So, unlike the persistent state, it does *not* move into `.sync`.
 pub fn default_socket_path() -> PathBuf {
     default_runtime_path(DEFAULT_SOCKET_NAME, env_path("XDG_RUNTIME_DIR"))
 }
 
-pub fn default_lockfile_path() -> PathBuf {
-    default_runtime_path(DEFAULT_LOCKFILE_NAME, env_path("XDG_RUNTIME_DIR"))
+/// The instance lockfile lives in the per-root `.sync` directory, so each sync root locks
+/// independently and all of a root's state sits in one place.
+pub fn default_lockfile_path(local_root: &Path) -> PathBuf {
+    sync_state_dir(local_root).join(DEFAULT_LOCKFILE_NAME)
 }
 
+/// The SQLite index — and, alongside it, the status/metrics sidecars derived from this path — lives
+/// in the per-root `.sync` directory.
 pub fn default_state_db_path(local_root: &Path) -> PathBuf {
-    match default_state_dir(env_path("XDG_STATE_HOME"), env_path("HOME")) {
-        Some(state_dir) => state_dir.join(APP_STATE_DIR).join(DEFAULT_INDEX_NAME),
-        None => local_root.join(DEFAULT_INDEX_NAME),
-    }
+    sync_state_dir(local_root).join(DEFAULT_INDEX_NAME)
 }
 
 fn default_runtime_path(file_name: &str, runtime_dir: Option<PathBuf>) -> PathBuf {
@@ -90,10 +105,6 @@ fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-fn default_state_dir(xdg_state_home: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
-    xdg_state_home.or_else(|| home.map(|home| home.join(".local/state")))
-}
-
 fn env_path(name: &str) -> Option<PathBuf> {
     env::var_os(name)
         .filter(|value| !value.is_empty())
@@ -145,22 +156,30 @@ mod tests {
     }
 
     #[test]
-    fn state_defaults_prefer_xdg_state_home() {
-        let state_dir = default_state_dir(
-            Some(PathBuf::from("/home/me/.local/state-custom")),
-            Some(PathBuf::from("/home/me")),
-        );
+    fn state_db_and_lockfile_live_in_the_sync_state_dir_at_the_root() {
+        let local_root = PathBuf::from("/home/me/Proton");
 
         assert_eq!(
-            state_dir,
-            Some(PathBuf::from("/home/me/.local/state-custom"))
+            default_state_db_path(&local_root),
+            PathBuf::from("/home/me/Proton/.sync/sync_index.db"),
+            "the index DB must live in the per-root .sync state directory"
+        );
+        assert_eq!(
+            default_lockfile_path(&local_root),
+            PathBuf::from("/home/me/Proton/.sync/proton-sync.lock"),
+            "the lockfile must live in the per-root .sync state directory"
+        );
+        assert_eq!(
+            sync_state_dir(&local_root),
+            PathBuf::from("/home/me/Proton/.sync")
         );
     }
 
     #[test]
-    fn state_defaults_fall_back_to_home_local_state() {
-        let state_dir = default_state_dir(None, Some(PathBuf::from("/home/me")));
-
-        assert_eq!(state_dir, Some(PathBuf::from("/home/me/.local/state")));
+    fn socket_stays_in_the_runtime_dir_not_the_sync_state_dir() {
+        // The socket is a session-scoped IPC endpoint, not persistent state, so it stays in
+        // $XDG_RUNTIME_DIR rather than moving into <local_root>/.sync.
+        let path = default_runtime_path("proton-sync.sock", Some(PathBuf::from("/run/user/1000")));
+        assert_eq!(path, PathBuf::from("/run/user/1000/proton-sync.sock"));
     }
 }
