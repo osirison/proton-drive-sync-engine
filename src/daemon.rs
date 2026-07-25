@@ -25,7 +25,7 @@ use fs2::FileExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -124,18 +124,21 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     _global_lock_guard: LockGuard,
 }
 
-#[derive(Debug, Serialize)]
-struct MetricsSnapshot {
-    generated_epoch_secs: u64,
-    status: String,
-    paused: bool,
-    pending_changes: usize,
-    last_sync_epoch_secs: Option<u64>,
-    last_error: Option<String>,
-    last_plan_summary: Option<PlanSummary>,
-    last_successful_sync_summary: Option<PlanSummary>,
-    status_history_entries: usize,
-    pending_deletions: Vec<PendingDeletion>,
+/// On-disk snapshot the daemon writes to `<db>.metrics.json` at startup and after each sync.
+/// Public + `Deserialize` so the desktop GUI can read it as a first-class live-state source
+/// (preferred over live SQLite reads, which race the daemon's non-WAL writer).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsSnapshot {
+    pub generated_epoch_secs: u64,
+    pub status: String,
+    pub paused: bool,
+    pub pending_changes: usize,
+    pub last_sync_epoch_secs: Option<u64>,
+    pub last_error: Option<String>,
+    pub last_plan_summary: Option<PlanSummary>,
+    pub last_successful_sync_summary: Option<PlanSummary>,
+    pub status_history_entries: usize,
+    pub pending_deletions: Vec<PendingDeletion>,
 }
 
 pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
@@ -1548,14 +1551,33 @@ fn load_status_history(path: &Path) -> AppResult<Vec<StatusHistoryEntry>> {
 }
 
 fn write_status_history(path: &Path, history: &[StatusHistoryEntry]) -> AppResult<()> {
-    ensure_parent_directory(path)?;
-    fs::write(path, serde_json::to_vec_pretty(history)?)?;
-    Ok(())
+    write_atomically(path, &serde_json::to_vec_pretty(history)?)
 }
 
 fn write_metrics_snapshot(path: &Path, metrics: &MetricsSnapshot) -> AppResult<()> {
+    write_atomically(path, &serde_json::to_vec_pretty(metrics)?)
+}
+
+/// Write `bytes` to `path` atomically: write a sibling temp file, fsync it, then rename over the
+/// destination. Rename is atomic within a filesystem, so a concurrent reader — e.g. a GUI polling
+/// `<db>.metrics.json` / `<db>.status.json`, or the CLI — never observes a partially written file.
+fn write_atomically(path: &Path, bytes: &[u8]) -> AppResult<()> {
+    use std::io::Write;
     ensure_parent_directory(path)?;
-    fs::write(path, serde_json::to_vec_pretty(metrics)?)?;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("sidecar");
+    let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.into());
+    }
     Ok(())
 }
 
