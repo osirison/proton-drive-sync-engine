@@ -1551,14 +1551,33 @@ fn load_status_history(path: &Path) -> AppResult<Vec<StatusHistoryEntry>> {
 }
 
 fn write_status_history(path: &Path, history: &[StatusHistoryEntry]) -> AppResult<()> {
-    ensure_parent_directory(path)?;
-    fs::write(path, serde_json::to_vec_pretty(history)?)?;
-    Ok(())
+    write_atomically(path, &serde_json::to_vec_pretty(history)?)
 }
 
 fn write_metrics_snapshot(path: &Path, metrics: &MetricsSnapshot) -> AppResult<()> {
+    write_atomically(path, &serde_json::to_vec_pretty(metrics)?)
+}
+
+/// Write `bytes` to `path` atomically: write a sibling temp file, fsync it, then rename over the
+/// destination. Rename is atomic within a filesystem, so a concurrent reader — e.g. a GUI polling
+/// `<db>.metrics.json` / `<db>.status.json`, or the CLI — never observes a partially written file.
+fn write_atomically(path: &Path, bytes: &[u8]) -> AppResult<()> {
+    use std::io::Write;
     ensure_parent_directory(path)?;
-    fs::write(path, serde_json::to_vec_pretty(metrics)?)?;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("sidecar");
+    let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.into());
+    }
     Ok(())
 }
 
