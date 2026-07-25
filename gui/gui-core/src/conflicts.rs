@@ -13,7 +13,7 @@ use proton_drive_sync_engine::sync::{is_conflict_copy, original_from_conflict_co
 use std::path::{Path, PathBuf};
 
 /// One detected, unresolved conflict. Both paths are **relative to the local root**.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Conflict {
     /// The user's local file the sidecar sits beside (relative to the local root).
     pub original: PathBuf,
