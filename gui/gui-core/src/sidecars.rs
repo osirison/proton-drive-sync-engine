@@ -5,7 +5,8 @@
 //! after each sync) and `<db>.status.json` (the last-20 [`StatusHistoryEntry`] list, the activity
 //! ledger / history source). These are the GUI's preferred disk source for live state because the
 //! index DB runs **without WAL** — a reader polling it races the daemon's write transactions and
-//! hits `SQLITE_BUSY`. The JSON files are written atomically, so a reader always sees a whole file.
+//! hits `SQLITE_BUSY`. The daemon writes these JSON files atomically (temp file + rename), so a
+//! polling reader never observes a partially written sidecar.
 
 use crate::wire::{MetricsSnapshot, StatusHistoryEntry};
 use serde::de::DeserializeOwned;

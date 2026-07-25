@@ -52,11 +52,11 @@ impl ConfigDoc {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(ConfigError::Io(e.to_string())),
         };
-        Self::from_str(&text)
+        Self::from_toml_str(&text)
     }
 
     /// Parse a document from a TOML string.
-    pub fn from_str(text: &str) -> Result<Self, ConfigError> {
+    pub fn from_toml_str(text: &str) -> Result<Self, ConfigError> {
         let doc = text
             .parse::<DocumentMut>()
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
@@ -156,32 +156,61 @@ impl ConfigDoc {
 #[cfg(unix)]
 fn write_atomic_0600(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
 
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
-    if let Some(parent) = parent {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
     let base = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("config");
-    let tmp = path.with_file_name(format!(".{base}.tmp"));
 
-    {
-        let mut file = std::fs::OpenOptions::new()
+    // Create a fresh, non-predictable sibling temp with `create_new` (O_EXCL) and mode 0600: it
+    // never follows a pre-existing symlink and never clobbers an existing file, so the rename below
+    // is a genuine atomic replace. Retry on the (vanishingly rare) name collision.
+    let (mut file, tmp) = loop {
+        let candidate = path.with_file_name(format!(
+            ".{base}.{}.{}.tmp",
+            std::process::id(),
+            unique_suffix()
+        ));
+        match std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(&tmp)?;
+            .open(&candidate)
+        {
+            Ok(file) => break (file, candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+
+    let write = (|| {
         file.write_all(bytes)?;
         file.flush()?;
-        file.sync_all()?;
+        file.sync_all()
+    })();
+    if let Err(e) = write.and_then(|_| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    // Enforce 0600 even if the temp file pre-existed with looser perms.
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    std::fs::rename(&tmp, path)
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unique_suffix() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos
+        ^ COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
 #[cfg(not(unix))]
@@ -206,7 +235,7 @@ exclude = ["*.tmp"]
 
     #[test]
     fn editing_preserves_comments_and_daemon_only_keys() {
-        let mut doc = ConfigDoc::from_str(SAMPLE).unwrap();
+        let mut doc = ConfigDoc::from_toml_str(SAMPLE).unwrap();
         doc.set_string_array("exclude", &["*.tmp".into(), "node_modules/".into()]);
         doc.set_int("scan_interval_secs", 120);
 
@@ -236,14 +265,14 @@ exclude = ["*.tmp"]
 
     #[test]
     fn validate_rejects_unknown_keys_so_the_daemon_cannot_be_bricked() {
-        let doc = ConfigDoc::from_str("local_root = \"/x\"\nfrobnicate = 1\n").unwrap();
+        let doc = ConfigDoc::from_toml_str("local_root = \"/x\"\nfrobnicate = 1\n").unwrap();
         let err = doc.validate().unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)), "got {err:?}");
     }
 
     #[test]
     fn delete_approval_nested_table_round_trips() {
-        let mut doc = ConfigDoc::from_str("local_root = \"/x\"\n").unwrap();
+        let mut doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
         assert_eq!(doc.get_delete_approval("remote"), None);
         doc.set_delete_approval("remote", false);
         doc.set_delete_approval("local", true);
@@ -254,11 +283,12 @@ exclude = ["*.tmp"]
     }
 
     #[test]
+    #[cfg(unix)] // 0600 permissions + PermissionsExt are unix-only
     fn save_writes_0600_and_is_readable_back() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/proton-sync.toml");
-        let mut doc = ConfigDoc::from_str(SAMPLE).unwrap();
+        let mut doc = ConfigDoc::from_toml_str(SAMPLE).unwrap();
         doc.set_bool("events_driven", false);
         doc.save(&path).unwrap();
 

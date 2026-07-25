@@ -108,8 +108,12 @@ pub fn apply_resolution(
     }
 }
 
-/// `notes.txt` → `notes.local.txt`; `README` → `README.local`; `.env` → `.env.local`. Byte-safe
-/// (no UTF-8 assumption), mirroring the engine's own extension semantics for dotfiles.
+/// `notes.txt` → `notes.local.txt`; `README` → `README.local`; `.env` → `.env.local`.
+///
+/// The unix path is byte-safe (no UTF-8 assumption), mirroring the engine's own extension
+/// semantics for dotfiles. A non-unix fallback keeps the crate type-checking off-unix (consistent
+/// with the `cfg(not(unix))` stubs elsewhere), accepting lossy handling of non-UTF-8 names there.
+#[cfg(unix)]
 fn local_sibling_path(original: &Path) -> PathBuf {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
@@ -125,6 +129,24 @@ fn local_sibling_path(original: &Path) -> PathBuf {
         bytes.extend_from_slice(extension.as_bytes());
     }
     original.with_file_name(std::ffi::OsString::from_vec(bytes))
+}
+
+#[cfg(not(unix))]
+fn local_sibling_path(original: &Path) -> PathBuf {
+    let Some(file_name) = original.file_name() else {
+        return original.to_path_buf();
+    };
+    let as_path = Path::new(file_name);
+    let stem = as_path
+        .file_stem()
+        .unwrap_or(file_name)
+        .to_string_lossy()
+        .into_owned();
+    let renamed = match as_path.extension() {
+        Some(extension) => format!("{stem}.local.{}", extension.to_string_lossy()),
+        None => format!("{stem}.local"),
+    };
+    original.with_file_name(renamed)
 }
 
 #[cfg(test)]

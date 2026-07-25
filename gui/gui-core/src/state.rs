@@ -77,10 +77,10 @@ pub fn derive_state(reply: Result<&ControlResponse, &IpcError>) -> DaemonState {
     if response.paused {
         return DaemonState::Paused;
     }
-    if let Some(error) = &response.last_error {
-        if looks_like_auth_error(error) {
-            return DaemonState::AuthExpired;
-        }
+    if let Some(error) = &response.last_error
+        && looks_like_auth_error(error)
+    {
+        return DaemonState::AuthExpired;
     }
     if response.last_sync_epoch_secs.is_none() && response.status_history.is_empty() {
         return DaemonState::FirstRun;
