@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"><style>
+doc-page:not(:defined){visibility:hidden}
+a{color:#b45309}a:hover{color:#7c3a11}
+</style><script src="./doc-page.js"></script></helmet>
+
+<doc-page margin="0.8in">
+<div style="font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:15px;line-height:1.62;color:#1e293b">
+
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:22px;padding-bottom:18px;border-bottom:2px solid #1e293b">
+  <img src="../assets/icon.svg" width="38" height="38" alt="Proton Drive Sync Engine icon">
+  <div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#64748b">osirison/proton-drive-sync-engine · design handoff</div>
+    <div style="font-size:13px;color:#475569">Linux desktop UI for proton-syncd · revision 1 · July 2026</div>
+  </div>
+</div>
+
+<h1 style="font-size:30px;line-height:1.2;font-weight:600;margin:0 0 14px;letter-spacing:-.015em">Proton Drive Sync — desktop UI implementation contract</h1>
+
+<p style="margin:0 0 16px">This document is the bridge between the HTML design prototypes in this project and the Rust daemon that already exists. Its purpose is narrow and specific: for every number, label and control in the UI, state where the value comes from, so that nobody has to guess or invent an API while building. The prototypes are the visual truth; this document is the data truth.</p>
+
+<p style="margin:0 0 24px">The engine ships today as <code style="font-family:'IBM Plex Mono',monospace;font-size:13.5px;background:#f1f4f9;padding:1px 5px;border-radius:4px">proton-syncd</code> (a systemd user daemon) and <code style="font-family:'IBM Plex Mono',monospace;font-size:13.5px;background:#f1f4f9;padding:1px 5px;border-radius:4px">proton-sync</code> (a CLI). There is no GUI. Everything described here is additive: the UI is a client of the existing control socket plus the state files the daemon already writes.</p>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">1 · Fidelity and scope</h2>
+
+<p style="margin:0 0 14px">The prototypes are <strong>high fidelity</strong>. Colours, type sizes, spacing and copy are final and should be reproduced as specified in section 7. Layout structure, interaction wiring and state behaviour are also final. What is <em>not</em> specified is the implementation toolkit — the mocks were built as web UI per the brief, so an Electron or Tauri shell reproduces them directly; a GTK4 or Qt implementation should treat them as a spec rather than markup to port.</p>
+
+<div style="break-inside:avoid;background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;padding:14px 16px;margin:0 0 18px">
+<div style="font-weight:600;margin-bottom:5px;color:#7c3a11">The one non-negotiable</div>
+<div style="font-size:14px;line-height:1.55;color:#7c3a11">Two-way sync deletes user files. A remote deletion removes the local file <strong>permanently</strong> — not to trash — and folder deletions are recursive. The persistent safety banner, the dry-run gate before the first sync, and the typed <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">DELETE</code> confirmation before applying a destructive plan are product requirements, not decoration. Do not ship the UI without them.</div>
+</div>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">2 · Architecture: the UI is a thin client</h2>
+
+<p style="margin:0 0 14px">The GUI owns no sync logic and no index. It reads state and issues four commands. Three data sources cover every screen:</p>
+
+<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 18px">
+<thead><tr style="border-bottom:2px solid #cbd5e1"><th style="text-align:left;padding:8px 10px 8px 0;font-weight:600;width:26%">Source</th><th style="text-align:left;padding:8px 10px;font-weight:600;width:30%">Path</th><th style="text-align:left;padding:8px 0 8px 10px;font-weight:600">Used for</th></tr></thead>
+<tbody>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:8px 10px 8px 0;vertical-align:top"><strong>Control socket</strong></td><td style="padding:8px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">$XDG_RUNTIME_DIR/proton-sync.sock</td><td style="padding:8px 0 8px 10px;vertical-align:top">Live status, history, and the pause / resume / sync-now commands. Newline-delimited JSON, mode 0600, one client at a time.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:8px 10px 8px 0;vertical-align:top"><strong>State files</strong></td><td style="padding:8px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">&lt;local_root&gt;/.sync/</td><td style="padding:8px 0 8px 10px;vertical-align:top">The sync index (per-path state, sizes, timestamps, remote ids) behind the activity ledger and the file-manager emblems.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:8px 10px 8px 0;vertical-align:top"><strong>Config</strong></td><td style="padding:8px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">~/.config/proton-sync/proton-sync.toml</td><td style="padding:8px 0 8px 10px;vertical-align:top">Everything in Settings. Written by the UI at 0600; saving restarts the daemon.</td></tr>
+<tr><td style="padding:8px 10px 8px 0;vertical-align:top"><strong>Journal</strong></td><td style="padding:8px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">journalctl --user -u proton-syncd</td><td style="padding:8px 0 8px 10px;vertical-align:top">The "Open journal" / "View journal" actions and error detail beyond the last-error string.</td></tr>
+</tbody>
+</table>
+
+<p style="margin:0 0 14px">Poll <code style="font-family:'IBM Plex Mono',monospace;font-size:13.5px;background:#f1f4f9;padding:1px 5px;border-radius:4px">status</code> on a short interval (2 s while the window is focused, 10 s when it is not) and treat a socket error as its own UI state — never as zeroes. Section 6 covers this.</p>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">3 · Screen contract</h2>
+
+<p style="margin:0 0 16px">Each screen below lists its dynamic elements against the field or file that supplies them. Field names are the daemon's own, so they can be grepped in the repo.</p>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.1 Overview</h3>
+<p style="margin:0 0 12px;font-size:14px">The default tab. Answers three questions in order: is it working, does it need me, what did it just do.</p>
+<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 16px">
+<thead><tr style="border-bottom:2px solid #cbd5e1"><th style="text-align:left;padding:8px 10px 8px 0;font-weight:600;width:36%">Element</th><th style="text-align:left;padding:8px 10px;font-weight:600;width:32%">Source</th><th style="text-align:left;padding:8px 0 8px 10px;font-weight:600">Notes</th></tr></thead>
+<tbody>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Title-bar state pill</td><td style="padding:7px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">status</td><td style="padding:7px 0 7px 10px;vertical-align:top">Verbatim daemon string. Dot colour per section 6.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Headline and sub-line</td><td style="padding:7px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">status, message, last_sync</td><td style="padding:7px 0 7px 10px;vertical-align:top">Copy is fixed per state — see section 6, not free-form.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Hexagon centre number</td><td style="padding:7px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">pending_changes</td><td style="padding:7px 0 7px 10px;vertical-align:top">Em-dash when the socket is unreachable.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Hexagon arcs</td><td style="padding:7px 10px;vertical-align:top">derived</td><td style="padding:7px 0 7px 10px;vertical-align:top">Upper arc amber when uploads are in flight, lower arc cyan for downloads; both muted when paused; track-grey when idle or down. Rotation only while transfers run.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Transfer rows + bar</td><td style="padding:7px 10px;vertical-align:top">gap — see §4</td><td style="padding:7px 0 7px 10px;vertical-align:top">Current file name is inferable from the daemon's <code style="font-family:'IBM Plex Mono',monospace;font-size:12.5px">[i/N]</code> progress logging; byte-level percentage is not available yet.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Primary / secondary buttons</td><td style="padding:7px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">syncnow, pause, resume</td><td style="padding:7px 0 7px 10px;vertical-align:top">Label and action both vary by state (section 6). Show the daemon's <code style="font-family:'IBM Plex Mono',monospace;font-size:12.5px">ok</code>/<code style="font-family:'IBM Plex Mono',monospace;font-size:12.5px">message</code> reply as the confirmation strip.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">"Needs you" card</td><td style="padding:7px 10px;vertical-align:top">sidecar scan</td><td style="padding:7px 0 7px 10px;vertical-align:top">Count of unresolved <code style="font-family:'IBM Plex Mono',monospace;font-size:12.5px">*.proton-cloud.*</code> files. Hidden at zero.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Four stat tiles</td><td style="padding:7px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">pending_changes, conflicts, destructive_actions, skipped_unsupported</td><td style="padding:7px 0 7px 10px;vertical-align:top">The field name is printed under each label on purpose — this audience greps.</td></tr>
+<tr><td style="padding:7px 10px 7px 0;vertical-align:top">Activity ledger</td><td style="padding:7px 10px;vertical-align:top;font-family:'IBM Plex Mono',monospace;font-size:12.5px">sync_index.db + status_history</td><td style="padding:7px 0 7px 10px;vertical-align:top">Last pass's actions, newest first. Filter chip counts must derive from the rows actually shown.</td></tr>
+</tbody>
+</table>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.2 Activity</h3>
+<p style="margin:0 0 14px;font-size:14px">The same ledger at full height with the filter chips promoted to the header. One row per planned or executed action: <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">upload</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">download</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">move_local</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">move_remote</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">conflict</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">skip_unsupported</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">auto_link</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">error</code>. Action colour carries direction (section 7); the row never relies on colour alone, the action name is always present.</p>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.3 Conflicts</h3>
+<p style="margin:0 0 12px;font-size:14px">The engine's conflict handling is non-destructive: when both sides changed, it keeps the local file and writes the remote copy beside it as <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">name.proton-cloud.ext</code>. Resolution therefore needs <strong>no new IPC verb</strong> — it is ordinary file work the UI performs on disk:</p>
+<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px">
+<thead><tr style="border-bottom:2px solid #cbd5e1"><th style="text-align:left;padding:8px 10px 8px 0;font-weight:600;width:30%">Choice</th><th style="text-align:left;padding:8px 0 8px 10px;font-weight:600">File operation</th></tr></thead>
+<tbody>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0">Keep mine</td><td style="padding:7px 0 7px 10px">Delete the sidecar. The local file uploads on the next pass.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0">Use Proton's</td><td style="padding:7px 0 7px 10px">Move the sidecar over the original, replacing it.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0">Keep both</td><td style="padding:7px 0 7px 10px">Rename the local file to <code style="font-family:'IBM Plex Mono',monospace;font-size:12.5px">name.local.ext</code>, then move the sidecar into place. Both then exist on both sides.</td></tr>
+<tr><td style="padding:7px 10px 7px 0">Decide later</td><td style="padding:7px 0 7px 10px">Nothing on disk. Still counts as outstanding everywhere in the UI.</td></tr>
+</tbody>
+</table>
+<p style="margin:0 0 14px;font-size:14px">Choices are staged and applied together, so a mis-click is recoverable before anything is written. Text files get a line-level diff; binaries show size and timestamp only, never a fabricated preview. Every conflict counter in the window — sidebar badge, tab header, Needs-you card, stat tile, ledger chip — must read from the same unresolved set. Disagreeing counts destroy trust faster than a missing feature.</p>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.4 Plan preview (dry run)</h3>
+<p style="margin:0 0 12px;font-size:14px">Runs the daemon with <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">--dry-run</code> and renders the JSON plan: a summary of every counter, then one row per action with path and remote id. Destructive rows are tinted and sorted to the top. Selecting a row explains, in plain words, why the planner chose it — index state plus what changed on each side.</p>
+<p style="margin:0 0 14px;font-size:14px">The Apply button stays inert until the user types <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">DELETE</code> whenever <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">destructive_actions &gt; 0</code>; with no destructive actions, Apply is enabled directly. After applying, the footer states what was executed, including the destructive count.</p>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.5 History</h3>
+<p style="margin:0 0 14px;font-size:14px">A reverse-chronological list of <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">status_history</code> entries with a per-entry summary. The daemon keeps the last 20 in memory, so the UI must state that limit rather than implying a full audit log; longer history comes from the journal.</p>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.6 Settings</h3>
+<p style="margin:0 0 12px;font-size:14px">A direct editor for the TOML, grouped: folders (<code style="font-family:'IBM Plex Mono',monospace;font-size:13px">local_root</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">remote_root</code>), schedule (<code style="font-family:'IBM Plex Mono',monospace;font-size:13px">scan_interval_secs</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">events_driven</code>), selective sync (include / exclude globs), the CLI (path, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">proton_timeout_secs</code>, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">proton_list_attempts</code>), and service startup.</p>
+<p style="margin:0 0 14px;font-size:14px">Selective sync is presented twice over one source of truth: a folder tree whose checkboxes write exclude globs, and an advanced disclosure exposing the raw patterns with live match counts. Exclude beats include, and <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">.sync/</code> is always ignored — state both in the UI. Changing a root re-bootstraps the index, so that path forces a dry run before the daemon restarts.</p>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.7 Tray indicator</h3>
+<p style="margin:0 0 14px;font-size:14px">An AppIndicator menu carrying the status line, <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">pending_changes</code>, conflict count, and the same actions as the window. Its glyph is symbolic and monochrome-safe with five states: up to date, syncing, paused, needs attention, daemon unreachable. When the socket is unreachable the menu collapses to Start service / View journal / Settings and shows no stale counters. "Quit" closes the window only — the daemon keeps running, and the menu says so.</p>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.8 Onboarding</h3>
+<p style="margin:0 0 14px;font-size:14px">Four steps: verify the <code style="font-family:'IBM Plex Mono',monospace;font-size:13px">proton-drive</code> CLI is present and authenticated, choose the folder pair, review the dry-run plan, start the service. The first pass is a non-destructive merge and the copy should say so plainly, while still requiring the explicit acknowledgement that deletions later propagate both ways. Nothing syncs before that checkbox and the plan review.</p>
+
+<h3 style="font-size:16px;font-weight:600;margin:22px 0 8px">3.9 File-manager emblems</h3>
+<p style="margin:0 0 14px;font-size:14px">Five 16 px symbolic emblems — synced, syncing, conflict, excluded, paused — for Nautilus (Python extension), Nemo, and Dolphin (KIO overlay). They read the sync index plus a per-path status query, and ship as optional per-distro packages rather than inside the Flatpak.</p>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">4 · Gaps the engine does not cover yet</h2>
+
+<p style="margin:0 0 14px">Everything above is buildable on today's engine except the following. Each is a deliberate design bet on work the daemon does not do yet; decide each one before building the screen that depends on it.</p>
+
+<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 18px">
+<thead><tr style="border-bottom:2px solid #cbd5e1"><th style="text-align:left;padding:8px 10px 8px 0;font-weight:600;width:30%">UI expects</th><th style="text-align:left;padding:8px 10px;font-weight:600;width:26%">Engine today</th><th style="text-align:left;padding:8px 0 8px 10px;font-weight:600">Suggested resolution</th></tr></thead>
+<tbody>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Per-file transfer percentage</td><td style="padding:7px 10px;vertical-align:top">Only <code style="font-family:'IBM Plex Mono',monospace;font-size:12.5px">[i/N]</code> file counts</td><td style="padding:7px 0 7px 10px;vertical-align:top">Ship file-count progress first; add byte progress to the status payload later. Do not fake a percentage.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Remote folder browser</td><td style="padding:7px 10px;vertical-align:top">No listing verb on the socket</td><td style="padding:7px 0 7px 10px;vertical-align:top">The UI can shell the CLI directly for listings, or the daemon gains a read-only <code style="font-family:'IBM Plex Mono',monospace;font-size:12.5px">list</code> command.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Apply a reviewed plan</td><td style="padding:7px 10px;vertical-align:top">Dry run and real run are separate invocations</td><td style="padding:7px 0 7px 10px;vertical-align:top">Either accept that Apply triggers a fresh pass (the plan may differ — re-run and re-confirm if it does), or add a plan token the daemon can execute.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Live event push</td><td style="padding:7px 10px;vertical-align:top">Request/response only</td><td style="padding:7px 0 7px 10px;vertical-align:top">Polling is adequate at these intervals; revisit only if the UI feels laggy.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Multiple folder pairs</td><td style="padding:7px 10px;vertical-align:top">One root pair, one daemon per user</td><td style="padding:7px 0 7px 10px;vertical-align:top">The pair selector and header are already shaped for many; ship one and leave the affordance.</td></tr>
+<tr><td style="padding:7px 10px 7px 0;vertical-align:top">Auth state detection</td><td style="padding:7px 10px;vertical-align:top">Surfaces as CLI call failures</td><td style="padding:7px 0 7px 10px;vertical-align:top">Pattern-match the auth error to drive the "sign-in expired" state, or have the daemon classify it.</td></tr>
+</tbody>
+</table>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">5 · Interaction rules</h2>
+
+<ul style="margin:0 0 18px;padding-left:20px">
+<li style="margin-bottom:7px">Every command is optimistic in the UI but confirmed by the daemon's reply, shown as a dismissible strip below the safety banner. If the reply does not arrive, revert the optimistic state.</li>
+<li style="margin-bottom:7px">Pause and Resume are one button whose label follows the state. Never show both.</li>
+<li style="margin-bottom:7px">Conflict choices are staged, not applied on click; the footer counts what will be written, and each decided file offers "Change choice" until Apply.</li>
+<li style="margin-bottom:7px">Destructive confirmation is typed, not a checkbox, and the gate copy names the specific file that will be lost.</li>
+<li style="margin-bottom:7px">Resolve links anywhere in the app open the Conflicts tab with that file already selected. No dead-end links.</li>
+<li style="margin-bottom:7px">Any list that can overflow scrolls. A clipped last row in a sync client reads as data loss.</li>
+<li>Follow the system light/dark preference; the theme is a palette swap over one layout, not two designs.</li>
+</ul>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">6 · State matrix</h2>
+
+<p style="margin:0 0 14px">Six states, all reachable in the prototype. The two rightmost are where sync clients usually lie to their users; the rule is that unknown must never render as zero.</p>
+
+<table style="width:100%;border-collapse:collapse;font-size:13px;margin:0 0 18px">
+<thead><tr style="border-bottom:2px solid #cbd5e1"><th style="text-align:left;padding:8px 8px 8px 0;font-weight:600;width:15%">State</th><th style="text-align:left;padding:8px 8px;font-weight:600;width:25%">Headline</th><th style="text-align:left;padding:8px 8px;font-weight:600;width:18%">Actions</th><th style="text-align:left;padding:8px 0 8px 8px;font-weight:600">Counters and banner</th></tr></thead>
+<tbody>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 8px 7px 0;vertical-align:top">Syncing</td><td style="padding:7px 8px;vertical-align:top">Syncing N of M files</td><td style="padding:7px 8px;vertical-align:top">Sync now · Pause</td><td style="padding:7px 0 7px 8px;vertical-align:top">Live; safety banner only.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 8px 7px 0;vertical-align:top">Up to date</td><td style="padding:7px 8px;vertical-align:top">Everything is up to date</td><td style="padding:7px 8px;vertical-align:top">Sync now · Pause</td><td style="padding:7px 0 7px 8px;vertical-align:top">Pending 0; last-sync time is the reassurance. No transfer rows.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 8px 7px 0;vertical-align:top">Paused</td><td style="padding:7px 8px;vertical-align:top">Syncing is paused</td><td style="padding:7px 8px;vertical-align:top">Resume</td><td style="padding:7px 0 7px 8px;vertical-align:top">Counters retained and honest; banner states edits are still tracked. Arcs muted.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 8px 7px 0;vertical-align:top">Auth expired</td><td style="padding:7px 8px;vertical-align:top">Proton sign-in expired</td><td style="padding:7px 8px;vertical-align:top">Re-authenticate · Pause</td><td style="padding:7px 0 7px 8px;vertical-align:top">Counters from the last good pass; amber banner; no transfer rows.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 8px 7px 0;vertical-align:top">Daemon down</td><td style="padding:7px 8px;vertical-align:top">Can't reach the sync daemon</td><td style="padding:7px 8px;vertical-align:top">Start proton-syncd · View journal</td><td style="padding:7px 0 7px 8px;vertical-align:top">All counters em-dash, ledger explicitly empty, red banner confirming files are untouched.</td></tr>
+<tr><td style="padding:7px 8px 7px 0;vertical-align:top">First run</td><td style="padding:7px 8px;vertical-align:top">Nothing has synced yet</td><td style="padding:7px 8px;vertical-align:top">Preview plan · Choose folders</td><td style="padding:7px 0 7px 8px;vertical-align:top">Em-dashes, empty ledger explaining why, banner promising a non-destructive first pass.</td></tr>
+</tbody>
+</table>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">7 · Visual specification</h2>
+
+<p style="margin:0 0 14px">The palette derives from the repo's own icon: warm orange is local and upload, cyan is remote and download. That mapping is the core of the visual language — apply it to arcs, arrows, action names, diff panes and emblems alike, and never use it decoratively. Red is reserved exclusively for destructive actions.</p>
+
+<table style="width:100%;border-collapse:collapse;font-size:13px;margin:0 0 16px">
+<thead><tr style="border-bottom:2px solid #cbd5e1"><th style="text-align:left;padding:8px 8px 8px 0;font-weight:600;width:24%">Role</th><th style="text-align:left;padding:8px 8px;font-weight:600;width:20%">Dark</th><th style="text-align:left;padding:8px 8px;font-weight:600;width:20%">Light</th><th style="text-align:left;padding:8px 0 8px 8px;font-weight:600">Applied to</th></tr></thead>
+<tbody>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:6px 8px 6px 0">Window background</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#0b1220</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#f7f8fa</td><td style="padding:6px 0 6px 8px">Root surface</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:6px 8px 6px 0">Card / panel</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#111b2e</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#ffffff</td><td style="padding:6px 0 6px 8px">Cards, ledger, tiles</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:6px 8px 6px 0">Chrome / sidebar</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#101a2c / #0e1728</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#ffffff / #fbfcfd</td><td style="padding:6px 0 6px 8px">Title bar, sidebar, footer</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:6px 8px 6px 0">Border</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#22304c / #1c2942</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#e3e7ee</td><td style="padding:6px 0 6px 8px">Card edges, dividers</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:6px 8px 6px 0">Body text</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#e6edf7 / #c7d4ea</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#1e293b / #334155</td><td style="padding:6px 0 6px 8px">Primary, secondary</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:6px 8px 6px 0">Muted text</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#8a9bb8 / #64748b / #5b6d8c</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#64748b / #94a3b8</td><td style="padding:6px 0 6px 8px">Meta, field names</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:6px 8px 6px 0"><strong>Local / upload</strong></td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#e55b2b → #f59e0b</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">same fill · text #b45309</td><td style="padding:6px 0 6px 8px">Up arc, uploads, primary button, "your version" pane</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:6px 8px 6px 0"><strong>Remote / download</strong></td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#06b6d4 → #3b82f6</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">fill #0891b2 · text #0e7490</td><td style="padding:6px 0 6px 8px">Down arc, downloads, healthy status, Proton pane</td></tr>
+<tr><td style="padding:6px 8px 6px 0"><strong>Destructive</strong></td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#ef4444 · text #fca5a5</td><td style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:12px">#dc2626 · text #b91c1c</td><td style="padding:6px 0 6px 8px">Deletes, purges, errors, the armed Apply button — nothing else</td></tr>
+</tbody>
+</table>
+
+<p style="margin:0 0 14px"><strong>Type.</strong> IBM Plex Sans for interface text; IBM Plex Mono for every path, glob, field name, timestamp, id and count — the mono/sans split tells the user at a glance which strings are literal engine values. Sizes: 17 px semibold status headline, 15 px section titles, 12.5–13 px body and controls, 11–12 px mono metadata, 10 px uppercase labels with 0.08em tracking. Never below 10 px.</p>
+
+<p style="margin:0 0 14px"><strong>Geometry.</strong> Radii 12 px cards, 10 px tiles, 7 px buttons and inputs, 999 px pills. Padding 18–20 px in cards, 12–16 px in rows, 8–11 px in list items. Gaps 16 px between cards, 12 px between tiles, 6–9 px inside control groups. Sidebar 214 px, conflict rail 236 px, action column 140 px, title bar 42 px, status footer 30 px. Reference window 1040 × 764.</p>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">8 · Packaging</h2>
+
+<p style="margin:0 0 14px">Fedora is the development target; Ubuntu and Arch are first-class. Flatpak is the primary channel because it covers all three from one build, with native packages for users who prefer them: RPM (Fedora, via COPR), deb (Ubuntu), and a PKGBUILD on the AUR. All wrap the same daemon and CLI binaries plus the systemd user unit.</p>
+
+<p style="margin:0 0 14px">Two Flatpak-specific consequences the UI must handle: the sandbox needs explicit access to the chosen sync folder and to the host <code style="font-family:'IBM Plex Mono',monospace;font-size:13.5px">proton-drive</code> binary, and the file-manager emblem extensions cannot ship inside the Flatpak — they are separate distro packages, so treat emblems as an enhancement and never the only signal of sync state. Because one daemon per user account is enforced by a global lock, the UI should surface the lock holder rather than failing silently when a second instance is attempted.</p>
+
+<h2 style="font-size:20px;font-weight:600;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e7ee">9 · Where the designs live</h2>
+
+<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 16px">
+<thead><tr style="border-bottom:2px solid #cbd5e1"><th style="text-align:left;padding:8px 10px 8px 0;font-weight:600;width:34%">Reference</th><th style="text-align:left;padding:8px 0 8px 10px;font-weight:600">What it contains</th></tr></thead>
+<tbody>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Option 5a</td><td style="padding:7px 0 7px 10px;vertical-align:top">The build target: complete app shell, all six tabs, tray popover, working DELETE gate, both themes, all six daemon states.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Option 2a</td><td style="padding:7px 0 7px 10px;vertical-align:top">Conflict resolution in isolation, including the binary-file case.</td></tr>
+<tr style="border-bottom:1px solid #eef1f6"><td style="padding:7px 10px 7px 0;vertical-align:top">Options 1e–1l</td><td style="padding:7px 0 7px 10px;vertical-align:top">Tray icon states, onboarding (two flows), full dry-run review with the explain panel, full settings including the glob editor, file-manager emblems and notifications.</td></tr>
+<tr><td style="padding:7px 10px 7px 0;vertical-align:top">Option 1d</td><td style="padding:7px 0 7px 10px;vertical-align:top">Three status metaphors, if the hexagon needs revisiting.</td></tr>
+</tbody>
+</table>
+
+<p style="margin:0 0 8px;font-size:13.5px;color:#475569">Prototypes are HTML design references, not production code — recreate them in whatever toolkit you choose. Where this document and a prototype disagree, the prototype is right about appearance and this document is right about data.</p>
+
+</div>
+</doc-page>
+</x-dc>
+</body>
+</html>
