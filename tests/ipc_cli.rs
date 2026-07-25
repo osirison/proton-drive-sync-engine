@@ -271,6 +271,13 @@ mod unix_tests {
                 // Keep these process-level tests on the full-tree snapshot path (the default is
                 // now event-driven, which would try to read the CLI keyring session at startup).
                 .arg("--no-events-driven")
+                // Isolate the user-global single-instance lock per test: `default_global_lock_path`
+                // keys on `$XDG_STATE_HOME`, so pointing it at this test's tempdir stops parallel
+                // ipc_cli daemons contending on one machine-global lock (they would else exit 1).
+                .env(
+                    "XDG_STATE_HOME",
+                    lockfile_path.parent().expect("lockfile has a parent dir"),
+                )
                 .env("RUST_LOG", "error")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())

@@ -58,7 +58,13 @@ pub struct DaemonConfig {
     pub remote_root: PathBuf,
     pub db_path: PathBuf,
     pub socket_path: PathBuf,
+    /// Per-root instance lock (`<local_root>/.sync/proton-sync.lock` by default): stops two daemons
+    /// syncing the *same* root.
     pub lockfile_path: PathBuf,
+    /// User-global single-instance lock (`paths::default_global_lock_path`): stops a *second*
+    /// daemon anywhere for this user, because they all shell the same `proton-drive` CLI whose
+    /// shared SQLite cache/session store is not concurrency-safe (`SQLITE_BUSY`; #23).
+    pub global_lock_path: PathBuf,
     pub scan_interval: Duration,
     pub proton_cli: PathBuf,
     pub proton_timeout: Duration,
@@ -97,7 +103,11 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// Number of successful incremental (event-driven) passes since the last full-tree snapshot.
     /// Drives the mandatory periodic safety resync (`events_full_scan_every`).
     incremental_passes_since_full_scan: u64,
+    /// Per-root instance lock; released on drop. Held for the daemon's whole lifetime.
     _lock_guard: LockGuard,
+    /// User-global single-instance lock; released on drop. Held for the daemon's whole lifetime so
+    /// no second daemon for this user can start and race the shared `proton-drive` cache (#23).
+    _global_lock_guard: LockGuard,
 }
 
 #[derive(Debug, Serialize)]
@@ -186,6 +196,17 @@ impl<C: ProtonClient> Daemon<C> {
             fs::create_dir_all(parent)?;
         }
         let lock_guard = LockGuard::acquire(&config.lockfile_path)?;
+        // Then the user-global lock, so a second daemon started for a *different* root (its per-root
+        // lock above would succeed) still cannot run: every daemon shells the same `proton-drive`
+        // CLI, whose shared SQLite cache/session store is not concurrency-safe (#23). A crashed
+        // daemon leaves only an unlocked file behind, which `acquire` reuses — restart still works.
+        let global_lock_guard = LockGuard::acquire(&config.global_lock_path).map_err(|error| {
+            boxed_error(format!(
+                "cannot start: {error}. Only one proton-syncd may run per user account — every \
+                 daemon shells the same proton-drive CLI, whose SQLite cache and session store are \
+                 not safe for concurrent use (#23). Stop the other daemon first."
+            ))
+        })?;
         let connection = open_database(&config.db_path)?;
         let scan_options = scan_options_from_config(&config)?;
         let status_history_path = status_history_path(&config.db_path);
@@ -225,6 +246,7 @@ impl<C: ProtonClient> Daemon<C> {
             event_source,
             incremental_passes_since_full_scan,
             _lock_guard: lock_guard,
+            _global_lock_guard: global_lock_guard,
         };
         daemon.write_metrics_snapshot()?;
         Ok(daemon)
@@ -2152,6 +2174,7 @@ mod tests {
             db_path: directory.path().join("missing.db"),
             socket_path: directory.path().join("daemon.sock"),
             lockfile_path: directory.path().join("daemon.lock"),
+            global_lock_path: directory.path().join("single-instance.lock"),
             scan_interval: Duration::from_secs(300),
             proton_cli: PathBuf::from("proton-drive"),
             proton_timeout: Duration::from_secs(60),
@@ -3945,6 +3968,60 @@ mod tests {
         drop(guard);
     }
 
+    #[test]
+    fn second_daemon_is_rejected_by_the_user_global_lock_even_across_roots() {
+        // Two daemons for the SAME user but DIFFERENT roots: their per-root locks differ (both
+        // would succeed), yet the second must still be refused because they share the proton-drive
+        // CLI's SQLite cache/session store (#23). Only the global_lock_path is shared here, so it
+        // is provably the discriminator — everything else (root, socket, per-root lock, db) differs.
+        let session = tempdir().expect("tempdir");
+        let shared_global = session.path().join("single-instance.lock");
+
+        let make = |name: &str| -> (DaemonConfig, PathBuf) {
+            let state_dir = session.path().join(format!("state-{name}"));
+            let local_root = session.path().join(format!("root-{name}"));
+            fs::create_dir_all(&state_dir).expect("state dir");
+            fs::create_dir_all(&local_root).expect("local root");
+            let mut config = test_config(&state_dir, &local_root);
+            config.global_lock_path = shared_global.clone();
+            (config, local_root)
+        };
+
+        let (config_a, _root_a) = make("a");
+        let (config_b, _root_b) = make("b");
+
+        let (client_a, _) = RecordingProtonClient::new(HashMap::new());
+        let daemon_a = Daemon::with_client(config_a, client_a).expect("first daemon starts");
+
+        let (client_b, _) = RecordingProtonClient::new(HashMap::new());
+        let second = Daemon::with_client(config_b, client_b);
+        assert!(
+            second.is_err(),
+            "a second daemon for this user must be rejected even with a different root/socket"
+        );
+        drop(daemon_a);
+    }
+
+    #[test]
+    fn a_stale_global_lock_file_does_not_block_startup() {
+        // A SIGKILLed daemon leaves its global lock FILE behind but the OS releases the flock. The
+        // stale, unlocked file must not block a restart (mirrors `lock_guard_reuses_stale_lockfile`
+        // for the per-root lock).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("root");
+        fs::create_dir_all(&local_root).expect("local root");
+        let mut config = test_config(directory.path(), &local_root);
+        config.global_lock_path = directory.path().join("single-instance.lock");
+        fs::write(&config.global_lock_path, b"").expect("stale global lock file");
+
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(config, client);
+        assert!(
+            daemon.is_ok(),
+            "a stale (unlocked) global lock file must not block startup"
+        );
+    }
+
     fn test_config(directory: &Path, local_root: &Path) -> DaemonConfig {
         DaemonConfig {
             local_root: local_root.to_path_buf(),
@@ -3952,6 +4029,7 @@ mod tests {
             db_path: directory.join("sync_index.db"),
             socket_path: directory.join("daemon.sock"),
             lockfile_path: directory.join("daemon.lock"),
+            global_lock_path: directory.join("single-instance.lock"),
             scan_interval: Duration::from_secs(300),
             proton_cli: PathBuf::from("proton-drive"),
             proton_timeout: Duration::from_secs(60),
