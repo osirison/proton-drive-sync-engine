@@ -1,7 +1,7 @@
 use crate::{AppResult, boxed_error};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fmt;
@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS remote_event_cursor (
     last_event_id TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS delete_approvals (
+    path BLOB NOT NULL,
+    direction TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    approved_at INTEGER NOT NULL,
+    PRIMARY KEY (path, direction)
+);
 "#;
 
 /// Speeds up [`path_for_proton_id`] (turning a volume event's node id into its local path).
@@ -34,7 +41,7 @@ CREATE TABLE IF NOT EXISTS remote_event_cursor (
 const PROTON_ID_INDEX: &str =
     "CREATE INDEX IF NOT EXISTS idx_file_index_proton_id ON file_index(proton_id);";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
     File,
@@ -624,6 +631,101 @@ pub fn clear_event_cursor(connection: &Connection, scope_id: &str) -> AppResult<
     Ok(())
 }
 
+/// A user's standing approval for one pending deletion, from the `delete_approvals` table. The
+/// `fingerprint` pins the approval to the *exact* thing the user saw (a file's baseline SHA-1, or a
+/// directory's `proton_id`): if the entity's content changes before the delete is applied, the
+/// re-derived action no longer matches and the stale approval is inert. `path` + `direction` is the
+/// primary key, so approving a path twice replaces the prior approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteApproval {
+    pub path: PathBuf,
+    pub direction: crate::sync::DeleteDirection,
+    pub fingerprint: String,
+    pub approved_at: i64,
+}
+
+/// Records (or replaces) the user's approval to delete `path` in `direction`.
+pub fn upsert_delete_approval(
+    connection: &Connection,
+    path: &Path,
+    direction: crate::sync::DeleteDirection,
+    fingerprint: &str,
+    approved_at: i64,
+) -> AppResult<()> {
+    connection.execute(
+        r#"
+        INSERT INTO delete_approvals (path, direction, fingerprint, approved_at)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(path, direction) DO UPDATE SET
+            fingerprint = excluded.fingerprint,
+            approved_at = excluded.approved_at
+        "#,
+        params![
+            index_key(path),
+            direction.as_str(),
+            fingerprint,
+            approved_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// Whether the user has a standing approval for exactly this deletion — same path, same direction,
+/// and same `fingerprint`. A mismatched fingerprint (the entity changed since approval) does not
+/// match, so a stale approval never authorizes a different deletion.
+pub fn matching_delete_approval(
+    connection: &Connection,
+    path: &Path,
+    direction: crate::sync::DeleteDirection,
+    fingerprint: &str,
+) -> AppResult<bool> {
+    let mut statement = connection.prepare(
+        "SELECT 1 FROM delete_approvals WHERE path = ?1 AND direction = ?2 AND fingerprint = ?3",
+    )?;
+    let found = statement
+        .query_row(
+            params![index_key(path), direction.as_str(), fingerprint],
+            |_row| Ok(()),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// Removes any approval for `path` in `direction`. Used both to *consume* an approval inside the
+/// post-success reconcile transaction (once the delete has actually run) and to *revoke* one on a
+/// `deny`. A no-op when none exists.
+pub fn delete_delete_approval(
+    connection: &Connection,
+    path: &Path,
+    direction: crate::sync::DeleteDirection,
+) -> AppResult<()> {
+    connection.execute(
+        "DELETE FROM delete_approvals WHERE path = ?1 AND direction = ?2",
+        params![index_key(path), direction.as_str()],
+    )?;
+    Ok(())
+}
+
+/// All standing approvals (unordered). Used for status/inspection and tests.
+pub fn load_delete_approvals(connection: &Connection) -> AppResult<Vec<DeleteApproval>> {
+    let mut statement = connection
+        .prepare("SELECT path, direction, fingerprint, approved_at FROM delete_approvals")?;
+    let approvals = statement
+        .query_map([], |row| {
+            let direction: String = row.get(1)?;
+            Ok(DeleteApproval {
+                path: read_index_key_column(row, 0)?,
+                direction: direction.parse().map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, err)
+                })?,
+                fingerprint: row.get(2)?,
+                approved_at: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(approvals)
+}
+
 pub fn scan_local_files(root: &Path) -> AppResult<HashMap<PathBuf, LocalFileState>> {
     let options = ScanOptions::new(root, &[], &[], &[])?;
     scan_local_files_with_options(root, &options)
@@ -719,10 +821,11 @@ fn should_ignore_relative_path(relative_path: &Path) -> bool {
     {
         return true;
     }
-    matches!(
-        relative_path.file_name().and_then(|value| value.to_str()),
-        Some("sync_index.db")
-    )
+    // The per-directory settings file is machine-local policy: ignore it at any depth (like the
+    // legacy DB name) so it is never scanned, planned, base-index-filtered, or watched for upload.
+    let file_name = relative_path.file_name().and_then(|value| value.to_str());
+    file_name == Some("sync_index.db")
+        || file_name == Some(crate::dirconfig::DIRECTORY_CONFIG_FILE_NAME)
 }
 
 /// True when `relative_path` is the per-root `.sync` state directory or anything inside it (the
@@ -1196,6 +1299,81 @@ mod tests {
         assert_eq!(loaded.sha1_hash, None);
         assert_eq!(loaded.proton_id.as_deref(), Some("remote-dir-id"));
         assert_eq!(loaded.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn delete_approval_round_trip_matches_only_the_same_fingerprint() {
+        use crate::sync::DeleteDirection;
+
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+
+        upsert_delete_approval(
+            &connection,
+            Path::new("notes.txt"),
+            DeleteDirection::Local,
+            "hash-a",
+            100,
+        )
+        .expect("upsert approval");
+
+        // Exact match (path + direction + fingerprint) is approved.
+        assert!(
+            matching_delete_approval(
+                &connection,
+                Path::new("notes.txt"),
+                DeleteDirection::Local,
+                "hash-a"
+            )
+            .expect("match")
+        );
+        // A different fingerprint (the file changed since approval) must NOT match.
+        assert!(
+            !matching_delete_approval(
+                &connection,
+                Path::new("notes.txt"),
+                DeleteDirection::Local,
+                "hash-b"
+            )
+            .expect("match")
+        );
+        // The other direction is a distinct, independently-keyed approval.
+        assert!(
+            !matching_delete_approval(
+                &connection,
+                Path::new("notes.txt"),
+                DeleteDirection::Remote,
+                "hash-a"
+            )
+            .expect("match")
+        );
+
+        // Consuming (or revoking) removes it.
+        delete_delete_approval(&connection, Path::new("notes.txt"), DeleteDirection::Local)
+            .expect("delete approval");
+        assert!(
+            !matching_delete_approval(
+                &connection,
+                Path::new("notes.txt"),
+                DeleteDirection::Local,
+                "hash-a"
+            )
+            .expect("match")
+        );
+        assert!(
+            load_delete_approvals(&connection)
+                .expect("load approvals")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn per_directory_config_file_is_ignored_at_any_depth() {
+        assert!(should_ignore_path(Path::new(".proton-sync.toml")));
+        assert!(should_ignore_path(Path::new("a/b/.proton-sync.toml")));
+        // A same-named directory or unrelated file is not ignored.
+        assert!(!should_ignore_path(Path::new("a/proton-sync.toml")));
+        assert!(!should_ignore_path(Path::new("notes.txt")));
     }
 
     #[cfg(unix)]

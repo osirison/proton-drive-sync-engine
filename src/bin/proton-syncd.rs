@@ -52,6 +52,11 @@ struct Cli {
     /// Force a full-tree resync every N incremental passes (event-driven mode only).
     #[arg(long = "events-full-scan-every", value_name = "N")]
     events_full_scan_every: Option<u64>,
+    /// Disable the delete-approval guard globally (both directions). By default deletions are
+    /// withheld pending approval; set this to let every delete apply automatically. For finer
+    /// control, use `[delete_approval]` in the config file or per-directory `.proton-sync.toml`.
+    #[arg(long = "no-delete-approval")]
+    no_delete_approval: bool,
 }
 
 #[tokio::main]
@@ -126,6 +131,7 @@ impl From<Cli> for DaemonConfigInput {
             events_driven: cli.events_driven,
             no_events_driven: cli.no_events_driven,
             events_full_scan_every: cli.events_full_scan_every,
+            no_delete_approval: cli.no_delete_approval,
         }
     }
 }

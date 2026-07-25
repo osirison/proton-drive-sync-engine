@@ -1,9 +1,10 @@
 use crate::AppResult;
-use crate::sync::PlanSummary;
+use crate::index::EntityKind;
+use crate::sync::{DeleteDirection, PlanSummary};
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -15,11 +16,32 @@ pub enum ControlCommand {
     Pause,
     Resume,
     Syncnow,
+    /// Approve pending deletions so they apply on the next sync. The `argument` on the request
+    /// selects the target: a relative path, or `"all"` for every currently-pending deletion.
+    Approve,
+    /// Revoke a prior approval (before it has applied). Same `argument` selector as `Approve`.
+    Deny,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ControlRequest {
     pub command: ControlCommand,
+    /// Optional argument for commands that need one (`Approve`/`Deny`). `#[serde(default)]` keeps
+    /// the wire shape backward-compatible: older clients that omit it still parse.
+    #[serde(default)]
+    pub argument: Option<String>,
+}
+
+/// One withheld deletion surfaced to the user for review. `path` + `direction` identify it for an
+/// `approve`; `fingerprint` (a file's baseline SHA-1 or a directory's `proton_id`) is what the
+/// approval is pinned to, so it cannot later authorize a different deletion at the same path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingDeletion {
+    pub path: PathBuf,
+    pub direction: DeleteDirection,
+    pub entity_kind: EntityKind,
+    pub fingerprint: String,
+    pub detected_epoch_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,6 +55,10 @@ pub struct ControlResponse {
     pub last_plan_summary: Option<PlanSummary>,
     pub last_successful_sync_summary: Option<PlanSummary>,
     pub status_history: Vec<StatusHistoryEntry>,
+    /// Deletions currently withheld by the delete-approval guard, awaiting the user's approval.
+    /// `#[serde(default)]` so a response from an older daemon (without the field) still parses.
+    #[serde(default)]
+    pub pending_deletions: Vec<PendingDeletion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,13 +97,31 @@ pub async fn bind_listener(socket_path: &Path) -> AppResult<UnixListener> {
     Ok(listener)
 }
 
+/// Sends a no-argument control command. Thin wrapper over [`send_request`] kept for the commands
+/// that carry no argument (`status`/`pause`/`resume`/`syncnow`).
 #[cfg(unix)]
 pub async fn send_command(
     socket_path: &Path,
     command: ControlCommand,
 ) -> AppResult<ControlResponse> {
+    send_request(
+        socket_path,
+        ControlRequest {
+            command,
+            argument: None,
+        },
+    )
+    .await
+}
+
+/// Sends a full control request (used by commands that carry an `argument`, e.g. `approve <path>`).
+#[cfg(unix)]
+pub async fn send_request(
+    socket_path: &Path,
+    request: ControlRequest,
+) -> AppResult<ControlResponse> {
     let mut stream = UnixStream::connect(socket_path).await?;
-    let request = serde_json::to_vec(&ControlRequest { command })?;
+    let request = serde_json::to_vec(&request)?;
     stream.write_all(&request).await?;
     stream.write_all(b"\n").await?;
     let mut reader = BufReader::new(stream);

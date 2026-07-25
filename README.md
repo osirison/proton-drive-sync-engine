@@ -180,7 +180,7 @@ exclude = ["**/*.tmp"]
 dry_run = false
 ```
 
-Every daemon flag has a matching config key. In addition to the keys shown above, `db_path`, `socket_path`, and `lockfile_path` may be set in the config file; when omitted they fall back to the XDG defaults. Keys also accept hyphenated aliases (for example `local-root`), and unknown keys are rejected so typos fail fast.
+Every daemon flag has a matching config key. In addition to the keys shown above, `db_path`, `socket_path`, and `lockfile_path` may be set in the config file; when omitted they fall back to the XDG defaults. The `[delete_approval]` table (`remote`/`local`, both defaulting to `true`) sets the daemon-wide default for the [delete-approval guard](#delete-approval); the `--no-delete-approval` flag is the CLI equivalent of setting both to `false`. Keys also accept hyphenated aliases (for example `local-root`), and unknown keys are rejected so typos fail fast.
 
 Explicit CLI flags override values from the config file. For example, you can keep normal settings in `proton-sync.toml` and run one filtered preview with `--config proton-sync.toml --include 'Documents/**' --dry-run`. Use `--no-dry-run` when a config file sets `dry_run = true` but you want to start the daemon normally. Note that `--include` and `--exclude` are each all-or-nothing: passing `--include` on the command line replaces the config file's include list entirely (and, independently, `--exclude` replaces the exclude list) rather than adding to it, so repeat every pattern in that list you still want. The two lists are independent — passing only `--include` leaves the config file's `exclude` patterns in effect.
 
@@ -291,8 +291,11 @@ When `--socket-path` is omitted, the control CLI uses the same default socket pa
 | `pause` | Pauses automatic and manual sync work until resumed |
 | `resume` | Resumes sync work |
 | `syncnow` | Triggers reconciliation immediately when the daemon is not paused |
+| `pending` | Lists deletions currently withheld by the delete-approval guard (see [Delete approval](#delete-approval)) |
+| `approve <path> \| --all` | Approves a withheld deletion (or all) so it applies on the next sync |
+| `deny <path> \| --all` | Revokes a prior approval before it has applied |
 
-Responses are JSON so scripts can consume them directly. The `status`, `pause`, `resume`, and `syncnow` commands print the full response object:
+Responses are JSON so scripts can consume them directly. The `status`, `pause`, `resume`, and `syncnow` commands print the full response object (the `pending`, `approve`, and `deny` commands print human-readable text instead):
 
 ```json
 {
@@ -304,7 +307,8 @@ Responses are JSON so scripts can consume them directly. The `status`, `pause`, 
   "last_error": null,
   "last_plan_summary": null,
   "last_successful_sync_summary": null,
-  "status_history": []
+  "status_history": [],
+  "pending_deletions": []
 }
 ```
 
@@ -388,6 +392,41 @@ A deletion is only propagated when the other side has **not** changed since the 
 
 Preview any run with `--dry-run` and check the `destructive_actions` count before letting the daemon run unattended.
 
+### Delete approval
+
+On top of the delete/edit safeguard above, a **delete-approval guard** withholds destructive actions until you approve them. It is **on by default** and **directional**, so you decide each direction independently:
+
+* `remote` — approval to delete a file **on Proton Drive** because you removed it locally (a `RemoteDelete`).
+* `local` — approval to delete a file **on your local disk** because it was removed/trashed on Proton Drive (a `LocalDelete`, the permanent-local-delete direction).
+
+(Index-only cleanup — dropping a stale record once both sides are already gone — destroys no data and is never gated.)
+
+While a deletion is guarded, the daemon withholds it and lists it for you:
+
+```bash
+proton-sync pending                 # show what is withheld, and which direction
+proton-sync approve notes/old.txt   # approve one; applies on the next sync
+proton-sync approve --all           # approve everything currently pending
+proton-sync deny notes/old.txt      # revoke an approval before it applies
+proton-sync syncnow                 # apply approved deletions now
+```
+
+An approval is pinned to exactly what you saw (a file's last-synced content hash, or a folder's remote id): if the file changes before the delete applies, the approval no longer matches and nothing is deleted. Nothing is ever deleted while a deletion sits unapproved.
+
+**Per-directory settings.** The guard's default comes from the daemon config (`[delete_approval]` in the config file, or `--no-delete-approval` to turn both directions off globally). You can override it for any subtree by dropping a `.proton-sync.toml` file in a directory:
+
+```toml
+# <local_root>/Downloads/.proton-sync.toml
+# Let deletions under Downloads/ flow without approval, in both directions.
+[delete_approval]
+remote = false
+local = false
+```
+
+A directory file applies to that directory and everything beneath it, and the **nearest** file wins over shallower ones — the same inheritance model as `.gitignore`. Any option a file leaves unset inherits from its parent. Changes take effect on the next reconcile (within the events poll interval, or immediately with `proton-sync syncnow`).
+
+These files are **machine-local**: they are ignored by sync and never uploaded to Proton Drive, so a file on the remote can never silently weaken your local delete protection. A malformed or unreadable settings file is ignored and the guard stays on (fail-safe).
+
 ### Change detection
 
 Changes are detected by SHA-1 content hash where Proton Drive exposes a digest. To avoid re-reading and re-hashing an unchanged tree on every periodic scan, the daemon uses a quick-check: a local file whose size and modification time both match the last synced record is assumed unchanged and its stored hash is reused. As a consequence, a change that somehow preserves both the byte size and the whole-second mtime of a file is not noticed until the next size- or mtime-changing edit — the same trade-off `rsync` makes by default.
@@ -420,6 +459,7 @@ Until you resolve it, the conflicting path is left as-is on both sides so no edi
 * The daemon rejects absolute, parent-directory, and root-escaping remote paths before joining them to the local sync root.
 * Local destination writes are also symlink-aware: before writing a downloaded or created entry, the daemon resolves the deepest existing parent and refuses the write if it would land outside the sync root through a symlinked directory. (The scanner likewise skips symlinks, so they are never uploaded.)
 * Selective sync filters are applied before planning, so excluded index records are not purged as missing files.
+* The delete-approval guard is on by default and withholds deletions (in both directions) until you approve them; it fails safe (stays on) when a per-directory settings file is malformed, and those settings files are never synced. See [Delete approval](#delete-approval).
 * The IPC socket is restricted to mode `0600` after binding, and control-connection reads and writes are bounded by a timeout so an idle or stalled client cannot stall the daemon.
 * The advisory lockfile prevents two live daemon instances from using the same configuration at once.
 * The daemon shells out to the configured `proton-drive` executable. Use a trusted executable path.

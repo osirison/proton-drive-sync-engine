@@ -1,13 +1,15 @@
+use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
     EntityKind, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
-    load_event_cursor, load_existing_index, load_index, local_directory_state, local_file_state,
-    mark_modified, open_database, path_for_proton_id, purge_record,
-    scan_local_entities_reusing_hashes, store_event_cursor, upsert_record,
+    delete_delete_approval, load_event_cursor, load_existing_index, load_index,
+    local_directory_state, local_file_state, mark_modified, matching_delete_approval,
+    open_database, path_for_proton_id, purge_record, scan_local_entities_reusing_hashes,
+    store_event_cursor, upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
-    ControlCommand, ControlRequest, ControlResponse, StatusHistoryEntry, bind_listener,
-    read_request, write_response,
+    ControlCommand, ControlRequest, ControlResponse, PendingDeletion, StatusHistoryEntry,
+    bind_listener, read_request, write_response,
 };
 use crate::proton::{
     CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity, RemoteListingStatus,
@@ -15,7 +17,7 @@ use crate::proton::{
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
-    PlanSummary, PlannedAction, SyncAction, directory_move_descendant_path_pairs,
+    DeleteDirection, PlanSummary, PlannedAction, SyncAction, directory_move_descendant_path_pairs,
     is_strict_descendant, original_from_conflict_copy, plan_sync_entities,
 };
 use crate::{AppResult, boxed_error};
@@ -26,6 +28,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -79,6 +82,13 @@ pub struct DaemonConfig {
     /// Bounds any completeness gap inherited from a missed snapshot item or the reuse-session
     /// staleness window, and backfills `proton_id` for just-uploaded nodes. Clamped to `>= 1`.
     pub events_full_scan_every: u64,
+    /// Daemon-wide default for the directional delete-approval guard — the root of the
+    /// per-directory `.proton-sync.toml` inheritance chain (see `crate::dirconfig`). When `true`, a
+    /// deletion propagating to Proton Drive (`RemoteDelete`) is withheld pending user approval.
+    pub delete_approval_remote: bool,
+    /// As `delete_approval_remote`, but for a deletion propagating to the local disk
+    /// (`LocalDelete`) — the remote-trash-deletes-your-local-file direction.
+    pub delete_approval_local: bool,
 }
 
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
@@ -103,6 +113,10 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// Number of successful incremental (event-driven) passes since the last full-tree snapshot.
     /// Drives the mandatory periodic safety resync (`events_full_scan_every`).
     incremental_passes_since_full_scan: u64,
+    /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
+    /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
+    /// plan; surfaced over IPC (`proton-sync pending`) and in the metrics sidecar.
+    pending_deletions: Vec<PendingDeletion>,
     /// Per-root instance lock; released on drop. Held for the daemon's whole lifetime.
     _lock_guard: LockGuard,
     /// User-global single-instance lock; released on drop. Held for the daemon's whole lifetime so
@@ -121,6 +135,7 @@ struct MetricsSnapshot {
     last_plan_summary: Option<PlanSummary>,
     last_successful_sync_summary: Option<PlanSummary>,
     status_history_entries: usize,
+    pending_deletions: Vec<PendingDeletion>,
 }
 
 pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
@@ -245,6 +260,7 @@ impl<C: ProtonClient> Daemon<C> {
             ipc_io_timeout: IPC_IO_TIMEOUT,
             event_source,
             incremental_passes_since_full_scan,
+            pending_deletions: Vec::new(),
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
         };
@@ -480,6 +496,16 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
             }
+            ControlCommand::Approve => {
+                let message = self.apply_approval_command(request.argument.as_deref(), true)?;
+                info!(argument = ?request.argument, "delete approval recorded");
+                self.status_response(&message)
+            }
+            ControlCommand::Deny => {
+                let message = self.apply_approval_command(request.argument.as_deref(), false)?;
+                info!(argument = ?request.argument, "delete approval revoked");
+                self.status_response(&message)
+            }
         };
         Ok(response)
     }
@@ -499,6 +525,7 @@ impl<C: ProtonClient> Daemon<C> {
             last_plan_summary: self.last_plan_summary.clone(),
             last_successful_sync_summary: self.last_successful_sync_summary.clone(),
             status_history: self.status_history.clone(),
+            pending_deletions: self.pending_deletions.clone(),
         }
     }
 
@@ -607,9 +634,19 @@ impl<C: ProtonClient> Daemon<C> {
             ));
         }
 
-        // Idle: no remote changes and no pending local changes → advance the cursor and skip the
-        // local stat-walk and planning entirely.
-        if delta.changes.is_empty() && self.pending_changes.is_empty() {
+        // Idle: no remote changes, no pending local changes, and nothing withheld awaiting approval
+        // → advance the cursor and skip the local stat-walk and planning entirely. The pending-
+        // deletions guard matters for a withheld `RemoteDelete` (a *local* deletion): it is tracked
+        // via `pending_changes`, which the prior pass cleared on commit, and it produces no remote
+        // event — so without this clause the next pass would idle-skip planning and never re-derive
+        // it, leaving an approved delete unapplied until the periodic bootstrap. Forcing a plan here
+        // re-derives it from ground truth every pass (and recomputes the pending list), so an
+        // approval applies on the very next reconcile; once resolved, the pass goes idle again. (A
+        // withheld `LocalDelete` is already non-idle: the held cursor keeps its event in the delta.)
+        if delta.changes.is_empty()
+            && self.pending_changes.is_empty()
+            && self.pending_deletions.is_empty()
+        {
             if delta.latest_event_id != cursor.last_event_id {
                 store_event_cursor(
                     &self.connection,
@@ -813,6 +850,30 @@ impl<C: ProtonClient> Daemon<C> {
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
         let plan_summary = PlanSummary::from_plan(&plan);
         self.last_plan_summary = Some(plan_summary.clone());
+
+        // Delete-approval gate: decide, per destructive action, whether to execute it now or
+        // withhold it pending the user's approval (see `decide_delete_gate`). This filters the
+        // plan at execution time; the planner itself stays pure.
+        let DeleteGate {
+            withheld_paths,
+            pending,
+            consumed_approvals,
+        } = self.decide_delete_gate(&plan, base_index)?;
+        // A withheld deletion originates from ground truth (a remote-delete event, or a missing
+        // local file). If any deletion is withheld this pass, do NOT advance the event cursor:
+        // otherwise a withheld `LocalDelete`'s originating event would fall out of future deltas
+        // (reconstruct overlays only the *new* delta onto the surviving baseline) and the pending
+        // item would vanish from the queue until the next full-tree resync. Holding the cursor
+        // keeps every pending deletion re-derived from ground truth each pass, so an approval
+        // applies promptly and the queue never goes stale. The cursor resumes advancing the first
+        // pass with nothing withheld.
+        let cursor_update = if withheld_paths.is_empty() {
+            cursor_update
+        } else {
+            None
+        };
+        self.pending_deletions = pending;
+
         info!(
             planned_actions = plan_summary.total,
             uploads = plan_summary.uploads,
@@ -820,6 +881,7 @@ impl<C: ProtonClient> Daemon<C> {
             conflicts = plan_summary.conflicts,
             skipped_unsupported = plan_summary.skipped_unsupported,
             destructive_actions = plan_summary.destructive_actions,
+            blocked_awaiting_approval = self.pending_deletions.len(),
             "sync plan computed"
         );
 
@@ -1136,6 +1198,11 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 SyncAction::RemoteDelete => {
+                    if withheld_paths.contains(&action.path) {
+                        // Guard on here and not yet approved: skip the deletion AND its index
+                        // mutation, so nothing is lost and it re-plans (still pending) next pass.
+                        continue;
+                    }
                     action.remote_id.as_deref().ok_or_else(|| {
                         boxed_error(format!(
                             "planned remote delete for {} is missing a remote id",
@@ -1158,6 +1225,11 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                 }
                 SyncAction::LocalDelete => {
+                    if withheld_paths.contains(&action.path) {
+                        // Guard on here and not yet approved: skip the deletion AND its index
+                        // mutation, so nothing is lost and it re-plans (still pending) next pass.
+                        continue;
+                    }
                     let Some(destination) = safe_local_path(&self.config.local_root, &action.path)
                     else {
                         warn!(
@@ -1210,6 +1282,12 @@ impl<C: ProtonClient> Daemon<C> {
                 current_epoch_secs() as i64,
             )?;
         }
+        // Consume the approvals whose deletions we just performed — in the SAME post-success
+        // transaction as the index mutations, so a mid-plan failure (which returns early above)
+        // leaves the approval intact and the delete retried next pass.
+        for (path, direction) in &consumed_approvals {
+            delete_delete_approval(&transaction, path, *direction)?;
+        }
         transaction.commit()?;
         // `pending_changes` only drives status reporting - planning always performs a
         // fresh full scan regardless of its contents - so it is safe, simpler, and
@@ -1226,6 +1304,111 @@ impl<C: ProtonClient> Daemon<C> {
         self.last_successful_sync_summary = Some(plan_summary);
         info!("reconciliation completed");
         Ok(())
+    }
+
+    /// Decides, for every destructive action in `plan`, whether to execute it now or withhold it
+    /// pending the user's approval. A directory-scoped [`DirectoryConfigResolver`] (rooted at the
+    /// daemon-wide default) says whether the direction is guarded at each path; a guarded deletion
+    /// executes only if the user has a standing approval matching its exact `fingerprint`, which is
+    /// then queued for consumption. Everything else is withheld and reported as pending. `Purge`
+    /// (index-only, no data loss) has no delete direction and is never gated.
+    fn decide_delete_gate(
+        &self,
+        plan: &[PlannedAction],
+        base_index: &HashMap<PathBuf, FileRecord>,
+    ) -> AppResult<DeleteGate> {
+        let mut resolver = DirectoryConfigResolver::new(
+            &self.config.local_root,
+            EffectiveSettings {
+                require_remote_delete_approval: self.config.delete_approval_remote,
+                require_local_delete_approval: self.config.delete_approval_local,
+            },
+        );
+        let mut gate = DeleteGate::default();
+        let now = current_epoch_secs();
+        for action in plan {
+            let Some(direction) = action.action.delete_direction() else {
+                continue;
+            };
+            let is_directory = action.entity_kind == EntityKind::Directory;
+            if !resolver
+                .resolve(&action.path, is_directory)
+                .requires_approval(direction)
+            {
+                continue; // guard off for this path/direction → execute normally
+            }
+            let fingerprint = delete_fingerprint(action, base_index);
+            if matching_delete_approval(&self.connection, &action.path, direction, &fingerprint)? {
+                gate.consumed_approvals
+                    .push((action.path.clone(), direction));
+            } else {
+                gate.withheld_paths.insert(action.path.clone());
+                gate.pending.push(PendingDeletion {
+                    path: action.path.clone(),
+                    direction,
+                    entity_kind: action.entity_kind,
+                    fingerprint,
+                    detected_epoch_secs: now,
+                });
+            }
+        }
+        Ok(gate)
+    }
+
+    /// Applies an `approve`/`deny` control command against the currently-pending deletions. The
+    /// `selector` must be an explicit relative path, or the literal `"all"` for every pending item.
+    /// A missing selector is rejected as a no-op: acting on "all" must be a deliberate choice, so an
+    /// accidentally-omitted argument from any IPC client can never approve every deletion at once.
+    /// Approving records a standing approval keyed to the pending item's exact fingerprint (so it
+    /// authorizes only that deletion); denying revokes any such approval. Only paths that are
+    /// *currently pending* are acted on, so a bogus argument is a harmless no-op and no unvalidated
+    /// path is ever stored.
+    fn apply_approval_command(&self, selector: Option<&str>, approve: bool) -> AppResult<String> {
+        let Some(selector) = selector else {
+            return Ok(
+                "no target: pass a relative path, or \"all\" to act on every pending deletion"
+                    .to_owned(),
+            );
+        };
+        // `None` here means the explicit "all" selector (every pending item); a plain path filters
+        // to that one item.
+        let target = Some(selector).filter(|value| !value.eq_ignore_ascii_case("all"));
+        let matches: Vec<&PendingDeletion> = self
+            .pending_deletions
+            .iter()
+            .filter(|pending| match target {
+                Some(path) => pending.path == Path::new(path),
+                None => true,
+            })
+            .collect();
+
+        if matches.is_empty() {
+            return Ok(match target {
+                Some(path) => format!("no pending deletion matches '{path}'"),
+                None => "no deletions are pending approval".to_owned(),
+            });
+        }
+
+        let now = current_epoch_secs() as i64;
+        for pending in &matches {
+            if approve {
+                upsert_delete_approval(
+                    &self.connection,
+                    &pending.path,
+                    pending.direction,
+                    &pending.fingerprint,
+                    now,
+                )?;
+            } else {
+                delete_delete_approval(&self.connection, &pending.path, pending.direction)?;
+            }
+        }
+
+        let verb = if approve { "approved" } else { "denied" };
+        Ok(format!(
+            "{verb} {} pending deletion(s); run `proton-sync syncnow` to apply now",
+            matches.len()
+        ))
     }
 
     fn record_status_history(&mut self, message: &str) {
@@ -1272,6 +1455,7 @@ impl<C: ProtonClient> Daemon<C> {
             last_plan_summary: self.last_plan_summary.clone(),
             last_successful_sync_summary: self.last_successful_sync_summary.clone(),
             status_history_entries: self.status_history.len(),
+            pending_deletions: self.pending_deletions.clone(),
         }
     }
 
@@ -1284,6 +1468,34 @@ impl<C: ProtonClient> Daemon<C> {
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs())
     }
+}
+
+/// The outcome of applying the delete-approval guard to a plan (see
+/// [`Daemon::decide_delete_gate`]). `withheld_paths` are the destructive actions the execution loop
+/// must skip; `pending` is the user-facing view of those; `consumed_approvals` are the approvals to
+/// delete once the deletions they authorized have actually run.
+#[derive(Default)]
+struct DeleteGate {
+    withheld_paths: HashSet<PathBuf>,
+    pending: Vec<PendingDeletion>,
+    consumed_approvals: Vec<(PathBuf, DeleteDirection)>,
+}
+
+/// The stable identity of the entity a deletion would remove, used to pin an approval to exactly
+/// what the user saw: a file's last-synced SHA-1, else a directory's `proton_id`, else the action's
+/// remote id. If the entity changes before the delete applies, the fingerprint no longer matches
+/// and any earlier approval is inert.
+fn delete_fingerprint(action: &PlannedAction, base_index: &HashMap<PathBuf, FileRecord>) -> String {
+    base_index
+        .get(&action.path)
+        .and_then(|record| {
+            record
+                .sha1_hash
+                .clone()
+                .or_else(|| record.proton_id.clone())
+        })
+        .or_else(|| action.remote_id.clone())
+        .unwrap_or_default()
 }
 
 enum IndexMutation {
@@ -2183,6 +2395,8 @@ mod tests {
             exclude_patterns: Vec::new(),
             events_driven: false,
             events_full_scan_every: 20,
+            delete_approval_remote: false,
+            delete_approval_local: false,
         };
 
         let plan = preview_plan_with_client(&config, &FakeProtonClient { remote_files })
@@ -2870,6 +3084,384 @@ mod tests {
                 .expect("index lookup")
                 .is_none(),
             "remote delete should purge the index record"
+        );
+    }
+
+    // --- delete-approval guard --------------------------------------------------------------
+
+    /// `test_config` with the guard ON for both directions (production default).
+    fn guarded_config(directory: &Path, local_root: &Path) -> DaemonConfig {
+        DaemonConfig {
+            delete_approval_remote: true,
+            delete_approval_local: true,
+            ..test_config(directory, local_root)
+        }
+    }
+
+    #[test]
+    fn guard_withholds_a_local_delete_and_preserves_the_file_and_index() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("keep.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            local_path.exists(),
+            "the guard must not delete the local file without approval"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("keep.txt"))
+                .expect("lookup")
+                .is_some(),
+            "the base record must survive so the delete re-plans next pass"
+        );
+        assert!(operations.lock().expect("ops").is_empty());
+        assert_eq!(daemon.pending_deletions.len(), 1);
+        assert_eq!(
+            daemon.pending_deletions[0].direction,
+            DeleteDirection::Local
+        );
+        assert_eq!(daemon.pending_deletions[0].path, PathBuf::from("keep.txt"));
+    }
+
+    #[test]
+    fn approve_without_a_selector_is_a_no_op_and_never_approves_everything() {
+        // A missing argument (e.g. from a non-CLI IPC client) must not approve all pending
+        // deletions; only an explicit "all" does.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("keep.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+        daemon.reconcile_blocking().expect("reconcile");
+        assert_eq!(daemon.pending_deletions.len(), 1, "a deletion is pending");
+
+        // No selector → no-op: nothing is approved even though something is pending.
+        let message = daemon
+            .apply_approval_command(None, true)
+            .expect("no-selector approve");
+        assert!(
+            message.contains("no target"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "a missing selector must not approve any deletion"
+        );
+
+        // Explicit "all" is the deliberate way to approve everything pending.
+        daemon
+            .apply_approval_command(Some("all"), true)
+            .expect("approve all");
+        assert_eq!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .len(),
+            1,
+            "an explicit \"all\" approves the pending deletion"
+        );
+    }
+
+    #[test]
+    fn guard_withholds_a_remote_delete_until_approved_then_applies_it() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        // Local file gone, remote still present, synced baseline → RemoteDelete.
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("removed.txt"),
+            remote("removed.txt", "remote-id", Some("base-hash")),
+        );
+        let (client, operations) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("removed.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("first reconcile");
+        assert!(
+            operations.lock().expect("ops").is_empty(),
+            "the remote delete must be withheld pending approval"
+        );
+        assert_eq!(daemon.pending_deletions.len(), 1);
+        let pending = daemon.pending_deletions[0].clone();
+        assert_eq!(pending.direction, DeleteDirection::Remote);
+
+        // Approve exactly this deletion (path + direction + fingerprint), then reconcile again.
+        upsert_delete_approval(
+            &daemon.connection,
+            &pending.path,
+            pending.direction,
+            &pending.fingerprint,
+            1,
+        )
+        .expect("approve");
+
+        daemon.reconcile_blocking().expect("second reconcile");
+        assert!(
+            operations
+                .lock()
+                .expect("ops")
+                .contains(&RecordedOperation::Delete {
+                    remote_path: PathBuf::from("/Drive/RemoteFolder/removed.txt"),
+                }),
+            "an approved remote delete must apply on the next reconcile"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("removed.txt"))
+                .expect("lookup")
+                .is_none(),
+            "the applied delete purges the index record"
+        );
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "the approval is consumed once the delete has applied"
+        );
+        assert!(daemon.pending_deletions.is_empty());
+    }
+
+    #[test]
+    fn a_directory_config_opts_a_subtree_out_of_the_guard() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("keep.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        // A root config disables the local-delete guard for the whole tree. It is ignored by the
+        // scanner, so it is never itself planned for upload.
+        fs::write(
+            local_root.join(".proton-sync.toml"),
+            "[delete_approval]\nlocal = false\n",
+        )
+        .expect("directory config");
+
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            !local_path.exists(),
+            "a subtree opted out of the guard must delete without approval"
+        );
+        assert!(daemon.pending_deletions.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_directory_config_keeps_the_guard_on() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("keep.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        fs::write(local_root.join(".proton-sync.toml"), "not = = valid toml")
+            .expect("directory config");
+
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            local_path.exists() && daemon.pending_deletions.len() == 1,
+            "a malformed directory config must fail safe and keep the delete withheld"
+        );
+    }
+
+    #[test]
+    fn a_withheld_local_delete_holds_the_event_cursor() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let base = sha1_bytes(b"base");
+        fs::write(local_root.join("a.txt"), b"base").expect("local file");
+
+        // A remote delete event for the baseline node → the planner derives a LocalDelete.
+        let client = EventFakeClient::new(HashMap::new());
+        let full_walks = Arc::clone(&client.full_walks);
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Deleted, "na", None, false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                delete_approval_local: true,
+                delete_approval_remote: true,
+                ..event_config(directory.path(), &local_root)
+            },
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![page],
+            ))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("a.txt", Some("vol~na"), base.as_str()),
+        )
+        .expect("seed base record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+
+        daemon.reconcile_blocking().expect("incremental reconcile");
+
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0, "stayed incremental");
+        assert!(
+            local_root.join("a.txt").exists(),
+            "the withheld local delete must not touch the file"
+        );
+        assert_eq!(daemon.pending_deletions.len(), 1);
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor present");
+        assert_eq!(
+            cursor.last_event_id, "cursor-0",
+            "the cursor must NOT advance while a destructive action is withheld, so the pending \
+             delete keeps re-deriving from ground truth every pass"
+        );
+    }
+
+    #[test]
+    fn an_approved_remote_delete_applies_on_the_next_incremental_pass() {
+        // Regression (event-driven / default mode): a withheld RemoteDelete is *local*-origin —
+        // tracked via `pending_changes` (cleared on commit) and generating no remote event — so an
+        // empty-delta incremental pass must not idle-skip planning while it is pending. Otherwise
+        // `approve` + `syncnow` would not apply it until the periodic bootstrap.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        // No local file: it was synced, then deleted locally → RemoteDelete.
+
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                delete_approval_local: true,
+                delete_approval_remote: true,
+                ..event_config(directory.path(), &local_root)
+            },
+            client,
+            // Empty pages on every fetch: a local deletion generates no remote event.
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed base record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        // The watcher would have observed the local deletion, so the first pass is not idle.
+        daemon.pending_changes.insert(PathBuf::from("keep.txt"));
+
+        // Pass 1: withhold.
+        daemon
+            .reconcile_blocking()
+            .expect("first incremental reconcile");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0, "stayed incremental");
+        assert_eq!(daemon.pending_deletions.len(), 1);
+        let pending = daemon.pending_deletions[0].clone();
+        assert_eq!(pending.direction, DeleteDirection::Remote);
+
+        // Pass 2: empty delta and `pending_changes` now cleared, but still pending → must re-derive
+        // (not idle-skip), so the queue stays fresh.
+        daemon
+            .reconcile_blocking()
+            .expect("second incremental reconcile");
+        assert_eq!(
+            daemon.pending_deletions.len(),
+            1,
+            "an empty-delta pass must re-derive the still-pending remote delete"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("keep.txt"))
+                .expect("lookup")
+                .is_some(),
+            "nothing is deleted while unapproved"
+        );
+
+        // Approve, then reconcile once more with the same empty delta: it must apply now.
+        upsert_delete_approval(
+            &daemon.connection,
+            &pending.path,
+            pending.direction,
+            &pending.fingerprint,
+            1,
+        )
+        .expect("approve");
+
+        daemon
+            .reconcile_blocking()
+            .expect("third incremental reconcile");
+        assert!(
+            get_record(&daemon.connection, Path::new("keep.txt"))
+                .expect("lookup")
+                .is_none(),
+            "an approved remote delete must apply on the next incremental pass, not wait for a \
+             periodic bootstrap"
+        );
+        assert!(daemon.pending_deletions.is_empty());
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "the approval is consumed once applied"
+        );
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "no full walk was needed"
         );
     }
 
@@ -4038,6 +4630,11 @@ mod tests {
             exclude_patterns: Vec::new(),
             events_driven: false,
             events_full_scan_every: 20,
+            // Default the general test fixture to guard-OFF so existing delete-propagation tests
+            // keep asserting the delete actually happens. The dedicated gate tests below build a
+            // config with the guard on explicitly.
+            delete_approval_remote: false,
+            delete_approval_local: false,
         }
     }
 
