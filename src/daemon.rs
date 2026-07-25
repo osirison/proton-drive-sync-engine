@@ -1356,12 +1356,23 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Applies an `approve`/`deny` control command against the currently-pending deletions. The
-    /// `selector` is a relative path, or `None`/`"all"` for every pending item. Approving records a
-    /// standing approval keyed to the pending item's exact fingerprint (so it authorizes only that
-    /// deletion); denying revokes any such approval. Only paths that are *currently pending* are
-    /// acted on, so a bogus argument is a harmless no-op and no unvalidated path is ever stored.
+    /// `selector` must be an explicit relative path, or the literal `"all"` for every pending item.
+    /// A missing selector is rejected as a no-op: acting on "all" must be a deliberate choice, so an
+    /// accidentally-omitted argument from any IPC client can never approve every deletion at once.
+    /// Approving records a standing approval keyed to the pending item's exact fingerprint (so it
+    /// authorizes only that deletion); denying revokes any such approval. Only paths that are
+    /// *currently pending* are acted on, so a bogus argument is a harmless no-op and no unvalidated
+    /// path is ever stored.
     fn apply_approval_command(&self, selector: Option<&str>, approve: bool) -> AppResult<String> {
-        let target = selector.filter(|value| !value.eq_ignore_ascii_case("all"));
+        let Some(selector) = selector else {
+            return Ok(
+                "no target: pass a relative path, or \"all\" to act on every pending deletion"
+                    .to_owned(),
+            );
+        };
+        // `None` here means the explicit "all" selector (every pending item); a plain path filters
+        // to that one item.
+        let target = Some(selector).filter(|value| !value.eq_ignore_ascii_case("all"));
         let matches: Vec<&PendingDeletion> = self
             .pending_deletions
             .iter()
@@ -3123,6 +3134,55 @@ mod tests {
             DeleteDirection::Local
         );
         assert_eq!(daemon.pending_deletions[0].path, PathBuf::from("keep.txt"));
+    }
+
+    #[test]
+    fn approve_without_a_selector_is_a_no_op_and_never_approves_everything() {
+        // A missing argument (e.g. from a non-CLI IPC client) must not approve all pending
+        // deletions; only an explicit "all" does.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("keep.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+        daemon.reconcile_blocking().expect("reconcile");
+        assert_eq!(daemon.pending_deletions.len(), 1, "a deletion is pending");
+
+        // No selector → no-op: nothing is approved even though something is pending.
+        let message = daemon
+            .apply_approval_command(None, true)
+            .expect("no-selector approve");
+        assert!(
+            message.contains("no target"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "a missing selector must not approve any deletion"
+        );
+
+        // Explicit "all" is the deliberate way to approve everything pending.
+        daemon
+            .apply_approval_command(Some("all"), true)
+            .expect("approve all");
+        assert_eq!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .len(),
+            1,
+            "an explicit \"all\" approves the pending deletion"
+        );
     }
 
     #[test]
