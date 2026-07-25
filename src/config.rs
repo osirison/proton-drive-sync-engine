@@ -79,7 +79,12 @@ pub struct FileConfig {
 
 /// The `[delete_approval]` table in the daemon config file. Names the *target* of the deletion
 /// being gated; unset directions default to protected.
+///
+/// `deny_unknown_fields` must be repeated here: serde's deny on [`FileConfig`] does not recurse
+/// into nested tables, so without it a typo like `remot = false` would be silently ignored and
+/// the guard would stay on despite the user's intent (#64).
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileDeleteApproval {
     remote: Option<bool>,
     local: Option<bool>,
@@ -254,6 +259,18 @@ fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
     if config.remote_root.as_os_str().is_empty() {
         return Err(boxed_error("remote_root must not be empty"));
     }
+    // Unlike db_path/lockfile_path, a relative socket_path is *not* resolved under local_root —
+    // the control socket must not live under the sync root (see `paths::default_socket_path`).
+    // Used verbatim, a relative value would bind against the daemon's current working directory,
+    // so reject it outright. The XDG default is always absolute; only explicit overrides hit this.
+    if !config.socket_path.is_absolute() {
+        return Err(boxed_error(format!(
+            "socket_path must be an absolute path, got relative `{}`: a relative socket path \
+             would resolve against the daemon's working directory; pass an absolute path (for \
+             example under $XDG_RUNTIME_DIR)",
+            config.socket_path.display()
+        )));
+    }
     ScanOptions::new(
         &config.local_root,
         std::slice::from_ref(&config.db_path),
@@ -391,6 +408,71 @@ include = ["config/**"]
         assert_eq!(
             config.lockfile_path,
             PathBuf::from("/run/user/1000/custom.lock")
+        );
+    }
+
+    #[test]
+    fn relative_socket_path_from_config_file_returns_targeted_config_error() {
+        // Unlike db_path/lockfile_path, socket_path is never resolved under local_root (the socket
+        // must not live in the sync root), so a relative value would bind against the daemon's
+        // CWD. It must be rejected with an actionable error instead (#63).
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+socket_path = "run/daemon.sock"
+"#,
+        )
+        .expect("write config");
+
+        let error = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("relative socket_path from the config file should fail");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("socket_path must be an absolute path")
+                && message.contains("run/daemon.sock"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn relative_socket_path_from_cli_flag_returns_targeted_config_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            socket_path: Some(PathBuf::from("relative.sock")),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("relative socket_path from the CLI flag should fail");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("socket_path must be an absolute path")
+                && message.contains("relative.sock"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn absolute_socket_path_override_is_used_as_is() {
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            socket_path: Some(PathBuf::from("/run/user/1000/custom.sock")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert_eq!(
+            config.socket_path,
+            PathBuf::from("/run/user/1000/custom.sock")
         );
     }
 
@@ -553,6 +635,41 @@ remote = false
         assert!(
             config.delete_approval_local,
             "an unset local direction must stay protected by default"
+        );
+    }
+
+    #[test]
+    fn typoed_key_inside_delete_approval_table_fails_to_load() {
+        // serde's `deny_unknown_fields` on `FileConfig` does not recurse into nested tables, so
+        // the nested struct must carry its own deny — otherwise `remot = false` would be silently
+        // dropped and the guard would stay on despite the user's intent (#64).
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+[delete_approval]
+remot = false
+"#,
+        )
+        .expect("write config");
+
+        let error = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("a typoed [delete_approval] key must fail to load");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("failed to parse config"),
+            "error must point at the config file: {message}"
+        );
+        assert!(
+            message.contains("unknown field `remot`"),
+            "error must name the unknown key so the typo is findable: {message}"
         );
     }
 
