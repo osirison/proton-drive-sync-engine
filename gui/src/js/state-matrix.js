@@ -23,7 +23,7 @@ export const STATE_MATRIX = {
     ],
     showTransfers: false,
     countersUnknown: false,
-    pillMono: "running",
+    pillMono: "idle",
   },
   paused: {
     headline: "Syncing is paused",

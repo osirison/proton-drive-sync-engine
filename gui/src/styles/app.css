@@ -18,6 +18,15 @@ body {
   color: var(--text-1);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Content is selectable/copyable (paths, globs, ids, errors, config all matter to this audience);
+   only non-textual chrome controls opt out of selection. */
+.nav-row,
+.tb-btn,
+.btn,
+.chip,
+.state-pill {
   user-select: none;
 }
 

@@ -30,6 +30,10 @@
  */
 
 :root {
+  /* Dark is the default palette; declare it so UA-native controls/scrollbars match even when
+     no `data-theme` attribute is present. */
+  color-scheme: dark;
+
   /* ---- non-colour tokens (theme-independent) ---- */
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -111,6 +115,7 @@
 /* Light palette when the system prefers it AND the toggle has not overridden. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
+    color-scheme: light;
     --bg: #f7f8fa;
     --card: #ffffff;
     --chrome: #ffffff;
