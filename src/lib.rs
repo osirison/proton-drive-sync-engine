@@ -8,6 +8,7 @@ compile_error!(
 
 pub mod config;
 pub mod daemon;
+pub mod dirconfig;
 pub mod events;
 pub mod index;
 pub mod ipc;

@@ -33,6 +33,11 @@ pub struct DaemonConfigInput {
     pub events_driven: bool,
     pub no_events_driven: bool,
     pub events_full_scan_every: Option<u64>,
+    /// Coarse opt-out for the delete-approval guard: when set, disables approval for **both**
+    /// directions globally (equivalent to `[delete_approval] remote = false, local = false`).
+    /// Per-direction and per-subtree granularity lives in the per-directory `.proton-sync.toml`
+    /// files (see `crate::dirconfig`); the CLI keeps only this blunt escape hatch.
+    pub no_delete_approval: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -66,6 +71,18 @@ pub struct FileConfig {
     events_driven: Option<bool>,
     #[serde(default, alias = "events-full-scan-every")]
     events_full_scan_every: Option<u64>,
+    /// Daemon-wide default for the directional delete-approval guard (the bottom of the
+    /// per-directory inheritance chain). Each direction defaults to `true` (protected) when unset.
+    #[serde(default, alias = "delete-approval")]
+    delete_approval: Option<FileDeleteApproval>,
+}
+
+/// The `[delete_approval]` table in the daemon config file. Names the *target* of the deletion
+/// being gated; unset directions default to protected.
+#[derive(Debug, Default, Deserialize)]
+struct FileDeleteApproval {
+    remote: Option<bool>,
+    local: Option<bool>,
 }
 
 pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConfig, bool)> {
@@ -88,6 +105,16 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         true
     } else {
         file_config.events_driven.unwrap_or(true)
+    };
+    // Delete-approval guard defaults (the root of the per-directory inheritance chain). Each
+    // direction is ON (protected) by default; the coarse `--no-delete-approval` flag forces both
+    // off, otherwise the config file's `[delete_approval]` values apply per direction. Per-subtree
+    // overrides live in `.proton-sync.toml` files, resolved at reconcile time by `crate::dirconfig`.
+    let (delete_approval_remote, delete_approval_local) = if input.no_delete_approval {
+        (false, false)
+    } else {
+        let file = file_config.delete_approval.unwrap_or_default();
+        (file.remote.unwrap_or(true), file.local.unwrap_or(true))
     };
     let local_root = input
         .local_root
@@ -155,6 +182,8 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             .or(file_config.events_full_scan_every)
             .unwrap_or(DEFAULT_EVENTS_FULL_SCAN_EVERY)
             .max(1),
+        delete_approval_remote,
+        delete_approval_local,
     };
     validate_runtime_config(&config)?;
 
@@ -465,6 +494,93 @@ events_driven = true
         .expect("runtime config");
 
         assert_eq!(config.events_full_scan_every, 1);
+    }
+
+    #[test]
+    fn delete_approval_defaults_on_for_both_directions_when_unset() {
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert!(
+            config.delete_approval_remote && config.delete_approval_local,
+            "the delete-approval guard must default ON for both directions"
+        );
+    }
+
+    #[test]
+    fn no_delete_approval_flag_disables_both_directions() {
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            no_delete_approval: true,
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert!(!config.delete_approval_remote);
+        assert!(!config.delete_approval_local);
+    }
+
+    #[test]
+    fn config_file_delete_approval_table_sets_directions_independently() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+[delete_approval]
+remote = false
+"#,
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert!(
+            !config.delete_approval_remote,
+            "an explicit remote = false in the file must disable the remote-delete guard"
+        );
+        assert!(
+            config.delete_approval_local,
+            "an unset local direction must stay protected by default"
+        );
+    }
+
+    #[test]
+    fn no_delete_approval_flag_overrides_a_config_file_that_enabled_it() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+[delete_approval]
+remote = true
+local = true
+"#,
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            no_delete_approval: true,
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert!(!config.delete_approval_remote);
+        assert!(!config.delete_approval_local);
     }
 
     #[test]

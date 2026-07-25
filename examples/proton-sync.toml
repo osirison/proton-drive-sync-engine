@@ -14,6 +14,17 @@ exclude = ["**/*.tmp", "**/.DS_Store"]
 # Set true when you want the configured service to print a plan and exit.
 dry_run = false
 
+# Delete-approval guard (daemon-wide default; ON in both directions unless changed here).
+# When on, a deletion is withheld until you approve it with `proton-sync approve <path>`.
+# `remote` gates deleting a file on Proton Drive because you removed it locally;
+# `local` gates deleting a file on your local disk because it was removed/trashed on Proton Drive.
+# For per-folder overrides, drop a `.proton-sync.toml` with a `[delete_approval]` table in any
+# directory under local_root — it applies to that directory and everything beneath it, and is
+# never itself synced.
+# [delete_approval]
+# remote = true
+# local = true
+
 # Optional overrides. When omitted, the daemon uses these defaults:
 # db_path and lockfile_path live in the per-root ".sync" state directory (ignored by sync)
 # socket_path stays under $XDG_RUNTIME_DIR (or the OS temp directory fallback)

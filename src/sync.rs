@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncAction {
     Upload,
@@ -33,6 +33,59 @@ pub struct PlannedAction {
     pub entity_kind: EntityKind,
     pub conflict_path: Option<PathBuf>,
     pub remote_id: Option<String>,
+}
+
+/// The direction a deletion propagates, used by the delete-approval guard, the persistent
+/// approval store, and the control protocol. It is the stable identity that distinguishes the
+/// two data-losing actions (see [`SyncAction::delete_direction`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteDirection {
+    /// Propagate a *local* deletion by deleting the copy on Proton Drive (`RemoteDelete`).
+    Remote,
+    /// Propagate a *remote* deletion/trash by deleting the copy on the local disk (`LocalDelete`).
+    Local,
+}
+
+impl DeleteDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::Local => "local",
+        }
+    }
+}
+
+impl std::fmt::Display for DeleteDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for DeleteDirection {
+    type Err = Box<dyn std::error::Error + Send + Sync>;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "remote" => Ok(Self::Remote),
+            "local" => Ok(Self::Local),
+            other => Err(crate::boxed_error(format!(
+                "unknown delete direction: {other}"
+            ))),
+        }
+    }
+}
+
+impl SyncAction {
+    /// The deletion direction this action propagates, or `None` for non-destructive actions and
+    /// for `Purge` (index-only cleanup that destroys no user data and is never gated).
+    pub fn delete_direction(self) -> Option<DeleteDirection> {
+        match self {
+            Self::RemoteDelete => Some(DeleteDirection::Remote),
+            Self::LocalDelete => Some(DeleteDirection::Local),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2119,7 +2172,7 @@ mod tests {
             planned
                 .iter()
                 .find(|action| action.path == Path::new(path))
-                .map(|action| action.action.clone())
+                .map(|action| action.action)
         };
 
         assert_eq!(
