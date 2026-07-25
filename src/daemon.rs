@@ -25,7 +25,7 @@ use fs2::FileExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -124,18 +124,21 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     _global_lock_guard: LockGuard,
 }
 
-#[derive(Debug, Serialize)]
-struct MetricsSnapshot {
-    generated_epoch_secs: u64,
-    status: String,
-    paused: bool,
-    pending_changes: usize,
-    last_sync_epoch_secs: Option<u64>,
-    last_error: Option<String>,
-    last_plan_summary: Option<PlanSummary>,
-    last_successful_sync_summary: Option<PlanSummary>,
-    status_history_entries: usize,
-    pending_deletions: Vec<PendingDeletion>,
+/// On-disk snapshot the daemon writes to `<db>.metrics.json` at startup and after each sync.
+/// Public + `Deserialize` so the desktop GUI can read it as a first-class live-state source
+/// (preferred over live SQLite reads, which race the daemon's non-WAL writer).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsSnapshot {
+    pub generated_epoch_secs: u64,
+    pub status: String,
+    pub paused: bool,
+    pub pending_changes: usize,
+    pub last_sync_epoch_secs: Option<u64>,
+    pub last_error: Option<String>,
+    pub last_plan_summary: Option<PlanSummary>,
+    pub last_successful_sync_summary: Option<PlanSummary>,
+    pub status_history_entries: usize,
+    pub pending_deletions: Vec<PendingDeletion>,
 }
 
 pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
