@@ -52,11 +52,11 @@ impl ConfigDoc {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(ConfigError::Io(e.to_string())),
         };
-        Self::from_str(&text)
+        Self::from_toml_str(&text)
     }
 
     /// Parse a document from a TOML string.
-    pub fn from_str(text: &str) -> Result<Self, ConfigError> {
+    pub fn from_toml_str(text: &str) -> Result<Self, ConfigError> {
         let doc = text
             .parse::<DocumentMut>()
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
@@ -206,7 +206,7 @@ exclude = ["*.tmp"]
 
     #[test]
     fn editing_preserves_comments_and_daemon_only_keys() {
-        let mut doc = ConfigDoc::from_str(SAMPLE).unwrap();
+        let mut doc = ConfigDoc::from_toml_str(SAMPLE).unwrap();
         doc.set_string_array("exclude", &["*.tmp".into(), "node_modules/".into()]);
         doc.set_int("scan_interval_secs", 120);
 
@@ -236,14 +236,14 @@ exclude = ["*.tmp"]
 
     #[test]
     fn validate_rejects_unknown_keys_so_the_daemon_cannot_be_bricked() {
-        let doc = ConfigDoc::from_str("local_root = \"/x\"\nfrobnicate = 1\n").unwrap();
+        let doc = ConfigDoc::from_toml_str("local_root = \"/x\"\nfrobnicate = 1\n").unwrap();
         let err = doc.validate().unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)), "got {err:?}");
     }
 
     #[test]
     fn delete_approval_nested_table_round_trips() {
-        let mut doc = ConfigDoc::from_str("local_root = \"/x\"\n").unwrap();
+        let mut doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
         assert_eq!(doc.get_delete_approval("remote"), None);
         doc.set_delete_approval("remote", false);
         doc.set_delete_approval("local", true);
@@ -258,7 +258,7 @@ exclude = ["*.tmp"]
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/proton-sync.toml");
-        let mut doc = ConfigDoc::from_str(SAMPLE).unwrap();
+        let mut doc = ConfigDoc::from_toml_str(SAMPLE).unwrap();
         doc.set_bool("events_driven", false);
         doc.save(&path).unwrap();
 

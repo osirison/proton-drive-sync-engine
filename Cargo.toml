@@ -7,7 +7,7 @@ edition = "2024"
 # reuses this crate's wire types; the Tauri shell (`gui/src-tauri`) is added to the
 # workspace once its Linux build deps (webkit2gtk-4.1, libsoup-3.0) are provisioned.
 [workspace]
-members = ["gui/gui-core"]
+members = ["gui/gui-core", "gui/src-tauri"]
 resolver = "2"
 
 [dependencies]
