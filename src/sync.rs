@@ -675,7 +675,13 @@ fn plan_ongoing_file_action(
     // reconcile). Without this early return, the very next reconcile would see local
     // unchanged / remote changed and plan an ordinary `Download` straight over the
     // original file, silently destroying the local content the sidecar protects.
-    if base.sync_status == SyncStatus::Conflict {
+    // Exception: when the conflicted file is gone on BOTH sides there is nothing left
+    // to protect, and holding the record would leave a zombie row no user action can
+    // clear (deleting the original file emits no sidecar event) — fall through to the
+    // ordinary `(Missing, Missing)` -> `Purge` arm instead.
+    if base.sync_status == SyncStatus::Conflict
+        && !(local_delta == FileDelta::Missing && remote_delta == FileDelta::Missing)
+    {
         return None;
     }
 
@@ -762,7 +768,11 @@ fn plan_ongoing_file_action(
         (FileDelta::Unchanged, FileDelta::Unchanged)
         | (FileDelta::Unchanged, FileDelta::Unknown) => {
             let linked_id = remote_id(remote, base);
-            if linked_id.is_some() && linked_id != base.proton_id {
+            // An empty id is the reconstruction placeholder for "not yet backfilled"
+            // (`reconstruct::remote_entity_from_record`), not a real remote id — linking
+            // it would commit `proton_id = Some("")` to the index.
+            if linked_id.as_deref().is_some_and(|id| !id.is_empty()) && linked_id != base.proton_id
+            {
                 Some(PlannedAction::new(
                     path,
                     SyncAction::AutoLink,
@@ -911,6 +921,22 @@ fn compute_directory_deletion_verdicts(
 
     let mut verdicts: HashMap<PathBuf, bool> = HashMap::new();
     for directory_path in directories {
+        // An entity present on the surviving side with no base record (created since the
+        // last sync) resolves to a bootstrap Upload/Download, which fails the proof — but
+        // it would never be seen by the base-index scan below, and its bootstrap action
+        // would then be suppressed as "covered" by the recursive delete, destroying the
+        // only copy. Any untracked descendant therefore fails the verdict outright.
+        let has_untracked_descendant =
+            local_entities
+                .keys()
+                .chain(remote_entities.keys())
+                .any(|path| {
+                    is_strict_descendant(directory_path, path) && !base_index.contains_key(path)
+                });
+        if has_untracked_descendant {
+            verdicts.insert(directory_path.clone(), false);
+            continue;
+        }
         let consistent = base_index
             .iter()
             .filter(|(path, _)| is_strict_descendant(directory_path, path))
@@ -2050,6 +2076,162 @@ mod tests {
         assert_eq!(planned[0].action, SyncAction::RemoteDelete);
         assert_eq!(planned[0].entity_kind, EntityKind::Directory);
         assert_eq!(planned[0].remote_id.as_deref(), Some("docs-id"));
+    }
+
+    #[test]
+    fn untracked_remote_descendant_blocks_recursive_remote_directory_delete() {
+        // Local `rm -rf docs` raced another device uploading a brand-new, never-synced
+        // `docs/new.txt`. The recursive RemoteDelete would destroy the only copy, so the
+        // verdict must fail and the untracked file's bootstrap Download must survive.
+        let local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            RemoteEntity::File(remote("docs/report.txt", "report-id", Some("same-hash"))),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/new.txt"),
+            RemoteEntity::File(remote("docs/new.txt", "new-id", Some("new-hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs/report.txt"),
+            base("docs/report.txt", Some("report-id"), "same-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            !planned.iter().any(|action| action.path == Path::new("docs")
+                && action.action == SyncAction::RemoteDelete),
+            "an untracked descendant must veto the recursive directory delete: {planned:?}"
+        );
+        assert!(
+            planned
+                .iter()
+                .any(|action| action.path == Path::new("docs/new.txt")
+                    && action.action == SyncAction::Download),
+            "the never-synced remote file must still be downloaded: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn untracked_local_descendant_blocks_recursive_local_directory_delete() {
+        // The remote side deleted `docs` wholesale, but the user has since created a
+        // brand-new, never-synced `docs/new.txt` locally. The recursive LocalDelete
+        // (`remove_dir_all`) would destroy it, and suppression would discard its
+        // bootstrap Upload — the verdict must fail instead.
+        let mut local_entities = HashMap::new();
+        let remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("docs"), local_directory("docs"));
+        local_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            LocalEntityState::File(local("docs/report.txt", "same-hash")),
+        );
+        local_entities.insert(
+            PathBuf::from("docs/new.txt"),
+            LocalEntityState::File(local("docs/new.txt", "new-hash")),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs/report.txt"),
+            base("docs/report.txt", Some("report-id"), "same-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            !planned.iter().any(|action| action.path == Path::new("docs")
+                && action.action == SyncAction::LocalDelete),
+            "an untracked descendant must veto the recursive directory delete: {planned:?}"
+        );
+        assert!(
+            planned
+                .iter()
+                .any(|action| action.path == Path::new("docs/new.txt")
+                    && action.action == SyncAction::Upload),
+            "the never-synced local file must still be uploaded: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn conflict_record_missing_on_both_sides_purges_instead_of_wedging() {
+        // A sidecar-less conflict record whose file was then deleted locally (remote
+        // already gone): without the Purge exit the record early-returns forever.
+        let mut base_index = HashMap::new();
+        base_index.insert(
+            PathBuf::from("gone.txt"),
+            FileRecord {
+                sync_status: SyncStatus::Conflict,
+                ..base("gone.txt", Some("id-1"), "old-hash")
+            },
+        );
+
+        let planned = plan_sync(&HashMap::new(), &HashMap::new(), &base_index);
+
+        assert_eq!(planned.len(), 1, "{planned:?}");
+        assert_eq!(planned[0].path, PathBuf::from("gone.txt"));
+        assert_eq!(planned[0].action, SyncAction::Purge);
+    }
+
+    #[test]
+    fn conflict_record_with_surviving_local_edit_still_waits_for_resolution() {
+        let mut local_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(PathBuf::from("edited.txt"), local("edited.txt", "new-hash"));
+        base_index.insert(
+            PathBuf::from("edited.txt"),
+            FileRecord {
+                sync_status: SyncStatus::Conflict,
+                ..base("edited.txt", Some("id-1"), "old-hash")
+            },
+        );
+
+        let planned = plan_sync(&local_files, &HashMap::new(), &base_index);
+
+        assert!(
+            planned.is_empty(),
+            "an unresolved conflict with surviving local content must stay parked: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn empty_reconstruction_placeholder_id_is_not_auto_linked() {
+        // `reconstruct::remote_entity_from_record` materializes a not-yet-backfilled
+        // record with an empty id; linking it would commit `proton_id = Some("")`.
+        let mut local_files = HashMap::new();
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(PathBuf::from("fresh.txt"), local("fresh.txt", "same-hash"));
+        remote_files.insert(
+            PathBuf::from("fresh.txt"),
+            remote("fresh.txt", "", Some("same-hash")),
+        );
+        base_index.insert(
+            PathBuf::from("fresh.txt"),
+            base("fresh.txt", None, "same-hash"),
+        );
+
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+
+        assert!(
+            planned.is_empty(),
+            "an empty placeholder id must not be auto-linked: {planned:?}"
+        );
     }
 
     #[test]

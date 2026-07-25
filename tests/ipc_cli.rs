@@ -394,6 +394,13 @@ mod unix_tests {
                 .arg("--no-events-driven")
                 .arg("--proton-timeout-secs")
                 .arg(proton_timeout_secs.to_string())
+                // Same isolation as `spawn` above: without this the test daemon contends on
+                // the real user-global single-instance lock and loses to any genuinely
+                // running proton-syncd on this machine (#77).
+                .env(
+                    "XDG_STATE_HOME",
+                    lockfile_path.parent().expect("lockfile has a parent dir"),
+                )
                 .env("RUST_LOG", "error")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())

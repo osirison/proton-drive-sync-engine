@@ -242,27 +242,39 @@ pub fn parse_latest_event_id(json: &str) -> AppResult<String> {
 pub fn parse_volume_events(json: &str) -> AppResult<VolumeEventPage> {
     let raw: RawEventsResponse = serde_json::from_str(json)?;
     ensure_success(raw.code)?;
-    let changes = raw
-        .events
-        .into_iter()
-        .filter_map(|event| {
-            // Skip — never fail the whole page — any event we can't act on: an unknown/absent
-            // event type, or (defensively, since the wire shape of a hard delete is
-            // unconfirmed) an event without a usable node id. The strict fields inside `Link`
-            // are optional so a sparse event can't break deserialization of its neighbours.
-            let kind = change_kind(event.event_type?)?;
-            let link = event.link?;
-            let node_id = link.link_id?;
-            Some(RemoteChange {
-                kind,
-                node_id,
-                parent_id: link.parent_link_id,
-                trashed: link.is_trashed,
-                shared: link.is_shared,
-                event_id: event.event_id,
-            })
-        })
-        .collect();
+    let mut changes = Vec::new();
+    for event in raw.events {
+        // An unknown or absent event type is skipped: a newly-introduced non-link event
+        // kind must never break a scan, and it won't be acted on until `change_kind` is
+        // extended. The strict fields inside `Link` stay optional so a sparse event can't
+        // break deserialization of its neighbours.
+        let Some(kind) = event.event_type.and_then(change_kind) else {
+            continue;
+        };
+        // A KNOWN link-event type without a usable Link/LinkID is different: it is a change
+        // the engine must act on but cannot attribute. Silently skipping it would let the
+        // caller treat the delta as complete and advance the cursor past a real remote
+        // change forever; failing the page instead degrades to exactly one full-tree
+        // snapshot (the daemon converts an events error into a fallback with the cursor
+        // held), which is the designed safe path.
+        let node_id = event.link.as_ref().and_then(|link| link.link_id.clone());
+        let Some(node_id) = node_id else {
+            return Err(boxed_error(format!(
+                "volume event {} has a link event type but no usable Link/LinkID; \
+                 treating the page as unparseable so the caller snapshots instead",
+                event.event_id
+            )));
+        };
+        let link = event.link.expect("checked above: link is present");
+        changes.push(RemoteChange {
+            kind,
+            node_id,
+            parent_id: link.parent_link_id,
+            trashed: link.is_trashed,
+            shared: link.is_shared,
+            event_id: event.event_id,
+        });
+    }
     Ok(VolumeEventPage {
         latest_event_id: raw.event_id,
         more: raw.more,
@@ -423,19 +435,38 @@ mod tests {
     }
 
     #[test]
-    fn one_malformed_event_is_dropped_without_failing_the_page() {
-        // An event missing its Link, and one missing EventType, must both be skipped while the
-        // surrounding valid event still comes through — a single bad event never breaks a scan.
+    fn an_unknown_or_absent_event_type_is_skipped_without_failing_the_page() {
+        // A newly-introduced (or absent) event type must never break a scan; the
+        // surrounding valid event still comes through.
         let body = concat!(
             r#"{"Code":1000,"EventID":"c","More":false,"Refresh":false,"Events":["#,
             r#"{"EventID":"a","EventType":1,"Link":{"LinkID":"n1","ParentLinkID":"p","IsShared":false,"IsTrashed":false}},"#,
-            r#"{"EventID":"b","EventType":1},"#,
+            r#"{"EventID":"b","EventType":99,"Link":{"LinkID":"n3"}},"#,
             r#"{"EventID":"d","Link":{"LinkID":"n2"}}"#,
             r#"]}"#
         );
-        let page = parse_volume_events(body).expect("malformed events must not fail the page");
-        assert_eq!(page.changes.len(), 1, "only the fully-valid event survives");
+        let page = parse_volume_events(body).expect("unknown event types must not fail the page");
+        assert_eq!(page.changes.len(), 1, "only the known-type event survives");
         assert_eq!(page.changes[0].node_id, "n1");
+    }
+
+    #[test]
+    fn a_known_type_event_missing_its_link_fails_the_page() {
+        // A known link-event type the engine cannot attribute must fail the page (one
+        // snapshot fallback, cursor held) rather than be skipped — skipping would advance
+        // the cursor past a real remote change forever.
+        let body = concat!(
+            r#"{"Code":1000,"EventID":"c","More":false,"Refresh":false,"Events":["#,
+            r#"{"EventID":"a","EventType":1,"Link":{"LinkID":"n1","ParentLinkID":"p","IsShared":false,"IsTrashed":false}},"#,
+            r#"{"EventID":"b","EventType":1}"#,
+            r#"]}"#
+        );
+        let error = parse_volume_events(body)
+            .expect_err("a known-type event without a link must fail the page");
+        assert!(
+            error.to_string().contains("volume event b"),
+            "the error should name the offending event: {error}"
+        );
     }
 
     #[test]

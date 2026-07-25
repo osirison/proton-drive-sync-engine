@@ -64,8 +64,21 @@ pub fn reconstruct_remote(
     let mut uid_to_path: HashMap<String, PathBuf> = HashMap::new();
 
     for (path, record) in base_index {
-        if let Some(id) = &record.proton_id {
-            uid_to_path.insert(id.clone(), path.clone());
+        // An empty id is the not-yet-backfilled placeholder, not a real uid — never seed it
+        // (two fresh uploads would alias each other on the "" key).
+        if let Some(id) = record.proton_id.as_deref().filter(|id| !id.is_empty())
+            && let Some(previous) = uid_to_path.insert(id.to_owned(), path.clone())
+        {
+            // Two rows holding one id is a reachable transient state (e.g. a withheld
+            // LocalDelete still pinning the old row while a Download committed the new
+            // one). Which row wins here would be HashMap iteration order — replaying a
+            // move event against the wrong winner silently drops the stale path and
+            // advances the cursor past it. Only a full walk resolves this safely.
+            return Reconstruction::FallbackToSnapshot(format!(
+                "proton_id {id} is held by both {} and {}",
+                previous.display(),
+                path.display()
+            ));
         }
         remote.insert(path.clone(), remote_entity_from_record(record));
     }
@@ -78,11 +91,35 @@ pub fn reconstruct_remote(
             || (matches!(change.kind, RemoteChangeKind::Updated) && change.trashed);
 
         if is_removal {
-            // Resolvable → remove it. Not tracked → nothing to remove; a full snapshot would not
-            // track it either, so this is a safe skip, never a fallback.
             if let Some(path) = uid_to_path.remove(&uid) {
                 remote.remove(&path);
+                // Volume events are per-link: trashing/deleting a folder flips only the
+                // folder's own link, with no events for its descendants. Cascade the removal,
+                // or the map would claim the children still exist remotely and the planner
+                // would *recreate* the folder the user just deleted. Sound under in-order
+                // delivery: a child moved out beforehand was re-homed by its own earlier
+                // event, so it no longer sits under `path`.
+                remote.retain(|key, _| !crate::sync::is_strict_descendant(&path, key));
+                uid_to_path.retain(|_, value| !crate::sync::is_strict_descendant(&path, value));
+            } else if base_index.values().any(|record| {
+                record
+                    .proton_id
+                    .as_deref()
+                    .is_none_or(|id| !id.contains('~'))
+            }) {
+                // Unresolvable removal while some baseline record has no composed id (the
+                // just-uploaded window, or a legacy raw id): the removed node may BE one of
+                // those records, and a full snapshot would notice its absence where this
+                // reconstruction cannot. Skipping would advance the cursor past the event
+                // forever.
+                return Reconstruction::FallbackToSnapshot(format!(
+                    "removal of untracked node {} while baseline records lack composed ids",
+                    change.node_id
+                ));
             }
+            // Otherwise: every baseline record is id-tracked and none matched, so the node
+            // was never synced here — nothing to remove; a full snapshot would not track it
+            // either. Safe skip.
             continue;
         }
 
@@ -470,5 +507,140 @@ mod tests {
             &resolver,
         ));
         assert!(map.is_empty(), "a node no longer in its parent is dropped");
+    }
+
+    fn directory_record(path: &str, proton_id: Option<&str>) -> FileRecord {
+        FileRecord {
+            entity_kind: EntityKind::Directory,
+            sha1_hash: None,
+            ..file_record(path, "unused", proton_id)
+        }
+    }
+
+    fn expect_fallback(outcome: Reconstruction, fragment: &str) {
+        match outcome {
+            Reconstruction::FallbackToSnapshot(reason) => assert!(
+                reason.contains(fragment),
+                "fallback reason should mention {fragment:?}: {reason}"
+            ),
+            Reconstruction::Complete(_) => {
+                panic!("expected a snapshot fallback mentioning {fragment:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn a_directory_removal_cascades_to_its_tracked_descendants() {
+        // Volume events are per-link: a folder trash emits no events for descendants.
+        // Without the cascade the map would claim `docs/a.txt` still exists remotely and
+        // the planner would recreate the folder the user just deleted.
+        let base = HashMap::from([
+            (
+                PathBuf::from("docs"),
+                directory_record("docs", Some("vol~node-docs")),
+            ),
+            (
+                PathBuf::from("docs/a.txt"),
+                file_record("docs/a.txt", "hash-a", Some("vol~node-a")),
+            ),
+            (
+                PathBuf::from("other.txt"),
+                file_record("other.txt", "hash-o", Some("vol~node-o")),
+            ),
+        ]);
+        let map = complete(reconstruct_remote(
+            &base,
+            &[change(RemoteChangeKind::Updated, "node-docs", true)],
+            VOLUME,
+            &scan_options(&[]),
+            &FakeResolver::default(),
+        ));
+        assert!(
+            !map.contains_key(Path::new("docs")) && !map.contains_key(Path::new("docs/a.txt")),
+            "the folder AND its descendants must be gone: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        assert!(map.contains_key(Path::new("other.txt")));
+    }
+
+    #[test]
+    fn an_untracked_removal_falls_back_when_a_baseline_record_lacks_a_composed_id() {
+        // `b.txt` was just uploaded (no proton_id yet). A trash event for it cannot be
+        // matched, but skipping would advance the cursor past the deletion forever — a
+        // full snapshot is the only safe answer.
+        let base = HashMap::from([(PathBuf::from("b.txt"), file_record("b.txt", "hash-b", None))]);
+        let outcome = reconstruct_remote(
+            &base,
+            &[change(RemoteChangeKind::Updated, "node-b", true)],
+            VOLUME,
+            &scan_options(&[]),
+            &FakeResolver::default(),
+        );
+        expect_fallback(outcome, "node-b");
+    }
+
+    #[test]
+    fn an_untracked_removal_falls_back_when_a_baseline_record_has_a_legacy_raw_id() {
+        let base = HashMap::from([(
+            PathBuf::from("old.txt"),
+            file_record("old.txt", "hash", Some("raw-legacy-id")),
+        )]);
+        let outcome = reconstruct_remote(
+            &base,
+            &[change(RemoteChangeKind::Deleted, "node-z", false)],
+            VOLUME,
+            &scan_options(&[]),
+            &FakeResolver::default(),
+        );
+        expect_fallback(outcome, "node-z");
+    }
+
+    #[test]
+    fn duplicate_baseline_proton_ids_force_a_snapshot() {
+        // Reachable transient state: a withheld LocalDelete pins the old row while a
+        // Download committed a new row with the same id. Seeding order would otherwise
+        // decide which path a replayed move event resolves against.
+        let base = HashMap::from([
+            (
+                PathBuf::from("a.txt"),
+                file_record("a.txt", "hash", Some("vol~node-dup")),
+            ),
+            (
+                PathBuf::from("b.txt"),
+                file_record("b.txt", "hash", Some("vol~node-dup")),
+            ),
+        ]);
+        let outcome = reconstruct_remote(
+            &base,
+            &[],
+            VOLUME,
+            &scan_options(&[]),
+            &FakeResolver::default(),
+        );
+        expect_fallback(outcome, "vol~node-dup");
+    }
+
+    #[test]
+    fn empty_placeholder_ids_do_not_alias_each_other_in_seeding() {
+        // Two just-uploaded records (id not yet backfilled) must not collide on "" —
+        // with no removal events in the delta this reconstruction stays complete.
+        let base = HashMap::from([
+            (
+                PathBuf::from("x.txt"),
+                file_record("x.txt", "hash-x", Some("")),
+            ),
+            (
+                PathBuf::from("y.txt"),
+                file_record("y.txt", "hash-y", Some("")),
+            ),
+        ]);
+        let map = complete(reconstruct_remote(
+            &base,
+            &[],
+            VOLUME,
+            &scan_options(&[]),
+            &FakeResolver::default(),
+        ));
+        assert_eq!(map.len(), 2);
     }
 }

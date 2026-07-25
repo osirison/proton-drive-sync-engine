@@ -228,7 +228,15 @@ impl ScanOptions {
     ) -> AppResult<Self> {
         let ignored_relative_paths = ignored_paths
             .iter()
-            .filter_map(|path| normalize_ignored_path(root, path))
+            .flat_map(|path| {
+                // SQLite writes transient sidecars next to its database file (`<db>-journal`,
+                // `<db>-wal`, `<db>-shm`). When a state file such as the index DB is relocated
+                // inside the sync root (issue #73), those siblings must be ignored alongside it
+                // or a scan racing a live transaction uploads them as user data. Expanding every
+                // ignored path is harmless: the siblings of non-DB entries simply never exist.
+                std::iter::once(path.clone()).chain(sqlite_sidecar_paths(path))
+            })
+            .filter_map(|path| normalize_ignored_path(root, &path))
             .collect();
 
         Ok(Self {
@@ -561,13 +569,28 @@ pub fn purge_record(connection: &Connection, relative_path: &Path) -> AppResult<
 /// this id space with [`crate::events::node_uid`]. Returns `None` when no synced record holds
 /// that id (e.g. a node created since the last full listing, whose id we have not recorded
 /// yet — the caller then falls back to a targeted listing or a full scan).
+///
+/// Also returns `None` when *more than one* indexed path holds the id. Duplicate `proton_id`
+/// rows are a reachable persisted state (issue #71): a withheld `LocalDelete` keeps the old
+/// row while a `Download` commits a new row carrying the same id. Picking either row would be
+/// arbitrary, so an ambiguous id is treated as unresolvable and the caller's safe fallback
+/// (targeted listing / snapshot) takes over.
 pub fn path_for_proton_id(connection: &Connection, proton_id: &str) -> AppResult<Option<PathBuf>> {
     let mut statement =
-        connection.prepare("SELECT file_path FROM file_index WHERE proton_id = ?1 LIMIT 1")?;
-    let path = statement
-        .query_row(params![proton_id], |row| read_index_key_column(row, 0))
-        .optional()?;
-    Ok(path)
+        connection.prepare("SELECT file_path FROM file_index WHERE proton_id = ?1 LIMIT 2")?;
+    let mut paths = statement
+        .query_map(params![proton_id], |row| read_index_key_column(row, 0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if paths.len() > 1 {
+        tracing::warn!(
+            proton_id,
+            "multiple indexed paths hold this proton_id (e.g. a withheld delete alongside a \
+             re-downloaded copy); treating the id as unresolvable so the reconcile falls back \
+             to a listing or snapshot"
+        );
+        return Ok(None);
+    }
+    Ok(paths.pop())
 }
 
 /// A persisted remote-event-stream cursor for one event scope. `scope_id` is Proton's
@@ -777,10 +800,20 @@ fn visit_directory(
     known: &HashMap<PathBuf, FileRecord>,
     entities: &mut HashMap<PathBuf, LocalEntityState>,
 ) -> AppResult<()> {
+    // Note: this `read_dir` is NOT vanish-tolerant on purpose. For a *child* directory the
+    // recursion call below maps its NotFound to a skip, but the top-level call must still
+    // fail when the scan root itself is gone — treating a missing root as an empty tree
+    // would plan a mass remote delete.
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
-        let file_type = entry.file_type()?;
+        // An entry can vanish between `read_dir` listing it and any follow-up syscall
+        // (editors replace files during save; build tools delete temp files). A vanished
+        // entry is skipped instead of failing the whole scan (issue #76); every other
+        // error still propagates. See `vanished_entry_to_skip`.
+        let Some(file_type) = vanished_entry_to_skip(entry.file_type().map_err(Into::into))? else {
+            continue;
+        };
         let relative_path = path.strip_prefix(root).map_err(|err| {
             boxed_error(format!(
                 "failed to compute relative path for {} against {}: {err}",
@@ -791,23 +824,52 @@ fn visit_directory(
         if file_type.is_dir() {
             if options.allows_directory_traversal(relative_path) {
                 if options.allows_relative_directory(relative_path) {
-                    let state = local_directory_state(root, &path)?;
+                    let Some(state) = vanished_entry_to_skip(local_directory_state(root, &path))?
+                    else {
+                        continue;
+                    };
                     entities.insert(
                         state.relative_path.clone(),
                         LocalEntityState::Directory(state),
                     );
                 }
-                visit_directory(root, &path, options, known, entities)?;
+                // A NotFound surfacing here is this child directory's own `read_dir`
+                // failing (the directory vanished mid-scan) — deeper vanishes were
+                // already skipped inside the recursion.
+                vanished_entry_to_skip(visit_directory(root, &path, options, known, entities))?;
             }
             continue;
         }
         if !file_type.is_file() || !options.allows_relative_file(relative_path) {
             continue;
         }
-        let state = local_file_state_reusing_hash(root, &path, known)?;
+        let Some(state) =
+            vanished_entry_to_skip(local_file_state_reusing_hash(root, &path, known))?
+        else {
+            continue;
+        };
         entities.insert(state.relative_path.clone(), LocalEntityState::File(state));
     }
     Ok(())
+}
+
+/// Maps a per-entry scan error to a skip when the entry vanished between `read_dir` listing
+/// it and the follow-up stat/open (issue #76: an editor save/replace race would otherwise
+/// abort the entire scan and reconcile pass): `NotFound` becomes `Ok(None)` ("gone — skip
+/// it"), every other error — permissions in particular — still fails the scan, since silently
+/// dropping an unreadable file would replan it as locally deleted.
+fn vanished_entry_to_skip<T>(result: AppResult<T>) -> AppResult<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn should_ignore_path(path: &Path) -> bool {
@@ -823,8 +885,12 @@ fn should_ignore_relative_path(relative_path: &Path) -> bool {
     }
     // The per-directory settings file is machine-local policy: ignore it at any depth (like the
     // legacy DB name) so it is never scanned, planned, base-index-filtered, or watched for upload.
+    // The legacy DB name also covers its transient SQLite sidecars (`-journal`/`-wal`/`-shm`).
     let file_name = relative_path.file_name().and_then(|value| value.to_str());
     file_name == Some("sync_index.db")
+        || file_name == Some("sync_index.db-journal")
+        || file_name == Some("sync_index.db-wal")
+        || file_name == Some("sync_index.db-shm")
         || file_name == Some(crate::dirconfig::DIRECTORY_CONFIG_FILE_NAME)
 }
 
@@ -859,13 +925,85 @@ fn is_download_scratch_path(relative_path: &Path) -> bool {
     })
 }
 
+/// The transient sibling files SQLite creates next to a database file: the rollback
+/// journal, write-ahead log, and shared-memory index. Built by appending to the full
+/// file name (SQLite's own convention: `custom.db` → `custom.db-journal`), not by
+/// replacing the extension.
+fn sqlite_sidecar_paths(path: &Path) -> impl Iterator<Item = PathBuf> {
+    ["-journal", "-wal", "-shm"].into_iter().map(|suffix| {
+        let mut sibling = path.as_os_str().to_os_string();
+        sibling.push(suffix);
+        PathBuf::from(sibling)
+    })
+}
+
+/// Resolves one configured ignore path (the index DB, its sidecars, the lockfile, …) to a
+/// root-relative entry for [`ScanOptions`], or `None` when it lies outside the root (nothing
+/// to ignore there).
+///
+/// Matching is best-effort canonical, not purely lexical (issue #73): a relative `root`
+/// combined with an absolute `path` — or `..`/symlink spellings of either — must still
+/// anchor, otherwise the ignore silently drops and the engine scans, hashes, and uploads its
+/// own live SQLite DB. A `path` that cannot be anchored under `root` but is itself relative
+/// keeps the pre-existing behavior of being treated as already root-relative.
 fn normalize_ignored_path(root: &Path, path: &Path) -> Option<PathBuf> {
-    let relative_path = match path.strip_prefix(root) {
-        Ok(stripped) => stripped.to_path_buf(),
-        Err(_) if path.is_relative() => path.to_path_buf(),
-        Err(_) => return None,
+    // Fast lexical path first: identical spellings strip directly.
+    if let Ok(stripped) = path.strip_prefix(root)
+        && let Some(normalized) = crate::validate_relative_path(stripped)
+    {
+        return Some(normalized);
+    }
+    // Lexical stripping failed (or left `..` components behind): compare canonical forms.
+    if let Ok(stripped) =
+        canonicalize_best_effort(path).strip_prefix(canonicalize_best_effort(root))
+        && let Some(normalized) = crate::validate_relative_path(stripped)
+    {
+        return Some(normalized);
+    }
+    if path.is_relative() {
+        return crate::validate_relative_path(path);
+    }
+    None
+}
+
+/// Canonicalizes `path` when it exists on disk; otherwise falls back to anchoring it against
+/// the current working directory and resolving `.`/`..` components lexically. Used only for
+/// prefix *matching* in [`normalize_ignored_path`], never for filesystem access.
+fn canonicalize_best_effort(path: &Path) -> PathBuf {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return canonical;
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Ok(current_dir) = std::env::current_dir() {
+        current_dir.join(path)
+    } else {
+        path.to_path_buf()
     };
-    crate::validate_relative_path(&relative_path)
+    lexically_normalized(&absolute)
+}
+
+/// Resolves `.` and `..` components without touching the filesystem. `..` above the root is
+/// clamped (POSIX: `/..` is `/`); a leading `..` on a relative path is preserved so the
+/// result never claims a location the input did not name.
+fn lexically_normalized(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match normalized.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    normalized.pop();
+                }
+                Some(Component::RootDir) | Some(Component::Prefix(_)) => {}
+                _ => normalized.push(Component::ParentDir.as_os_str()),
+            },
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn build_glob_set(patterns: &[String]) -> AppResult<GlobSet> {
@@ -1142,6 +1280,56 @@ mod tests {
     }
 
     #[test]
+    fn a_vanished_entry_is_skipped_but_other_errors_still_fail_the_scan() {
+        // A true mid-scan vanish (listed by read_dir, gone before stat/open) cannot be
+        // reproduced deterministically, so this exercises the exact seam `visit_directory`
+        // routes every per-entry operation through: the real call chains' NotFound must map
+        // to a skip, and only NotFound may.
+        let directory = tempdir().expect("tempdir");
+        let missing = directory.path().join("gone.txt");
+
+        assert!(
+            vanished_entry_to_skip(local_file_state_reusing_hash(
+                directory.path(),
+                &missing,
+                &HashMap::new(),
+            ))
+            .expect("a vanished file maps to a skip, not a scan failure")
+            .is_none()
+        );
+        assert!(
+            vanished_entry_to_skip(local_directory_state(directory.path(), &missing))
+                .expect("a vanished directory maps to a skip")
+                .is_none()
+        );
+        // A child directory that vanished before its own read_dir (the recursion call site).
+        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let mut entities = HashMap::new();
+        assert!(
+            vanished_entry_to_skip(visit_directory(
+                directory.path(),
+                &missing,
+                &options,
+                &HashMap::new(),
+                &mut entities,
+            ))
+            .expect("a directory vanishing before its read_dir maps to a skip")
+            .is_none()
+        );
+
+        // Any other error propagates unchanged: a permission failure must still fail the
+        // scan rather than silently dropping files (which would replan them as deleted).
+        let denied: AppResult<()> =
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied").into());
+        assert!(
+            vanished_entry_to_skip(denied).is_err(),
+            "only NotFound may be treated as a vanish"
+        );
+        let ok: AppResult<u32> = Ok(7);
+        assert_eq!(vanished_entry_to_skip(ok).expect("ok"), Some(7));
+    }
+
+    #[test]
     fn scan_options_ignore_configured_index_path() {
         let directory = tempdir().expect("tempdir");
         let state_directory = directory.path().join(".state");
@@ -1182,6 +1370,75 @@ mod tests {
             !options.allows_relative_file(Path::new("state/custom.db")),
             "relative db paths joined under a relative local root must be ignored"
         );
+    }
+
+    #[test]
+    fn scan_options_canonicalize_root_and_db_path_before_ignore_matching() {
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path().join("x");
+        let state = root.join(".state");
+        fs::create_dir_all(&state).expect("dirs");
+        let db_path = state.join("custom.db");
+        std::fs::write(&db_path, b"db").expect("write db");
+        std::fs::write(root.join("keep.txt"), b"keep").expect("write keep");
+
+        // A `..`-spelled root does not lexically prefix the plainly-spelled db path — the
+        // issue #73 shape (relative/`..`/symlink root vs absolute db path). Without canonical
+        // matching the ignore silently drops and the engine scans/uploads its own live DB.
+        let dotted_root = directory.path().join("x").join("..").join("x");
+        let options = ScanOptions::new(&dotted_root, std::slice::from_ref(&db_path), &[], &[])
+            .expect("scan options");
+        assert!(
+            !options.allows_relative_file(Path::new(".state/custom.db")),
+            "a db path that only matches the root after canonicalization must still be ignored"
+        );
+        let files = scan_local_files_with_options(&dotted_root, &options).expect("scan files");
+        assert!(files.contains_key(Path::new("keep.txt")));
+        assert!(
+            !files.contains_key(Path::new(".state/custom.db")),
+            "the engine's own DB must never be scanned as sync data: {files:?}"
+        );
+
+        // The reverse spelling — plain root, `..`-spelled db path that does not even exist
+        // yet — resolves through the lexical-normalization fallback.
+        let dotted_db = root
+            .join(".state")
+            .join("..")
+            .join(".state")
+            .join("other.db");
+        let options = ScanOptions::new(&root, std::slice::from_ref(&dotted_db), &[], &[])
+            .expect("scan options");
+        assert!(
+            !options.allows_relative_file(Path::new(".state/other.db")),
+            "a not-yet-created db path spelled with `..` must normalize into the ignore set"
+        );
+    }
+
+    #[test]
+    fn scan_options_ignore_sqlite_sidecars_of_the_configured_db_path() {
+        let directory = tempdir().expect("tempdir");
+        let state = directory.path().join(".state");
+        fs::create_dir(&state).expect("state dir");
+        let db_path = state.join("custom.db");
+        std::fs::write(&db_path, b"db").expect("write db");
+        std::fs::write(state.join("custom.db-journal"), b"j").expect("write journal");
+        std::fs::write(state.join("custom.db-wal"), b"w").expect("write wal");
+        std::fs::write(state.join("custom.db-shm"), b"s").expect("write shm");
+        std::fs::write(directory.path().join("keep.txt"), b"keep").expect("write keep");
+
+        let options = ScanOptions::new(directory.path(), std::slice::from_ref(&db_path), &[], &[])
+            .expect("scan options");
+
+        assert!(!options.allows_relative_file(Path::new(".state/custom.db-journal")));
+        assert!(!options.allows_relative_file(Path::new(".state/custom.db-wal")));
+        assert!(!options.allows_relative_file(Path::new(".state/custom.db-shm")));
+        let files = scan_local_files_with_options(directory.path(), &options).expect("scan files");
+        assert_eq!(
+            files.len(),
+            1,
+            "a relocated DB's transient SQLite files must never sync: {files:?}"
+        );
+        assert!(files.contains_key(Path::new("keep.txt")));
     }
 
     #[test]
@@ -1552,6 +1809,33 @@ mod tests {
         assert_eq!(
             path_for_proton_id(&connection, "vol~node-42").expect("lookup after purge"),
             None
+        );
+    }
+
+    #[test]
+    fn path_for_proton_id_returns_none_when_two_paths_share_the_id() {
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+        // Reachable persisted state (issue #71): a withheld LocalDelete keeps the old row
+        // while a Download commits a new row carrying the same proton_id.
+        for path in ["old/report.txt", "new/report.txt"] {
+            let record = FileRecord {
+                file_path: PathBuf::from(path),
+                entity_kind: EntityKind::File,
+                file_size: 3,
+                mtime: 7,
+                sha1_hash: Some("abcd".to_owned()),
+                proton_id: Some("vol~node-9".to_owned()),
+                sync_status: SyncStatus::Synced,
+            };
+            upsert_record(&connection, &record).expect("upsert");
+        }
+
+        assert_eq!(
+            path_for_proton_id(&connection, "vol~node-9").expect("lookup"),
+            None,
+            "an id held by two distinct paths is ambiguous and must resolve to None so the \
+             caller falls back to a listing/snapshot instead of picking an arbitrary row"
         );
     }
 
