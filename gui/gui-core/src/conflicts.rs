@@ -217,7 +217,30 @@ fn read_side(local_root: &Path, relative: &Path) -> Result<ConflictSide, String>
             binary_or_large: true,
         });
     }
-    let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
+    let bytes = match std::fs::read(&full) {
+        Ok(bytes) => bytes,
+        // The file vanished between `metadata()` and `read()` — treat as missing, not an error, so
+        // the whole pair doesn't fail over one racy side.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ConflictSide {
+                exists: false,
+                size: 0,
+                mtime_epoch_secs: None,
+                text: None,
+                binary_or_large: false,
+            });
+        }
+        // Unreadable for another reason (e.g. permissions) — show metadata only rather than failing.
+        Err(_) => {
+            return Ok(ConflictSide {
+                exists: true,
+                size,
+                mtime_epoch_secs,
+                text: None,
+                binary_or_large: true,
+            });
+        }
+    };
     // Binary heuristic: invalid UTF-8, or an embedded NUL (common in binary formats).
     match String::from_utf8(bytes) {
         Ok(text) if !text.contains('\u{0}') => Ok(ConflictSide {

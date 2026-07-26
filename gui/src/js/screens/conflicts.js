@@ -176,7 +176,7 @@ function comparePanel(conflicts) {
       el(
         "div",
         { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:10px" },
-        `Staged: ${choiceLabel(current)} — ${CHOICES.find((c) => c.key === current).hint}. Nothing is written until you Apply.`,
+        `Staged: ${choiceLabel(current)} — ${CHOICES.find((c) => c.key === current)?.hint ?? ""}. Nothing is written until you Apply.`,
       ),
     );
   }
@@ -188,7 +188,7 @@ function comparePanel(conflicts) {
   } else if (cache.error) {
     children.push(el("div", { class: "card dir-destructive" }, `Couldn't read files: ${cache.error}`));
   } else {
-    children.push(compareBody(cache.pair));
+    children.push(compareBody(cache));
   }
 
   children.push(applyFooter(conflicts));
@@ -209,7 +209,8 @@ function metaLine(s) {
   return `${s.size} bytes · ${when}`;
 }
 
-function compareBody(pair) {
+function compareBody(cache) {
+  const pair = cache.pair;
   const local = pair.original;
   const remote = pair.sidecar;
   const bothText = local.text != null && remote.text != null;
@@ -233,18 +234,23 @@ function compareBody(pair) {
         remote.binary_or_large ? "Binary or large file — no preview." : remote.exists ? "(text unavailable)" : "does not exist"),
     );
   } else {
-    body = diffTable(local.text, remote.text);
+    // Memoize the LCS diff on the cache entry: paint() re-runs on every staging click, but the
+    // texts don't change until the conflict is re-resolved (which clears pairCache[path]).
+    if (!cache.diffRows) cache.diffRows = computeDiffRows(local.text, remote.text);
+    body = renderDiffTable(cache.diffRows);
   }
   return el("div", { class: "scroll-y", style: "min-height:0;flex:1" }, header, body);
 }
 
 /** Longest-common-subsequence line diff → side-by-side rows; changed rows tinted + coloured line
  * numbers. Falls back to a plain paired view for very large files (bounds the O(n·m) table). */
-function diffTable(localText, remoteText) {
+function computeDiffRows(localText, remoteText) {
   const a = localText.replace(/\n$/, "").split("\n");
   const b = remoteText.replace(/\n$/, "").split("\n");
-  const rows = a.length > MAX_DIFF_LINES || b.length > MAX_DIFF_LINES ? plainRows(a, b) : lcsRows(a, b);
+  return a.length > MAX_DIFF_LINES || b.length > MAX_DIFF_LINES ? plainRows(a, b) : lcsRows(a, b);
+}
 
+function renderDiffTable(rows) {
   const cell = (text, no, side, changed) => {
     const tint = changed ? (side === "left" ? "var(--diff-local)" : "var(--diff-remote)") : "transparent";
     const numColor = changed ? (side === "left" ? "var(--upload-text)" : "var(--download-text)") : "var(--muted-2)";
