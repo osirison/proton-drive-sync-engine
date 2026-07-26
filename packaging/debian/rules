@@ -20,6 +20,12 @@ override_dh_auto_test:
 	# Drive session/keyring (tests/*_live.rs); unit tests already run in CI
 	# on every change, not at package-build time.
 
+# We drive cargo directly (see override_dh_auto_build), so debhelper's dh_auto_clean can't
+# clean the Rust build tree on its own. Remove it explicitly — matters for the 3.0 (native)
+# source format, where a stray target/ would otherwise be swept into the source tarball.
+override_dh_auto_clean:
+	rm -rf target
+
 override_dh_auto_install:
 	# Nothing to do here: binaries and data files are staged via the
 	# per-package debian/*.install files (dh_install), not `cargo install`.

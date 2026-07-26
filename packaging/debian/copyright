@@ -13,6 +13,7 @@ Copyright: 2026 osirison
 License: Apache-2.0
 
 Files: packaging/debian/*
+       packaging/debian/source/*
 Copyright: 2026 osirison
 License: Apache-2.0
 
