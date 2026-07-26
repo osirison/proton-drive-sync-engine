@@ -59,7 +59,7 @@ export function renderActivity(container, ctx) {
     el(
       "div",
       { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-top:2px" },
-      "every action the last pass took",
+      "recent status history",
     ),
   );
 
