@@ -209,6 +209,19 @@ function canProceedFolders() {
   return draft.local_root.trim() !== "" && draft.remote_root.trim() !== "";
 }
 
+// DOM refs captured during the current step-2 `renderStep2()`, used to patch the Next button and
+// the required-fields hint directly on every keystroke — see `folderField`'s `onInput`. Without
+// this, typing would leave both stuck at their initial (disabled/shown) state: `renderOnboarding`
+// deliberately skips the shell's poll-triggered full repaint while an `<input>` here has focus (so
+// the cursor doesn't get yanked mid-keystroke), and nothing else would ever re-run `canProceedFolders()`.
+let folderRefs = {};
+
+function refreshFolderDerived() {
+  const ok = canProceedFolders();
+  if (folderRefs.nextBtn) folderRefs.nextBtn.disabled = !ok || saving;
+  if (folderRefs.hint) folderRefs.hint.textContent = ok ? "" : "Both fields are required.";
+}
+
 async function goToReview() {
   if (!canProceedFolders() || saving) return;
   const ctx = lastCtx;
@@ -254,6 +267,7 @@ function folderField(label, hint, key) {
       style: inputStyle,
       onInput: (e) => {
         draft[key] = e.target.value;
+        refreshFolderDerived();
       },
     }),
     hint ? el("div", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:4px" }, hint) : null,
@@ -261,6 +275,7 @@ function folderField(label, hint, key) {
 }
 
 function renderStep2() {
+  folderRefs = {};
   if (!cfgLoaded) {
     const body = cfgLoadError
       ? el(
@@ -287,16 +302,30 @@ function renderStep2() {
     saveError ? el("div", { class: "dir-destructive", style: "font-weight:600;margin-top:4px" }, `Couldn't save: ${saveError}`) : null,
   );
 
-  return [
-    card,
-    footerNav({
-      onBack: () => { step = 1; paint(); },
-      hint: canProceedFolders() ? "" : "Both fields are required.",
-      nextLabel: saving ? "Saving…" : "Next",
-      nextDisabled: !canProceedFolders() || saving,
-      onNext: () => goToReview(),
-    }),
-  ];
+  // Built inline (not via the shared `footerNav`) so the Next button and hint can be captured into
+  // `folderRefs` and patched directly by `refreshFolderDerived` on every keystroke, instead of only
+  // updating on the next full repaint (see the comment on `folderRefs`).
+  const hintSpan = el(
+    "span",
+    { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-right:auto" },
+    canProceedFolders() ? "" : "Both fields are required.",
+  );
+  folderRefs.hint = hintSpan;
+  const nextBtn = el(
+    "button",
+    { class: "btn primary", disabled: !canProceedFolders() || saving, onClick: () => goToReview() },
+    saving ? "Saving…" : "Next",
+  );
+  folderRefs.nextBtn = nextBtn;
+  const footer = el(
+    "div",
+    { class: "card", style: "display:flex;align-items:center;gap:12px" },
+    hintSpan,
+    el("button", { class: "btn", onClick: () => { step = 1; paint(); } }, "Back"),
+    nextBtn,
+  );
+
+  return [card, footer];
 }
 
 // ---- step 3: review the dry-run plan -----------------------------------------------------------
