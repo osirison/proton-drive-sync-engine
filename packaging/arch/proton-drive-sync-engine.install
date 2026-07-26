@@ -1,0 +1,19 @@
+post_install() {
+  post_upgrade
+}
+
+post_upgrade() {
+  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor &>/dev/null || true
+
+  if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database -q /usr/share/applications || true
+  fi
+
+  if command -v appstreamcli &>/dev/null; then
+    appstreamcli refresh --force &>/dev/null || true
+  fi
+}
+
+post_remove() {
+  post_upgrade
+}
