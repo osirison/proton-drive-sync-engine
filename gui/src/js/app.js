@@ -256,6 +256,13 @@ function main() {
   refreshConfig();
   poll();
   window.addEventListener("focus", scheduleNextPoll);
+
+  // Tray menu items ("Resolve conflicts", "Settings") ask the shell to switch tabs (S7).
+  if (window.__TAURI__) {
+    window.__TAURI__.event.listen("tray-navigate", (e) => {
+      if (typeof e.payload === "string") setTab(e.payload);
+    });
+  }
 }
 
 main();
