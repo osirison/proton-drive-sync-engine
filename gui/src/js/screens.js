@@ -16,7 +16,7 @@ export const SCREENS = [
   { id: "overview", label: "Overview", icon: "◇", banner: true, issue: "S1 #82", render: renderOverview },
   { id: "activity", label: "Activity", icon: "≡", counter: true, issue: "S2 #83", render: renderActivity },
   { id: "conflicts", label: "Conflicts", icon: "⚠", badge: true, issue: "S3 #84", render: renderConflicts },
-  { id: "deletions", label: "Deletions", icon: "⊘", badge: false, issue: "S9 #90", render: renderDeletions },
+  { id: "deletions", label: "Deletions", icon: "⊘", badge: true, issue: "S9 #90", render: renderDeletions },
   { id: "plan", label: "Plan preview", icon: "▤", banner: true, issue: "S4 #85", render: renderPlan },
   { id: "history", label: "History", icon: "◷", issue: "S5 #86", render: renderHistory },
   { id: "settings", label: "Settings", icon: "⚙", banner: true, issue: "S6 #87", render: renderSettings },
