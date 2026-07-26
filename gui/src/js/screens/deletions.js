@@ -92,7 +92,10 @@ function renderRow(ctx, item) {
   const path = typeof item.path === "string" ? item.path : String(item.path ?? "");
   const isDirectory = item.entity_kind === "directory";
   const copy = directionCopy(item.direction, item.entity_kind);
-  const rowBusy = busy === path || busy === "all";
+  // Any in-flight approve/deny disables ALL row actions (not just this row's / "all"), so a second
+  // click can't overwrite `busy` and let the first request's `finally` re-enable the UI while the
+  // second is still running — which would allow overlapping destructive actions.
+  const anyBusy = busy != null;
 
   return el(
     "div",
@@ -122,7 +125,7 @@ function renderRow(ctx, item) {
         "button",
         {
           class: "btn danger",
-          disabled: rowBusy,
+          disabled: anyBusy,
           onClick: () => runAndRefresh(ctx, path, "approve"),
         },
         busy === path ? "Approving…" : "Approve",
@@ -131,7 +134,7 @@ function renderRow(ctx, item) {
         "button",
         {
           class: "btn",
-          disabled: rowBusy,
+          disabled: anyBusy,
           onClick: () => runAndRefresh(ctx, path, "deny"),
         },
         "Deny",
