@@ -48,7 +48,9 @@ function renderRow(entry) {
   // `.state-pill.is-unreachable .dot` / `.is-running .dot`): a solid fill for the dot, the
   // softer `-text` variant for the label so large red text stays readable on dark backgrounds.
   const dotColor = isError ? "var(--danger-fill)" : "var(--download-text)";
-  const labelClass = isError ? "dir-destructive" : "dir-download";
+  // The dot carries status colour; the label stays neutral for healthy rows (design §3.5 colours
+  // only the dot). Errors keep a red label for emphasis, since red is reserved for problems.
+  const labelClass = isError ? "dir-destructive" : "";
   return el(
     "div",
     { class: "ledger-row" },
