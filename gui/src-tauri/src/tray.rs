@@ -52,13 +52,28 @@ fn build_menu(
     let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
+    // "Quit" closes the window only and leaves the tray running (design §3.7 / #88): the indicator
+    // must survive so the user doesn't lose visibility while syncing continues.
     let quit = MenuItem::with_id(
         app,
         "quit",
-        "Quit (daemon keeps running)",
+        "Close window (keeps syncing in the tray)",
         true,
         None::<&str>,
     )?;
+
+    if state == DaemonState::FirstRun {
+        // First run has no meaningful counts yet — show a disabled note instead of "0 pending" /
+        // "Resolve 0 conflicts", which would read as real (zero) counters (the em-dash convention).
+        let info = MenuItem::with_id(
+            app,
+            "info_first_run",
+            "Nothing synced yet",
+            false,
+            None::<&str>,
+        )?;
+        return Menu::with_items(app, &[&show, &info, &settings, &sep, &quit]);
+    }
 
     if state == DaemonState::Unreachable {
         let start = MenuItem::with_id(
@@ -82,7 +97,7 @@ fn build_menu(
     let sync_now = MenuItem::with_id(
         app,
         "sync_now",
-        &format!("Sync now ({pending} pending)"),
+        format!("Sync now ({pending} pending)"),
         !paused,
         None::<&str>,
     )?;
@@ -94,7 +109,7 @@ fn build_menu(
     let conflicts_item = MenuItem::with_id(
         app,
         "conflicts",
-        &format!(
+        format!(
             "Resolve {conflicts} conflict{}",
             if conflicts == 1 { "" } else { "s" }
         ),
@@ -193,7 +208,13 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
                 .spawn();
         }
         "journal" => show_window(app), // the History/Settings screens carry the journal commands
-        "quit" => app.exit(0),
+        // "Quit" closes the window only — the tray (and this GUI process) keep running so the
+        // indicator survives, and the daemon is a separate process either way (design §3.7 / #88).
+        "quit" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+        }
         _ => {}
     }
 }
