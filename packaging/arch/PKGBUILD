@@ -65,7 +65,10 @@ prepare() {
   cd "${pkgname}"
   # Populate the local cargo registry cache from the vendored Cargo.lock so build()
   # can run fully offline (--frozen) inside makepkg's network-restricted chroot.
-  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+  # Derive the target triple from makepkg's $CARCH rather than shelling out to `rustc`
+  # (rustc isn't a virtual provided by any package, so it can't be a clean makedepend;
+  # cargo — provided by rust or rustup — is the only declared toolchain dependency).
+  cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
 }
 
 build() {
