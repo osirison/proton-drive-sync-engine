@@ -1,0 +1,287 @@
+/* Shared components (F3): cards, buttons, hexagon, stat tiles, ledger rows + chips. */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: var(--pad-card);
+}
+.card + .card {
+  margin-top: var(--gap-card);
+}
+
+/* ---- buttons ---- */
+.btn {
+  padding: 9px 14px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--btn-text);
+  font-size: var(--fs-control);
+}
+.btn:hover {
+  border-color: var(--selected-border);
+}
+.btn.primary {
+  background: var(--upload-fill);
+  border: none;
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.btn.danger {
+  background: var(--danger-fill);
+  border: none;
+  color: #fff;
+  font-weight: 600;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.cmd-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-2);
+  margin-top: 4px;
+}
+
+/* ---- hexagon status widget ---- */
+.hexagon {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  flex: none;
+}
+.hexagon svg {
+  width: 100%;
+  height: 100%;
+}
+.hexagon .arc-track {
+  fill: none;
+  stroke: var(--track);
+  stroke-width: 6;
+}
+.hexagon .arc-up {
+  fill: none;
+  stroke: var(--upload-text);
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+.hexagon .arc-down {
+  fill: none;
+  stroke: var(--download-text);
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+.hexagon.is-muted .arc-up,
+.hexagon.is-muted .arc-down {
+  opacity: 0.35;
+}
+.hexagon.is-spinning svg {
+  animation: hexspin 3s linear infinite;
+  transform-origin: 50% 50%;
+}
+@keyframes hexspin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.hexagon .center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* ---- stat tiles: repeat(4, minmax(0,1fr)) ---- */
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--gap-tile);
+}
+.stat-tile {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  padding: 14px;
+}
+.stat-tile .value {
+  font-size: 20px;
+  font-weight: 700;
+}
+.stat-tile .name {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  margin-top: 2px;
+}
+.stat-tile .field {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--muted-2);
+  margin-top: 2px;
+}
+
+/* ---- transfer rows + progress bar ---- */
+.transfer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.transfer-row .path {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress {
+  height: 4px;
+  width: 120px;
+  background: var(--track);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--download-fill);
+}
+
+/* ---- activity ledger ---- */
+.ledger {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ledger-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.chip {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+}
+.chip.active {
+  background: var(--selected);
+  border-color: var(--selected-border);
+}
+.provenance {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-2);
+}
+.ledger-body {
+  display: flex;
+  flex-direction: column;
+}
+.ledger-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+.ledger-row .action {
+  width: 96px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+}
+.ledger-row .path {
+  flex: 1;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ledger-row .meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--muted-2);
+}
+.ledger-empty {
+  padding: 24px 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* action direction colours (colour never the sole signal — the name is always shown) */
+.dir-upload {
+  color: var(--upload-text);
+}
+.dir-download {
+  color: var(--download-text);
+}
+.dir-destructive {
+  color: var(--danger-text);
+}
+.dir-neutral {
+  color: var(--muted);
+}
+
+/* Needs-you card (hidden at zero conflicts) */
+.needs-you {
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-card);
+  padding: var(--pad-card);
+  background: var(--card);
+}
+.needs-you .ny-label {
+  font-size: var(--fs-label);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--warn-text);
+}
+.needs-you .ny-count {
+  font-size: 26px;
+  font-weight: 700;
+}
+
+/* status card header */
+.status-card {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+}
+.status-card .headline {
+  font-size: var(--fs-headline);
+  font-weight: 600;
+}
+.status-card .subline {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--muted);
+  margin-top: 4px;
+}
+.status-card .actions {
+  margin-left: auto;
+  border-left: 1px solid var(--border-soft);
+  padding-left: 20px;
+  width: var(--dim-action-col);
+  display: grid;
+  gap: 8px;
+}

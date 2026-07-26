@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncAction {
     Upload,
@@ -25,7 +25,7 @@ pub enum SyncAction {
     SkipUnsupported,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedAction {
     pub path: PathBuf,
     pub destination_path: Option<PathBuf>,
@@ -88,7 +88,7 @@ impl SyncAction {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DryRunReport {
     pub summary: PlanSummary,
     pub plan: Vec<PlannedAction>,

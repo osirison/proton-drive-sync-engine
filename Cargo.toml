@@ -3,6 +3,13 @@ name = "proton-drive-sync-engine"
 version = "0.1.0"
 edition = "2024"
 
+# The desktop GUI (Tauri) lives in `gui/`. `gui-core` is the pure-Rust data layer that reuses this
+# crate's wire types; `gui/src-tauri` is the Tauri shell (needs webkit2gtk-4.1 + libsoup-3.0 to
+# build — installed in CI).
+[workspace]
+members = ["gui/gui-core", "gui/src-tauri"]
+resolver = "2"
+
 [dependencies]
 clap = { version = "4.6.2", features = ["derive"] }
 fs2 = "0.4"

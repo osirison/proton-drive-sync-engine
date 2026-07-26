@@ -1,0 +1,22 @@
+# Packaged copy of examples/systemd/proton-syncd.service (P3, #95).
+#
+# The example unit targets a `cargo install` layout (ExecStart under %h/.cargo/bin). This copy is
+# for distro packaging: ExecStart points at the package-installed /usr/bin/proton-syncd instead.
+# Installed to /usr/lib/systemd/user/proton-syncd.service by the RPM; it is a *user* unit, enabled
+# per-user with `systemctl --user enable --now proton-syncd`.
+[Unit]
+Description=Proton Drive Sync Daemon
+# No After=network-online.target here: this is a systemd *user* unit, and
+# network-online.target lives in the system manager (not the per-user manager), so ordering
+# against it has no effect. The daemon retries on its own (Restart=on-failure below) and the
+# proton-drive CLI it shells out to handles transient connectivity.
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+ExecStart=/usr/bin/proton-syncd --config %h/.config/proton-sync/proton-sync.toml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

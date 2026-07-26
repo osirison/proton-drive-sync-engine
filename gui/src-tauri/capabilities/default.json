@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the main window. App-defined commands are always callable; this grants the core defaults plus desktop notifications (used by S11).",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:default", "notification:default"]
+}

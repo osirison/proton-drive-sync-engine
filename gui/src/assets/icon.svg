@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%">
+  <defs>
+    <!-- Brand Gradients -->
+    <linearGradient id="orbit-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E55B2B" />
+      <stop offset="100%" stop-color="#F59E0B" />
+    </linearGradient>
+    <linearGradient id="accent-grad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06B6D4" />
+      <stop offset="100%" stop-color="#3B82F6" />
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Protective Hexagon Container -->
+  <polygon points="64,10 110,36 110,92 64,118 18,92 18,36"
+           fill="none"
+           stroke="url(#orbit-grad)"
+           stroke-width="7"
+           stroke-linejoin="round"/>
+
+  <!-- Top-Right Sync Arc (Clockwise to 3 o'clock) -->
+  <path d="M 64,34 A 30,30 0 0,1 94,58"
+        fill="none"
+        stroke="url(#orbit-grad)"
+        stroke-width="7"
+        stroke-linecap="round"/>
+  <!-- Compact Top-Right Arrowhead (Pointing Down at x=94) -->
+  <polygon points="94,70 87,56 101,56" fill="#F59E0B" />
+
+  <!-- Bottom-Left Sync Arc (Clockwise to 9 o'clock) -->
+  <path d="M 64,94 A 30,30 0 0,1 34,70"
+        fill="none"
+        stroke="url(#accent-grad)"
+        stroke-width="7"
+        stroke-linecap="round"/>
+  <!-- Compact Bottom-Left Arrowhead (Pointing Up at x=34) -->
+  <polygon points="34,58 27,72 41,72" fill="#06B6D4" />
+
+  <!-- Center Data Node (Rust / SQLite Anchor) -->
+  <circle cx="64" cy="64" r="8" fill="#1E293B" stroke="url(#orbit-grad)" stroke-width="3"/>
+</svg>

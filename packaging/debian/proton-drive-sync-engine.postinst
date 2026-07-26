@@ -1,0 +1,27 @@
+#!/bin/sh
+# postinst for proton-drive-sync-engine
+#
+# Refreshes the freedesktop caches this package's data files feed into.
+# Guarded with `command -v` since none of these tools are hard Depends
+# (modern desktop-file-utils/hicolor-icon-theme/appstream trigger on the
+# relevant paths automatically; this is a belt-and-suspenders refresh for
+# systems where those triggers aren't wired up).
+set -e
+
+case "$1" in
+    configure)
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+        fi
+        if command -v appstreamcli >/dev/null 2>&1; then
+            appstreamcli refresh --system >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
