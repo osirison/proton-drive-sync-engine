@@ -152,6 +152,9 @@ install -Dm0644 packaging/freedesktop/app.protondrivesync.engine.metainfo.xml \
 # Install whatever hicolor apps-icon sizes actually exist in the source tree, rather than
 # hardcoding a size list that can drift from packaging/freedesktop/icons/hicolor/*.
 for size_dir in packaging/freedesktop/icons/hicolor/*x*/apps; do
+    # An unmatched glob is left literal in POSIX sh; skip it so the loop is a real no-op
+    # (not a failed install) if no sized apps-icon dirs exist.
+    [ -d "${size_dir}" ] || continue
     size=$(basename "$(dirname "${size_dir}")")
     install -Dm0644 "${size_dir}/app.protondrivesync.engine.png" \
         "%{buildroot}%{_datadir}/icons/hicolor/${size}/apps/app.protondrivesync.engine.png"
@@ -163,6 +166,7 @@ install -Dm0644 packaging/freedesktop/icons/hicolor/scalable/apps/app.protondriv
 # are split into the -nautilus / -nemo subpackages below.
 install -d %{buildroot}%{_datadir}/icons/hicolor/scalable/emblems
 for f in packaging/emblems/icons/hicolor/scalable/emblems/emblem-proton-sync-*.svg; do
+    [ -e "${f}" ] || continue  # skip the literal glob if no emblem SVGs are present
     install -m0644 "${f}" %{buildroot}%{_datadir}/icons/hicolor/scalable/emblems/
 done
 
@@ -197,10 +201,10 @@ cargo test --release --all-targets --all-features --locked
 
 %post
 if [ -x %{_bindir}/gtk-update-icon-cache ]; then
-    %{_bindir}/gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor &>/dev/null || :
+    %{_bindir}/gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
 fi
 if [ -x %{_bindir}/update-desktop-database ]; then
-    %{_bindir}/update-desktop-database -q %{_datadir}/applications &>/dev/null || :
+    %{_bindir}/update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
 fi
 if [ -x %{_bindir}/appstreamcli ]; then
     %{_bindir}/appstreamcli refresh --force >/dev/null 2>&1 || :
@@ -212,10 +216,10 @@ fi
 
 %postun
 if [ -x %{_bindir}/gtk-update-icon-cache ]; then
-    %{_bindir}/gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor &>/dev/null || :
+    %{_bindir}/gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
 fi
 if [ -x %{_bindir}/update-desktop-database ]; then
-    %{_bindir}/update-desktop-database -q %{_datadir}/applications &>/dev/null || :
+    %{_bindir}/update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
 fi
 if [ -x %{_bindir}/appstreamcli ]; then
     %{_bindir}/appstreamcli refresh --force >/dev/null 2>&1 || :
