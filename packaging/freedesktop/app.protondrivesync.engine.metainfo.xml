@@ -28,7 +28,6 @@
   <icon type="stock">app.protondrivesync.engine</icon>
 
   <categories>
-    <category>Utility</category>
     <category>Network</category>
     <category>FileTransfer</category>
   </categories>
