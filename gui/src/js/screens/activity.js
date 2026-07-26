@@ -16,8 +16,9 @@ function rowsFromStatusHistory(resp) {
     .slice()
     .reverse() // status_history is oldest -> newest; ledger reads newest first
     .map((entry) => ({
-      action: entry.last_error ? "error" : "auto_link",
-      path: entry.last_error || entry.message || "",
+      // `last_error` is Option<String>: a *non-null* value is an error row, even if it's "".
+      action: entry.last_error != null ? "error" : "auto_link",
+      path: entry.last_error != null ? entry.last_error : (entry.message ?? ""),
       meta: relativeTime(entry.epoch_secs),
     }));
 }
