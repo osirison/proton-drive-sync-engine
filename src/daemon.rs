@@ -1582,11 +1582,17 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> AppResult<()> {
                 .unwrap_or_default();
         let candidate =
             path.with_file_name(format!(".{file_name}.{}.{nonce:x}.tmp", std::process::id()));
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
+        let mut open_opts = fs::OpenOptions::new();
+        open_opts.write(true).create_new(true);
+        // The sidecars carry local paths, errors, and pending deletions; write them owner-only
+        // (0600), like the control socket, so they don't leak if the sidecar dir is readable by
+        // other users. The final file inherits the temp's mode through the rename.
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            open_opts.mode(0o600);
+        }
+        match open_opts.open(&candidate) {
             Ok(file) => break (file, candidate),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
@@ -2029,6 +2035,25 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_write_is_owner_only_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("sync_index.status.json");
+        write_atomically(&path, b"{\"ok\":true}").expect("write sidecar");
+        let mode = fs::metadata(&path)
+            .expect("sidecar metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "status/metrics sidecars must be owner-only (they carry local paths, errors, and \
+             pending deletions)"
+        );
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum RecordedOperation {
