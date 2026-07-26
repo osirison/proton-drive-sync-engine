@@ -60,6 +60,7 @@ Source1:        proton-syncd.service
 BuildRequires:  cargo
 BuildRequires:  rust
 BuildRequires:  gcc
+BuildRequires:  binutils
 BuildRequires:  pkgconfig
 BuildRequires:  webkit2gtk4.1-devel
 BuildRequires:  libsoup3-devel
@@ -86,17 +87,19 @@ Recommends:     libappindicator-gtk3
 %{?systemd_requires}
 
 %description
-Proton Drive Sync is a two-way file-synchronization engine between a local folder and Proton
-Drive. This package provides the long-running sync daemon (proton-syncd), its control CLI
-(proton-sync), and the Tauri-based desktop GUI (proton-sync-gui), together with a systemd user
-unit and Linux desktop integration (application launcher, hicolor icons, AppStream metadata).
+Proton Drive Sync is a two-way file-synchronization engine between a local
+folder and Proton Drive. This package provides the long-running sync daemon
+(proton-syncd), its control CLI (proton-sync), and the Tauri desktop GUI
+(proton-sync-gui), together with a systemd user unit and Linux desktop
+integration (application launcher, hicolor icons, AppStream metadata).
 
-IMPORTANT — external dependency: proton-syncd shells out to the official `proton-drive` CLI to
-perform Proton Drive API operations, and reads that CLI's logged-in session from the desktop
-keyring via `secret-tool`. The `proton-drive` CLI is a separate, user-provided binary that is NOT
-packaged here (it is not available in Fedora/COPR repositories); install it yourself and make
-sure it is on $PATH before starting proton-syncd. `secret-tool` (from libsecret) IS pulled in as a
-package dependency.
+IMPORTANT — external dependency: proton-syncd shells out to the official
+`proton-drive` CLI to perform Proton Drive API operations, and reads that
+CLI's logged-in session from the desktop keyring via `secret-tool`. The
+`proton-drive` CLI is a separate, user-provided binary that is NOT packaged
+here (it is not available in Fedora/COPR repositories); install it yourself
+and make sure it is on $PATH before starting proton-syncd. `secret-tool`
+(from libsecret) IS pulled in as a package dependency.
 
 After installing, enable the daemon per-user with:
     systemctl --user enable --now proton-syncd
@@ -108,9 +111,10 @@ Requires:       %{name}%{?_isa} = %{version}-%{release}
 Requires:       nautilus-python
 
 %description nautilus
-GNOME Files (Nautilus) extension that shows a per-file emblem (synced / syncing / conflict) by
-reading the sync engine's SQLite index read-only. Split out from the main package so headless
-users don't have to pull in nautilus-python/GObject introspection. Restart Nautilus after
+GNOME Files (Nautilus) extension that shows a per-file emblem
+(synced / syncing / conflict) by reading the sync engine's SQLite index
+read-only. Split out from the main package so headless users don't have to
+pull in nautilus-python/GObject introspection. Restart Nautilus after
 installing (`nautilus -q`) to load the extension.
 
 %package nemo
@@ -120,9 +124,10 @@ Requires:       %{name}%{?_isa} = %{version}-%{release}
 Requires:       nemo-python
 
 %description nemo
-Nemo (Cinnamon Files) extension that shows a per-file emblem (synced / syncing / conflict) by
-reading the sync engine's SQLite index read-only. Split out from the main package so headless
-users don't have to pull in nemo-python/GObject introspection. Restart Nemo after installing
+Nemo (Cinnamon Files) extension that shows a per-file emblem
+(synced / syncing / conflict) by reading the sync engine's SQLite index
+read-only. Split out from the main package so headless users don't have to
+pull in nemo-python/GObject introspection. Restart Nemo after installing
 (`nemo -q`) to load the extension.
 
 %prep
@@ -139,6 +144,12 @@ cargo build --release -p proton-sync-gui --locked
 install -Dm0755 target/release/proton-syncd %{buildroot}%{_bindir}/proton-syncd
 install -Dm0755 target/release/proton-sync %{buildroot}%{_bindir}/proton-sync
 install -Dm0755 target/release/proton-sync-gui %{buildroot}%{_bindir}/proton-sync-gui
+
+# The debug_package override above disables RPM's automatic strip pass, so strip the release
+# binaries explicitly — otherwise they ship unstripped (rpmlint: unstripped-binary-or-object).
+strip %{buildroot}%{_bindir}/proton-syncd \
+      %{buildroot}%{_bindir}/proton-sync \
+      %{buildroot}%{_bindir}/proton-sync-gui
 
 # systemd user unit (packaged copy, see Source1 comment above).
 install -Dm0644 %{SOURCE1} %{buildroot}%{_userunitdir}/proton-syncd.service
