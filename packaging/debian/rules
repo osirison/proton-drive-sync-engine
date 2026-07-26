@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+# No dh-cargo/Rust buildsystem class is assumed to be installed, so drive
+# cargo directly instead of relying on debhelper's auto-detection (which
+# would otherwise no-op with "no build system detected").
+override_dh_auto_build:
+	cargo build --release --bins
+	cargo build --release -p proton-sync-gui
+
+override_dh_auto_test:
+	# Intentionally skipped at package-build time. The workspace's non-unit
+	# tests include #[ignore]'d gates that need a real authenticated Proton
+	# Drive session/keyring (tests/*_live.rs); unit tests already run in CI
+	# on every change, not at package-build time.
+
+override_dh_auto_install:
+	# Nothing to do here: binaries and data files are staged via the
+	# per-package debian/*.install files (dh_install), not `cargo install`.
+
+# debhelper (compat >= 12) runs dh_installsystemduser by default, but the
+# packaged unit is named proton-syncd.service, not
+# proton-drive-sync-engine.service (the package-name default), so pass
+# --name explicitly. Source file:
+#   debian/proton-drive-sync-engine.proton-syncd.user.service
+# installs to /usr/lib/systemd/user/proton-syncd.service.
+override_dh_installsystemduser:
+	dh_installsystemduser --name=proton-syncd

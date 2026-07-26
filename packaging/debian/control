@@ -1,0 +1,69 @@
+Source: proton-drive-sync-engine
+Section: net
+Priority: optional
+Maintainer: osirison <mina.swe@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               cargo (>= 1.85~),
+               rustc (>= 1.85~),
+               pkg-config,
+               libwebkit2gtk-4.1-dev,
+               libsoup-3.0-dev,
+               libgtk-3-dev,
+               libglib2.0-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/osirison/proton-drive-sync-engine
+Vcs-Browser: https://github.com/osirison/proton-drive-sync-engine
+Vcs-Git: https://github.com/osirison/proton-drive-sync-engine.git
+Rules-Requires-Root: no
+
+Package: proton-drive-sync-engine
+Architecture: any
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         libwebkit2gtk-4.1-0,
+         libsoup-3.0-0,
+         libgtk-3-0
+Recommends: libsecret-tools
+Suggests: proton-sync-nautilus, proton-sync-nemo
+Description: two-way file sync engine and desktop GUI for Proton Drive
+ Bidirectionally synchronizes a local folder with Proton Drive. Ships:
+ .
+  * proton-syncd  — the background sync daemon (systemd user service)
+  * proton-sync   — a control CLI that talks to the daemon over a
+                     Unix socket (status, activity, dry-run review)
+  * proton-sync-gui — a Tauri desktop GUI for status, activity,
+                     conflict resolution, dry-run review, and settings
+ .
+ This package does NOT bundle the proprietary `proton-drive` command-line
+ client published by Proton. You must install it yourself and make sure
+ it is on PATH: proton-syncd shells out to it for every remote Proton
+ Drive operation and reads its cached session from the desktop keyring
+ (see the libsecret-tools recommendation, which provides secret-tool).
+ .
+ Optional per-file sync-status emblems for the Nautilus and Nemo file
+ managers are packaged separately as proton-sync-nautilus and
+ proton-sync-nemo.
+
+Package: proton-sync-nautilus
+Architecture: all
+Depends: ${misc:Depends}, python3, python3-nautilus
+Enhances: proton-drive-sync-engine
+Description: Nautilus file-manager emblems for Proton Drive Sync
+ Adds per-file sync-status emblems (synced / syncing / conflict) to the
+ GNOME Files (Nautilus) file manager by reading proton-syncd's local
+ SQLite index read-only. Requires proton-drive-sync-engine's daemon to
+ have populated an index; this is a cosmetic enhancement only and is
+ never the sole signal of sync state.
+ .
+ Restart Nautilus after installing: nautilus -q
+
+Package: proton-sync-nemo
+Architecture: all
+Depends: ${misc:Depends}, python3, nemo-python | python3-nemo
+Enhances: proton-drive-sync-engine
+Description: Nemo file-manager emblems for Proton Drive Sync
+ Adds per-file sync-status emblems (synced / syncing / conflict) to the
+ Cinnamon Nemo file manager by reading proton-syncd's local SQLite index
+ read-only. Requires proton-drive-sync-engine's daemon to have populated
+ an index; this is a cosmetic enhancement only and is never the sole
+ signal of sync state.
