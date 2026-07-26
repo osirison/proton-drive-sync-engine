@@ -1,0 +1,17 @@
+proton-drive-sync-engine (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging (#96): proton-syncd, proton-sync, and the
+    Tauri desktop GUI proton-sync-gui, all built from the workspace and
+    installed to /usr/bin.
+  * Package a systemd --user unit for proton-syncd (ExecStart patched to
+    /usr/bin/proton-syncd for a distro install; installed via
+    dh_installsystemduser to /usr/lib/systemd/user/proton-syncd.service).
+  * Install the P2 freedesktop integration assets (desktop entry,
+    AppStream metainfo, hicolor app icons) from packaging/freedesktop/.
+  * Split the S10 Nautilus/Nemo sync-status emblem extensions into
+    separate optional binary packages (proton-sync-nautilus,
+    proton-sync-nemo) so headless installs don't pull in the
+    nautilus-python/nemo-python + GObject stack; emblem icons ship in
+    the main package.
+
+ -- osirison <mina.swe@gmail.com>  Thu, 01 Jan 2026 00:00:00 +0000
