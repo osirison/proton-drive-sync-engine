@@ -34,9 +34,11 @@ function formatSummary(summary) {
   return parts.join(" · ");
 }
 
-/** The mono summary column: the error text for a failed pass, else this pass's counters. */
+/** The mono summary column: the error text for a failed pass, else this pass's counters.
+ * Uses a non-null check (matching `isError`) so an empty-string `last_error` can't render a red dot
+ * next to success counters. */
 function summaryFor(entry) {
-  if (entry.last_error) return entry.last_error;
+  if (entry.last_error != null) return entry.last_error;
   return formatSummary(entry.successful_sync_summary) ?? formatSummary(entry.plan_summary) ?? dash(null);
 }
 
