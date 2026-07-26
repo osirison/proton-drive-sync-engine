@@ -12,7 +12,7 @@ Files: packaging/freedesktop/icons/*
 Copyright: 2026 osirison
 License: Apache-2.0
 
-Files: debian/*
+Files: packaging/debian/*
 Copyright: 2026 osirison
 License: Apache-2.0
 

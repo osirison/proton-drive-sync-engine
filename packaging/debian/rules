@@ -7,10 +7,12 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 # No dh-cargo/Rust buildsystem class is assumed to be installed, so drive
 # cargo directly instead of relying on debhelper's auto-detection (which
-# would otherwise no-op with "no build system detected").
+# would otherwise no-op with "no build system detected"). --locked pins the
+# dependency graph to the committed Cargo.lock so the build is deterministic
+# (and fails loudly if the lock is stale) rather than silently resolving new versions.
 override_dh_auto_build:
-	cargo build --release --bins
-	cargo build --release -p proton-sync-gui
+	cargo build --release --locked --bins
+	cargo build --release --locked -p proton-sync-gui
 
 override_dh_auto_test:
 	# Intentionally skipped at package-build time. The workspace's non-unit
@@ -21,6 +23,13 @@ override_dh_auto_test:
 override_dh_auto_install:
 	# Nothing to do here: binaries and data files are staged via the
 	# per-package debian/*.install files (dh_install), not `cargo install`.
+
+# The emblem extensions live in the file managers' own extension dirs, not a standard
+# python module path, so point dh_python3 at them explicitly. This byte-compiles them and
+# computes ${python3:Depends} (python3, python3-gi for `import gi`) for the -nautilus/-nemo
+# packages, on top of their hard python3-nautilus / nemo-python bindings dep.
+override_dh_python3:
+	dh_python3 /usr/share/nautilus-python/extensions /usr/share/nemo-python/extensions
 
 # debhelper (compat >= 12) runs dh_installsystemduser by default, but the
 # packaged unit is named proton-syncd.service, not

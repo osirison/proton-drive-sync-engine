@@ -3,6 +3,7 @@ Section: net
 Priority: optional
 Maintainer: osirison <mina.swe@gmail.com>
 Build-Depends: debhelper-compat (= 13),
+               dh-sequence-python3,
                cargo (>= 1.85~),
                rustc (>= 1.85~),
                pkg-config,
@@ -18,11 +19,11 @@ Rules-Requires-Root: no
 
 Package: proton-drive-sync-engine
 Architecture: any
+# Runtime library deps (webkit2gtk / libsoup3 / gtk3 / ...) are computed from the built
+# binaries by dh_shlibdeps via ${shlibs:Depends}; don't hard-code the ABI package names, which
+# drift across Debian/Ubuntu releases.
 Depends: ${shlibs:Depends},
-         ${misc:Depends},
-         libwebkit2gtk-4.1-0,
-         libsoup-3.0-0,
-         libgtk-3-0
+         ${misc:Depends}
 Recommends: libsecret-tools
 Suggests: proton-sync-nautilus, proton-sync-nemo
 Description: two-way file sync engine and desktop GUI for Proton Drive
@@ -46,7 +47,7 @@ Description: two-way file sync engine and desktop GUI for Proton Drive
 
 Package: proton-sync-nautilus
 Architecture: all
-Depends: ${misc:Depends}, python3, python3-nautilus
+Depends: ${misc:Depends}, ${python3:Depends}, python3-nautilus
 Enhances: proton-drive-sync-engine
 Description: Nautilus file-manager emblems for Proton Drive Sync
  Adds per-file sync-status emblems (synced / syncing / conflict) to the
@@ -59,7 +60,7 @@ Description: Nautilus file-manager emblems for Proton Drive Sync
 
 Package: proton-sync-nemo
 Architecture: all
-Depends: ${misc:Depends}, python3, nemo-python | python3-nemo
+Depends: ${misc:Depends}, ${python3:Depends}, nemo-python | python3-nemo
 Enhances: proton-drive-sync-engine
 Description: Nemo file-manager emblems for Proton Drive Sync
  Adds per-file sync-status emblems (synced / syncing / conflict) to the
