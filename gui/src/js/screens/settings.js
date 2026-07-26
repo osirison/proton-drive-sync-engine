@@ -67,19 +67,14 @@ function arraysEqual(a, b) {
 }
 
 /** Only the fields that actually differ from `original` — this is exactly the `writeConfig`
- * payload, so it's both the dirty-check and the save-diff in one place. Blank/unparseable number
- * fields are skipped (not sent, not counted as a change) rather than silently coerced to 0. */
+ * payload, so it's both the dirty-check and the save-diff in one place. Number fields need no
+ * special blank/NaN handling here: `textInput`'s onInput already guarantees `form[k]` is always
+ * either a valid finite number or exactly `original[k]` (see the number branch there), so a plain
+ * equality diff can never disagree with what's actually shown in the field. */
 function buildUpdate() {
   const update = {};
-  for (const k of [...TEXT_FIELDS, ...BOOL_FIELDS]) {
+  for (const k of [...TEXT_FIELDS, ...NUMBER_FIELDS, ...BOOL_FIELDS]) {
     if (form[k] !== original[k]) update[k] = form[k];
-  }
-  for (const k of NUMBER_FIELDS) {
-    const raw = form[k];
-    const str = raw == null ? "" : String(raw).trim();
-    if (str === "") continue;
-    const n = Number(str);
-    if (Number.isFinite(n) && n !== original[k]) update[k] = n;
   }
   for (const k of LIST_FIELDS) {
     if (!arraysEqual(form[k], original[k])) update[k] = [...form[k]];
@@ -109,10 +104,16 @@ function refreshDerived() {
   if (refs.discardBtn) refs.discardBtn.disabled = !dirty || saving;
   if (refs.dirtyNote) refs.dirtyNote.style.display = dirty ? "" : "none";
   if (refs.rootWarning) refs.rootWarning.style.display = isRootDirty() ? "" : "none";
-  // A stale "Saved…" banner reads oddly next to "Unsaved changes" once the user edits again after
-  // a save. Hide it visually (surgical — no repaint, so no focus loss); `saveNotice`/`saveError`
-  // themselves are cleared for real at the start of the next `handleSave`.
-  if (refs.statusBox) refs.statusBox.style.display = dirty ? "none" : "";
+  // A stale SUCCESS notice reads oddly next to "Unsaved changes" once the user edits again after a
+  // save, so hide it surgically (no repaint, no focus loss) once dirty. A FAILURE banner must stay
+  // visible while dirty — the form is dirty precisely *because* the save failed and the draft was
+  // deliberately left unsaved (see `handleSave`'s catch), so hiding the error the instant it appears
+  // would mean the user never gets to read why. Only the success path auto-hides on further edits;
+  // `saveNotice`/`saveError` themselves are cleared for real at the start of the next `handleSave`.
+  if (refs.statusBox) {
+    const hideStaleSuccess = dirty && !!saveNotice && !saveError;
+    refs.statusBox.style.display = hideStaleSuccess ? "none" : "";
+  }
 }
 
 // ---- small builders -------------------------------------------------------------------------
@@ -146,7 +147,23 @@ function textInput(container, ctx, key, kind, opts = {}) {
     value: form[key],
     style: inputStyle,
     onInput: (e) => {
-      form[key] = e.target.value;
+      if (kind === "number") {
+        const str = e.target.value.trim();
+        const n = Number(str);
+        if (str === "" || !Number.isFinite(n)) {
+          // A blank/unparseable number can't be sent — `writeConfig`'s field is a plain integer,
+          // not an Option-of-maybe-invalid-string — so there is no "valid but different" state to
+          // hold here. Reverting BOTH `form[key]` and what the input actually displays to the
+          // baseline keeps the dirty computation and the visible value from ever disagreeing about
+          // whether this field changed (they're now, by construction, always the same fact).
+          form[key] = original[key];
+          e.target.value = original[key] == null ? "" : String(original[key]);
+        } else {
+          form[key] = n;
+        }
+      } else {
+        form[key] = e.target.value;
+      }
       refreshDerived();
     },
   };
@@ -265,8 +282,9 @@ function foldersSection(container, ctx) {
       class: "dir-destructive",
       style: `margin-top:6px;font-size:var(--fs-meta);font-weight:600;${isRootDirty() ? "" : "display:none"}`,
     },
-    "Changing a root re-bootstraps the index from scratch on the next reconcile. Preview a plan " +
-      "before restarting the daemon.",
+    "Changing a root re-bootstraps the index from scratch. Before you restart the daemon, preview " +
+      "the dry-run plan on the Plan tab and confirm it looks right — restarting is a manual step " +
+      "this screen doesn't perform, so nothing here can force that check for you.",
     el(
       "div",
       { style: "margin-top:6px" },
@@ -416,7 +434,9 @@ function statusBanners(container, ctx) {
               "div",
               { class: "dir-destructive", style: "margin-top:8px;font-weight:600" },
               "You changed a sync root — restarting will re-bootstrap the index from scratch. Preview " +
-                "a plan before restarting.",
+                "the dry-run plan on the Plan tab and confirm it looks right before you restart. " +
+                "Saving here doesn't restart the daemon, so this is the only checkpoint before that " +
+                "happens.",
             )
           : null,
         saveNotice.rootChanged
@@ -575,8 +595,18 @@ function paint(container, ctx) {
 }
 
 export function renderSettings(container, ctx) {
-  if (!loaded && !loading) {
-    startLoad(container, ctx);
+  if (!loaded) {
+    // First-ever attempt (no error yet, not already in flight): kick off `readConfig()`. A load
+    // FAILURE must NOT retry itself on the shell's 2s poll — only the explicit Retry button (in the
+    // error card `paint()` renders below) re-triggers `startLoad`. Without this guard, the poll
+    // would re-invoke `renderSettings` every 2s while `loaded` stays false, hammering a broken
+    // daemon/config path with repeated `readConfig()` calls and flickering the error card in place
+    // of letting the user actually read it.
+    if (!loading && !loadError) {
+      startLoad(container, ctx);
+      return;
+    }
+    paint(container, ctx); // loading spinner, or the error card — both static, no network call
     return;
   }
   // The shell re-invokes every screen's render on its 2s status poll. A full `paint()` here would
