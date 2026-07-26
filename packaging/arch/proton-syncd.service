@@ -1,6 +1,9 @@
 [Unit]
 Description=Proton Drive Sync Daemon
-After=network-online.target
+# No After=network-online.target here: this is a systemd *user* unit, and
+# network-online.target lives in the system manager (not the per-user manager), so ordering
+# against it has no effect. The daemon retries on its own (Restart=on-failure below) and the
+# proton-drive CLI it shells out to handles transient connectivity.
 
 [Service]
 Type=simple
