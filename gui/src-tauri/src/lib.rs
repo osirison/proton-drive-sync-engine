@@ -35,8 +35,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the window hides it to the tray rather than exiting — the tray's "Quit" is the
-            // real exit. (The daemon is a separate process and is unaffected either way.)
+            // Closing the window hides it to the tray rather than exiting. The GUI + tray keep
+            // running — there is intentionally no from-tray full-exit (#88); the daemon is a
+            // separate process and is unaffected either way.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
