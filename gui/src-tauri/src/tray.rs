@@ -207,7 +207,7 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
                 .args(["--user", "start", "proton-syncd"])
                 .spawn();
         }
-        "journal" => show_window(app), // the History/Settings screens carry the journal commands
+        "journal" => navigate(app, "history"), // the History screen surfaces the journalctl command
         // "Quit" closes the window only — the tray (and this GUI process) keep running so the
         // indicator survives, and the daemon is a separate process either way (design §3.7 / #88).
         "quit" => {
@@ -226,14 +226,20 @@ fn navigate(app: &AppHandle, tab: &str) {
 }
 
 fn send_command(app: &AppHandle, command: ControlCommand) {
-    let socket = {
-        let state = app.state::<Mutex<RuntimePaths>>();
-        let guard = state.lock().unwrap();
-        guard.socket_path.clone()
-    };
-    let _ = ipc::command(&socket, command, ipc::DEFAULT_TIMEOUT);
-    // Refresh the tray promptly rather than waiting for the next poll tick.
-    let reply = ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT);
-    let state = derive_state(reply.as_ref());
-    update_tray(app, state, reply.ok().as_ref());
+    // Menu events run on the UI/event-loop thread and the control socket is synchronous (blocking up
+    // to DEFAULT_TIMEOUT), so do the round trip on a background thread and refresh the tray after —
+    // a slow/unreachable daemon must never freeze tray interaction.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let socket = {
+            let state = app.state::<Mutex<RuntimePaths>>();
+            let guard = state.lock().unwrap();
+            guard.socket_path.clone()
+        };
+        let _ = ipc::command(&socket, command, ipc::DEFAULT_TIMEOUT);
+        // Refresh the tray promptly rather than waiting for the next poll tick.
+        let reply = ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT);
+        let state = derive_state(reply.as_ref());
+        update_tray(&app, state, reply.ok().as_ref());
+    });
 }

@@ -257,12 +257,11 @@ function main() {
   poll();
   window.addEventListener("focus", scheduleNextPoll);
 
-  // Tray menu items ("Resolve conflicts", "Settings") ask the shell to switch tabs (S7).
-  if (window.__TAURI__) {
-    window.__TAURI__.event.listen("tray-navigate", (e) => {
-      if (typeof e.payload === "string") setTab(e.payload);
-    });
-  }
+  // Tray menu items ("Resolve conflicts", "Settings", "View journal") ask the shell to switch tabs
+  // (S7). Routed through the api facade — no direct window.__TAURI__ here.
+  api.onTrayNavigate((tab) => {
+    if (typeof tab === "string") setTab(tab);
+  });
 }
 
 main();

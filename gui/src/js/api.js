@@ -29,6 +29,11 @@ export const api = {
   readConflictPair: (conflict) => invoke("read_conflict_pair", { conflict }),
   pathSyncStatus: (relativePath) => invoke("path_sync_status", { relativePath }),
   notify: (title, body) => invoke("notify", { title, body }),
+  // Subscribe to the backend's `tray-navigate` event (tray menu → tab switch). Routed through the
+  // facade so screens/shell never touch `window.__TAURI__` directly; a no-op in browser preview.
+  onTrayNavigate: (cb) => {
+    if (inTauri()) window.__TAURI__.event.listen("tray-navigate", (e) => cb(e.payload));
+  },
   isMock: () => !inTauri(),
 };
 
