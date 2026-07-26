@@ -22,6 +22,11 @@ let gateInput = ""; // the typed-DELETE confirmation text
 let applying = false; // a syncNow() call is in flight
 let applyOutcome = null; // { state, message, isError } after the last Apply, or null
 
+// `report.plan`, destructive-first (stable sort), computed once per successful `runPreview()` —
+// NOT inside `paint()`, which re-runs on every DELETE-gate keystroke. Re-sorting the full plan on
+// every keypress would be O(n log n) per key for large plans; caching it here keeps `paint()` O(n).
+let sortedPlanRows = [];
+
 // Mirrors components.js's private `dirClass` (not exported) so plan rows/tiles use the exact same
 // direction → CSS class mapping as the shared ledger (including "conflict" reading as amber, not a
 // dedicated colour). `directionForAction` itself — the actual classification logic — is imported
@@ -64,6 +69,20 @@ function formatFilesAtRisk(files) {
   return `${files.slice(0, 3).join(", ")}, and ${files.length - 3} more`;
 }
 
+// Stable sort: destructive rows (remote_delete / local_delete / purge, per directionForAction)
+// float to the top; everything else keeps the daemon's original order. Called once per plan (see
+// `sortedPlanRows`), not per render.
+function sortPlanRows(plan) {
+  return plan
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const da = directionForAction(a.row.action) === "destructive" ? 0 : 1;
+      const db = directionForAction(b.row.action) === "destructive" ? 0 : 1;
+      return da - db || a.index - b.index;
+    })
+    .map((entry) => entry.row);
+}
+
 // ---- data ----
 
 async function runPreview() {
@@ -79,6 +98,7 @@ async function runPreview() {
         : "The daemon returned no plan report.";
     } else {
       payload = result;
+      sortedPlanRows = sortPlanRows(result.report?.plan ?? []);
       // A fresh plan may have a different destructive set than the one just reviewed — require
       // the gate to be typed again rather than carrying over a stale confirmation.
       gateInput = "";
@@ -241,18 +261,9 @@ function planRow(row) {
   );
 }
 
-function planRowsCard(plan) {
-  // Stable sort: destructive rows (remote_delete / local_delete / purge, per directionForAction)
-  // float to the top; everything else keeps the daemon's original order.
-  const sorted = plan
-    .map((row, index) => ({ row, index }))
-    .sort((a, b) => {
-      const da = directionForAction(a.row.action) === "destructive" ? 0 : 1;
-      const db = directionForAction(b.row.action) === "destructive" ? 0 : 1;
-      return da - db || a.index - b.index;
-    })
-    .map((entry) => entry.row);
-
+// `sorted` is precomputed by `sortPlanRows` in `runPreview` and cached in `sortedPlanRows` — this
+// function only renders, it never re-sorts (see the module-level state note on `sortedPlanRows`).
+function planRowsCard(sorted) {
   const header = el(
     "div",
     {
@@ -320,8 +331,11 @@ function gateBanner(requiresGate, summary, filesAtRisk) {
       el(
         "div",
         { style: "flex:1;min-width:0;font-size:12.5px;line-height:1.5;color:var(--danger-text)" },
-        el("strong", {}, `${summary?.destructive_actions ?? "some"} destructive action(s) in this plan. `),
-        `This includes a remote or local delete — applying will permanently remove: ${named || "the affected file(s)"}.`,
+        // Count is `files_at_risk.length` — the gated remote_delete/local_delete set — NOT
+        // `summary.destructive_actions`, which also counts purges (index-only, no user data lost)
+        // and would overstate how many files this warning is actually about.
+        el("strong", {}, `${filesAtRisk?.length ?? "some"} permanent deletion(s) in this plan. `),
+        `Applying will permanently remove: ${named || "the affected file(s)"}.`,
       ),
       gateInputField(applying),
     );
@@ -427,13 +441,12 @@ function paint() {
   } else {
     const { report, requires_delete_gate, files_at_risk } = payload;
     const summary = report?.summary ?? null;
-    const plan = report?.plan ?? [];
     const requiresGate = requires_delete_gate === true;
 
     const banner = gateBanner(requiresGate, summary, files_at_risk);
     if (banner) nodes.push(banner);
     nodes.push(summaryGrid(summary));
-    nodes.push(planRowsCard(plan));
+    nodes.push(planRowsCard(sortedPlanRows));
     nodes.push(applyFooter(requiresGate, files_at_risk));
     nodes.push(applyOutcomeCard());
   }
