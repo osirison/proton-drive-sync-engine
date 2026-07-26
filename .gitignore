@@ -22,3 +22,7 @@ target
 
 # Tauri build-generated schemas
 gui/src-tauri/gen/
+
+# Python bytecode
+__pycache__/
+*.pyc
