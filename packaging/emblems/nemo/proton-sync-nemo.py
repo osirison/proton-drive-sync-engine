@@ -71,16 +71,34 @@ class _Index:
             rel = os.path.relpath(abs_path, root)
             if rel.startswith(".."):
                 return None
-            try:
-                conn = self._conn(db_path)
-                row = conn.execute(
-                    "SELECT sync_status FROM file_index WHERE file_path = ? OR file_path = ? LIMIT 1",
-                    (rel, os.fsencode(rel)),
-                ).fetchone()
-            except sqlite3.Error:
-                self._conns.pop(db_path, None)
-                return None
+            row = self._lookup(db_path, rel)
             return row[0] if row else None
+
+    def _lookup(self, db_path, rel):
+        # Match both TEXT and BLOB key encodings. A non-UTF-8 (surrogateescaped) name can't be bound
+        # as a TEXT param (UnicodeEncodeError, not a sqlite3.Error → would crash Nemo), so in that
+        # case match by the BLOB key alone. See the Nautilus module header.
+        key_blob = os.fsencode(rel)
+        try:
+            rel.encode("utf-8")
+        except UnicodeEncodeError:
+            text_key = None
+        else:
+            text_key = rel
+        try:
+            conn = self._conn(db_path)
+            if text_key is not None:
+                return conn.execute(
+                    "SELECT sync_status FROM file_index WHERE file_path = ? OR file_path = ? LIMIT 1",
+                    (text_key, key_blob),
+                ).fetchone()
+            return conn.execute(
+                "SELECT sync_status FROM file_index WHERE file_path = ? LIMIT 1",
+                (key_blob,),
+            ).fetchone()
+        except sqlite3.Error:
+            self._conns.pop(db_path, None)
+            return None
 
 
 _INDEX = _Index()

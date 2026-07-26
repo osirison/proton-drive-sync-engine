@@ -8,8 +8,10 @@
 #    `.sync/sync_index.db`. We do NOT hardcode the GUI's config path — the daemon may run with a
 #    different --config/--db-path, and there may be more than one sync root.
 #  * Key encoding: `file_index.file_path` is the path relative to the root, stored byte-exact — TEXT
-#    for valid UTF-8, BLOB otherwise. We match both (bind the str AND the raw bytes) so non-UTF-8
-#    names still resolve.
+#    for valid UTF-8, BLOB otherwise. For a UTF-8 name we match both (str AND raw bytes). A non-UTF-8
+#    (surrogateescaped) name canNOT be bound as a TEXT param — sqlite3 would raise UnicodeEncodeError
+#    (not a sqlite3.Error, so uncaught → crashes the file manager) — so we match it by its BLOB key
+#    alone.
 #  * Read-only + busy_timeout: the daemon's index runs WITHOUT WAL, so a naive reader races its write
 #    transactions. We open `mode=ro` and set a busy timeout instead of failing on SQLITE_BUSY.
 #  * Nautilus 4 API (Fedora/GNOME ship 4.x): `Nautilus.InfoProvider.update_file_info` returns
@@ -88,18 +90,35 @@ class _Index:
             rel = os.path.relpath(abs_path, root)
             if rel.startswith(".."):
                 return None
-            try:
-                conn = self._conn(db_path)
-                # Match TEXT (str) and BLOB (bytes) key encodings — see the module header.
-                row = conn.execute(
-                    "SELECT sync_status FROM file_index WHERE file_path = ? OR file_path = ? LIMIT 1",
-                    (rel, os.fsencode(rel)),
-                ).fetchone()
-            except sqlite3.Error:
-                # A transient read error (locked/mid-migration) → no emblem this pass, not a crash.
-                self._conns.pop(db_path, None)
-                return None
+            row = self._lookup(db_path, rel)
             return row[0] if row else None
+
+    def _lookup(self, db_path, rel):
+        """Query the index for `rel`, matching both TEXT and BLOB key encodings — see header."""
+        key_blob = os.fsencode(rel)
+        try:
+            rel.encode("utf-8")
+        except UnicodeEncodeError:
+            # Non-UTF-8 (surrogateescaped) name: it can only be a BLOB key, and binding it as TEXT
+            # would raise UnicodeEncodeError (not a sqlite3.Error) and crash the file manager.
+            text_key = None
+        else:
+            text_key = rel
+        try:
+            conn = self._conn(db_path)
+            if text_key is not None:
+                return conn.execute(
+                    "SELECT sync_status FROM file_index WHERE file_path = ? OR file_path = ? LIMIT 1",
+                    (text_key, key_blob),
+                ).fetchone()
+            return conn.execute(
+                "SELECT sync_status FROM file_index WHERE file_path = ? LIMIT 1",
+                (key_blob,),
+            ).fetchone()
+        except sqlite3.Error:
+            # A transient read error (locked/mid-migration) → no emblem this pass, not a crash.
+            self._conns.pop(db_path, None)
+            return None
 
 
 _INDEX = _Index()
