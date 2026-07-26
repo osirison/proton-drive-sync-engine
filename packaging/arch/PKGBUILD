@@ -1,0 +1,132 @@
+# Maintainer: Proton Drive Sync contributors <https://github.com/osirison/proton-drive-sync-engine>
+#
+# Builds and installs three binaries from one workspace:
+#   - proton-syncd, proton-sync  (root crate, `cargo build --release --bins`)
+#   - proton-sync-gui            (Tauri desktop GUI, workspace member gui/src-tauri,
+#                                  `cargo build --release -p proton-sync-gui`)
+# plus the systemd user unit, freedesktop launcher/icon assets (P2, #94), and the
+# Nautilus/Nemo sync-status emblem extensions (S10, #91).
+#
+# NOTE: the daemon shells out to the `proton-drive` CLI at runtime and reads its
+# session from the OS keyring via `secret-tool`. `proton-drive` is a separate,
+# user-provided binary (not in the official Arch repos or the AUR at the time of
+# writing) that must be on $PATH — it is intentionally NOT a `depends` entry here.
+# `libsecret` (providing `secret-tool`) IS a real runtime dependency.
+#
+# NOTE: `nautilus-python` / `nemo-python` are the current Arch `extra` package names
+# for the GNOME Files / Nemo Python bindings the emblem extensions need at runtime
+# (the older `python-nautilus` / `python-nemo` names are stale). Verified against
+# https://archlinux.org/packages/extra/x86_64/nautilus-python/ and
+# https://archlinux.org/packages/extra/x86_64/nemo-python/ .
+#
+# NOTE: `libayatana-appindicator` is required to build and run the system tray
+# (S7): the GUI enables Tauri's `tray-icon` feature, which on Linux links against
+# libappindicator via pkg-config (see the `libappindicator-sys` build dependency
+# in Cargo.lock) and needs the same library at runtime for the tray icon to render.
+pkgname=proton-drive-sync-engine
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Two-way file sync between a local folder and Proton Drive — daemon, control CLI, and desktop GUI"
+arch=('x86_64')
+url="https://github.com/osirison/proton-drive-sync-engine"
+license=('Apache-2.0')
+depends=(
+  'gcc-libs'
+  'webkit2gtk-4.1'
+  'libsoup3'
+  'gtk3'
+  'libsecret'
+  'libayatana-appindicator'
+  'hicolor-icon-theme'
+)
+makedepends=(
+  'cargo'
+  'webkit2gtk-4.1'
+  'libsoup3'
+  'gtk3'
+  'glib2'
+  'pkgconf'
+  'git'
+  'libayatana-appindicator'
+)
+optdepends=(
+  'nautilus-python: sync-status emblems in GNOME Files (Nautilus)'
+  'nemo-python: sync-status emblems in Cinnamon Nemo'
+)
+install="${pkgname}.install"
+# No release tag exists yet at authoring time; once v${pkgver} is tagged (on a commit
+# that already contains packaging/freedesktop/, packaging/emblems/ and this
+# packaging/arch/ directory), makepkg clones it into $srcdir/$pkgname. See README.md
+# for how to fill in real checksums once the tag exists.
+source=("${pkgname}::git+${url}.git#tag=v${pkgver}")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "${pkgname}"
+  # Populate the local cargo registry cache from the vendored Cargo.lock so build()
+  # can run fully offline (--frozen) inside makepkg's network-restricted chroot.
+  # Derive the target triple from makepkg's $CARCH rather than shelling out to `rustc`
+  # (rustc isn't a virtual provided by any package, so it can't be a clean makedepend;
+  # cargo — provided by rust or rustup — is the only declared toolchain dependency).
+  cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
+}
+
+build() {
+  cd "${pkgname}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+
+  # proton-syncd + proton-sync (root crate)
+  cargo build --frozen --release --bins
+  # proton-sync-gui (Tauri shell, workspace member gui/src-tauri)
+  cargo build --frozen --release -p proton-sync-gui
+}
+
+package() {
+  cd "${pkgname}"
+
+  # --- Binaries -----------------------------------------------------------
+  install -Dm755 target/release/proton-syncd "${pkgdir}/usr/bin/proton-syncd"
+  install -Dm755 target/release/proton-sync "${pkgdir}/usr/bin/proton-sync"
+  install -Dm755 target/release/proton-sync-gui "${pkgdir}/usr/bin/proton-sync-gui"
+
+  # --- systemd user unit (packaged copy — ExecStart uses /usr/bin, unlike the
+  #     `cargo install` example at examples/systemd/proton-syncd.service) -----
+  install -Dm644 packaging/arch/proton-syncd.service \
+    "${pkgdir}/usr/lib/systemd/user/proton-syncd.service"
+
+  # --- Freedesktop integration (P2, #94) -----------------------------------
+  install -Dm644 packaging/freedesktop/app.protondrivesync.engine.desktop \
+    "${pkgdir}/usr/share/applications/app.protondrivesync.engine.desktop"
+  install -Dm644 packaging/freedesktop/app.protondrivesync.engine.metainfo.xml \
+    "${pkgdir}/usr/share/metainfo/app.protondrivesync.engine.metainfo.xml"
+  install -Dm644 packaging/freedesktop/icons/hicolor/scalable/apps/app.protondrivesync.engine.svg \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/app.protondrivesync.engine.svg"
+
+  local size_dir size
+  for size_dir in packaging/freedesktop/icons/hicolor/*x*/apps; do
+    size="$(basename "$(dirname "${size_dir}")")"
+    install -Dm644 "${size_dir}/app.protondrivesync.engine.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}/apps/app.protondrivesync.engine.png"
+  done
+
+  # --- File-manager sync-status emblems (S10, #91) -------------------------
+  # Icons + extensions ship in the main package; the Python bindings that load
+  # them (nautilus-python / nemo-python) are optdepends, see header comment.
+  install -Dm644 packaging/emblems/nautilus/proton-sync-nautilus.py \
+    "${pkgdir}/usr/share/nautilus-python/extensions/proton-sync-nautilus.py"
+  install -Dm644 packaging/emblems/nemo/proton-sync-nemo.py \
+    "${pkgdir}/usr/share/nemo-python/extensions/proton-sync-nemo.py"
+
+  local emblem
+  for emblem in packaging/emblems/icons/hicolor/scalable/emblems/*.svg; do
+    install -Dm644 "${emblem}" \
+      "${pkgdir}/usr/share/icons/hicolor/scalable/emblems/$(basename "${emblem}")"
+  done
+
+  # --- License + docs -------------------------------------------------------
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 examples/proton-sync.toml \
+    "${pkgdir}/usr/share/doc/${pkgname}/examples/proton-sync.toml"
+}
