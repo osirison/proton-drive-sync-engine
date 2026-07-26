@@ -172,3 +172,16 @@ export function relativeTime(epochSecs) {
   if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
   return `${Math.floor(delta / 86400)}d ago`;
 }
+
+/** Placeholder body for a screen whose S-task hasn't built it yet. */
+export function screenPlaceholder(container, title, issue) {
+  container.replaceChildren(
+    el(
+      "div",
+      { class: "screen-placeholder" },
+      el("h2", {}, title),
+      el("p", {}, "This screen is built by its own task on the shared foundation (F1–F3)."),
+      el("div", { class: "issue" }, issue),
+    ),
+  );
+}
