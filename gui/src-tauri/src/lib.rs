@@ -25,6 +25,7 @@ pub fn run() {
             commands::list_remote,
             commands::scan_conflicts,
             commands::resolve_conflict,
+            commands::read_conflict_pair,
             commands::path_sync_status,
             commands::notify,
         ])

@@ -302,6 +302,22 @@ pub fn resolve_conflict(
     conflicts::apply_resolution(&local_root, &conflict, choice).map_err(|e| e.to_string())
 }
 
+/// Read both sides of a conflict (the local file + its `.proton-cloud` sidecar) for the compare
+/// view. Path-safe and size-bounded — see `gui_core::conflicts::read_conflict_pair`.
+#[tauri::command]
+pub fn read_conflict_pair(
+    state: Paths,
+    conflict: Conflict,
+) -> Result<conflicts::ConflictPair, String> {
+    let local_root = state
+        .lock()
+        .unwrap()
+        .local_root
+        .clone()
+        .ok_or_else(|| "local_root is not configured".to_string())?;
+    conflicts::read_conflict_pair(&local_root, &conflict)
+}
+
 /// Per-path index status for the file-manager emblems (S10). Built from the engine's `FileRecord`
 /// (which is not itself `Serialize`). `sync_status` is one of `synced` / `modified` / `conflict`;
 /// "syncing" / "paused" / "excluded" are derived by the frontend from live state + globs.

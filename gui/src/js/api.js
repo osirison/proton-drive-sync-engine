@@ -26,6 +26,7 @@ export const api = {
   listRemote: (path) => invoke("list_remote", { path: path ?? null }),
   scanConflicts: () => invoke("scan_conflicts"),
   resolveConflict: (conflict, choice) => invoke("resolve_conflict", { conflict, choice }),
+  readConflictPair: (conflict) => invoke("read_conflict_pair", { conflict }),
   pathSyncStatus: (relativePath) => invoke("path_sync_status", { relativePath }),
   notify: (title, body) => invoke("notify", { title, body }),
   isMock: () => !inTauri(),
@@ -62,6 +63,13 @@ function mockInvoke(cmd, _args) {
       return Promise.resolve({ state: "paused", response: { status: "paused", paused: true, pending_changes: 3, message: "paused", last_sync_epoch_secs: null, last_error: null, last_plan_summary: null, last_successful_sync_summary: null, status_history: [], pending_deletions: [] } });
     case "scan_conflicts":
       return Promise.resolve([{ original: "notes/todo.txt", sidecar: "notes/todo.proton-cloud.txt" }]);
+    case "read_conflict_pair":
+      return Promise.resolve({
+        original: { exists: true, size: 41, mtime_epoch_secs: Math.floor(Date.now() / 1000) - 300, text: "# Todo\n- buy milk\n- call Alice\n- ship v1\n", binary_or_large: false },
+        sidecar: { exists: true, size: 44, mtime_epoch_secs: Math.floor(Date.now() / 1000) - 120, text: "# Todo\n- buy oat milk\n- call Alice\n- ship v1\n- relax\n", binary_or_large: false },
+      });
+    case "resolve_conflict":
+      return Promise.resolve(null);
     case "list_pending_deletions":
       return Promise.resolve([]);
     case "read_config":

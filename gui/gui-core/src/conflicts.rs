@@ -149,6 +149,94 @@ fn local_sibling_path(original: &Path) -> PathBuf {
     original.with_file_name(renamed)
 }
 
+/// One side of a conflict for the compare view.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ConflictSide {
+    pub exists: bool,
+    pub size: u64,
+    pub mtime_epoch_secs: Option<i64>,
+    /// UTF-8 text, only for small files that look like text; `None` for binary/large/missing.
+    pub text: Option<String>,
+    /// `true` when the file is binary or too large to diff — the UI shows size + time only,
+    /// never a fabricated preview (design §3.3).
+    pub binary_or_large: bool,
+}
+
+/// Both sides of a conflict: the user's local `original` and the `sidecar` (Proton's copy).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ConflictPair {
+    pub original: ConflictSide,
+    pub sidecar: ConflictSide,
+}
+
+/// Files above this size are shown as metadata only (no diff).
+const MAX_DIFF_BYTES: u64 = 512 * 1024;
+
+/// Read both sides of a conflict for the compare view. **Path-safe**: each relative path is passed
+/// through the engine's `validate_relative_path` guard (rejecting `..`/absolute/prefix components)
+/// before being joined onto `local_root`. Text is returned only for small, valid-UTF-8, NUL-free
+/// files; everything else comes back as metadata with `binary_or_large = true`.
+pub fn read_conflict_pair(local_root: &Path, conflict: &Conflict) -> Result<ConflictPair, String> {
+    Ok(ConflictPair {
+        original: read_side(local_root, &conflict.original)?,
+        sidecar: read_side(local_root, &conflict.sidecar)?,
+    })
+}
+
+fn read_side(local_root: &Path, relative: &Path) -> Result<ConflictSide, String> {
+    let safe = proton_drive_sync_engine::validate_relative_path(relative)
+        .ok_or_else(|| format!("unsafe conflict path: {}", relative.display()))?;
+    let full = local_root.join(safe);
+
+    let meta = match std::fs::metadata(&full) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ConflictSide {
+                exists: false,
+                size: 0,
+                mtime_epoch_secs: None,
+                text: None,
+                binary_or_large: false,
+            });
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    let size = meta.len();
+    let mtime_epoch_secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+
+    if size > MAX_DIFF_BYTES {
+        return Ok(ConflictSide {
+            exists: true,
+            size,
+            mtime_epoch_secs,
+            text: None,
+            binary_or_large: true,
+        });
+    }
+    let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
+    // Binary heuristic: invalid UTF-8, or an embedded NUL (common in binary formats).
+    match String::from_utf8(bytes) {
+        Ok(text) if !text.contains('\u{0}') => Ok(ConflictSide {
+            exists: true,
+            size,
+            mtime_epoch_secs,
+            text: Some(text),
+            binary_or_large: false,
+        }),
+        _ => Ok(ConflictSide {
+            exists: true,
+            size,
+            mtime_epoch_secs,
+            text: None,
+            binary_or_large: true,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +366,75 @@ mod tests {
         apply_resolution(root, &conflict, Resolution::DecideLater).unwrap();
         assert!(root.join("notes.txt").exists());
         assert!(root.join("notes.proton-cloud.txt").exists());
+    }
+}
+
+#[cfg(test)]
+mod pair_tests {
+    use super::*;
+
+    fn conflict() -> Conflict {
+        Conflict {
+            original: "notes.txt".into(),
+            sidecar: "notes.proton-cloud.txt".into(),
+        }
+    }
+
+    #[test]
+    fn reads_text_on_both_sides() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("notes.txt"), "mine\nline2\n").unwrap();
+        std::fs::write(root.join("notes.proton-cloud.txt"), "theirs\nline2\n").unwrap();
+        let pair = read_conflict_pair(root, &conflict()).unwrap();
+        assert_eq!(pair.original.text.as_deref(), Some("mine\nline2\n"));
+        assert_eq!(pair.sidecar.text.as_deref(), Some("theirs\nline2\n"));
+        assert!(!pair.original.binary_or_large && pair.original.exists);
+    }
+
+    #[test]
+    fn binary_side_returns_metadata_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("notes.txt"), b"ok").unwrap();
+        std::fs::write(root.join("notes.proton-cloud.txt"), [0u8, 1, 2, 3, 0]).unwrap(); // NUL bytes
+        let pair = read_conflict_pair(root, &conflict()).unwrap();
+        assert_eq!(pair.sidecar.text, None);
+        assert!(pair.sidecar.binary_or_large && pair.sidecar.exists);
+        assert_eq!(pair.sidecar.size, 5);
+    }
+
+    #[test]
+    fn large_side_returns_metadata_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("notes.txt"), "small").unwrap();
+        std::fs::write(
+            root.join("notes.proton-cloud.txt"),
+            vec![b'a'; (MAX_DIFF_BYTES + 1) as usize],
+        )
+        .unwrap();
+        let pair = read_conflict_pair(root, &conflict()).unwrap();
+        assert!(pair.sidecar.binary_or_large && pair.sidecar.text.is_none());
+    }
+
+    #[test]
+    fn missing_side_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("notes.txt"), "mine").unwrap();
+        let pair = read_conflict_pair(root, &conflict()).unwrap();
+        assert!(pair.original.exists);
+        assert!(!pair.sidecar.exists && pair.sidecar.text.is_none());
+    }
+
+    #[test]
+    fn path_traversal_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let evil = Conflict {
+            original: "../../etc/passwd".into(),
+            sidecar: "notes.proton-cloud.txt".into(),
+        };
+        assert!(read_conflict_pair(dir.path(), &evil).is_err());
     }
 }
