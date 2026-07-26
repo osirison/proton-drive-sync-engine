@@ -19,10 +19,10 @@
 # https://archlinux.org/packages/extra/x86_64/nautilus-python/ and
 # https://archlinux.org/packages/extra/x86_64/nemo-python/ .
 #
-# NOTE: `libayatana-appindicator` is required to build and run the system tray
-# (S7): the GUI enables Tauri's `tray-icon` feature, which on Linux links against
-# libappindicator via pkg-config (see the `libappindicator-sys` build dependency
-# in Cargo.lock) and needs the same library at runtime for the tray icon to render.
+# NOTE: `libayatana-appindicator` is a RUNTIME dependency of the system tray (S7), not a
+# build-time one: the GUI's Tauri `tray-icon` feature loads libappindicator by dlopen at runtime
+# (libappindicator-sys uses `libloading` in Cargo.lock — there is no pkg-config or link-time
+# dependency), so it is needed in `depends` for the tray icon to render, not in `makedepends`.
 pkgname=proton-drive-sync-engine
 pkgver=0.1.0
 pkgrel=1
@@ -47,7 +47,6 @@ makedepends=(
   'glib2'
   'pkgconf'
   'git'
-  'libayatana-appindicator'
 )
 optdepends=(
   'nautilus-python: sync-status emblems in GNOME Files (Nautilus)'

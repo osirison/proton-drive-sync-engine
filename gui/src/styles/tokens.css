@@ -1,8 +1,9 @@
 /*
  * Design tokens (F1) — the single source of the visual language from the handoff (§7).
  *
- * Colour rule: warm orange = local / upload, cyan = remote / download; red is reserved
- * exclusively for destructive actions. Apply these via the semantic vars below, never raw hex.
+ * Colour rule: warm orange = local / upload, cyan = remote / download; red is reserved for
+ * destructive actions and error / unreachable states (e.g. the unreachable state-pill dot and
+ * error rows) — never as a decorative accent. Apply these via the semantic vars below, never raw hex.
  *
  * Theme: dark is the default; light applies under the system preference OR when the shell stamps
  * `data-theme` on <html> (the toggle). The toggle must win in both directions, so the explicit

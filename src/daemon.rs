@@ -1562,18 +1562,39 @@ fn write_metrics_snapshot(path: &Path, metrics: &MetricsSnapshot) -> AppResult<(
 /// destination. Rename is atomic within a filesystem, so a concurrent reader — e.g. a GUI polling
 /// `<db>.metrics.json` / `<db>.status.json`, or the CLI — never observes a partially written file.
 fn write_atomically(path: &Path, bytes: &[u8]) -> AppResult<()> {
-    use std::io::Write;
+    use std::io::{ErrorKind, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_NONCE: AtomicU64 = AtomicU64::new(0);
     ensure_parent_directory(path)?;
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("sidecar");
-    let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
-    {
-        let mut file = fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
+    // Open a fresh sibling temp with `create_new` (O_EXCL): it fails rather than following or
+    // truncating a pre-existing path — e.g. an attacker-planted symlink in a writable sidecar
+    // directory — and the unpredictable, per-attempt suffix avoids colliding with a concurrent
+    // writer. Then fsync and atomically rename over the destination.
+    let (mut file, tmp) = loop {
+        let nonce = TMP_NONCE.fetch_add(1, Ordering::Relaxed)
+            ^ SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or_default();
+        let candidate =
+            path.with_file_name(format!(".{file_name}.{}.{nonce:x}.tmp", std::process::id()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (file, candidate),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
     if let Err(error) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(error.into());
