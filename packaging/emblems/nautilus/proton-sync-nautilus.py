@@ -60,8 +60,12 @@ class _Index:
             if parent == cur:  # reached filesystem root
                 break
             cur = parent
-        for d in chain:  # memoize the whole walked chain to the same answer
-            self._root_of_dir[d] = result
+        # Only memoize POSITIVE results: a directory that isn't a root yet may become one later (the
+        # daemon starts / `.sync/sync_index.db` appears), so caching `None` would hide new roots
+        # until the file manager restarts. Misses re-walk (cheap: a few stats up the tree).
+        if result is not None:
+            for d in chain:
+                self._root_of_dir[d] = result
         return result
 
     def _conn(self, db_path):

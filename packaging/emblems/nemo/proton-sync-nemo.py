@@ -46,8 +46,11 @@ class _Index:
             if parent == cur:
                 break
             cur = parent
-        for d in chain:
-            self._root_of_dir[d] = result
+        # Only memoize POSITIVE results — caching None would hide a folder that becomes a sync root
+        # later (daemon starts) until Nemo restarts. Misses re-walk (cheap).
+        if result is not None:
+            for d in chain:
+                self._root_of_dir[d] = result
         return result
 
     def _conn(self, db_path):
