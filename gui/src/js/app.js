@@ -7,6 +7,7 @@ import * as store from "./store.js";
 import { SCREENS } from "./screens.js";
 import { matrixFor } from "./state-matrix.js";
 import { el, dash } from "./components.js";
+import { renderOnboarding } from "./screens/onboarding.js";
 
 let activeTab = "overview";
 let configInfo = null;
@@ -198,8 +199,9 @@ function render() {
     api.isMock() ? el("span", { class: "lock-holder" }, "preview (mock data)") : null,
   );
 
-  // mount active screen
-  screenById(activeTab).render(dom.screen, ctx);
+  // mount active screen — first-run is a full takeover, not a normal tab (S8, #89)
+  if (st === "firstRun") renderOnboarding(dom.screen, ctx);
+  else screenById(activeTab).render(dom.screen, ctx);
 }
 
 // ---- data ----
