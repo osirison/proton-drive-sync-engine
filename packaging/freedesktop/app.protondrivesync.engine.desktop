@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Proton Drive Sync
+GenericName=File Synchronization
+Comment=Two-way sync between a local folder and Proton Drive
+Icon=app.protondrivesync.engine
+Exec=proton-sync-gui
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=proton;drive;sync;backup;cloud;files;
+StartupNotify=true
+StartupWMClass=app.protondrivesync.engine

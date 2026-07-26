@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metainfo for the Proton Drive Sync desktop GUI. -->
+<component type="desktop-application">
+  <id>app.protondrivesync.engine</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+
+  <name>Proton Drive Sync</name>
+  <summary>Two-way file sync for Proton Drive</summary>
+
+  <description>
+    <p>
+      A desktop client for the Proton Drive sync engine: a systemd user daemon that
+      keeps a local folder and a Proton Drive folder in sync, and a graphical interface
+      for its status, activity, conflicts, dry-run review, and settings.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Live status, activity history, and per-pass plan summaries</li>
+      <li>Non-destructive conflict resolution with a side-by-side compare</li>
+      <li>Dry-run plan review with a typed confirmation before destructive changes</li>
+      <li>A system-tray indicator and a settings editor for the sync configuration</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">app.protondrivesync.engine.desktop</launchable>
+
+  <icon type="stock">app.protondrivesync.engine</icon>
+
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+
+  <keywords>
+    <keyword>proton</keyword>
+    <keyword>drive</keyword>
+    <keyword>sync</keyword>
+    <keyword>backup</keyword>
+    <keyword>cloud</keyword>
+  </keywords>
+
+  <url type="homepage">https://github.com/osirison/proton-drive-sync-engine</url>
+  <url type="bugtracker">https://github.com/osirison/proton-drive-sync-engine/issues</url>
+  <url type="vcs-browser">https://github.com/osirison/proton-drive-sync-engine</url>
+
+  <developer id="io.github.osirison">
+    <name>osirison</name>
+  </developer>
+
+  <provides>
+    <binary>proton-sync-gui</binary>
+    <binary>proton-syncd</binary>
+    <binary>proton-sync</binary>
+  </provides>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-07-26">
+      <description>
+        <p>Initial desktop UI: overview, activity, conflicts, plan preview, history, settings, delete-approval, onboarding, and a system tray.</p>
+      </description>
+    </release>
+  </releases>
+</component>
