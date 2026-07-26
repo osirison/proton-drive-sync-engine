@@ -3,6 +3,7 @@
 
 mod commands;
 mod config_path;
+mod tray;
 
 use std::sync::Mutex;
 
@@ -29,6 +30,19 @@ pub fn run() {
             commands::path_sync_status,
             commands::notify,
         ])
+        .setup(|app| {
+            tray::setup(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Closing the window hides it to the tray rather than exiting. The GUI + tray keep
+            // running — there is intentionally no from-tray full-exit (#88); the daemon is a
+            // separate process and is unaffected either way.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running proton-sync-gui");
 }

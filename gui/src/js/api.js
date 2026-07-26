@@ -29,6 +29,17 @@ export const api = {
   readConflictPair: (conflict) => invoke("read_conflict_pair", { conflict }),
   pathSyncStatus: (relativePath) => invoke("path_sync_status", { relativePath }),
   notify: (title, body) => invoke("notify", { title, body }),
+  // Subscribe to the backend's `tray-navigate` event (tray menu → tab switch). Routed through the
+  // facade so screens/shell never touch `window.__TAURI__` directly; a no-op in browser preview.
+  onTrayNavigate: (cb) => {
+    if (!inTauri()) return;
+    // `listen` returns a Promise (resolving to an unlisten fn); handle rejection so a failed
+    // registration surfaces instead of becoming a silent unhandled rejection. We don't need the
+    // unlisten handle — the listener lives for the app's lifetime.
+    window.__TAURI__.event
+      .listen("tray-navigate", (e) => cb(e.payload))
+      .catch((err) => console.error("tray-navigate listen failed:", err));
+  },
   isMock: () => !inTauri(),
 };
 

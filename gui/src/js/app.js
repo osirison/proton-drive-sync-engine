@@ -256,6 +256,12 @@ function main() {
   refreshConfig();
   poll();
   window.addEventListener("focus", scheduleNextPoll);
+
+  // Tray menu items ("Resolve conflicts", "Settings", "View journal") ask the shell to switch tabs
+  // (S7). Routed through the api facade — no direct window.__TAURI__ here.
+  api.onTrayNavigate((tab) => {
+    if (typeof tab === "string") setTab(tab);
+  });
 }
 
 main();
