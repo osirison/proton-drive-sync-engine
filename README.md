@@ -109,13 +109,27 @@ ignored by sync. The control socket is at `$XDG_RUNTIME_DIR/proton-sync.sock`.
 
 ## The desktop app
 
-Prefer not to touch a terminal? Build and run the desktop app:
+Prefer not to touch a terminal? Use the desktop app instead:
+
+**1. Install system dependencies** (Linux/Fedora; adjust for your distro):
 
 ```bash
-cargo build --release -p proton-sync-gui
+sudo dnf install webkit2gtk4.1-devel libsoup3-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel
 ```
 
-It's a **thin client** over the same daemon — it owns no sync logic and reads the same
+**2. Start the daemon** (from the project root):
+
+```bash
+cargo run --bin proton-syncd -- --local-root /tmp/demo --remote-root /Drive/RemoteFolder
+```
+
+**3. In another terminal, run the GUI**:
+
+```bash
+cargo run -p proton-sync-gui
+```
+
+The desktop app is a **thin client** over the same daemon — it owns no sync logic and reads the same
 socket and files as the CLI, so the two never disagree. It gives you:
 
 - An **onboarding wizard** — check the CLI, choose the folder pair, review the first
