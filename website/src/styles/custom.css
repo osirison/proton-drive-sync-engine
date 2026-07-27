@@ -1,0 +1,56 @@
+/*
+ * Brand palette, derived from the repo's own assets/icon.svg:
+ *   warm orange  = local & upload
+ *   cyan         = remote & download
+ *   red          = reserved for destructive actions
+ * Applied to Starlight's accent + a few doc affordances. Never decorative.
+ */
+
+:root {
+  --sl-color-accent-low: #3a1a0c;
+  --sl-color-accent: #e55b2b;
+  --sl-color-accent-high: #f6c9ad;
+
+  --pds-local: #f59e0b;
+  --pds-remote: #06b6d4;
+  --pds-danger: #ef4444;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #fde7d8;
+  --sl-color-accent: #c2410c;
+  --sl-color-accent-high: #6b2710;
+
+  --pds-local: #b45309;
+  --pds-remote: #0e7490;
+  --pds-danger: #b91c1c;
+}
+
+/* The hero on the landing page uses the brand gradient. */
+.hero .actions a[data-astro-cta] {
+  background-image: linear-gradient(135deg, #e55b2b, #f59e0b);
+}
+
+/* Directional emphasis for inline terms, used sparingly in the docs. */
+.pds-up {
+  color: var(--pds-local);
+  font-weight: 600;
+}
+.pds-down {
+  color: var(--pds-remote);
+  font-weight: 600;
+}
+.pds-danger {
+  color: var(--pds-danger);
+  font-weight: 600;
+}
+
+/* Give tables a touch more breathing room for the many reference tables. */
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+}
+.sl-markdown-content th,
+.sl-markdown-content td {
+  vertical-align: top;
+}
