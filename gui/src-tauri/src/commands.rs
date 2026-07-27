@@ -276,10 +276,13 @@ pub struct DryRunPayload {
 
 #[tauri::command]
 pub fn run_dry_run(state: Paths) -> Result<DryRunPayload, String> {
-    let (config_path, daemon_local, daemon_remote, daemon_db) = {
+    let (config_path, file_local, file_remote, file_db, daemon_local, daemon_remote, daemon_db) = {
         let paths = state.lock().unwrap();
         (
             paths.config_path.clone(),
+            paths.local_root.clone(),
+            paths.remote_root.clone(),
+            paths.db_path.clone(),
             paths.daemon_local_root.clone(),
             paths.daemon_remote_root.clone(),
             paths.daemon_db_path.clone(),
@@ -289,6 +292,24 @@ pub fn run_dry_run(state: Paths) -> Result<DryRunPayload, String> {
     command.arg("--dry-run");
     if config_path.exists() {
         command.arg("--config").arg(&config_path);
+        // The config file wins wherever it speaks; a live daemon's reported values fill only the
+        // gaps the file leaves (explicit CLI flags beat file values in the daemon's own
+        // precedence, so only pass a flag when the file has no value of its own).
+        if file_local.is_none() {
+            if let Some(local) = &daemon_local {
+                command.arg("--local-root").arg(local);
+            }
+        }
+        if file_remote.is_none() {
+            if let Some(remote) = &daemon_remote {
+                command.arg("--remote-root").arg(remote);
+            }
+        }
+        if file_db.is_none() {
+            if let Some(db) = &daemon_db {
+                command.arg("--db-path").arg(db);
+            }
+        }
     } else if let (Some(local), Some(remote)) = (&daemon_local, &daemon_remote) {
         // No GUI config file, but a live daemon told us its real roots — preview against those
         // instead of failing on a config path that was never written.
