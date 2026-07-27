@@ -1,0 +1,77 @@
+---
+title: Proton Drive Sync
+description: Bidirectional file sync between a local folder and Proton Drive — a Rust daemon, a control CLI, and a desktop app for Linux.
+template: splash
+hero:
+  tagline: Two-way sync between a local folder and Proton Drive — a fast Rust daemon, a scriptable control CLI, and a desktop app that shows you every plan before it runs.
+  image:
+    file: ../../assets/icon.svg
+  actions:
+    - text: Get started
+      link: /start/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/osirison/proton-drive-sync-engine
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Three ways to drive it
+
+<CardGrid>
+  <Card title="proton-syncd — the daemon" icon="seti:rust">
+    A long-running background service that watches a local folder, reconciles it
+    with Proton Drive, and applies uploads, downloads, moves, and deletes. Event-driven
+    change detection keeps ongoing passes fast.
+  </Card>
+  <Card title="proton-sync — the CLI" icon="seti:powershell">
+    A thin control client over a Unix socket: check `status`, `pause`/`resume`,
+    trigger a `syncnow`, review `history`, and approve or deny withheld deletions.
+  </Card>
+  <Card title="Proton Drive Sync — the app" icon="laptop">
+    A Tauri desktop app for Linux: live status, an activity ledger, side-by-side
+    conflict resolution, a typed-confirmation dry-run review, settings, onboarding,
+    and a system-tray indicator.
+  </Card>
+</CardGrid>
+
+## Built to be trusted with your files
+
+<CardGrid>
+  <Card title="Preview before you commit" icon="magnifier">
+    Every run can be previewed with `--dry-run`, which prints the exact plan as JSON
+    and never touches a byte. The app renders the same plan and gates destructive
+    applies behind a typed `DELETE` confirmation.
+  </Card>
+  <Card title="Deletions ask first" icon="warning">
+    A directional **delete-approval** guard is on by default: deletions are withheld
+    until you approve them, per item and per direction, and can be relaxed per folder.
+  </Card>
+  <Card title="Conflicts keep both sides" icon="document">
+    When both sides change, nothing is lost — the engine writes a `.proton-cloud`
+    sidecar so you can resolve it deliberately.
+  </Card>
+  <Card title="Commit only after success" icon="approve-check">
+    The sync index is updated in a single transaction *after* every side effect
+    succeeds. A failure mid-plan replans next pass; it never leaves half-recorded state.
+  </Card>
+</CardGrid>
+
+:::caution[Early prototype — read the safety guide]
+Sync is bidirectional and deletions propagate. A file deleted on Proton Drive is
+removed from your local disk **permanently** (not to your OS trash), and folder
+deletions remove the whole subtree. Test with disposable folders and backups first,
+and read [Deletions & the safeguard](/safety/deletions/) before your first run.
+:::
+
+## Where to next
+
+<CardGrid>
+  <LinkCard title="Install it" href="/start/installation/" description="Requirements, the proton-drive CLI, building from source, and native packages." />
+  <LinkCard title="Do a first sync" href="/start/quick-start/" description="Preview a plan, start the daemon, and drive it from the CLI in a few minutes." />
+  <LinkCard title="Understand the model" href="/concepts/how-sync-works/" description="Three sources of truth, bootstrap vs. ongoing, and what each action means." />
+  <LinkCard title="Use the desktop app" href="/desktop/overview/" description="The screens, the tray, and how the app maps onto the daemon's real surface." />
+</CardGrid>

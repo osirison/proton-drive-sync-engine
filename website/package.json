@@ -1,0 +1,20 @@
+{
+  "name": "proton-drive-sync-docs",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Documentation site for the Proton Drive Sync engine, CLI, and desktop app.",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.41.4",
+    "astro": "7.1.4",
+    "sharp": "0.35.3"
+  }
+}
