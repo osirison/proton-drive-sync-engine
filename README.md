@@ -66,7 +66,7 @@ cargo build --release --bins      # → target/release/proton-syncd, proton-sync
 
 This only writes the binaries to `target/release/` — it does not put them on your `PATH`.
 Add that directory to `PATH` for this shell session (or run `cargo install --path .` once to
-install both permanently to `~/.cargo/bin`):
+install both permanently to `$CARGO_HOME/bin` (defaults to `~/.cargo/bin`)):
 
 ```bash
 export PATH="$PWD/target/release:$PATH"
