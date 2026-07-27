@@ -64,6 +64,19 @@ Build the binaries:
 cargo build --release --bins      # → target/release/proton-syncd, proton-sync
 ```
 
+This only writes the binaries to `target/release/` — it does not put them on your `PATH`.
+Add that directory to `PATH` for this shell session (or run `cargo install --path .` once to
+install both permanently to `~/.cargo/bin`):
+
+```bash
+export PATH="$PWD/target/release:$PATH"
+```
+
+The commands below are examples — replace `/tmp/demo` with the local folder you want to
+sync and `/Drive/RemoteFolder` with the Proton Drive path you want to sync it to. The local
+folder must exist before a dry run (create it if needed: `mkdir -p /tmp/demo`); the remote
+folder does **not** need to exist yet — it's created for you on the first real sync.
+
 **1. Preview the plan first** — this touches nothing; it prints exactly what would happen:
 
 ```bash
