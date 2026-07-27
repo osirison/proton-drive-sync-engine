@@ -44,6 +44,17 @@ pub struct PendingDeletion {
     pub detected_epoch_secs: u64,
 }
 
+/// The daemon's resolved folder pair + index location, surfaced over IPC so a UI can reflect the
+/// *live* configuration no matter how the daemon was launched (config file, flags, or defaults).
+/// Without this, a client that guesses at a config path renders placeholders against a healthy
+/// daemon whose roots it cannot know.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunningConfigInfo {
+    pub local_root: PathBuf,
+    pub remote_root: PathBuf,
+    pub db_path: PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ControlResponse {
     pub status: String,
@@ -59,6 +70,10 @@ pub struct ControlResponse {
     /// `#[serde(default)]` so a response from an older daemon (without the field) still parses.
     #[serde(default)]
     pub pending_deletions: Vec<PendingDeletion>,
+    /// The live resolved configuration (see [`RunningConfigInfo`]). `#[serde(default)]` keeps
+    /// replies from older daemons parseable.
+    #[serde(default)]
+    pub config: Option<RunningConfigInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -23,6 +23,7 @@ let form = null; // editable draft: local_root, remote_root, scan_interval_secs,
 let saving = false;
 let saveError = null;
 let saveNotice = null; // { text, rootChanged } set after a successful save
+let prefilledFromDaemon = false; // roots adopted from the running daemon (config file had none)
 
 // Transient text-buffers for the "add a pattern" inputs — not part of the diffed draft, cleared
 // once the pattern is committed into form.include / form.exclude.
@@ -297,6 +298,14 @@ function foldersSection(container, ctx) {
     "div",
     { class: "card", style: "margin-bottom:14px" },
     sectionTitle("Folders"),
+    prefilledFromDaemon
+      ? el(
+          "div",
+          { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:10px" },
+          "Pre-filled from the running daemon — this config file doesn't set a folder pair yet. " +
+            "Save to adopt it.",
+        )
+      : null,
     fieldRow("Local root", null, textInput(container, ctx, "local_root", "text")),
     fieldRow("Remote root", "Path on Proton Drive, e.g. /Drive/RemoteFolder", textInput(container, ctx, "remote_root", "text")),
     rootWarning,
@@ -505,6 +514,16 @@ function startLoad(container, ctx) {
       meta = { path: cfg.path, exists: cfg.exists };
       original = toDraft(cfg);
       form = toDraft(cfg);
+      // Config file has no folder pair but a live daemon reports one (started with flags or a
+      // different config): pre-fill the DRAFT with the daemon's roots. The baseline stays what
+      // the file really contains, so the form is dirty and Save adopts the pair into the file.
+      const live = ctx.select.response()?.config ?? null;
+      prefilledFromDaemon = false;
+      if (live && !form.local_root && !form.remote_root) {
+        form.local_root = live.local_root || null;
+        form.remote_root = live.remote_root || null;
+        prefilledFromDaemon = !!(form.local_root || form.remote_root);
+      }
       loaded = true;
       loading = false;
       paint(container, ctx);

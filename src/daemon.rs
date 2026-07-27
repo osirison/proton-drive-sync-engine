@@ -529,6 +529,11 @@ impl<C: ProtonClient> Daemon<C> {
             last_successful_sync_summary: self.last_successful_sync_summary.clone(),
             status_history: self.status_history.clone(),
             pending_deletions: self.pending_deletions.clone(),
+            config: Some(crate::ipc::RunningConfigInfo {
+                local_root: self.config.local_root.clone(),
+                remote_root: self.config.remote_root.clone(),
+                db_path: self.config.db_path.clone(),
+            }),
         }
     }
 
@@ -4012,6 +4017,28 @@ mod tests {
             fs::read_to_string(&downloaded).expect("downloaded file"),
             "downloaded:/Drive/RemoteFolder/notes.txt"
         );
+    }
+
+    #[test]
+    fn status_response_reports_the_resolved_running_config() {
+        // A UI client can only reflect the daemon's real folder pair if the status reply carries
+        // it — the daemon may have been launched with flags and no config file the client knows.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let config = test_config(directory.path(), &local_root);
+        let expected_remote = config.remote_root.clone();
+        let expected_db = config.db_path.clone();
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(config, client).expect("daemon");
+
+        let status = daemon.status_response("daemon status");
+        let info = status
+            .config
+            .expect("status must report the running config");
+        assert_eq!(info.local_root, local_root);
+        assert_eq!(info.remote_root, expected_remote);
+        assert_eq!(info.db_path, expected_db);
     }
 
     #[test]

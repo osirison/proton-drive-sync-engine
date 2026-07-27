@@ -109,6 +109,7 @@ mod tests {
             last_successful_sync_summary: None,
             status_history: vec![],
             pending_deletions: vec![],
+            config: None,
         }
     }
 

@@ -66,7 +66,13 @@ const actions = {
     } else if (cmd === "chooseFolders") {
       setTab("settings");
     } else if (cmd === "startService") {
-      showConfirm("Start it with: systemctl --user start proton-syncd");
+      showConfirm("Starting proton-syncd…");
+      try {
+        const message = await api.startService();
+        showConfirm(message || "start requested — waiting for the daemon to come up");
+      } catch (e) {
+        showConfirm(String(e), true);
+      }
     } else if (cmd === "journal") {
       showConfirm("View logs with: journalctl --user -u proton-syncd");
     } else if (cmd === "reauth") {
@@ -190,14 +196,30 @@ function render() {
   // safety banner only on the screens that require it
   dom.banner.hidden = !screenById(activeTab).banner;
 
-  // footer
+  // folder pair: the running daemon's reported roots are ground truth; the GUI config file is the
+  // fallback when no daemon is reachable. Em-dashes only when neither knows.
+  const live = store.select.response()?.config ?? null;
+  const localRoot = live?.local_root ?? configInfo?.local_root ?? null;
+  const remoteRoot = live?.remote_root ?? configInfo?.remote_root ?? null;
+  const pairText = `${localRoot ?? "—"} ⇄ ${remoteRoot ?? "—"}`;
+  const localName = (localRoot || "").split("/").filter(Boolean).pop() || "ProtonDrive";
+  dom.pairCard.querySelector(".pair-name").textContent = localName;
+  const pairPath = dom.pairCard.querySelector(".pair-path");
+  pairPath.textContent = pairText;
+  pairPath.title = pairText;
+  dom.rootPair.textContent = pairText;
+  dom.rootPair.title = pairText;
+
+  // footer — build then drop the null-ish entries; `replaceChildren(null)` would render a literal
+  // "null" text node.
   const socketOk = st !== "unreachable";
-  dom.footer.replaceChildren(
+  const footerItems = [
     el("span", { class: "sb-item" }, `daemon: ${matrix.pillMono}`),
     el("span", { class: "sb-item" }, `cli: ${configInfo?.proton_cli ?? "proton-drive"}`),
     el("span", { class: "sb-item" }, `socket: ${socketOk ? "connected" : "down"}`),
     api.isMock() ? el("span", { class: "lock-holder" }, "preview (mock data)") : null,
-  );
+  ].filter(Boolean);
+  dom.footer.replaceChildren(...footerItems);
 
   // mount active screen — first-run is a full takeover, not a normal tab (S8, #89)
   if (st === "firstRun") renderOnboarding(dom.screen, ctx);
@@ -206,21 +228,21 @@ function render() {
 
 // ---- data ----
 async function refreshConfig() {
+  // Loads the GUI config file for the footer + fallback pair display; the actual pair rendering
+  // happens in render(), which prefers the live daemon-reported roots over this file.
   try {
     configInfo = await api.readConfig();
-    const localName = (configInfo.local_root || "").split("/").filter(Boolean).pop() || "ProtonDrive";
-    dom.pairCard.querySelector(".pair-name").textContent = localName;
-    dom.pairCard.querySelector(".pair-path").textContent =
-      `${configInfo.local_root ?? "—"} ⇄ ${configInfo.remote_root ?? "—"}`;
-    dom.rootPair.textContent = `${configInfo.local_root ?? "—"} ⇄ ${configInfo.remote_root ?? "—"}`;
   } catch (_) {
     /* config not readable yet — leave placeholders */
   }
+  render();
 }
 
 async function poll() {
+  let payload = null;
   try {
-    store.setStatus(await api.getStatus());
+    payload = await api.getStatus();
+    store.setStatus(payload);
   } catch (e) {
     store.setStatus({ state: "unreachable", error: String(e) });
   }
@@ -232,11 +254,13 @@ async function poll() {
     } catch (_) {
       store.setConflicts([]);
     }
+    // Re-read the GUI config file on the same slow cadence: onboarding or an external edit may
+    // have (re)written it since boot, and it also drives the no-daemon fallback pair display.
+    refreshConfig();
   }
-  try {
-    store.setPendingDeletions(await api.listPendingDeletions());
-  } catch (_) {
-    /* keep last */
+  // Pending deletions ride on the status reply itself — no second IPC round trip per tick.
+  if (payload?.response) {
+    store.setPendingDeletions(payload.response.pending_deletions ?? []);
   }
   scheduleNextPoll();
 }

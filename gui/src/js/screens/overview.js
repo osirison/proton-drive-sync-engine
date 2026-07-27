@@ -156,12 +156,14 @@ export function renderOverview(container, ctx) {
 
   // Ledger rows from status_history (S2 replaces with real per-action rows once available).
   // `last_error` is Option<String>: a *non-null* value is an error row, even if it's "" — same
-  // fix as activity.js/history.js (review findings on #108/#109).
+  // fix as activity.js/history.js (review findings on #108/#109). Healthy entries get the plain
+  // "sync" label (neutral colour): status_history has no per-action vocabulary, and showing the
+  // engine-internal `auto_link` tag here read as a leftover placeholder.
   const rows = (resp?.status_history ?? [])
     .slice()
     .reverse()
     .map((entry) => ({
-      action: entry.last_error != null ? "error" : "auto_link",
+      action: entry.last_error != null ? "error" : "sync",
       path: entry.last_error != null ? entry.last_error : (entry.message ?? ""),
       meta: relativeTime(entry.epoch_secs),
     }));
