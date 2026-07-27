@@ -35,6 +35,13 @@ button {
   cursor: pointer;
 }
 
+/* The `hidden` attribute must always win. Several chrome elements (safety banner, confirm strip)
+   set `display: flex`, which outranks the UA's `[hidden] { display: none }` — without this rule
+   they render on every screen regardless of the shell toggling `hidden`. */
+[hidden] {
+  display: none !important;
+}
+
 .mono {
   font-family: var(--font-mono);
 }
@@ -49,9 +56,17 @@ button {
 #app-root {
   display: grid;
   grid-template-rows: var(--dim-titlebar) 1fr var(--dim-footer);
+  /* One explicit column clamped to the viewport: without minmax(0, …) a long unbreakable string
+     anywhere in the chrome (e.g. the folder-pair path in the title bar) sets the grid's
+     min-content width, silently widening EVERY row past the window and pushing controls
+     (state pill, Approve/Deny, Save) off-screen. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
   width: 100vw;
   overflow: hidden;
+}
+#app-root > * {
+  min-width: 0;
 }
 
 /* ---- title bar ---- */
@@ -78,6 +93,10 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Shrinkable flex item (flex min-width defaults to content size), so a long path ellipsizes
+     instead of shoving the theme toggle and state pill out of the title bar. */
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .titlebar .spacer {
   flex: 1;
@@ -156,6 +175,9 @@ button {
   flex-direction: column;
   gap: 6px;
   min-height: 0;
+  /* Long unbreakable paths in the pair card must clip at the sidebar edge, never bleed across
+     the divider under the content column. */
+  overflow: hidden;
 }
 .sidebar .label {
   font-size: var(--fs-label);
@@ -183,10 +205,18 @@ button {
   font-size: var(--fs-control);
   font-weight: 600;
 }
+.pair-card > div:last-child {
+  min-width: 0;
+}
 .pair-card .pair-path {
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--muted);
+  /* One line, ellipsized — the full pair lives in the title tooltip. Wrapping a deep path here
+     used to stack six lines and push the whole nav down. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .nav-row {
   display: flex;

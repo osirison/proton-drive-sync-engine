@@ -16,6 +16,31 @@ use tauri::{AppHandle, Emitter, Manager};
 const TRAY_ID: &str = "proton-sync-tray";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Everything the tray visually depends on. `update_tray` skips the rebuild when this hasn't
+/// changed — replacing the menu every poll tick regenerates item ids and can dismiss (or misfire)
+/// a menu the user has open at that moment.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TrayFingerprint {
+    state: DaemonState,
+    pending: usize,
+    conflicts: usize,
+    paused: bool,
+}
+
+fn fingerprint(state: DaemonState, response: Option<&ControlResponse>) -> TrayFingerprint {
+    TrayFingerprint {
+        state,
+        pending: response.map(|r| r.pending_changes).unwrap_or(0),
+        conflicts: response
+            .and_then(|r| r.last_plan_summary.as_ref())
+            .map(|s| s.conflicts)
+            .unwrap_or(0),
+        paused: response.map(|r| r.paused).unwrap_or(false),
+    }
+}
+
+static LAST_FINGERPRINT: Mutex<Option<TrayFingerprint>> = Mutex::new(None);
+
 fn icon_for(state: DaemonState) -> tauri::image::Image<'static> {
     match state {
         DaemonState::Running => tauri::include_image!("icons/tray/syncing.png"),
@@ -52,15 +77,17 @@ fn build_menu(
     let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    // "Quit" closes the window only and leaves the tray running (design §3.7 / #88): the indicator
-    // must survive so the user doesn't lose visibility while syncing continues.
-    let quit = MenuItem::with_id(
+    // Two distinct exits (design §3.7 / #88 refined): closing the window keeps the tray + GUI
+    // process alive so the indicator survives while syncing continues, and a real Quit actually
+    // ends the GUI process. The daemon is a separate process and is unaffected by either.
+    let close_window = MenuItem::with_id(
         app,
-        "quit",
+        "close_window",
         "Close window (keeps syncing in the tray)",
         true,
         None::<&str>,
     )?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Proton Drive Sync", true, None::<&str>)?;
 
     if state == DaemonState::FirstRun {
         // First run has no meaningful counts yet — show a disabled note instead of "0 pending" /
@@ -72,7 +99,7 @@ fn build_menu(
             false,
             None::<&str>,
         )?;
-        return Menu::with_items(app, &[&show, &info, &settings, &sep, &quit]);
+        return Menu::with_items(app, &[&show, &info, &settings, &sep, &close_window, &quit]);
     }
 
     if state == DaemonState::Unreachable {
@@ -84,7 +111,18 @@ fn build_menu(
             None::<&str>,
         )?;
         let journal = MenuItem::with_id(app, "journal", "View journal", true, None::<&str>)?;
-        return Menu::with_items(app, &[&show, &start, &journal, &settings, &sep, &quit]);
+        return Menu::with_items(
+            app,
+            &[
+                &show,
+                &start,
+                &journal,
+                &settings,
+                &sep,
+                &close_window,
+                &quit,
+            ],
+        );
     }
 
     let pending = response.map(|r| r.pending_changes).unwrap_or(0);
@@ -126,6 +164,7 @@ fn build_menu(
             &conflicts_item,
             &settings,
             &sep,
+            &close_window,
             &quit,
         ],
     )
@@ -177,6 +216,14 @@ fn update_tray(app: &AppHandle, state: DaemonState, response: Option<&ControlRes
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
+    let current = fingerprint(state, response);
+    {
+        let mut last = LAST_FINGERPRINT.lock().unwrap();
+        if *last == Some(current) {
+            return;
+        }
+        *last = Some(current);
+    }
     let _ = tray.set_icon(Some(icon_for(state)));
     let _ = tray.set_tooltip(Some(tooltip_for(state, response)));
     if let Ok(menu) = build_menu(app, state, response) {
@@ -201,20 +248,29 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
         "pause" => send_command(app, ControlCommand::Pause),
         "resume" => send_command(app, ControlCommand::Resume),
         "start_service" => {
-            // Best-effort; the user's session manager owns the unit. Failure is surfaced only in
-            // the window's own "daemon unreachable" state, which the next poll will refresh.
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "start", "proton-syncd"])
-                .spawn();
+            // Same start logic as the window's button (systemd unit, else direct spawn against the
+            // GUI config). Run off the menu-event thread; the next poll refreshes the tray state.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let config_path = {
+                    let state = app.state::<Mutex<RuntimePaths>>();
+                    let guard = state.lock().unwrap();
+                    guard.config_path.clone()
+                };
+                let _ = crate::commands::start_service_impl(&config_path);
+            });
         }
         "journal" => navigate(app, "history"), // the History screen surfaces the journalctl command
-        // "Quit" closes the window only — the tray (and this GUI process) keep running so the
-        // indicator survives, and the daemon is a separate process either way (design §3.7 / #88).
-        "quit" => {
+        // Closing the window keeps the tray (and this GUI process) running so the indicator
+        // survives; the daemon is a separate process either way (design §3.7 / #88).
+        "close_window" => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();
             }
         }
+        // A real exit: end the GUI process (tray included). The sync daemon keeps running — it
+        // never depended on this process.
+        "quit" => app.exit(0),
         _ => {}
     }
 }

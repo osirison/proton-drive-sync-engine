@@ -8,16 +8,17 @@ import { el, renderLedger, relativeTime } from "../components.js";
 // ---- status_history -> ledger row mapping (the ONE spot; replace once the daemon exposes real
 // per-action rows — see the engine-gap note in the design handoff). A `last_error` entry becomes
 // an `error` row (`error` is not a plan action — it comes from status, per #83's acceptance
-// criteria). Everything else has no structured action in status_history yet, so it gets the
-// neutral `auto_link` action (no direction colour, no destructive tint) rather than guessing one
-// from freeform message text, which would misclassify (e.g. "removed 3 files" reading as a move).
+// criteria). Everything else has no structured action in status_history yet, so it gets a plain
+// neutral "sync" label (no direction colour, no destructive tint) rather than guessing one from
+// freeform message text, which would misclassify (e.g. "removed 3 files" reading as a move) —
+// and rather than the engine-internal `auto_link` tag, which read as a leftover placeholder.
 function rowsFromStatusHistory(resp) {
   return (resp?.status_history ?? [])
     .slice()
     .reverse() // status_history is oldest -> newest; ledger reads newest first
     .map((entry) => ({
       // `last_error` is Option<String>: a *non-null* value is an error row, even if it's "".
-      action: entry.last_error != null ? "error" : "auto_link",
+      action: entry.last_error != null ? "error" : "sync",
       path: entry.last_error != null ? entry.last_error : (entry.message ?? ""),
       meta: relativeTime(entry.epoch_secs),
     }));

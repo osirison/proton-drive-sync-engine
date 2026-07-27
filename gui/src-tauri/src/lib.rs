@@ -28,6 +28,7 @@ pub fn run() {
             commands::resolve_conflict,
             commands::read_conflict_pair,
             commands::path_sync_status,
+            commands::start_service,
             commands::notify,
         ])
         .setup(|app| {
@@ -35,9 +36,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the window hides it to the tray rather than exiting. The GUI + tray keep
-            // running — there is intentionally no from-tray full-exit (#88); the daemon is a
-            // separate process and is unaffected either way.
+            // Closing the window hides it to the tray rather than exiting, so the indicator
+            // survives while syncing continues. A real exit lives in the tray menu ("Quit Proton
+            // Drive Sync"); the daemon is a separate process and is unaffected either way.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();

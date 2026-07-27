@@ -44,60 +44,104 @@ fn socket_path(state: &Paths) -> std::path::PathBuf {
     state.lock().unwrap().socket_path.clone()
 }
 
+/// Drop ANSI escape sequences (`ESC [ … <letter>`) from subprocess stderr. The daemon's tracing
+/// output is coloured for terminals; rendered raw in the webview it turns error cards into
+/// `[2m…[0m` soup.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for d in chars.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Fold a status round trip into a payload AND cache the daemon-reported live config, so later
+/// commands (conflict scan, emblems, dry run) can act on the roots the daemon is really syncing
+/// even when the GUI-owned config file doesn't exist.
+fn status_payload_remembering(
+    state: &Paths,
+    result: Result<ControlResponse, ipc::IpcError>,
+) -> StatusPayload {
+    if let Ok(response) = &result {
+        if let Some(info) = &response.config {
+            state.lock().unwrap().remember_daemon_config(info);
+        }
+    }
+    status_payload(result)
+}
+
 #[tauri::command]
 pub fn get_status(state: Paths) -> StatusPayload {
-    status_payload(ipc::command(
+    let reply = ipc::command(
         &socket_path(&state),
         ControlCommand::Status,
         ipc::DEFAULT_TIMEOUT,
-    ))
+    );
+    status_payload_remembering(&state, reply)
 }
 
 #[tauri::command]
 pub fn pause(state: Paths) -> StatusPayload {
-    status_payload(ipc::command(
+    let reply = ipc::command(
         &socket_path(&state),
         ControlCommand::Pause,
         ipc::DEFAULT_TIMEOUT,
-    ))
+    );
+    status_payload_remembering(&state, reply)
 }
 
 #[tauri::command]
 pub fn resume(state: Paths) -> StatusPayload {
-    status_payload(ipc::command(
+    let reply = ipc::command(
         &socket_path(&state),
         ControlCommand::Resume,
         ipc::DEFAULT_TIMEOUT,
-    ))
+    );
+    status_payload_remembering(&state, reply)
 }
 
 #[tauri::command]
 pub fn sync_now(state: Paths) -> StatusPayload {
-    status_payload(ipc::command(
+    let reply = ipc::command(
         &socket_path(&state),
         ControlCommand::Syncnow,
         ipc::DEFAULT_TIMEOUT,
-    ))
+    );
+    status_payload_remembering(&state, reply)
 }
 
 #[tauri::command]
 pub fn approve(state: Paths, target: String) -> StatusPayload {
-    status_payload(ipc::command_with_argument(
+    let reply = ipc::command_with_argument(
         &socket_path(&state),
         ControlCommand::Approve,
         target,
         ipc::DEFAULT_TIMEOUT,
-    ))
+    );
+    status_payload_remembering(&state, reply)
 }
 
 #[tauri::command]
 pub fn deny(state: Paths, target: String) -> StatusPayload {
-    status_payload(ipc::command_with_argument(
+    let reply = ipc::command_with_argument(
         &socket_path(&state),
         ControlCommand::Deny,
         target,
         ipc::DEFAULT_TIMEOUT,
-    ))
+    );
+    status_payload_remembering(&state, reply)
 }
 
 #[tauri::command]
@@ -208,9 +252,15 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
         doc.set_delete_approval("local", v);
     }
     doc.save(&path).map_err(|e| e.to_string())?;
-    // Re-resolve in case local_root / socket / db changed. (Saving still requires a daemon restart
-    // to take effect — the frontend prompts for that.)
-    *state.lock().unwrap() = RuntimePaths::resolve();
+    // Re-resolve in case local_root / socket / db changed, but keep the daemon-reported live
+    // config — the daemon is still running with it until restarted. (Saving still requires a
+    // daemon restart to take effect — the frontend prompts for that.)
+    let mut paths = state.lock().unwrap();
+    let mut resolved = RuntimePaths::resolve();
+    resolved.daemon_local_root = paths.daemon_local_root.take();
+    resolved.daemon_remote_root = paths.daemon_remote_root.take();
+    resolved.daemon_db_path = paths.daemon_db_path.take();
+    *paths = resolved;
     Ok(())
 }
 
@@ -226,17 +276,41 @@ pub struct DryRunPayload {
 
 #[tauri::command]
 pub fn run_dry_run(state: Paths) -> Result<DryRunPayload, String> {
-    let config_path = state.lock().unwrap().config_path.clone();
-    let output = Command::new("proton-syncd")
-        .arg("--dry-run")
-        .arg("--config")
-        .arg(&config_path)
+    let (config_path, daemon_local, daemon_remote, daemon_db) = {
+        let paths = state.lock().unwrap();
+        (
+            paths.config_path.clone(),
+            paths.daemon_local_root.clone(),
+            paths.daemon_remote_root.clone(),
+            paths.daemon_db_path.clone(),
+        )
+    };
+    let mut command = Command::new("proton-syncd");
+    command.arg("--dry-run");
+    if config_path.exists() {
+        command.arg("--config").arg(&config_path);
+    } else if let (Some(local), Some(remote)) = (&daemon_local, &daemon_remote) {
+        // No GUI config file, but a live daemon told us its real roots — preview against those
+        // instead of failing on a config path that was never written.
+        command.arg("--local-root").arg(local);
+        command.arg("--remote-root").arg(remote);
+        if let Some(db) = &daemon_db {
+            command.arg("--db-path").arg(db);
+        }
+    } else {
+        return Err(format!(
+            "no config file at {} and no running daemon to take the folder pair from — set the \
+             folders in Settings first",
+            config_path.display()
+        ));
+    }
+    let output = command
         .output()
         .map_err(|e| format!("failed to launch proton-syncd: {e}"))?;
     if !output.status.success() {
         return Err(format!(
             "proton-syncd --dry-run failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            strip_ansi(String::from_utf8_lossy(&output.stderr).trim())
         ));
     }
     let report = plan::parse_dry_run(&String::from_utf8_lossy(&output.stdout))?;
@@ -255,7 +329,7 @@ pub fn run_dry_run(state: Paths) -> Result<DryRunPayload, String> {
 pub fn list_remote(state: Paths, path: Option<String>) -> Result<String, String> {
     let (proton_cli, remote_root) = {
         let paths = state.lock().unwrap();
-        (paths.proton_cli.clone(), paths.remote_root.clone())
+        (paths.proton_cli.clone(), paths.effective_remote_root())
     };
     let target = path
         .or_else(|| remote_root.map(|r| r.display().to_string()))
@@ -270,7 +344,7 @@ pub fn list_remote(state: Paths, path: Option<String>) -> Result<String, String>
     if !output.status.success() {
         return Err(format!(
             "{proton_cli} list failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            strip_ansi(String::from_utf8_lossy(&output.stderr).trim())
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -281,8 +355,7 @@ pub fn scan_conflicts(state: Paths) -> Result<Vec<Conflict>, String> {
     let local_root = state
         .lock()
         .unwrap()
-        .local_root
-        .clone()
+        .effective_local_root()
         .ok_or_else(|| "local_root is not configured".to_string())?;
     conflicts::scan_conflicts(&local_root).map_err(|e| e.to_string())
 }
@@ -296,8 +369,7 @@ pub fn resolve_conflict(
     let local_root = state
         .lock()
         .unwrap()
-        .local_root
-        .clone()
+        .effective_local_root()
         .ok_or_else(|| "local_root is not configured".to_string())?;
     conflicts::apply_resolution(&local_root, &conflict, choice).map_err(|e| e.to_string())
 }
@@ -312,8 +384,7 @@ pub fn read_conflict_pair(
     let local_root = state
         .lock()
         .unwrap()
-        .local_root
-        .clone()
+        .effective_local_root()
         .ok_or_else(|| "local_root is not configured".to_string())?;
     conflicts::read_conflict_pair(&local_root, &conflict)
 }
@@ -333,7 +404,11 @@ pub struct EmblemStatus {
 
 #[tauri::command]
 pub fn path_sync_status(state: Paths, relative_path: String) -> Result<EmblemStatus, String> {
-    let db_path = state.lock().unwrap().db_path.clone();
+    let db_path = state
+        .lock()
+        .unwrap()
+        .effective_db_path()
+        .ok_or_else(|| "no index database configured or reported by the daemon".to_string())?;
     let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT)?;
     let record = index_read::record_for_path(&connection, std::path::Path::new(&relative_path))?;
     Ok(match record {
@@ -356,6 +431,48 @@ pub fn path_sync_status(state: Paths, relative_path: String) -> Result<EmblemSta
     })
 }
 
+/// Start the sync daemon: prefer the user's systemd unit; when there is none, fall back to
+/// spawning `proton-syncd` directly against the GUI config file. Shared by the window button and
+/// the tray menu item so both paths behave identically.
+pub(crate) fn start_service_impl(config_path: &std::path::Path) -> Result<String, String> {
+    let systemctl = Command::new("systemctl")
+        .args(["--user", "start", "proton-syncd"])
+        .output();
+    if let Ok(output) = &systemctl {
+        if output.status.success() {
+            return Ok("asked systemd to start proton-syncd".to_string());
+        }
+    }
+    // No unit (or no systemd): launch the daemon directly. Only sensible with a config file —
+    // without one the daemon has no folder pair and exits immediately.
+    if !config_path.exists() {
+        let detail = match &systemctl {
+            Ok(output) => strip_ansi(String::from_utf8_lossy(&output.stderr).trim()),
+            Err(e) => e.to_string(),
+        };
+        return Err(format!(
+            "couldn't start via systemd ({detail}) and there is no config file at {} to launch \
+             proton-syncd with — set the folders in Settings first",
+            config_path.display()
+        ));
+    }
+    Command::new("proton-syncd")
+        .arg("--config")
+        .arg(config_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to launch proton-syncd: {e}"))?;
+    Ok("no systemd unit found — started proton-syncd directly".to_string())
+}
+
+#[tauri::command]
+pub fn start_service(state: Paths) -> Result<String, String> {
+    let config_path = state.lock().unwrap().config_path.clone();
+    start_service_impl(&config_path)
+}
+
 #[tauri::command]
 pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
     app.notification()
@@ -364,4 +481,19 @@ pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), 
         .body(body)
         .show()
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn strip_ansi_removes_color_sequences_and_keeps_text() {
+        let colored = "\u{1b}[2m2026-07-27\u{1b}[0m \u{1b}[33m WARN\u{1b}[0m list failed";
+        assert_eq!(strip_ansi(colored), "2026-07-27  WARN list failed");
+        assert_eq!(strip_ansi("plain text"), "plain text");
+        // A dangling escape at end-of-input must not panic or loop.
+        assert_eq!(strip_ansi("tail\u{1b}"), "tail");
+        assert_eq!(strip_ansi("tail\u{1b}["), "tail");
+    }
 }
