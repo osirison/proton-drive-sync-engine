@@ -49,49 +49,103 @@ sides, is what lets it tell a *new* file from a *deleted* one and an *edit* from
 The index is committed only **after** every action in a pass succeeds, so a failure
 mid-plan never leaves half-recorded state. → [How sync works](https://osirison.github.io/proton-drive-sync-engine/concepts/how-sync-works/)
 
-## Quick start
+## Quick setup
 
-Requires a Rust toolchain (edition 2024 / Rust ≥ 1.85) and an authenticated `proton-drive`
-CLI on your `PATH`. Confirm the CLI works first:
+One command installs the engine, writes the config a background service reads, and starts
+syncing. You need a **Rust toolchain** (edition 2024 / Rust ≥ 1.85) and an **authenticated
+`proton-drive` CLI** on your `PATH` first — the engine drives it for every remote operation:
+
+```bash
+proton-drive filesystem list --json /Drive/RemoteFolder   # confirm the CLI works & is logged in
+git clone https://github.com/osirison/proton-drive-sync-engine.git
+cd proton-drive-sync-engine
+```
+
+**Terminal — pass the folders on the command line:**
+
+```bash
+./setup.sh --local-root ~/ProtonDrive --remote-root /Drive/RemoteFolder
+```
+
+This builds and installs `proton-syncd` + `proton-sync`, writes
+`~/.config/proton-sync/proton-sync.toml`, installs a **systemd user service** that runs
+`proton-syncd --config <that file>`, previews a dry-run (showing the `destructive_actions`
+count as a safety check), and — once you confirm — enables and starts the service.
+
+**Desktop — pick the folders in a wizard, no terminal after launch:**
+
+```bash
+./setup.sh --gui
+```
+
+This also builds the desktop app and opens it straight into the **onboarding wizard**: check
+the CLI, choose the folder pair, review the first dry-run, and press Start. The wizard writes
+the *same* config the service reads, so the two never disagree.
+
+Once it's running, drive it however you like:
+
+```bash
+proton-sync status                        # what is the daemon doing?
+systemctl --user status proton-syncd      # the service itself
+```
+
+`./setup.sh --help` lists every flag (`--no-start`, `--force-config`, `--proton-cli`,
+`--no-build`, …). The next section explains what the script does, step by step.
+
+## Manual setup — what the script does
+
+Prefer to run each step yourself, or skip systemd and just run the daemon in the foreground?
+`setup.sh` automates essentially these steps (it also resolves the exact binary path for the
+unit's `ExecStart`, previews a dry-run as a safety gate, and — with `--gui` — hands folder
+selection to the desktop onboarding wizard):
+
+**1. Confirm the `proton-drive` CLI works** — the daemon fails the same way if it doesn't:
 
 ```bash
 proton-drive filesystem list --json /Drive/RemoteFolder
 ```
 
-Build the binaries:
+**2. Build and install the binaries** to `$CARGO_HOME/bin` (defaults to `~/.cargo/bin`):
 
 ```bash
-cargo build --release --bins      # → target/release/proton-syncd, proton-sync
+cargo install --path .            # installs proton-syncd + proton-sync
 ```
 
-This only writes the binaries to `target/release/` — it does not put them on your `PATH`.
-Add that directory to `PATH` for this shell session (or run `cargo install --path .` once to
-install both permanently to `$CARGO_HOME/bin` (defaults to `~/.cargo/bin`)):
+(Or `cargo build --release --bins` and add `target/release` to your `PATH` for a throwaway run.)
+
+**3. Preview the plan** — this touches nothing; it prints exactly what would happen. Replace
+the paths with yours; the local folder must exist first (`mkdir -p ~/ProtonDrive`), the remote
+folder is created on the first real sync. Check `destructive_actions` before going further:
 
 ```bash
-export PATH="$PWD/target/release:$PATH"
+proton-syncd --local-root ~/ProtonDrive --remote-root /Drive/RemoteFolder --dry-run
 ```
 
-The commands below are examples — replace `/tmp/demo` with the local folder you want to
-sync and `/Drive/RemoteFolder` with the Proton Drive path you want to sync it to. The local
-folder must exist before a dry run (create it if needed: `mkdir -p /tmp/demo`); the remote
-folder does **not** need to exist yet — it's created for you on the first real sync.
-
-**1. Preview the plan first** — this touches nothing; it prints exactly what would happen:
+**4a. Run it as a systemd user service** (this is what the script automates) — write a config,
+install the unit, and enable it. The heredoc is **unquoted** so `$HOME` expands to a real
+absolute path (systemd/TOML don't expand `~`):
 
 ```bash
-proton-syncd --local-root /tmp/demo --remote-root /Drive/RemoteFolder --dry-run
+mkdir -p ~/.config/proton-sync ~/ProtonDrive
+cat > ~/.config/proton-sync/proton-sync.toml <<TOML
+local_root  = "$HOME/ProtonDrive"
+remote_root = "/Drive/RemoteFolder"
+TOML
+# The sample unit's ExecStart is %h/.cargo/bin/proton-syncd — correct if step 2 installed to the
+# default ~/.cargo/bin; edit it if your CARGO_HOME/CARGO_INSTALL_ROOT differs.
+install -Dm644 examples/systemd/proton-syncd.service \
+  ~/.config/systemd/user/proton-syncd.service
+systemctl --user daemon-reload
+systemctl --user enable --now proton-syncd
 ```
 
-Check the `destructive_actions` count in the output before going further.
-
-**2. Start the daemon:**
+**4b. …or just run the daemon in the foreground** (no systemd):
 
 ```bash
-proton-syncd --local-root /tmp/demo --remote-root /Drive/RemoteFolder
+proton-syncd --local-root ~/ProtonDrive --remote-root /Drive/RemoteFolder
 ```
 
-**3. Drive it from another terminal:**
+**5. Drive it from another terminal:**
 
 ```bash
 proton-sync status      # is it running? what did it just do?
@@ -104,12 +158,15 @@ State (the SQLite index and its sidecars) lives in `<local-root>/.sync/`, which 
 ignored by sync. The control socket is at `$XDG_RUNTIME_DIR/proton-sync.sock`.
 
 → [Quick start guide](https://osirison.github.io/proton-drive-sync-engine/start/quick-start/) ·
+[Running as a service](https://osirison.github.io/proton-drive-sync-engine/daemon/running-as-a-service/) ·
 [Daemon reference](https://osirison.github.io/proton-drive-sync-engine/daemon/reference/) ·
 [CLI reference](https://osirison.github.io/proton-drive-sync-engine/cli/reference/)
 
 ## The desktop app
 
-Prefer not to touch a terminal? Use the desktop app instead:
+Prefer not to touch a terminal? The quickest path is `./setup.sh --gui` (see
+[Quick setup](#quick-setup)), which builds the app, installs a launcher, and opens the
+onboarding wizard for you. To build and run it by hand from a checkout instead:
 
 **1. Install system dependencies** (Linux/Fedora; adjust for your distro):
 
@@ -182,7 +239,8 @@ that safe and predictable.
   → [Change detection](https://osirison.github.io/proton-drive-sync-engine/concepts/change-detection/)
 - **Config files** with `--config`, plus hierarchical per-directory `.proton-sync.toml`.
   → [Configuration](https://osirison.github.io/proton-drive-sync-engine/daemon/configuration/)
-- **Run as a systemd user service**, with sample units and an install helper.
+- **Run as a systemd user service** — set up in one command by [`setup.sh`](#quick-setup), or
+  by hand with the sample units and install helper.
   → [Running as a service](https://osirison.github.io/proton-drive-sync-engine/daemon/running-as-a-service/)
 - **Rename/move detection** for files in either direction and for remote-side directories;
   **structured `tracing` logs**; **file-manager emblems** for Nautilus and Nemo.
@@ -204,6 +262,7 @@ The site is built from [`website/`](website/) with [Astro](https://astro.build/)
 ## Project layout
 
 ```text
+setup.sh        One-command installer (terminal quick setup, or --gui onboarding)
 src/            The engine (library crate) + the two binaries
   bin/          proton-sync.rs (CLI) · proton-syncd.rs (daemon)
   sync.rs       Pure planner: the reconcile decision matrix + conflict naming

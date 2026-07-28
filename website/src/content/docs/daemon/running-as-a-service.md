@@ -8,6 +8,15 @@ sidebar:
 For day-to-day use on a systemd-based Linux workstation, run the daemon as a **systemd user
 service** so it starts with your session and restarts on crash.
 
+:::tip[One command]
+From a source checkout, [`./setup.sh`](https://github.com/osirison/proton-drive-sync-engine/blob/main/setup.sh)
+does everything on this page in one step — it builds and installs the binaries, writes the
+config, installs and reloads the unit, previews a dry-run, and (after you confirm) enables and
+starts the service. Add `--gui` to choose the folders in the desktop onboarding wizard instead
+of on the command line. The sections below are the manual equivalent, and how to install from a
+native package.
+:::
+
 ## From a source install
 
 Install the binaries and the sample assets:

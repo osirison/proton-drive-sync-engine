@@ -2,6 +2,12 @@
 #
 # install-user-service.sh
 # Install the sample proton-syncd systemd user service and config.
+#
+# This is the low-level, assets-only helper: it copies the *sample* config and unit (no build,
+# no folder customization), which is what the prebuilt release archive ships. For a full
+# one-command install from a source checkout — build the binaries, generate a real config from
+# your folders (or the desktop onboarding wizard), install the unit, preview a dry-run, and start
+# the service — use `./setup.sh` at the repository root instead.
 
 set -euo pipefail
 
