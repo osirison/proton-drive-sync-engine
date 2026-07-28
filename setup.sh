@@ -458,7 +458,8 @@ preview_and_start() {
 
   if [[ "${destructive:-0}" != "0" ]]; then
     warn "this plan includes ${destructive} destructive action(s) (deletions/overwrites). Review carefully."
-    note "For the full plan run:  ${daemon_bin##*/} --config ${cfg} --dry-run"
+    # Print an absolute, quoted command so it is copy-pasteable regardless of PATH or spaces in paths.
+    note "For the full plan run:  \"${daemon_bin}\" --config \"${cfg}\" --dry-run"
   fi
 
   if [[ "${assume_yes}" != "true" ]]; then
