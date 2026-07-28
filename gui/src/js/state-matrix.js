@@ -71,3 +71,38 @@ export const STATE_MATRIX = {
 export function matrixFor(daemonState) {
   return STATE_MATRIX[daemonState] ?? STATE_MATRIX.unreachable;
 }
+
+// Onboarding routing (S8). The onboarding takeover is a *latched* decision, not a raw read of the
+// daemon state, because it must survive the mid-flow config write: the moment step 2 writes the
+// folder pair, a naive `!hasPair` entry condition would flip false and the next 2 s poll would eject
+// the user to the unreachable screen. So: once we enter onboarding we STAY until the daemon becomes
+// *reachable* — at which point the main screen (with its per-state actions) takes over.
+//
+// Release on ANY reachable state — `idle`/`running`/`paused` (setup succeeded) AND `authExpired`
+// (setup succeeded but Proton sign-in lapsed): onboarding can't fix expired auth, and its step-4
+// status line already promises a hand-off once the state moves past `firstRun`, so we must actually
+// hand off to the main screen's Re-authenticate action rather than trap the user in the wizard.
+//
+// Entry has two triggers: (1) `firstRun` — the canonical signal (a reachable daemon that has never
+// synced), preserving the original single-hook behaviour; and (2) a genuinely fresh machine — a
+// *completed* status poll reports the daemon unreachable AND no folder pair is configured yet.
+// `statusPolled` gates this so we never claim "fresh" from the pre-poll default state, and
+// `configLoaded` gates it so a daemon configured elsewhere (or a config file not yet read) doesn't
+// flash the wizard. Pure and side-effect free so it can be unit-tested.
+export function nextOnboardingLatch(prev, daemonState, hasConfigPair, configLoaded, statusPolled) {
+  // Reachable in any form — hand back to the main screen (which surfaces the right per-state action).
+  if (
+    daemonState === "idle" ||
+    daemonState === "running" ||
+    daemonState === "paused" ||
+    daemonState === "authExpired"
+  )
+    return false;
+  // Reachable daemon that has never synced: the original firstRun takeover.
+  if (daemonState === "firstRun") return true;
+  // Fresh machine: a completed poll says the daemon is unreachable AND no folders are chosen.
+  if (daemonState === "unreachable" && statusPolled && configLoaded && !hasConfigPair) return true;
+  // Anything else (notably `unreachable` right after step 2 wrote the config, or before the first
+  // poll): hold whatever we were doing so the flow isn't interrupted.
+  return prev;
+}

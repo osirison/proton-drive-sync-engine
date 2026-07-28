@@ -5,12 +5,15 @@
 import { api } from "./api.js";
 import * as store from "./store.js";
 import { SCREENS } from "./screens.js";
-import { matrixFor } from "./state-matrix.js";
+import { matrixFor, nextOnboardingLatch } from "./state-matrix.js";
 import { el, dash } from "./components.js";
 import { renderOnboarding } from "./screens/onboarding.js";
 
 let activeTab = "overview";
 let configInfo = null;
+let configLoaded = false; // has the GUI config file been read at least once (even if empty)?
+let statusPolled = false; // has at least one get_status round trip completed (success or failure)?
+let onboardingLatch = false; // sticky: are we in the first-run onboarding takeover? (see state-matrix.js)
 let pollTimer = null;
 let lastConflictScan = 0;
 
@@ -193,9 +196,6 @@ function render() {
     }
   }
 
-  // safety banner only on the screens that require it
-  dom.banner.hidden = !screenById(activeTab).banner;
-
   // folder pair: the running daemon's reported roots are ground truth; the GUI config file is the
   // fallback when no daemon is reachable. Em-dashes only when neither knows.
   const live = store.select.response()?.config ?? null;
@@ -221,8 +221,26 @@ function render() {
   ].filter(Boolean);
   dom.footer.replaceChildren(...footerItems);
 
-  // mount active screen — first-run is a full takeover, not a normal tab (S8, #89)
-  if (st === "firstRun") renderOnboarding(dom.screen, ctx);
+  // onboarding is a full-window takeover, not a normal tab (S8, #89). It's a *latched* decision
+  // (see nextOnboardingLatch): entered on firstRun OR a genuinely fresh machine (a completed poll
+  // reports the daemon unreachable and no folder pair is configured), and held across the mid-flow
+  // config write so writing the pair in step 2 doesn't eject the user to the unreachable screen.
+  // `localRoot`/`remoteRoot` were resolved above for the folder-pair display (live daemon config
+  // first, GUI config file second).
+  onboardingLatch = nextOnboardingLatch(
+    onboardingLatch,
+    st,
+    Boolean(localRoot && remoteRoot),
+    configLoaded,
+    statusPolled,
+  );
+
+  // safety banner only on the screens that require it — and never stacked over the onboarding
+  // takeover, which shows its own (opposite) "the first sync is a non-destructive merge" banner.
+  dom.banner.hidden = !screenById(activeTab).banner || onboardingLatch;
+
+  // mount active screen
+  if (onboardingLatch) renderOnboarding(dom.screen, ctx);
   else screenById(activeTab).render(dom.screen, ctx);
 }
 
@@ -232,6 +250,10 @@ async function refreshConfig() {
   // happens in render(), which prefers the live daemon-reported roots over this file.
   try {
     configInfo = await api.readConfig();
+    // A missing config file reads back as an empty doc (not an error), so a successful read means we
+    // now *know* whether a folder pair exists — the signal nextOnboardingLatch needs to distinguish a
+    // fresh machine from a config file that simply hasn't been read yet.
+    configLoaded = true;
   } catch (_) {
     /* config not readable yet — leave placeholders */
   }
@@ -242,8 +264,13 @@ async function poll() {
   let payload = null;
   try {
     payload = await api.getStatus();
+    // Set before setStatus (which synchronously re-renders) so the onboarding-routing gate sees that
+    // a real poll has now completed — only then may an `unreachable` reply mean a genuinely fresh
+    // machine rather than the pre-poll default.
+    statusPolled = true;
     store.setStatus(payload);
   } catch (e) {
+    statusPolled = true;
     store.setStatus({ state: "unreachable", error: String(e) });
   }
   const now = Date.now();
