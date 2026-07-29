@@ -32,10 +32,12 @@ function humanBytes(n) {
 
 /**
  * One live line for the daemon's `activity` wire field (src/ipc.rs `SyncActivity`): the current
- * phase, file, and byte progress of the in-flight pass. Mirrors the `proton-sync` CLI's own
- * `describe_activity` rendering. Unknown phases from a newer daemon render as their raw token
- * rather than disappearing. Returns null when the daemon reports no activity (older daemon, or
- * the pass is between phases).
+ * phase, file, and byte progress of the in-flight pass. A close cousin of the `proton-sync`
+ * CLI's `describe_activity` — same concepts and data, but the casing, separators, and elapsed
+ * fragments deliberately follow this screen's own style rather than matching byte-for-byte.
+ * Unknown phases from a newer daemon render as their raw token rather than disappearing.
+ * Returns null when the daemon reports no activity (older daemon, or the pass is between
+ * phases).
  */
 function describeActivity(activity) {
   if (!activity) return null;

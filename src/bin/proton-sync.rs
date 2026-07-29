@@ -487,8 +487,8 @@ fn describe_activity(activity: &SyncActivity) -> String {
                 .unwrap_or_default();
             format!("listing remote folders{listed}{along}{phase_elapsed}")
         }
-        "fetching-events" => "checking the remote change feed".to_owned(),
-        "committing" => "committing the sync index".to_owned(),
+        "fetching-events" => format!("checking the remote change feed{phase_elapsed}"),
+        "committing" => format!("committing the sync index{phase_elapsed}"),
         "executing" => {
             if let Some(transfer) = &activity.transfer {
                 let verb = if transfer.direction == "upload" {
@@ -513,11 +513,13 @@ fn describe_activity(activity: &SyncActivity) -> String {
                     transfer.path.display()
                 )
             } else {
+                // Non-transfer actions (directory creation, moves, deletes) can still take
+                // noticeable time — keep the elapsed clock ticking for them too.
                 let what = activity
                     .detail
                     .clone()
                     .unwrap_or_else(|| "applying planned actions".to_owned());
-                format!("{what}{step}")
+                format!("{what}{phase_elapsed}{step}")
             }
         }
         // Unknown phase from a newer daemon: show the raw token (plus detail) rather than hide it.

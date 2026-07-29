@@ -313,7 +313,15 @@ impl ControlShared {
             status_history: snapshot.status_history,
             pending_deletions: snapshot.pending_deletions,
             config: Some(snapshot.config),
-            activity: self.activity_for_response(),
+            // Gated on `syncing` read above: `syncing` and the activity slot are updated
+            // independently at pass end, so without the gate a reply issued between
+            // `syncing.store(false)` and `clear_activity()` could pair `syncing: false`
+            // with a stale "downloading X".
+            activity: if syncing {
+                self.activity_for_response()
+            } else {
+                None
+            },
         }
     }
 
@@ -4871,6 +4879,9 @@ mod tests {
     #[test]
     fn progress_sink_walk_updates_surface_in_status_replies() {
         let shared = Arc::new(activity_test_shared());
+        // Replies only carry activity while a pass is in flight (`syncing`), matching how the
+        // daemon core brackets every reconcile.
+        shared.syncing.store(true, Ordering::SeqCst);
         let sink = SharedProgressSink {
             shared: Arc::clone(&shared),
         };
@@ -4899,11 +4910,19 @@ mod tests {
         // …and the end of the pass clears everything.
         shared.clear_activity();
         assert!(shared.response("m").activity.is_none());
+
+        // Even a not-yet-cleared activity is withheld once `syncing` is false: the two are
+        // updated independently at pass end, and a reply between the two stores must never
+        // pair `syncing: false` with a stale "downloading X".
+        sink.remote_folder_listed(9, Path::new("stale"));
+        shared.syncing.store(false, Ordering::SeqCst);
+        assert!(shared.response("m").activity.is_none());
     }
 
     #[tokio::test]
     async fn download_bytes_are_sampled_live_from_the_staging_directory() {
         let shared = activity_test_shared();
+        shared.syncing.store(true, Ordering::SeqCst);
         let scratch = tempdir().expect("scratch dir");
         fs::write(scratch.path().join("partial.bin"), vec![0u8; 2048]).expect("partial file");
 
