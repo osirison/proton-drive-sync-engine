@@ -17,19 +17,85 @@ function indeterminateStyleTag() {
   );
 }
 
+/** `1.4 GiB` for a byte count; null in → null out. */
+function humanBytes(n) {
+  if (n == null) return null;
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = n;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  return u === 0 ? `${n} B` : `${v.toFixed(1)} ${units[u]}`;
+}
+
 /**
- * Honest transfer-row data. The daemon's own `[i/N]` in-flight counter (src/daemon.rs,
- * `begin_transfer_spinner`) is a stderr-only terminal spinner — it never crosses the IPC socket,
- * so `StatusResponse` (src/ipc.rs) carries no live "how many of this pass are done" field. What IS
- * on the wire: `last_plan_summary` (this pass's planned upload/download counts) and
- * `pending_changes` (the daemon-wide pending count). Render those honestly — direction + count,
- * never a fabricated percentage or filename — one row per non-zero direction, falling back to a
- * single undirected line when no plan has been computed yet this pass.
+ * One live line for the daemon's `activity` wire field (src/ipc.rs `SyncActivity`): the current
+ * phase, file, and byte progress of the in-flight pass. A close cousin of the `proton-sync`
+ * CLI's `describe_activity` — same concepts and data, but the casing, separators, and elapsed
+ * fragments deliberately follow this screen's own style rather than matching byte-for-byte.
+ * Unknown phases from a newer daemon render as their raw token rather than disappearing.
+ * Returns null when the daemon reports no activity (older daemon, or the pass is between
+ * phases).
  */
-function transferRows(planSummary, pending) {
+function describeActivity(activity) {
+  if (!activity) return null;
+  const step =
+    activity.action_index && activity.action_total
+      ? ` · step ${activity.action_index}/${activity.action_total}`
+      : "";
+  switch (activity.phase) {
+    case "scanning-local":
+      return (
+        "Scanning local files" +
+        (activity.files_scanned ? ` — ${activity.files_scanned} seen` : "") +
+        (activity.detail ? ` · ${activity.detail}` : "")
+      );
+    case "listing-remote":
+      return (
+        "Listing remote folders" +
+        (activity.folders_listed ? ` — ${activity.folders_listed} listed` : "") +
+        (activity.detail ? ` · ${activity.detail}` : "")
+      );
+    case "fetching-events":
+      return "Checking the remote change feed";
+    case "committing":
+      return "Committing the sync index";
+    case "executing": {
+      const t = activity.transfer;
+      if (t) {
+        const verb = t.direction === "upload" ? "Uploading" : "Downloading";
+        let progress = "";
+        if (t.bytes_done != null && t.bytes_total) progress = ` — ${humanBytes(t.bytes_done)} / ${humanBytes(t.bytes_total)}`;
+        else if (t.bytes_done != null) progress = ` — ${humanBytes(t.bytes_done)} so far`;
+        else if (t.bytes_total != null) progress = ` — ${humanBytes(t.bytes_total)}`;
+        return `${verb} ${t.path}${progress}${step}`;
+      }
+      return `${activity.detail || "Applying planned actions"}${step}`;
+    }
+    default:
+      return activity.detail ? `${activity.phase} · ${activity.detail}` : activity.phase;
+  }
+}
+
+/**
+ * Transfer-row data. The first row is the daemon's live `activity` (real filename and, for
+ * downloads, real bytes-so-far sampled from the staging directory — see src/ipc.rs
+ * `SyncActivity`); the rows after it are the pass's aggregate planned counts from
+ * `last_plan_summary`. Both are honest wire data; the bar stays indeterminate because a
+ * download's *total* is still unknown (the remote listing carries no size).
+ */
+function transferRows(planSummary, pending, activity) {
+  const rows = [];
+  const live = describeActivity(activity);
+  if (live) {
+    const direction = activity?.transfer?.direction;
+    const dir = direction === "upload" ? "up" : direction === "download" ? "down" : "sync";
+    rows.push({ dir, label: live });
+  }
   const uploads = planSummary?.uploads ?? 0;
   const downloads = planSummary?.downloads ?? 0;
-  const rows = [];
   if (uploads > 0) rows.push({ dir: "up", label: `Uploading ${uploads} file${uploads === 1 ? "" : "s"}` });
   if (downloads > 0) rows.push({ dir: "down", label: `Downloading ${downloads} file${downloads === 1 ? "" : "s"}` });
   if (rows.length === 0 && pending) {
@@ -112,7 +178,7 @@ export function renderOverview(container, ctx) {
   // Transfer rows only while actively reconciling (design §3.1); `showTransfers` is the
   // state-matrix's own flag for this, so it stays correct if the matrix ever grows a second
   // transfer-bearing state.
-  const transfers = matrix.showTransfers ? transferRows(planSummary, pending) : [];
+  const transfers = matrix.showTransfers ? transferRows(planSummary, pending, resp?.activity) : [];
   const transferSection = transfers.length
     ? el(
         "div",

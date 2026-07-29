@@ -787,8 +787,35 @@ pub fn scan_local_entities_reusing_hashes(
     options: &ScanOptions,
     known: &HashMap<PathBuf, FileRecord>,
 ) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
+    scan_local_entities_observed(root, options, known, None)
+}
+
+/// Observer invoked once per file the scan visits, just *before* the file is stat'd and
+/// (when its cached hash cannot be reused) SHA-1 hashed: `(files_seen_so_far, absolute_path)`.
+/// Hashing a large changed file is where a slow scan spends its time, so the most recently
+/// reported file is exactly what the scan is working on. Display-only — implementations must
+/// be cheap and must not fail.
+pub type ScanObserver<'a> = &'a dyn Fn(u64, &Path);
+
+/// Like [`scan_local_entities_reusing_hashes`] with a per-file [`ScanObserver`], so a caller
+/// (the daemon) can surface live scan progress while a large tree is hashed.
+pub fn scan_local_entities_observed(
+    root: &Path,
+    options: &ScanOptions,
+    known: &HashMap<PathBuf, FileRecord>,
+    observer: Option<ScanObserver<'_>>,
+) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
     let mut entities = HashMap::new();
-    visit_directory(root, root, options, known, &mut entities)?;
+    let mut files_seen = 0u64;
+    visit_directory(
+        root,
+        root,
+        options,
+        known,
+        &mut entities,
+        observer,
+        &mut files_seen,
+    )?;
     Ok(entities)
 }
 
@@ -803,6 +830,8 @@ fn visit_directory(
     options: &ScanOptions,
     known: &HashMap<PathBuf, FileRecord>,
     entities: &mut HashMap<PathBuf, LocalEntityState>,
+    observer: Option<ScanObserver<'_>>,
+    files_seen: &mut u64,
 ) -> AppResult<()> {
     // Note: this `read_dir` is NOT vanish-tolerant on purpose. For a *child* directory the
     // recursion call below maps its NotFound to a skip, but the top-level call must still
@@ -840,12 +869,18 @@ fn visit_directory(
                 // A NotFound surfacing here is this child directory's own `read_dir`
                 // failing (the directory vanished mid-scan) — deeper vanishes were
                 // already skipped inside the recursion.
-                vanished_entry_to_skip(visit_directory(root, &path, options, known, entities))?;
+                vanished_entry_to_skip(visit_directory(
+                    root, &path, options, known, entities, observer, files_seen,
+                ))?;
             }
             continue;
         }
         if !file_type.is_file() || !options.allows_relative_file(relative_path) {
             continue;
+        }
+        if let Some(observe) = observer {
+            *files_seen += 1;
+            observe(*files_seen, &path);
         }
         let Some(state) =
             vanished_entry_to_skip(local_file_state_reusing_hash(root, &path, known))?
@@ -1209,6 +1244,45 @@ mod tests {
     }
 
     #[test]
+    fn scan_observer_reports_each_visited_file_with_a_running_count() {
+        let directory = tempdir().expect("tempdir");
+        let nested = directory.path().join("sub");
+        std::fs::create_dir(&nested).expect("nested dir");
+        std::fs::write(directory.path().join("one.txt"), b"one").expect("write one");
+        std::fs::write(nested.join("two.txt"), b"two").expect("write two");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+
+        let seen = std::cell::RefCell::new(Vec::new());
+        let observer = |count: u64, path: &Path| {
+            seen.borrow_mut().push((count, path.to_path_buf()));
+        };
+        let entities = scan_local_entities_observed(
+            directory.path(),
+            &options,
+            &HashMap::new(),
+            Some(&observer),
+        )
+        .expect("observed scan");
+
+        assert_eq!(entities.len(), 3, "two files plus the nested directory");
+        let mut seen = seen.into_inner();
+        seen.sort_by_key(|(count, _)| *count);
+        assert_eq!(
+            seen.len(),
+            2,
+            "one callback per visited file, none for directories"
+        );
+        assert_eq!(
+            seen.iter().map(|(count, _)| *count).collect::<Vec<_>>(),
+            vec![1, 2],
+            "the count runs across the whole scan"
+        );
+        let paths: Vec<_> = seen.iter().map(|(_, path)| path.clone()).collect();
+        assert!(paths.contains(&directory.path().join("one.txt")));
+        assert!(paths.contains(&nested.join("two.txt")));
+    }
+
+    #[test]
     fn scanner_ignores_orphaned_download_scratch_directories() {
         // A download scratch directory left behind by a hard crash (SIGKILL/OOM/power
         // loss) mid-download persists inside the synced root. It must never be scanned or
@@ -1316,6 +1390,8 @@ mod tests {
                 &options,
                 &HashMap::new(),
                 &mut entities,
+                None,
+                &mut 0,
             ))
             .expect("a directory vanishing before its read_dir maps to a skip")
             .is_none()

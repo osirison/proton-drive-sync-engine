@@ -138,11 +138,24 @@ impl RemoteListing {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProtonDriveClient {
     executable: PathBuf,
     command_policy: CommandPolicy,
     cancel_flag: Arc<AtomicBool>,
+    progress_sink: Option<Arc<dyn ProgressSink>>,
+}
+
+// Manual impl: `dyn ProgressSink` has no `Debug`, so the derive is no longer available.
+impl std::fmt::Debug for ProtonDriveClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProtonDriveClient")
+            .field("executable", &self.executable)
+            .field("command_policy", &self.command_policy)
+            .field("cancel_flag", &self.cancel_flag)
+            .field("progress_sink", &self.progress_sink.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +222,26 @@ pub trait ProtonClient: Send + Sync {
     /// default implementation is a no-op, so test doubles are unaffected unless they
     /// choose to opt in.
     fn install_cancel_flag(&mut self, _cancel_flag: Arc<AtomicBool>) {}
+    /// Installs a live-progress sink this client may notify from inside long operations
+    /// (per-folder during the full-tree walk, per-transfer staging location). Display-only:
+    /// implementations must never let a sink error or slow callback affect the operation.
+    /// The default is a no-op, mirroring [`Self::install_cancel_flag`], so test doubles are
+    /// unaffected unless they opt in.
+    fn install_progress_sink(&mut self, _sink: Arc<dyn ProgressSink>) {}
+}
+
+/// Receiver for the concrete client's live progress callbacks (see
+/// [`ProtonClient::install_progress_sink`]). The daemon publishes these into its status
+/// snapshot so `proton-sync status` / the GUI can show what a long pass is doing. Callbacks
+/// must be cheap and non-blocking — they run inline in the BFS walk and transfer paths.
+pub trait ProgressSink: Send + Sync {
+    /// One remote directory finished listing during the O(folders) full-tree walk.
+    /// `folders_listed` counts directories completed so far, `directory` is root-relative
+    /// (empty for the remote root itself).
+    fn remote_folder_listed(&self, folders_listed: u64, directory: &Path);
+    /// A download began staging into `scratch_dir`; the receiver may poll the directory's
+    /// contents to observe bytes arriving while the CLI child runs.
+    fn download_staging(&self, scratch_dir: &Path);
 }
 
 impl ProtonDriveClient {
@@ -217,6 +250,7 @@ impl ProtonDriveClient {
             executable: executable.into(),
             command_policy: CommandPolicy::default(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            progress_sink: None,
         }
     }
 
@@ -235,6 +269,7 @@ impl ProtonDriveClient {
             executable: executable.into(),
             command_policy,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            progress_sink: None,
         }
     }
 }
@@ -328,6 +363,9 @@ impl ProtonClient for ProtonDriveClient {
                     .cloned(),
             );
             directories.extend(listing.directories);
+            if let Some(sink) = &self.progress_sink {
+                sink.remote_folder_listed(visited.len() as u64, &relative_directory);
+            }
         }
 
         Ok(RemoteListingStatus::Found(
@@ -493,6 +531,9 @@ impl ProtonClient for ProtonDriveClient {
             ))
         })?;
         let _scratch_guard = ScratchDirGuard::new(&scratch_dir);
+        if let Some(sink) = &self.progress_sink {
+            sink.download_staging(&scratch_dir);
+        }
 
         let output = self.run_proton_drive(
             "download",
@@ -646,6 +687,10 @@ impl ProtonClient for ProtonDriveClient {
 
     fn install_cancel_flag(&mut self, cancel_flag: Arc<AtomicBool>) {
         self.cancel_flag = cancel_flag;
+    }
+
+    fn install_progress_sink(&mut self, sink: Arc<dyn ProgressSink>) {
+        self.progress_sink = Some(sink);
     }
 }
 
@@ -2027,6 +2072,122 @@ exit 0
         assert!(
             !destination.exists(),
             "no file should appear at the destination when the download produced nothing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_reports_its_staging_directory_to_the_progress_sink() {
+        struct RecordingSink {
+            staging: std::sync::Mutex<Option<(PathBuf, bool)>>,
+        }
+        impl ProgressSink for RecordingSink {
+            fn remote_folder_listed(&self, _folders_listed: u64, _directory: &Path) {}
+            fn download_staging(&self, scratch_dir: &Path) {
+                *self.staging.lock().expect("staging lock") =
+                    Some((scratch_dir.to_path_buf(), scratch_dir.is_dir()));
+            }
+        }
+
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+target_dir="$4"
+printf 'downloaded content\n' > "$target_dir/budget.xlsx"
+exit 0
+"#,
+        );
+        let mut client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+        let sink = Arc::new(RecordingSink {
+            staging: std::sync::Mutex::new(None),
+        });
+        client.install_progress_sink(Arc::clone(&sink) as Arc<dyn ProgressSink>);
+
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        let destination = local_folder.join("budget.xlsx");
+        client
+            .download(Path::new("/my-files/demo/budget.xlsx"), &destination)
+            .expect("download command");
+
+        let (scratch_dir, existed_when_reported) = sink
+            .staging
+            .lock()
+            .expect("staging lock")
+            .clone()
+            .expect("the download must report its staging directory");
+        assert!(
+            scratch_dir.starts_with(&local_folder),
+            "staging directory should live under the destination's parent: {}",
+            scratch_dir.display()
+        );
+        assert!(
+            existed_when_reported,
+            "the staging directory must already exist when reported, so the receiver \
+             can immediately poll it for bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_reports_walk_progress_to_the_sink() {
+        struct CountingSink {
+            calls: std::sync::Mutex<Vec<(u64, PathBuf)>>,
+        }
+        impl ProgressSink for CountingSink {
+            fn remote_folder_listed(&self, folders_listed: u64, directory: &Path) {
+                self.calls
+                    .lock()
+                    .expect("calls lock")
+                    .push((folders_listed, directory.to_path_buf()));
+            }
+            fn download_staging(&self, _scratch_dir: &Path) {}
+        }
+
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+if [ "$4" = "/my-files/demo" ]; then
+    cat <<'JSON'
+[
+    {
+        "uid": "folder-id",
+        "name": { "ok": true, "value": "cloud-folder" },
+        "type": "folder"
+    }
+]
+JSON
+else
+    printf '[]\n'
+fi
+exit 0
+"#,
+        );
+        let mut client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+        let sink = Arc::new(CountingSink {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        client.install_progress_sink(Arc::clone(&sink) as Arc<dyn ProgressSink>);
+
+        client
+            .list_entities(Path::new("/my-files/demo"))
+            .expect("recursive list");
+
+        let calls = sink.calls.lock().expect("calls lock").clone();
+        assert_eq!(
+            calls,
+            vec![(1, PathBuf::new()), (2, PathBuf::from("cloud-folder")),],
+            "each finished directory should be reported with a running count"
         );
     }
 

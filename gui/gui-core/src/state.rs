@@ -116,6 +116,7 @@ mod tests {
             status_history: vec![],
             pending_deletions: vec![],
             config: None,
+            activity: None,
         }
     }
 
