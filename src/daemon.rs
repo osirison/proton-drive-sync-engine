@@ -8,7 +8,7 @@ use crate::index::{
     store_event_cursor, upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
-    ControlCommand, ControlRequest, ControlResponse, PendingDeletion, StatusHistoryEntry,
+    ControlCommand, ControlResponse, PendingDeletion, RunningConfigInfo, StatusHistoryEntry,
     bind_listener, read_request, write_response,
 };
 use crate::proton::{
@@ -32,18 +32,17 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::net::UnixStream;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 const STATUS_HISTORY_LIMIT: usize = 20;
-/// Time budget for a single control-connection read or write. Bounds how long a stalled
-/// or idle client can occupy the daemon's single-threaded event loop before it is
-/// dropped, so a silent client cannot indefinitely block reconciles, filesystem events,
-/// or graceful shutdown.
+/// Time budget for a single control-connection read or write. Control connections are served
+/// concurrently on their own task, so a stalled client cannot block the daemon — the timeout
+/// just stops silent clients from accumulating parked connection tasks forever.
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the daemon polls the volume event stream when `events_driven` is enabled. Matches
 /// the ~30s cadence Proton's own client uses (ADR 0001). Only the incremental (O(changes)) path
@@ -97,7 +96,10 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     proton: C,
     pending_changes: BTreeSet<PathBuf>,
     scan_options: ScanOptions,
-    paused: bool,
+    /// State shared with the concurrently-running control-socket server task (see
+    /// [`ControlShared`]). The daemon core is the only writer of the snapshot; `paused` is
+    /// written by both sides (IPC `pause`/`resume` flips it, the core reads it).
+    shared: Arc<ControlShared>,
     last_sync: Option<SystemTime>,
     last_error: Option<String>,
     last_plan_summary: Option<PlanSummary>,
@@ -139,6 +141,115 @@ pub struct MetricsSnapshot {
     pub last_successful_sync_summary: Option<PlanSummary>,
     pub status_history_entries: usize,
     pub pending_deletions: Vec<PendingDeletion>,
+}
+
+/// State shared between the daemon core and the control-socket server task so control requests
+/// are answered instantly from the latest published snapshot — even while a reconcile is
+/// blocking the main loop. This is what keeps the CLI and GUI responsive during a long sync.
+struct ControlShared {
+    /// Whether syncing is paused. Written by the IPC task (`pause`/`resume`) and read by the
+    /// daemon core before each reconcile, so a pause takes effect from the next pass.
+    paused: AtomicBool,
+    /// `true` while a reconcile pass is in flight (drives the `syncing` status).
+    syncing: AtomicBool,
+    /// Count of completed reconcile attempts since startup (see `ControlResponse::reconcile_seq`).
+    reconcile_seq: AtomicU64,
+    /// The daemon core's most recently published status. The IPC task only ever reads it.
+    snapshot: StdMutex<StatusSnapshot>,
+}
+
+/// Everything a status reply needs beyond the atomics above. Published by the daemon core via
+/// [`Daemon::publish_status`] whenever its state changes.
+#[derive(Clone)]
+struct StatusSnapshot {
+    pending_changes: usize,
+    last_sync_epoch_secs: Option<u64>,
+    last_error: Option<String>,
+    last_plan_summary: Option<PlanSummary>,
+    last_successful_sync_summary: Option<PlanSummary>,
+    status_history: Vec<StatusHistoryEntry>,
+    pending_deletions: Vec<PendingDeletion>,
+    config: RunningConfigInfo,
+}
+
+impl ControlShared {
+    fn new(config: RunningConfigInfo) -> Self {
+        Self {
+            paused: AtomicBool::new(false),
+            syncing: AtomicBool::new(false),
+            reconcile_seq: AtomicU64::new(0),
+            snapshot: StdMutex::new(StatusSnapshot {
+                pending_changes: 0,
+                last_sync_epoch_secs: None,
+                last_error: None,
+                last_plan_summary: None,
+                last_successful_sync_summary: None,
+                status_history: Vec::new(),
+                pending_deletions: Vec::new(),
+                config,
+            }),
+        }
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    fn is_syncing(&self) -> bool {
+        self.syncing.load(Ordering::SeqCst)
+    }
+
+    fn response(&self, message: &str) -> ControlResponse {
+        let paused = self.is_paused();
+        let syncing = self.is_syncing();
+        let snapshot = self.snapshot.lock().expect("control snapshot lock").clone();
+        ControlResponse {
+            status: if paused {
+                "paused"
+            } else if syncing {
+                "syncing"
+            } else {
+                "running"
+            }
+            .to_owned(),
+            paused,
+            syncing,
+            reconcile_seq: self.reconcile_seq.load(Ordering::SeqCst),
+            pending_changes: snapshot.pending_changes,
+            message: message.to_owned(),
+            last_sync_epoch_secs: snapshot.last_sync_epoch_secs,
+            last_error: snapshot.last_error,
+            last_plan_summary: snapshot.last_plan_summary,
+            last_successful_sync_summary: snapshot.last_successful_sync_summary,
+            status_history: snapshot.status_history,
+            pending_deletions: snapshot.pending_deletions,
+            config: Some(snapshot.config),
+        }
+    }
+
+    fn metrics(&self) -> MetricsSnapshot {
+        let paused = self.is_paused();
+        let snapshot = self.snapshot.lock().expect("control snapshot lock").clone();
+        MetricsSnapshot {
+            generated_epoch_secs: current_epoch_secs(),
+            status: if paused { "paused" } else { "running" }.to_owned(),
+            paused,
+            pending_changes: snapshot.pending_changes,
+            last_sync_epoch_secs: snapshot.last_sync_epoch_secs,
+            last_error: snapshot.last_error,
+            last_plan_summary: snapshot.last_plan_summary,
+            last_successful_sync_summary: snapshot.last_successful_sync_summary,
+            status_history_entries: snapshot.status_history.len(),
+            pending_deletions: snapshot.pending_deletions,
+        }
+    }
+}
+
+/// Work the control-socket task hands to the daemon's main loop — the two commands that must run
+/// on the core (everything else is answered directly from [`ControlShared`]).
+enum LoopCommand {
+    SyncNow,
+    Shutdown,
 }
 
 pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
@@ -246,13 +357,18 @@ impl<C: ProtonClient> Daemon<C> {
         // snapshots (the market-data "get truth first" step), then resets the counter to 0 and
         // streams from there.
         let incremental_passes_since_full_scan = config.events_full_scan_every;
+        let shared = Arc::new(ControlShared::new(RunningConfigInfo {
+            local_root: config.local_root.clone(),
+            remote_root: config.remote_root.clone(),
+            db_path: config.db_path.clone(),
+        }));
         let daemon = Self {
             config,
             connection,
             proton,
             pending_changes: BTreeSet::new(),
             scan_options,
-            paused: false,
+            shared,
             last_sync: None,
             last_error: None,
             last_plan_summary: None,
@@ -267,6 +383,7 @@ impl<C: ProtonClient> Daemon<C> {
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
         };
+        daemon.publish_status();
         daemon.write_metrics_snapshot()?;
         Ok(daemon)
     }
@@ -285,12 +402,32 @@ impl<C: ProtonClient> Daemon<C> {
         // `reconcile()`'s synchronous `block_in_place` call, letting an in-flight
         // proton-drive command be cancelled promptly instead of only being noticed
         // once that blocking call returns control to this task.
+        let signal_cancel_flag = Arc::clone(&cancel_flag);
         tokio::spawn(async move {
             shutdown_signal().await;
-            cancel_flag.store(true, Ordering::SeqCst);
+            signal_cancel_flag.store(true, Ordering::SeqCst);
         });
 
         let listener = bind_listener(&self.config.socket_path).await?;
+        // Serve the control socket on its own task so a status poll (or pause/approve/…) is
+        // answered instantly even while this task is blocked inside a reconcile. The task gets
+        // its own SQLite connection for approval writes (both connections set a busy timeout,
+        // so a rare same-database collision waits instead of failing); `syncnow`/`shutdown` are
+        // forwarded to the loop below over `loop_rx`. The cancel flag gives an IPC `shutdown`
+        // the same teeth as a signal: an in-flight proton-drive command is killed rather than
+        // holding up the exit (the commit-after-side-effects invariant makes that safe — the
+        // interrupted pass simply commits nothing and would replan on next start).
+        let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
+        let approvals_connection = open_database(&self.config.db_path)?;
+        let ipc_task = tokio::spawn(serve_control_socket(
+            listener,
+            Arc::clone(&self.shared),
+            approvals_connection,
+            loop_tx,
+            self.ipc_io_timeout,
+            self.metrics_path.clone(),
+            Arc::clone(&cancel_flag),
+        ));
         let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
         watcher.watch(&self.config.local_root, RecursiveMode::Recursive)?;
@@ -336,89 +473,54 @@ impl<C: ProtonClient> Daemon<C> {
             _ = &mut shutdown => shutdown_during_startup = true,
             result = self.reconcile_if_needed() => result?,
         }
-        if shutdown_during_startup {
-            remove_control_socket(&self.config.socket_path);
-            info!("daemon stopped");
-            return Ok(());
-        }
 
-        loop {
-            tokio::select! {
-                maybe_event = watch_rx.recv() => {
-                    match maybe_event {
-                        Some(Ok(event)) => {
-                            let outcome =
-                                tokio::task::block_in_place(|| self.handle_fs_event(event));
-                            if let Err(error) = outcome {
-                                warn!(%error, "failed to process filesystem event");
+        if !shutdown_during_startup {
+            loop {
+                tokio::select! {
+                    maybe_event = watch_rx.recv() => {
+                        match maybe_event {
+                            Some(Ok(event)) => {
+                                let pending_before = self.pending_changes.len();
+                                let outcome =
+                                    tokio::task::block_in_place(|| self.handle_fs_event(event));
+                                if let Err(error) = outcome {
+                                    warn!(%error, "failed to process filesystem event");
+                                }
+                                if self.pending_changes.len() != pending_before {
+                                    self.publish_status();
+                                }
                             }
-                        }
-                        Some(Err(error)) => {
-                            warn!(%error, "filesystem watcher reported an error");
-                        }
-                        None => break,
-                    }
-                }
-                accepted = listener.accept() => {
-                    match accepted {
-                        Ok((stream, _)) => {
-                            if let Err(error) = self.handle_ipc_stream(stream).await {
-                                warn!(%error, "failed to handle control connection");
+                            Some(Err(error)) => {
+                                warn!(%error, "filesystem watcher reported an error");
                             }
-                        }
-                        Err(error) => {
-                            warn!(%error, "failed to accept control connection");
+                            None => break,
                         }
                     }
-                }
-                _ = interval.tick() => {
-                    self.reconcile_if_needed().await?;
-                }
-                _ = events_poll.tick(), if self.config.events_driven => {
-                    self.reconcile_if_needed().await?;
-                }
-                _ = &mut shutdown => {
-                    break;
+                    Some(command) = loop_rx.recv() => {
+                        match command {
+                            LoopCommand::SyncNow => self.reconcile_if_needed().await?,
+                            LoopCommand::Shutdown => {
+                                info!("shutting down on control request");
+                                break;
+                            }
+                        }
+                    }
+                    _ = interval.tick() => {
+                        self.reconcile_if_needed().await?;
+                    }
+                    _ = events_poll.tick(), if self.config.events_driven => {
+                        self.reconcile_if_needed().await?;
+                    }
+                    _ = &mut shutdown => {
+                        break;
+                    }
                 }
             }
         }
 
+        ipc_task.abort();
         remove_control_socket(&self.config.socket_path);
         info!("daemon stopped");
-        Ok(())
-    }
-
-    async fn handle_ipc_stream(&mut self, stream: UnixStream) -> AppResult<()> {
-        // Time-bound the request read so a client that connects but never sends a
-        // complete request line cannot park the single-threaded select! loop (and with it
-        // periodic scans, filesystem events, and graceful shutdown) indefinitely. The
-        // read is also length-bounded in `read_request`. Request *processing* below is
-        // deliberately not time-bounded: a `Syncnow` triggers a full reconcile that may
-        // legitimately take a long time.
-        let (request, mut stream) =
-            match tokio::time::timeout(self.ipc_io_timeout, read_request(stream)).await {
-                Ok(result) => result?,
-                Err(_elapsed) => {
-                    warn!(
-                        timeout_secs = self.ipc_io_timeout.as_secs(),
-                        "control connection did not send a request within the timeout; dropping it"
-                    );
-                    return Ok(());
-                }
-            };
-        debug!(command = ?request.command, "handling control request");
-        let response = self.handle_ipc_request(request).await?;
-        // Time-bound the response write too, so a client that sends a valid request then
-        // never reads cannot wedge the loop on a full send buffer.
-        match tokio::time::timeout(self.ipc_io_timeout, write_response(&mut stream, &response))
-            .await
-        {
-            Ok(result) => result?,
-            Err(_elapsed) => warn!(
-                timeout_secs = self.ipc_io_timeout.as_secs(),
-                "control client did not read the response within the timeout; dropping it"
-            ),
-        }
         Ok(())
     }
 
@@ -471,74 +573,40 @@ impl<C: ProtonClient> Daemon<C> {
         Ok(())
     }
 
-    async fn handle_ipc_request(&mut self, request: ControlRequest) -> AppResult<ControlResponse> {
-        let response = match request.command {
-            ControlCommand::Status => self.status_response("daemon status"),
-            ControlCommand::Pause => {
-                self.paused = true;
-                info!("sync paused");
-                self.write_metrics_snapshot()?;
-                self.status_response("sync paused")
-            }
-            ControlCommand::Resume => {
-                self.paused = false;
-                info!("sync resumed");
-                self.write_metrics_snapshot()?;
-                self.status_response("sync resumed")
-            }
-            ControlCommand::Syncnow => {
-                if self.paused {
-                    self.status_response("sync skipped because daemon is paused")
-                } else {
-                    match self.reconcile().await {
-                        Ok(()) => self.status_response("sync completed"),
-                        Err(error) => {
-                            error!(%error, "manual reconciliation failed");
-                            self.status_response(&format!("sync failed: {error}"))
-                        }
-                    }
-                }
-            }
-            ControlCommand::Approve => {
-                let message = self.apply_approval_command(request.argument.as_deref(), true)?;
-                info!(argument = ?request.argument, "delete approval recorded");
-                self.status_response(&message)
-            }
-            ControlCommand::Deny => {
-                let message = self.apply_approval_command(request.argument.as_deref(), false)?;
-                info!(argument = ?request.argument, "delete approval revoked");
-                self.status_response(&message)
-            }
-        };
-        Ok(response)
-    }
-
-    fn status_response(&self, message: &str) -> ControlResponse {
-        ControlResponse {
-            status: if self.paused {
-                "paused".to_owned()
-            } else {
-                "running".to_owned()
-            },
-            paused: self.paused,
+    /// Publishes the daemon core's current state to [`ControlShared`], from which the IPC task
+    /// answers every control request. Called whenever the state it copies changes.
+    fn publish_status(&self) {
+        let snapshot = StatusSnapshot {
             pending_changes: self.pending_changes.len(),
-            message: message.to_owned(),
             last_sync_epoch_secs: self.last_sync_epoch_secs(),
             last_error: self.last_error.clone(),
             last_plan_summary: self.last_plan_summary.clone(),
             last_successful_sync_summary: self.last_successful_sync_summary.clone(),
             status_history: self.status_history.clone(),
             pending_deletions: self.pending_deletions.clone(),
-            config: Some(crate::ipc::RunningConfigInfo {
+            config: RunningConfigInfo {
                 local_root: self.config.local_root.clone(),
                 remote_root: self.config.remote_root.clone(),
                 db_path: self.config.db_path.clone(),
-            }),
-        }
+            },
+        };
+        *self.shared.snapshot.lock().expect("control snapshot lock") = snapshot;
+    }
+
+    /// Test-only convenience: publish and build a status reply exactly as the IPC task would.
+    /// Production replies are built by the IPC task itself from [`ControlShared`].
+    #[cfg(test)]
+    fn status_response(&self, message: &str) -> ControlResponse {
+        self.publish_status();
+        self.shared.response(message)
+    }
+
+    fn is_paused(&self) -> bool {
+        self.shared.is_paused()
     }
 
     async fn reconcile_if_needed(&mut self) -> AppResult<()> {
-        if self.paused {
+        if self.is_paused() {
             return Ok(());
         }
         if let Err(error) = self.reconcile().await {
@@ -548,7 +616,12 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     async fn reconcile(&mut self) -> AppResult<()> {
-        tokio::task::block_in_place(|| self.reconcile_blocking())
+        // Flag the pass for status replies before blocking this task; the IPC task keeps
+        // serving (and reporting `syncing`) for the whole duration.
+        self.shared.syncing.store(true, Ordering::SeqCst);
+        let result = tokio::task::block_in_place(|| self.reconcile_blocking());
+        self.shared.syncing.store(false, Ordering::SeqCst);
+        result
     }
 
     fn reconcile_blocking(&mut self) -> AppResult<()> {
@@ -564,6 +637,10 @@ impl<C: ProtonClient> Daemon<C> {
             }
         };
         self.record_status_history(message);
+        // The attempt is complete (recorded either way): bump the sequence a waiting client
+        // watches, then publish the final state of this pass.
+        self.shared.reconcile_seq.fetch_add(1, Ordering::SeqCst);
+        self.publish_status();
         result
     }
 
@@ -881,6 +958,9 @@ impl<C: ProtonClient> Daemon<C> {
             None
         };
         self.pending_deletions = pending;
+        // Publish now — not just at pass end — so a status poll issued during the transfers
+        // below already reports this pass's plan and pending deletions.
+        self.publish_status();
 
         info!(
             planned_actions = plan_summary.total,
@@ -1371,52 +1451,11 @@ impl<C: ProtonClient> Daemon<C> {
     /// authorizes only that deletion); denying revokes any such approval. Only paths that are
     /// *currently pending* are acted on, so a bogus argument is a harmless no-op and no unvalidated
     /// path is ever stored.
+    /// Test-only convenience wrapper over the free [`apply_approval_command`], which production
+    /// code runs on the IPC task with its own connection and the published pending list.
+    #[cfg(test)]
     fn apply_approval_command(&self, selector: Option<&str>, approve: bool) -> AppResult<String> {
-        let Some(selector) = selector else {
-            return Ok(
-                "no target: pass a relative path, or \"all\" to act on every pending deletion"
-                    .to_owned(),
-            );
-        };
-        // `None` here means the explicit "all" selector (every pending item); a plain path filters
-        // to that one item.
-        let target = Some(selector).filter(|value| !value.eq_ignore_ascii_case("all"));
-        let matches: Vec<&PendingDeletion> = self
-            .pending_deletions
-            .iter()
-            .filter(|pending| match target {
-                Some(path) => pending.path == Path::new(path),
-                None => true,
-            })
-            .collect();
-
-        if matches.is_empty() {
-            return Ok(match target {
-                Some(path) => format!("no pending deletion matches '{path}'"),
-                None => "no deletions are pending approval".to_owned(),
-            });
-        }
-
-        let now = current_epoch_secs() as i64;
-        for pending in &matches {
-            if approve {
-                upsert_delete_approval(
-                    &self.connection,
-                    &pending.path,
-                    pending.direction,
-                    &pending.fingerprint,
-                    now,
-                )?;
-            } else {
-                delete_delete_approval(&self.connection, &pending.path, pending.direction)?;
-            }
-        }
-
-        let verb = if approve { "approved" } else { "denied" };
-        Ok(format!(
-            "{verb} {} pending deletion(s); run `proton-sync syncnow` to apply now",
-            matches.len()
-        ))
+        apply_approval_command(&self.connection, &self.pending_deletions, selector, approve)
     }
 
     fn record_status_history(&mut self, message: &str) {
@@ -1449,22 +1488,8 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     fn metrics_snapshot(&self) -> MetricsSnapshot {
-        MetricsSnapshot {
-            generated_epoch_secs: current_epoch_secs(),
-            status: if self.paused {
-                "paused".to_owned()
-            } else {
-                "running".to_owned()
-            },
-            paused: self.paused,
-            pending_changes: self.pending_changes.len(),
-            last_sync_epoch_secs: self.last_sync_epoch_secs(),
-            last_error: self.last_error.clone(),
-            last_plan_summary: self.last_plan_summary.clone(),
-            last_successful_sync_summary: self.last_successful_sync_summary.clone(),
-            status_history_entries: self.status_history.len(),
-            pending_deletions: self.pending_deletions.clone(),
-        }
+        self.publish_status();
+        self.shared.metrics()
     }
 
     fn write_metrics_snapshot(&self) -> AppResult<()> {
@@ -1475,6 +1500,222 @@ impl<C: ProtonClient> Daemon<C> {
         self.last_sync
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs())
+    }
+}
+
+/// Applies an `approve`/`deny` control command against the currently-pending deletions. The
+/// `selector` must be an explicit relative path, or the literal `"all"` for every pending item.
+/// A missing selector is rejected as a no-op: acting on "all" must be a deliberate choice, so an
+/// accidentally-omitted argument from any IPC client can never approve every deletion at once.
+/// Approving records a standing approval keyed to the pending item's exact fingerprint (so it
+/// authorizes only that deletion); denying revokes any such approval. Only paths that are
+/// *currently pending* are acted on, so a bogus argument is a harmless no-op and no unvalidated
+/// path is ever stored.
+fn apply_approval_command(
+    connection: &Connection,
+    pending_deletions: &[PendingDeletion],
+    selector: Option<&str>,
+    approve: bool,
+) -> AppResult<String> {
+    let Some(selector) = selector else {
+        return Ok(
+            "no target: pass a relative path, or \"all\" to act on every pending deletion"
+                .to_owned(),
+        );
+    };
+    // `None` here means the explicit "all" selector (every pending item); a plain path filters
+    // to that one item.
+    let target = Some(selector).filter(|value| !value.eq_ignore_ascii_case("all"));
+    let matches: Vec<&PendingDeletion> = pending_deletions
+        .iter()
+        .filter(|pending| match target {
+            Some(path) => pending.path == Path::new(path),
+            None => true,
+        })
+        .collect();
+
+    if matches.is_empty() {
+        return Ok(match target {
+            Some(path) => format!("no pending deletion matches '{path}'"),
+            None => "no deletions are pending approval".to_owned(),
+        });
+    }
+
+    let now = current_epoch_secs() as i64;
+    for pending in &matches {
+        if approve {
+            upsert_delete_approval(
+                connection,
+                &pending.path,
+                pending.direction,
+                &pending.fingerprint,
+                now,
+            )?;
+        } else {
+            delete_delete_approval(connection, &pending.path, pending.direction)?;
+        }
+    }
+
+    let verb = if approve { "approved" } else { "denied" };
+    Ok(format!(
+        "{verb} {} pending deletion(s); run `proton-sync syncnow` to apply now",
+        matches.len()
+    ))
+}
+
+/// Accept loop for the control socket, run on its own task so control requests are served while
+/// the daemon core is blocked in a reconcile. Each connection is handled on a further spawned
+/// task, so one stalled client cannot delay the others. Aborted by `run()` on shutdown.
+async fn serve_control_socket(
+    listener: UnixListener,
+    shared: Arc<ControlShared>,
+    approvals_connection: Connection,
+    loop_tx: mpsc::UnboundedSender<LoopCommand>,
+    io_timeout: Duration,
+    metrics_path: PathBuf,
+    cancel_flag: Arc<AtomicBool>,
+) {
+    let approvals = Arc::new(tokio::sync::Mutex::new(approvals_connection));
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let shared = Arc::clone(&shared);
+                let approvals = Arc::clone(&approvals);
+                let loop_tx = loop_tx.clone();
+                let metrics_path = metrics_path.clone();
+                let cancel_flag = Arc::clone(&cancel_flag);
+                tokio::spawn(async move {
+                    let outcome = handle_control_connection(
+                        stream,
+                        &shared,
+                        &approvals,
+                        &loop_tx,
+                        io_timeout,
+                        &metrics_path,
+                        &cancel_flag,
+                    )
+                    .await;
+                    if let Err(error) = outcome {
+                        warn!(%error, "failed to handle control connection");
+                    }
+                });
+            }
+            Err(error) => warn!(%error, "failed to accept control connection"),
+        }
+    }
+}
+
+/// Serves one control connection: read a request (time-bounded), answer it from [`ControlShared`]
+/// — never by running work on this task — and write the reply (time-bounded). `syncnow` and
+/// `shutdown` are acknowledged immediately and forwarded to the daemon core over `loop_tx`; a
+/// client that wants to observe the requested sync finishing polls `status` until
+/// `reconcile_seq` advances past the value in its ack and `syncing` is false again.
+async fn handle_control_connection(
+    stream: UnixStream,
+    shared: &ControlShared,
+    approvals: &tokio::sync::Mutex<Connection>,
+    loop_tx: &mpsc::UnboundedSender<LoopCommand>,
+    io_timeout: Duration,
+    metrics_path: &Path,
+    cancel_flag: &AtomicBool,
+) -> AppResult<()> {
+    // Time-bound the request read (it is also length-bounded in `read_request`) so silent
+    // clients do not accumulate parked connection tasks.
+    let (request, mut stream) = match tokio::time::timeout(io_timeout, read_request(stream)).await {
+        Ok(result) => result?,
+        Err(_elapsed) => {
+            warn!(
+                timeout_secs = io_timeout.as_secs(),
+                "control connection did not send a request within the timeout; dropping it"
+            );
+            return Ok(());
+        }
+    };
+    debug!(command = ?request.command, "handling control request");
+    let response = match request.command {
+        ControlCommand::Status => shared.response("daemon status"),
+        ControlCommand::Pause => {
+            shared.paused.store(true, Ordering::SeqCst);
+            info!("sync paused");
+            persist_metrics_best_effort(shared, metrics_path);
+            shared.response("sync paused")
+        }
+        ControlCommand::Resume => {
+            shared.paused.store(false, Ordering::SeqCst);
+            info!("sync resumed");
+            persist_metrics_best_effort(shared, metrics_path);
+            shared.response("sync resumed")
+        }
+        ControlCommand::Syncnow => {
+            if shared.is_paused() {
+                shared.response("sync skipped because daemon is paused")
+            } else {
+                let message = if shared.is_syncing() {
+                    "sync already in progress; another pass will follow"
+                } else {
+                    "sync scheduled"
+                };
+                if loop_tx.send(LoopCommand::SyncNow).is_ok() {
+                    shared.response(message)
+                } else {
+                    shared.response("daemon is shutting down; sync not scheduled")
+                }
+            }
+        }
+        ControlCommand::Approve | ControlCommand::Deny => {
+            let approve = request.command == ControlCommand::Approve;
+            let pending = shared
+                .snapshot
+                .lock()
+                .expect("control snapshot lock")
+                .pending_deletions
+                .clone();
+            let connection = approvals.lock().await;
+            let message = apply_approval_command(
+                &connection,
+                &pending,
+                request.argument.as_deref(),
+                approve,
+            )?;
+            drop(connection);
+            if approve {
+                info!(argument = ?request.argument, "delete approval recorded");
+            } else {
+                info!(argument = ?request.argument, "delete approval revoked");
+            }
+            shared.response(&message)
+        }
+        ControlCommand::Shutdown => {
+            info!("shutdown requested over control socket");
+            // Same teeth as a delivered signal: cancel any in-flight proton-drive command so
+            // the daemon core returns from its reconcile promptly and observes the command
+            // below, instead of finishing a potentially long transfer first.
+            cancel_flag.store(true, Ordering::SeqCst);
+            let _ = loop_tx.send(LoopCommand::Shutdown);
+            shared.response("shutting down")
+        }
+    };
+    // Time-bound the response write too, so a client that sends a valid request then never
+    // reads cannot park this task on a full send buffer.
+    match tokio::time::timeout(io_timeout, write_response(&mut stream, &response)).await {
+        Ok(result) => result?,
+        Err(_elapsed) => warn!(
+            timeout_secs = io_timeout.as_secs(),
+            "control client did not read the response within the timeout; dropping it"
+        ),
+    }
+    Ok(())
+}
+
+/// Writes the metrics sidecar from the shared control state, logging (not failing) on error —
+/// the IPC task must keep serving even if the sidecar path is briefly unwritable.
+fn persist_metrics_best_effort(shared: &ControlShared, metrics_path: &Path) {
+    if let Err(error) = write_metrics_snapshot(metrics_path, &shared.metrics()) {
+        warn!(
+            path = %metrics_path.display(),
+            %error,
+            "failed to persist daemon metrics snapshot"
+        );
     }
 }
 
@@ -4350,26 +4591,39 @@ mod tests {
 
     #[tokio::test]
     async fn idle_ipc_client_is_dropped_after_the_io_timeout_instead_of_blocking() {
-        // A client that connects to the control socket but never sends a request line
-        // must not park the daemon's single-threaded event loop forever (which would
-        // freeze reconciles, filesystem events, and graceful shutdown). handle_ipc_stream
-        // must return after the IO timeout rather than hang.
+        // A client that connects to the control socket but never sends a request line must not
+        // park its connection task forever. handle_control_connection must return after the IO
+        // timeout rather than hang.
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
         fs::create_dir(&local_root).expect("local root");
         let (client, _) = RecordingProtonClient::new(HashMap::new());
-        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
-        daemon.ipc_io_timeout = Duration::from_millis(50);
+        let approvals = tokio::sync::Mutex::new(
+            open_database(&daemon.config.db_path).expect("second connection"),
+        );
+        let (loop_tx, _loop_rx) = mpsc::unbounded_channel();
 
         let (control_client, server) = UnixStream::pair().expect("socket pair");
 
         // The outer timeout is a generous test-only guard: if the handler regressed to
         // blocking forever it fails here instead of hanging the suite.
-        let outcome =
-            tokio::time::timeout(Duration::from_secs(5), daemon.handle_ipc_stream(server))
-                .await
-                .expect("an idle control connection must be dropped after the IO timeout");
+        let cancel_flag = AtomicBool::new(false);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            handle_control_connection(
+                server,
+                &daemon.shared,
+                &approvals,
+                &loop_tx,
+                Duration::from_millis(50),
+                &daemon.metrics_path,
+                &cancel_flag,
+            ),
+        )
+        .await
+        .expect("an idle control connection must be dropped after the IO timeout");
         drop(control_client);
 
         outcome.expect("dropping an idle control connection is a clean, non-error outcome");

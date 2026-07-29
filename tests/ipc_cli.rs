@@ -30,13 +30,14 @@ mod unix_tests {
         );
         wait_for_socket(&socket_path, &mut daemon.child);
 
-        let status = run_control(&socket_path, "status");
+        // The control socket answers during the startup reconcile now, so wait for that first
+        // pass to complete before asserting on its results.
+        let status = wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
         assert_eq!(status["status"], "running");
         assert_eq!(status["paused"], false);
         assert!(status["last_error"].is_null());
-        // The daemon reconciles once on startup (remote and local are both empty here), so an
-        // empty plan and a matching successful-sync summary are already present before any
-        // manual syncnow.
+        // The startup reconcile ran against empty local and remote roots, so an empty plan and a
+        // matching successful-sync summary are already present before any manual syncnow.
         assert_eq!(status["last_plan_summary"]["total"].as_u64(), Some(0));
         assert_eq!(
             status["last_successful_sync_summary"]["total"].as_u64(),
@@ -56,9 +57,12 @@ mod unix_tests {
         assert_eq!(resumed["status"], "running");
         assert_eq!(resumed["paused"], false);
 
+        // `syncnow` acks immediately and the CLI watches status until the scheduled pass
+        // finishes, so the final `--json` payload is the post-sync status.
         let synced = run_control(&socket_path, "syncnow");
         assert_eq!(synced["status"], "running");
-        assert_eq!(synced["message"], "sync completed");
+        assert_eq!(synced["syncing"], false);
+        assert!(synced["reconcile_seq"].as_u64().unwrap_or(0) >= 2);
         assert!(synced["last_sync_epoch_secs"].as_u64().is_some());
         assert!(synced["last_error"].is_null());
         assert_eq!(synced["last_plan_summary"]["total"].as_u64(), Some(0));
@@ -70,7 +74,7 @@ mod unix_tests {
         let history = run_control(&socket_path, "history");
         let history = history.as_array().expect("history JSON array");
         // Two entries: the startup reconcile, then the manual syncnow after resume. (The syncnow
-        // issued while paused is skipped without reconciling, so it records no history entry.)
+        // issued while paused is skipped without scheduling, so it records no history entry.)
         assert_eq!(history.len(), 2);
         assert_eq!(history[0]["message"], "sync completed");
         assert_eq!(history[1]["message"], "sync completed");
@@ -119,7 +123,9 @@ mod unix_tests {
             "daemon must still be running after malformed control requests"
         );
 
-        let status = run_control(&socket_path, "status");
+        // Wait past the startup reconcile so the asserted status is the settled "running", not a
+        // transient "syncing".
+        let status = wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
         assert_eq!(status["status"], "running");
     }
 
@@ -144,16 +150,12 @@ mod unix_tests {
         );
         wait_for_socket(&socket_path, &mut daemon.child);
 
-        let synced = run_control(&socket_path, "syncnow");
+        // The watched pass fails, so `syncnow --json` exits non-zero while still printing the
+        // final status payload.
+        let synced = run_control_any_exit(&socket_path, "syncnow");
 
         assert_eq!(synced["status"], "running");
-        assert!(
-            synced["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("sync failed"),
-            "syncnow should report failure: {synced}"
-        );
+        assert_eq!(synced["syncing"], false);
         assert!(
             synced["last_error"]
                 .as_str()
@@ -241,6 +243,58 @@ mod unix_tests {
         );
     }
 
+    // The core responsiveness guarantee behind the concurrent control-socket task: a status
+    // request issued while a reconcile is blocked mid-transfer must be answered immediately
+    // (reporting `syncing`), not queue behind the reconcile. Before the IPC task existed, this
+    // exact scenario froze every CLI/GUI status call for the duration of the sync.
+    #[test]
+    fn status_is_answered_while_a_sync_is_blocked_mid_transfer() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("blocking.txt"), b"content").expect("write fixture");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive =
+            write_blocking_upload_proton_drive(directory.path(), "/Drive/RemoteFolder");
+
+        let mut daemon = DaemonProcess::spawn_with_proton_timeout(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+            30,
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+
+        // The startup reconcile is now wedged inside the fake's endless upload.
+        let started_marker = PathBuf::from(format!("{}.started", fake_proton_drive.display()));
+        wait_for_marker(&started_marker, &mut daemon.child);
+
+        let asked = Instant::now();
+        let status = run_control(&socket_path, "status");
+        let elapsed = asked.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "status must be answered while a sync is in flight; took {elapsed:?}"
+        );
+        assert_eq!(status["status"], "syncing");
+        assert_eq!(status["syncing"], true);
+        assert_eq!(status["paused"], false);
+        // The in-flight pass's plan is already published: one upload.
+        assert_eq!(status["last_plan_summary"]["uploads"].as_u64(), Some(1));
+
+        // A pause is accepted mid-sync too, and takes effect for the *next* pass.
+        let paused = run_control(&socket_path, "pause");
+        assert_eq!(paused["paused"], true);
+
+        // Release the blocked upload so the daemon can wind down cleanly.
+        fs::write(format!("{}.release", fake_proton_drive.display()), b"go").expect("release");
+    }
+
     #[test]
     fn delete_approval_withholds_a_remote_delete_until_approved_over_ipc() {
         let directory = tempdir().expect("tempdir");
@@ -271,7 +325,10 @@ mod unix_tests {
         let trash_marker = PathBuf::from(format!("{}.trash", fake_proton_drive.display()));
 
         let withheld = run_control(&socket_path, "syncnow");
-        assert_eq!(withheld["message"], "sync completed");
+        assert!(
+            withheld["last_error"].is_null(),
+            "pass should succeed: {withheld}"
+        );
         let pending = withheld["pending_deletions"]
             .as_array()
             .expect("pending_deletions array");
@@ -302,7 +359,10 @@ mod unix_tests {
         );
 
         let applied = run_control(&socket_path, "syncnow");
-        assert_eq!(applied["message"], "sync completed");
+        assert!(
+            applied["last_error"].is_null(),
+            "pass should succeed: {applied}"
+        );
         assert!(
             applied["pending_deletions"]
                 .as_array()
@@ -462,10 +522,13 @@ mod unix_tests {
         None
     }
 
+    /// Runs the control CLI with `--json` and parses the response. The human-readable output is
+    /// the CLI's default now; these process-level tests assert on the machine-readable form.
     fn run_control(socket_path: &Path, command: &str) -> Value {
         let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
             .arg("--socket-path")
             .arg(socket_path)
+            .arg("--json")
             .arg(command)
             .output()
             .expect("run proton-sync");
@@ -475,6 +538,40 @@ mod unix_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         serde_json::from_slice(&output.stdout).expect("control response JSON")
+    }
+
+    /// As `run_control`, but tolerates a non-zero exit — `syncnow --json` exits 1 when the pass
+    /// it watched failed, and some tests exercise exactly that.
+    fn run_control_any_exit(socket_path: &Path, command: &str) -> Value {
+        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
+            .arg("--socket-path")
+            .arg(socket_path)
+            .arg("--json")
+            .arg(command)
+            .output()
+            .expect("run proton-sync");
+        serde_json::from_slice(&output.stdout).expect("control response JSON")
+    }
+
+    /// Polls `status` until the daemon has completed at least `passes` reconcile attempts. The
+    /// control socket now answers while a reconcile is in flight, so tests that assert on
+    /// last-sync state must explicitly wait for the pass to finish instead of relying on the
+    /// old accept-queue blocking.
+    fn wait_for_reconcile_seq(socket_path: &Path, child: &mut Child, passes: u64) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Some(status) = child.try_wait().expect("daemon status") {
+                panic!("proton-syncd exited while waiting for a reconcile: {status}");
+            }
+            let status = run_control(socket_path, "status");
+            let seq = status["reconcile_seq"].as_u64().unwrap_or(0);
+            let syncing = status["syncing"].as_bool().unwrap_or(false);
+            if seq >= passes && !syncing {
+                return status;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("timed out waiting for reconcile pass {passes}");
     }
 
     /// Runs the control CLI and returns its raw stdout, for subcommands whose output is
