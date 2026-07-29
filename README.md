@@ -92,6 +92,37 @@ systemctl --user status proton-syncd      # the service itself
 `./setup.sh --help` lists every flag (`--no-start`, `--force-config`, `--proton-cli`,
 `--no-build`, …). The next section explains what the script does, step by step.
 
+## Upgrade and uninstall
+
+Two companion scripts sit beside `setup.sh` and reuse its installer logic, so the systemd unit
+and desktop launcher they write never drift from what a fresh install would produce.
+
+**Upgrade an existing install** — rebuild the binaries from this checkout, refresh the unit and
+(if installed) the desktop launcher, then restart the running service. Your config, folder
+pairing, and sync state are left untouched:
+
+```bash
+git pull                 # or: ./upgrade.sh --pull  (fast-forwards for you)
+./upgrade.sh             # rebuilds whatever is installed, then restarts the service
+```
+
+It auto-detects whether the desktop app is installed and upgrades it too; scope it with
+`--engine-only` / `--gui`, skip the rebuild with `--no-build`, or leave the service stopped with
+`--no-restart`. It refuses to run on a machine with nothing installed (use `setup.sh` for a first
+install).
+
+**Uninstall** — remove the service, binaries, config, desktop app files, and all engine state,
+leaving the machine clean. Preview first; it prompts once before deleting:
+
+```bash
+./uninstall.sh --dry-run    # print exactly what would be removed, change nothing
+./uninstall.sh              # remove everything (or -y to skip the prompt)
+```
+
+It **never** touches the files you were syncing (only the `.sync` state dir inside your local
+root), nor the separate `proton-drive` CLI and its login. Pass `--keep-config` to preserve the
+config and folder pairing for a later reinstall. `./uninstall.sh --help` lists every flag.
+
 ## Manual setup — what the script does
 
 Prefer to run each step yourself, or skip systemd and just run the daemon in the foreground?
@@ -263,6 +294,8 @@ The site is built from [`website/`](website/) with [Astro](https://astro.build/)
 
 ```text
 setup.sh        One-command installer (terminal quick setup, or --gui onboarding)
+upgrade.sh      In-place upgrade of an existing install (rebuild + refresh unit/launcher + restart)
+uninstall.sh    Remove everything cleanly (keeps your synced files and the proton-drive CLI)
 src/            The engine (library crate) + the two binaries
   bin/          proton-sync.rs (CLI) · proton-syncd.rs (daemon)
   sync.rs       Pure planner: the reconcile decision matrix + conflict naming

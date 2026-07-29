@@ -598,4 +598,9 @@ main() {
   fi
 }
 
-main "$@"
+# Only run when executed directly. When sourced (by upgrade.sh / uninstall.sh, which reuse the
+# installer functions and helpers above so the unit/launcher templates never drift out of sync),
+# BASH_SOURCE[0] != $0 and main is skipped — sourcing has no side effects beyond defining functions.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
