@@ -512,12 +512,21 @@ impl ProtonClient for ProtonDriveClient {
             )));
         }
 
+        // The CLI exited 0, so if the scratch directory does not now hold exactly the downloaded
+        // file, the CLI put it somewhere else (or silently skipped it) — e.g. it expands a
+        // leading `~` in the destination argument while the daemon's own fs calls treat `~` as a
+        // literal directory name. Surface the CLI's own output so the mismatch is diagnosable
+        // from the error alone.
         let downloaded_path = single_entry_in_directory(&scratch_dir).map_err(|error| {
             boxed_error(format!(
-                "download of {} did not produce exactly one file in the scratch \
-                 directory {}: {error}",
+                "download of {} reported success, but the scratch directory the daemon was \
+                 watching ({}) did not end up holding exactly the one downloaded file: {error}; \
+                 the CLI may have resolved the destination to a different path — proton-drive \
+                 stdout: {}; stderr: {}",
                 remote_path.display(),
-                scratch_dir.display()
+                scratch_dir.display(),
+                summarize_command_output(&output.stdout),
+                summarize_command_output(&output.stderr),
             ))
         })?;
         fs::rename(&downloaded_path, destination).map_err(|error| {
@@ -1094,6 +1103,24 @@ fn single_entry_in_directory(directory: &Path) -> AppResult<PathBuf> {
             directory.display()
         ))),
     }
+}
+
+/// Renders captured CLI output for inclusion in an error message: lossy UTF-8, trimmed, capped
+/// to its final characters (the end is where a CLI's summary and error lines land), and
+/// `"(empty)"` when there was none — so the surrounding message never reads as truncated itself.
+fn summarize_command_output(bytes: &[u8]) -> String {
+    const MAX_CHARS: usize = 600;
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "(empty)".to_owned();
+    }
+    let total_chars = trimmed.chars().count();
+    if total_chars <= MAX_CHARS {
+        return trimmed.to_owned();
+    }
+    let tail: String = trimmed.chars().skip(total_chars - MAX_CHARS).collect();
+    format!("(first {} chars omitted) …{tail}", total_chars - MAX_CHARS)
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -1964,6 +1991,8 @@ exit 0
             directory.path(),
             "fake-proton-drive",
             r#"#!/bin/sh
+echo "Saved file to /somewhere/else/budget.xlsx"
+echo "one stray warning" >&2
 exit 0
 "#,
         );
@@ -1980,14 +2009,40 @@ exit 0
             .download(Path::new("/my-files/demo/budget.xlsx"), &destination)
             .expect_err("a CLI that produces no file should be reported as an error");
 
+        let message = error.to_string();
         assert!(
-            error.to_string().contains("no entries were found"),
-            "unexpected error: {error}"
+            message.contains("no entries were found"),
+            "unexpected error: {message}"
+        );
+        // The CLI exited 0 yet delivered nothing where the daemon looked, so the only clue to
+        // where the file actually went is the CLI's own output — the error must carry it.
+        assert!(
+            message.contains("Saved file to /somewhere/else/budget.xlsx"),
+            "the error must include the CLI's stdout: {message}"
+        );
+        assert!(
+            message.contains("one stray warning"),
+            "the error must include the CLI's stderr: {message}"
         );
         assert!(
             !destination.exists(),
             "no file should appear at the destination when the download produced nothing"
         );
+    }
+
+    #[test]
+    fn summarize_command_output_handles_empty_and_oversized_output() {
+        assert_eq!(summarize_command_output(b""), "(empty)");
+        assert_eq!(summarize_command_output(b"  \n"), "(empty)");
+        assert_eq!(summarize_command_output(b" saved to /x \n"), "saved to /x");
+
+        let long = "a".repeat(700);
+        let summarized = summarize_command_output(long.as_bytes());
+        assert!(
+            summarized.starts_with("(first 100 chars omitted) …"),
+            "unexpected prefix: {summarized}"
+        );
+        assert!(summarized.ends_with(&"a".repeat(600)));
     }
 
     #[cfg(unix)]

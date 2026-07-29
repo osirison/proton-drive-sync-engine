@@ -6,8 +6,9 @@ use crate::paths::{
 use crate::proton::CommandPolicy;
 use crate::{AppResult, boxed_error};
 use serde::Deserialize;
+use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 /// Default number of incremental event-driven passes between forced full-tree resyncs when
@@ -91,7 +92,13 @@ struct FileDeleteApproval {
 }
 
 pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConfig, bool)> {
-    let file_config = load_file_config(input.config.as_ref())?;
+    // The config-file path is itself a local-filesystem path, so it gets the same `~` treatment
+    // as the values inside it (see `expand_tilde` below).
+    let config_path = input
+        .config
+        .map(|path| expand_tilde(path, "--config"))
+        .transpose()?;
+    let file_config = load_file_config(config_path.as_ref())?;
     let dry_run = if input.no_dry_run {
         false
     } else if input.dry_run {
@@ -121,10 +128,17 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         let file = file_config.delete_approval.unwrap_or_default();
         (file.remote.unwrap_or(true), file.local.unwrap_or(true))
     };
-    let local_root = input
-        .local_root
-        .or(file_config.local_root)
-        .ok_or_else(|| boxed_error("missing required --local-root or config local_root"))?;
+    // Every local-filesystem path a user can hand us goes through `expand_tilde` first: the
+    // daemon runs shell-less (systemd unit, GUI spawn), so nothing else ever expands `~` on its
+    // behalf. `remote_root` is deliberately excluded — it is a Drive-side path where `~` has no
+    // meaning.
+    let local_root = expand_tilde(
+        input
+            .local_root
+            .or(file_config.local_root)
+            .ok_or_else(|| boxed_error("missing required --local-root or config local_root"))?,
+        "local_root",
+    )?;
     let remote_root = input
         .remote_root
         .or(file_config.remote_root)
@@ -132,6 +146,8 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
     let db_path = input
         .db_path
         .or(file_config.db_path)
+        .map(|path| expand_tilde(path, "db_path"))
+        .transpose()?
         .map(|path| resolve_path(&local_root, path))
         .unwrap_or_else(|| default_state_db_path(&local_root));
     // Resolved before the struct literal below (which moves `local_root`), mirroring `db_path`:
@@ -140,6 +156,8 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
     let lockfile_path = input
         .lockfile_path
         .or(file_config.lockfile_path)
+        .map(|path| expand_tilde(path, "lockfile_path"))
+        .transpose()?
         .map(|path| resolve_path(&local_root, path))
         .unwrap_or_else(|| default_lockfile_path(&local_root));
     let default_command_policy = CommandPolicy::default();
@@ -151,6 +169,8 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         socket_path: input
             .socket_path
             .or(file_config.socket_path)
+            .map(|path| expand_tilde(path, "socket_path"))
+            .transpose()?
             .unwrap_or_else(default_socket_path),
         lockfile_path,
         // Not user-overridable: the single-instance guarantee must key on a fixed per-user path so
@@ -166,6 +186,8 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         proton_cli: input
             .proton_cli
             .or(file_config.proton_cli)
+            .map(|path| expand_tilde(path, "proton_cli"))
+            .transpose()?
             .unwrap_or_else(|| PathBuf::from("proton-drive")),
         proton_timeout: resolve_positive_duration_secs(
             input.proton_timeout_secs,
@@ -220,6 +242,57 @@ fn resolve_path(local_root: &Path, path: PathBuf) -> PathBuf {
     } else {
         local_root.join(path)
     }
+}
+
+/// Expands a leading `~` component (`~` alone or `~/...`) to the user's home directory.
+///
+/// The daemon is spawned without a shell (systemd unit, GUI), so nothing expands `~` on its
+/// behalf: a config value like `local_root = "~/Documents"` used to reach the filesystem layer
+/// verbatim, making the daemon create and sync a directory literally named `~` under its working
+/// directory — while the `proton-drive` CLI it shells *does* expand `~` in its arguments, so the
+/// daemon and the CLI silently operated on two different trees (every download landed in the
+/// expanded path and the daemon then found its literal-path scratch directory empty). Expanding
+/// once here, at config resolution, keeps every consumer — direct fs calls, scratch directories,
+/// and the shelled CLI — pointed at the same tree.
+///
+/// `~user` forms are rejected with an actionable error rather than guessed at; paths that do not
+/// start with a `~` component pass through untouched.
+fn expand_tilde(path: PathBuf, field_name: &str) -> AppResult<PathBuf> {
+    expand_tilde_with_home(path, field_name, std::env::var_os("HOME"))
+}
+
+fn expand_tilde_with_home(
+    path: PathBuf,
+    field_name: &str,
+    home: Option<OsString>,
+) -> AppResult<PathBuf> {
+    let mut components = path.components();
+    let Some(Component::Normal(first)) = components.next() else {
+        return Ok(path);
+    };
+    if first == OsStr::new("~") {
+        let home = home.filter(|value| !value.is_empty()).ok_or_else(|| {
+            boxed_error(format!(
+                "cannot expand `~` in {field_name} `{}`: the HOME environment variable is not \
+                 set (or is empty); use an absolute path instead",
+                path.display()
+            ))
+        })?;
+        let rest = components.as_path().to_path_buf();
+        let mut expanded = PathBuf::from(home);
+        if !rest.as_os_str().is_empty() {
+            expanded.push(rest);
+        }
+        return Ok(expanded);
+    }
+    if first.as_encoded_bytes().starts_with(b"~") {
+        return Err(boxed_error(format!(
+            "cannot expand {field_name} `{}`: `~user` paths are not supported; use an absolute \
+             path instead",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 fn resolve_positive_duration_secs(
@@ -409,6 +482,156 @@ include = ["config/**"]
             config.lockfile_path,
             PathBuf::from("/run/user/1000/custom.lock")
         );
+    }
+
+    #[test]
+    fn tilde_local_root_from_config_file_expands_to_the_home_directory() {
+        // Regression: a hand- or GUI-written `local_root = "~/Documents"` used to be taken
+        // literally, so the daemon synced into a directory actually named `~` while the shelled
+        // `proton-drive` CLI expanded `~` and wrote downloads into the real home directory —
+        // every download then failed with an empty scratch directory.
+        let home = std::env::var_os("HOME").expect("HOME is set in the test environment");
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "~/Sync Root"
+remote_root = "/Drive/RemoteFolder"
+"#,
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        let expanded_root = PathBuf::from(&home).join("Sync Root");
+        assert_eq!(config.local_root, expanded_root);
+        assert!(
+            config.db_path.starts_with(&expanded_root),
+            "derived state paths must follow the expanded root, not the literal `~`: {}",
+            config.db_path.display()
+        );
+        assert!(
+            config.lockfile_path.starts_with(&expanded_root),
+            "derived lockfile must follow the expanded root, not the literal `~`: {}",
+            config.lockfile_path.display()
+        );
+    }
+
+    #[test]
+    fn tilde_expands_in_every_local_path_option_but_not_remote_root() {
+        let home = std::env::var_os("HOME").expect("HOME is set in the test environment");
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("~/Proton")),
+            remote_root: Some(PathBuf::from("/Drive/X")),
+            db_path: Some(PathBuf::from("~/state/index.db")),
+            lockfile_path: Some(PathBuf::from("~/state/daemon.lock")),
+            socket_path: Some(PathBuf::from("~/run/daemon.sock")),
+            proton_cli: Some(PathBuf::from("~/bin/proton-drive")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        let home = PathBuf::from(&home);
+        assert_eq!(config.local_root, home.join("Proton"));
+        assert_eq!(config.db_path, home.join("state/index.db"));
+        assert_eq!(config.lockfile_path, home.join("state/daemon.lock"));
+        assert_eq!(config.socket_path, home.join("run/daemon.sock"));
+        assert_eq!(config.proton_cli, home.join("bin/proton-drive"));
+        assert_eq!(
+            config.remote_root,
+            PathBuf::from("/Drive/X"),
+            "remote_root is a Drive-side path where `~` has no meaning"
+        );
+    }
+
+    #[test]
+    fn tilde_username_local_root_is_rejected_with_an_actionable_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("~alice/Proton")),
+            remote_root: Some(PathBuf::from("/Drive/X")),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("`~user` paths should be rejected, not treated as literal directories");
+
+        assert!(
+            error
+                .to_string()
+                .contains("`~user` paths are not supported"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn tilde_config_flag_path_expands_to_the_home_directory() {
+        // The `--config` path is a local-filesystem path like any other: a literal `~` must be
+        // expanded before the file is read, not passed to `fs::read_to_string` verbatim. The
+        // path below does not exist, so resolution fails — but the error must name the
+        // *expanded* location.
+        let home = std::env::var_os("HOME").expect("HOME is set in the test environment");
+        let missing = "proton-sync-test-nonexistent-config.toml";
+
+        let error = resolve_runtime_config(DaemonConfigInput {
+            config: Some(PathBuf::from("~").join(missing)),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("a nonexistent config file should fail to load");
+
+        let message = error.to_string();
+        let expanded = PathBuf::from(&home).join(missing);
+        assert!(
+            message.contains(&expanded.display().to_string()),
+            "the error must reference the expanded config path, got: {message}"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_with_home_covers_the_edge_shapes() {
+        let home = Some(OsString::from("/home/tester"));
+
+        // Bare `~` becomes the home directory itself, with no trailing component.
+        assert_eq!(
+            expand_tilde_with_home(PathBuf::from("~"), "local_root", home.clone())
+                .expect("bare tilde"),
+            PathBuf::from("/home/tester")
+        );
+        // A `~` that is not the leading component is a literal directory name.
+        assert_eq!(
+            expand_tilde_with_home(PathBuf::from("data/~/x"), "local_root", home.clone())
+                .expect("inner tilde"),
+            PathBuf::from("data/~/x")
+        );
+        // Absolute and plain relative paths pass through untouched.
+        assert_eq!(
+            expand_tilde_with_home(PathBuf::from("/opt/sync"), "local_root", home.clone())
+                .expect("absolute"),
+            PathBuf::from("/opt/sync")
+        );
+        assert_eq!(
+            expand_tilde_with_home(PathBuf::from("sync-root"), "local_root", home.clone())
+                .expect("relative"),
+            PathBuf::from("sync-root")
+        );
+        // A filename that merely starts with `~` (e.g. an editor backup) is `~user` shaped and
+        // rejected rather than silently misread.
+        expand_tilde_with_home(PathBuf::from("~alice"), "local_root", home.clone())
+            .expect_err("~user must be rejected");
+        // Without HOME, expansion fails loudly instead of falling back to a literal `~`, and the
+        // error names the offending field.
+        let error = expand_tilde_with_home(PathBuf::from("~/x"), "db_path", None)
+            .expect_err("missing HOME must be an error");
+        let message = error.to_string();
+        assert!(
+            message.contains("HOME environment variable") && message.contains("db_path"),
+            "unexpected error: {message}"
+        );
+        // An empty HOME is as good as unset.
+        expand_tilde_with_home(PathBuf::from("~/x"), "db_path", Some(OsString::new()))
+            .expect_err("empty HOME must be an error");
     }
 
     #[test]
