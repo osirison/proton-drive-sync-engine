@@ -103,7 +103,7 @@ parser would reject (so a save can't brick startup). The file is written atomica
 `0600`. Sections:
 
 - **Folders** — `local_root`, `remote_root`. Editing a root warns that it re-bootstraps the
-  index; preview the plan first, and restart the daemon manually.
+  index; preview the plan first before restarting.
 - **Schedule** — `scan_interval_secs`, and the `events_driven` toggle (Proton volume-events
   stream for fast incremental reconcile).
 - **Selective sync** — the raw `include` / `exclude` glob lists. Copy states exclude beats
@@ -111,11 +111,16 @@ parser would reject (so a save can't brick startup). The file is written atomica
 - **CLI** — `proton_cli` path, `proton_timeout_secs`, `proton_list_attempts`.
 - **Delete approval** — the `remote` and `local` toggles, both shown **on (protected)** by
   default so a `null` in the file never misrepresents a security guard as off.
-- **Service** — the config file path, and a reminder that saving requires
-  `systemctl --user restart proton-syncd` to take effect.
+- **Service** — the config file path and a **Restart daemon now** button (the equivalent
+  manual command is shown alongside).
 
-Changing a root promotes a "Preview plan" button. Saving restarts nothing on its own — it
-tells you the restart command.
+The daemon only reads its config at startup, so after a successful save the screen prompts
+you to restart it and offers a one-click **Restart daemon now** button. The restart asks the
+running daemon to exit gracefully over IPC (this works however it was launched), waits for
+the control socket to go quiet, then starts it again — via the systemd unit when installed,
+else by spawning `proton-syncd` directly against the saved config. Changing a root
+additionally promotes a "Preview plan" button ahead of the restart, since a root change
+re-bootstraps the index.
 
 ## Onboarding
 

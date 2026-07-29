@@ -25,6 +25,13 @@ let saveError = null;
 let saveNotice = null; // { text, rootChanged } set after a successful save
 let prefilledFromDaemon = false; // roots adopted from the running daemon (config file had none)
 
+// Restart-daemon flow (the post-save prompt and the Service-section button share it): the daemon
+// only reads its config at startup, so after a save the screen offers a one-click restart via
+// the `restart_service` command (graceful IPC shutdown → wait → systemd/direct start).
+let restarting = false;
+let restartError = null;
+let restartDone = false; // a restart succeeded since the last save
+
 // Transient text-buffers for the "add a pattern" inputs — not part of the diffed draft, cleared
 // once the pattern is committed into form.include / form.exclude.
 let newIncludeText = "";
@@ -403,7 +410,7 @@ function deleteApprovalSection(container, ctx) {
   );
 }
 
-function serviceSection() {
+function serviceSection(container, ctx) {
   const path = meta?.path;
   const exists = meta?.exists;
   return el(
@@ -419,9 +426,28 @@ function serviceSection() {
       "div",
       { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" },
       "Saving writes this file only — the running daemon keeps its already-loaded config until " +
-        "it's restarted:",
+        "it's restarted.",
     ),
-    el("div", { class: "mono", style: "font-size:var(--fs-control);margin-top:4px" }, "systemctl --user restart proton-syncd"),
+    el(
+      "div",
+      { style: "display:flex;gap:10px;align-items:center;margin-top:8px" },
+      restartButton(container, ctx),
+      el("span", { class: "cmd-hint mono", style: "margin-top:0" }, "systemctl --user restart proton-syncd"),
+    ),
+  );
+}
+
+/// The restart button used by both the post-save prompt and the Service section.
+function restartButton(container, ctx, extraStyle = "") {
+  return el(
+    "button",
+    {
+      class: "btn primary",
+      style: extraStyle,
+      disabled: restarting,
+      onClick: () => handleRestart(container, ctx),
+    },
+    restarting ? "Restarting…" : "Restart daemon now",
   );
 }
 
@@ -437,23 +463,38 @@ function statusBanners(container, ctx) {
       el(
         "div",
         { class: "card", style: "margin-bottom:14px" },
-        el("div", { style: "font-weight:600" }, saveNotice.text),
-        saveNotice.rootChanged
+        el(
+          "div",
+          { style: "font-weight:600" },
+          restartDone ? "Daemon restarted — the new settings are live." : saveNotice.text,
+        ),
+        saveNotice.rootChanged && !restartDone
           ? el(
               "div",
               { class: "dir-destructive", style: "margin-top:8px;font-weight:600" },
               "You changed a sync root — restarting will re-bootstrap the index from scratch. Preview " +
-                "the dry-run plan on the Plan tab and confirm it looks right before you restart. " +
-                "Saving here doesn't restart the daemon, so this is the only checkpoint before that " +
-                "happens.",
+                "the dry-run plan on the Plan tab and confirm it looks right before you restart.",
             )
           : null,
-        saveNotice.rootChanged
+        restartError
           ? el(
-              "button",
-              { class: "btn", style: "margin-top:8px", onClick: () => ctx.actions.setTab("plan") },
-              "Preview plan",
+              "div",
+              { class: "dir-destructive", style: "margin-top:8px;font-weight:600" },
+              `Couldn't restart the daemon: ${restartError}`,
             )
+          : null,
+        !restartDone
+          ? el(
+              "div",
+              { style: "display:flex;gap:8px;margin-top:10px;align-items:center" },
+              saveNotice.rootChanged
+                ? el("button", { class: "btn", onClick: () => ctx.actions.setTab("plan") }, "Preview plan")
+                : null,
+              restartButton(container, ctx),
+            )
+          : null,
+        !restartDone
+          ? el("div", { class: "cmd-hint mono" }, "systemctl --user restart proton-syncd")
           : null,
       ),
     );
@@ -551,15 +592,34 @@ async function handleSave(container, ctx) {
     original = { ...original, ...update };
     if (meta) meta.exists = true;
     saveNotice = {
-      text: "Saved. Restart the daemon for changes to take effect: systemctl --user restart proton-syncd",
+      text: "Saved. Restart the daemon to apply the new settings.",
       rootChanged,
     };
+    // A fresh save supersedes any earlier restart outcome — the daemon is stale again.
+    restartDone = false;
+    restartError = null;
   } catch (e) {
     // Do NOT touch `original`/`form` here — the draft stays exactly as the user left it, and stays
     // dirty, so Save remains enabled and no edits are lost.
     saveError = messageOf(e);
   } finally {
     saving = false;
+    paint(container, ctx);
+  }
+}
+
+async function handleRestart(container, ctx) {
+  if (restarting) return;
+  restarting = true;
+  restartError = null;
+  paint(container, ctx);
+  try {
+    await ctx.api.restartService();
+    restartDone = true;
+  } catch (e) {
+    restartError = messageOf(e);
+  } finally {
+    restarting = false;
     paint(container, ctx);
   }
 }
@@ -605,7 +665,7 @@ function paint(container, ctx) {
     selectiveSyncSection(container, ctx),
     cliSection(container, ctx),
     deleteApprovalSection(container, ctx),
-    serviceSection(),
+    serviceSection(container, ctx),
     footerBar(container, ctx),
   ];
 

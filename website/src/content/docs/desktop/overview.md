@@ -17,7 +17,7 @@ daemon's real surface:
 
 | Source | Supplies |
 | --- | --- |
-| Control socket (`$XDG_RUNTIME_DIR/proton-sync.sock`) | Live status, history, pending deletions, and the `pause` / `resume` / `syncnow` / `approve` / `deny` commands. |
+| Control socket (`$XDG_RUNTIME_DIR/proton-sync.sock`) | Live status, history, pending deletions, and the `pause` / `resume` / `syncnow` / `approve` / `deny` / `shutdown` commands. |
 | Config file (`~/.config/proton-sync/proton-sync.toml`) | Everything in **Settings**. The app edits this file in place. |
 | `.proton-cloud` sidecars on disk | Conflict resolution — plain file operations, no new IPC verb needed. |
 | `proton-syncd --dry-run` | The **Plan preview** and onboarding review. |
