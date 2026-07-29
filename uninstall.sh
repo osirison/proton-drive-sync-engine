@@ -127,7 +127,17 @@ collect_targets() {
   }
 
   if [[ "${keep_config}" != "true" ]]; then
-    add "$(dirname -- "${config_path}")" "config directory"
+    # Only remove the whole *directory* when it is the dedicated one setup.sh creates
+    # ($XDG_CONFIG_HOME/proton-sync). For a custom --config path the parent is a shared directory
+    # (e.g. ~/.config), so `rm -rf`ing it would be catastrophic — delete just the config file there.
+    local config_default_dir config_dir
+    config_default_dir="$(config_home)/proton-sync"
+    config_dir="$(dirname -- "${config_path}")"
+    if [[ "${config_dir}" == "${config_default_dir}" ]]; then
+      add "${config_default_dir}" "config directory"
+    else
+      add "${config_path}" "config file"
+    fi
   fi
   add "$(desktop_launcher_path)" "desktop launcher"
   add "$(desktop_icon_path)" "desktop icon"

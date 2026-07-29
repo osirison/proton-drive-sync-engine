@@ -94,10 +94,13 @@ config_path_from_unit() {
   unit="$(unit_path)"
   [[ -f "${unit}" ]] || return 0
   # ExecStart="<bin>" --config "<cfg>"  — prefer the quoted form, fall back to a bare token.
+  # Best-effort: a unit with no matching ExecStart makes grep exit non-zero, which under
+  # `set -e` would abort the whole upgrade via the `detected_config="$(...)"` substitution. The
+  # trailing `|| true` yields empty output instead, and the caller falls back to the XDG default.
   grep -E '^ExecStart=' "${unit}" 2>/dev/null | head -n1 | sed -nE \
     -e 's/.*--config[[:space:]]+"([^"]+)".*/\1/p;t' \
     -e 's/.*--config[[:space:]]+([^[:space:]]+).*/\1/p' \
-    | head -n1
+    | head -n1 || true
 }
 
 gui_is_installed() {
