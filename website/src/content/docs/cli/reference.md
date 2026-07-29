@@ -40,6 +40,7 @@ Commands print a concise, git-style summary by default:
 $ proton-sync status
 ● syncing — 2 uploads, 1 download planned
   folders    ~/ProtonDrive ⇄ /Drive/RemoteFolder
+  activity   downloading Documents/takeout.tgz — 1.4 GiB so far · 3m12s [step 812/6377]
   last sync  2m ago
   changes    3 queued locally
 
@@ -53,6 +54,12 @@ The headline dot reflects the daemon state: **idle** (everything up to date), **
 pass), **paused**, or **error** (the last pass failed; the error is shown on its own line).
 Extra lines — queued changes, deletions awaiting approval, the last error — appear only
 when they apply.
+
+While a pass is in flight, the **activity** line shows what the daemon is doing *right
+now*: which remote folder a full-tree walk is listing (with a running count), which local
+file the scan is hashing, or which file is transferring — with live bytes-so-far for
+downloads, sampled from the staging directory while the transfer runs. The same line
+animates in place on the `syncnow` spinner.
 
 Pass `--json` to any command to get the daemon's raw response instead: `status --json`
 prints the full response object (below), `history --json` just the history array, and
@@ -110,6 +117,14 @@ and schedules nothing.
   summaries](/safety/dry-run/#the-output-shape) (upload/download/conflict/… counts).
 - `status_history` — the recent history array (also available via `history`).
 - `pending_deletions` — the items awaiting delete approval (also via `pending`).
+- `activity` — what the daemon is doing right now (`null` when idle): `{ phase, detail,
+  folders_listed, files_scanned, action_index, action_total, transfer, since_epoch_secs }`,
+  where `phase` is one of `scanning-local`, `listing-remote`, `fetching-events`,
+  `executing`, `committing`, and `transfer` (when a file is moving) carries `direction`,
+  `path`, `bytes_done` (downloads: sampled live from the staging directory), `bytes_total`
+  (uploads only — the remote listing exposes no size), and `started_epoch_secs`. Every
+  field is display-only and best-effort; new phases may appear, so render unknown tokens
+  rather than failing.
 
 ## Status history
 

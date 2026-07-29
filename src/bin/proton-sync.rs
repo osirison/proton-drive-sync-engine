@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use proton_drive_sync_engine::ipc::{
-    ControlCommand, ControlRequest, ControlResponse, PendingDeletion, send_request,
+    ControlCommand, ControlRequest, ControlResponse, PendingDeletion, SyncActivity, send_request,
 };
 use proton_drive_sync_engine::paths::default_socket_path;
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary};
@@ -286,6 +286,11 @@ fn print_status(response: &ControlResponse, style: &Style) {
             ),
         ));
     }
+    if response.syncing
+        && let Some(activity) = &response.activity
+    {
+        rows.push(("activity", describe_activity(activity)));
+    }
     rows.push((
         "last sync",
         match response.last_sync_epoch_secs {
@@ -438,6 +443,124 @@ fn summarize_plan(summary: &PlanSummary) -> String {
     }
 }
 
+/// One live line for the daemon's current activity (`status`, and the `syncnow` spinner).
+///
+/// ```text
+/// listing remote folders — 214 listed · in Companies/Acme
+/// scanning local files — 1,204 seen · at Photos/2024/IMG_1834.jpg
+/// downloading Companies/takeout.tgz — 1.4 GiB so far · 3m12s [step 812/6377]
+/// uploading docs/report.pdf — 4.2 MiB · 12s [step 5/6377]
+/// ```
+fn describe_activity(activity: &SyncActivity) -> String {
+    let step = match (activity.action_index, activity.action_total) {
+        (Some(index), Some(total)) => format!(" [step {index}/{total}]"),
+        _ => String::new(),
+    };
+    // Elapsed time in the current phase — the walk and scan can each run for many minutes,
+    // and the growing clock is what shows they are alive even between per-item updates.
+    let phase_elapsed = activity
+        .since_epoch_secs
+        .map(elapsed_label)
+        .unwrap_or_default();
+    match activity.phase.as_str() {
+        "scanning-local" => {
+            let seen = activity
+                .files_scanned
+                .map(|count| format!(" — {count} seen"))
+                .unwrap_or_default();
+            let at = activity
+                .detail
+                .as_ref()
+                .map(|path| format!(" · at {path}"))
+                .unwrap_or_default();
+            format!("scanning local files{seen}{at}{phase_elapsed}")
+        }
+        "listing-remote" => {
+            let listed = activity
+                .folders_listed
+                .map(|count| format!(" — {count} listed"))
+                .unwrap_or_default();
+            let along = activity
+                .detail
+                .as_ref()
+                .map(|path| format!(" · in {path}"))
+                .unwrap_or_default();
+            format!("listing remote folders{listed}{along}{phase_elapsed}")
+        }
+        "fetching-events" => "checking the remote change feed".to_owned(),
+        "committing" => "committing the sync index".to_owned(),
+        "executing" => {
+            if let Some(transfer) = &activity.transfer {
+                let verb = if transfer.direction == "upload" {
+                    "uploading"
+                } else {
+                    "downloading"
+                };
+                let progress = match (transfer.bytes_done, transfer.bytes_total) {
+                    (Some(done), Some(total)) if total > 0 => format!(
+                        " — {} / {} ({}%)",
+                        human_bytes(done),
+                        human_bytes(total),
+                        (done.min(total)) * 100 / total
+                    ),
+                    (Some(done), _) => format!(" — {} so far", human_bytes(done)),
+                    (None, Some(total)) => format!(" — {}", human_bytes(total)),
+                    (None, None) => String::new(),
+                };
+                let elapsed = elapsed_label(transfer.started_epoch_secs);
+                format!(
+                    "{verb} {}{progress}{elapsed}{step}",
+                    transfer.path.display()
+                )
+            } else {
+                let what = activity
+                    .detail
+                    .clone()
+                    .unwrap_or_else(|| "applying planned actions".to_owned());
+                format!("{what}{step}")
+            }
+        }
+        // Unknown phase from a newer daemon: show the raw token (plus detail) rather than hide it.
+        other => match &activity.detail {
+            Some(detail) => format!("{other} · {detail}"),
+            None => other.to_owned(),
+        },
+    }
+}
+
+/// ` · 3m12s` since `epoch_secs`, empty within the first couple of seconds.
+fn elapsed_label(epoch_secs: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let delta = now.saturating_sub(epoch_secs);
+    if delta < 3 {
+        String::new()
+    } else if delta < 60 {
+        format!(" · {delta}s")
+    } else if delta < 3600 {
+        format!(" · {}m{:02}s", delta / 60, delta % 60)
+    } else {
+        format!(" · {}h{:02}m", delta / 3600, (delta % 3600) / 60)
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 fn relative_time(epoch_secs: u64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -579,12 +702,23 @@ impl Spinner {
         }
         let glyph = self.frames[self.frame.get() % self.frames.len()];
         self.frame.set(self.frame.get() + 1);
-        let detail = status
-            .last_plan_summary
-            .as_ref()
-            .filter(|_| status.syncing)
-            .map(|summary| format!(" ({})", summarize_plan(summary)))
-            .unwrap_or_default();
+        // Prefer the live activity ("downloading X — 1.4 GiB so far") over the static plan
+        // summary, so a long transfer visibly makes progress instead of freezing the line.
+        let detail = if status.syncing {
+            status
+                .activity
+                .as_ref()
+                .map(|activity| format!(" — {}", describe_activity(activity)))
+                .or_else(|| {
+                    status
+                        .last_plan_summary
+                        .as_ref()
+                        .map(|summary| format!(" ({})", summarize_plan(summary)))
+                })
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         eprint!(
             "\r\x1b[2K{glyph} syncing… {}s{detail}",
             started.elapsed().as_secs()
@@ -620,4 +754,81 @@ fn print_pending(pending: &[PendingDeletion]) {
         println!("  {label}  {}  ({effect})", item.path.display());
     }
     println!("Approve with: proton-sync approve <path>   (or --all)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proton_drive_sync_engine::ipc::TransferActivity;
+
+    fn blank_activity(phase: &str) -> SyncActivity {
+        SyncActivity {
+            phase: phase.to_owned(),
+            detail: None,
+            folders_listed: None,
+            files_scanned: None,
+            action_index: None,
+            action_total: None,
+            transfer: None,
+            since_epoch_secs: None,
+        }
+    }
+
+    #[test]
+    fn describe_activity_renders_each_phase() {
+        let mut walk = blank_activity("listing-remote");
+        walk.folders_listed = Some(214);
+        walk.detail = Some("Companies/Acme".to_owned());
+        assert_eq!(
+            describe_activity(&walk),
+            "listing remote folders — 214 listed · in Companies/Acme"
+        );
+
+        let mut scan = blank_activity("scanning-local");
+        scan.files_scanned = Some(1204);
+        scan.detail = Some("Photos/IMG_1834.jpg".to_owned());
+        assert_eq!(
+            describe_activity(&scan),
+            "scanning local files — 1204 seen · at Photos/IMG_1834.jpg"
+        );
+
+        let mut transfer = blank_activity("executing");
+        transfer.action_index = Some(812);
+        transfer.action_total = Some(6377);
+        transfer.transfer = Some(TransferActivity {
+            direction: "download".to_owned(),
+            path: PathBuf::from("Companies/takeout.tgz"),
+            bytes_total: None,
+            bytes_done: Some(1_500_000_000),
+            // Far future → zero elapsed → no elapsed fragment, keeping the assertion stable.
+            started_epoch_secs: u64::MAX,
+        });
+        assert_eq!(
+            describe_activity(&transfer),
+            "downloading Companies/takeout.tgz — 1.4 GiB so far [step 812/6377]"
+        );
+
+        let mut plain = blank_activity("executing");
+        plain.detail = Some("creating local folder a/b".to_owned());
+        plain.action_index = Some(5);
+        plain.action_total = Some(10);
+        assert_eq!(
+            describe_activity(&plain),
+            "creating local folder a/b [step 5/10]"
+        );
+
+        // An unknown phase from a newer daemon renders its raw token instead of vanishing.
+        let mut unknown = blank_activity("defragmenting-flux");
+        unknown.detail = Some("x".to_owned());
+        assert_eq!(describe_activity(&unknown), "defragmenting-flux · x");
+    }
+
+    #[test]
+    fn human_bytes_scales_through_the_units() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(999), "999 B");
+        assert_eq!(human_bytes(2048), "2.0 KiB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(human_bytes(1_500_000_000), "1.4 GiB");
+    }
 }

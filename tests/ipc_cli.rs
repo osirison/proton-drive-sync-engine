@@ -286,6 +286,16 @@ mod unix_tests {
         assert_eq!(status["paused"], false);
         // The in-flight pass's plan is already published: one upload.
         assert_eq!(status["last_plan_summary"]["uploads"].as_u64(), Some(1));
+        // And the live activity names the wedged transfer itself — the whole point of the
+        // field is that a blocked pass still reports what it is doing right now.
+        assert_eq!(status["activity"]["phase"], "executing");
+        assert_eq!(status["activity"]["transfer"]["direction"], "upload");
+        assert_eq!(status["activity"]["transfer"]["path"], "blocking.txt");
+        assert_eq!(
+            status["activity"]["transfer"]["bytes_total"].as_u64(),
+            Some(b"content".len() as u64),
+            "an upload's total is its local file size"
+        );
 
         // A pause is accepted mid-sync too, and takes effect for the *next* pass.
         let paused = run_control(&socket_path, "pause");

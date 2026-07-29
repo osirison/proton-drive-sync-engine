@@ -4,15 +4,15 @@ use crate::index::{
     EntityKind, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
     delete_delete_approval, load_event_cursor, load_existing_index, load_index,
     local_directory_state, local_file_state, mark_modified, matching_delete_approval,
-    open_database, path_for_proton_id, purge_record, scan_local_entities_reusing_hashes,
-    store_event_cursor, upsert_delete_approval, upsert_record,
+    open_database, path_for_proton_id, purge_record, scan_local_entities_observed,
+    scan_local_entities_reusing_hashes, store_event_cursor, upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ControlCommand, ControlResponse, PendingDeletion, RunningConfigInfo, StatusHistoryEntry,
-    bind_listener, read_request, write_response,
+    SyncActivity, TransferActivity, bind_listener, read_request, write_response,
 };
 use crate::proton::{
-    CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity, RemoteListingStatus,
+    CommandPolicy, ProgressSink, ProtonClient, ProtonDriveClient, RemoteEntity, RemoteListingStatus,
 };
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
@@ -156,6 +156,21 @@ struct ControlShared {
     reconcile_seq: AtomicU64,
     /// The daemon core's most recently published status. The IPC task only ever reads it.
     snapshot: StdMutex<StatusSnapshot>,
+    /// Live activity for the in-flight pass (see [`SyncActivity`]). Written from inside the
+    /// blocking reconcile (phase changes, per-folder walk progress, per-file scan progress,
+    /// per-action execution) and read by the IPC task on every status reply, so clients see
+    /// motion while the main task is blocked. Separate from `snapshot` because it churns far
+    /// more often than a `publish_status` and needs none of the snapshot's contents.
+    activity: StdMutex<ActivityState>,
+}
+
+/// [`ControlShared::activity`]'s contents: the wire-visible activity plus the internal staging
+/// location of an in-flight download, kept out of the wire type so status replies can sample
+/// bytes-so-far without leaking scratch paths to clients.
+#[derive(Default)]
+struct ActivityState {
+    current: Option<SyncActivity>,
+    download_scratch: Option<PathBuf>,
 }
 
 /// Everything a status reply needs beyond the atomics above. Published by the daemon core via
@@ -188,11 +203,82 @@ impl ControlShared {
                 pending_deletions: Vec::new(),
                 config,
             }),
+            activity: StdMutex::new(ActivityState::default()),
         }
     }
 
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    /// Starts a new activity phase, replacing whatever was current (and dropping any stale
+    /// download staging location from the previous action).
+    fn begin_activity(&self, activity: SyncActivity) {
+        let mut state = self.activity.lock().expect("activity lock");
+        state.current = Some(activity);
+        state.download_scratch = None;
+    }
+
+    /// Applies `update` to the current activity, creating one with `phase` first if none is
+    /// current or the phase changed (which also resets `since_epoch_secs` to now, so elapsed
+    /// times are per-phase). Used by the high-frequency walk/scan callbacks.
+    fn update_activity(&self, phase: &str, update: impl FnOnce(&mut SyncActivity)) {
+        let mut state = self.activity.lock().expect("activity lock");
+        let same_phase = matches!(&state.current, Some(current) if current.phase == phase);
+        if !same_phase {
+            state.current = Some(new_activity(phase));
+        }
+        let current = state
+            .current
+            .as_mut()
+            .expect("activity was just ensured above");
+        update(current);
+    }
+
+    /// Records the staging directory of the in-flight download so status replies can sample
+    /// bytes-so-far while the CLI child is still running.
+    fn note_download_scratch(&self, scratch_dir: &Path) {
+        let mut state = self.activity.lock().expect("activity lock");
+        state.download_scratch = Some(scratch_dir.to_path_buf());
+    }
+
+    /// Clears all live activity (the pass is over; `syncing` is about to read false).
+    fn clear_activity(&self) {
+        let mut state = self.activity.lock().expect("activity lock");
+        *state = ActivityState::default();
+    }
+
+    /// The in-flight download's staging directory, if any (for byte sampling).
+    fn download_scratch_path(&self) -> Option<PathBuf> {
+        self.activity
+            .lock()
+            .expect("activity lock")
+            .download_scratch
+            .clone()
+    }
+
+    /// Snapshot of the current activity for a status reply. Purely in-memory — a download's
+    /// live `bytes_done` is filled in separately by [`Self::response_with_sampled_activity`],
+    /// so building a plain reply never touches the filesystem.
+    fn activity_for_response(&self) -> Option<SyncActivity> {
+        self.activity.lock().expect("activity lock").current.clone()
+    }
+
+    /// [`Self::response`] plus the one live measurement a reply can carry: a download's
+    /// bytes-so-far, sampled from its staging directory with async fs calls. Only the `status`
+    /// command pays for this — the IPC handler's "answer from the snapshot, never by running
+    /// work on this task" contract stays intact for everything else, and the sampling itself
+    /// never blocks the async runtime.
+    async fn response_with_sampled_activity(&self, message: &str) -> ControlResponse {
+        let mut response = self.response(message);
+        if let Some(activity) = &mut response.activity
+            && let Some(transfer) = &mut activity.transfer
+            && transfer.direction == "download"
+            && let Some(scratch_dir) = self.download_scratch_path()
+        {
+            transfer.bytes_done = staged_bytes(&scratch_dir).await;
+        }
+        response
     }
 
     fn is_syncing(&self) -> bool {
@@ -227,6 +313,7 @@ impl ControlShared {
             status_history: snapshot.status_history,
             pending_deletions: snapshot.pending_deletions,
             config: Some(snapshot.config),
+            activity: self.activity_for_response(),
         }
     }
 
@@ -245,6 +332,89 @@ impl ControlShared {
             status_history_entries: snapshot.status_history.len(),
             pending_deletions: snapshot.pending_deletions,
         }
+    }
+}
+
+/// Activity phase tokens (see [`SyncActivity::phase`]). Wire-visible: renamed values break
+/// older clients' phase-specific rendering (they fall back to showing the raw token).
+const PHASE_SCANNING_LOCAL: &str = "scanning-local";
+const PHASE_LISTING_REMOTE: &str = "listing-remote";
+const PHASE_FETCHING_EVENTS: &str = "fetching-events";
+const PHASE_EXECUTING: &str = "executing";
+const PHASE_COMMITTING: &str = "committing";
+
+/// A blank [`SyncActivity`] for `phase`, stamped with the current time.
+fn new_activity(phase: &str) -> SyncActivity {
+    SyncActivity {
+        phase: phase.to_owned(),
+        detail: None,
+        folders_listed: None,
+        files_scanned: None,
+        action_index: None,
+        action_total: None,
+        transfer: None,
+        since_epoch_secs: Some(current_epoch_secs()),
+    }
+}
+
+/// Human verb for an executing action's activity line (`"downloading a/b.txt"`).
+fn activity_verb(action: &SyncAction) -> &'static str {
+    match action {
+        SyncAction::Upload => "uploading",
+        SyncAction::Download => "downloading",
+        SyncAction::CreateRemoteDirectory => "creating remote folder",
+        SyncAction::CreateLocalDirectory => "creating local folder",
+        SyncAction::MoveLocal => "moving locally",
+        SyncAction::MoveRemote => "moving remotely",
+        SyncAction::AutoLink => "linking",
+        SyncAction::Conflict => "resolving conflict",
+        SyncAction::TypeConflict => "resolving type conflict",
+        SyncAction::RemoteDelete => "deleting remotely",
+        SyncAction::LocalDelete => "deleting locally",
+        SyncAction::Purge => "clearing index entry",
+        SyncAction::SkipUnsupported => "skipping unsupported",
+    }
+}
+
+/// Sum of the file sizes currently inside a download staging directory (the CLI downloads a
+/// single file into it, so this is that file's bytes-so-far). Async so the IPC task never
+/// blocks on filesystem calls against a directory under active write load. Best-effort
+/// display data: any error — the directory already renamed away, a race with the move — is
+/// just `None`.
+async fn staged_bytes(scratch_dir: &Path) -> Option<u64> {
+    let mut entries = tokio::fs::read_dir(scratch_dir).await.ok()?;
+    let mut total = 0u64;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if let Ok(metadata) = entry.metadata().await
+            && metadata.is_file()
+        {
+            total += metadata.len();
+        }
+    }
+    Some(total)
+}
+
+/// The daemon's [`ProgressSink`]: forwards the concrete client's live callbacks into
+/// [`ControlShared`] so every status reply reflects them. Installed in [`Daemon::run`].
+struct SharedProgressSink {
+    shared: Arc<ControlShared>,
+}
+
+impl ProgressSink for SharedProgressSink {
+    fn remote_folder_listed(&self, folders_listed: u64, directory: &Path) {
+        self.shared
+            .update_activity(PHASE_LISTING_REMOTE, |activity| {
+                activity.folders_listed = Some(folders_listed);
+                activity.detail = Some(if directory.as_os_str().is_empty() {
+                    "/".to_owned()
+                } else {
+                    directory.display().to_string()
+                });
+            });
+    }
+
+    fn download_staging(&self, scratch_dir: &Path) {
+        self.shared.note_download_scratch(scratch_dir);
     }
 }
 
@@ -400,6 +570,13 @@ impl<C: ProtonClient> Daemon<C> {
         );
         let cancel_flag = Arc::new(AtomicBool::new(false));
         self.proton.install_cancel_flag(Arc::clone(&cancel_flag));
+        // Live-progress plumbing: the client reports per-folder walk progress and download
+        // staging locations straight into `ControlShared`, so status replies stay alive while
+        // this task is blocked inside a reconcile.
+        self.proton
+            .install_progress_sink(Arc::new(SharedProgressSink {
+                shared: Arc::clone(&self.shared),
+            }));
         // Runs independently of the select! loop below so it can still observe a
         // shutdown signal and flip the flag while the main task is blocked inside
         // `reconcile()`'s synchronous `block_in_place` call, letting an in-flight
@@ -624,6 +801,8 @@ impl<C: ProtonClient> Daemon<C> {
         self.shared.syncing.store(true, Ordering::SeqCst);
         let result = tokio::task::block_in_place(|| self.reconcile_blocking());
         self.shared.syncing.store(false, Ordering::SeqCst);
+        // The pass is over either way; never let a stale "downloading X" outlive it.
+        self.shared.clear_activity();
         result
     }
 
@@ -708,6 +887,8 @@ impl<C: ProtonClient> Daemon<C> {
         };
 
         // Fetch the delta (paginating) *before* the local scan so a fully idle cycle does no work.
+        self.shared
+            .begin_activity(new_activity(PHASE_FETCHING_EVENTS));
         let delta = match self.fetch_event_delta(&volume, &cursor.last_event_id) {
             Ok(delta) => delta,
             Err(error) => {
@@ -748,11 +929,7 @@ impl<C: ProtonClient> Daemon<C> {
             return Ok(IncrementalOutcome::Idle);
         }
 
-        let local_entities = scan_local_entities_reusing_hashes(
-            &self.config.local_root,
-            &self.scan_options,
-            base_records,
-        )?;
+        let local_entities = self.scan_local_entities_reporting_progress(base_records)?;
         let local_files = local_files_from_entities(&local_entities);
         let base_index = filter_base_index(base_records.clone(), &self.scan_options);
 
@@ -828,6 +1005,34 @@ impl<C: ProtonClient> Daemon<C> {
         ))
     }
 
+    /// The daemon's local scan, surfacing per-file progress into [`ControlShared`] so a slow
+    /// pass over large files (SHA-1 hashing is the cost) reads as alive in status replies.
+    fn scan_local_entities_reporting_progress(
+        &self,
+        base_records: &HashMap<PathBuf, FileRecord>,
+    ) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
+        self.shared
+            .begin_activity(new_activity(PHASE_SCANNING_LOCAL));
+        let observer = |files_seen: u64, path: &Path| {
+            let display = path
+                .strip_prefix(&self.config.local_root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            self.shared
+                .update_activity(PHASE_SCANNING_LOCAL, |activity| {
+                    activity.files_scanned = Some(files_seen);
+                    activity.detail = Some(display);
+                });
+        };
+        scan_local_entities_observed(
+            &self.config.local_root,
+            &self.scan_options,
+            base_records,
+            Some(&observer),
+        )
+    }
+
     /// Full-tree snapshot reconcile — the original behavior, plus (when event-driven) capturing
     /// and persisting the replay cursor `C0`. Resets the periodic-resync counter.
     fn bootstrap_reconcile(&mut self, base_records: HashMap<PathBuf, FileRecord>) -> AppResult<()> {
@@ -837,12 +1042,12 @@ impl<C: ProtonClient> Daemon<C> {
         // the walk, and the mandatory periodic resync bounds that one-time gap.
         let pre_snapshot_cursor = self.capture_pre_snapshot_cursor(&base_records);
 
-        let local_entities = scan_local_entities_reusing_hashes(
-            &self.config.local_root,
-            &self.scan_options,
-            &base_records,
-        )?;
+        let local_entities = self.scan_local_entities_reporting_progress(&base_records)?;
         let local_files = local_files_from_entities(&local_entities);
+        // The client's progress sink updates the per-folder count/path from inside the walk;
+        // this just flips the phase so status shows "listing remote" the moment it starts.
+        self.shared
+            .begin_activity(new_activity(PHASE_LISTING_REMOTE));
         let (remote_entities, remote_root_missing) =
             load_remote_entities(&self.proton, &self.config.remote_root, &self.scan_options)?;
         let mut base_index = filter_base_index(base_records, &self.scan_options);
@@ -993,9 +1198,26 @@ impl<C: ProtonClient> Daemon<C> {
             .filter(|action| matches!(action.action, SyncAction::Upload | SyncAction::Download))
             .count();
         let mut transfer_index = 0usize;
+        let action_total = plan.len() as u64;
 
-        for action in &plan {
+        for (action_number, action) in plan.iter().enumerate() {
             debug!(path = %action.path.display(), action = ?action.action, "executing sync action");
+            self.shared.begin_activity(SyncActivity {
+                // Root-level actions have an empty relative path; skip it rather than render
+                // a trailing space ("creating remote folder ").
+                detail: Some(if action.path.as_os_str().is_empty() {
+                    activity_verb(&action.action).to_owned()
+                } else {
+                    format!(
+                        "{} {}",
+                        activity_verb(&action.action),
+                        action.path.display()
+                    )
+                }),
+                action_index: Some(action_number as u64 + 1),
+                action_total: Some(action_total),
+                ..new_activity(PHASE_EXECUTING)
+            });
             match action.action {
                 SyncAction::Upload => {
                     if let Some(local) = local_files.get(&action.path) {
@@ -1007,6 +1229,15 @@ impl<C: ProtonClient> Daemon<C> {
                                 .ensure_directory(&self.config.remote_root, parent)?;
                         }
                         transfer_index += 1;
+                        self.shared.update_activity(PHASE_EXECUTING, |activity| {
+                            activity.transfer = Some(TransferActivity {
+                                direction: "upload".to_owned(),
+                                path: action.path.clone(),
+                                bytes_total: Some(local.file_size),
+                                bytes_done: None,
+                                started_epoch_secs: current_epoch_secs(),
+                            });
+                        });
                         let spinner = begin_transfer_spinner(
                             interactive_progress,
                             transfer_index,
@@ -1068,6 +1299,18 @@ impl<C: ProtonClient> Daemon<C> {
                     };
                     ensure_parent_directory(&destination)?;
                     transfer_index += 1;
+                    // `bytes_total` stays unknown (the remote listing carries no size), but
+                    // `bytes_done` is sampled live from the staging directory the client
+                    // reports via the progress sink, so status still shows a growing count.
+                    self.shared.update_activity(PHASE_EXECUTING, |activity| {
+                        activity.transfer = Some(TransferActivity {
+                            direction: "download".to_owned(),
+                            path: action.path.clone(),
+                            bytes_total: None,
+                            bytes_done: None,
+                            started_epoch_secs: current_epoch_secs(),
+                        });
+                    });
                     let spinner = begin_transfer_spinner(
                         interactive_progress,
                         transfer_index,
@@ -1357,6 +1600,7 @@ impl<C: ProtonClient> Daemon<C> {
             }
         }
 
+        self.shared.begin_activity(new_activity(PHASE_COMMITTING));
         let transaction = self.connection.transaction()?;
         for mutation in &index_mutations {
             mutation.apply(&transaction)?;
@@ -1636,7 +1880,7 @@ async fn handle_control_connection(
     };
     debug!(command = ?request.command, "handling control request");
     let response = match request.command {
-        ControlCommand::Status => shared.response("daemon status"),
+        ControlCommand::Status => shared.response_with_sampled_activity("daemon status").await,
         ControlCommand::Pause => {
             shared.paused.store(true, Ordering::SeqCst);
             info!("sync paused");
@@ -4614,6 +4858,124 @@ mod tests {
 
         shared.paused.store(false, Ordering::SeqCst);
         assert_eq!(shared.response("m").status, "running");
+    }
+
+    fn activity_test_shared() -> ControlShared {
+        ControlShared::new(RunningConfigInfo {
+            local_root: PathBuf::from("/local"),
+            remote_root: PathBuf::from("/remote"),
+            db_path: PathBuf::from("/db"),
+        })
+    }
+
+    #[test]
+    fn progress_sink_walk_updates_surface_in_status_replies() {
+        let shared = Arc::new(activity_test_shared());
+        let sink = SharedProgressSink {
+            shared: Arc::clone(&shared),
+        };
+
+        sink.remote_folder_listed(3, Path::new("Companies/Acme"));
+        let activity = shared.response("m").activity.expect("walk activity");
+        assert_eq!(activity.phase, PHASE_LISTING_REMOTE);
+        assert_eq!(activity.folders_listed, Some(3));
+        assert_eq!(activity.detail.as_deref(), Some("Companies/Acme"));
+        let first_since = activity.since_epoch_secs;
+
+        // Further folders update the same activity (phase start time stays put)…
+        sink.remote_folder_listed(4, Path::new(""));
+        let activity = shared.response("m").activity.expect("walk activity");
+        assert_eq!(activity.folders_listed, Some(4));
+        assert_eq!(
+            activity.detail.as_deref(),
+            Some("/"),
+            "the remote root itself renders as \"/\", not an empty string"
+        );
+        assert_eq!(
+            activity.since_epoch_secs, first_since,
+            "elapsed time is per-phase, not per-folder"
+        );
+
+        // …and the end of the pass clears everything.
+        shared.clear_activity();
+        assert!(shared.response("m").activity.is_none());
+    }
+
+    #[tokio::test]
+    async fn download_bytes_are_sampled_live_from_the_staging_directory() {
+        let shared = activity_test_shared();
+        let scratch = tempdir().expect("scratch dir");
+        fs::write(scratch.path().join("partial.bin"), vec![0u8; 2048]).expect("partial file");
+
+        shared.begin_activity(SyncActivity {
+            transfer: Some(TransferActivity {
+                direction: "download".to_owned(),
+                path: PathBuf::from("a/b.bin"),
+                bytes_total: None,
+                bytes_done: None,
+                started_epoch_secs: 0,
+            }),
+            ..new_activity(PHASE_EXECUTING)
+        });
+        shared.note_download_scratch(scratch.path());
+
+        // The plain (in-memory) reply never touches the filesystem…
+        let transfer = shared
+            .response("m")
+            .activity
+            .expect("activity")
+            .transfer
+            .expect("transfer");
+        assert_eq!(
+            transfer.bytes_done, None,
+            "a plain reply must not sample the filesystem"
+        );
+
+        // …while the status reply samples the staging directory at reply time.
+        let transfer = shared
+            .response_with_sampled_activity("m")
+            .await
+            .activity
+            .expect("activity")
+            .transfer
+            .expect("transfer");
+        assert_eq!(transfer.bytes_done, Some(2048));
+
+        // More bytes staged → the next status reply sees the larger number, with no
+        // intervening daemon-side update: sampling happens at reply time.
+        fs::write(scratch.path().join("partial.bin"), vec![0u8; 6144]).expect("grow file");
+        let transfer = shared
+            .response_with_sampled_activity("m")
+            .await
+            .activity
+            .expect("activity")
+            .transfer
+            .expect("transfer");
+        assert_eq!(transfer.bytes_done, Some(6144));
+
+        // Beginning the next action drops the stale staging dir: a following upload must
+        // never report the previous download's bytes.
+        shared.begin_activity(SyncActivity {
+            transfer: Some(TransferActivity {
+                direction: "upload".to_owned(),
+                path: PathBuf::from("c/d.bin"),
+                bytes_total: Some(10),
+                bytes_done: None,
+                started_epoch_secs: 0,
+            }),
+            ..new_activity(PHASE_EXECUTING)
+        });
+        let transfer = shared
+            .response_with_sampled_activity("m")
+            .await
+            .activity
+            .expect("activity")
+            .transfer
+            .expect("transfer");
+        assert_eq!(
+            transfer.bytes_done, None,
+            "an upload's progress is unobservable and must not inherit a stale scratch dir"
+        );
     }
 
     #[tokio::test]

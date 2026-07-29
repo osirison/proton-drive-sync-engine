@@ -58,6 +58,60 @@ pub struct RunningConfigInfo {
     pub db_path: PathBuf,
 }
 
+/// Live "what is the daemon doing right now", surfaced while `syncing` is true so clients can
+/// render more than a spinner during a long pass (a multi-minute remote walk, a multi-GB
+/// transfer). Purely informational display data: every field is best-effort, absence means
+/// "unknown or not applicable", and nothing here participates in any sync decision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncActivity {
+    /// Coarse machine-readable step: `scanning-local`, `listing-remote`, `fetching-events`,
+    /// `executing`, or `committing`. Clients should render an unrecognized token verbatim
+    /// rather than fail, so new phases can be added without a lockstep upgrade.
+    pub phase: String,
+    /// Human-readable fragment locating the phase: the folder currently being listed, the file
+    /// currently being scanned, or the action currently executing.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// Remote folders listed so far during a `listing-remote` walk.
+    #[serde(default)]
+    pub folders_listed: Option<u64>,
+    /// Local files visited so far during a `scanning-local` pass.
+    #[serde(default)]
+    pub files_scanned: Option<u64>,
+    /// 1-based position of the currently executing action within the plan (`executing`).
+    #[serde(default)]
+    pub action_index: Option<u64>,
+    /// Total number of planned actions this pass (`executing`).
+    #[serde(default)]
+    pub action_total: Option<u64>,
+    /// The in-flight file transfer, when the executing action is an upload or download.
+    #[serde(default)]
+    pub transfer: Option<TransferActivity>,
+    /// When this phase began (unix seconds), for elapsed-time rendering.
+    #[serde(default)]
+    pub since_epoch_secs: Option<u64>,
+}
+
+/// A file transfer in flight. For downloads, `bytes_done` is sampled live from the staging
+/// scratch directory each time a status reply is built, so a client polling status watches the
+/// number grow while the CLI child is still running.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransferActivity {
+    /// `"upload"` or `"download"`.
+    pub direction: String,
+    /// Root-relative path of the file being transferred.
+    pub path: PathBuf,
+    /// Total size in bytes when known (uploads: the local file's size; downloads: unknown —
+    /// the remote listing carries no size).
+    #[serde(default)]
+    pub bytes_total: Option<u64>,
+    /// Bytes transferred so far when observable (downloads only; see the type docs).
+    #[serde(default)]
+    pub bytes_done: Option<u64>,
+    /// When this transfer began (unix seconds).
+    pub started_epoch_secs: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ControlResponse {
     pub status: String,
@@ -88,6 +142,10 @@ pub struct ControlResponse {
     /// replies from older daemons parseable.
     #[serde(default)]
     pub config: Option<RunningConfigInfo>,
+    /// What the daemon is doing right now (see [`SyncActivity`]); `None` when idle or from an
+    /// older daemon (`#[serde(default)]` keeps both directions of the wire compatible).
+    #[serde(default)]
+    pub activity: Option<SyncActivity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,6 +244,59 @@ pub async fn write_response(stream: &mut UnixStream, response: &ControlResponse)
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn control_response_without_activity_still_parses() {
+        // A reply from an older daemon carries no `activity` field; a newer client must parse
+        // it (as None) rather than error — the same guarantee the other `#[serde(default)]`
+        // fields give.
+        let legacy = r#"{
+            "status": "running",
+            "paused": false,
+            "pending_changes": 0,
+            "message": "daemon status",
+            "last_sync_epoch_secs": null,
+            "last_error": null,
+            "last_plan_summary": null,
+            "last_successful_sync_summary": null,
+            "status_history": []
+        }"#;
+        let response: ControlResponse =
+            serde_json::from_str(legacy).expect("legacy reply must parse");
+        assert!(response.activity.is_none());
+        assert!(!response.syncing);
+    }
+
+    #[test]
+    fn sync_activity_round_trips_and_partial_json_defaults() {
+        let activity = SyncActivity {
+            phase: "executing".to_owned(),
+            detail: Some("downloading a/b.bin".to_owned()),
+            folders_listed: None,
+            files_scanned: None,
+            action_index: Some(3),
+            action_total: Some(10),
+            transfer: Some(TransferActivity {
+                direction: "download".to_owned(),
+                path: PathBuf::from("a/b.bin"),
+                bytes_total: None,
+                bytes_done: Some(1024),
+                started_epoch_secs: 5,
+            }),
+            since_epoch_secs: Some(4),
+        };
+        let json = serde_json::to_string(&activity).expect("serialize");
+        let back: SyncActivity = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, activity);
+
+        // A minimal activity (just the phase) parses, every optional field defaulting — so
+        // phases can grow fields without breaking older clients.
+        let minimal: SyncActivity =
+            serde_json::from_str(r#"{"phase": "listing-remote"}"#).expect("minimal activity");
+        assert_eq!(minimal.phase, "listing-remote");
+        assert!(minimal.transfer.is_none());
+        assert!(minimal.folders_listed.is_none());
+    }
 
     #[tokio::test]
     async fn bind_listener_restricts_socket_permissions() {
