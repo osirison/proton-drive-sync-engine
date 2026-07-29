@@ -34,7 +34,8 @@ struct Cli {
 enum Commands {
     /// Show what the sync daemon is doing right now.
     Status,
-    /// Show the recent sync history (newest first).
+    /// Show the recent sync history, newest first. (--json prints the daemon's raw
+    /// status_history array instead, which is stored oldest-first.)
     History,
     /// Pause syncing (edits are still tracked while paused).
     Pause,
@@ -319,6 +320,15 @@ fn print_status(response: &ControlResponse, style: &Style) {
 
 /// The status headline: a coloured state dot, the state word, and a one-line detail.
 fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str, String) {
+    if response.paused && response.syncing {
+        // A pause accepted mid-pass: the in-flight pass still runs to completion, then the
+        // daemon holds. Saying "paused — stopped" here would be untrue while transfers run.
+        return (
+            style.yellow("●"),
+            "pausing",
+            "finishing the current pass, then holding".to_owned(),
+        );
+    }
     if response.paused {
         return (
             style.yellow("●"),

@@ -204,10 +204,13 @@ impl ControlShared {
         let syncing = self.is_syncing();
         let snapshot = self.snapshot.lock().expect("control snapshot lock").clone();
         ControlResponse {
-            status: if paused {
-                "paused"
-            } else if syncing {
+            // The string reports live *activity*, so an in-flight pass stays "syncing" even
+            // when a pause was just accepted mid-pass (the pass still runs to completion);
+            // the `paused` boolean carries the standing request either way.
+            status: if syncing {
                 "syncing"
+            } else if paused {
+                "paused"
             } else {
                 "running"
             }
@@ -4587,6 +4590,30 @@ mod tests {
                 .is_none(),
             "downloaded conflict sidecars must not be indexed as sync data"
         );
+    }
+
+    #[test]
+    fn status_string_reports_syncing_even_while_a_pause_is_requested() {
+        // A pause accepted mid-pass does not stop the in-flight pass; the status string must
+        // keep reporting the live activity ("syncing") while the `paused` boolean carries the
+        // standing request. Once the pass ends, the string becomes "paused".
+        let shared = ControlShared::new(RunningConfigInfo {
+            local_root: PathBuf::from("/local"),
+            remote_root: PathBuf::from("/remote"),
+            db_path: PathBuf::from("/db"),
+        });
+        shared.syncing.store(true, Ordering::SeqCst);
+        shared.paused.store(true, Ordering::SeqCst);
+        let mid_pass = shared.response("m");
+        assert_eq!(mid_pass.status, "syncing");
+        assert!(mid_pass.paused);
+        assert!(mid_pass.syncing);
+
+        shared.syncing.store(false, Ordering::SeqCst);
+        assert_eq!(shared.response("m").status, "paused");
+
+        shared.paused.store(false, Ordering::SeqCst);
+        assert_eq!(shared.response("m").status, "running");
     }
 
     #[tokio::test]

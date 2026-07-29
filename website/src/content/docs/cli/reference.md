@@ -56,7 +56,9 @@ when they apply.
 
 Pass `--json` to any command to get the daemon's raw response instead: `status --json`
 prints the full response object (below), `history --json` just the history array, and
-`pending --json` the pending-deletions array. Scripts that consumed the old JSON output
+`pending --json` the pending-deletions array. `--json` output is always the daemon's data
+verbatim — so `history --json` keeps the stored **oldest-first** order, while the
+human-readable `history` renders newest first. Scripts that consumed the old JSON output
 should add the flag.
 
 ## `syncnow`
@@ -95,7 +97,10 @@ and schedules nothing.
 ```
 
 - `status` / `paused` / `pending_changes` — the live daemon state (`running`, `syncing`, or
-  `paused`) and the number of changes waiting to reconcile.
+  `paused`) and the number of changes waiting to reconcile. The string reports live
+  activity: it stays `syncing` while a pass is in flight even if a pause was just accepted
+  mid-pass (`paused` carries the standing request; the CLI shows this combination as
+  "pausing").
 - `syncing` — `true` while a reconcile pass is actually in flight.
 - `reconcile_seq` — count of completed passes since the daemon started; clients that
   scheduled a sync poll until it advances to know their pass finished.
