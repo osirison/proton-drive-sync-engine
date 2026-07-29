@@ -63,13 +63,14 @@ The control CLI talks to the running daemon over its Unix socket:
 ```bash
 proton-sync status      # is it running? what did it just do?
 proton-sync history     # recent sync summaries and errors
-proton-sync syncnow     # reconcile right now
+proton-sync syncnow     # sync now and watch it finish
 proton-sync pause       # stop automatic + manual sync
 proton-sync resume      # resume
 ```
 
-`status`, `pause`, `resume`, and `syncnow` print the full JSON status object, so scripts
-can consume them directly. See the [CLI reference](/cli/reference/) for every command.
+Output is a concise human-readable summary (the daemon answers instantly, even mid-sync);
+add `--json` to any command to get the raw response object for scripts. See the
+[CLI reference](/cli/reference/) for every command.
 
 ## 5. Approve your first deletion
 
