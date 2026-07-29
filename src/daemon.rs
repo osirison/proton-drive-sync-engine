@@ -248,15 +248,6 @@ impl ControlShared {
         *state = ActivityState::default();
     }
 
-    /// The in-flight download's staging directory, if any (for byte sampling).
-    fn download_scratch_path(&self) -> Option<PathBuf> {
-        self.activity
-            .lock()
-            .expect("activity lock")
-            .download_scratch
-            .clone()
-    }
-
     /// Snapshot of the current activity for a status reply. Purely in-memory — a download's
     /// live `bytes_done` is filled in separately by [`Self::response_with_sampled_activity`],
     /// so building a plain reply never touches the filesystem.
@@ -271,10 +262,23 @@ impl ControlShared {
     /// never blocks the async runtime.
     async fn response_with_sampled_activity(&self, message: &str) -> ControlResponse {
         let mut response = self.response(message);
+        if !response.syncing {
+            return response;
+        }
+        // Take the activity and the staging directory under ONE lock acquisition, so the
+        // sampled bytes always belong to the transfer being reported. Re-reading them
+        // separately (or reusing `response`'s own activity, cloned under an earlier
+        // acquisition) could pair action X's transfer with action Y's staging directory when
+        // a poll lands exactly on an action boundary.
+        let (current, scratch) = {
+            let state = self.activity.lock().expect("activity lock");
+            (state.current.clone(), state.download_scratch.clone())
+        };
+        response.activity = current;
         if let Some(activity) = &mut response.activity
             && let Some(transfer) = &mut activity.transfer
             && transfer.direction == "download"
-            && let Some(scratch_dir) = self.download_scratch_path()
+            && let Some(scratch_dir) = scratch
         {
             transfer.bytes_done = staged_bytes(&scratch_dir).await;
         }
