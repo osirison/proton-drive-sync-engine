@@ -41,6 +41,12 @@ defaults to `$XDG_RUNTIME_DIR` (with an OS temp-directory fallback) — see [sta
 disk](/concepts/architecture/#state-on-disk). Keys also accept **hyphenated aliases** (e.g.
 `local-root`), and **unknown keys are rejected** so typos fail fast.
 
+Local filesystem paths (`local_root`, `db_path`, `socket_path`, `lockfile_path`,
+`proton_cli`) expand a leading `~` to your home directory, so `local_root =
+"~/ProtonDrive"` works the way it would in a shell. The `~user` form is rejected with an
+error. `remote_root` is a Drive-side path, so `~` has no meaning there and is not
+expanded.
+
 :::note[Config-path convention]
 The daemon itself has no default config path — you always pass `--config`. The **desktop
 app** and the packaged systemd unit adopt the convention
