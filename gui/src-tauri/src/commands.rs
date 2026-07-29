@@ -494,6 +494,60 @@ pub fn start_service(state: Paths) -> Result<String, String> {
     start_service_impl(&config_path)
 }
 
+/// Restart the sync daemon so a saved config change takes effect. Works no matter how the daemon
+/// was launched: ask it to exit gracefully over IPC (its `shutdown` control command), wait for
+/// the control socket to go quiet, then start it again through the shared start logic (systemd
+/// unit first, direct spawn against the GUI config as fallback). The unit ships
+/// `Restart=on-failure`, so systemd does not race us by respawning the clean exit itself.
+pub(crate) fn restart_service_impl(
+    config_path: &std::path::Path,
+    socket_path: &std::path::Path,
+) -> Result<String, String> {
+    use std::time::{Duration, Instant};
+
+    let was_running =
+        ipc::command(socket_path, ControlCommand::Status, ipc::DEFAULT_TIMEOUT).is_ok();
+    if was_running {
+        // Best-effort: if the shutdown call itself errors the daemon may already be exiting;
+        // the socket probe below is the authoritative "has it stopped" signal.
+        let _ = ipc::command(socket_path, ControlCommand::Shutdown, ipc::DEFAULT_TIMEOUT);
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            if ipc::command(socket_path, ControlCommand::Status, Duration::from_secs(1)).is_err() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    "the daemon did not stop within 8s — restart it manually with: \
+                     systemctl --user restart proton-syncd"
+                        .to_string(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    start_service_impl(config_path).map(|detail| {
+        if was_running {
+            format!("daemon restarted ({detail})")
+        } else {
+            format!("daemon was not running; started it ({detail})")
+        }
+    })
+}
+
+/// Async so the up-to-~10s stop/start sequence never runs on the UI thread; the blocking work
+/// itself happens on a runtime blocking thread.
+#[tauri::command]
+pub async fn restart_service(state: Paths<'_>) -> Result<String, String> {
+    let (config_path, socket_path) = {
+        let paths = state.lock().unwrap();
+        (paths.config_path.clone(), paths.socket_path.clone())
+    };
+    tauri::async_runtime::spawn_blocking(move || restart_service_impl(&config_path, &socket_path))
+        .await
+        .map_err(|error| format!("restart task failed: {error}"))?
+}
+
 #[tauri::command]
 pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
     app.notification()

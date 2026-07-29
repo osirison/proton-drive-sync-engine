@@ -68,6 +68,9 @@ export function ledgerCategory(action) {
 
 const dirClass = { upload: "dir-upload", download: "dir-download", destructive: "dir-destructive", conflict: "dir-upload", neutral: "dir-neutral" };
 
+/** Duration of the `hexspin` keyframe animation in components.css — keep the two in sync. */
+const HEXSPIN_SECONDS = 3;
+
 /** The hexagon status widget. `opts`: { pending, uploading, downloading, paused, idle }. */
 export function renderHexagon(opts = {}) {
   const { pending = null, uploading = false, downloading = false, paused = false, idle = false } = opts;
@@ -84,6 +87,14 @@ export function renderHexagon(opts = {}) {
       ${showArcs ? '<path class="arc-down" d="M 88 48 A 40 40 0 0 1 8 48"></path>' : ""}
     </svg>
     <div class="center">${dash(pending)}</div>`;
+  if (wrap.classList.contains("is-spinning")) {
+    // Phase-lock the rotation to the wall clock. The shell rebuilds the screen (recreating this
+    // SVG) on every status poll, which restarts a CSS animation from 0° — the spinner visibly
+    // jerked back and never completed a rotation. A negative delay derived from a shared clock
+    // makes the recreated element resume exactly where the previous one was.
+    wrap.querySelector("svg").style.animationDelay =
+      `-${(performance.now() / 1000) % HEXSPIN_SECONDS}s`;
+  }
   return wrap;
 }
 

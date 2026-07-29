@@ -79,6 +79,8 @@
   opacity: 0.35;
 }
 .hexagon.is-spinning svg {
+  /* Duration mirrored by HEXSPIN_SECONDS in components.js, which phase-locks the animation
+     across re-renders via a negative animation-delay. */
   animation: hexspin 3s linear infinite;
   transform-origin: 50% 50%;
 }

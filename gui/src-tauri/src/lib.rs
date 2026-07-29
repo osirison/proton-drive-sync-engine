@@ -29,6 +29,7 @@ pub fn run() {
             commands::read_conflict_pair,
             commands::path_sync_status,
             commands::start_service,
+            commands::restart_service,
             commands::notify,
         ])
         .setup(|app| {

@@ -8,8 +8,9 @@
 use crate::ipc::IpcError;
 use crate::wire::ControlResponse;
 
-/// The six reachable UI states (design §6). `Running` vs `Idle` is derived from `pending_changes`
-/// (the daemon does not distinguish "syncing" from "up to date" in its status string).
+/// The six reachable UI states (design §6). `Running` is primarily the daemon's own `syncing`
+/// flag (a reconcile pass is in flight); `pending_changes > 0` is kept as a secondary signal so
+/// replies from older daemons (whose `syncing` deserializes to `false`) still derive usefully.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DaemonState {
@@ -82,6 +83,9 @@ pub fn derive_state(reply: Result<&ControlResponse, &IpcError>) -> DaemonState {
     {
         return DaemonState::AuthExpired;
     }
+    if response.syncing {
+        return DaemonState::Running;
+    }
     if response.last_sync_epoch_secs.is_none() && response.status_history.is_empty() {
         return DaemonState::FirstRun;
     }
@@ -101,6 +105,8 @@ mod tests {
         ControlResponse {
             status: "running".into(),
             paused: false,
+            syncing: false,
+            reconcile_seq: 0,
             pending_changes: 0,
             message: String::new(),
             last_sync_epoch_secs: Some(1),
@@ -152,6 +158,21 @@ mod tests {
         assert_eq!(derive_state(Ok(&r)), DaemonState::Running);
         r.pending_changes = 0;
         assert_eq!(derive_state(Ok(&r)), DaemonState::Idle);
+    }
+
+    #[test]
+    fn syncing_flag_means_running_even_with_no_pending_changes() {
+        // A download-only pass has pending_changes == 0; the daemon's own `syncing` flag is what
+        // marks it as actively reconciling.
+        let mut r = response();
+        r.syncing = true;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Running);
+
+        // And it wins over first-run emptiness: the first-ever startup sync shows as syncing,
+        // not "nothing has synced yet".
+        r.last_sync_epoch_secs = None;
+        r.status_history = vec![];
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Running);
     }
 
     #[test]

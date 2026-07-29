@@ -21,6 +21,9 @@ pub enum ControlCommand {
     Approve,
     /// Revoke a prior approval (before it has applied). Same `argument` selector as `Approve`.
     Deny,
+    /// Ask the daemon to exit gracefully (same clean path as SIGTERM). Lets a UI restart the
+    /// daemon regardless of how it was launched (systemd unit or direct spawn).
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +62,17 @@ pub struct RunningConfigInfo {
 pub struct ControlResponse {
     pub status: String,
     pub paused: bool,
+    /// `true` while a reconcile pass is actually in flight. Distinct from `status == "running"`,
+    /// which only means "not paused". `#[serde(default)]` keeps replies from older daemons
+    /// parseable.
+    #[serde(default)]
+    pub syncing: bool,
+    /// Count of completed reconcile attempts (success or failure) since the daemon started.
+    /// A client that scheduled a sync can poll until this advances past the value in its ack
+    /// (and `syncing` is false again) to know *its* pass finished. `#[serde(default)]` for
+    /// replies from older daemons.
+    #[serde(default)]
+    pub reconcile_seq: u64,
     pub pending_changes: usize,
     pub message: String,
     pub last_sync_epoch_secs: Option<u64>,

@@ -309,6 +309,10 @@ impl ScanOptions {
 
 pub fn open_database(path: &Path) -> AppResult<Connection> {
     let connection = Connection::open(path)?;
+    // The daemon core and its control-socket task each hold a connection to this database
+    // (reconcile commits vs. approval writes). Both writes are short; a busy timeout makes the
+    // rare collision wait instead of surfacing SQLITE_BUSY.
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
     initialize_schema(&connection)?;
     Ok(connection)
 }

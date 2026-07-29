@@ -29,6 +29,7 @@ export const api = {
   readConflictPair: (conflict) => invoke("read_conflict_pair", { conflict }),
   pathSyncStatus: (relativePath) => invoke("path_sync_status", { relativePath }),
   startService: () => invoke("start_service"),
+  restartService: () => invoke("restart_service"),
   notify: (title, body) => invoke("notify", { title, body }),
   // Subscribe to the backend's `tray-navigate` event (tray menu → tab switch). Routed through the
   // facade so screens/shell never touch `window.__TAURI__` directly; a no-op in browser preview.
@@ -51,8 +52,10 @@ function mockInvoke(cmd, _args) {
       return Promise.resolve({
         state: "running",
         response: {
-          status: "running",
+          status: "syncing",
           paused: false,
+          syncing: true,
+          reconcile_seq: 7,
           pending_changes: 3,
           message: "sync completed",
           last_sync_epoch_secs: Math.floor(Date.now() / 1000) - 120,
@@ -74,6 +77,10 @@ function mockInvoke(cmd, _args) {
       });
     case "start_service":
       return Promise.resolve("asked systemd to start proton-syncd (preview mock)");
+    case "restart_service":
+      // Simulate the real stop→start latency so the Settings screen's "Restarting…" state is
+      // visible in browser preview.
+      return new Promise((resolve) => setTimeout(() => resolve("daemon restarted (preview mock)"), 1200));
     case "pause":
       return Promise.resolve({ state: "paused", response: { status: "paused", paused: true, pending_changes: 3, message: "paused", last_sync_epoch_secs: null, last_error: null, last_plan_summary: null, last_successful_sync_summary: null, status_history: [], pending_deletions: [] } });
     case "scan_conflicts":
