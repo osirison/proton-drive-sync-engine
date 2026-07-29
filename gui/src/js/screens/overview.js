@@ -3,7 +3,7 @@
 // (proves F1+F2+F3 end-to-end); S1 refines visuals + adds real transfer rows.
 
 import { matrixFor } from "../state-matrix.js";
-import { el, renderHexagon, renderStatTiles, renderLedger, relativeTime, dash } from "../components.js";
+import { el, renderHexagon, renderStatTiles, renderLedger, relativeTime } from "../components.js";
 
 // One-time keyframe for the indeterminate transfer bar (see `transferRows` below for why it's
 // indeterminate rather than a filled percentage). Scoped to this screen's own render output — not
@@ -38,13 +38,20 @@ function transferRows(planSummary, pending) {
   return rows;
 }
 
+/** Duration of the `ps-indeterminate` keyframe above — keep the two in sync. */
+const INDETERMINATE_SECONDS = 1.3;
+
 // A `.transfer-row` + 4px `.progress` bar per direction. The fraction transferred is unknowable
 // (see `transferRows`), so the bar is deliberately indeterminate — a sliding segment, not a
-// specific width% — rather than pretending a completion fraction we don't have.
+// specific width% — rather than pretending a completion fraction we don't have. The negative,
+// wall-clock-derived animation-delay phase-locks the slide across the shell's poll re-renders:
+// without it every rebuild restarted the animation at translateX(-120%), so the segment visibly
+// jumped back every ~2 s instead of gliding.
 function renderTransferRow(row) {
   const arrow = row.dir === "up" ? "↑" : row.dir === "down" ? "↓" : "↻";
   const fill =
     row.dir === "up" ? "var(--upload-fill)" : row.dir === "down" ? "var(--download-fill)" : "var(--muted-2)";
+  const phase = (performance.now() / 1000) % INDETERMINATE_SECONDS;
   return el(
     "div",
     { class: "transfer-row" },
@@ -54,7 +61,10 @@ function renderTransferRow(row) {
       "div",
       { class: "progress", style: "position:relative" },
       el("span", {
-        style: `position:absolute;inset:0 auto 0 0;width:38%;background:${fill};animation:ps-indeterminate 1.3s ease-in-out infinite`,
+        style:
+          `position:absolute;inset:0 auto 0 0;width:38%;background:${fill};` +
+          `animation:ps-indeterminate ${INDETERMINATE_SECONDS}s ease-in-out infinite;` +
+          `animation-delay:-${phase}s`,
       }),
     ),
   );
@@ -81,7 +91,10 @@ export function renderOverview(container, ctx) {
 
   let subline = matrix.subline;
   if (st === "idle") subline = `last synced ${relativeTime(resp?.last_sync_epoch_secs)}`;
-  else if (st === "running") subline = `${dash(pending)} change(s) pending`;
+  else if (st === "running")
+    // A download-only pass has no queued local changes, so "0 change(s) pending" would read
+    // wrong; the daemon's `syncing` flag is what put us in this state, so say that instead.
+    subline = pending ? `${pending} change(s) pending` : "reconciling with Proton Drive";
 
   const actionButtons = matrix.actions.map((a) =>
     el(
