@@ -542,7 +542,8 @@ impl<C: ProtonClient> Daemon<C> {
         // pass, so it snapshots (the market-data "get truth first" step), then resets the counter
         // to 0 and streams from there. When the periodic resync is disabled (`events_full_scan_every
         // == 0`) the effective threshold is `u64::MAX`, so the startup floor still fires once here
-        // but the counter never reaches it again — the daemon stays purely event-driven afterward.
+        // but the counter cannot reach it again in any realistic runtime (that would take 2^64
+        // passes) — so in practice the daemon stays purely event-driven afterward.
         let incremental_passes_since_full_scan =
             effective_full_scan_every(config.events_full_scan_every);
         let shared = Arc::new(ControlShared::new(RunningConfigInfo {
@@ -872,8 +873,9 @@ impl<C: ProtonClient> Daemon<C> {
             return false;
         }
         // Periodic safety resync (opt-in). `events_full_scan_every == 0` maps to `u64::MAX` here,
-        // which the counter never reaches after the startup floor resets it to 0 — so a disabled
-        // resync leaves the daemon purely event-driven until restart or an event-stream fallback.
+        // a threshold the counter cannot reach in any realistic runtime after the startup floor
+        // resets it to 0 (that would take 2^64 passes) — so a disabled resync leaves the daemon
+        // event-driven until restart or an event-stream fallback.
         if self.incremental_passes_since_full_scan
             >= effective_full_scan_every(self.config.events_full_scan_every)
         {
@@ -2304,8 +2306,8 @@ fn find_entity_by_uid(
 }
 
 /// The periodic full-scan cadence to compare the pass counter against, translating the
-/// user-facing "disabled" sentinel into a threshold the counter can never reach. `0` (the default)
-/// disables the periodic safety resync — after the startup floor the daemon stays purely
+/// user-facing "disabled" sentinel into a threshold no realistic runtime can reach. `0` (the
+/// default) disables the periodic safety resync — after the startup floor the daemon stays purely
 /// event-driven; any positive `N` reinstates a full walk every `N` incremental passes. Because the
 /// counter only ever increments while it is *below* this value (i.e. while `should_try_incremental`
 /// was true), it never overflows even when seeded at `u64::MAX`.
