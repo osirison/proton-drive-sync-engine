@@ -113,7 +113,7 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// exactly as before this feature.
     event_source: Option<Box<dyn EventSource>>,
     /// Number of successful incremental (event-driven) passes since the last full-tree snapshot.
-    /// Drives the mandatory periodic safety resync (`events_full_scan_every`).
+    /// Drives the opt-in periodic safety resync (`events_full_scan_every`, disabled by default).
     incremental_passes_since_full_scan: u64,
     /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
@@ -538,10 +538,13 @@ impl<C: ProtonClient> Daemon<C> {
         // backstop). A fresh process has an empty `pending_changes` — `notify` never replays
         // pre-existing files — so an incremental pass would idle-skip a local file that was edited
         // while the daemon was down, stranding it until the periodic K-floor. Seeding the counter
-        // at the resync threshold makes `should_try_incremental` false on the first pass, so it
-        // snapshots (the market-data "get truth first" step), then resets the counter to 0 and
-        // streams from there.
-        let incremental_passes_since_full_scan = config.events_full_scan_every;
+        // at the (effective) resync threshold makes `should_try_incremental` false on the first
+        // pass, so it snapshots (the market-data "get truth first" step), then resets the counter
+        // to 0 and streams from there. When the periodic resync is disabled (`events_full_scan_every
+        // == 0`) the effective threshold is `u64::MAX`, so the startup floor still fires once here
+        // but the counter never reaches it again — the daemon stays purely event-driven afterward.
+        let incremental_passes_since_full_scan =
+            effective_full_scan_every(config.events_full_scan_every);
         let shared = Arc::new(ControlShared::new(RunningConfigInfo {
             local_root: config.local_root.clone(),
             remote_root: config.remote_root.clone(),
@@ -862,13 +865,18 @@ impl<C: ProtonClient> Daemon<C> {
 
     /// Whether an incremental (event-stream) pass may be attempted this cycle. Requires the
     /// feature on with a usable event source, a volume id derivable from a previously-stored
-    /// composed `proton_id`, a stored cursor to replay from, and that the mandatory periodic
-    /// safety resync is not currently due.
+    /// composed `proton_id`, a stored cursor to replay from, and that the opt-in periodic
+    /// safety resync (disabled by default) is not currently due.
     fn should_try_incremental(&self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
         if !self.config.events_driven || self.event_source.is_none() {
             return false;
         }
-        if self.incremental_passes_since_full_scan >= self.config.events_full_scan_every {
+        // Periodic safety resync (opt-in). `events_full_scan_every == 0` maps to `u64::MAX` here,
+        // which the counter never reaches after the startup floor resets it to 0 — so a disabled
+        // resync leaves the daemon purely event-driven until restart or an event-stream fallback.
+        if self.incremental_passes_since_full_scan
+            >= effective_full_scan_every(self.config.events_full_scan_every)
+        {
             return false;
         }
         // Safe degradation: if no base record carries a composed `proton_id` yet — a brand-new sync
@@ -1051,7 +1059,11 @@ impl<C: ProtonClient> Daemon<C> {
         // Market-data recovery: capture the cursor *before* the snapshot when the volume is
         // already known, so a change landing during the walk is re-delivered (idempotently) by
         // the next incremental pass. On the first-ever bootstrap the volume is only known after
-        // the walk, and the mandatory periodic resync bounds that one-time gap.
+        // the walk, so a change landing in an already-listed folder mid-walk is missed by this
+        // snapshot *and* precedes the post-walk cursor — a one-time gap that heals on the next
+        // process restart (the startup floor re-snapshots) or, if the opt-in periodic resync is
+        // enabled (`events_full_scan_every = N`), within N passes. With the default (0) it stays
+        // until restart; enable the periodic resync if that bound matters for your deployment.
         let pre_snapshot_cursor = self.capture_pre_snapshot_cursor(&base_records);
 
         let local_entities = self.scan_local_entities_reporting_progress(&base_records)?;
@@ -2289,6 +2301,20 @@ fn find_entity_by_uid(
     listing
         .into_iter()
         .find(|(_, entity)| entity.remote_id().as_deref() == Some(target_uid))
+}
+
+/// The periodic full-scan cadence to compare the pass counter against, translating the
+/// user-facing "disabled" sentinel into a threshold the counter can never reach. `0` (the default)
+/// disables the periodic safety resync — after the startup floor the daemon stays purely
+/// event-driven; any positive `N` reinstates a full walk every `N` incremental passes. Because the
+/// counter only ever increments while it is *below* this value (i.e. while `should_try_incremental`
+/// was true), it never overflows even when seeded at `u64::MAX`.
+fn effective_full_scan_every(configured: u64) -> u64 {
+    if configured == 0 {
+        u64::MAX
+    } else {
+        configured
+    }
 }
 
 /// Derives the volume id from any baseline record carrying a composed `proton_id`
@@ -6015,6 +6041,56 @@ mod tests {
         assert_eq!(
             daemon.incremental_passes_since_full_scan, 0,
             "the resync counter resets after a full snapshot"
+        );
+    }
+
+    #[test]
+    fn disabled_periodic_resync_never_full_scans_after_the_startup_snapshot() {
+        // The shipped default: `events_full_scan_every == 0` disables the periodic safety resync,
+        // so after the one mandatory startup snapshot every subsequent pass stays event-driven no
+        // matter how many passes elapse. Regression for the "daemon keeps doing full syncs" report.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("a.txt"),
+            remote_file_entity("a.txt", "vol~na", "h"),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut config = event_config(directory.path(), &local_root);
+        config.events_full_scan_every = 0; // periodic resync disabled (the shipped default)
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+
+        // The startup floor still fires exactly once even with the resync disabled: seeded at the
+        // effective threshold (`u64::MAX`), the first pass snapshots and resets the counter to 0.
+        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the first reconcile after startup must still full-scan"
+        );
+        assert_eq!(daemon.incremental_passes_since_full_scan, 0);
+
+        // Far more idle passes than the *old* default (20) would have resynced at — none may walk.
+        for _ in 0..50 {
+            daemon
+                .reconcile_blocking()
+                .expect("idle incremental reconcile");
+        }
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "with the periodic resync disabled, only the startup snapshot ever walks the whole tree"
+        );
+        assert_eq!(
+            daemon.incremental_passes_since_full_scan, 50,
+            "the pass counter keeps climbing without ever tripping a resync"
         );
     }
 

@@ -12,8 +12,11 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 /// Default number of incremental event-driven passes between forced full-tree resyncs when
-/// `events_driven` is on and no explicit value is configured.
-const DEFAULT_EVENTS_FULL_SCAN_EVERY: u64 = 20;
+/// `events_driven` is on and no explicit value is configured. `0` disables the periodic safety
+/// resync entirely, so after the first (startup) full-tree snapshot the daemon stays purely
+/// event-driven until it is restarted or the event stream forces a fallback. The periodic resync
+/// is opt-in: set a positive value to reinstate a self-healing full walk every N passes.
+const DEFAULT_EVENTS_FULL_SCAN_EVERY: u64 = 0;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DaemonConfigInput {
@@ -204,11 +207,13 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         include_patterns: merge_patterns(input.include_patterns, file_config.include_patterns),
         exclude_patterns: merge_patterns(input.exclude_patterns, file_config.exclude_patterns),
         events_driven,
+        // `0` is a valid, meaningful value here (periodic safety resync disabled), so it is *not*
+        // clamped up to 1 the way a zero scan interval would be. The daemon treats 0 as "never
+        // auto-resync" (see `effective_full_scan_every` in `daemon.rs`).
         events_full_scan_every: input
             .events_full_scan_every
             .or(file_config.events_full_scan_every)
-            .unwrap_or(DEFAULT_EVENTS_FULL_SCAN_EVERY)
-            .max(1),
+            .unwrap_or(DEFAULT_EVENTS_FULL_SCAN_EVERY),
         delete_approval_remote,
         delete_approval_local,
     };
@@ -787,8 +792,10 @@ events_driven = true
     }
 
     #[test]
-    fn zero_events_full_scan_every_is_clamped_to_one() {
-        // The periodic safety resync is mandatory; a configured 0 must never disable it.
+    fn zero_events_full_scan_every_is_preserved_as_disabled() {
+        // The periodic safety resync is opt-in: a configured 0 must be preserved (not clamped up to
+        // 1) so the daemon reads it as "disabled" and stays purely event-driven after the startup
+        // snapshot. `daemon::effective_full_scan_every` maps this 0 to `u64::MAX`.
         let (config, _) = resolve_runtime_config(DaemonConfigInput {
             local_root: Some(PathBuf::from("sync-root")),
             remote_root: Some(PathBuf::from("/Drive/Config")),
@@ -798,7 +805,21 @@ events_driven = true
         })
         .expect("runtime config");
 
-        assert_eq!(config.events_full_scan_every, 1);
+        assert_eq!(config.events_full_scan_every, 0);
+    }
+
+    #[test]
+    fn events_full_scan_every_defaults_to_disabled() {
+        // The shipped default disables the periodic resync entirely.
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert_eq!(config.events_full_scan_every, 0);
+        assert_eq!(DEFAULT_EVENTS_FULL_SCAN_EVERY, 0);
     }
 
     #[test]
