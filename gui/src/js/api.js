@@ -17,8 +17,11 @@ export const api = {
   pause: () => invoke("pause"),
   resume: () => invoke("resume"),
   syncNow: () => invoke("sync_now"),
-  approve: (target) => invoke("approve", { target }),
-  deny: (target) => invoke("deny", { target }),
+  // `literalPath: true` (the default) marks `target` as a row's actual relative path, so a file
+  // literally named "all" can never be mistaken for the every-item selector; the Approve-all /
+  // Deny-all buttons pass `false` with the explicit "all" argument.
+  approve: (target, literalPath = true) => invoke("approve", { target, literalPath }),
+  deny: (target, literalPath = true) => invoke("deny", { target, literalPath }),
   listPendingDeletions: () => invoke("list_pending_deletions"),
   readConfig: () => invoke("read_config"),
   writeConfig: (update) => invoke("write_config", { update }),
@@ -77,6 +80,14 @@ function mockInvoke(cmd, _args) {
       });
     case "start_service":
       return Promise.resolve("asked systemd to start proton-syncd (preview mock)");
+    case "approve":
+    case "deny":
+      // Simulate the daemon round trip so the Deletions screen's busy → acknowledged flow is
+      // visible in browser preview. Shaped like a real StatusPayload: the screen only trusts a
+      // reply that carries a `response` and no `error`.
+      return new Promise((resolve) =>
+        setTimeout(() => resolve({ state: "running", response: { paused: false }, error: null }), 800),
+      );
     case "restart_service":
       // Simulate the real stop→start latency so the Settings screen's "Restarting…" state is
       // visible in browser preview.

@@ -7,11 +7,72 @@ import { el, relativeTime } from "../components.js";
 import { setPendingDeletions } from "../store.js";
 
 // Transient, screen-local UI state — the last action's error, and which target ("<path>" or
-// "all") is currently in flight. This belongs to this screen alone (not the shared store): it
-// only needs to survive across this file's own re-renders, and disabling buttons mid-flight
-// guards against double-firing a permanent deletion on a slow connection.
+// "all") is currently in flight (plus which verb, so only the clicked button's label changes).
+// This belongs to this screen alone (not the shared store): it only needs to survive across
+// this file's own re-renders, and disabling buttons mid-flight guards against double-firing a
+// permanent deletion on a slow connection.
 let lastError = null;
-let busy = null;
+let busy = null; // { target: "<path>" | "all", verb: "approve" | "deny" } | null
+
+// Acknowledged clicks: path → { verb: "approved" | "denied", at: epoch ms }. The daemon's ack
+// round trip is near-instant, but the item does NOT leave `pending_deletions` on it: an
+// approved deletion stays listed until the next reconcile pass actually executes it, and a
+// denied one stays pending indefinitely (deny only revokes/declines — the file is still
+// missing on one side). Meanwhile the 2 s status poll rewrites the store's list on every
+// tick. So the lasting "your click landed" signal cannot live in the store or ride the busy
+// flag alone; this map pins each acknowledged row to a visible confirmation state across
+// those overwrites. Approved entries clear when the row leaves the daemon's list (or after a
+// safety timeout, so an inert approval — e.g. a fingerprint that no longer matches — can't
+// strand the row without buttons); denied entries clear after a short confirmation interval.
+const acknowledged = new Map();
+const APPROVED_ACK_SAFETY_MS = 90_000;
+const DENIED_ACK_MS = 4_000;
+let ackExpiryTimer = null;
+
+function ackTtl(entry) {
+  return entry.verb === "denied" ? DENIED_ACK_MS : APPROVED_ACK_SAFETY_MS;
+}
+
+/**
+ * The live acknowledgment for this listed item, dropping it first if its display window has
+ * expired — or if the item's fingerprint no longer matches the one the click acted on. A
+ * changed fingerprint means this row is a NEW pending deletion at the same path (the
+ * acknowledged one resolved while this screen wasn't rendering): it has not been approved or
+ * denied, so it must show live buttons, not a stale pill.
+ */
+function acknowledgment(item) {
+  const path = typeof item.path === "string" ? item.path : String(item.path ?? "");
+  const entry = acknowledged.get(path);
+  if (!entry) return null;
+  if (Date.now() - entry.at >= ackTtl(entry)) {
+    acknowledged.delete(path);
+    return null;
+  }
+  if (
+    entry.fingerprint != null &&
+    item.fingerprint != null &&
+    entry.fingerprint !== item.fingerprint
+  ) {
+    acknowledged.delete(path);
+    return null;
+  }
+  return entry;
+}
+
+// One shared timer wakes the screen when the soonest acknowledgment expires, so a "Deny
+// recorded" pill clears itself even if no poll or click happens to re-render first.
+function scheduleAckExpiry(ctx) {
+  clearTimeout(ackExpiryTimer);
+  ackExpiryTimer = null;
+  let soonest = Infinity;
+  const now = Date.now();
+  for (const entry of acknowledged.values()) {
+    soonest = Math.min(soonest, entry.at + ackTtl(entry) - now);
+  }
+  if (soonest !== Infinity) {
+    ackExpiryTimer = setTimeout(() => nudgeRerender(ctx), Math.max(soonest, 0) + 50);
+  }
+}
 
 /**
  * What approving THIS item actually does, in plain words. `direction` mirrors the engine's
@@ -67,25 +128,95 @@ function nudgeRerender(ctx) {
   setPendingDeletions(ctx.select.pendingDeletions());
 }
 
-async function runAndRefresh(ctx, target, verb) {
-  busy = target;
+async function runAndRefresh(ctx, target, verb, isAll) {
+  busy = { target, verb };
   lastError = null;
+  // Capture the affected items at click time, before any await: the poll may rewrite the
+  // store's list mid-flight, an "all" acknowledgment must cover exactly the items the user
+  // was looking at when they clicked, and each acknowledgment is pinned to the item's
+  // fingerprint so it can never label a future same-path pending deletion.
+  const snapshot = ctx.select.pendingDeletions();
+  const affected = (isAll ? snapshot : snapshot.filter((item) => String(item.path) === target)).map(
+    (item) => ({ path: String(item.path), fingerprint: item.fingerprint ?? null }),
+  );
   nudgeRerender(ctx); // show the busy state immediately, before the round trip
+  let confirmed = false;
   try {
-    if (verb === "approve") await ctx.api.approve(target);
-    else await ctx.api.deny(target);
-    await refreshList(ctx);
+    const payload =
+      verb === "approve"
+        ? await ctx.api.approve(target, !isAll)
+        : await ctx.api.deny(target, !isAll);
+    // The Tauri approve/deny commands NEVER reject on a daemon failure — a dead socket or a
+    // dropped connection comes back as a RESOLVED payload with `error` set and no `response`.
+    // A confirmation pill must only ever appear for an action the daemon durably recorded: a
+    // false "✓ Deny recorded" would sit there while a still-standing approval deletes the
+    // file it just promised was safe.
+    if (!payload || payload.error != null || payload.response == null) {
+      throw new Error(
+        (payload && payload.error) || "the daemon did not confirm the request",
+      );
+    }
+    const paused = payload.response.paused === true;
+    const at = Date.now();
+    const verbState = verb === "deny" ? "denied" : paused ? "approved-paused" : "approved";
+    for (const { path, fingerprint } of affected) {
+      acknowledged.set(path, { verb: verbState, at, fingerprint });
+    }
+    confirmed = true;
+    if (verb === "approve" && !paused) {
+      // Best-effort nudge: the approval is already durably recorded, but the daemon only
+      // executes it on its next reconcile pass (up to its poll interval away). Asking for a
+      // sync now makes the row disappear while the user is still watching; a failure here
+      // changes nothing, so it is deliberately swallowed. Skipped while paused — the daemon
+      // would skip the sync anyway, and the pill copy says the delete waits for resume.
+      ctx.api.syncNow().catch(() => {});
+    }
   } catch (e) {
-    const who = target === "all" ? "all pending deletions" : target;
+    const who = isAll ? "all pending deletions" : target;
     lastError = `Couldn't ${verb} ${who}: ${e && e.message ? e.message : String(e)}`;
   } finally {
     busy = null;
     nudgeRerender(ctx);
   }
+  if (confirmed) {
+    // Refresh OUTSIDE the verb-attributed catch: the action itself succeeded, and a refresh
+    // hiccup must not render as "Couldn't approve …" beside a success pill. The 2 s status
+    // poll self-heals the list within a tick anyway.
+    try {
+      await refreshList(ctx);
+    } catch (_) {
+      /* poll self-heals */
+    }
+  }
 }
 
 function emptyCard(text) {
   return el("div", { class: "card" }, el("div", { class: "ledger-empty" }, text));
+}
+
+/** The verb-aware label for one action button, so only the clicked button animates. */
+function actionLabel(target, verb, idleLabel, busyLabel) {
+  return busy && busy.target === target && busy.verb === verb ? busyLabel : idleLabel;
+}
+
+/** The lasting post-ack confirmation shown in place of the action buttons. */
+function acknowledgmentPill(entry) {
+  const denied = entry.verb === "denied";
+  const label = denied
+    ? "✓ Deny recorded — nothing deleted"
+    : entry.verb === "approved-paused"
+      ? "✓ Approved — deletes when sync resumes"
+      : "✓ Approved — deleting…";
+  return el(
+    "div",
+    {
+      class: "mono" + (denied ? "" : " dir-destructive"),
+      style:
+        "flex:none;align-self:center;font-size:var(--fs-meta);font-weight:600" +
+        (denied ? ";color:var(--muted)" : ""),
+    },
+    label,
+  );
 }
 
 function renderRow(ctx, item) {
@@ -96,6 +227,7 @@ function renderRow(ctx, item) {
   // click can't overwrite `busy` and let the first request's `finally` re-enable the UI while the
   // second is still running — which would allow overlapping destructive actions.
   const anyBusy = busy != null;
+  const ack = acknowledgment(item);
 
   return el(
     "div",
@@ -118,28 +250,30 @@ function renderRow(ctx, item) {
         copy.detail,
       ),
     ),
-    el(
-      "div",
-      { style: "display:flex;gap:8px;flex:none" },
-      el(
-        "button",
-        {
-          class: "btn danger",
-          disabled: anyBusy,
-          onClick: () => runAndRefresh(ctx, path, "approve"),
-        },
-        busy === path ? "Approving…" : "Approve",
-      ),
-      el(
-        "button",
-        {
-          class: "btn",
-          disabled: anyBusy,
-          onClick: () => runAndRefresh(ctx, path, "deny"),
-        },
-        "Deny",
-      ),
-    ),
+    ack
+      ? acknowledgmentPill(ack)
+      : el(
+          "div",
+          { style: "display:flex;gap:8px;flex:none" },
+          el(
+            "button",
+            {
+              class: "btn danger",
+              disabled: anyBusy,
+              onClick: () => runAndRefresh(ctx, path, "approve", false),
+            },
+            actionLabel(path, "approve", "Approve", "Approving…"),
+          ),
+          el(
+            "button",
+            {
+              class: "btn",
+              disabled: anyBusy,
+              onClick: () => runAndRefresh(ctx, path, "deny", false),
+            },
+            actionLabel(path, "deny", "Deny", "Denying…"),
+          ),
+        ),
   );
 }
 
@@ -147,6 +281,15 @@ export function renderDeletions(container, ctx) {
   const { select } = ctx;
   const st = select.daemonState();
   const items = select.pendingDeletions();
+
+  // An acknowledged row that has left the daemon's list is done (the approved deletion
+  // executed, or the item resolved some other way) — drop its entry so the map can't grow
+  // across a long session.
+  const listed = new Set(items.map((item) => String(item.path)));
+  for (const path of acknowledged.keys()) {
+    if (!listed.has(path)) acknowledged.delete(path);
+  }
+  scheduleAckExpiry(ctx);
 
   const children = [
     el(
@@ -212,18 +355,18 @@ export function renderDeletions(container, ctx) {
           {
             class: "btn danger",
             disabled: allBusy,
-            onClick: () => runAndRefresh(ctx, "all", "approve"),
+            onClick: () => runAndRefresh(ctx, "all", "approve", true),
           },
-          busy === "all" ? "Approving all…" : "Approve all",
+          actionLabel("all", "approve", "Approve all", "Approving all…"),
         ),
         el(
           "button",
           {
             class: "btn",
             disabled: allBusy,
-            onClick: () => runAndRefresh(ctx, "all", "deny"),
+            onClick: () => runAndRefresh(ctx, "all", "deny", true),
           },
-          "Deny all",
+          actionLabel("all", "deny", "Deny all", "Denying all…"),
         ),
       ),
     ),

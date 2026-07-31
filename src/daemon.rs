@@ -1728,7 +1728,13 @@ impl<C: ProtonClient> Daemon<C> {
     /// code runs on the IPC task with its own connection and the published pending list.
     #[cfg(test)]
     fn apply_approval_command(&self, selector: Option<&str>, approve: bool) -> AppResult<String> {
-        apply_approval_command(&self.connection, &self.pending_deletions, selector, approve)
+        apply_approval_command(
+            &self.connection,
+            &self.pending_deletions,
+            selector,
+            false,
+            approve,
+        )
     }
 
     fn record_status_history(&mut self, message: &str) {
@@ -1780,6 +1786,9 @@ impl<C: ProtonClient> Daemon<C> {
 /// `selector` must be an explicit relative path, or the literal `"all"` for every pending item.
 /// A missing selector is rejected as a no-op: acting on "all" must be a deliberate choice, so an
 /// accidentally-omitted argument from any IPC client can never approve every deletion at once.
+/// When `literal_path` is set (see [`ControlRequest::literal_path`]), the selector is always a
+/// path — a pending deletion literally named `all` can then be targeted without the reserved
+/// word swallowing it into the every-item meaning.
 /// Approving records a standing approval keyed to the pending item's exact fingerprint (so it
 /// authorizes only that deletion); denying revokes any such approval. Only paths that are
 /// *currently pending* are acted on, so a bogus argument is a harmless no-op and no unvalidated
@@ -1788,6 +1797,7 @@ fn apply_approval_command(
     connection: &Connection,
     pending_deletions: &[PendingDeletion],
     selector: Option<&str>,
+    literal_path: bool,
     approve: bool,
 ) -> AppResult<String> {
     let Some(selector) = selector else {
@@ -1797,8 +1807,12 @@ fn apply_approval_command(
         );
     };
     // `None` here means the explicit "all" selector (every pending item); a plain path filters
-    // to that one item.
-    let target = Some(selector).filter(|value| !value.eq_ignore_ascii_case("all"));
+    // to that one item. A literal-path request never gets the "all" interpretation.
+    let target = if literal_path {
+        Some(selector)
+    } else {
+        Some(selector).filter(|value| !value.eq_ignore_ascii_case("all"))
+    };
     let matches: Vec<&PendingDeletion> = pending_deletions
         .iter()
         .filter(|pending| match target {
@@ -1948,6 +1962,7 @@ async fn handle_control_connection(
                 &connection,
                 &pending,
                 request.argument.as_deref(),
+                request.literal_path,
                 approve,
             )?;
             drop(connection);
@@ -3735,6 +3750,63 @@ mod tests {
             DeleteDirection::Local
         );
         assert_eq!(daemon.pending_deletions[0].path, PathBuf::from("keep.txt"));
+    }
+
+    #[test]
+    fn a_literal_path_selector_never_gets_the_reserved_all_meaning() {
+        // The wire reserves "all" (any letter case) as the every-item selector — but a request
+        // flagged `literal_path` is targeting a row by its actual path, so a pending deletion
+        // for a file literally named "All" must be approvable alone. Without the flag the same
+        // selector keeps its historical case-insensitive every-item meaning (legacy clients).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending = vec![
+            PendingDeletion {
+                path: PathBuf::from("All"),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::File,
+                fingerprint: "fp-all".to_owned(),
+                detected_epoch_secs: 1,
+            },
+            PendingDeletion {
+                path: PathBuf::from("other.txt"),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::File,
+                fingerprint: "fp-other".to_owned(),
+                detected_epoch_secs: 1,
+            },
+        ];
+
+        let message = apply_approval_command(&daemon.connection, &pending, Some("All"), true, true)
+            .expect("literal-path approve");
+        assert!(
+            message.contains("approved 1"),
+            "a literal-path selector must approve only the file named \"All\": {message}"
+        );
+        assert_eq!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .len(),
+            1,
+        );
+
+        let message =
+            apply_approval_command(&daemon.connection, &pending, Some("All"), false, true)
+                .expect("legacy approve");
+        assert!(
+            message.contains("approved 2"),
+            "without the literal flag the same selector keeps the every-item meaning: {message}"
+        );
+        assert_eq!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .len(),
+            2,
+        );
     }
 
     #[test]
