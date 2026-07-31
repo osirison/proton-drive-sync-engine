@@ -18,6 +18,12 @@ use std::time::Duration;
 /// is opt-in: set a positive value to reinstate a self-healing full walk every N passes.
 const DEFAULT_EVENTS_FULL_SCAN_EVERY: u64 = 0;
 
+/// Default maximum number of planned downloads bundled into one `proton-drive filesystem
+/// download` invocation. Large enough to amortize the CLI's per-spawn startup cost across a
+/// bulk download, small enough that every ~25 files a checkpoint commits and a failure loses
+/// at most one chunk of progress. `1` disables batching (one subprocess per file).
+const DEFAULT_DOWNLOAD_BATCH_SIZE: usize = 25;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DaemonConfigInput {
     pub config: Option<PathBuf>,
@@ -30,6 +36,7 @@ pub struct DaemonConfigInput {
     pub proton_cli: Option<PathBuf>,
     pub proton_timeout_secs: Option<u64>,
     pub proton_list_attempts: Option<usize>,
+    pub download_batch_size: Option<usize>,
     pub dry_run: bool,
     pub no_dry_run: bool,
     pub include_patterns: Vec<String>,
@@ -65,6 +72,8 @@ pub struct FileConfig {
     proton_timeout_secs: Option<u64>,
     #[serde(alias = "proton-list-attempts")]
     proton_list_attempts: Option<usize>,
+    #[serde(alias = "download-batch-size")]
+    download_batch_size: Option<usize>,
     #[serde(default, alias = "include")]
     include_patterns: Option<Vec<String>>,
     #[serde(default, alias = "exclude")]
@@ -203,6 +212,12 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             file_config.proton_list_attempts,
             default_command_policy.list_attempts,
             "proton_list_attempts",
+        )?,
+        download_batch_size: resolve_positive_usize(
+            input.download_batch_size,
+            file_config.download_batch_size,
+            DEFAULT_DOWNLOAD_BATCH_SIZE,
+            "download_batch_size",
         )?,
         include_patterns: merge_patterns(input.include_patterns, file_config.include_patterns),
         exclude_patterns: merge_patterns(input.exclude_patterns, file_config.exclude_patterns),
@@ -1040,5 +1055,68 @@ dry_run = true
         .expect_err("empty remote root should fail");
 
         assert_eq!(error.to_string(), "remote_root must not be empty");
+    }
+
+    #[test]
+    fn download_batch_size_resolves_flag_over_file_over_default() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+download_batch_size = 5
+"#,
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/RemoteFolder")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("default config");
+        assert_eq!(
+            config.download_batch_size, 25,
+            "unset download_batch_size resolves to the default"
+        );
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path.clone()),
+            ..DaemonConfigInput::default()
+        })
+        .expect("file config");
+        assert_eq!(
+            config.download_batch_size, 5,
+            "file value beats the default"
+        );
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            download_batch_size: Some(9),
+            ..DaemonConfigInput::default()
+        })
+        .expect("flag config");
+        assert_eq!(
+            config.download_batch_size, 9,
+            "explicit flag beats the file"
+        );
+    }
+
+    #[test]
+    fn zero_download_batch_size_returns_targeted_config_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/RemoteFolder")),
+            download_batch_size: Some(0),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("zero download batch size should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "download_batch_size must be greater than zero"
+        );
     }
 }

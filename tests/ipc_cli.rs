@@ -130,7 +130,7 @@ mod unix_tests {
     }
 
     #[test]
-    fn failed_upload_syncnow_does_not_commit_partial_index_state() {
+    fn failed_upload_syncnow_commits_only_the_completed_uploads() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
         fs::create_dir(&local_root).expect("local root");
@@ -165,8 +165,12 @@ mod unix_tests {
         );
         let index = load_existing_index(&db_path).expect("load index after failed upload");
         assert!(
-            index.is_empty(),
-            "failed upload must not commit any synced rows: {index:?}"
+            index.contains_key(std::path::Path::new("first.txt")),
+            "the upload that completed before the failure must be checkpoint-committed: {index:?}"
+        );
+        assert!(
+            !index.contains_key(std::path::Path::new("second.txt")),
+            "the failed upload must never be recorded: {index:?}"
         );
     }
 

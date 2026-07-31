@@ -28,22 +28,26 @@ from the pair.
 ```text
 scan local ─┐
 list remote ─┼─▶ plan_sync ──▶ execute actions ──▶ commit index
-load index ─┘   (pure, no I/O)   (uploads, etc.)     (one transaction)
+load index ─┘   (pure, no I/O)   (uploads, etc.)     (checkpointed)
 ```
 
 - **`plan_sync`** is a **pure function**: given the three maps, it returns a
   `Vec<PlannedAction>` and performs no I/O. This is the heart of the engine, and it's
   tested directly with in-memory maps.
 - **Execution** performs the uploads, downloads, moves, and deletes.
-- **Commit** writes the new baseline into SQLite — see the invariant below.
+- **Commit** checkpoints the new baseline into SQLite as actions complete — see the
+  invariant below.
 
 ### Commit only after side effects succeed
 
-The index is committed in **a single transaction, after every planned action in the pass
-has succeeded**. If an action fails partway through a plan, the earlier successes are
-**not** recorded in the index; they simply replan on the next pass. There is never a
-half-recorded state that claims something synced when it didn't. This is a load-bearing
-invariant of the design.
+An index write never happens before its side effect has succeeded. Completed work is
+committed **incrementally**: after every action that performed a side effect (and after
+every batched download chunk), the mutations recorded so far land in a checkpoint
+transaction. If an action fails partway through a plan, everything already completed
+stays durably recorded, the failed action itself is **never** recorded, and the
+remainder replans on the next pass. There is never a half-recorded state that claims
+something synced when it didn't — and a failure late in a long pass no longer discards
+the work that preceded it. This is a load-bearing invariant of the design.
 
 ## Bootstrap vs. ongoing
 

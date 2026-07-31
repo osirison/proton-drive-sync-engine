@@ -18,6 +18,11 @@ proton_cli = "proton-drive"
 proton_timeout_secs = 60
 proton_list_attempts = 2
 
+# How many planned downloads to bundle into one proton-drive invocation
+# (chunked per destination folder, checkpoint-committed per chunk; 1 = one
+# subprocess per file)
+download_batch_size = 25
+
 # Selective sync (paths relative to the roots)
 include = ["Documents/**", "Projects/**/*.md"]
 exclude = ["**/*.tmp", "**/.DS_Store"]

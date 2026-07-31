@@ -43,7 +43,8 @@ cargo test computes_empty_file_sha1   # a single test by name substring
 
 The daemon is generic over its client (`Daemon<C: ProtonClient>`), so tests inject **fake
 `ProtonClient` implementations** — including one that fails uploads to exercise the
-"no partial commit" invariant — and reconciliation is tested without a real Proton Drive.
+checkpoint-commit invariant (completed actions stay committed; the failed action is never
+recorded) — and reconciliation is tested without a real Proton Drive.
 The planner in `src/sync.rs` is **pure** and tested directly with in-memory maps.
 
 **Prefer adding regression tests next to the logic you change**: planner tests in

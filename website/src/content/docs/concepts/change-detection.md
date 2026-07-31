@@ -47,8 +47,8 @@ Concretely, the engine:
 2. Fetches the delta of created / updated / deleted nodes since that cursor.
 3. Overlays that delta onto the last-known remote view to reconstruct a *complete* remote
    map — without walking the whole tree — and hands it to the planner.
-4. Advances the cursor **only** inside the single post-success commit, so a failed or
-   withheld pass re-derives from the same cursor next time.
+4. Advances the cursor **only** in the final commit of a fully-successful pass, so a
+   failed or withheld pass re-derives from the same cursor next time.
 
 A **full-tree scan still runs periodically** (every *N* incremental passes, configurable
 with `--events-full-scan-every`) as a reconvergence backstop, and the **first reconcile

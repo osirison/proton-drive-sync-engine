@@ -12,7 +12,8 @@ use crate::ipc::{
     SyncActivity, TransferActivity, bind_listener, read_request, write_response,
 };
 use crate::proton::{
-    CommandPolicy, ProgressSink, ProtonClient, ProtonDriveClient, RemoteEntity, RemoteListingStatus,
+    CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient, RemoteEntity,
+    RemoteListingStatus,
 };
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
@@ -71,6 +72,12 @@ pub struct DaemonConfig {
     pub proton_cli: PathBuf,
     pub proton_timeout: Duration,
     pub proton_list_attempts: usize,
+    /// Maximum planned downloads bundled into one `proton-drive filesystem download`
+    /// invocation (the CLI accepts multiple remote paths per call). Consecutive planned
+    /// downloads are grouped by destination directory and chunked to this size; every chunk is
+    /// checkpoint-committed on landing. `1` disables batching (one subprocess per file, the
+    /// pre-batching behavior).
+    pub download_batch_size: usize,
     pub include_patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
     /// Opt-in: detect remote changes from Proton's volume event stream (O(changes)) instead of
@@ -612,7 +619,8 @@ impl<C: ProtonClient> Daemon<C> {
         // forwarded to the loop below over `loop_rx`. The cancel flag gives an IPC `shutdown`
         // the same teeth as a signal: an in-flight proton-drive command is killed rather than
         // holding up the exit (the commit-after-side-effects invariant makes that safe — the
-        // interrupted pass simply commits nothing and would replan on next start).
+        // interrupted pass keeps only the checkpoints of actions that fully completed and
+        // replans the remainder from ground truth on next start).
         let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
         let approvals_connection = open_database(&self.config.db_path)?;
         let ipc_task = tokio::spawn(serve_control_socket(
@@ -1153,9 +1161,15 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Plans against the given complete remote map, executes every action performing all side
-    /// effects, then commits the resulting index mutations — and, when `cursor_update` is set, the
-    /// advanced event cursor — in a **single** post-success transaction (the commit-after-side-
-    /// effects invariant: a mid-plan failure leaves both the index and the cursor unadvanced).
+    /// effects, and commits the resulting index mutations **incrementally**: after every action
+    /// whose side effect succeeded (and after every batched download chunk) the mutations
+    /// accumulated so far are checkpoint-committed (`commit_checkpoint`), so a mid-plan failure —
+    /// or a daemon shutdown — keeps everything already done durable, and only the failed action
+    /// and its unexecuted successors re-plan next pass. The commit-after-side-effects invariant
+    /// is unchanged in the direction that matters: an index write still never precedes its side
+    /// effect. The event cursor is the deliberate exception — it advances only in the final
+    /// commit of a fully-successful pass, because it asserts "every remote change up to this
+    /// event has been applied", which holds only when the whole plan landed.
     fn execute_plan_and_commit(
         &mut self,
         local_entities: &HashMap<PathBuf, LocalEntityState>,
@@ -1176,7 +1190,7 @@ impl<C: ProtonClient> Daemon<C> {
         let DeleteGate {
             withheld_paths,
             pending,
-            consumed_approvals,
+            consumed_approvals: approved_deletes,
         } = self.decide_delete_gate(&plan, base_index)?;
         // A withheld deletion originates from ground truth (a remote-delete event, or a missing
         // local file). If any deletion is withheld this pass, do NOT advance the event cursor:
@@ -1225,8 +1239,37 @@ impl<C: ProtonClient> Daemon<C> {
             .count();
         let mut transfer_index = 0usize;
         let action_total = plan.len() as u64;
+        let mut pending_approval_consumptions: Vec<(PathBuf, DeleteDirection)> = Vec::new();
 
-        for (action_number, action) in plan.iter().enumerate() {
+        let mut action_number = 0usize;
+        while action_number < plan.len() {
+            let action = &plan[action_number];
+            // A run of two-plus consecutive planned downloads executes as chunked multi-file
+            // CLI invocations instead of one subprocess per file (grouped by destination
+            // directory — see `execute_download_run`); a run of one takes the single-file arm
+            // below. `download_batch_size = 1` disables batching entirely.
+            if self.config.download_batch_size > 1 && action.action == SyncAction::Download {
+                let run_length = plan[action_number..]
+                    .iter()
+                    .take_while(|action| action.action == SyncAction::Download)
+                    .count();
+                if run_length > 1 {
+                    self.execute_download_run(
+                        &plan[action_number..action_number + run_length],
+                        action_number,
+                        action_total,
+                        transfer_total,
+                        &mut transfer_index,
+                        remote_entities,
+                        interactive_progress,
+                        &mut index_mutations,
+                        &mut pending_approval_consumptions,
+                    )?;
+                    action_number += run_length;
+                    continue;
+                }
+            }
+            let checkpoint_after = action_performs_side_effects(&action.action);
             debug!(path = %action.path.display(), action = ?action.action, "executing sync action");
             self.shared.begin_activity(SyncActivity {
                 // Root-level actions have an empty relative path; skip it rather than render
@@ -1244,22 +1287,99 @@ impl<C: ProtonClient> Daemon<C> {
                 action_total: Some(action_total),
                 ..new_activity(PHASE_EXECUTING)
             });
-            match action.action {
-                SyncAction::Upload => {
-                    if let Some(local) = local_files.get(&action.path) {
-                        if let Some(parent) = action.path.parent()
-                            && !parent.as_os_str().is_empty()
-                            && !planned_remote_directories.contains(parent)
-                        {
-                            self.proton
-                                .ensure_directory(&self.config.remote_root, parent)?;
+            // Labeled so an arm can bail out of just this action (`break 'action`, the old
+            // loop `continue`) while still reaching the per-action checkpoint below.
+            'action: {
+                match action.action {
+                    SyncAction::Upload => {
+                        if let Some(local) = local_files.get(&action.path) {
+                            if let Some(parent) = action.path.parent()
+                                && !parent.as_os_str().is_empty()
+                                && !planned_remote_directories.contains(parent)
+                            {
+                                self.proton
+                                    .ensure_directory(&self.config.remote_root, parent)?;
+                            }
+                            transfer_index += 1;
+                            self.shared.update_activity(PHASE_EXECUTING, |activity| {
+                                activity.transfer = Some(TransferActivity {
+                                    direction: "upload".to_owned(),
+                                    path: action.path.clone(),
+                                    bytes_total: Some(local.file_size),
+                                    bytes_done: None,
+                                    started_epoch_secs: current_epoch_secs(),
+                                });
+                            });
+                            let spinner = begin_transfer_spinner(
+                                interactive_progress,
+                                transfer_index,
+                                transfer_total,
+                                "uploading",
+                                &action.path,
+                                Some(local.file_size),
+                            );
+                            if spinner.is_none() {
+                                info!(
+                                    target: TRANSFER_LOG_TARGET,
+                                    path = %action.path.display(),
+                                    size_bytes = local.file_size,
+                                    "uploading file to Proton Drive"
+                                );
+                            }
+                            let result = self.proton.upload(
+                                &local.absolute_path,
+                                &self.config.remote_root,
+                                &action.path,
+                            );
+                            finish_transfer_spinner(spinner);
+                            result?;
+                            let record = FileRecord::from_local(
+                                action.path.clone(),
+                                local,
+                                action.remote_id.clone().or_else(|| {
+                                    base_index
+                                        .get(&action.path)
+                                        .and_then(|record| record.proton_id.clone())
+                                }),
+                                SyncStatus::Synced,
+                            );
+                            index_mutations.push(IndexMutation::Upsert(record));
                         }
+                    }
+                    SyncAction::Download => {
+                        let remote_id = action.remote_id.as_deref().ok_or_else(|| {
+                            boxed_error(format!(
+                                "planned download for {} is missing a remote id",
+                                action.path.display()
+                            ))
+                        })?;
+                        let remote_path = safe_remote_path(&self.config.remote_root, &action.path)
+                            .ok_or_else(|| {
+                                boxed_error(format!(
+                                    "planned download for {} has an unsafe remote path",
+                                    action.path.display()
+                                ))
+                            })?;
+                        let Some(destination) =
+                            safe_local_path(&self.config.local_root, &action.path)
+                        else {
+                            warn!(
+                                path = %action.path.display(),
+                                "skipping download: local destination escapes the sync root \
+                                 (e.g. through a symlinked directory)"
+                            );
+                            break 'action;
+                        };
+                        ensure_parent_directory(&destination)?;
                         transfer_index += 1;
+                        // `bytes_total` stays unknown (the remote listing carries no size), but
+                        // `bytes_done` is sampled live from the staging directory the client
+                        // reports via the progress sink, so status still shows a growing count.
                         self.shared.update_activity(PHASE_EXECUTING, |activity| {
                             activity.transfer = Some(TransferActivity {
-                                direction: "upload".to_owned(),
+                                direction: "download".to_owned(),
                                 path: action.path.clone(),
-                                bytes_total: Some(local.file_size),
+                                bytes_total: None,
                                 bytes_done: None,
                                 started_epoch_secs: current_epoch_secs(),
                             });
@@ -1268,184 +1388,133 @@ impl<C: ProtonClient> Daemon<C> {
                             interactive_progress,
                             transfer_index,
                             transfer_total,
-                            "uploading",
+                            "downloading",
                             &action.path,
-                            Some(local.file_size),
+                            None,
                         );
                         if spinner.is_none() {
                             info!(
                                 target: TRANSFER_LOG_TARGET,
                                 path = %action.path.display(),
-                                size_bytes = local.file_size,
-                                "uploading file to Proton Drive"
+                                remote_id,
+                                "downloading file from Proton Drive"
                             );
                         }
-                        let result = self.proton.upload(
-                            &local.absolute_path,
-                            &self.config.remote_root,
-                            &action.path,
-                        );
+                        let result = self.proton.download(&remote_path, &destination);
                         finish_transfer_spinner(spinner);
                         result?;
+                        let local_state = local_file_state(&self.config.local_root, &destination)?;
                         let record = FileRecord::from_local(
                             action.path.clone(),
-                            local,
-                            action.remote_id.clone().or_else(|| {
-                                base_index
-                                    .get(&action.path)
-                                    .and_then(|record| record.proton_id.clone())
-                            }),
-                            SyncStatus::Synced,
-                        );
-                        index_mutations.push(IndexMutation::Upsert(record));
-                    }
-                }
-                SyncAction::Download => {
-                    let remote_id = action.remote_id.as_deref().ok_or_else(|| {
-                        boxed_error(format!(
-                            "planned download for {} is missing a remote id",
-                            action.path.display()
-                        ))
-                    })?;
-                    let remote_path = safe_remote_path(&self.config.remote_root, &action.path)
-                        .ok_or_else(|| {
-                            boxed_error(format!(
-                                "planned download for {} has an unsafe remote path",
-                                action.path.display()
-                            ))
-                        })?;
-                    let Some(destination) = safe_local_path(&self.config.local_root, &action.path)
-                    else {
-                        warn!(
-                            path = %action.path.display(),
-                            "skipping download: local destination escapes the sync root \
-                             (e.g. through a symlinked directory)"
-                        );
-                        continue;
-                    };
-                    ensure_parent_directory(&destination)?;
-                    transfer_index += 1;
-                    // `bytes_total` stays unknown (the remote listing carries no size), but
-                    // `bytes_done` is sampled live from the staging directory the client
-                    // reports via the progress sink, so status still shows a growing count.
-                    self.shared.update_activity(PHASE_EXECUTING, |activity| {
-                        activity.transfer = Some(TransferActivity {
-                            direction: "download".to_owned(),
-                            path: action.path.clone(),
-                            bytes_total: None,
-                            bytes_done: None,
-                            started_epoch_secs: current_epoch_secs(),
-                        });
-                    });
-                    let spinner = begin_transfer_spinner(
-                        interactive_progress,
-                        transfer_index,
-                        transfer_total,
-                        "downloading",
-                        &action.path,
-                        None,
-                    );
-                    if spinner.is_none() {
-                        info!(
-                            target: TRANSFER_LOG_TARGET,
-                            path = %action.path.display(),
-                            remote_id,
-                            "downloading file from Proton Drive"
-                        );
-                    }
-                    let result = self.proton.download(&remote_path, &destination);
-                    finish_transfer_spinner(spinner);
-                    result?;
-                    let local_state = local_file_state(&self.config.local_root, &destination)?;
-                    let record = FileRecord::from_local(
-                        action.path.clone(),
-                        &local_state,
-                        Some(remote_id.to_owned()),
-                        SyncStatus::Synced,
-                    );
-                    index_mutations.push(IndexMutation::Upsert(record));
-                }
-                SyncAction::CreateRemoteDirectory => {
-                    if action.path.as_os_str().is_empty() {
-                        self.proton
-                            .ensure_root_directory(&self.config.remote_root)?;
-                        continue;
-                    }
-                    if let Some(LocalEntityState::Directory(local)) =
-                        local_entities.get(&action.path)
-                    {
-                        self.proton
-                            .ensure_directory(&self.config.remote_root, &action.path)?;
-                        let record = FileRecord::from_local_directory(
-                            action.path.clone(),
-                            local,
-                            action.remote_id.clone().or_else(|| {
-                                base_index
-                                    .get(&action.path)
-                                    .and_then(|record| record.proton_id.clone())
-                            }),
-                            SyncStatus::Synced,
-                        );
-                        index_mutations.push(IndexMutation::Upsert(record));
-                    }
-                }
-                SyncAction::CreateLocalDirectory => {
-                    if let Some(destination) =
-                        safe_local_path(&self.config.local_root, &action.path)
-                    {
-                        fs::create_dir_all(&destination)?;
-                        let local_state =
-                            local_directory_state(&self.config.local_root, &destination)?;
-                        let record = FileRecord::from_local_directory(
-                            action.path.clone(),
                             &local_state,
-                            action.remote_id.clone(),
+                            Some(remote_id.to_owned()),
                             SyncStatus::Synced,
                         );
                         index_mutations.push(IndexMutation::Upsert(record));
                     }
-                }
-                SyncAction::MoveLocal => {
-                    if let Some(destination_path) = action.destination_path.as_ref()
-                        && let Some(source) = safe_local_path(&self.config.local_root, &action.path)
-                        && let Some(destination) =
-                            safe_local_path(&self.config.local_root, destination_path)
-                    {
-                        ensure_parent_directory(&destination)?;
-                        fs::rename(&source, &destination)?;
-                        if action.entity_kind == EntityKind::Directory {
+                    SyncAction::CreateRemoteDirectory => {
+                        if action.path.as_os_str().is_empty() {
+                            self.proton
+                                .ensure_root_directory(&self.config.remote_root)?;
+                            break 'action;
+                        }
+                        if let Some(LocalEntityState::Directory(local)) =
+                            local_entities.get(&action.path)
+                        {
+                            self.proton
+                                .ensure_directory(&self.config.remote_root, &action.path)?;
+                            let record = FileRecord::from_local_directory(
+                                action.path.clone(),
+                                local,
+                                action.remote_id.clone().or_else(|| {
+                                    base_index
+                                        .get(&action.path)
+                                        .and_then(|record| record.proton_id.clone())
+                                }),
+                                SyncStatus::Synced,
+                            );
+                            index_mutations.push(IndexMutation::Upsert(record));
+                        }
+                    }
+                    SyncAction::CreateLocalDirectory => {
+                        if let Some(destination) =
+                            safe_local_path(&self.config.local_root, &action.path)
+                        {
+                            fs::create_dir_all(&destination)?;
                             let local_state =
                                 local_directory_state(&self.config.local_root, &destination)?;
                             let record = FileRecord::from_local_directory(
-                                destination_path.clone(),
+                                action.path.clone(),
                                 &local_state,
                                 action.remote_id.clone(),
                                 SyncStatus::Synced,
                             );
-                            index_mutations.push(IndexMutation::Purge(action.path.clone()));
                             index_mutations.push(IndexMutation::Upsert(record));
-                            for (old_descendant, new_descendant) in
-                                directory_move_descendant_path_pairs(
-                                    &action.path,
-                                    destination_path,
-                                    base_index,
-                                )
-                            {
-                                if let Some(descendant_record) = base_index.get(&old_descendant) {
-                                    index_mutations
-                                        .push(IndexMutation::Purge(old_descendant.clone()));
-                                    index_mutations.push(IndexMutation::Upsert(FileRecord {
-                                        file_path: new_descendant,
-                                        ..descendant_record.clone()
-                                    }));
+                        }
+                    }
+                    SyncAction::MoveLocal => {
+                        if let Some(destination_path) = action.destination_path.as_ref()
+                            && let Some(source) =
+                                safe_local_path(&self.config.local_root, &action.path)
+                            && let Some(destination) =
+                                safe_local_path(&self.config.local_root, destination_path)
+                        {
+                            ensure_parent_directory(&destination)?;
+                            fs::rename(&source, &destination)?;
+                            if action.entity_kind == EntityKind::Directory {
+                                let local_state =
+                                    local_directory_state(&self.config.local_root, &destination)?;
+                                let record = FileRecord::from_local_directory(
+                                    destination_path.clone(),
+                                    &local_state,
+                                    action.remote_id.clone(),
+                                    SyncStatus::Synced,
+                                );
+                                index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                                index_mutations.push(IndexMutation::Upsert(record));
+                                for (old_descendant, new_descendant) in
+                                    directory_move_descendant_path_pairs(
+                                        &action.path,
+                                        destination_path,
+                                        base_index,
+                                    )
+                                {
+                                    if let Some(descendant_record) = base_index.get(&old_descendant)
+                                    {
+                                        index_mutations
+                                            .push(IndexMutation::Purge(old_descendant.clone()));
+                                        index_mutations.push(IndexMutation::Upsert(FileRecord {
+                                            file_path: new_descendant,
+                                            ..descendant_record.clone()
+                                        }));
+                                    }
                                 }
+                            } else {
+                                let local_state =
+                                    local_file_state(&self.config.local_root, &destination)?;
+                                let record = FileRecord::from_local(
+                                    destination_path.clone(),
+                                    &local_state,
+                                    action.remote_id.clone(),
+                                    SyncStatus::Synced,
+                                );
+                                index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                                index_mutations.push(IndexMutation::Upsert(record));
                             }
-                        } else {
-                            let local_state =
-                                local_file_state(&self.config.local_root, &destination)?;
+                        }
+                    }
+                    SyncAction::MoveRemote => {
+                        if let Some(destination_path) = action.destination_path.as_ref()
+                            && let Some(local) = local_files.get(destination_path)
+                        {
+                            self.proton.rename_or_move(
+                                &self.config.remote_root,
+                                &action.path,
+                                destination_path,
+                            )?;
                             let record = FileRecord::from_local(
                                 destination_path.clone(),
-                                &local_state,
+                                local,
                                 action.remote_id.clone(),
                                 SyncStatus::Synced,
                             );
@@ -1453,187 +1522,195 @@ impl<C: ProtonClient> Daemon<C> {
                             index_mutations.push(IndexMutation::Upsert(record));
                         }
                     }
-                }
-                SyncAction::MoveRemote => {
-                    if let Some(destination_path) = action.destination_path.as_ref()
-                        && let Some(local) = local_files.get(destination_path)
-                    {
-                        self.proton.rename_or_move(
-                            &self.config.remote_root,
-                            &action.path,
-                            destination_path,
-                        )?;
-                        let record = FileRecord::from_local(
-                            destination_path.clone(),
-                            local,
-                            action.remote_id.clone(),
-                            SyncStatus::Synced,
-                        );
-                        index_mutations.push(IndexMutation::Purge(action.path.clone()));
-                        index_mutations.push(IndexMutation::Upsert(record));
-                    }
-                }
-                SyncAction::AutoLink => match local_entities.get(&action.path) {
-                    Some(LocalEntityState::File(local)) => {
-                        let record = FileRecord::from_local(
-                            action.path.clone(),
-                            local,
-                            action.remote_id.clone(),
-                            SyncStatus::Synced,
-                        );
-                        index_mutations.push(IndexMutation::Upsert(record));
-                    }
-                    Some(LocalEntityState::Directory(local)) => {
-                        let record = FileRecord::from_local_directory(
-                            action.path.clone(),
-                            local,
-                            action.remote_id.clone(),
-                            SyncStatus::Synced,
-                        );
-                        index_mutations.push(IndexMutation::Upsert(record));
-                    }
-                    None => {}
-                },
-                SyncAction::Conflict => {
-                    if action.remote_id.is_some()
-                        && let Some(remote_path) =
-                            safe_remote_path(&self.config.remote_root, &action.path)
-                        && let Some(conflict_path) = action.conflict_path.as_ref()
-                        && let Some(destination) =
-                            safe_local_path(&self.config.local_root, conflict_path)
-                    {
-                        ensure_parent_directory(&destination)?;
-                        self.proton.download(&remote_path, &destination)?;
-                    }
-                    if let Some(local) = local_files.get(&action.path) {
-                        let record = FileRecord::from_local(
-                            action.path.clone(),
-                            local,
-                            action.remote_id.clone().or_else(|| {
-                                base_index
-                                    .get(&action.path)
-                                    .and_then(|record| record.proton_id.clone())
-                            }),
-                            SyncStatus::Conflict,
-                        );
-                        index_mutations.push(IndexMutation::Upsert(record));
-                    }
-                }
-                SyncAction::TypeConflict => {
-                    if action.entity_kind == EntityKind::Directory
-                        && let Some(conflict_path) = action.conflict_path.as_ref()
-                        && let Some(LocalEntityState::Directory(local_directory)) =
-                            local_entities.get(&action.path)
-                    {
+                    SyncAction::AutoLink => match local_entities.get(&action.path) {
+                        Some(LocalEntityState::File(local)) => {
+                            let record = FileRecord::from_local(
+                                action.path.clone(),
+                                local,
+                                action.remote_id.clone(),
+                                SyncStatus::Synced,
+                            );
+                            index_mutations.push(IndexMutation::Upsert(record));
+                        }
+                        Some(LocalEntityState::Directory(local)) => {
+                            let record = FileRecord::from_local_directory(
+                                action.path.clone(),
+                                local,
+                                action.remote_id.clone(),
+                                SyncStatus::Synced,
+                            );
+                            index_mutations.push(IndexMutation::Upsert(record));
+                        }
+                        None => {}
+                    },
+                    SyncAction::Conflict => {
                         if action.remote_id.is_some()
                             && let Some(remote_path) =
                                 safe_remote_path(&self.config.remote_root, &action.path)
+                            && let Some(conflict_path) = action.conflict_path.as_ref()
                             && let Some(destination) =
                                 safe_local_path(&self.config.local_root, conflict_path)
                         {
                             ensure_parent_directory(&destination)?;
                             self.proton.download(&remote_path, &destination)?;
-                            let local_state =
-                                local_file_state(&self.config.local_root, &destination)?;
-                            let sidecar_record = FileRecord::from_local(
-                                conflict_path.clone(),
-                                &local_state,
-                                action.remote_id.clone(),
+                        }
+                        if let Some(local) = local_files.get(&action.path) {
+                            let record = FileRecord::from_local(
+                                action.path.clone(),
+                                local,
+                                action.remote_id.clone().or_else(|| {
+                                    base_index
+                                        .get(&action.path)
+                                        .and_then(|record| record.proton_id.clone())
+                                }),
                                 SyncStatus::Conflict,
                             );
-                            index_mutations.push(IndexMutation::Upsert(sidecar_record));
+                            index_mutations.push(IndexMutation::Upsert(record));
                         }
-                        let directory_record = FileRecord::from_local_directory(
-                            action.path.clone(),
-                            local_directory,
-                            None,
-                            SyncStatus::Synced,
-                        );
-                        index_mutations.push(IndexMutation::Upsert(directory_record));
-                    } else {
-                        warn!(
-                            path = %action.path.display(),
-                            "skipping sync action because local and remote entity types differ"
-                        );
                     }
-                }
-                SyncAction::RemoteDelete => {
-                    if withheld_paths.contains(&action.path) {
-                        // Guard on here and not yet approved: skip the deletion AND its index
-                        // mutation, so nothing is lost and it re-plans (still pending) next pass.
-                        continue;
+                    SyncAction::TypeConflict => {
+                        if action.entity_kind == EntityKind::Directory
+                            && let Some(conflict_path) = action.conflict_path.as_ref()
+                            && let Some(LocalEntityState::Directory(local_directory)) =
+                                local_entities.get(&action.path)
+                        {
+                            if action.remote_id.is_some()
+                                && let Some(remote_path) =
+                                    safe_remote_path(&self.config.remote_root, &action.path)
+                                && let Some(destination) =
+                                    safe_local_path(&self.config.local_root, conflict_path)
+                            {
+                                ensure_parent_directory(&destination)?;
+                                self.proton.download(&remote_path, &destination)?;
+                                let local_state =
+                                    local_file_state(&self.config.local_root, &destination)?;
+                                let sidecar_record = FileRecord::from_local(
+                                    conflict_path.clone(),
+                                    &local_state,
+                                    action.remote_id.clone(),
+                                    SyncStatus::Conflict,
+                                );
+                                index_mutations.push(IndexMutation::Upsert(sidecar_record));
+                            }
+                            let directory_record = FileRecord::from_local_directory(
+                                action.path.clone(),
+                                local_directory,
+                                None,
+                                SyncStatus::Synced,
+                            );
+                            index_mutations.push(IndexMutation::Upsert(directory_record));
+                        } else {
+                            warn!(
+                                path = %action.path.display(),
+                                "skipping sync action because local and remote entity types differ"
+                            );
+                        }
                     }
-                    action.remote_id.as_deref().ok_or_else(|| {
-                        boxed_error(format!(
-                            "planned remote delete for {} is missing a remote id",
-                            action.path.display()
-                        ))
-                    })?;
-                    let remote_path = safe_remote_path(&self.config.remote_root, &action.path)
-                        .ok_or_else(|| {
+                    SyncAction::RemoteDelete => {
+                        if withheld_paths.contains(&action.path) {
+                            // Guard on here and not yet approved: skip the deletion AND its index
+                            // mutation, so nothing is lost and it re-plans (still pending) next pass.
+                            break 'action;
+                        }
+                        action.remote_id.as_deref().ok_or_else(|| {
                             boxed_error(format!(
-                                "planned remote delete for {} has an unsafe remote path",
+                                "planned remote delete for {} is missing a remote id",
                                 action.path.display()
                             ))
                         })?;
-                    self.proton.delete(&remote_path)?;
-                    index_mutations.push(IndexMutation::Purge(action.path.clone()));
-                    if action.entity_kind == EntityKind::Directory {
-                        for descendant in descendant_index_paths(&action.path, base_index) {
-                            index_mutations.push(IndexMutation::Purge(descendant));
-                        }
-                    }
-                }
-                SyncAction::LocalDelete => {
-                    if withheld_paths.contains(&action.path) {
-                        // Guard on here and not yet approved: skip the deletion AND its index
-                        // mutation, so nothing is lost and it re-plans (still pending) next pass.
-                        continue;
-                    }
-                    let Some(destination) = safe_local_path(&self.config.local_root, &action.path)
-                    else {
-                        warn!(
-                            path = %action.path.display(),
-                            "skipping local delete: path escapes the sync root \
-                             (e.g. through a symlinked directory)"
-                        );
-                        continue;
-                    };
-                    if destination.exists() {
+                        let remote_path = safe_remote_path(&self.config.remote_root, &action.path)
+                            .ok_or_else(|| {
+                                boxed_error(format!(
+                                    "planned remote delete for {} has an unsafe remote path",
+                                    action.path.display()
+                                ))
+                            })?;
+                        self.proton.delete(&remote_path)?;
+                        index_mutations.push(IndexMutation::Purge(action.path.clone()));
                         if action.entity_kind == EntityKind::Directory {
-                            fs::remove_dir_all(&destination)?;
-                        } else {
-                            fs::remove_file(&destination)?;
+                            for descendant in descendant_index_paths(&action.path, base_index) {
+                                index_mutations.push(IndexMutation::Purge(descendant));
+                            }
                         }
+                        record_approval_consumption(
+                            &approved_deletes,
+                            &action.path,
+                            DeleteDirection::Remote,
+                            &mut pending_approval_consumptions,
+                        );
                     }
-                    index_mutations.push(IndexMutation::Purge(action.path.clone()));
-                    if action.entity_kind == EntityKind::Directory {
-                        for descendant in descendant_index_paths(&action.path, base_index) {
-                            index_mutations.push(IndexMutation::Purge(descendant));
+                    SyncAction::LocalDelete => {
+                        if withheld_paths.contains(&action.path) {
+                            // Guard on here and not yet approved: skip the deletion AND its index
+                            // mutation, so nothing is lost and it re-plans (still pending) next pass.
+                            break 'action;
                         }
+                        let Some(destination) =
+                            safe_local_path(&self.config.local_root, &action.path)
+                        else {
+                            warn!(
+                                path = %action.path.display(),
+                                "skipping local delete: path escapes the sync root \
+                                 (e.g. through a symlinked directory)"
+                            );
+                            break 'action;
+                        };
+                        if destination.exists() {
+                            if action.entity_kind == EntityKind::Directory {
+                                fs::remove_dir_all(&destination)?;
+                            } else {
+                                fs::remove_file(&destination)?;
+                            }
+                        }
+                        index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                        if action.entity_kind == EntityKind::Directory {
+                            for descendant in descendant_index_paths(&action.path, base_index) {
+                                index_mutations.push(IndexMutation::Purge(descendant));
+                            }
+                        }
+                        record_approval_consumption(
+                            &approved_deletes,
+                            &action.path,
+                            DeleteDirection::Local,
+                            &mut pending_approval_consumptions,
+                        );
                     }
-                }
-                SyncAction::Purge => {
-                    index_mutations.push(IndexMutation::Purge(action.path.clone()));
-                }
-                SyncAction::SkipUnsupported => {
-                    debug!(
-                        path = %action.path.display(),
-                        remote_id = ?action.remote_id,
-                        "skipping Proton-native file that proton-drive cannot download"
-                    );
+                    SyncAction::Purge => {
+                        index_mutations.push(IndexMutation::Purge(action.path.clone()));
+                    }
+                    SyncAction::SkipUnsupported => {
+                        debug!(
+                            path = %action.path.display(),
+                            remote_id = ?action.remote_id,
+                            "skipping Proton-native file that proton-drive cannot download"
+                        );
+                    }
                 }
             }
+            if checkpoint_after {
+                // Land this action's outcome durably before moving on: a later failure — or a
+                // shutdown mid-pass — can no longer discard work that already happened. Index-only
+                // actions (AutoLink/Purge) accumulate instead, so an adoption-heavy pass stays a
+                // few large transactions rather than thousands of per-row fsyncs.
+                commit_checkpoint(
+                    &mut self.connection,
+                    &mut index_mutations,
+                    &mut pending_approval_consumptions,
+                )?;
+            }
+            action_number += 1;
         }
 
         self.shared.begin_activity(new_activity(PHASE_COMMITTING));
         let transaction = self.connection.transaction()?;
+        // Whatever accumulated since the last checkpoint (trailing index-only mutations, plus any
+        // approval consumption not yet flushed) commits here together with the cursor.
         for mutation in &index_mutations {
             mutation.apply(&transaction)?;
         }
-        // Advance the event cursor in the SAME transaction as the index mutations: it must move
-        // only after every side effect of this plan has succeeded, so a mid-plan failure (which
-        // returns early above, before this commit) replays the same events next pass rather than
+        // Advance the event cursor ONLY in this final, whole-pass-succeeded transaction — never in
+        // a mid-pass checkpoint: the cursor asserts "every remote change up to this event has been
+        // applied", so a mid-plan failure must replay the same events next pass rather than
         // silently skipping them. Reprocessing events is idempotent; skipping them loses changes.
         if let Some(cursor_update) = &cursor_update {
             store_event_cursor(
@@ -1643,10 +1720,7 @@ impl<C: ProtonClient> Daemon<C> {
                 current_epoch_secs() as i64,
             )?;
         }
-        // Consume the approvals whose deletions we just performed — in the SAME post-success
-        // transaction as the index mutations, so a mid-plan failure (which returns early above)
-        // leaves the approval intact and the delete retried next pass.
-        for (path, direction) in &consumed_approvals {
+        for (path, direction) in &pending_approval_consumptions {
             delete_delete_approval(&transaction, path, *direction)?;
         }
         transaction.commit()?;
@@ -1665,6 +1739,227 @@ impl<C: ProtonClient> Daemon<C> {
         self.last_successful_sync_summary = Some(plan_summary);
         info!("reconciliation completed");
         Ok(())
+    }
+
+    /// Executes one run of consecutive planned `Download` actions as chunked multi-file CLI
+    /// invocations ([`ProtonClient::download_many`]) instead of one subprocess per file. Files
+    /// are grouped by destination directory (a batch shares one `localFolder`), preserving plan
+    /// order, and each group is split into chunks of at most `download_batch_size`. Every chunk
+    /// is checkpoint-committed as soon as it lands, so a failure — or a daemon shutdown — never
+    /// discards transfers that already completed; the first failed file aborts the pass after
+    /// its chunk's survivors are committed.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_download_run(
+        &mut self,
+        run: &[PlannedAction],
+        first_action_number: usize,
+        action_total: u64,
+        transfer_total: usize,
+        transfer_index: &mut usize,
+        remote_entities: &HashMap<PathBuf, RemoteEntity>,
+        interactive_progress: bool,
+        index_mutations: &mut Vec<IndexMutation>,
+        pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
+    ) -> AppResult<()> {
+        let mut groups: Vec<(PathBuf, Vec<PreparedDownload<'_>>)> = Vec::new();
+        for (offset, action) in run.iter().enumerate() {
+            let remote_id = action.remote_id.as_deref().ok_or_else(|| {
+                boxed_error(format!(
+                    "planned download for {} is missing a remote id",
+                    action.path.display()
+                ))
+            })?;
+            let remote_path =
+                safe_remote_path(&self.config.remote_root, &action.path).ok_or_else(|| {
+                    boxed_error(format!(
+                        "planned download for {} has an unsafe remote path",
+                        action.path.display()
+                    ))
+                })?;
+            let Some(destination) = safe_local_path(&self.config.local_root, &action.path) else {
+                warn!(
+                    path = %action.path.display(),
+                    "skipping download: local destination escapes the sync root \
+                     (e.g. through a symlinked directory)"
+                );
+                continue;
+            };
+            // The remote's claimed digest rides along so a failed chunk can salvage the files
+            // that were already fully staged (verified by content, not by exit status).
+            let expected_sha1 = remote_entities
+                .get(&action.path)
+                .and_then(|entity| entity.as_file())
+                .and_then(|file| file.sha1_hash.clone());
+            let parent = action
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_path_buf();
+            let prepared = PreparedDownload {
+                action,
+                action_number: first_action_number + offset,
+                remote_id: remote_id.to_owned(),
+                request: DownloadRequest {
+                    remote_path,
+                    destination,
+                    expected_sha1,
+                },
+            };
+            match groups.iter_mut().find(|(group, _)| *group == parent) {
+                Some((_, members)) => members.push(prepared),
+                None => groups.push((parent, vec![prepared])),
+            }
+        }
+        let batch_size = self.config.download_batch_size.max(1);
+        for (parent, members) in &groups {
+            if let Some(first) = members.first() {
+                ensure_parent_directory(&first.request.destination)?;
+            }
+            for chunk in members.chunks(batch_size) {
+                self.execute_download_chunk(
+                    parent,
+                    chunk,
+                    action_total,
+                    transfer_total,
+                    transfer_index,
+                    interactive_progress,
+                    index_mutations,
+                    pending_approval_consumptions,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Executes one chunk of prepared downloads via a single [`ProtonClient::download_many`]
+    /// call, records every landed file, checkpoint-commits, and only then fails the pass if any
+    /// file in the chunk failed — completed transfers in a failing chunk stay durable.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_download_chunk(
+        &mut self,
+        parent: &Path,
+        chunk: &[PreparedDownload<'_>],
+        action_total: u64,
+        transfer_total: usize,
+        transfer_index: &mut usize,
+        interactive_progress: bool,
+        index_mutations: &mut Vec<IndexMutation>,
+        pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
+    ) -> AppResult<()> {
+        let display_parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let first_transfer_ordinal = *transfer_index + 1;
+        *transfer_index += chunk.len();
+        let last_action_number = chunk
+            .last()
+            .map(|prepared| prepared.action_number)
+            .unwrap_or(0);
+        self.shared.begin_activity(SyncActivity {
+            detail: Some(format!(
+                "downloading {} files in {}",
+                chunk.len(),
+                display_parent.display()
+            )),
+            action_index: Some(last_action_number as u64 + 1),
+            action_total: Some(action_total),
+            ..new_activity(PHASE_EXECUTING)
+        });
+        // `bytes_done` is sampled live from the staging directory the client reports via the
+        // progress sink; for a chunk it grows across the whole batch. The path names the
+        // directory being filled rather than a single file.
+        self.shared.update_activity(PHASE_EXECUTING, |activity| {
+            activity.transfer = Some(TransferActivity {
+                direction: "download".to_owned(),
+                path: parent.to_path_buf(),
+                bytes_total: None,
+                bytes_done: None,
+                started_epoch_secs: current_epoch_secs(),
+            });
+        });
+        let verb = format!("downloading {} files from", chunk.len());
+        let spinner = begin_transfer_spinner(
+            interactive_progress,
+            first_transfer_ordinal,
+            transfer_total,
+            &verb,
+            display_parent,
+            None,
+        );
+        if spinner.is_none() {
+            info!(
+                target: TRANSFER_LOG_TARGET,
+                directory = %display_parent.display(),
+                files = chunk.len(),
+                "downloading batch of files from Proton Drive"
+            );
+        }
+        let requests: Vec<DownloadRequest> = chunk
+            .iter()
+            .map(|prepared| prepared.request.clone())
+            .collect();
+        let results = self.proton.download_many(&requests);
+        finish_transfer_spinner(spinner);
+
+        let mut first_failure: Option<(PathBuf, String)> = None;
+        let record_item_failure =
+            |first_failure: &mut Option<(PathBuf, String)>, path: &Path, error: String| {
+                warn!(path = %path.display(), error = %error, "batched download failed for file");
+                if first_failure.is_none() {
+                    *first_failure = Some((path.to_path_buf(), error));
+                }
+            };
+        for (prepared, result) in chunk.iter().zip(results) {
+            match result {
+                // A stat/hash failure on a landed file (e.g. deleted out from under us the
+                // instant after promotion) is that ITEM's failure, never a `?` out of the
+                // loop — the chunk's other survivors must still reach the checkpoint below.
+                Ok(()) => {
+                    match local_file_state(&self.config.local_root, &prepared.request.destination) {
+                        Ok(local_state) => {
+                            let record = FileRecord::from_local(
+                                prepared.action.path.clone(),
+                                &local_state,
+                                Some(prepared.remote_id.clone()),
+                                SyncStatus::Synced,
+                            );
+                            index_mutations.push(IndexMutation::Upsert(record));
+                            debug!(
+                                target: TRANSFER_LOG_TARGET,
+                                path = %prepared.action.path.display(),
+                                "downloaded file from Proton Drive (batched)"
+                            );
+                        }
+                        Err(error) => record_item_failure(
+                            &mut first_failure,
+                            &prepared.action.path,
+                            format!("downloaded but could not be recorded: {error}"),
+                        ),
+                    }
+                }
+                Err(error) => record_item_failure(
+                    &mut first_failure,
+                    &prepared.action.path,
+                    error.to_string(),
+                ),
+            }
+        }
+        // Land this chunk's completed downloads durably before deciding the pass's fate: even
+        // when the chunk failed, its survivors are recorded and never re-transferred.
+        commit_checkpoint(
+            &mut self.connection,
+            index_mutations,
+            pending_approval_consumptions,
+        )?;
+        match first_failure {
+            None => Ok(()),
+            Some((path, error)) => Err(boxed_error(format!(
+                "download failed for {}: {error}",
+                path.display()
+            ))),
+        }
     }
 
     /// Decides, for every destructive action in `plan`, whether to execute it now or withhold it
@@ -2031,6 +2326,71 @@ impl IndexMutation {
             Self::Upsert(record) => upsert_record(connection, record),
             Self::Purge(path) => purge_record(connection, path),
         }
+    }
+}
+
+/// One planned download prepared for batched execution: boundary-validated paths plus the
+/// remote's claimed digest (for salvage verification when a chunk fails midway).
+struct PreparedDownload<'plan> {
+    action: &'plan PlannedAction,
+    /// Position in the overall plan, for `action_index` progress reporting.
+    action_number: usize,
+    remote_id: String,
+    request: DownloadRequest,
+}
+
+/// Whether executing this action performs a side effect (a CLI call or a local filesystem
+/// change). These checkpoint-commit immediately after completing; index-only actions
+/// (`AutoLink`/`Purge`) and no-ops accumulate until the next checkpoint or the final commit,
+/// so an adoption-heavy pass (thousands of AutoLinks) stays a few large transactions instead
+/// of thousands of per-row fsyncs.
+fn action_performs_side_effects(action: &SyncAction) -> bool {
+    !matches!(
+        action,
+        SyncAction::AutoLink | SyncAction::Purge | SyncAction::SkipUnsupported
+    )
+}
+
+/// Durably commits everything accumulated since the previous checkpoint — the incremental half
+/// of the commit-after-side-effects scheme (see `execute_plan_and_commit`). An index write
+/// still never precedes its side effect; a checkpoint only makes *completed* work survive a
+/// later failure or shutdown. The event cursor is deliberately not part of any checkpoint (it
+/// advances only in the final commit of a fully-successful pass). Approval consumptions ride
+/// in the same transaction as the deletion's own index purge.
+fn commit_checkpoint(
+    connection: &mut Connection,
+    index_mutations: &mut Vec<IndexMutation>,
+    pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
+) -> AppResult<()> {
+    if index_mutations.is_empty() && pending_approval_consumptions.is_empty() {
+        return Ok(());
+    }
+    let transaction = connection.transaction()?;
+    for mutation in index_mutations.iter() {
+        mutation.apply(&transaction)?;
+    }
+    for (path, direction) in pending_approval_consumptions.iter() {
+        delete_delete_approval(&transaction, path, *direction)?;
+    }
+    transaction.commit()?;
+    index_mutations.clear();
+    pending_approval_consumptions.clear();
+    Ok(())
+}
+
+/// Queues the consumption of the standing delete approval matching a deletion that just
+/// executed, so the next checkpoint removes the approval in the same transaction as the index
+/// purge it authorized. No-op when the delete ran with the guard off (nothing was approved).
+fn record_approval_consumption(
+    approved: &[(PathBuf, DeleteDirection)],
+    path: &Path,
+    direction: DeleteDirection,
+    pending: &mut Vec<(PathBuf, DeleteDirection)>,
+) {
+    if approved.iter().any(|(approved_path, approved_direction)| {
+        approved_path == path && *approved_direction == direction
+    }) {
+        pending.push((path.to_path_buf(), direction));
     }
 }
 
@@ -2606,6 +2966,9 @@ mod tests {
             remote_path: PathBuf,
             destination: PathBuf,
         },
+        DownloadBatch {
+            remote_paths: Vec<PathBuf>,
+        },
         Delete {
             remote_path: PathBuf,
         },
@@ -2623,6 +2986,12 @@ mod tests {
         remote_contents: HashMap<PathBuf, Vec<u8>>,
         operations: Arc<Mutex<Vec<RecordedOperation>>>,
         failed_uploads: BTreeSet<PathBuf>,
+        /// Absolute remote paths whose per-item result in `download_many` fails (the batch
+        /// itself still runs, mirroring the real client's partial-failure contract).
+        failed_batch_downloads: BTreeSet<PathBuf>,
+        /// Absolute remote paths for which `download_many` reports `Ok` WITHOUT writing the
+        /// destination file — models a landed file vanishing before the daemon can stat it.
+        unstaged_batch_downloads: BTreeSet<PathBuf>,
     }
 
     impl RecordingProtonClient {
@@ -2637,6 +3006,8 @@ mod tests {
                     remote_contents: HashMap::new(),
                     operations: Arc::clone(&operations),
                     failed_uploads: BTreeSet::new(),
+                    failed_batch_downloads: BTreeSet::new(),
+                    unstaged_batch_downloads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -2654,6 +3025,8 @@ mod tests {
                     remote_contents,
                     operations: Arc::clone(&operations),
                     failed_uploads: BTreeSet::new(),
+                    failed_batch_downloads: BTreeSet::new(),
+                    unstaged_batch_downloads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -2671,6 +3044,8 @@ mod tests {
                     remote_contents: HashMap::new(),
                     operations: Arc::clone(&operations),
                     failed_uploads,
+                    failed_batch_downloads: BTreeSet::new(),
+                    unstaged_batch_downloads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -2694,6 +3069,8 @@ mod tests {
                     remote_contents: HashMap::new(),
                     operations: Arc::clone(&operations),
                     failed_uploads: BTreeSet::new(),
+                    failed_batch_downloads: BTreeSet::new(),
+                    unstaged_batch_downloads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -2760,6 +3137,43 @@ mod tests {
                     destination: destination.to_path_buf(),
                 });
             Ok(())
+        }
+
+        fn download_many(&self, requests: &[DownloadRequest]) -> Vec<AppResult<()>> {
+            self.operations.lock().expect("operations lock").push(
+                RecordedOperation::DownloadBatch {
+                    remote_paths: requests
+                        .iter()
+                        .map(|request| request.remote_path.clone())
+                        .collect(),
+                },
+            );
+            requests
+                .iter()
+                .map(|request| {
+                    if self.failed_batch_downloads.contains(&request.remote_path) {
+                        return Err(boxed_error(format!(
+                            "download failed for {}",
+                            request.remote_path.display()
+                        )));
+                    }
+                    if self.unstaged_batch_downloads.contains(&request.remote_path) {
+                        return Ok(());
+                    }
+                    if let Some(parent) = request.destination.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let content = self
+                        .remote_contents
+                        .get(&request.remote_path)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            format!("downloaded:{}", request.remote_path.display()).into_bytes()
+                        });
+                    fs::write(&request.destination, content)?;
+                    Ok(())
+                })
+                .collect()
         }
 
         fn delete(&self, remote_path: &Path) -> AppResult<()> {
@@ -2992,6 +3406,7 @@ mod tests {
             proton_cli: PathBuf::from("proton-drive"),
             proton_timeout: Duration::from_secs(60),
             proton_list_attempts: 2,
+            download_batch_size: 1,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             events_driven: false,
@@ -4291,7 +4706,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_does_not_commit_directory_move_when_later_action_fails() {
+    fn reconcile_checkpoints_directory_move_when_later_action_fails() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
         fs::create_dir_all(local_root.join("old-docs")).expect("local old-docs directory");
@@ -4354,28 +4769,47 @@ mod tests {
             "the directory rename side effect happens before the later failure"
         );
         assert!(local_root.join("new-docs").join("report.txt").is_file());
+        // The move completed on disk before the later upload failed, so its checkpoint commit
+        // must have recorded it — the index reflects what actually happened, and the completed
+        // move is never re-derived (or worse, re-executed) on the retry pass.
         assert!(
             get_record(&daemon.connection, Path::new("old-docs"))
                 .expect("old directory index lookup")
-                .is_some(),
-            "a successful directory move must not be committed when a later action fails"
+                .is_none(),
+            "a completed directory move must be checkpoint-committed despite the later failure"
         );
         assert!(
             get_record(&daemon.connection, Path::new("old-docs/report.txt"))
                 .expect("old descendant index lookup")
-                .is_some(),
-            "descendant rewrites queued by an earlier action must not be committed either"
+                .is_none(),
+            "descendant rewrites commit in the same checkpoint as their directory move"
         );
         assert!(
             get_record(&daemon.connection, Path::new("new-docs"))
                 .expect("new directory index lookup")
+                .is_some(),
+            "the moved directory's new index row lands with the move's own checkpoint"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("new-docs/report.txt"))
+                .expect("new descendant index lookup")
+                .is_some(),
+            "the moved descendant's new index row lands with the move's own checkpoint"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("will-fail.txt"))
+                .expect("failed upload index lookup")
                 .is_none(),
-            "no new index row should appear until the whole reconcile succeeds"
+            "the failed action itself must never be recorded"
+        );
+        assert!(
+            daemon.last_sync.is_none(),
+            "a failed pass must not count as a successful sync even with checkpoints committed"
         );
     }
 
     #[test]
-    fn reconcile_does_not_commit_index_when_later_action_fails() {
+    fn reconcile_checkpoints_completed_actions_when_later_action_fails() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
         fs::create_dir(&local_root).expect("local root");
@@ -4416,8 +4850,8 @@ mod tests {
         assert!(
             get_record(&daemon.connection, Path::new("first.txt"))
                 .expect("first index lookup")
-                .is_none(),
-            "a successful early action must not be committed when a later action fails"
+                .is_some(),
+            "a completed upload must be checkpoint-committed even when a later action fails"
         );
         assert!(
             get_record(&daemon.connection, Path::new("second.txt"))
@@ -4454,6 +4888,285 @@ mod tests {
             Some(2)
         );
         assert!(status.last_successful_sync_summary.is_none());
+    }
+
+    #[test]
+    fn consecutive_downloads_batch_by_directory_and_chunk_size() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let mut remote_entities = HashMap::new();
+        for name in ["docs", "media"] {
+            remote_entities.insert(
+                PathBuf::from(name),
+                RemoteEntity::Directory(RemoteDirectory {
+                    path: PathBuf::from(name),
+                    id: Some(format!("{name}-id")),
+                    name: name.to_owned(),
+                }),
+            );
+        }
+        for (path, id, hash) in [
+            ("docs/a.txt", "id-a", "ha"),
+            ("docs/b.txt", "id-b", "hb"),
+            ("docs/c.txt", "id-c", "hc"),
+            ("media/d.txt", "id-d", "hd"),
+        ] {
+            remote_entities.insert(
+                PathBuf::from(path),
+                RemoteEntity::File(remote(path, id, Some(hash))),
+            );
+        }
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let config = DaemonConfig {
+            download_batch_size: 2,
+            ..test_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+
+        daemon.reconcile_blocking().expect("bootstrap reconcile");
+
+        // The three consecutive `docs/` downloads form one run: grouped under their shared
+        // parent and chunked to the batch size (2 + 1). The `media/` download is separated
+        // from them by media's own CreateLocalDirectory action, so its run has length one and
+        // takes the plain single-file path.
+        assert_eq!(
+            *operations.lock().expect("operations lock"),
+            vec![
+                RecordedOperation::DownloadBatch {
+                    remote_paths: vec![
+                        PathBuf::from("/Drive/RemoteFolder/docs/a.txt"),
+                        PathBuf::from("/Drive/RemoteFolder/docs/b.txt"),
+                    ],
+                },
+                RecordedOperation::DownloadBatch {
+                    remote_paths: vec![PathBuf::from("/Drive/RemoteFolder/docs/c.txt")],
+                },
+                RecordedOperation::Download {
+                    remote_path: PathBuf::from("/Drive/RemoteFolder/media/d.txt"),
+                    destination: local_root.join("media/d.txt"),
+                },
+            ]
+        );
+        for path in ["docs/a.txt", "docs/b.txt", "docs/c.txt", "media/d.txt"] {
+            assert!(
+                local_root.join(path).is_file(),
+                "batched download must land {path} at its destination"
+            );
+            assert!(
+                get_record(&daemon.connection, Path::new(path))
+                    .expect("index lookup")
+                    .is_some(),
+                "batched download must record {path} in the index"
+            );
+        }
+        assert!(daemon.last_sync.is_some(), "the pass succeeded");
+    }
+
+    #[test]
+    fn a_failed_batch_download_checkpoints_survivors_without_advancing_the_cursor() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("docs"),
+                id: Some("vol~nd".to_owned()),
+                name: "docs".to_owned(),
+            }),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/a.txt"),
+            RemoteEntity::File(remote("docs/a.txt", "vol~na", Some("ha"))),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/b.txt"),
+            RemoteEntity::File(remote("docs/b.txt", "vol~nb", Some("hb"))),
+        );
+        let (mut client, _operations) =
+            RecordingProtonClient::with_remote_entities(remote_entities);
+        client.failed_batch_downloads =
+            BTreeSet::from([PathBuf::from("/Drive/RemoteFolder/docs/b.txt")]);
+        let config = DaemonConfig {
+            download_batch_size: 2,
+            ..event_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-1"))),
+        )
+        .expect("daemon");
+
+        let error = daemon
+            .reconcile_blocking()
+            .expect_err("a failed file in the batch must fail the pass");
+        assert!(
+            error.to_string().contains("download failed for docs/b.txt"),
+            "unexpected error: {error}"
+        );
+
+        // The chunk's survivor was checkpoint-committed before the pass failed...
+        assert!(
+            local_root.join("docs/a.txt").is_file(),
+            "the successfully downloaded file stays on disk"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs/a.txt"))
+                .expect("survivor index lookup")
+                .is_some(),
+            "a completed download in a failing chunk must be checkpoint-committed"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs"))
+                .expect("directory index lookup")
+                .is_some(),
+            "the earlier CreateLocalDirectory checkpoint must also survive"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs/b.txt"))
+                .expect("failed index lookup")
+                .is_none(),
+            "the failed file must never be recorded"
+        );
+        // ...but the pass-level outcomes are still those of a failure: no cursor, no last_sync.
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("load cursor")
+                .is_none(),
+            "a failed pass must never advance the event cursor, checkpoints notwithstanding"
+        );
+        assert!(daemon.last_sync.is_none());
+    }
+
+    #[test]
+    fn a_batch_item_that_cannot_be_recorded_fails_alone_and_the_survivors_commit() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("docs"),
+                id: Some("docs-id".to_owned()),
+                name: "docs".to_owned(),
+            }),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/a.txt"),
+            RemoteEntity::File(remote("docs/a.txt", "id-a", Some("ha"))),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/b.txt"),
+            RemoteEntity::File(remote("docs/b.txt", "id-b", Some("hb"))),
+        );
+        let (mut client, _operations) =
+            RecordingProtonClient::with_remote_entities(remote_entities);
+        // The client reports success for b.txt but never writes it, so the daemon's stat of
+        // the landed file fails — that must be b.txt's OWN failure, not a `?` that discards
+        // the chunk's other survivor.
+        client.unstaged_batch_downloads =
+            BTreeSet::from([PathBuf::from("/Drive/RemoteFolder/docs/b.txt")]);
+        let config = DaemonConfig {
+            download_batch_size: 2,
+            ..test_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+
+        let error = daemon
+            .reconcile_blocking()
+            .expect_err("an unrecordable batch item must fail the pass");
+        assert!(
+            error.to_string().contains("could not be recorded"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs/a.txt"))
+                .expect("survivor index lookup")
+                .is_some(),
+            "the chunk's other survivor must still be checkpoint-committed"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs/b.txt"))
+                .expect("failed index lookup")
+                .is_none(),
+            "the unrecordable item must not be recorded"
+        );
+        assert!(daemon.last_sync.is_none());
+    }
+
+    #[test]
+    fn an_executed_deletes_approval_is_consumed_even_when_a_later_action_fails() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        // A local-only file whose upload fails, ordered after the delete ("removed.txt" <
+        // "zz-fail.txt"), so every pass ends in an error after the delete has executed.
+        fs::write(local_root.join("zz-fail.txt"), b"fails").expect("failing upload file");
+
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("removed.txt"),
+            remote("removed.txt", "removed-id", Some("same-hash")),
+        );
+        let (mut client, operations) = RecordingProtonClient::new(remote_files);
+        client.failed_uploads = BTreeSet::from([PathBuf::from("zz-fail.txt")]);
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("removed.txt", Some("removed-id"), "same-hash"),
+        )
+        .expect("base record");
+
+        // Pass 1: the remote delete is withheld pending approval; the pass then fails on the
+        // upload. The pending deletion is still published.
+        daemon
+            .reconcile_blocking()
+            .expect_err("the failing upload fails the pass");
+        assert_eq!(daemon.pending_deletions.len(), 1);
+        let pending = daemon.pending_deletions[0].clone();
+        upsert_delete_approval(
+            &daemon.connection,
+            &pending.path,
+            pending.direction,
+            &pending.fingerprint,
+            1,
+        )
+        .expect("approve");
+
+        // Pass 2: the approved delete executes and checkpoints — its index purge and the
+        // approval consumption commit together — before the later upload fails the pass again.
+        daemon
+            .reconcile_blocking()
+            .expect_err("the failing upload still fails the pass");
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .contains(&RecordedOperation::Delete {
+                    remote_path: PathBuf::from("/Drive/RemoteFolder/removed.txt"),
+                }),
+            "the approved delete must have executed"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("removed.txt"))
+                .expect("record lookup")
+                .is_none(),
+            "the executed delete's index purge must be checkpoint-committed despite the failure"
+        );
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "the consumed approval must not survive the failed pass"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -5415,6 +6128,9 @@ mod tests {
             proton_cli: PathBuf::from("proton-drive"),
             proton_timeout: Duration::from_secs(60),
             proton_list_attempts: 2,
+            // Batching off by default in the general fixture so existing per-file download
+            // expectations hold; the dedicated batching tests opt in explicitly.
+            download_batch_size: 1,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             events_driven: false,

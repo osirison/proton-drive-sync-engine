@@ -1,3 +1,4 @@
+use crate::index::compute_sha1;
 use crate::{AppResult, boxed_error};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -200,6 +201,18 @@ pub trait ProtonClient: Send + Sync {
     fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
     fn upload(&self, local_path: &Path, remote_root: &Path, relative_path: &Path) -> AppResult<()>;
     fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()>;
+    /// Downloads several remote files in one operation, returning one result per request,
+    /// aligned by index. The default implementation loops over [`Self::download`], so existing
+    /// clients and test doubles behave exactly as before; clients that can fetch many files per
+    /// invocation (the real CLI takes multiple `path...` arguments) override it. Callers must
+    /// treat each element independently: some files may have landed at their destinations even
+    /// when others — or the invocation as a whole — failed.
+    fn download_many(&self, requests: &[DownloadRequest]) -> Vec<AppResult<()>> {
+        requests
+            .iter()
+            .map(|request| self.download(&request.remote_path, &request.destination))
+            .collect()
+    }
     fn delete(&self, remote_path: &Path) -> AppResult<()>;
     /// Renames and/or moves a remote entry from `old_relative_path` to
     /// `new_relative_path`, both resolved against `remote_root`. Implementations
@@ -228,6 +241,17 @@ pub trait ProtonClient: Send + Sync {
     /// The default is a no-op, mirroring [`Self::install_cancel_flag`], so test doubles are
     /// unaffected unless they opt in.
     fn install_progress_sink(&mut self, _sink: Arc<dyn ProgressSink>) {}
+}
+
+/// One file in a batched download (see [`ProtonClient::download_many`]): fetch `remote_path`
+/// and land its content at exactly `destination`. `expected_sha1` — the remote's claimed
+/// digest, when the listing exposed one — lets a failed batch salvage the files that were
+/// already fully staged, by verifying their content instead of trusting the CLI's exit status.
+#[derive(Debug, Clone)]
+pub struct DownloadRequest {
+    pub remote_path: PathBuf,
+    pub destination: PathBuf,
+    pub expected_sha1: Option<String>,
 }
 
 /// Receiver for the concrete client's live progress callbacks (see
@@ -515,15 +539,7 @@ impl ProtonClient for ProtonDriveClient {
         // nothing else is touched"), always stage the download in a private scratch
         // directory first and move the single resulting entry into place with one
         // rename, rather than trusting the CLI to name it correctly on the first try.
-        let scratch_dir = local_folder.join(format!(
-            "{}{}-{}",
-            crate::DOWNLOAD_SCRATCH_PREFIX,
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_nanos())
-                .unwrap_or_default()
-        ));
+        let scratch_dir = download_scratch_dir(local_folder);
         fs::create_dir_all(&scratch_dir).map_err(|error| {
             boxed_error(format!(
                 "failed to create scratch download directory {}: {error}",
@@ -577,6 +593,16 @@ impl ProtonClient for ProtonDriveClient {
                 destination.display()
             ))
         })
+    }
+
+    fn download_many(&self, requests: &[DownloadRequest]) -> Vec<AppResult<()>> {
+        match batchable_download_folder(requests) {
+            Some(local_folder) => self.run_download_batch(requests, &local_folder),
+            None => requests
+                .iter()
+                .map(|request| self.download(&request.remote_path, &request.destination))
+                .collect(),
+        }
     }
 
     fn delete(&self, remote_path: &Path) -> AppResult<()> {
@@ -835,21 +861,104 @@ impl ProtonDriveClient {
     /// - **Read-only** listings (`list` / `list_directory`) pass `list_attempts` (> 1), so a
     ///   transient busy crash is retried and usually self-heals.
     /// - **Mutating** commands (upload/download/trash/rename/move/create-folder) pass `attempts = 1`
-    ///   and are never auto-retried, so a busy crash mid-write fails the reconcile cleanly — no
-    ///   partial commit, because index writes happen only after all side effects succeed — and
-    ///   replans next cycle.
+    ///   and are never auto-retried, so a busy crash mid-write fails the reconcile cleanly — the
+    ///   failed action is never recorded (index writes happen only after their side effect
+    ///   succeeded; completed actions keep their checkpoints) — and the remainder replans next
+    ///   cycle.
     ///
     /// The real fix — one long-lived process owning the cache instead of many short-lived CLI
     /// spawns fighting over shared SQLite — is the SDK-sidecar tracked in #18. Until then, do **not**
     /// add engine-side parallelism across `proton-drive` invocations (this is also why #17,
     /// parallelizing the list BFS, stays deferred).
+    /// Executes the batched form of [`ProtonClient::download_many`]: one `filesystem download`
+    /// invocation naming every remote path, staged through a single private scratch directory
+    /// and moved into place with one rename per file — the same "content lands at exactly
+    /// `destination`, and nothing else is touched" contract as the single-file `download`.
+    ///
+    /// Results are per-file. After a successful CLI exit every request must have been staged
+    /// under its remote basename; a missing entry (e.g. a file the CLI silently skipped) fails
+    /// only that request. After a failed CLI exit (or timeout/cancellation) the batch still
+    /// salvages every fully-staged file whose content matches its `expected_sha1`, so transfers
+    /// that already completed survive the failure; unverifiable files fail with the batch error.
+    fn run_download_batch(
+        &self,
+        requests: &[DownloadRequest],
+        local_folder: &Path,
+    ) -> Vec<AppResult<()>> {
+        let scratch_dir = download_scratch_dir(local_folder);
+        if let Err(error) = fs::create_dir_all(&scratch_dir) {
+            let message = format!(
+                "failed to create scratch download directory {}: {error}",
+                scratch_dir.display()
+            );
+            return requests
+                .iter()
+                .map(|_| Err(boxed_error(message.clone())))
+                .collect();
+        }
+        let _scratch_guard = ScratchDirGuard::new(&scratch_dir);
+        if let Some(sink) = &self.progress_sink {
+            sink.download_staging(&scratch_dir);
+        }
+
+        let mut args = Vec::with_capacity(requests.len() + 3);
+        args.push(OsString::from("filesystem"));
+        args.push(OsString::from("download"));
+        args.extend(
+            requests
+                .iter()
+                .map(|request| request.remote_path.as_os_str().to_os_string()),
+        );
+        args.push(scratch_dir.as_os_str().to_os_string());
+        let timeout = batch_download_timeout(self.command_policy.timeout, requests.len());
+
+        match self.run_proton_drive_with_timeout("download", &args, timeout) {
+            Ok(output) if output.status.success() => requests
+                .iter()
+                .map(|request| promote_staged_download(&scratch_dir, request, &output))
+                .collect(),
+            Ok(output) => {
+                let failure = format!(
+                    "proton-drive download failed for a batch of {} files: {}",
+                    requests.len(),
+                    trimmed_stderr(&output)
+                );
+                salvage_staged_downloads(&scratch_dir, requests, &failure)
+            }
+            Err(error) => {
+                let failure = format!(
+                    "proton-drive download failed for a batch of {} files: {error}",
+                    requests.len()
+                );
+                // A cancellation (shutdown/SIGTERM) must stay prompt: salvage hashes every
+                // staged file, which could hold the exit for the full read of a large chunk.
+                // Skip it — the scratch guard discards the staged files and the completed
+                // transfers simply re-download next pass. The flag is latched once shutdown
+                // begins, so this cannot misfire for an ordinary timeout or CLI failure.
+                if self.cancel_flag.load(Ordering::SeqCst) {
+                    return requests
+                        .iter()
+                        .map(|_| Err(boxed_error(failure.clone())))
+                        .collect();
+                }
+                salvage_staged_downloads(&scratch_dir, requests, &failure)
+            }
+        }
+    }
+
     fn run_proton_drive(
         &self,
         operation: &str,
         args: &[OsString],
         attempts: usize,
     ) -> AppResult<Output> {
-        self.run_proton_drive_with_logging(operation, args, attempts, true)
+        self.run_proton_drive_with_logging(
+            operation,
+            args,
+            attempts,
+            true,
+            self.command_policy.timeout,
+        )
     }
 
     fn run_proton_drive_quiet(
@@ -858,7 +967,25 @@ impl ProtonDriveClient {
         args: &[OsString],
         attempts: usize,
     ) -> AppResult<Output> {
-        self.run_proton_drive_with_logging(operation, args, attempts, false)
+        self.run_proton_drive_with_logging(
+            operation,
+            args,
+            attempts,
+            false,
+            self.command_policy.timeout,
+        )
+    }
+
+    /// As [`Self::run_proton_drive`] with `attempts = 1`, but with an explicit per-invocation
+    /// timeout. Used by batched downloads, where one invocation legitimately transfers many
+    /// files and therefore deserves many times the single-command budget.
+    fn run_proton_drive_with_timeout(
+        &self,
+        operation: &str,
+        args: &[OsString],
+        timeout: Duration,
+    ) -> AppResult<Output> {
+        self.run_proton_drive_with_logging(operation, args, 1, true, timeout)
     }
 
     fn run_proton_drive_with_logging(
@@ -867,11 +994,12 @@ impl ProtonDriveClient {
         args: &[OsString],
         attempts: usize,
         warn_on_unsuccessful_exit: bool,
+        timeout: Duration,
     ) -> AppResult<Output> {
         let attempts = attempts.max(1);
         let mut last_error = None;
         for attempt in 1..=attempts {
-            let output = match self.run_once(operation, args) {
+            let output = match self.run_once(operation, args, timeout) {
                 Ok(output) => output,
                 Err(error) if attempt < attempts => {
                     warn!(
@@ -926,7 +1054,7 @@ impl ProtonDriveClient {
         })))
     }
 
-    fn run_once(&self, operation: &str, args: &[OsString]) -> AppResult<Output> {
+    fn run_once(&self, operation: &str, args: &[OsString], timeout: Duration) -> AppResult<Output> {
         let mut child = self.spawn_once(args)?;
         // Drain stdout and stderr on separate threads *while the child runs*. A `proton-drive`
         // command whose output exceeds the OS pipe buffer (~64 KiB) fills that buffer and then
@@ -937,19 +1065,19 @@ impl ProtonDriveClient {
         // poll the cancellation flag / enforce the timeout while it reads.
         let stdout_reader = spawn_pipe_reader(child.stdout.take());
         let stderr_reader = spawn_pipe_reader(child.stderr.take());
-        let deadline = Instant::now() + self.command_policy.timeout;
+        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 terminate_child_tree(&mut child);
                 warn!(
                     operation,
-                    timeout_ms = self.command_policy.timeout.as_millis(),
+                    timeout_ms = timeout.as_millis(),
                     "proton-drive command timed out"
                 );
                 return Err(boxed_error(format!(
                     "proton-drive {operation} timed out after {}",
-                    format_duration(self.command_policy.timeout)
+                    format_duration(timeout)
                 )));
             }
             let poll_interval = remaining.min(CANCELLATION_POLL_INTERVAL);
@@ -1130,6 +1258,142 @@ impl Drop for ScratchDirGuard {
     }
 }
 
+/// Builds the private per-invocation scratch directory path under `local_folder` used to
+/// stage downloads before their final rename into place (see the naming-contract note in
+/// [`ProtonClient::download`]'s concrete impl for why staging is mandatory).
+fn download_scratch_dir(local_folder: &Path) -> PathBuf {
+    local_folder.join(format!(
+        "{}{}-{}",
+        crate::DOWNLOAD_SCRATCH_PREFIX,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+    ))
+}
+
+/// The preconditions for [`ProtonClient::download_many`]'s single-invocation form: at least
+/// two files, one shared destination directory (the CLI takes exactly one `localFolder`), and
+/// each destination named exactly after its remote basename with no duplicates — the CLI names
+/// every staged file after its remote source, so that name is the only handle for mapping
+/// staged entries back to requests. Returns the shared destination directory when the
+/// preconditions hold; the caller falls back to per-file downloads otherwise.
+fn batchable_download_folder(requests: &[DownloadRequest]) -> Option<PathBuf> {
+    if requests.len() < 2 {
+        return None;
+    }
+    let local_folder = requests.first()?.destination.parent()?;
+    let mut folded_names = BTreeSet::new();
+    for request in requests {
+        if request.destination.parent() != Some(local_folder) {
+            return None;
+        }
+        let destination_name = request.destination.file_name()?;
+        if request.remote_path.file_name() != Some(destination_name) {
+            return None;
+        }
+        // The uniqueness check is case-folded, not byte-exact: Proton Drive is
+        // case-sensitive, but the local filesystem may not be, and two staged siblings
+        // differing only by case would collapse onto one file there. Such a batch falls
+        // back to per-file downloads, which keep the per-file staging contract.
+        if !folded_names.insert(destination_name.to_string_lossy().to_lowercase()) {
+            return None;
+        }
+    }
+    Some(local_folder.to_path_buf())
+}
+
+/// Every file in a batch gets the configured per-command budget: one invocation transferring
+/// N files may legitimately take N times as long as one. Deliberately unclamped — a cap lower
+/// than what a chunk genuinely needs would make that chunk permanently un-downloadable; a hung
+/// CLI child is instead bounded by cancellation (shutdown kills it within the poll interval).
+fn batch_download_timeout(single_command_timeout: Duration, files: usize) -> Duration {
+    single_command_timeout.saturating_mul(u32::try_from(files).unwrap_or(u32::MAX))
+}
+
+/// Locates a request's staged file inside the batch scratch directory: the CLI names every
+/// download after its remote source, and the batch preconditions pinned each destination
+/// basename to exactly that name.
+fn staged_download_path(scratch_dir: &Path, request: &DownloadRequest) -> AppResult<PathBuf> {
+    let name = request.destination.file_name().ok_or_else(|| {
+        boxed_error(format!(
+            "download destination has no file name: {}",
+            request.destination.display()
+        ))
+    })?;
+    Ok(scratch_dir.join(name))
+}
+
+/// Moves one request's staged file into place after a successful batch invocation. The CLI
+/// exited 0, so a missing staged entry means it silently skipped that file (e.g. a
+/// Proton-native document) or named it unexpectedly — that request fails with the CLI's own
+/// output attached, without affecting its siblings.
+fn promote_staged_download(
+    scratch_dir: &Path,
+    request: &DownloadRequest,
+    output: &Output,
+) -> AppResult<()> {
+    let staged = staged_download_path(scratch_dir, request)?;
+    if !is_regular_file(&staged) {
+        return Err(boxed_error(format!(
+            "batch download reported success, but {} was not staged in {} — the CLI may have \
+             skipped it or named it unexpectedly; proton-drive stdout: {}; stderr: {}",
+            request.remote_path.display(),
+            scratch_dir.display(),
+            summarize_command_output(&output.stdout),
+            summarize_command_output(&output.stderr),
+        )));
+    }
+    move_staged_download(&staged, request)
+}
+
+/// Salvages a failed batch: any request whose staged file is provably complete — its content
+/// hashes to the remote's claimed SHA-1 — is still moved into place and reported `Ok`, so an
+/// error late in a large batch does not discard the transfers that already finished. A partial
+/// file can never match its digest, and without a claimed digest there is nothing safe to
+/// verify against, so every other request fails with the batch error.
+fn salvage_staged_downloads(
+    scratch_dir: &Path,
+    requests: &[DownloadRequest],
+    failure: &str,
+) -> Vec<AppResult<()>> {
+    requests
+        .iter()
+        .map(|request| {
+            let Some(expected_sha1) = request.expected_sha1.as_deref() else {
+                return Err(boxed_error(failure.to_owned()));
+            };
+            let staged = staged_download_path(scratch_dir, request)?;
+            let verified = is_regular_file(&staged)
+                && compute_sha1(&staged).is_ok_and(|hash| hash == expected_sha1);
+            if !verified {
+                return Err(boxed_error(failure.to_owned()));
+            }
+            move_staged_download(&staged, request)
+        })
+        .collect()
+}
+
+fn move_staged_download(staged: &Path, request: &DownloadRequest) -> AppResult<()> {
+    fs::rename(staged, &request.destination).map_err(|error| {
+        boxed_error(format!(
+            "downloaded {} to a scratch location but failed to move it to {}: {error}",
+            request.remote_path.display(),
+            request.destination.display()
+        ))
+    })
+}
+
+/// `true` only for an actual regular file at `path` — not a symlink to one (`symlink_metadata`
+/// does not follow), not a directory, not absent. Batch staging only ever deals in regular
+/// files the CLI wrote, so anything else is treated as "not staged".
+fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
 /// Returns the path of the single entry inside `directory`, failing if it contains
 /// zero or more than one entry. Used to locate a just-downloaded file without
 /// assuming the exact name the `proton-drive` CLI chose for it.
@@ -1181,7 +1445,11 @@ where
     D: Deserializer<'de>,
 {
     match Option::<Value>::deserialize(deserializer)? {
-        Some(Value::String(value)) => Ok(Some(value)),
+        // Normalize hex digests to lowercase at the parse boundary: every comparison
+        // downstream — the planner's SHA-1 equality checks and the batch-download salvage
+        // verification — matches against `compute_sha1`'s lowercase output, so an
+        // uppercase digest from the CLI would otherwise read as "content differs" forever.
+        Some(Value::String(value)) => Ok(Some(value.to_ascii_lowercase())),
         _ => Ok(None),
     }
 }
@@ -2026,6 +2294,339 @@ exit 0
             "remote content\n",
             "the remote's content should land at exactly the requested sidecar destination"
         );
+    }
+
+    fn batch_request(
+        local_folder: &Path,
+        name: &str,
+        expected_sha1: Option<&str>,
+    ) -> DownloadRequest {
+        DownloadRequest {
+            remote_path: PathBuf::from(format!("/my-files/demo/{name}")),
+            destination: local_folder.join(name),
+            expected_sha1: expected_sha1.map(ToOwned::to_owned),
+        }
+    }
+
+    /// SHA-1 of `content`, computed by hashing a scratch file — the same code path the salvage
+    /// verification uses.
+    fn sha1_of_content(directory: &Path, content: &str) -> String {
+        let probe = directory.join("sha1-probe");
+        fs::write(&probe, content).expect("write probe file");
+        compute_sha1(&probe).expect("hash probe file")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_many_uses_one_invocation_and_places_every_file() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+for a; do last="$a"; done
+printf 'alpha content\n' > "$last/alpha.txt"
+printf 'beta content\n' > "$last/beta.txt"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(2), 1),
+        );
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        let requests = vec![
+            batch_request(&local_folder, "alpha.txt", None),
+            batch_request(&local_folder, "beta.txt", None),
+        ];
+
+        let results = client.download_many(&requests);
+
+        assert!(
+            results.iter().all(Result::is_ok),
+            "both files should succeed: {results:?}"
+        );
+        let recorded_args = fs::read_to_string(args_path(&executable)).expect("recorded args");
+        let mut lines = recorded_args.lines();
+        assert_eq!(lines.next(), Some("filesystem"));
+        assert_eq!(lines.next(), Some("download"));
+        assert_eq!(lines.next(), Some("/my-files/demo/alpha.txt"));
+        assert_eq!(lines.next(), Some("/my-files/demo/beta.txt"));
+        let scratch_dir = lines.next().expect("scratch directory argument");
+        let scratch_prefix = local_folder.join(crate::DOWNLOAD_SCRATCH_PREFIX);
+        assert!(
+            scratch_dir.starts_with(scratch_prefix.to_str().expect("utf-8 scratch prefix")),
+            "the batch should stage into one private scratch directory under the shared \
+             destination folder: {scratch_dir}"
+        );
+        assert!(
+            lines.next().is_none(),
+            "exactly one CLI invocation expected"
+        );
+        assert_eq!(
+            fs::read_to_string(local_folder.join("alpha.txt")).expect("alpha at destination"),
+            "alpha content\n"
+        );
+        assert_eq!(
+            fs::read_to_string(local_folder.join("beta.txt")).expect("beta at destination"),
+            "beta content\n"
+        );
+        assert!(
+            !Path::new(scratch_dir).exists(),
+            "the scratch directory should be cleaned up after the batch"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_many_reports_an_unstaged_file_as_a_per_item_error() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+for a; do last="$a"; done
+printf 'alpha content\n' > "$last/alpha.txt"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(2), 1),
+        );
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        let requests = vec![
+            batch_request(&local_folder, "alpha.txt", None),
+            batch_request(&local_folder, "beta.txt", None),
+        ];
+
+        let results = client.download_many(&requests);
+
+        assert!(results[0].is_ok(), "the staged file succeeds: {results:?}");
+        let error = results[1].as_ref().expect_err("the skipped file must fail");
+        assert!(
+            error.to_string().contains("was not staged"),
+            "the per-item error must name the silent skip: {error}"
+        );
+        assert!(
+            local_folder.join("alpha.txt").is_file(),
+            "the staged sibling still lands at its destination"
+        );
+        assert!(
+            !local_folder.join("beta.txt").exists(),
+            "nothing may appear at the skipped file's destination"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_many_salvages_digest_verified_files_when_the_cli_fails() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+for a; do last="$a"; done
+printf 'salvaged content\n' > "$last/alpha.txt"
+printf 'partial' > "$last/beta.txt"
+printf 'gamma content\n' > "$last/gamma.txt"
+echo "network dropped" >&2
+exit 1
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(2), 1),
+        );
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        let alpha_sha1 = sha1_of_content(directory.path(), "salvaged content\n");
+        let beta_sha1 = sha1_of_content(directory.path(), "full beta content\n");
+        let requests = vec![
+            batch_request(&local_folder, "alpha.txt", Some(&alpha_sha1)),
+            batch_request(&local_folder, "beta.txt", Some(&beta_sha1)),
+            // Fully staged by the fake CLI, but the remote exposed no claimed digest — there
+            // is nothing safe to verify against, so it must NOT be salvaged.
+            batch_request(&local_folder, "gamma.txt", None),
+        ];
+
+        let results = client.download_many(&requests);
+
+        assert!(
+            results[0].is_ok(),
+            "a fully-staged, digest-verified file must be salvaged: {results:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(local_folder.join("alpha.txt")).expect("salvaged file"),
+            "salvaged content\n"
+        );
+        let error = results[1]
+            .as_ref()
+            .expect_err("the partially-staged file must fail");
+        assert!(
+            error.to_string().contains("network dropped"),
+            "the per-item error must carry the CLI's own failure: {error}"
+        );
+        assert!(
+            !local_folder.join("beta.txt").exists(),
+            "a partial file whose digest cannot verify must never reach its destination"
+        );
+        assert!(
+            results[2].is_err(),
+            "a file without a claimed digest must never be salvaged: {results:?}"
+        );
+        assert!(
+            !local_folder.join("gamma.txt").exists(),
+            "an unverifiable staged file must never reach its destination"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_many_with_case_colliding_basenames_falls_back_to_per_file_downloads() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" >> "$0.args"
+printf -- '--\n' >> "$0.args"
+for a; do last="$a"; done
+name=$(basename "$3")
+printf 'fallback content\n' > "$last/$name"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(2), 1),
+        );
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        // Legal siblings on case-sensitive Proton Drive, but they would collapse onto one
+        // staged file on a case-insensitive local filesystem — the batch preconditions must
+        // reject them so each file keeps its own per-file staging.
+        let requests = vec![
+            batch_request(&local_folder, "Readme.txt", None),
+            batch_request(&local_folder, "readme.txt", None),
+        ];
+
+        let results = client.download_many(&requests);
+
+        assert!(
+            results.iter().all(Result::is_ok),
+            "both fallback downloads should succeed: {results:?}"
+        );
+        let recorded_args = fs::read_to_string(args_path(&executable)).expect("recorded args");
+        assert_eq!(
+            recorded_args.matches("--\n").count(),
+            2,
+            "case-fold-equal basenames must disable the single-invocation batch: {recorded_args}"
+        );
+    }
+
+    #[test]
+    fn batch_download_timeout_scales_per_file_and_saturates() {
+        assert_eq!(
+            batch_download_timeout(Duration::from_secs(60), 25),
+            Duration::from_secs(1500),
+            "every file in a batch keeps the full single-command budget"
+        );
+        assert_eq!(
+            batch_download_timeout(Duration::from_secs(1), 1),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            batch_download_timeout(Duration::MAX, 2),
+            Duration::MAX,
+            "scaling must saturate instead of overflowing"
+        );
+    }
+
+    #[test]
+    fn claimed_sha1_digests_are_normalized_to_lowercase_at_parse_time() {
+        let json = r#"
+                [
+                    {
+                        "uid": "upper-uid",
+                        "name": "shouty.txt",
+                        "type": "file",
+                        "mediaType": "text/plain",
+                        "activeRevision": {
+                            "ok": true,
+                            "value": {
+                                "claimedDigests": {
+                                    "sha1": "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+                                }
+                            }
+                        }
+                    }
+                ]
+                "#;
+
+        let files =
+            parse_remote_files(json, Path::new("/my-files/demo/")).expect("parse remote files");
+        let file = files.get(Path::new("shouty.txt")).expect("parsed file");
+
+        assert_eq!(
+            file.sha1_hash.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01"),
+            "digests must be lowercased at the parse boundary so every downstream comparison \
+             (planner equality, salvage verification) matches compute_sha1's lowercase output"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_many_with_mixed_destination_folders_falls_back_to_per_file_downloads() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" >> "$0.args"
+printf -- '--\n' >> "$0.args"
+for a; do last="$a"; done
+name=$(basename "$3")
+printf 'fallback content\n' > "$last/$name"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(2), 1),
+        );
+        let folder_a = directory.path().join("a");
+        let folder_b = directory.path().join("b");
+        fs::create_dir_all(&folder_a).expect("folder a");
+        fs::create_dir_all(&folder_b).expect("folder b");
+        let requests = vec![
+            batch_request(&folder_a, "one.txt", None),
+            DownloadRequest {
+                remote_path: PathBuf::from("/my-files/demo/two.txt"),
+                destination: folder_b.join("two.txt"),
+                expected_sha1: None,
+            },
+        ];
+
+        let results = client.download_many(&requests);
+
+        assert!(
+            results.iter().all(Result::is_ok),
+            "both fallback downloads should succeed: {results:?}"
+        );
+        let recorded_args = fs::read_to_string(args_path(&executable)).expect("recorded args");
+        assert_eq!(
+            recorded_args.matches("--\n").count(),
+            2,
+            "destinations in different folders violate the batch preconditions, so each file \
+             must download in its own invocation: {recorded_args}"
+        );
+        assert!(folder_a.join("one.txt").is_file());
+        assert!(folder_b.join("two.txt").is_file());
     }
 
     #[cfg(unix)]

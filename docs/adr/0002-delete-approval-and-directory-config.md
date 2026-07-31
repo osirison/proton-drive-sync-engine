@@ -1,6 +1,7 @@
 # ADR 0002 — Directional delete-approval guard + per-directory config
 
-- **Status:** Accepted
+- **Status:** Accepted (amended in part by ADR 0003 — approval consumption now rides in the
+  executing delete's checkpoint transaction, not the end-of-pass transaction)
 - **Date:** 2026-07-25
 
 ## Context
