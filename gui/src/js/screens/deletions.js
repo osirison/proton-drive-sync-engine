@@ -12,9 +12,15 @@ import { setPendingDeletions } from "../store.js";
 // this file's own re-renders, and disabling buttons mid-flight guards against double-firing a
 // permanent deletion on a slow connection.
 let lastError = null;
-let busy = null; // { target: "<path>" | "all", verb: "approve" | "deny" } | null
+// `isAll` is part of the identity, not just `target`: the bulk buttons use the wire sentinel
+// "all" as their target, which a pending deletion for a file literally *named* `all` also carries
+// (with `isAll: false`). Matching on `isAll` too keeps a row click from lighting up the bulk
+// button (and vice versa). `target` stays the wire selector ("all" ⇒ every item, else the path).
+let busy = null; // { target: "<path>" | "all", verb: "approve" | "deny", isAll: bool } | null
 
-// Acknowledged clicks: path → { verb: "approved" | "denied", at: epoch ms }. The daemon's ack
+// Acknowledged clicks: path → { verb: "approved" | "approved-paused" | "denied", at: epoch ms,
+// fingerprint }. ("approved-paused" is the daemon-was-paused variant — the delete waits for a
+// resume.) The daemon's ack
 // round trip is near-instant, but the item does NOT leave `pending_deletions` on it: an
 // approved deletion stays listed until the next reconcile pass actually executes it, and a
 // denied one stays pending indefinitely (deny only revokes/declines — the file is still
@@ -129,7 +135,7 @@ function nudgeRerender(ctx) {
 }
 
 async function runAndRefresh(ctx, target, verb, isAll) {
-  busy = { target, verb };
+  busy = { target, verb, isAll };
   lastError = null;
   // Capture the affected items at click time, before any await: the poll may rewrite the
   // store's list mid-flight, an "all" acknowledgment must cover exactly the items the user
@@ -194,9 +200,15 @@ function emptyCard(text) {
   return el("div", { class: "card" }, el("div", { class: "ledger-empty" }, text));
 }
 
-/** The verb-aware label for one action button, so only the clicked button animates. */
-function actionLabel(target, verb, idleLabel, busyLabel) {
-  return busy && busy.target === target && busy.verb === verb ? busyLabel : idleLabel;
+/**
+ * The verb-aware label for one action button, so only the clicked button animates. `isAll`
+ * disambiguates the bulk buttons from a per-row button whose path is literally `all` — both carry
+ * the target string "all", so target + verb alone would cross-fire between them.
+ */
+function actionLabel(target, verb, isAll, idleLabel, busyLabel) {
+  return busy && busy.target === target && busy.verb === verb && busy.isAll === isAll
+    ? busyLabel
+    : idleLabel;
 }
 
 /** The lasting post-ack confirmation shown in place of the action buttons. */
@@ -262,7 +274,7 @@ function renderRow(ctx, item) {
               disabled: anyBusy,
               onClick: () => runAndRefresh(ctx, path, "approve", false),
             },
-            actionLabel(path, "approve", "Approve", "Approving…"),
+            actionLabel(path, "approve", false, "Approve", "Approving…"),
           ),
           el(
             "button",
@@ -271,7 +283,7 @@ function renderRow(ctx, item) {
               disabled: anyBusy,
               onClick: () => runAndRefresh(ctx, path, "deny", false),
             },
-            actionLabel(path, "deny", "Deny", "Denying…"),
+            actionLabel(path, "deny", false, "Deny", "Denying…"),
           ),
         ),
   );
@@ -357,7 +369,7 @@ export function renderDeletions(container, ctx) {
             disabled: allBusy,
             onClick: () => runAndRefresh(ctx, "all", "approve", true),
           },
-          actionLabel("all", "approve", "Approve all", "Approving all…"),
+          actionLabel("all", "approve", true, "Approve all", "Approving all…"),
         ),
         el(
           "button",
@@ -366,7 +378,7 @@ export function renderDeletions(container, ctx) {
             disabled: allBusy,
             onClick: () => runAndRefresh(ctx, "all", "deny", true),
           },
-          actionLabel("all", "deny", "Deny all", "Denying all…"),
+          actionLabel("all", "deny", true, "Deny all", "Denying all…"),
         ),
       ),
     ),
