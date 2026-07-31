@@ -49,7 +49,9 @@ struct Cli {
     /// Opt out of event-driven detection and use full-tree-walk-only remote change detection.
     #[arg(long = "no-events-driven", conflicts_with = "events_driven")]
     no_events_driven: bool,
-    /// Force a full-tree resync every N incremental passes (event-driven mode only).
+    /// Force a full-tree resync every N incremental passes (event-driven mode only). Default 0
+    /// disables the periodic resync entirely: after the first (startup) full snapshot the daemon
+    /// stays purely event-driven. Set a positive N to reinstate a self-healing safety resync.
     #[arg(long = "events-full-scan-every", value_name = "N")]
     events_full_scan_every: Option<u64>,
     /// Disable the delete-approval guard globally (both directions). By default deletions are
