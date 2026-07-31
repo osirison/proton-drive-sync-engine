@@ -1742,10 +1742,12 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Executes one run of consecutive planned `Download` actions as chunked multi-file CLI
-    /// invocations ([`ProtonClient::download_many`]) instead of one subprocess per file. Files
-    /// are grouped by destination directory (a batch shares one `localFolder`), preserving plan
-    /// order, and each group is split into chunks of at most `download_batch_size`. Every chunk
-    /// is checkpoint-committed as soon as it lands, so a failure — or a daemon shutdown — never
+    /// invocations ([`ProtonClient::download_many`]) instead of one subprocess per file. The
+    /// run is segmented into *consecutive* same-destination-directory groups (a batch shares
+    /// one `localFolder`) — never merging same-directory files across an intervening
+    /// subdirectory's downloads, so execution order is exactly plan order — and each segment
+    /// is split into chunks of at most `download_batch_size`. Every chunk is
+    /// checkpoint-committed as soon as it lands, so a failure — or a daemon shutdown — never
     /// discards transfers that already completed; the first failed file aborts the pass after
     /// its chunk's survivors are committed.
     #[allow(clippy::too_many_arguments)]
@@ -1805,9 +1807,14 @@ impl<C: ProtonClient> Daemon<C> {
                     expected_sha1,
                 },
             };
-            match groups.iter_mut().find(|(group, _)| *group == parent) {
-                Some((_, members)) => members.push(prepared),
-                None => groups.push((parent, vec![prepared])),
+            // Segment, don't bucket: extend the current group only while the parent is
+            // unchanged. A same-parent file appearing again after an intervening
+            // subdirectory's downloads starts a NEW group, so execution order stays
+            // exactly plan order (progress indices stay monotonic and a failure aborts at
+            // the same point the per-file path would have).
+            match groups.last_mut() {
+                Some((group, members)) if *group == parent => members.push(prepared),
+                _ => groups.push((parent, vec![prepared])),
             }
         }
         let batch_size = self.config.download_batch_size.max(1);
@@ -1869,11 +1876,12 @@ impl<C: ProtonClient> Daemon<C> {
         });
         // `bytes_done` is sampled live from the staging directory the client reports via the
         // progress sink; for a chunk it grows across the whole batch. The path names the
-        // directory being filled rather than a single file.
+        // directory being filled rather than a single file (`display_parent`, so a root-level
+        // chunk renders as "." instead of an empty string in `proton-sync status`).
         self.shared.update_activity(PHASE_EXECUTING, |activity| {
             activity.transfer = Some(TransferActivity {
                 direction: "download".to_owned(),
-                path: parent.to_path_buf(),
+                path: display_parent.to_path_buf(),
                 bytes_total: None,
                 bytes_done: None,
                 started_epoch_secs: current_epoch_secs(),
@@ -4962,6 +4970,87 @@ mod tests {
             );
         }
         assert!(daemon.last_sync.is_some(), "the pass succeeded");
+    }
+
+    #[test]
+    fn same_parent_downloads_separated_by_a_subtree_never_merge_across_it() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        // The directories already exist locally AND carry base records, so the ongoing
+        // planner emits no directory actions — leaving docs/a.txt, docs/sub/x.txt and
+        // docs/z.txt as one uninterrupted run of downloads with interleaved parents.
+        fs::create_dir_all(local_root.join("docs/sub")).expect("local directories");
+
+        let mut remote_entities = HashMap::new();
+        for (path, id) in [("docs", "dir-docs"), ("docs/sub", "dir-sub")] {
+            remote_entities.insert(
+                PathBuf::from(path),
+                RemoteEntity::Directory(RemoteDirectory {
+                    path: PathBuf::from(path),
+                    id: Some(id.to_owned()),
+                    name: Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path)
+                        .to_owned(),
+                }),
+            );
+        }
+        for (path, id, hash) in [
+            ("docs/a.txt", "id-a", "ha"),
+            ("docs/sub/x.txt", "id-x", "hx"),
+            ("docs/z.txt", "id-z", "hz"),
+        ] {
+            remote_entities.insert(
+                PathBuf::from(path),
+                RemoteEntity::File(remote(path, id, Some(hash))),
+            );
+        }
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let config = DaemonConfig {
+            download_batch_size: 10,
+            ..test_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+        for (path, id) in [("docs", "dir-docs"), ("docs/sub", "dir-sub")] {
+            upsert_record(
+                &daemon.connection,
+                &FileRecord {
+                    file_path: PathBuf::from(path),
+                    entity_kind: EntityKind::Directory,
+                    file_size: 0,
+                    mtime: 1,
+                    sha1_hash: None,
+                    proton_id: Some(id.to_owned()),
+                    sync_status: SyncStatus::Synced,
+                },
+            )
+            .expect("directory base record");
+        }
+
+        daemon.reconcile_blocking().expect("ongoing reconcile");
+
+        // docs/a.txt and docs/z.txt share a parent but are separated in plan order by
+        // docs/sub/x.txt; merging them into one batch would reorder execution relative to
+        // the plan, so each contiguous same-parent segment must batch on its own.
+        assert_eq!(
+            *operations.lock().expect("operations lock"),
+            vec![
+                RecordedOperation::DownloadBatch {
+                    remote_paths: vec![PathBuf::from("/Drive/RemoteFolder/docs/a.txt")],
+                },
+                RecordedOperation::DownloadBatch {
+                    remote_paths: vec![PathBuf::from("/Drive/RemoteFolder/docs/sub/x.txt")],
+                },
+                RecordedOperation::DownloadBatch {
+                    remote_paths: vec![PathBuf::from("/Drive/RemoteFolder/docs/z.txt")],
+                },
+            ],
+            "same-parent downloads must not merge across an intervening subtree"
+        );
+        for path in ["docs/a.txt", "docs/sub/x.txt", "docs/z.txt"] {
+            assert!(local_root.join(path).is_file(), "{path} must land");
+        }
     }
 
     #[test]
