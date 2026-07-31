@@ -65,8 +65,9 @@ export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
     sidecar so you can resolve it deliberately.
   </Card>
   <Card title="Commit only after success" icon="approve-check">
-    The sync index is updated in a single transaction *after* every side effect
-    succeeds. A failure mid-plan replans next pass; it never leaves half-recorded state.
+    The sync index records an action only *after* its side effect succeeds, in
+    incremental checkpoint commits. A failure mid-plan keeps completed work durable
+    and replans the rest; it never leaves half-recorded state.
   </Card>
 </CardGrid>
 

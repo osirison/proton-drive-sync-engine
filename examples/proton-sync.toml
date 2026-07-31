@@ -7,6 +7,12 @@ proton_cli = "proton-drive"
 proton_timeout_secs = 60
 proton_list_attempts = 2
 
+# How many planned downloads to bundle into one proton-drive invocation. Batches are
+# chunked per destination folder and checkpoint-committed as each chunk lands, so an
+# interrupted bulk download keeps its completed files. Set 1 to download one file per
+# invocation (the pre-batching behavior).
+download_batch_size = 25
+
 # Optional selective sync rules. Paths are relative to local_root and remote_root.
 include = ["Documents/**", "Projects/**/*.md"]
 exclude = ["**/*.tmp", "**/.DS_Store"]

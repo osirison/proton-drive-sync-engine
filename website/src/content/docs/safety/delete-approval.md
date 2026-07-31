@@ -43,8 +43,10 @@ copy about exactly what approving will do, and offers per-item **Approve**/**Den
 
 An approval is pinned to **exactly what you saw** — a file's last-synced content hash, or a
 directory's remote id. If the entity changes before the delete applies, the fingerprint no
-longer matches and the stale approval is inert: nothing is deleted. Approvals are consumed
-in the same post-success transaction as the delete they authorize.
+longer matches and the stale approval is inert: nothing is deleted. An approval is consumed
+in the same transaction as its delete's index update — the checkpoint committed right after
+the delete executes — so once a delete has applied, its approval is spent even if a later
+action fails that pass. A *withheld* delete's approval, by contrast, is never touched.
 
 ## Setting the default
 

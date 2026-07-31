@@ -173,8 +173,10 @@ the smaller (a) first:
 
 ## Invariants preserved (both stages)
 
-- **Commit-after-side-effects / no partial commit.** Unchanged: the cursor advance is part of
-  the same single post-success transaction as the index mutations.
+- **Commit-after-side-effects.** An index write still never precedes its side effect
+  (mutations checkpoint-commit per completed action since the batched-download work, ADR
+  0003); the cursor advance remains gated on a fully-successful pass — it commits only in
+  the final transaction, never in a mid-pass checkpoint.
 - **Path-safety.** Every path derived from an event or a targeted listing passes
   `validate_relative_path` / `safe_local_path` before use (Stage 2).
 - **Non-destructive on unknown digests / conservatism.** A `refresh`, an error, an unresolved

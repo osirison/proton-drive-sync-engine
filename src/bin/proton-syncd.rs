@@ -33,6 +33,11 @@ struct Cli {
     proton_timeout_secs: Option<u64>,
     #[arg(long)]
     proton_list_attempts: Option<usize>,
+    /// Maximum planned downloads bundled into one proton-drive invocation (chunked by
+    /// destination directory; each chunk is checkpoint-committed on landing). 1 disables
+    /// batching and downloads one file per invocation.
+    #[arg(long = "download-batch-size", value_name = "N")]
+    download_batch_size: Option<usize>,
     #[arg(long)]
     dry_run: bool,
     #[arg(long = "no-dry-run", conflicts_with = "dry_run")]
@@ -126,6 +131,7 @@ impl From<Cli> for DaemonConfigInput {
             proton_cli: cli.proton_cli,
             proton_timeout_secs: cli.proton_timeout_secs,
             proton_list_attempts: cli.proton_list_attempts,
+            download_batch_size: cli.download_batch_size,
             dry_run: cli.dry_run,
             no_dry_run: cli.no_dry_run,
             include_patterns: cli.include_patterns,

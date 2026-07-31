@@ -159,8 +159,9 @@ bare `approve` won't silently approve everything.
 ## Stopping the daemon
 
 `proton-sync stop` asks the daemon to exit through the same clean path as a `SIGTERM`: an
-in-flight transfer is cancelled (the interrupted pass commits nothing and replans on next
-start), the control socket is removed, and the process exits. Under systemd, start it again
+in-flight transfer is cancelled (actions that fully completed before the stop keep their
+checkpoint commits; the interrupted action is never recorded and replans, along with the
+rest, on next start), the control socket is removed, and the process exits. Under systemd, start it again
 with `systemctl --user start proton-syncd`; the unit's `Restart=on-failure` does not respawn
 a clean stop.
 

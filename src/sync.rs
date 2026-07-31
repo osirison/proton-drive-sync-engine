@@ -712,8 +712,9 @@ fn plan_ongoing_file_action(
         )),
         // Both sides diverged from the baseline. If they nonetheless reached
         // byte-identical content — two independent identical edits, or a transfer that
-        // landed on disk before its deferred index commit was rolled back by a later
-        // failing action (the commit-after-side-effects invariant) — they already agree,
+        // landed on disk but whose index checkpoint never committed (a crash or failure
+        // between the side effect and its checkpoint; index writes still never precede
+        // their side effect) — they already agree,
         // so adopt the shared content as the new baseline via AutoLink instead of
         // fabricating a spurious `.proton-cloud` sidecar and a permanently stuck Conflict
         // record. Mirrors the identical-content handling in `plan_bootstrap_file_action`.
@@ -1509,8 +1510,9 @@ mod tests {
     #[test]
     fn ongoing_changed_changed_with_identical_content_autolinks_instead_of_conflicting() {
         // Base hash A; local and remote independently converged on identical content B.
-        // This happens after two identical edits, or when a transfer lands on disk but a
-        // later failing action rolls back the deferred index commit (leaving base at A).
+        // This happens after two identical edits, or when a transfer lands on disk but
+        // its index checkpoint never commits — a crash or failure between the side
+        // effect and its checkpoint (leaving base at A).
         let mut local_files = HashMap::new();
         let mut remote_files = HashMap::new();
         let mut base_index = HashMap::new();

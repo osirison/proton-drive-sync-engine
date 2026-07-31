@@ -30,6 +30,7 @@ Stop it with `Ctrl+C` or `SIGTERM`; it removes its Unix socket on shutdown.
 | `--local-root <PATH>` | required¹ | Local directory to watch and reconcile. |
 | `--remote-root <PATH>` | required¹ | Proton Drive folder used as the remote sync root (an absolute path inside your Drive, e.g. `/Drive/RemoteFolder`). |
 | `--db-path <PATH>` | `<local-root>/.sync/sync_index.db` | SQLite index path; relative values are stored under the local root. |
+| `--download-batch-size <N>` | `25` | How many planned downloads to bundle into one `proton-drive` invocation (grouped by destination folder, checkpoint-committed per chunk; each invocation's timeout budget is the Proton command timeout × the chunk's file count). `1` downloads one file per invocation. Must be greater than zero. |
 | `--socket-path <PATH>` | `$XDG_RUNTIME_DIR/proton-sync.sock` | Unix socket the control CLI connects to. |
 | `--lockfile-path <PATH>` | `<local-root>/.sync/…lock` | Advisory lockfile that prevents duplicate daemon instances on this root. |
 | `--scan-interval-secs <N>` | `300` | Periodic reconciliation interval, in seconds (clamped to a 1-second minimum). |
@@ -78,8 +79,8 @@ surprising side effects.
 ## Validation
 
 Before starting, the daemon validates its resolved configuration and fails fast on: empty
-roots, invalid include/exclude globs, a zero Proton command timeout, and zero Proton list
-attempts. `scan_interval_secs` is clamped to a minimum of 1 second. Unknown config-file
+roots, invalid include/exclude globs, a zero Proton command timeout, zero Proton list
+attempts, and a zero download batch size. `scan_interval_secs` is clamped to a minimum of 1 second. Unknown config-file
 keys are rejected so typos fail immediately.
 
 ## Exit and signals
