@@ -1,0 +1,34 @@
+name: Dependabot auto-merge
+
+# Runs only for PRs opened by Dependabot. Approves and enables GitHub auto-merge for
+# security fixes (any semver) and semver-patch version bumps; GitHub then merges each once
+# all required status checks are green. Minor/major NON-security bumps are intentionally
+# left for manual review.
+#
+# Prerequisites (set outside this file): "Allow auto-merge" in repo settings, and branch
+# protection on main with the CI + security-audit checks required — the required checks are
+# what make `--auto` wait for green rather than merge immediately.
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Approve and enable auto-merge (security fixes + patch bumps)
+        if: steps.meta.outputs.ghsa-id != '' || steps.meta.outputs.update-type == 'version-update:semver-patch'
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,42 @@
+# Dependency automation.
+#
+# Freshness ("upgrade when a new version ships") comes from the weekly version-update PRs
+# below. CVE response is separate and event-driven: it does NOT wait for this schedule —
+# Dependabot opens a dedicated security PR the moment an advisory affecting a locked
+# version is published (this needs "Dependabot security updates" enabled in repo settings).
+version: 2
+updates:
+  # ---- Rust: the whole Cargo workspace resolves from the root manifest + lockfile ----
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Patch bumps are grouped on their own so the auto-merge workflow can land them
+      # unattended; minor bumps get a single grouped PR for review; majors stay solo.
+      cargo-patch:
+        update-types: [patch]
+      cargo-minor:
+        update-types: [minor]
+
+  # ---- npm: the Astro documentation site ----
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      npm-patch:
+        update-types: [patch]
+      npm-minor:
+        update-types: [minor]
+
+  # ---- The GitHub Actions pinned by the workflows themselves ----
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
