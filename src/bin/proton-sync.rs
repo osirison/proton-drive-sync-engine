@@ -175,9 +175,23 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         }
         Commands::Deny { path, all } => (ControlCommand::Deny, approval_selector(path, *all)?),
     };
+    // A `<PATH>` selector is always a literal path on the wire: `proton-sync approve all`
+    // targets a pending deletion literally named `all` instead of silently becoming the
+    // every-item form (which requires the explicit `--all`, exactly as documented).
+    let literal_path = matches!(
+        command,
+        Commands::Approve {
+            path: Some(_),
+            all: false
+        } | Commands::Deny {
+            path: Some(_),
+            all: false
+        }
+    );
     Ok(ControlRequest {
         command: control_command,
         argument,
+        literal_path,
     })
 }
 
@@ -623,6 +637,7 @@ async fn watch_syncnow(
         let request = ControlRequest {
             command: ControlCommand::Status,
             argument: None,
+            literal_path: false,
         };
         match request_with_timeout(socket_path, request).await {
             Ok(status) => {

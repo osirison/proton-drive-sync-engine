@@ -123,22 +123,24 @@ pub fn sync_now(state: Paths) -> StatusPayload {
 }
 
 #[tauri::command]
-pub fn approve(state: Paths, target: String) -> StatusPayload {
+pub fn approve(state: Paths, target: String, literal_path: bool) -> StatusPayload {
     let reply = ipc::command_with_argument(
         &socket_path(&state),
         ControlCommand::Approve,
         target,
+        literal_path,
         ipc::DEFAULT_TIMEOUT,
     );
     status_payload_remembering(&state, reply)
 }
 
 #[tauri::command]
-pub fn deny(state: Paths, target: String) -> StatusPayload {
+pub fn deny(state: Paths, target: String, literal_path: bool) -> StatusPayload {
     let reply = ipc::command_with_argument(
         &socket_path(&state),
         ControlCommand::Deny,
         target,
+        literal_path,
         ipc::DEFAULT_TIMEOUT,
     );
     status_payload_remembering(&state, reply)

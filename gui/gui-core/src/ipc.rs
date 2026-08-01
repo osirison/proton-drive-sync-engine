@@ -107,16 +107,21 @@ pub fn command(
         &ControlRequest {
             command,
             argument: None,
+            literal_path: false,
         },
         timeout,
     )
 }
 
 /// Convenience wrapper for `approve` / `deny`, which take a path (or `"all"`) argument.
+/// `literal_path` mirrors [`ControlRequest::literal_path`]: pass `true` when the argument is a
+/// row's actual path (so a file literally named `all` cannot be mistaken for the every-item
+/// selector) and `false` for the explicit approve-all/deny-all form.
 pub fn command_with_argument(
     socket_path: &Path,
     command: ControlCommand,
     argument: impl Into<String>,
+    literal_path: bool,
     timeout: Duration,
 ) -> Result<ControlResponse, IpcError> {
     send_request(
@@ -124,6 +129,7 @@ pub fn command_with_argument(
         &ControlRequest {
             command,
             argument: Some(argument.into()),
+            literal_path,
         },
         timeout,
     )
@@ -191,7 +197,13 @@ mod tests {
                 let _ = (&stream).write_all(format!("{CANNED_REPLY}\n").as_bytes());
             }
         });
-        let _ = command_with_argument(&path, ControlCommand::Approve, "all", DEFAULT_TIMEOUT);
+        let _ = command_with_argument(
+            &path,
+            ControlCommand::Approve,
+            "all",
+            false,
+            DEFAULT_TIMEOUT,
+        );
         let request = seen.lock().unwrap().clone();
         assert!(
             request.contains("\"command\":\"approve\""),

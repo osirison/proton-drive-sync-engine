@@ -33,6 +33,13 @@ pub struct ControlRequest {
     /// the wire shape backward-compatible: older clients that omit it still parse.
     #[serde(default)]
     pub argument: Option<String>,
+    /// When `true`, `argument` is always a **literal relative path** — the daemon must not give
+    /// the reserved word `"all"` its every-pending-item meaning. This lets a client target a
+    /// file literally named `all` (any letter case) without mass-approving. `#[serde(default)]`
+    /// keeps wire compat: legacy clients omit it and retain the historical case-insensitive
+    /// `"all"` interpretation.
+    #[serde(default)]
+    pub literal_path: bool,
 }
 
 /// One withheld deletion surfaced to the user for review. `path` + `direction` identify it for an
@@ -196,6 +203,7 @@ pub async fn send_command(
         ControlRequest {
             command,
             argument: None,
+            literal_path: false,
         },
     )
     .await
@@ -244,6 +252,17 @@ pub async fn write_response(stream: &mut UnixStream, response: &ControlResponse)
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn control_request_without_literal_path_parses_as_legacy() {
+        // A request from an older client omits `literal_path`; it must parse with the flag off,
+        // preserving the historical case-insensitive "all" interpretation for that client.
+        let legacy = r#"{"command":"approve","argument":"all"}"#;
+        let request: ControlRequest =
+            serde_json::from_str(legacy).expect("legacy request must parse");
+        assert_eq!(request.argument.as_deref(), Some("all"));
+        assert!(!request.literal_path);
+    }
 
     #[test]
     fn control_response_without_activity_still_parses() {
