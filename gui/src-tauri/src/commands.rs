@@ -276,8 +276,13 @@ pub struct DryRunPayload {
     files_at_risk: Vec<String>,
 }
 
+/// Async so the full-tree dry run — a `proton-syncd --dry-run` subprocess that can take many
+/// seconds against a large remote — never blocks the GTK main loop. Running it synchronously would
+/// stall the webview's URI-scheme handler thread (the GTK main loop) until WebKit aborts the whole
+/// process; here the blocking work runs on a runtime blocking thread instead. (See
+/// `restart_service` for the same pattern.)
 #[tauri::command]
-pub fn run_dry_run(state: Paths) -> Result<DryRunPayload, String> {
+pub async fn run_dry_run(state: Paths<'_>) -> Result<DryRunPayload, String> {
     let (config_path, file_local, file_remote, file_db, daemon_local, daemon_remote, daemon_db) = {
         let paths = state.lock().unwrap();
         (
@@ -290,6 +295,32 @@ pub fn run_dry_run(state: Paths) -> Result<DryRunPayload, String> {
             paths.daemon_db_path.clone(),
         )
     };
+    tauri::async_runtime::spawn_blocking(move || {
+        run_dry_run_impl(
+            config_path,
+            file_local,
+            file_remote,
+            file_db,
+            daemon_local,
+            daemon_remote,
+            daemon_db,
+        )
+    })
+    .await
+    .map_err(|error| format!("dry-run task failed: {error}"))?
+}
+
+/// The blocking half of `run_dry_run`: build and run `proton-syncd --dry-run`, then parse its
+/// stdout. Kept as a free function so the mutex guard from `run_dry_run` never crosses the `.await`.
+fn run_dry_run_impl(
+    config_path: std::path::PathBuf,
+    file_local: Option<std::path::PathBuf>,
+    file_remote: Option<std::path::PathBuf>,
+    file_db: Option<std::path::PathBuf>,
+    daemon_local: Option<std::path::PathBuf>,
+    daemon_remote: Option<std::path::PathBuf>,
+    daemon_db: Option<std::path::PathBuf>,
+) -> Result<DryRunPayload, String> {
     let mut command = Command::new("proton-syncd");
     command.arg("--dry-run");
     if config_path.exists() {
@@ -348,39 +379,51 @@ pub fn run_dry_run(state: Paths) -> Result<DryRunPayload, String> {
     })
 }
 
+/// Async so the remote-listing subprocess (`proton-drive filesystem list`, which walks the remote
+/// tree and can be slow) never blocks the GTK main loop.
 #[tauri::command]
-pub fn list_remote(state: Paths, path: Option<String>) -> Result<String, String> {
+pub async fn list_remote(state: Paths<'_>, path: Option<String>) -> Result<String, String> {
     let (proton_cli, remote_root) = {
         let paths = state.lock().unwrap();
         (paths.proton_cli.clone(), paths.effective_remote_root())
     };
-    let target = path
-        .or_else(|| remote_root.map(|r| r.display().to_string()))
-        .ok_or_else(|| "no remote path given and remote_root is not configured".to_string())?;
-    let output = Command::new(&proton_cli)
-        .arg("filesystem")
-        .arg("list")
-        .arg("--json")
-        .arg(&target)
-        .output()
-        .map_err(|e| format!("failed to launch {proton_cli}: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{proton_cli} list failed: {}",
-            strip_ansi(String::from_utf8_lossy(&output.stderr).trim())
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = path
+            .or_else(|| remote_root.map(|r| r.display().to_string()))
+            .ok_or_else(|| "no remote path given and remote_root is not configured".to_string())?;
+        let output = Command::new(&proton_cli)
+            .arg("filesystem")
+            .arg("list")
+            .arg("--json")
+            .arg(&target)
+            .output()
+            .map_err(|e| format!("failed to launch {proton_cli}: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "{proton_cli} list failed: {}",
+                strip_ansi(String::from_utf8_lossy(&output.stderr).trim())
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    })
+    .await
+    .map_err(|error| format!("remote-list task failed: {error}"))?
 }
 
+/// Async so a full local-tree conflict scan (the `.proton-cloud` sidecar walk) never blocks the
+/// GTK main loop on a large folder.
 #[tauri::command]
-pub fn scan_conflicts(state: Paths) -> Result<Vec<Conflict>, String> {
+pub async fn scan_conflicts(state: Paths<'_>) -> Result<Vec<Conflict>, String> {
     let local_root = state
         .lock()
         .unwrap()
         .effective_local_root()
         .ok_or_else(|| "local_root is not configured".to_string())?;
-    conflicts::scan_conflicts(&local_root).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        conflicts::scan_conflicts(&local_root).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|error| format!("conflict-scan task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -490,10 +533,14 @@ pub(crate) fn start_service_impl(config_path: &std::path::Path) -> Result<String
     Ok("no systemd unit found — started proton-syncd directly".to_string())
 }
 
+/// Async so the `systemctl --user start` round trip (it blocks until the unit reports started)
+/// never runs on the GTK main loop. Mirrors `restart_service`.
 #[tauri::command]
-pub fn start_service(state: Paths) -> Result<String, String> {
+pub async fn start_service(state: Paths<'_>) -> Result<String, String> {
     let config_path = state.lock().unwrap().config_path.clone();
-    start_service_impl(&config_path)
+    tauri::async_runtime::spawn_blocking(move || start_service_impl(&config_path))
+        .await
+        .map_err(|error| format!("start-service task failed: {error}"))?
 }
 
 /// Restart the sync daemon so a saved config change takes effect. Works no matter how the daemon
