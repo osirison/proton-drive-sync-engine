@@ -84,8 +84,9 @@ fn status_payload_remembering(
 
 /// Run a blocking control-socket round trip off the GTK main loop. Every socket command is async +
 /// `spawn_blocking` so a slow-but-alive daemon (up to `DEFAULT_TIMEOUT`) never stalls the event
-/// loop. A task-join failure (the blocking task panicked) is folded into an `Unreachable` error so
-/// callers keep the "socket failure → error state, never zeroed counters" invariant.
+/// loop. A task-join failure (the blocking task panicked, or was cancelled on runtime shutdown) is
+/// folded into an `Unreachable` error so callers keep the "socket failure → error state, never
+/// zeroed counters" invariant.
 async fn spawn_blocking_ipc<F>(f: F) -> Result<ControlResponse, ipc::IpcError>
 where
     F: FnOnce() -> Result<ControlResponse, ipc::IpcError> + Send + 'static,
@@ -624,11 +625,7 @@ pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
-    use std::sync::Mutex;
-    use std::thread;
+    use super::strip_ansi;
 
     #[test]
     fn strip_ansi_removes_color_sequences_and_keeps_text() {
@@ -639,6 +636,17 @@ mod tests {
         assert_eq!(strip_ansi("tail\u{1b}"), "tail");
         assert_eq!(strip_ansi("tail\u{1b}["), "tail");
     }
+}
+
+// The socket-command tests need Unix domain sockets, so they are gated `unix` (mirroring
+// `gui-core/src/ipc.rs`); the portable `strip_ansi` test above stays under plain `#[cfg(test)]`.
+#[cfg(all(test, unix))]
+mod socket_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::Mutex;
+    use std::thread;
 
     /// A canned status reply matching `ControlResponse` (mirrors gui-core's ipc tests).
     const CANNED_REPLY: &str = r#"{"status":"running","paused":false,"pending_changes":3,"message":"sync completed","last_sync_epoch_secs":1750000000,"last_error":null,"last_plan_summary":null,"last_successful_sync_summary":null,"status_history":[],"pending_deletions":[]}"#;
