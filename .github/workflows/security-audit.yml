@@ -2,7 +2,8 @@ name: Security audit
 
 # The build-failing CVE gate for Rust dependencies (RustSec advisory DB, via cargo-audit).
 # Runs on every PR and on push to main so a vulnerable crate cannot merge, and on a daily
-# cron so a CVE published against code already on main — with no open PR — is still caught.
+# cron so a CVE published against code already on main — with no open PR — is still caught
+# (the scheduled run turns red; Dependabot security updates also open a fix PR in parallel).
 on:
   push:
     branches: [main]
@@ -11,10 +12,10 @@ on:
     - cron: "17 6 * * *"
   workflow_dispatch:
 
+# Least privilege: cargo-audit only reads the checked-out lockfile. A vulnerable crate fails
+# the job (blocking the PR / turning the scheduled run red) — no check or issue writes needed.
 permissions:
   contents: read
-  issues: write # rustsec/audit-check opens/updates a tracking issue on scheduled runs
-  checks: write # ...and posts a check annotation on PRs
 
 jobs:
   audit:
@@ -22,7 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Audit Rust dependencies against the RustSec advisory DB
-        uses: rustsec/audit-check@v2
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: Audit Rust dependencies against the RustSec advisory DB
+        run: cargo audit

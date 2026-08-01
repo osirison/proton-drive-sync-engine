@@ -10,14 +10,17 @@ name: Dependabot auto-merge
 # what make `--auto` wait for green rather than merge immediately.
 on: pull_request
 
+# Default to read-only; only the auto-merge job (and only for Dependabot PRs) elevates.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   auto-merge:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Fetch Dependabot metadata
         id: meta
