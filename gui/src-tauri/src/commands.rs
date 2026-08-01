@@ -277,9 +277,10 @@ pub struct DryRunPayload {
 }
 
 /// Async so the full-tree dry run — a `proton-syncd --dry-run` subprocess that can take many
-/// seconds against a large remote — never blocks the GTK main loop. Run synchronously on the
-/// webview's URI-scheme handler thread it hangs (then aborts) the whole process; here the blocking
-/// work runs on a runtime blocking thread instead. (See `restart_service` for the same pattern.)
+/// seconds against a large remote — never blocks the GTK main loop. Running it synchronously would
+/// stall the webview's URI-scheme handler thread (the GTK main loop) until WebKit aborts the whole
+/// process; here the blocking work runs on a runtime blocking thread instead. (See
+/// `restart_service` for the same pattern.)
 #[tauri::command]
 pub async fn run_dry_run(state: Paths<'_>) -> Result<DryRunPayload, String> {
     let (config_path, file_local, file_remote, file_db, daemon_local, daemon_remote, daemon_db) = {
