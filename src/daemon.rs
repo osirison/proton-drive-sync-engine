@@ -1507,6 +1507,21 @@ impl<C: ProtonClient> Daemon<C> {
                         if let Some(destination_path) = action.destination_path.as_ref()
                             && let Some(local) = local_files.get(destination_path)
                         {
+                            // The destination's parent folder may not exist on the remote yet:
+                            // a move is a transition action prepended ahead of the
+                            // `CreateRemoteDirectory` that would make it, so `rename_or_move`
+                            // would fail with "Node not found" (the poison-pill loop of #141).
+                            // Ensure it first (idempotent mkdir-p; the later create degrades to a
+                            // no-op) — mirroring the `Upload` and `MoveLocal` arms, which already
+                            // ensure their destination parent. Unconditional, not gated on
+                            // `planned_remote_directories`: unlike an upload (planned after its
+                            // parent's create), a move runs *before* that create.
+                            if let Some(parent) = destination_path.parent()
+                                && !parent.as_os_str().is_empty()
+                            {
+                                self.proton
+                                    .ensure_directory(&self.config.remote_root, parent)?;
+                            }
                             self.proton.rename_or_move(
                                 &self.config.remote_root,
                                 &action.path,
@@ -3814,6 +3829,71 @@ mod tests {
         assert_eq!(record.proton_id.as_deref(), Some("stable-id"));
         assert_eq!(record.sha1_hash.as_deref(), Some(hash.as_str()));
         assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn remote_move_into_a_new_directory_creates_the_destination_parent_first() {
+        // Regression for #141: a local file moved into a brand-new subfolder replays as a
+        // remote move whose destination parent does not exist on the remote yet. Because the
+        // move is a transition action prepended ahead of the folder's `CreateRemoteDirectory`,
+        // the executor must ensure that parent *itself* before the move — otherwise
+        // `rename_or_move` fails with "Node not found" every pass and the plan never makes
+        // progress (the observed poison-pill loop). The `MoveLocal` and `Upload` arms already
+        // ensure their destination parent; this proves `MoveRemote` now does too.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let new_dir = local_root.join("AI History");
+        fs::create_dir(&new_dir).expect("new local dir");
+        let new_path = new_dir.join("claude_export.zip");
+        fs::write(&new_path, b"same content").expect("moved local file");
+        let hash = crate::index::compute_sha1(&new_path).expect("hash");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("claude_export.zip"),
+            RemoteEntity::File(remote(
+                "claude_export.zip",
+                "stable-id",
+                Some(hash.as_str()),
+            )),
+        );
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("claude_export.zip", Some("stable-id"), hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        let ops = operations.lock().expect("operations lock");
+        let move_index = ops
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    RecordedOperation::RenameOrMove { old_relative_path, new_relative_path, .. }
+                        if old_relative_path == Path::new("claude_export.zip")
+                            && new_relative_path == Path::new("AI History/claude_export.zip")
+                )
+            })
+            .expect("the remote move must be executed");
+        let ensure_index = ops
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    RecordedOperation::EnsureDirectory { relative_path, .. }
+                        if relative_path == Path::new("AI History")
+                )
+            })
+            .expect("the destination parent folder must be ensured on the remote");
+        assert!(
+            ensure_index < move_index,
+            "the destination folder must be created before the move: ops={ops:?}"
+        );
     }
 
     #[test]
