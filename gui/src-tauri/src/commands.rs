@@ -9,7 +9,7 @@ use gui_core::wire::{ControlCommand, ControlResponse, DryRunReport, PendingDelet
 use gui_core::{config_io, index_read, ipc, plan};
 use std::process::Command;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_notification::NotificationExt;
 
 type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
@@ -82,79 +82,95 @@ fn status_payload_remembering(
     status_payload(result)
 }
 
-#[tauri::command]
-pub fn get_status(state: Paths) -> StatusPayload {
-    let reply = ipc::command(
-        &socket_path(&state),
-        ControlCommand::Status,
-        ipc::DEFAULT_TIMEOUT,
-    );
-    status_payload_remembering(&state, reply)
+/// Run a blocking control-socket round trip off the GTK main loop. Every socket command is async +
+/// `spawn_blocking` so a slow-but-alive daemon (up to `DEFAULT_TIMEOUT`) never stalls the event
+/// loop. A task-join failure (the blocking task panicked, or was cancelled on runtime shutdown) is
+/// folded into an `Unreachable` error so callers keep the "socket failure → error state, never
+/// zeroed counters" invariant.
+async fn spawn_blocking_ipc<F>(f: F) -> Result<ControlResponse, ipc::IpcError>
+where
+    F: FnOnce() -> Result<ControlResponse, ipc::IpcError> + Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(f).await {
+        Ok(result) => result,
+        Err(join_error) => Err(ipc::IpcError::Unreachable(format!(
+            "control-socket task failed: {join_error}"
+        ))),
+    }
+}
+
+// The socket commands take an owned `AppHandle` rather than `State<'_>`: an async command with a
+// *reference* input (`State<'_>`) is forced by Tauri to return a `Result`, but these commands never
+// fail — a socket error is folded into the payload, never surfaced as a rejected promise. Owning
+// the handle also lets us re-borrow the managed paths *after* the `.await` (to remember the daemon's
+// live config from the reply), which a `State<'_>` guard cannot cross.
+
+/// The shared body of the no-argument status commands (`get_status`/`pause`/`resume`/`sync_now`):
+/// one control-socket round trip run off the main loop, folded into a `StatusPayload`. Generic over
+/// the runtime so a `tauri::test` mock app can drive it headlessly (see tests).
+async fn status_round_trip<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    command: ControlCommand,
+) -> StatusPayload {
+    let socket = socket_path(&app.state());
+    let reply =
+        spawn_blocking_ipc(move || ipc::command(&socket, command, ipc::DEFAULT_TIMEOUT)).await;
+    status_payload_remembering(&app.state(), reply)
 }
 
 #[tauri::command]
-pub fn pause(state: Paths) -> StatusPayload {
-    let reply = ipc::command(
-        &socket_path(&state),
-        ControlCommand::Pause,
-        ipc::DEFAULT_TIMEOUT,
-    );
-    status_payload_remembering(&state, reply)
+pub async fn get_status(app: tauri::AppHandle) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Status).await
 }
 
 #[tauri::command]
-pub fn resume(state: Paths) -> StatusPayload {
-    let reply = ipc::command(
-        &socket_path(&state),
-        ControlCommand::Resume,
-        ipc::DEFAULT_TIMEOUT,
-    );
-    status_payload_remembering(&state, reply)
+pub async fn pause(app: tauri::AppHandle) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Pause).await
 }
 
 #[tauri::command]
-pub fn sync_now(state: Paths) -> StatusPayload {
-    let reply = ipc::command(
-        &socket_path(&state),
-        ControlCommand::Syncnow,
-        ipc::DEFAULT_TIMEOUT,
-    );
-    status_payload_remembering(&state, reply)
+pub async fn resume(app: tauri::AppHandle) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Resume).await
 }
 
 #[tauri::command]
-pub fn approve(state: Paths, target: String, literal_path: bool) -> StatusPayload {
-    let reply = ipc::command_with_argument(
-        &socket_path(&state),
-        ControlCommand::Approve,
-        target,
-        literal_path,
-        ipc::DEFAULT_TIMEOUT,
-    );
-    status_payload_remembering(&state, reply)
+pub async fn sync_now(app: tauri::AppHandle) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Syncnow).await
+}
+
+/// The shared body of `approve`/`deny`: a path-argument round trip folded into a `StatusPayload`.
+/// Generic over the runtime so a `tauri::test` mock app can drive it headlessly (see tests).
+async fn approval_round_trip<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    command: ControlCommand,
+    target: String,
+    literal_path: bool,
+) -> StatusPayload {
+    let socket = socket_path(&app.state());
+    let reply = spawn_blocking_ipc(move || {
+        ipc::command_with_argument(&socket, command, target, literal_path, ipc::DEFAULT_TIMEOUT)
+    })
+    .await;
+    status_payload_remembering(&app.state(), reply)
 }
 
 #[tauri::command]
-pub fn deny(state: Paths, target: String, literal_path: bool) -> StatusPayload {
-    let reply = ipc::command_with_argument(
-        &socket_path(&state),
-        ControlCommand::Deny,
-        target,
-        literal_path,
-        ipc::DEFAULT_TIMEOUT,
-    );
-    status_payload_remembering(&state, reply)
+pub async fn approve(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
+    approval_round_trip(app, ControlCommand::Approve, target, literal_path).await
 }
 
 #[tauri::command]
-pub fn list_pending_deletions(state: Paths) -> Result<Vec<PendingDeletion>, String> {
-    ipc::command(
-        &socket_path(&state),
-        ControlCommand::Status,
-        ipc::DEFAULT_TIMEOUT,
-    )
-    .map(|response| response.pending_deletions)
-    .map_err(|e| e.to_string())
+pub async fn deny(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
+    approval_round_trip(app, ControlCommand::Deny, target, literal_path).await
+}
+
+#[tauri::command]
+pub async fn list_pending_deletions(app: tauri::AppHandle) -> Result<Vec<PendingDeletion>, String> {
+    let socket = socket_path(&app.state());
+    spawn_blocking_ipc(move || ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT))
+        .await
+        .map(|response| response.pending_deletions)
+        .map_err(|e| e.to_string())
 }
 
 /// A read of the GUI-owned config file, exposing both the raw TOML and the known settings.
@@ -619,5 +635,108 @@ mod tests {
         // A dangling escape at end-of-input must not panic or loop.
         assert_eq!(strip_ansi("tail\u{1b}"), "tail");
         assert_eq!(strip_ansi("tail\u{1b}["), "tail");
+    }
+}
+
+// The socket-command tests need Unix domain sockets, so they are gated `unix` (mirroring
+// `gui-core/src/ipc.rs`); the portable `strip_ansi` test above stays under plain `#[cfg(test)]`.
+#[cfg(all(test, unix))]
+mod socket_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::Mutex;
+    use std::thread;
+
+    /// A canned status reply matching `ControlResponse` (mirrors gui-core's ipc tests).
+    const CANNED_REPLY: &str = r#"{"status":"running","paused":false,"pending_changes":3,"message":"sync completed","last_sync_epoch_secs":1750000000,"last_error":null,"last_plan_summary":null,"last_successful_sync_summary":null,"status_history":[],"pending_deletions":[]}"#;
+
+    /// A one-shot fake daemon: bind a Unix socket, read one request line, write back `reply`.
+    fn spawn_one_shot_daemon(reply: &'static str) -> (std::path::PathBuf, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proton-sync.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(&stream);
+                let mut request_line = String::new();
+                let _ = reader.read_line(&mut request_line);
+                let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
+            }
+        });
+        (path, dir)
+    }
+
+    /// A headless mock app (no webview/display) managing `RuntimePaths` pointed at `socket`.
+    fn mock_app(socket: std::path::PathBuf) -> tauri::App<tauri::test::MockRuntime> {
+        let mut paths = RuntimePaths::resolve();
+        paths.socket_path = socket;
+        tauri::test::mock_builder()
+            .manage(Mutex::new(paths))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build")
+    }
+
+    #[test]
+    fn spawn_blocking_ipc_runs_the_round_trip_off_thread_and_parses_the_reply() {
+        let (path, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
+        let reply = tauri::async_runtime::block_on(spawn_blocking_ipc(move || {
+            ipc::command(&path, ControlCommand::Status, ipc::DEFAULT_TIMEOUT)
+        }));
+        let response = reply.expect("round trip should succeed");
+        assert_eq!(response.status, "running");
+        assert_eq!(response.pending_changes, 3);
+    }
+
+    #[test]
+    fn spawn_blocking_ipc_maps_a_missing_socket_to_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope.sock");
+        let reply = tauri::async_runtime::block_on(spawn_blocking_ipc(move || {
+            ipc::command(&missing, ControlCommand::Status, ipc::DEFAULT_TIMEOUT)
+        }));
+        assert!(
+            matches!(reply, Err(ipc::IpcError::Unreachable(_))),
+            "got {reply:?}"
+        );
+    }
+
+    // The two tests below drive the real command helpers through a mock `AppHandle`, exercising the
+    // `app.state::<Mutex<RuntimePaths>>()` runtime lookup and the reply → `StatusPayload` fold that
+    // compile/clippy cannot check — a payload regression would surface here as `Unreachable`.
+
+    #[test]
+    fn status_round_trip_resolves_app_state_and_folds_a_live_reply() {
+        let (socket, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
+        let app = mock_app(socket);
+        let payload = tauri::async_runtime::block_on(status_round_trip(
+            app.handle().clone(),
+            ControlCommand::Status,
+        ));
+        assert!(
+            payload.error.is_none(),
+            "unexpected error: {:?}",
+            payload.error
+        );
+        assert!(payload.response.is_some(), "expected a decoded response");
+        assert_ne!(payload.state, gui_core::DaemonState::Unreachable);
+    }
+
+    #[test]
+    fn approval_round_trip_reaches_the_daemon_and_folds_a_live_reply() {
+        let (socket, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
+        let app = mock_app(socket);
+        let payload = tauri::async_runtime::block_on(approval_round_trip(
+            app.handle().clone(),
+            ControlCommand::Approve,
+            "some/file.txt".to_string(),
+            true,
+        ));
+        assert!(
+            payload.error.is_none(),
+            "unexpected error: {:?}",
+            payload.error
+        );
+        assert_ne!(payload.state, gui_core::DaemonState::Unreachable);
     }
 }
