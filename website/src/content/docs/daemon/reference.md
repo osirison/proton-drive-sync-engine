@@ -43,7 +43,7 @@ Stop it with `Ctrl+C` or `SIGTERM`; it removes its Unix socket on shutdown.
 | `--no-dry-run` | — | Override `dry_run = true` from a config file. Conflicts with `--dry-run`. |
 | `--events-driven` | on² | Detect remote changes from Proton's volume-event stream. On by default; the flag exists for explicitness / to override a config `events_driven = false`. |
 | `--no-events-driven` | — | Opt out of event-driven detection; use full-tree-walk-only remote change detection. Conflicts with `--events-driven`. |
-| `--events-full-scan-every <N>` | `20` | Force a full-tree reconvergence every *N* incremental passes (event-driven mode only; clamped to a minimum of 1). |
+| `--events-full-scan-every <N>` | `0` | Force a full-tree reconvergence every *N* incremental passes (event-driven mode only). **`0` (the default) disables the periodic resync** — after the one-time startup snapshot the daemon stays purely event-driven; set a positive *N* to reinstate a self-healing full walk. |
 | `--no-delete-approval` | — | Disable the [delete-approval guard](/safety/delete-approval/) globally, in both directions. By default deletions are withheld pending approval. |
 
 ¹ `--local-root` and `--remote-root` are required **unless** supplied by a `--config` file.

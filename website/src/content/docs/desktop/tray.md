@@ -11,10 +11,12 @@ the tray is a reliable at-a-glance status even when you're not looking at the ap
 
 ## Closing the window keeps syncing
 
-Closing the app window **hides it to the tray** rather than quitting. The tray item's
-"Quit" is labelled to say so: it closes the window but the tray and the app process keep
-running, and the **daemon is never affected** by the app either way. To stop syncing you
-pause or stop the daemon, not close the window.
+Closing the app window (the ✕ button) **hides it to the tray** rather than quitting — the
+tray and the app process keep running. The tray menu makes both exits explicit: **Close
+window (keeps syncing in the tray)** does the same hide-to-tray, while **Quit Proton Drive
+Sync** ends the app process (the tray with it). The **daemon is a separate process and is
+never affected** by either — to stop *syncing* you pause or stop the daemon, not close the
+window.
 
 ## The five icon states
 
@@ -34,12 +36,12 @@ state](/desktop/overview/#the-six-daemon-states):
 The tray menu changes with the state, and never shows misleading counters:
 
 - **First run** — Show window, a disabled "Nothing synced yet" note (no fake "0 pending"),
-  Settings, Quit.
-- **Unreachable** — Show window, **Start proton-syncd**, **View journal**, Settings, Quit.
+  Settings, Close window, Quit.
+- **Unreachable** — Show window, **Start proton-syncd**, **View journal**, Settings, Close window, Quit.
   No counters at all.
 - **Reachable** (running / idle / paused / auth-expired) — Show window,
   **Sync now (N pending)** (disabled while paused), **Pause** / **Resume** (follows state),
-  **Resolve K conflict(s)** (from the last plan summary; disabled at zero), Settings, Quit.
+  **Resolve K conflict(s)** (from the last plan summary; disabled at zero), Settings, Close window, Quit.
 
 Interactions: left-clicking the icon shows the window; menu items that open a screen
 (Settings, Resolve conflicts, View journal → History) bring the window forward and navigate

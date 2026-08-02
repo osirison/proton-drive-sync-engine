@@ -42,7 +42,8 @@ and relies on the daemon's XDG defaults for the socket, lockfile, and index.
 ## From a native package
 
 The RPM, deb, and AUR packages ship their own unit at
-`/usr/lib/systemd/user/proton-syncd.service` (with `ExecStart=/usr/bin/proton-syncd`). You
+`/usr/lib/systemd/user/proton-syncd.service` (with
+`ExecStart=/usr/bin/proton-syncd --config %h/.config/proton-sync/proton-sync.toml`). You
 still create your config file first. The sample config's installed location varies by
 package — Fedora ships it at `/usr/share/doc/proton-drive-sync-engine/proton-sync.toml`,
 Arch at `/usr/share/doc/proton-drive-sync-engine/examples/proton-sync.toml`, and the Debian

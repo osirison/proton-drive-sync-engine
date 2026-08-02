@@ -18,8 +18,8 @@ The home dashboard — *is it working, does it need me, what did it just do.*
 - A **headline and sub-line** from the current [daemon state](/desktop/overview/#the-six-daemon-states)
   (e.g. "Everything is up to date", "last synced 5 min ago").
 - **Transfer rows** while syncing — "Uploading N files" / "Downloading N files" from the
-  last plan summary, with indeterminate progress bars (the engine reports file counts, not
-  a percentage).
+  last plan summary. Downloads show an indeterminate bar (a remote listing carries no file
+  size, so the total is unknown); uploads, whose size is known, show a percentage.
 - **Four stat tiles**: pending changes, conflicts, destructive actions, skipped-unsupported
   — each showing an em-dash when the daemon is unreachable.
 - A **"Needs you" card** that appears only when there are unresolved conflicts, with a

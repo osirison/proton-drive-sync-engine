@@ -21,8 +21,11 @@ don't get the overlays; nothing else changes.
 | Nemo | `proton-sync-nemo.py` | `nemo-python` |
 
 Plus the emblem **icons** (`emblem-proton-sync-*.svg`) installed into the hicolor icon
-theme. The native packages ([RPM/deb/AUR](/distribution/packages/)) install these as
-optional packages, so a headless install doesn't pull in the GObject/Python stack.
+theme. On **RPM and deb** the extensions ship as **separate optional packages**, so a
+headless install doesn't pull in the GObject/Python stack; on **Arch/AUR** the icons and
+extensions live in the single main package with the Python bindings
+(`nautilus-python`/`nemo-python`) as `optdepends`. See
+[Native packages](/distribution/packages/).
 
 ## States wired today
 
