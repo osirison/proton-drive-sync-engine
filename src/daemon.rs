@@ -4585,6 +4585,151 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_edit_duplicate_proton_id_does_not_drop_the_withheld_local_delete() {
+        // Issue #71(c) regression guard — spans the id-takeover pass AND the pass after it.
+        //
+        // A remote rename+edit (a.txt -> b.txt, content ALSO changed) fails move detection (the
+        // digest no longer equals the base hash), so the planner falls back to Download(b.txt) +
+        // LocalDelete(a.txt). With the local delete-approval guard on (the default), the
+        // LocalDelete is WITHHELD while the Download commits a fresh b.txt row carrying the SAME
+        // composed proton_id (vol~nx) as the still-present a.txt row — the transient DUPLICATE
+        // proton_id issue #71 describes.
+        //
+        // This locks in the correct current behavior. On the next pass, with the move event still
+        // in the delta (the cursor is held), the duplicate forces reconstruct's snapshot fallback
+        // (issue #71(b)); the snapshot lists the real remote (a.txt gone, b.txt present) and
+        // re-derives LocalDelete(a.txt) from ground truth, it stays withheld, a.txt survives, and
+        // the cursor does NOT advance. A naive #71(c) "clear the id from the other row on
+        // takeover" would erase the duplicate, let reconstruction complete with a PHANTOM
+        // remote-present a.txt, drop the withheld delete, and advance the cursor past the move — a
+        // worse data-integrity regression. See the comment in `index::upsert_record`.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let base_hash = sha1_bytes(b"base");
+        // The fake client's `download` writes b"downloaded"; make the remote claim that exact
+        // digest so b.txt is a clean no-op once it lands (no confounding re-download later).
+        let downloaded_hash = sha1_bytes(b"downloaded");
+        fs::write(local_root.join("a.txt"), b"base").expect("local a.txt");
+
+        // Remote AFTER the rename+edit: node nx now lives at b.txt (a.txt is gone remotely). This
+        // map backs both the targeted directory listing (the incremental resolver) and the full
+        // walk (the snapshot fallback).
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("b.txt"),
+            remote_file_entity("b.txt", "vol~nx", downloaded_hash.as_str()),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+
+        // The move arrives as Updated(node nx, not trashed). Script it on BOTH passes: the held
+        // cursor means the real stream re-delivers it from cursor-0 until a pass advances past it
+        // (which must not happen while the delete is withheld).
+        let pages = vec![
+            one_page(
+                "cursor-1",
+                vec![change(RemoteChangeKind::Updated, "nx", None, false)],
+            ),
+            one_page(
+                "cursor-1",
+                vec![change(RemoteChangeKind::Updated, "nx", None, false)],
+            ),
+        ];
+        let mut daemon = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                delete_approval_local: true,
+                delete_approval_remote: true,
+                ..event_config(directory.path(), &local_root)
+            },
+            client,
+            Some(Box::new(FakeEventSource::with_pages("cursor-1", pages))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("a.txt", Some("vol~nx"), base_hash.as_str()),
+        )
+        .expect("seed base record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+
+        // Pass 1 — the id takeover. Incremental: Download(b.txt) commits a row with proton_id
+        // vol~nx; LocalDelete(a.txt) is withheld, so a.txt keeps its vol~nx row → duplicate id.
+        daemon
+            .reconcile_blocking()
+            .expect("pass 1 (incremental takeover)");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "pass 1 stays incremental (no full walk)"
+        );
+        assert!(local_root.join("b.txt").exists(), "b.txt was downloaded");
+        assert!(
+            local_root.join("a.txt").exists(),
+            "the withheld local delete leaves a.txt in place"
+        );
+        assert_eq!(daemon.pending_deletions.len(), 1, "LocalDelete(a.txt) held");
+        assert_eq!(
+            daemon.pending_deletions[0].direction,
+            DeleteDirection::Local
+        );
+        // Both rows now hold the same composed id — the transient duplicate. (A naive #71(c) would
+        // already have cleared a.txt's id here, failing this assertion.)
+        assert_eq!(
+            get_record(&daemon.connection, Path::new("a.txt"))
+                .expect("lookup a.txt")
+                .expect("a.txt row")
+                .proton_id
+                .as_deref(),
+            Some("vol~nx"),
+            "the withheld local delete keeps a.txt pinned to vol~nx"
+        );
+        assert_eq!(
+            get_record(&daemon.connection, Path::new("b.txt"))
+                .expect("lookup b.txt")
+                .expect("b.txt row")
+                .proton_id
+                .as_deref(),
+            Some("vol~nx"),
+            "the fresh download commits b.txt with the same vol~nx"
+        );
+
+        // Pass 2 — the pass after takeover, move event still in the delta. The duplicate proton_id
+        // forces exactly one snapshot fallback (#71(b)); the snapshot re-derives the withheld
+        // LocalDelete, a.txt survives, and the cursor is held.
+        daemon
+            .reconcile_blocking()
+            .expect("pass 2 (fallback re-derives the withheld delete)");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the duplicate proton_id forces exactly one snapshot fallback"
+        );
+        assert!(
+            local_root.join("a.txt").exists(),
+            "a.txt must survive: a naive #71(c) id-clear would strand a phantom remote entry and \
+             drop the delete"
+        );
+        assert_eq!(
+            daemon.pending_deletions.len(),
+            1,
+            "the LocalDelete must still be withheld, not silently dropped"
+        );
+        assert_eq!(
+            daemon.pending_deletions[0].direction,
+            DeleteDirection::Local
+        );
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor present");
+        assert_eq!(
+            cursor.last_event_id, "cursor-0",
+            "the cursor must NOT advance across the id takeover while the delete is withheld"
+        );
+    }
+
+    #[test]
     fn an_approved_remote_delete_applies_on_the_next_incremental_pass() {
         // Regression (event-driven / default mode): a withheld RemoteDelete is *local*-origin —
         // tracked via `pending_changes` (cleared on commit) and generating no remote event — so an
