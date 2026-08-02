@@ -8,7 +8,7 @@ sidebar:
 ## Build
 
 ```bash
-cargo build --all-targets
+cargo build --workspace --all-targets
 ```
 
 The workspace is one library crate (`proton_drive_sync_engine`) backing `proton-syncd` and
@@ -20,11 +20,15 @@ Run this before opening or updating a pull request — CI enforces it:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
 ```
 
 `clippy` runs with `-D warnings`, so any warning is a build failure. Keep `cargo fmt` clean.
+
+`--workspace` is load-bearing on `clippy`/`test`: the workspace root is itself a package, so
+Cargo's default member selection collapses to that root crate — without the flag the `gui/`
+members are neither linted nor tested. (`cargo fmt --all` already spans every member.)
 
 ## Focused tests
 

@@ -14,12 +14,12 @@ Unix-only today: control-plane IPC uses Unix domain sockets (`#[cfg(unix)]` guar
 ## Commands
 
 ```bash
-cargo build --all-targets
+cargo build --workspace --all-targets
 
-# Full validation suite (run before committing)
+# Full validation suite (run before committing) — mirrors .github/workflows/ci.yml
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
 
 # Focused tests
 cargo test sync::tests          # planner unit tests (src/sync.rs)
@@ -34,6 +34,10 @@ cargo test computes_empty_file_sha1   # single test by name substring
 ```
 
 `clippy` runs with `-D warnings` — warnings are build failures in CI. Keep `cargo fmt` clean.
+
+`--workspace` matters: this workspace's root is itself a package, so Cargo's default member
+selection is *just* the root crate. Without the flag, `gui/gui-core` and `gui/src-tauri` are
+neither linted nor tested. (`cargo fmt --all` already spans every member.)
 
 The live smoke test against a real authenticated Proton Drive account is `#[ignore]` and read-only:
 
