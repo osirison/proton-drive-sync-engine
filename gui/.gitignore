@@ -1,0 +1,6 @@
+# Dev-only lint/format tooling. Nothing here is bundled: Tauri serves src/ raw
+# (frontendDist: "../src"), and node_modules sits outside that directory.
+node_modules/
+
+# logs
+npm-debug.log*

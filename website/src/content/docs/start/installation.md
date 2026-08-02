@@ -69,7 +69,7 @@ The resulting `proton-sync-gui` binary is the desktop client. See the
 
 ### Validate a source checkout
 
-The full contributor validation suite:
+The Rust validation suite:
 
 ```bash
 cargo fmt --all -- --check
@@ -77,8 +77,19 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 ```
 
-`clippy` runs with `-D warnings`, so warnings fail the build in CI. See
-[Development](/reference/development/) for focused test commands.
+`clippy` runs with `-D warnings`, so warnings fail the build in CI.
+
+The desktop app's webview frontend is gated separately and needs Node 20 or newer (CI uses
+Node 22):
+
+```bash
+cd gui
+npm ci        # first time, and after any gui/package-lock.json change
+npm run check # prettier --check, then eslint
+```
+
+Both suites are enforced by CI. See [Development](/reference/development/) for focused test
+commands and the frontend tooling notes.
 
 ## Native packages
 

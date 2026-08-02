@@ -310,6 +310,7 @@ src/            The engine (library crate) + the two binaries
 gui/            The desktop app (Tauri)
   gui-core/     Pure-Rust data layer (the typed boundary to the daemon)
   src/          Vanilla-JS webview frontend · src-tauri/  the Tauri shell
+  package.json  eslint + prettier for src/ (dev-only; nothing here is bundled)
 website/        This documentation site (Astro + Starlight)
 packaging/      RPM · deb · AUR · freedesktop · file-manager emblems
 examples/       Sample config, systemd unit, release-archive helper
@@ -329,6 +330,15 @@ cargo test --workspace --all-targets --all-features
 `--workspace` is required on `clippy`/`test`: the workspace root is itself a package, so
 Cargo's default member selection is just that root crate and the `gui/` members would go
 unlinted and untested. (`cargo fmt --all` already covers every member.)
+
+The desktop app's webview frontend (`gui/src`, vanilla ES modules with no bundler) has its
+own eslint + prettier gate, also enforced by CI:
+
+```bash
+cd gui
+npm ci        # first time, and after any gui/package-lock.json change
+npm run check # prettier --check, then eslint
+```
 
 The planner (`src/sync.rs`) is pure and tested directly; the daemon is generic over its
 Proton client so reconciliation is tested with injected fakes. Add regression tests next to

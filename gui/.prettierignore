@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# npm owns this file's formatting.
+package-lock.json
+
+# The Rust side of the app: Cargo/Tauri own these. src-tauri/gen/ in particular is generated and
+# gitignored at the repo root, so without this entry `prettier --check .` would pass on a fresh CI
+# checkout and fail for every developer who has actually built the GUI.
+src-tauri/
+gui-core/

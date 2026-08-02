@@ -38,3 +38,37 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --workspace --all-targets --all-features
+
+  # The desktop app's webview frontend (gui/src): vanilla ES modules served RAW by Tauri
+  # ("frontendDist": "../src", and deliberately no beforeBuildCommand), so there is no bundler and
+  # no build step — this job only lints and format-checks. A bad import specifier is therefore not
+  # a build error but a blank window at runtime, which is the bug class the lint gate exists for.
+  #
+  # Deliberately NOT `needs: rust` — it only wants Node, so it runs in parallel rather than queueing
+  # behind the Tauri apt install.
+  #
+  # Deliberately NOT path-filtered either. This job is intended to become a required status check on
+  # main, and a required check that is path-filtered never reports on PRs outside its filter: those
+  # PRs would sit forever on "Expected — waiting for status to be reported", which would also stall
+  # Dependabot auto-merge. Keeping it unfiltered is what makes it safe to mark as required.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          # Resolved from the repo root, not from `defaults.run.working-directory` — same as the
+          # website job in docs.yml. `npm ci` requires the committed gui/package-lock.json.
+          cache-dependency-path: gui/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      # Step order mirrors the `rust` job above.
+      - name: Format
+        run: npm run format:check
+      - name: Lint
+        run: npm run lint

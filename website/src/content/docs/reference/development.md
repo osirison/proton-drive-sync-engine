@@ -30,6 +30,27 @@ cargo test --workspace --all-targets --all-features
 Cargo's default member selection collapses to that root crate — without the flag the `gui/`
 members are neither linted nor tested. (`cargo fmt --all` already spans every member.)
 
+## Frontend tooling
+
+The desktop app's webview frontend (`gui/src`) is **vanilla ES modules with no bundler and no
+build step** — Tauri serves the directory raw (`frontendDist: "../src"`). It has its own
+eslint + prettier gate, run by the `frontend` job in CI:
+
+```bash
+cd gui
+npm ci        # first time, and after any gui/package-lock.json change
+npm run check # prettier --check, then eslint
+# npm run format  /  npm run lint:fix   to apply fixes
+```
+
+Everything under `gui/` that npm installs is **dev-only tooling and never ships**: `node_modules`
+lives at `gui/node_modules`, outside the `gui/src` directory that gets embedded into the binary.
+
+Because there is no bundler, an import specifier that loses its `.js` extension still resolves
+under Node's resolver but **404s in the webview** — a blank window at runtime rather than a build
+error. That is why `import-x/extensions: always` is enabled and why it is the highest-value rule
+in the config; `gui/eslint.config.js` documents the reasoning for the rest.
+
 ## Focused tests
 
 ```bash
@@ -88,6 +109,7 @@ See the repo's `CLAUDE.md` for the architecture map and the invariants to preser
 
 ## Contributing
 
-Format, lint, and test before pushing. Keep changes focused, add tests near the code you
+Format, lint, and test before pushing — the Rust suite above, plus `npm run check` in `gui/` if
+you touched `gui/src`. Keep changes focused, add tests near the code you
 touch, and preserve the documented invariants — commit-after-side-effects, path-safety at
 boundaries, non-destructive-on-unknown-digests, and selective-sync-applies-everywhere.

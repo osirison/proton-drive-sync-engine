@@ -16,10 +16,14 @@ Unix-only today: control-plane IPC uses Unix domain sockets (`#[cfg(unix)]` guar
 ```bash
 cargo build --workspace --all-targets
 
-# Full validation suite (run before committing) — mirrors .github/workflows/ci.yml
+# Rust validation suite (run before committing) — mirrors the `rust` job in .github/workflows/ci.yml
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
+
+# Frontend validation suite (the gui/src webview) — mirrors the `frontend` job in the same workflow
+(cd gui && npm ci)         # first time, and after any gui/package-lock.json change
+(cd gui && npm run check)  # = prettier --check, then eslint
 
 # Focused tests
 cargo test sync::tests          # planner unit tests (src/sync.rs)
@@ -38,6 +42,12 @@ cargo test computes_empty_file_sha1   # single test by name substring
 `--workspace` matters: this workspace's root is itself a package, so Cargo's default member
 selection is *just* the root crate. Without the flag, `gui/gui-core` and `gui/src-tauri` are
 neither linted nor tested. (`cargo fmt --all` already spans every member.)
+
+The webview frontend in `gui/src/js` is gated separately by `gui/package.json` (eslint + prettier,
+both dev-only — nothing there ships). There is **no bundler**: Tauri serves `gui/src` raw
+(`frontendDist: "../src"`), so `import-x/extensions: always` is load-bearing — an import specifier
+that loses its `.js` still resolves under Node's resolver and 404s in WebKitGTK, which is a blank
+window at runtime rather than a build error. `eslint.config.js` documents the rest of the ruleset.
 
 The live smoke test against a real authenticated Proton Drive account is `#[ignore]` and read-only:
 
