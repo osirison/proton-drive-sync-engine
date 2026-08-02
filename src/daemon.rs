@@ -102,6 +102,15 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     connection: Connection,
     proton: C,
     pending_changes: BTreeSet<PathBuf>,
+    /// Relative paths the daemon itself wrote into the watched tree during the current pass
+    /// (`Download` destinations and `MoveLocal` *file* destinations). The `notify` watcher echoes
+    /// those writes straight back as `Create`/`Modify` events; without this the echo would flip the
+    /// just-committed `Synced` record to `Modified`, and a `Modified` record whose remote then
+    /// changes plans a stale `Upload` that reverts the newer remote edit (or resurrects a remote
+    /// delete) — issue #49. `handle_fs_event` suppresses `mark_modified` for a path in this set (but
+    /// still queues it in `pending_changes`); it is cleared at the top of every pass, so the
+    /// suppression lasts exactly one echo window and a later genuine user edit is never affected.
+    authored_writes: HashSet<PathBuf>,
     scan_options: ScanOptions,
     /// State shared with the concurrently-running control-socket server task (see
     /// [`ControlShared`]). The daemon core is the only writer of the snapshot; `paused` is
@@ -563,6 +572,7 @@ impl<C: ProtonClient> Daemon<C> {
             connection,
             proton,
             pending_changes: BTreeSet::new(),
+            authored_writes: HashSet::new(),
             scan_options,
             shared,
             last_sync: None,
@@ -765,7 +775,19 @@ impl<C: ProtonClient> Daemon<C> {
                     // first checking whether the path exists, is a regular file, or
                     // already has a record - this also avoids synchronously hashing
                     // potentially large files on every raw filesystem event.
-                    mark_modified(&self.connection, &relative_path)?;
+                    //
+                    // Exception: skip `mark_modified` when this is the watcher echoing a
+                    // write the daemon *itself* just made (a Download destination or a
+                    // `MoveLocal` file destination this pass). Flipping that fresh `Synced`
+                    // record to `Modified` would make the next pass plan a stale `Upload`
+                    // over a newer remote edit — reverting it, or resurrecting a remote
+                    // delete (issue #49). Still queue it in `pending_changes` so the path is
+                    // re-examined: a genuine user edit landing in the same window is caught
+                    // regardless, because planning re-scans and detects it from the content
+                    // delta even without the `Modified` flag.
+                    if !self.authored_writes.contains(&relative_path) {
+                        mark_modified(&self.connection, &relative_path)?;
+                    }
                     self.pending_changes.insert(relative_path);
                 }
                 EventKind::Remove(_) => {
@@ -852,6 +874,12 @@ impl<C: ProtonClient> Daemon<C> {
 
     fn reconcile_blocking_inner(&mut self) -> AppResult<()> {
         info!("starting reconciliation");
+        // Start each pass with an empty authored-writes set: it only needs to survive from a
+        // download/move to the watcher echo of that same write (which drains after this pass
+        // returns from `block_in_place`, before the next pass runs). Clearing here bounds the
+        // `mark_modified` suppression in `handle_fs_event` to a single echo window, so a genuine
+        // user edit that arrives in any later pass is never mistaken for the daemon's own echo.
+        self.authored_writes.clear();
         // Load the baseline before scanning so the scan can reuse each unchanged file's
         // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
         let base_records = load_index(&self.connection)?;
@@ -1403,6 +1431,10 @@ impl<C: ProtonClient> Daemon<C> {
                         let result = self.proton.download(&remote_path, &destination);
                         finish_transfer_spinner(spinner);
                         result?;
+                        // The write we just landed will echo back through the watcher; record it so
+                        // `handle_fs_event` does not flip this fresh `Synced` record to `Modified`
+                        // (issue #49). Downloads always target a regular file.
+                        self.authored_writes.insert(action.path.clone());
                         let local_state = local_file_state(&self.config.local_root, &destination)?;
                         let record = FileRecord::from_local(
                             action.path.clone(),
@@ -1490,6 +1522,12 @@ impl<C: ProtonClient> Daemon<C> {
                                     }
                                 }
                             } else {
+                                // The renamed-into-place file echoes through the watcher; record
+                                // its destination so `handle_fs_event` does not flip the fresh
+                                // `Synced` record to `Modified` (issue #49). Directory moves are
+                                // already ignored by the `path.is_dir()` guard at the top of
+                                // `handle_fs_event`, so only the file branch records.
+                                self.authored_writes.insert(destination_path.clone());
                                 let local_state =
                                     local_file_state(&self.config.local_root, &destination)?;
                                 let record = FileRecord::from_local(
@@ -1942,6 +1980,10 @@ impl<C: ProtonClient> Daemon<C> {
                 Ok(()) => {
                     match local_file_state(&self.config.local_root, &prepared.request.destination) {
                         Ok(local_state) => {
+                            // Suppress this landed download's watcher echo so it cannot flip the
+                            // fresh `Synced` record to `Modified` (issue #49); same rationale as
+                            // the single-file `Download` arm.
+                            self.authored_writes.insert(prepared.action.path.clone());
                             let record = FileRecord::from_local(
                                 prepared.action.path.clone(),
                                 &local_state,
@@ -4543,6 +4585,151 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_edit_duplicate_proton_id_does_not_drop_the_withheld_local_delete() {
+        // Issue #71(c) regression guard — spans the id-takeover pass AND the pass after it.
+        //
+        // A remote rename+edit (a.txt -> b.txt, content ALSO changed) fails move detection (the
+        // digest no longer equals the base hash), so the planner falls back to Download(b.txt) +
+        // LocalDelete(a.txt). With the local delete-approval guard on (the default), the
+        // LocalDelete is WITHHELD while the Download commits a fresh b.txt row carrying the SAME
+        // composed proton_id (vol~nx) as the still-present a.txt row — the transient DUPLICATE
+        // proton_id issue #71 describes.
+        //
+        // This locks in the correct current behavior. On the next pass, with the move event still
+        // in the delta (the cursor is held), the duplicate forces reconstruct's snapshot fallback
+        // (issue #71(b)); the snapshot lists the real remote (a.txt gone, b.txt present) and
+        // re-derives LocalDelete(a.txt) from ground truth, it stays withheld, a.txt survives, and
+        // the cursor does NOT advance. A naive #71(c) "clear the id from the other row on
+        // takeover" would erase the duplicate, let reconstruction complete with a PHANTOM
+        // remote-present a.txt, drop the withheld delete, and advance the cursor past the move — a
+        // worse data-integrity regression. See the comment in `index::upsert_record`.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let base_hash = sha1_bytes(b"base");
+        // The fake client's `download` writes b"downloaded"; make the remote claim that exact
+        // digest so b.txt is a clean no-op once it lands (no confounding re-download later).
+        let downloaded_hash = sha1_bytes(b"downloaded");
+        fs::write(local_root.join("a.txt"), b"base").expect("local a.txt");
+
+        // Remote AFTER the rename+edit: node nx now lives at b.txt (a.txt is gone remotely). This
+        // map backs both the targeted directory listing (the incremental resolver) and the full
+        // walk (the snapshot fallback).
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("b.txt"),
+            remote_file_entity("b.txt", "vol~nx", downloaded_hash.as_str()),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+
+        // The move arrives as Updated(node nx, not trashed). Script it on BOTH passes: the held
+        // cursor means the real stream re-delivers it from cursor-0 until a pass advances past it
+        // (which must not happen while the delete is withheld).
+        let pages = vec![
+            one_page(
+                "cursor-1",
+                vec![change(RemoteChangeKind::Updated, "nx", None, false)],
+            ),
+            one_page(
+                "cursor-1",
+                vec![change(RemoteChangeKind::Updated, "nx", None, false)],
+            ),
+        ];
+        let mut daemon = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                delete_approval_local: true,
+                delete_approval_remote: true,
+                ..event_config(directory.path(), &local_root)
+            },
+            client,
+            Some(Box::new(FakeEventSource::with_pages("cursor-1", pages))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("a.txt", Some("vol~nx"), base_hash.as_str()),
+        )
+        .expect("seed base record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+
+        // Pass 1 — the id takeover. Incremental: Download(b.txt) commits a row with proton_id
+        // vol~nx; LocalDelete(a.txt) is withheld, so a.txt keeps its vol~nx row → duplicate id.
+        daemon
+            .reconcile_blocking()
+            .expect("pass 1 (incremental takeover)");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "pass 1 stays incremental (no full walk)"
+        );
+        assert!(local_root.join("b.txt").exists(), "b.txt was downloaded");
+        assert!(
+            local_root.join("a.txt").exists(),
+            "the withheld local delete leaves a.txt in place"
+        );
+        assert_eq!(daemon.pending_deletions.len(), 1, "LocalDelete(a.txt) held");
+        assert_eq!(
+            daemon.pending_deletions[0].direction,
+            DeleteDirection::Local
+        );
+        // Both rows now hold the same composed id — the transient duplicate. (A naive #71(c) would
+        // already have cleared a.txt's id here, failing this assertion.)
+        assert_eq!(
+            get_record(&daemon.connection, Path::new("a.txt"))
+                .expect("lookup a.txt")
+                .expect("a.txt row")
+                .proton_id
+                .as_deref(),
+            Some("vol~nx"),
+            "the withheld local delete keeps a.txt pinned to vol~nx"
+        );
+        assert_eq!(
+            get_record(&daemon.connection, Path::new("b.txt"))
+                .expect("lookup b.txt")
+                .expect("b.txt row")
+                .proton_id
+                .as_deref(),
+            Some("vol~nx"),
+            "the fresh download commits b.txt with the same vol~nx"
+        );
+
+        // Pass 2 — the pass after takeover, move event still in the delta. The duplicate proton_id
+        // forces exactly one snapshot fallback (#71(b)); the snapshot re-derives the withheld
+        // LocalDelete, a.txt survives, and the cursor is held.
+        daemon
+            .reconcile_blocking()
+            .expect("pass 2 (fallback re-derives the withheld delete)");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the duplicate proton_id forces exactly one snapshot fallback"
+        );
+        assert!(
+            local_root.join("a.txt").exists(),
+            "a.txt must survive: a naive #71(c) id-clear would strand a phantom remote entry and \
+             drop the delete"
+        );
+        assert_eq!(
+            daemon.pending_deletions.len(),
+            1,
+            "the LocalDelete must still be withheld, not silently dropped"
+        );
+        assert_eq!(
+            daemon.pending_deletions[0].direction,
+            DeleteDirection::Local
+        );
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor present");
+        assert_eq!(
+            cursor.last_event_id, "cursor-0",
+            "the cursor must NOT advance across the id takeover while the delete is withheld"
+        );
+    }
+
+    #[test]
     fn an_approved_remote_delete_applies_on_the_next_incremental_pass() {
         // Regression (event-driven / default mode): a withheld RemoteDelete is *local*-origin —
         // tracked via `pending_changes` (cleared on commit) and generating no remote event — so an
@@ -6197,6 +6384,237 @@ mod tests {
             daemon.pending_changes.is_empty(),
             "pending_changes must not leak entries for paths that plan to no action: {:?}",
             daemon.pending_changes
+        );
+    }
+
+    #[test]
+    fn authored_download_echo_does_not_flip_synced_record_to_modified() {
+        // Issue #49 (T1): the daemon's own download write echoes back through the `notify`
+        // watcher. That echo must NOT flip the just-committed `Synced` record to `Modified`
+        // (a `Modified` record whose remote later changes plans a stale `Upload` that reverts
+        // the newer remote edit). The echo must still register a pending change so the path is
+        // re-examined next pass.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+
+        let remote_content = b"remote content v1".to_vec();
+        let remote_hash = sha1_bytes(&remote_content);
+        let remote_path = PathBuf::from("/Drive/RemoteFolder/notes.txt");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some(remote_hash.as_str())),
+        );
+        let remote_contents = HashMap::from([(remote_path, remote_content.clone())]);
+        let (client, _) =
+            RecordingProtonClient::with_remote_contents(remote_files, remote_contents);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        // Pass: local Unchanged vs base, remote Changed → the daemon downloads and commits Synced.
+        daemon.reconcile_blocking().expect("reconcile");
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            record.sync_status,
+            SyncStatus::Synced,
+            "the download must commit a Synced record"
+        );
+        assert_eq!(record.sha1_hash, Some(remote_hash));
+
+        // The daemon's own write echoes back through the watcher.
+        daemon
+            .handle_fs_event(
+                Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+                    .add_path(local_path.clone()),
+            )
+            .expect("handle echo event");
+
+        let after = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            after.sync_status,
+            SyncStatus::Synced,
+            "the daemon's own download echo must not flip the record to Modified (issue #49)"
+        );
+        assert!(
+            daemon.pending_changes.contains(Path::new("notes.txt")),
+            "the echo must still register a pending change so the path is re-examined next pass"
+        );
+    }
+
+    #[test]
+    fn unauthored_write_still_marks_record_modified_even_with_a_pending_authored_write() {
+        // Issue #49 (T2): the suppression must key on the path, not merely on "the set is
+        // non-empty". A Create/Modify for a file the daemon did NOT author still flips its record
+        // to `Modified` as before, even while an unrelated authored download sits in
+        // `authored_writes`.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        // File A: remote-only this pass, so the daemon downloads it → it lands in `authored_writes`.
+        let a_content = b"remote a".to_vec();
+        let a_hash = sha1_bytes(&a_content);
+        let a_remote_path = PathBuf::from("/Drive/RemoteFolder/a.txt");
+        // File B: a stable, already-synced local file the daemon never writes.
+        let b_path = local_root.join("b.txt");
+        fs::write(&b_path, b"stable b").expect("b file");
+        let b_hash = crate::index::compute_sha1(&b_path).expect("b hash");
+
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("a.txt"),
+            remote("a.txt", "id-a", Some(a_hash.as_str())),
+        );
+        remote_files.insert(
+            PathBuf::from("b.txt"),
+            remote("b.txt", "id-b", Some(b_hash.as_str())),
+        );
+        let remote_contents = HashMap::from([(a_remote_path, a_content)]);
+        let (client, _) =
+            RecordingProtonClient::with_remote_contents(remote_files, remote_contents);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("b.txt", Some("id-b"), b_hash.as_str()),
+        )
+        .expect("b base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+        assert!(
+            daemon.authored_writes.contains(Path::new("a.txt")),
+            "the downloaded file must be recorded as an authored write, so the guard is exercised"
+        );
+        assert!(
+            !daemon.authored_writes.contains(Path::new("b.txt")),
+            "the daemon never wrote B, so it must not be an authored write"
+        );
+
+        // A Modify for B — which the daemon did not author — must still mark it Modified, even
+        // though `authored_writes` is non-empty (it holds A).
+        daemon
+            .handle_fs_event(
+                Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+                    .add_path(b_path.clone()),
+            )
+            .expect("handle modify event");
+
+        let b_record = get_record(&daemon.connection, Path::new("b.txt"))
+            .expect("index lookup")
+            .expect("b record");
+        assert_eq!(
+            b_record.sync_status,
+            SyncStatus::Modified,
+            "a genuine (non-authored) edit must still flip the record to Modified"
+        );
+    }
+
+    #[test]
+    fn authored_echo_prevents_stale_upload_reverting_a_newer_remote_edit() {
+        // Issue #49 (T3): end-to-end payoff. Pass 1 downloads a file (commits Synced) and its
+        // write echoes through the watcher. The remote is then edited again. Because the echo did
+        // NOT flip the record to `Modified`, pass 2 correctly plans a `Download` of the newer
+        // remote content instead of an `Upload` that would revert it. The two passes use two
+        // daemon instances on the same db + local_root so the payoff is carried by the persisted
+        // record (the second daemon's fresh client models the remote having changed meanwhile).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("doc.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+
+        let remote_path = PathBuf::from("/Drive/RemoteFolder/doc.txt");
+        let content_v1 = b"remote content v1".to_vec();
+        let hash_v1 = sha1_bytes(&content_v1);
+        let content_v2 = b"remote content v2 (newer)".to_vec();
+        let hash_v2 = sha1_bytes(&content_v2);
+
+        // --- Pass 1: daemon1 downloads v1, then its write echoes back through the watcher. ---
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("doc.txt"),
+            remote("doc.txt", "id-doc", Some(hash_v1.as_str())),
+        );
+        let remote_contents = HashMap::from([(remote_path.clone(), content_v1.clone())]);
+        let (client, _) =
+            RecordingProtonClient::with_remote_contents(remote_files, remote_contents);
+        let mut daemon1 = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon1");
+        upsert_record(
+            &daemon1.connection,
+            &base_record("doc.txt", Some("id-doc"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon1.reconcile_blocking().expect("pass 1 reconcile");
+        assert_eq!(
+            fs::read(&local_path).expect("local after download"),
+            content_v1,
+            "pass 1 must download v1 into the local tree"
+        );
+        // The daemon's own download echoes through the watcher.
+        daemon1
+            .handle_fs_event(
+                Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+                    .add_path(local_path.clone()),
+            )
+            .expect("handle echo event");
+        let record_after_echo = get_record(&daemon1.connection, Path::new("doc.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            record_after_echo.sync_status,
+            SyncStatus::Synced,
+            "the download echo must leave the record Synced, not Modified (issue #49)"
+        );
+        drop(daemon1); // release the lock guards so daemon2 can open the same root + db
+
+        // --- Pass 2: the remote is edited to v2; a fresh daemon reconciles the same db + tree. ---
+        let mut remote_files_v2 = HashMap::new();
+        remote_files_v2.insert(
+            PathBuf::from("doc.txt"),
+            remote("doc.txt", "id-doc", Some(hash_v2.as_str())),
+        );
+        let remote_contents_v2 = HashMap::from([(remote_path.clone(), content_v2.clone())]);
+        let (client2, operations2) =
+            RecordingProtonClient::with_remote_contents(remote_files_v2, remote_contents_v2);
+        let mut daemon2 = Daemon::with_client(test_config(directory.path(), &local_root), client2)
+            .expect("daemon2");
+
+        daemon2.reconcile_blocking().expect("pass 2 reconcile");
+
+        // The newer remote edit wins: v2 is downloaded, and the stale local copy is never uploaded.
+        assert_eq!(
+            fs::read(&local_path).expect("local after pass 2"),
+            content_v2,
+            "the newer remote content must win — a reverting upload of the stale local copy is the bug"
+        );
+        let ops = operations2.lock().expect("operations lock");
+        assert!(
+            ops.contains(&RecordedOperation::Download {
+                remote_path: remote_path.clone(),
+                destination: local_path.clone(),
+            }),
+            "pass 2 must download the newer remote content: {ops:?}"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, RecordedOperation::Upload { .. })),
+            "pass 2 must not upload (revert) the stale local copy: {ops:?}"
         );
     }
 

@@ -523,6 +523,30 @@ pub fn get_record(connection: &Connection, relative_path: &Path) -> AppResult<Op
 }
 
 pub fn upsert_record(connection: &Connection, record: &FileRecord) -> AppResult<()> {
+    // NOTE (issue #71(c), deliberately NOT implemented). The issue proposes a "durable cure":
+    // when a row takes over a `proton_id`, clear that id from any other row in the same
+    // transaction so the composed id is always unique. That is a REGRESSION, not a fix.
+    //
+    // A remote rename+edit plans `Download(b.txt)` + `LocalDelete(a.txt)`; with the local
+    // delete-approval guard on (the default) the delete is WITHHELD while the download commits a
+    // new `b.txt` row carrying the same `volumeId~nodeId` as the surviving `a.txt` row — a
+    // transient duplicate. If this upsert cleared `a.txt`'s id, the next pass (the move event is
+    // still in the delta because the held cursor did not advance) would find NO duplicate, so
+    // `reconstruct_remote` would COMPLETE instead of falling back: it seeds `a.txt` as
+    // remote-present but, with its id gone, the replayed rename resolves only `b.txt`, leaving
+    // `a.txt` as a PHANTOM remote entry. The planner then reads `a.txt` as present on both sides,
+    // drops the withheld `LocalDelete`, and the cursor advances past the move — violating the
+    // "a withheld LocalDelete holds the event cursor" invariant and losing a real deletion.
+    //
+    // The tension is fundamental at this layer: reconstruction completing requires no duplicate,
+    // but correctly removing `a.txt` from the reconstructed map requires `a.txt` to stay linked to
+    // the node's uid — which IS the duplicate. The harm is already prevented WITHOUT clearing the
+    // id: `path_for_proton_id` (ambiguous id → `None`) and `reconstruct_remote` seeding (duplicate
+    // id → `FallbackToSnapshot`) make every incremental pass fall back to a full snapshot while the
+    // duplicate exists, which lists the real remote and re-derives the withheld `LocalDelete`. The
+    // only cost is that fallback until the user resolves the approval — correctness-preserving and
+    // self-healing. Regression guard:
+    // `daemon::tests::a_rename_edit_duplicate_proton_id_does_not_drop_the_withheld_local_delete`.
     connection.execute(
         r#"
         INSERT INTO file_index (file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status)
