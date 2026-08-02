@@ -1505,7 +1505,8 @@ fn parse_remote_listing(
 ) -> AppResult<RemoteListing> {
     let value: Value = serde_json::from_str(json)?;
     let mut listing = RemoteListing::default();
-    collect_from_value(&value, parent_path, remote_root, &mut listing)?;
+    // `true`: the top-level nodes of this listing are the CLI's root wrapper level.
+    collect_from_value(&value, parent_path, remote_root, &mut listing, true)?;
     Ok(listing)
 }
 
@@ -1514,17 +1515,19 @@ fn collect_from_value(
     parent_path: &Path,
     remote_root: &Path,
     listing: &mut RemoteListing,
+    is_root: bool,
 ) -> AppResult<()> {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_from_value(item, parent_path, remote_root, listing)?;
+                // A top-level array does not descend a level: its items are still root nodes.
+                collect_from_value(item, parent_path, remote_root, listing, is_root)?;
             }
         }
         Value::Object(object) => {
             // Deserialize once and let collect_node own all parent-path propagation.
             let node: ProtonNode = serde_json::from_value(Value::Object(object.clone()))?;
-            collect_node(&node, parent_path, remote_root, listing)?;
+            collect_node(&node, parent_path, remote_root, listing, is_root)?;
         }
         _ => {}
     }
@@ -1536,6 +1539,7 @@ fn collect_node(
     parent_path: &Path,
     remote_root: &Path,
     listing: &mut RemoteListing,
+    is_root: bool,
 ) -> AppResult<()> {
     let candidate_path = node
         .path
@@ -1543,10 +1547,17 @@ fn collect_node(
         .map(PathBuf::from)
         .or_else(|| node.name.as_deref().map(|name| parent_path.join(name)));
 
+    // The root-basename strip must collapse only the genuine depth-0 wrapper node,
+    // never a descendant that merely shares the root's basename (issue #54). A
+    // non-empty `parent_path` means this call is resolving beneath some directory
+    // (a re-parented child, or a targeted subdirectory listing), so it is never the
+    // root wrapper even at the listing's top level.
+    let is_root_wrapper = is_root && parent_path.as_os_str().is_empty();
+
     // If a path was provided but fails normalization (absolute path, `..` escape,
     // or root component), skip the node and all of its descendants.
     let relative_path = match candidate_path.as_deref() {
-        Some(p) => match normalize_remote_path(p, remote_root) {
+        Some(p) => match normalize_remote_path(p, remote_root, is_root_wrapper) {
             Some(normalized) => normalized,
             None => return Ok(()),
         },
@@ -1602,14 +1613,21 @@ fn collect_node(
         relative_path
     };
 
+    // A nameless structural container (the CLI wraps its listing in an outer
+    // `{"entries": [...]}` object with no name/path) does not itself occupy the
+    // wrapper level — it passes `is_root` straight through to the real nodes it
+    // holds. Any node that carries its own identity, on the other hand, consumes
+    // the root level: its descendants are never the wrapper, so a child that
+    // shares the root's basename keeps its qualified relative path (issue #54).
+    let child_is_root = is_root && candidate_path.is_none();
     for child in &node.entries {
-        collect_node(child, &next_parent, remote_root, listing)?;
+        collect_node(child, &next_parent, remote_root, listing, child_is_root)?;
     }
     for child in &node.children {
-        collect_node(child, &next_parent, remote_root, listing)?;
+        collect_node(child, &next_parent, remote_root, listing, child_is_root)?;
     }
     for child in &node.files {
-        collect_node(child, &next_parent, remote_root, listing)?;
+        collect_node(child, &next_parent, remote_root, listing, child_is_root)?;
     }
 
     Ok(())
@@ -1637,10 +1655,22 @@ fn is_downloadable_media_type(media_type: Option<&str>) -> bool {
 ///
 /// `CurDir` (`.`) components are stripped so the result only contains
 /// `Normal` components and is safe to use as a `HashMap` key.
-fn normalize_remote_path(path: &Path, remote_root: &Path) -> Option<PathBuf> {
+///
+/// `is_root_wrapper` gates the bare root-basename strip: the CLI's tree output
+/// wraps a listing in a single node named after the listed folder, which must
+/// collapse to `""`. That strip is applied ONLY to that depth-0 wrapper — a
+/// genuine descendant that merely shares the root's basename (e.g. a subfolder
+/// `Documents` under root `/Drive/Documents`) must survive as a normal relative
+/// path rather than aliasing to the root and vanishing (issue #54).
+fn normalize_remote_path(
+    path: &Path,
+    remote_root: &Path,
+    is_root_wrapper: bool,
+) -> Option<PathBuf> {
     let relative = if let Ok(stripped) = path.strip_prefix(remote_root) {
         stripped.to_path_buf()
-    } else if let Some(root_name) = remote_root.file_name()
+    } else if is_root_wrapper
+        && let Some(root_name) = remote_root.file_name()
         && let Ok(stripped) = path.strip_prefix(root_name)
     {
         stripped.to_path_buf()
@@ -1945,47 +1975,136 @@ mod tests {
     }
 
     #[test]
+    fn root_named_subfolder_survives_and_is_not_reparented_to_root() {
+        // Regression for issue #54: the CLI wraps a listing in a depth-0 node named
+        // after the listed folder, which must collapse to "". The old strip fired at
+        // every depth, so a genuine subfolder that happens to share the root's basename
+        // ("Documents" under root "/Drive/Documents") also collapsed to "" — its whole
+        // subtree vanished and its child re-parented to the root, colliding with real
+        // root entries. The subtree must instead survive under its qualified path.
+        let json = r#"
+        {
+          "entries": [
+            {
+              "name": "Documents",
+              "type": "folder",
+              "entries": [
+                {
+                  "name": "Documents",
+                  "type": "folder",
+                  "entries": [
+                    {
+                      "id": "file-inner",
+                      "name": "notes.txt",
+                      "activeRevision": {
+                        "claimedDigests": {
+                          "sha1": "3333333333333333333333333333333333333333"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let remote_root = Path::new("/Drive/Documents");
+
+        // The nested subfolder must be recorded as a directory (so the BFS walk queues
+        // and recurses into it) at its qualified path, not collapsed to the root.
+        let entities = parse_remote_entities(json, remote_root).expect("parse remote entities");
+        let subfolder = entities
+            .get(Path::new("Documents"))
+            .and_then(RemoteEntity::as_directory)
+            .expect("root-named subfolder must survive as a directory entity");
+        assert_eq!(subfolder.name, "Documents");
+
+        // The child file must live under the subfolder, not aliased to the root.
+        let files = parse_remote_files(json, remote_root).expect("parse remote files");
+        let nested = files
+            .get(Path::new("Documents/notes.txt"))
+            .expect("child of the root-named subfolder must keep its qualified path");
+        assert_eq!(nested.id, "file-inner");
+        assert_eq!(
+            nested.sha1_hash.as_deref(),
+            Some("3333333333333333333333333333333333333333")
+        );
+
+        // It must NOT be re-parented to the root (the key-collision variant).
+        assert!(
+            !files.contains_key(Path::new("notes.txt")),
+            "child must not re-parent to the root and collide with real root entries"
+        );
+        // And the subtree must not have vanished into the empty root path.
+        assert_eq!(files.len(), 1, "exactly the one nested file must be mapped");
+    }
+
+    #[test]
     fn normalize_remote_path_rejects_traversal_and_absolute_paths() {
         // Parent-directory component must be rejected.
         assert_eq!(
-            normalize_remote_path(Path::new("../secret"), Path::new("/Drive")),
+            normalize_remote_path(Path::new("../secret"), Path::new("/Drive"), true),
             None,
             "path with .. must be rejected"
         );
 
         // Absolute path that does not start with remote_root must be rejected.
         assert_eq!(
-            normalize_remote_path(Path::new("/etc/passwd"), Path::new("/Drive")),
+            normalize_remote_path(Path::new("/etc/passwd"), Path::new("/Drive"), true),
             None,
             "absolute path outside remote_root must be rejected"
         );
 
         // Nested .. disguised inside a longer path.
         assert_eq!(
-            normalize_remote_path(Path::new("Documents/../../etc/passwd"), Path::new("/Drive")),
+            normalize_remote_path(
+                Path::new("Documents/../../etc/passwd"),
+                Path::new("/Drive"),
+                true
+            ),
             None,
             "embedded .. must be rejected"
         );
 
         // A valid relative path must succeed.
         assert_eq!(
-            normalize_remote_path(Path::new("Documents/notes.txt"), Path::new("/Drive")),
+            normalize_remote_path(Path::new("Documents/notes.txt"), Path::new("/Drive"), true),
             Some(PathBuf::from("Documents/notes.txt")),
             "valid relative path must pass through"
         );
 
         // A valid absolute path rooted at remote_root must succeed.
         assert_eq!(
-            normalize_remote_path(Path::new("/Drive/notes.txt"), Path::new("/Drive")),
+            normalize_remote_path(Path::new("/Drive/notes.txt"), Path::new("/Drive"), true),
             Some(PathBuf::from("notes.txt")),
             "absolute path under remote_root must be stripped correctly"
         );
 
         // CurDir (.) components must be stripped so the result is a canonical Normal-only path.
         assert_eq!(
-            normalize_remote_path(Path::new("./Documents/notes.txt"), Path::new("/Drive")),
+            normalize_remote_path(
+                Path::new("./Documents/notes.txt"),
+                Path::new("/Drive"),
+                true
+            ),
             Some(PathBuf::from("Documents/notes.txt")),
             "leading CurDir must be stripped"
+        );
+
+        // A node NOT at the root-wrapper level that merely shares the root basename must
+        // keep its name verbatim instead of being stripped to "" (issue #54).
+        assert_eq!(
+            normalize_remote_path(Path::new("Drive"), Path::new("/Drive"), false),
+            Some(PathBuf::from("Drive")),
+            "root-named descendant must survive when not the root wrapper"
+        );
+        // The same name AT the root-wrapper level still collapses (the CLI's wrapper node).
+        assert_eq!(
+            normalize_remote_path(Path::new("Drive"), Path::new("/Drive"), true),
+            Some(PathBuf::new()),
+            "root wrapper node still collapses to the empty path"
         );
     }
 
@@ -2896,6 +3015,97 @@ exit 64
                 .as_deref(),
             Some("2222222222222222222222222222222222222222")
         );
+    }
+
+    // Regression guard for issue #54 through the production `client.list()` BFS path
+    // (the parse-entry test above only covers an empty `parent_path`). Remote root
+    // `/Drive/Documents` contains a subfolder also named `Documents`: the root wrapper
+    // must collapse, the root-named subfolder must survive and be BFS-queued, and — the
+    // subtlety this test locks down — the basename strip must NOT fire again when its
+    // child is resolved under the non-empty `parent_path` "Documents", or the child
+    // would be re-parented to the bare root name and collide with real root entries.
+    #[cfg(unix)]
+    #[test]
+    fn list_keeps_a_root_named_subfolders_child_under_its_qualified_path() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+    printf '%s\n' "$4" >> "$0.args"
+    if [ "$4" = "/Drive/Documents" ]; then
+        cat <<'JSON'
+[
+    {
+        "name": { "ok": true, "value": "Documents" },
+        "type": "folder",
+        "entries": [
+            {
+                "uid": "sub-id",
+                "name": { "ok": true, "value": "Documents" },
+                "type": "folder"
+            }
+        ]
+    }
+]
+JSON
+        exit 0
+    fi
+    if [ "$4" = "/Drive/Documents/Documents" ]; then
+        cat <<'JSON'
+[
+    {
+        "uid": "notes-id",
+        "name": { "ok": true, "value": "notes.txt" },
+        "type": "file",
+        "activeRevision": {
+            "ok": true,
+            "value": {
+                "claimedDigests": {
+                    "sha1": "4444444444444444444444444444444444444444"
+                }
+            }
+        }
+    }
+]
+JSON
+        exit 0
+    fi
+fi
+echo "unexpected args: $*" >&2
+exit 64
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 2),
+        );
+
+        let files = client
+            .list(Path::new("/Drive/Documents"))
+            .expect("list a root-named subfolder");
+
+        // The wrapper collapsed, the root-named subfolder survived and was BFS-queued
+        // (its directory got listed), proving it did not vanish or re-parent to root.
+        assert_eq!(
+            fs::read_to_string(args_path(&executable)).expect("recorded list paths"),
+            "/Drive/Documents\n/Drive/Documents/Documents\n"
+        );
+        assert_eq!(
+            files
+                .get(Path::new("Documents/notes.txt"))
+                .expect("child under the root-named subfolder")
+                .sha1_hash
+                .as_deref(),
+            Some("4444444444444444444444444444444444444444")
+        );
+        // The basename strip must NOT have fired at the non-root parent_path.
+        assert!(
+            !files.contains_key(Path::new("notes.txt")),
+            "child must not re-parent to the bare root name"
+        );
+        assert_eq!(files.len(), 1, "exactly the one nested file must be mapped");
     }
 
     #[cfg(unix)]
