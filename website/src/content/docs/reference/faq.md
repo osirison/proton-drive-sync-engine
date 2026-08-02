@@ -65,11 +65,14 @@ SQLite cache isn't concurrency-safe, so a user-global lock enforces a single ins
 No. Closing the window **hides it to the tray**; the app process and the daemon keep running.
 Syncing is the daemon's job, independent of the window. See [Tray](/desktop/tray/).
 
-## Why isn't there a transfer percentage?
+## Why isn't there a transfer percentage for downloads?
 
-The daemon reports in-flight progress as `[i/N]` file counts on stderr only — it never
-crosses the control socket — so the app shows file counts and an indeterminate bar rather
-than a fabricated percentage.
+The daemon *does* surface live progress over the control socket — the sync phase, the
+`[i/N]` action counts, and byte counts when it knows them — and the CLI and app render it.
+What's missing is a download *percentage*: a remote listing carries no file size, so a
+download's total bytes are unknown and no honest percentage can be computed. The app shows
+file counts and an indeterminate bar instead. (Uploads, whose size is known locally, do show
+a percentage.)
 
 ## Does it work on Windows or macOS?
 

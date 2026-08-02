@@ -66,9 +66,11 @@ nothing surprising happens on your behalf.
 The app is careful not to imply capabilities the daemon doesn't have. A few examples you'll
 notice:
 
-- **Transfer progress is indeterminate.** The daemon reports in-flight progress as `[i/N]`
-  file counts on stderr only; it never crosses the socket, so the app shows a moving bar and
-  file counts, not a fabricated percentage.
+- **Download progress is indeterminate.** The daemon surfaces live progress over the socket
+  (the phase, `[i/N]` action counts, and byte counts when known), but a remote listing carries
+  no file size — so a *download's* total bytes are unknown and the app shows a moving bar and
+  file counts rather than a fabricated percentage. (Uploads, whose size is known, show a
+  percentage.)
 - **Applying a reviewed plan is a fresh pass.** Dry-run and the real reconcile are separate
   invocations, so the applied plan can differ from the reviewed one — the app says so.
 - **One folder pair.** The daemon syncs one local↔remote pair; the folder selector is shaped

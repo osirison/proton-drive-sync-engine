@@ -46,8 +46,9 @@ Every reconcile compares **three sources of truth** — the local files, the rem
 and the last-synced baseline in a local SQLite index — then plans and executes actions
 (upload, download, move, conflict, delete, …). Comparing all three, not just the two live
 sides, is what lets it tell a *new* file from a *deleted* one and an *edit* from a *move*.
-The index is committed only **after** every action in a pass succeeds, so a failure
-mid-plan never leaves half-recorded state. → [How sync works](https://osirison.github.io/proton-drive-sync-engine/concepts/how-sync-works/)
+Each index change is committed only **after** its side effect succeeds, in incremental
+checkpoints as work completes, so a failure mid-plan keeps completed work durable and never
+leaves half-recorded state. → [How sync works](https://osirison.github.io/proton-drive-sync-engine/concepts/how-sync-works/)
 
 ## Quick setup
 
@@ -266,7 +267,8 @@ that safe and predictable.
   the index, so excluded paths are never treated as deleted.
   → [Selective sync](https://osirison.github.io/proton-drive-sync-engine/daemon/selective-sync/)
 - **Fast incremental reconcile** — Proton's volume-event stream gives `O(changes)` change
-  detection (on by default), with a periodic full scan as a safety net.
+  detection (on by default), with automatic full-scan fallback when the stream can't resolve a
+  change; a periodic full scan is an opt-in safety net (off by default).
   → [Change detection](https://osirison.github.io/proton-drive-sync-engine/concepts/change-detection/)
 - **Config files** with `--config`, plus hierarchical per-directory `.proton-sync.toml`.
   → [Configuration](https://osirison.github.io/proton-drive-sync-engine/daemon/configuration/)

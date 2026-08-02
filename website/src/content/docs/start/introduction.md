@@ -46,7 +46,8 @@ Read [How sync works](/concepts/how-sync-works/) for the full model.
 - Detects **renames and moves** for files in either direction, and for directories
   renamed or moved on the remote side.
 - Uses Proton's **volume-event stream** for fast, `O(changes)` incremental reconciles,
-  with a periodic full-tree scan as a safety net. See [Change detection](/concepts/change-detection/).
+  with an optional periodic full-tree scan (off by default) as a safety net. See
+  [Change detection](/concepts/change-detection/).
 - Preserves both versions on a real **conflict** via a `.proton-cloud` sidecar.
 - Withholds destructive deletes behind a directional, per-item **delete-approval** guard
   that is on by default.

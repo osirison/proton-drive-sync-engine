@@ -33,7 +33,8 @@ out what moved.
 The straightforward method lists every remote directory with
 `proton-drive filesystem list --json`, one call per folder. That's **`O(folders)`** network
 round trips every scan. It's correct and simple, but slow on large trees, so it's used as
-the **bootstrap** and as a periodic **reconvergence** safety net — not the hot path.
+the **bootstrap** and as an on-demand fallback (and, if you opt in, a periodic
+**reconvergence**) — not the hot path.
 
 ### Event-driven (the default)
 
@@ -50,10 +51,12 @@ Concretely, the engine:
 4. Advances the cursor **only** in the final commit of a fully-successful pass, so a
    failed or withheld pass re-derives from the same cursor next time.
 
-A **full-tree scan still runs periodically** (every *N* incremental passes, configurable
-with `--events-full-scan-every`) as a reconvergence backstop, and the **first reconcile
-after the daemon starts is always a full scan** — a fresh process has no pending-change
-history, so it can't safely trust an incremental pass alone.
+A periodic full-tree scan can be re-enabled as a reconvergence backstop
+(`--events-full-scan-every N`), but it is **off by default** — after the mandatory startup
+snapshot the daemon stays purely event-driven until it is restarted or the event stream forces
+a fallback (no cursor, fetch error, an unresolvable node, …). The **first reconcile after the
+daemon starts is always a full scan** — a fresh process has no pending-change history, so it
+can't safely trust an incremental pass alone.
 
 Event-driven mode is **on by default**. Opt out with `--no-events-driven` (or
 `events_driven = false`), which restores the byte-identical snapshot-only path.
@@ -93,7 +96,7 @@ decision. The rationale for all of this is recorded in
 | --- | --- |
 | `--events-driven` / `--no-events-driven` | Turn event-driven detection on (default) or off. |
 | `events_driven = true/false` | The config-file equivalent. |
-| `--events-full-scan-every N` | Force a full-tree reconvergence every *N* incremental passes. |
+| `--events-full-scan-every N` | Force a full-tree reconvergence every *N* incremental passes. **Default `0` disables it** — event-driven only after the startup snapshot. |
 | `--scan-interval-secs` | How often the periodic reconcile fires. |
 
 See the [Daemon reference](/daemon/reference/) for all flags.

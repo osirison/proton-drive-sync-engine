@@ -16,7 +16,7 @@ All three install:
 - The binaries `proton-syncd`, `proton-sync`, and the desktop app `proton-sync-gui` into
   `/usr/bin`.
 - A packaged **systemd user unit** at `/usr/lib/systemd/user/proton-syncd.service` (with
-  `ExecStart=/usr/bin/proton-syncd`).
+  `ExecStart=/usr/bin/proton-syncd --config %h/.config/proton-sync/proton-sync.toml`).
 - The **freedesktop** launcher, AppStream metainfo, and hicolor app icons — so the app shows
   up in your menu and software centre. App id: `app.protondrivesync.engine`.
 - The **file-manager emblem** icons and the Nautilus/Nemo Python extensions. On **RPM and
