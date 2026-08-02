@@ -37,7 +37,8 @@ examples/systemd/install-user-service.sh
 
 Edit `~/.config/proton-sync/proton-sync.toml` for your roots **before** enabling the
 service. The sample unit runs `proton-syncd --config %h/.config/proton-sync/proton-sync.toml`
-and relies on the daemon's XDG defaults for the socket, lockfile, and index.
+and relies on the daemon's defaults — the socket under `$XDG_RUNTIME_DIR`, and the lockfile
+and index in the per-root `<local-root>/.sync/` state directory.
 
 ## From a native package
 

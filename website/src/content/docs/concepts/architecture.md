@@ -25,7 +25,7 @@ socket, and the `proton-drive` CLI.
 | `config.rs` | Layered config resolution — precedence is **explicit CLI flag > TOML file value > XDG default**. Validates roots and globs and resolves delete-approval defaults. |
 | `dirconfig.rs` | **Hierarchical per-directory config** — a `.gitignore`-style layer where a `.proton-sync.toml` in any directory applies to it and everything beneath it, nearest wins. Machine-local and never synced. |
 | `ipc.rs` | The JSON-line request/response protocol over the Unix control socket, bound at mode `0600`. |
-| `paths.rs` | XDG-aware default paths for the index, socket, and lockfiles, plus the two-tier locking scheme. |
+| `paths.rs` | Default state paths — the index and per-root lockfile in `<local-root>/.sync/`, the control socket under `$XDG_RUNTIME_DIR`, and the user-global lock keyed on `$XDG_STATE_HOME` — plus the two-tier locking scheme. |
 | `lib.rs` | Shared helpers: the `AppResult` alias, `boxed_error`, and the `validate_relative_path` path-safety guard. |
 
 ### Two-tier locking
