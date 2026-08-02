@@ -16,6 +16,28 @@ import importX from "eslint-plugin-import-x";
 const TAURI_FACADE_MESSAGE =
   "Reach the backend through the api facade in js/api.js, not the __TAURI__ injection — direct access breaks the browser-preview path.";
 
+// Language-level correctness, applied to EVERY module system below. Kept in one place on purpose:
+// the point of this whole gate is that partial coverage looks identical to full coverage until
+// something breaks, so a future .cjs helper must not silently get a weaker ruleset than the
+// frontend. Rules that are genuinely browser- or ESM-specific stay in their own blocks.
+const CORRECTNESS_RULES = {
+  "no-shadow": "error",
+  "no-var": "error",
+  "prefer-const": "error",
+  // `== null` is a deliberate idiom here (components.js: `val != null`); everything else strict.
+  eqeqeq: ["error", "always", { null: "ignore" }],
+  // conflicts.js hand-writes diff loops with manual index advancement.
+  "no-unmodified-loop-condition": "error",
+  "no-self-compare": "error",
+  // A "${x}" that never got its backticks — this codebase builds most strings from templates.
+  "no-template-curly-in-string": "error",
+  "no-promise-executor-return": "error",
+  // `node.hidden;` instead of `node.hidden = false;` — a silent no-op in DOM-mutation code.
+  "no-unused-expressions": "error",
+  // A `default:` clause that is not last does not run last.
+  "default-case-last": "error",
+};
+
 export default [
   // Patterns here and below are `**/`-prefixed on purpose. ESLint resolves `files`/`ignores`
   // against the working directory, not against this file, so a bare "src/js/api.js" silently
@@ -28,10 +50,11 @@ export default [
   js.configs.recommended,
 
   {
-    // Matches the extension set ESLint lints by default. `**/*.js` alone would leave a future
-    // .mjs/.cjs file with js.configs.recommended only — no browser globals and, worse, none of the
-    // import-x rules, which is precisely the gap this config exists to close.
-    files: ["**/*.{js,mjs,cjs}"],
+    // Matches the extension set ESLint lints by default (minus .cjs, handled separately below).
+    // `**/*.js` alone would leave a future .mjs file with js.configs.recommended only — no browser
+    // globals and, worse, none of the import-x rules, which is precisely the gap this config
+    // exists to close.
+    files: ["**/*.{js,mjs}"],
     plugins: { "import-x": importX },
     languageOptions: {
       ecmaVersion: 2023,
@@ -86,22 +109,7 @@ export default [
         },
       ],
 
-      // ---- correctness ----
-      "no-shadow": "error",
-      "no-var": "error",
-      "prefer-const": "error",
-      // `== null` is a deliberate idiom here (components.js: `val != null`); everything else strict.
-      eqeqeq: ["error", "always", { null: "ignore" }],
-      // conflicts.js hand-writes diff loops with manual index advancement.
-      "no-unmodified-loop-condition": "error",
-      "no-self-compare": "error",
-      // A "${x}" that never got its backticks — this codebase builds most strings from templates.
-      "no-template-curly-in-string": "error",
-      "no-promise-executor-return": "error",
-      // `node.hidden;` instead of `node.hidden = false;` — a silent no-op in DOM-mutation code.
-      "no-unused-expressions": "error",
-      // A `default:` clause that is not last does not run last.
-      "default-case-last": "error",
+      ...CORRECTNESS_RULES,
 
       // ---- webview-specific ----
       // alert/confirm/prompt block the WebKitGTK main loop (the failure mode behind #142/#143) and
@@ -135,6 +143,21 @@ export default [
         },
       ],
     },
+  },
+
+  // `.cjs` means CommonJS by definition, so it gets Node globals and CommonJS parsing rather than
+  // the browser/ESM block above. Nothing in gui/src is CommonJS — the frontend is ESM-only and
+  // served raw — so this exists purely so that a future Node-side helper or tool config lands in a
+  // sane configuration instead of collecting bogus "'require' is not defined" errors. The import-x
+  // rules are ESM-specific and deliberately not applied here.
+  {
+    files: ["**/*.cjs"],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: "commonjs",
+      globals: { ...globals.node },
+    },
+    rules: { ...CORRECTNESS_RULES },
   },
 
   // js/api.js is the one file allowed to touch the Tauri injection: it is the facade.
