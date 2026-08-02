@@ -28,9 +28,13 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # `--workspace` is load-bearing on Lint/Test: this workspace's root is itself a package, so
+      # Cargo's default member selection collapses to that root package alone — without the flag,
+      # `gui/gui-core` and `gui/src-tauri` are never linted and their tests never run. (`cargo fmt
+      # --all` already spans every member, so Format needs no flag.)
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test --all-targets --all-features
+        run: cargo test --workspace --all-targets --all-features
