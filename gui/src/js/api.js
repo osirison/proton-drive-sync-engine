@@ -85,13 +85,15 @@ function mockInvoke(cmd, _args) {
       // Simulate the daemon round trip so the Deletions screen's busy → acknowledged flow is
       // visible in browser preview. Shaped like a real StatusPayload: the screen only trusts a
       // reply that carries a `response` and no `error`.
-      return new Promise((resolve) =>
-        setTimeout(() => resolve({ state: "running", response: { paused: false }, error: null }), 800),
-      );
+      return new Promise((resolve) => {
+        setTimeout(() => resolve({ state: "running", response: { paused: false }, error: null }), 800);
+      });
     case "restart_service":
       // Simulate the real stop→start latency so the Settings screen's "Restarting…" state is
       // visible in browser preview.
-      return new Promise((resolve) => setTimeout(() => resolve("daemon restarted (preview mock)"), 1200));
+      return new Promise((resolve) => {
+        setTimeout(() => resolve("daemon restarted (preview mock)"), 1200);
+      });
     case "pause":
       return Promise.resolve({ state: "paused", response: { status: "paused", paused: true, pending_changes: 3, message: "paused", last_sync_epoch_secs: null, last_error: null, last_plan_summary: null, last_successful_sync_summary: null, status_history: [], pending_deletions: [] } });
     case "scan_conflicts":

@@ -6,7 +6,7 @@ import { api } from "./api.js";
 import * as store from "./store.js";
 import { SCREENS } from "./screens.js";
 import { matrixFor, nextOnboardingLatch } from "./state-matrix.js";
-import { el, dash } from "./components.js";
+import { el } from "./components.js";
 import { renderOnboarding } from "./screens/onboarding.js";
 
 let activeTab = "overview";

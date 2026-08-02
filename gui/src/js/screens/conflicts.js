@@ -294,8 +294,14 @@ function lcsRows(a, b) {
       j++;
     }
   }
-  while (i < n) rows.push({ left: a[i], right: null, leftNo: li++, rightNo: null, changed: true }), i++;
-  while (j < m) rows.push({ left: null, right: b[j], leftNo: null, rightNo: ri++, changed: true }), j++;
+  while (i < n) {
+    rows.push({ left: a[i], right: null, leftNo: li++, rightNo: null, changed: true });
+    i++;
+  }
+  while (j < m) {
+    rows.push({ left: null, right: b[j], leftNo: null, rightNo: ri++, changed: true });
+    j++;
+  }
   return rows;
 }
 
