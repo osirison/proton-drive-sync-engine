@@ -145,7 +145,13 @@ function fieldRow(label, hint, control) {
       label,
     ),
     control,
-    hint ? el("div", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:4px" }, hint) : null,
+    hint
+      ? el(
+          "div",
+          { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:4px" },
+          hint,
+        )
+      : null,
   );
 }
 
@@ -200,7 +206,11 @@ function toggleRow(container, ctx, key, label, description) {
       {},
       el("div", { style: "font-size:var(--fs-body)" }, label),
       description
-        ? el("div", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:2px" }, description)
+        ? el(
+            "div",
+            { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:2px" },
+            description,
+          )
         : null,
     ),
   );
@@ -227,8 +237,15 @@ function patternListEditor(container, ctx, key, label) {
   const rows = list.map((pattern, idx) =>
     el(
       "div",
-      { style: "display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-soft)" },
-      el("span", { class: "mono", style: "flex:1;font-size:var(--fs-control);word-break:break-all" }, pattern),
+      {
+        style:
+          "display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-soft)",
+      },
+      el(
+        "span",
+        { class: "mono", style: "flex:1;font-size:var(--fs-control);word-break:break-all" },
+        pattern,
+      ),
       el(
         "button",
         {
@@ -259,7 +276,11 @@ function patternListEditor(container, ctx, key, label) {
     ),
     list.length
       ? el("div", {}, rows)
-      : el("div", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-bottom:4px" }, "No patterns."),
+      : el(
+          "div",
+          { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-bottom:4px" },
+          "No patterns.",
+        ),
     el(
       "div",
       { style: "display:flex;gap:8px;margin-top:8px" },
@@ -314,7 +335,11 @@ function foldersSection(container, ctx) {
         )
       : null,
     fieldRow("Local root", null, textInput(container, ctx, "local_root", "text")),
-    fieldRow("Remote root", "Path on Proton Drive, e.g. /Drive/RemoteFolder", textInput(container, ctx, "remote_root", "text")),
+    fieldRow(
+      "Remote root",
+      "Path on Proton Drive, e.g. /Drive/RemoteFolder",
+      textInput(container, ctx, "remote_root", "text"),
+    ),
     rootWarning,
   );
 }
@@ -373,7 +398,11 @@ function cliSection(container, ctx) {
       "Path, or a bare command resolved via PATH.",
       textInput(container, ctx, "proton_cli", "text"),
     ),
-    fieldRow("Command timeout (seconds)", null, textInput(container, ctx, "proton_timeout_secs", "number", { min: "1" })),
+    fieldRow(
+      "Command timeout (seconds)",
+      null,
+      textInput(container, ctx, "proton_timeout_secs", "number", { min: "1" }),
+    ),
     fieldRow(
       "List retry attempts",
       "Read-only remote listings retry on failure; uploads/downloads/deletes never do.",
@@ -455,7 +484,11 @@ function statusBanners(container, ctx) {
   const nodes = [];
   if (saveError) {
     nodes.push(
-      el("div", { class: "card dir-destructive", style: "margin-bottom:14px;font-weight:600" }, `Couldn't save: ${saveError}`),
+      el(
+        "div",
+        { class: "card dir-destructive", style: "margin-bottom:14px;font-weight:600" },
+        `Couldn't save: ${saveError}`,
+      ),
     );
   }
   if (saveNotice) {
@@ -493,9 +526,7 @@ function statusBanners(container, ctx) {
               restartButton(container, ctx),
             )
           : null,
-        !restartDone
-          ? el("div", { class: "cmd-hint mono" }, "systemctl --user restart proton-syncd")
-          : null,
+        !restartDone ? el("div", { class: "cmd-hint mono" }, "systemctl --user restart proton-syncd") : null,
       ),
     );
   }
@@ -507,7 +538,10 @@ function footerBar(container, ctx) {
 
   const dirtyNote = el(
     "span",
-    { class: "mono", style: `font-size:var(--fs-meta);color:var(--muted);margin-right:auto;${dirty ? "" : "display:none"}` },
+    {
+      class: "mono",
+      style: `font-size:var(--fs-meta);color:var(--muted);margin-right:auto;${dirty ? "" : "display:none"}`,
+    },
     "Unsaved changes",
   );
   refs.dirtyNote = dirtyNote;
@@ -636,7 +670,11 @@ function paint(container, ctx) {
             "div",
             { class: "card dir-destructive" },
             el("div", {}, `Couldn't load configuration: ${loadError}`),
-            el("button", { class: "btn", style: "margin-top:10px", onClick: () => startLoad(container, ctx) }, "Retry"),
+            el(
+              "button",
+              { class: "btn", style: "margin-top:10px", onClick: () => startLoad(container, ctx) },
+              "Retry",
+            ),
           )
         : el("div", { class: "card mono" }, "Loading configuration…"),
     );

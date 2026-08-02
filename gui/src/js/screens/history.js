@@ -57,8 +57,16 @@ function renderRow(entry) {
     "div",
     { class: "ledger-row" },
     el("span", { style: `width:7px;height:7px;border-radius:50%;flex:none;background:${dotColor}` }),
-    el("span", { class: "mono", style: "width:66px;flex:none;color:var(--muted)" }, formatTime(entry.epoch_secs)),
-    el("span", { class: labelClass, style: "flex:1" }, entry.message || (isError ? "sync failed" : "sync completed")),
+    el(
+      "span",
+      { class: "mono", style: "width:66px;flex:none;color:var(--muted)" },
+      formatTime(entry.epoch_secs),
+    ),
+    el(
+      "span",
+      { class: labelClass, style: "flex:1" },
+      entry.message || (isError ? "sync failed" : "sync completed"),
+    ),
     el("span", { class: "meta" }, summaryFor(entry)),
   );
 }

@@ -45,7 +45,7 @@
   --fs-control: 12.5px;
   --fs-meta: 11px;
   --fs-mono-meta: 11px;
-  --fs-label: 10px;   /* uppercase labels, 0.08em tracking; never below 10px */
+  --fs-label: 10px; /* uppercase labels, 0.08em tracking; never below 10px */
   --tracking-label: 0.08em;
 
   --radius-card: 12px;
@@ -107,9 +107,9 @@
   --diff-local: rgba(229, 91, 43, 0.13);
   --diff-remote: rgba(6, 182, 212, 0.13);
 
-  --track: #22304c;   /* idle hexagon arc / progress track */
+  --track: #22304c; /* idle hexagon arc / progress track */
 
-  --shadow-card: none;                 /* dark uses borders, not shadows */
+  --shadow-card: none; /* dark uses borders, not shadows */
   --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
 }
 
