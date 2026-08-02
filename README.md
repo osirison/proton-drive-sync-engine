@@ -46,9 +46,9 @@ Every reconcile compares **three sources of truth** — the local files, the rem
 and the last-synced baseline in a local SQLite index — then plans and executes actions
 (upload, download, move, conflict, delete, …). Comparing all three, not just the two live
 sides, is what lets it tell a *new* file from a *deleted* one and an *edit* from a *move*.
-Each index change is committed only **after** its action's side effect succeeds, and
-checkpointed per action, so a failure mid-plan keeps completed work durable and never leaves
-half-recorded state. → [How sync works](https://osirison.github.io/proton-drive-sync-engine/concepts/how-sync-works/)
+Each index change is committed only **after** its side effect succeeds, in incremental
+checkpoints as work completes, so a failure mid-plan keeps completed work durable and never
+leaves half-recorded state. → [How sync works](https://osirison.github.io/proton-drive-sync-engine/concepts/how-sync-works/)
 
 ## Quick setup
 
