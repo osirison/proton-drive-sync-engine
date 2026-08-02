@@ -73,8 +73,8 @@ The full contributor validation suite:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
 ```
 
 `clippy` runs with `-D warnings`, so warnings fail the build in CI. See

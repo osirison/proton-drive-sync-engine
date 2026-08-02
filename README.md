@@ -322,9 +322,13 @@ Run the validation suite before opening a PR — CI enforces it:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
 ```
+
+`--workspace` is required on `clippy`/`test`: the workspace root is itself a package, so
+Cargo's default member selection is just that root crate and the `gui/` members would go
+unlinted and untested. (`cargo fmt --all` already covers every member.)
 
 The planner (`src/sync.rs`) is pure and tested directly; the daemon is generic over its
 Proton client so reconciliation is tested with injected fakes. Add regression tests next to
