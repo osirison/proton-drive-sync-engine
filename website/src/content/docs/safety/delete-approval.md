@@ -89,8 +89,10 @@ with `proton-sync syncnow`).
 
 - They are **never synced**. The engine ignores `.proton-sync.toml` at any depth, so a file
   on the remote can never silently weaken your local delete protection.
-- A **malformed or unreadable** settings file is ignored and **the guard stays on** — it
-  fails safe, never open.
+- A **malformed or unreadable** settings file is ignored and contributes no override, so the
+  guard is left in whatever state it **inherits** (on by default). It can never silently
+  *weaken* protection below the inherited level — but it can't *re-enable* it either, so if a
+  nested file re-enables approval that a higher level disabled, keep that file valid.
 
 ## A correctness note for event-driven mode
 

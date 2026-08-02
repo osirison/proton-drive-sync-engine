@@ -93,8 +93,12 @@ local = false
 ```
 
 These files are **machine-local**: the engine ignores `.proton-sync.toml` at any depth, so
-they are never synced to Proton Drive, and a malformed one is ignored with the guard left
-**on** (fail-safe). Edits take effect on the next reconcile.
+they are never synced to Proton Drive. A malformed one is ignored and contributes no
+override, so the guard is left in whatever state it **inherits** — on by default, but *off*
+if an ancestor file or the daemon-wide default (`--no-delete-approval`) disabled it. So if you
+use a nested `.proton-sync.toml` to *re-enable* approval for a subtree, a typo there silently
+falls back to the inherited (disabled) state — keep it valid. Edits take effect on the next
+reconcile.
 
 The config layer is built to extend — future per-directory settings slot into the same
 inheritance model. See
