@@ -12,7 +12,7 @@
     "check": "npm run format:check && npm run lint"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.5",
+    "@eslint/js": "10.0.1",
     "eslint": "10.8.0",
     "eslint-plugin-import-x": "4.17.1",
     "globals": "17.9.0",
