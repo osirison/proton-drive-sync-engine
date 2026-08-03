@@ -92,13 +92,21 @@ function paint() {
 
   if (ctx_.select.daemonState() === "unreachable") {
     container_.replaceChildren(
-      el("div", { class: "card" }, el("div", { class: "ledger-empty" }, "Daemon unreachable — can't list conflicts.")),
+      el(
+        "div",
+        { class: "card" },
+        el("div", { class: "ledger-empty" }, "Daemon unreachable — can't list conflicts."),
+      ),
     );
     return;
   }
   if (conflicts.length === 0) {
     container_.replaceChildren(
-      el("div", { class: "card" }, el("div", { class: "ledger-empty" }, "No conflicts. Nothing needs your attention here.")),
+      el(
+        "div",
+        { class: "card" },
+        el("div", { class: "ledger-empty" }, "No conflicts. Nothing needs your attention here."),
+      ),
     );
     return;
   }
@@ -125,9 +133,7 @@ function rail(conflicts) {
       },
       el("span", { style: "font-size:var(--fs-control);font-weight:600" }, basename(c.original)),
       el("span", { class: "mono", style: "font-size:10.5px;color:var(--muted)" }, c.original),
-      choice
-        ? el("span", { class: "chip", style: "margin-top:2px" }, choiceLabel(choice))
-        : null,
+      choice ? el("span", { class: "chip", style: "margin-top:2px" }, choiceLabel(choice)) : null,
     );
   });
   return el(
@@ -145,8 +151,14 @@ function comparePanel(conflicts) {
   const children = [];
 
   if (!conflict) {
-    children.push(el("div", { class: "card" }, el("div", { class: "ledger-empty" }, "Select a conflict to review.")));
-    return el("div", { style: "flex:1;min-width:0;display:flex;flex-direction:column;min-height:0" }, ...children);
+    children.push(
+      el("div", { class: "card" }, el("div", { class: "ledger-empty" }, "Select a conflict to review.")),
+    );
+    return el(
+      "div",
+      { style: "flex:1;min-width:0;display:flex;flex-direction:column;min-height:0" },
+      ...children,
+    );
   }
 
   // choice buttons
@@ -167,7 +179,11 @@ function comparePanel(conflicts) {
     el(
       "div",
       { style: "display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px" },
-      el("div", { class: "mono", style: "font-weight:600;flex:1;min-width:0;word-break:break-all" }, conflict.original),
+      el(
+        "div",
+        { class: "mono", style: "font-weight:600;flex:1;min-width:0;word-break:break-all" },
+        conflict.original,
+      ),
       ...buttons,
     ),
   );
@@ -192,7 +208,11 @@ function comparePanel(conflicts) {
   }
 
   children.push(applyFooter(conflicts));
-  return el("div", { style: "flex:1;min-width:0;display:flex;flex-direction:column;min-height:0" }, ...children);
+  return el(
+    "div",
+    { style: "flex:1;min-width:0;display:flex;flex-direction:column;min-height:0" },
+    ...children,
+  );
 }
 
 function paneHeader(title, tint, side) {
@@ -217,7 +237,10 @@ function compareBody(cache) {
 
   const header = el(
     "div",
-    { style: "display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--border);border-radius:var(--radius-tile) var(--radius-tile) 0 0;overflow:hidden" },
+    {
+      style:
+        "display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--border);border-radius:var(--radius-tile) var(--radius-tile) 0 0;overflow:hidden",
+    },
     paneHeader(`Your version · ${metaLine(local)}`, "var(--diff-local)", "var(--upload-text)"),
     paneHeader(`Proton's version · ${metaLine(remote)}`, "var(--diff-remote)", "var(--download-text)"),
   );
@@ -228,10 +251,28 @@ function compareBody(cache) {
     body = el(
       "div",
       { style: "display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--border);border-top:none" },
-      el("div", { class: "mono", style: "padding:14px;font-size:var(--fs-meta);color:var(--muted);border-right:1px solid var(--border)" },
-        local.binary_or_large ? "Binary or large file — no preview." : local.exists ? "(text unavailable)" : "does not exist"),
-      el("div", { class: "mono", style: "padding:14px;font-size:var(--fs-meta);color:var(--muted)" },
-        remote.binary_or_large ? "Binary or large file — no preview." : remote.exists ? "(text unavailable)" : "does not exist"),
+      el(
+        "div",
+        {
+          class: "mono",
+          style:
+            "padding:14px;font-size:var(--fs-meta);color:var(--muted);border-right:1px solid var(--border)",
+        },
+        local.binary_or_large
+          ? "Binary or large file — no preview."
+          : local.exists
+            ? "(text unavailable)"
+            : "does not exist",
+      ),
+      el(
+        "div",
+        { class: "mono", style: "padding:14px;font-size:var(--fs-meta);color:var(--muted)" },
+        remote.binary_or_large
+          ? "Binary or large file — no preview."
+          : remote.exists
+            ? "(text unavailable)"
+            : "does not exist",
+      ),
     );
   } else {
     // Memoize the LCS diff on the cache entry: paint() re-runs on every staging click, but the
@@ -253,27 +294,50 @@ function computeDiffRows(localText, remoteText) {
 function renderDiffTable(rows) {
   const cell = (text, no, side, changed) => {
     const tint = changed ? (side === "left" ? "var(--diff-local)" : "var(--diff-remote)") : "transparent";
-    const numColor = changed ? (side === "left" ? "var(--upload-text)" : "var(--download-text)") : "var(--muted-2)";
+    const numColor = changed
+      ? side === "left"
+        ? "var(--upload-text)"
+        : "var(--download-text)"
+      : "var(--muted-2)";
     return el(
       "div",
       { style: `display:flex;gap:8px;background:${tint};padding:0 8px` },
-      el("span", { class: "mono", style: `width:34px;flex:none;text-align:right;color:${numColor};font-size:11px;user-select:none` }, no == null ? "" : String(no)),
-      el("span", { class: "mono", style: "font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1" }, text == null ? "" : text),
+      el(
+        "span",
+        {
+          class: "mono",
+          style: `width:34px;flex:none;text-align:right;color:${numColor};font-size:11px;user-select:none`,
+        },
+        no == null ? "" : String(no),
+      ),
+      el(
+        "span",
+        { class: "mono", style: "font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1" },
+        text == null ? "" : text,
+      ),
     );
   };
 
   const left = el("div", {}, ...rows.map((r) => cell(r.left, r.leftNo, "left", r.changed)));
-  const right = el("div", { style: "border-left:1px solid var(--border)" }, ...rows.map((r) => cell(r.right, r.rightNo, "right", r.changed)));
+  const right = el(
+    "div",
+    { style: "border-left:1px solid var(--border)" },
+    ...rows.map((r) => cell(r.right, r.rightNo, "right", r.changed)),
+  );
   return el(
     "div",
-    { style: "display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-tile) var(--radius-tile);overflow:hidden" },
+    {
+      style:
+        "display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-tile) var(--radius-tile);overflow:hidden",
+    },
     left,
     right,
   );
 }
 
 function lcsRows(a, b) {
-  const n = a.length, m = b.length;
+  const n = a.length,
+    m = b.length;
   const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
@@ -281,11 +345,15 @@ function lcsRows(a, b) {
     }
   }
   const rows = [];
-  let i = 0, j = 0, li = 1, ri = 1;
+  let i = 0,
+    j = 0,
+    li = 1,
+    ri = 1;
   while (i < n && j < m) {
     if (a[i] === b[j]) {
       rows.push({ left: a[i], right: b[j], leftNo: li++, rightNo: ri++, changed: false });
-      i++; j++;
+      i++;
+      j++;
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
       rows.push({ left: a[i], right: null, leftNo: li++, rightNo: null, changed: true });
       i++;
@@ -294,8 +362,14 @@ function lcsRows(a, b) {
       j++;
     }
   }
-  while (i < n) rows.push({ left: a[i], right: null, leftNo: li++, rightNo: null, changed: true }), i++;
-  while (j < m) rows.push({ left: null, right: b[j], leftNo: null, rightNo: ri++, changed: true }), j++;
+  while (i < n) {
+    rows.push({ left: a[i], right: null, leftNo: li++, rightNo: null, changed: true });
+    i++;
+  }
+  while (j < m) {
+    rows.push({ left: null, right: b[j], leftNo: null, rightNo: ri++, changed: true });
+    j++;
+  }
   return rows;
 }
 
@@ -315,24 +389,45 @@ function plainRows(a, b) {
 }
 
 function applyFooter(conflicts) {
-  const pendingWrites = conflicts.filter((c) => staged[c.original] && staged[c.original] !== "decide_later").length;
+  const pendingWrites = conflicts.filter(
+    (c) => staged[c.original] && staged[c.original] !== "decide_later",
+  ).length;
   const nodes = [
-    el("span", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" },
-      pendingWrites === 0 ? "No changes staged." : `${pendingWrites} file operation(s) staged — none written yet.`),
+    el(
+      "span",
+      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" },
+      pendingWrites === 0
+        ? "No changes staged."
+        : `${pendingWrites} file operation(s) staged — none written yet.`,
+    ),
   ];
   if (applyError) {
-    nodes.push(el("span", { class: "dir-destructive mono", style: "font-size:var(--fs-meta)" }, `Apply failed: ${applyError}`));
+    nodes.push(
+      el(
+        "span",
+        { class: "dir-destructive mono", style: "font-size:var(--fs-meta)" },
+        `Apply failed: ${applyError}`,
+      ),
+    );
   }
   nodes.push(
     el(
       "button",
-      { class: "btn primary", style: "margin-left:auto", disabled: applying || pendingWrites === 0, onClick: () => applyStaged() },
+      {
+        class: "btn primary",
+        style: "margin-left:auto",
+        disabled: applying || pendingWrites === 0,
+        onClick: () => applyStaged(),
+      },
       applying ? "Applying…" : "Apply",
     ),
   );
   return el(
     "div",
-    { style: "display:flex;align-items:center;gap:12px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-soft)" },
+    {
+      style:
+        "display:flex;align-items:center;gap:12px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-soft)",
+    },
     ...nodes,
   );
 }

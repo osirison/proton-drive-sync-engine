@@ -48,7 +48,12 @@ export const STATE_MATRIX = {
     headline: "Can't reach the sync daemon",
     subline: "your files are untouched",
     actions: [
-      { label: "Start proton-syncd", cmd: "startService", kind: "primary", hint: "systemctl --user start proton-syncd" },
+      {
+        label: "Start proton-syncd",
+        cmd: "startService",
+        kind: "primary",
+        hint: "systemctl --user start proton-syncd",
+      },
       { label: "View journal", cmd: "journal", kind: "secondary", hint: "journalctl --user -u proton-syncd" },
     ],
     showTransfers: false,

@@ -32,6 +32,22 @@ updates:
       npm-minor:
         update-types: [minor]
 
+  # ---- npm: eslint/prettier for the desktop app's webview frontend (gui/src) ----
+  # Dev-only tooling — nothing here ships: Tauri serves gui/src raw and gui/node_modules sits
+  # outside that directory. The npm ecosystem is keyed per-directory, so without this entry the
+  # gui/ lockfile would get no version PRs and, more to the point, no security PRs. Group names
+  # are distinct from the /website entry's so PR titles and branch names stay unambiguous.
+  - package-ecosystem: npm
+    directory: /gui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      gui-npm-patch:
+        update-types: [patch]
+      gui-npm-minor:
+        update-types: [minor]
+
   # ---- The GitHub Actions pinned by the workflows themselves ----
   - package-ecosystem: github-actions
     directory: /

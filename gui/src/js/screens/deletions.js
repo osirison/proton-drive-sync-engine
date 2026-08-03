@@ -54,11 +54,7 @@ function acknowledgment(item) {
     acknowledged.delete(path);
     return null;
   }
-  if (
-    entry.fingerprint != null &&
-    item.fingerprint != null &&
-    entry.fingerprint !== item.fingerprint
-  ) {
+  if (entry.fingerprint != null && item.fingerprint != null && entry.fingerprint !== item.fingerprint) {
     acknowledged.delete(path);
     return null;
   }
@@ -149,18 +145,14 @@ async function runAndRefresh(ctx, target, verb, isAll) {
   let confirmed = false;
   try {
     const payload =
-      verb === "approve"
-        ? await ctx.api.approve(target, !isAll)
-        : await ctx.api.deny(target, !isAll);
+      verb === "approve" ? await ctx.api.approve(target, !isAll) : await ctx.api.deny(target, !isAll);
     // The Tauri approve/deny commands NEVER reject on a daemon failure — a dead socket or a
     // dropped connection comes back as a RESOLVED payload with `error` set and no `response`.
     // A confirmation pill must only ever appear for an action the daemon durably recorded: a
     // false "✓ Deny recorded" would sit there while a still-standing approval deletes the
     // file it just promised was safe.
     if (!payload || payload.error != null || payload.response == null) {
-      throw new Error(
-        (payload && payload.error) || "the daemon did not confirm the request",
-      );
+      throw new Error((payload && payload.error) || "the daemon did not confirm the request");
     }
     const paused = payload.response.paused === true;
     const at = Date.now();
@@ -206,9 +198,7 @@ function emptyCard(text) {
  * the target string "all", so target + verb alone would cross-fire between them.
  */
 function actionLabel(target, verb, isAll, idleLabel, busyLabel) {
-  return busy && busy.target === target && busy.verb === verb && busy.isAll === isAll
-    ? busyLabel
-    : idleLabel;
+  return busy && busy.target === target && busy.verb === verb && busy.isAll === isAll ? busyLabel : idleLabel;
 }
 
 /** The lasting post-ack confirmation shown in place of the action buttons. */

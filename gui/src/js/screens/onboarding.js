@@ -70,8 +70,7 @@ async function runCliCheck() {
   if (state === "authExpired") {
     cli = {
       status: "authExpired",
-      message:
-        status?.response?.last_error || status?.error || "The proton-drive sign-in looks expired.",
+      message: status?.response?.last_error || status?.error || "The proton-drive sign-in looks expired.",
     };
     paint();
     return;
@@ -110,7 +109,8 @@ async function runCliCheck() {
   } catch (e) {
     cli = {
       status: "unknown",
-      message: `Couldn't confirm the CLI is authenticated (${messageOf(e)}). You can continue, but ` +
+      message:
+        `Couldn't confirm the CLI is authenticated (${messageOf(e)}). You can continue, but ` +
         'run "proton-drive login" first if the next steps fail.',
     };
   }
@@ -138,7 +138,11 @@ function renderStep1() {
   const card = el(
     "div",
     { class: "card status-card" },
-    el("div", { style: `font-size:28px;line-height:1;width:40px;text-align:center;flex:none;color:${color}` }, icon),
+    el(
+      "div",
+      { style: `font-size:28px;line-height:1;width:40px;text-align:center;flex:none;color:${color}` },
+      icon,
+    ),
     el(
       "div",
       { style: "flex:1;min-width:0" },
@@ -148,7 +152,11 @@ function renderStep1() {
     el(
       "div",
       { class: "actions" },
-      el("button", { class: "btn", disabled: checking, onClick: () => runCliCheck() }, checking ? "Checking…" : "Re-check"),
+      el(
+        "button",
+        { class: "btn", disabled: checking, onClick: () => runCliCheck() },
+        checking ? "Checking…" : "Re-check",
+      ),
       cli.status === "authExpired" ? el("div", { class: "cmd-hint mono" }, "proton-drive login") : null,
     ),
   );
@@ -270,7 +278,13 @@ function folderField(label, hint, key) {
         refreshFolderDerived();
       },
     }),
-    hint ? el("div", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:4px" }, hint) : null,
+    hint
+      ? el(
+          "div",
+          { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:4px" },
+          hint,
+        )
+      : null,
   );
 }
 
@@ -285,13 +299,26 @@ function renderStep2() {
           el("button", { class: "btn", style: "margin-top:10px", onClick: () => startLoad() }, "Retry"),
         )
       : el("div", { class: "card ledger-empty" }, "Loading configuration…");
-    return [body, footerNav({ onBack: () => { step = 1; paint(); }, nextDisabled: true })];
+    return [
+      body,
+      footerNav({
+        onBack: () => {
+          step = 1;
+          paint();
+        },
+        nextDisabled: true,
+      }),
+    ];
   }
 
   const card = el(
     "div",
     { class: "card" },
-    el("div", { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" }, "Choose the folder pair"),
+    el(
+      "div",
+      { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" },
+      "Choose the folder pair",
+    ),
     el(
       "div",
       { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:14px" },
@@ -299,7 +326,13 @@ function renderStep2() {
     ),
     folderField("Local root", "A folder on this computer, e.g. ~/ProtonDrive", "local_root"),
     folderField("Remote root", "Path on Proton Drive, e.g. /Drive/RemoteFolder", "remote_root"),
-    saveError ? el("div", { class: "dir-destructive", style: "font-weight:600;margin-top:4px" }, `Couldn't save: ${saveError}`) : null,
+    saveError
+      ? el(
+          "div",
+          { class: "dir-destructive", style: "font-weight:600;margin-top:4px" },
+          `Couldn't save: ${saveError}`,
+        )
+      : null,
   );
 
   // Built inline (not via the shared `footerNav`) so the Next button and hint can be captured into
@@ -321,7 +354,17 @@ function renderStep2() {
     "div",
     { class: "card", style: "display:flex;align-items:center;gap:12px" },
     hintSpan,
-    el("button", { class: "btn", onClick: () => { step = 1; paint(); } }, "Back"),
+    el(
+      "button",
+      {
+        class: "btn",
+        onClick: () => {
+          step = 1;
+          paint();
+        },
+      },
+      "Back",
+    ),
     nextBtn,
   );
 
@@ -382,19 +425,35 @@ function summaryTiles(summary) {
 
 // Mirrors plan.js's own DIR_CLASS mapping (components.js's `dirClass` isn't exported): "conflict"
 // reads as amber (dir-upload), same as everywhere else the ledger renders a direction color.
-const DIR_CLASS = { upload: "dir-upload", download: "dir-download", destructive: "dir-destructive", conflict: "dir-upload", neutral: "dir-neutral" };
+const DIR_CLASS = {
+  upload: "dir-upload",
+  download: "dir-download",
+  destructive: "dir-destructive",
+  conflict: "dir-upload",
+  neutral: "dir-neutral",
+};
 
 function planRow(row) {
   const dir = directionForAction(row.action);
   const cls = DIR_CLASS[dir] || "dir-neutral";
-  const extra = row.destination_path ? `→ ${row.destination_path}` : row.conflict_path ? `→ ${row.conflict_path}` : "";
+  const extra = row.destination_path
+    ? `→ ${row.destination_path}`
+    : row.conflict_path
+      ? `→ ${row.conflict_path}`
+      : "";
   return el(
     "div",
-    { style: "display:flex;gap:14px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--border-soft)" },
+    {
+      style:
+        "display:flex;gap:14px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--border-soft)",
+    },
     el("span", { class: `mono ${cls}`, style: "width:104px;flex:none;font-weight:600" }, row.action),
     el(
       "span",
-      { class: "mono", style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" },
+      {
+        class: "mono",
+        style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap",
+      },
       row.path,
       extra ? el("span", { style: "color:var(--muted-2);margin-left:6px" }, extra) : null,
     ),
@@ -405,7 +464,10 @@ function planRow(row) {
 function riskBanner(payload) {
   const filesAtRisk = payload?.files_at_risk ?? [];
   if (!payload?.requires_delete_gate && filesAtRisk.length === 0) return null;
-  const named = filesAtRisk.length <= 3 ? filesAtRisk.join(", ") : `${filesAtRisk.slice(0, 3).join(", ")}, and ${filesAtRisk.length - 3} more`;
+  const named =
+    filesAtRisk.length <= 3
+      ? filesAtRisk.join(", ")
+      : `${filesAtRisk.slice(0, 3).join(", ")}, and ${filesAtRisk.length - 3} more`;
   return el(
     "div",
     { class: "card dir-destructive", style: "font-weight:600" },
@@ -438,7 +500,11 @@ function ackRow() {
         "I understand that once syncing is running, deletions propagate in both directions — deleting a file on either side deletes it on the other.",
       ),
       !enabled
-        ? el("div", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-top:4px" }, "Run the dry-run review below first.")
+        ? el(
+            "div",
+            { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-top:4px" },
+            "Run the dry-run review below first.",
+          )
         : null,
     ),
   );
@@ -449,7 +515,11 @@ function renderStep3() {
     el(
       "div",
       { class: "card" },
-      el("div", { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" }, "Review what the first sync will do"),
+      el(
+        "div",
+        { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" },
+        "Review what the first sync will do",
+      ),
       el(
         "div",
         { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" },
@@ -459,7 +529,13 @@ function renderStep3() {
   ];
 
   if (dryRun.status === "running" && !dryRun.payload) {
-    nodes.push(el("div", { class: "card ledger-empty" }, "Running proton-syncd --dry-run… this shells the daemon and can take a while."));
+    nodes.push(
+      el(
+        "div",
+        { class: "card ledger-empty" },
+        "Running proton-syncd --dry-run… this shells the daemon and can take a while.",
+      ),
+    );
   } else if (dryRun.error) {
     nodes.push(
       el(
@@ -475,7 +551,11 @@ function renderStep3() {
         "div",
         { class: "card" },
         el("div", { class: "ledger-empty" }, dryRun.note),
-        el("button", { class: "btn", style: "margin-top:8px", onClick: () => runDryRunCheck() }, "Re-run dry run"),
+        el(
+          "button",
+          { class: "btn", style: "margin-top:8px", onClick: () => runDryRunCheck() },
+          "Re-run dry run",
+        ),
       ),
     );
   } else if (dryRun.payload) {
@@ -491,13 +571,19 @@ function renderStep3() {
         { class: "card", style: "padding:0;overflow:hidden" },
         el(
           "div",
-          { class: "mono", style: "padding:8px 12px;font-size:var(--fs-meta);color:var(--faint);border-bottom:1px solid var(--border);display:flex" },
+          {
+            class: "mono",
+            style:
+              "padding:8px 12px;font-size:var(--fs-meta);color:var(--faint);border-bottom:1px solid var(--border);display:flex",
+          },
           el("span", {}, `${plan.length} planned action(s)`),
         ),
         el(
           "div",
           { class: "scroll-y", style: "max-height:32vh" },
-          plan.length === 0 ? el("div", { class: "ledger-empty" }, "Nothing to do — the plan is empty.") : plan.map(planRow),
+          plan.length === 0
+            ? el("div", { class: "ledger-empty" }, "Nothing to do — the plan is empty.")
+            : plan.map(planRow),
         ),
         el(
           "div",
@@ -513,18 +599,29 @@ function renderStep3() {
   nodes.push(el("div", { class: "card" }, ackRow()));
 
   const canStart = isReviewed() && ack;
-  const hint = !isReviewed() ? "Waiting on the dry-run review." : !ack ? "Check the acknowledgement above to continue." : "";
+  const hint = !isReviewed()
+    ? "Waiting on the dry-run review."
+    : !ack
+      ? "Check the acknowledgement above to continue."
+      : "";
 
   nodes.push(
     footerNav({
-      onBack: () => { step = 2; paint(); },
+      onBack: () => {
+        step = 2;
+        paint();
+      },
       hint,
       nextLabel: "Continue to start service",
       nextDisabled: !canStart,
       // Disabled buttons don't fire clicks, but re-check the gate here too — belt-and-suspenders on
       // the one safety-critical transition, matching plan.js's own `applyPlan` convention of never
       // trusting the disabled attribute alone for a destructive/gated action.
-      onNext: () => { if (!isReviewed() || !ack) return; step = 4; paint(); },
+      onNext: () => {
+        if (!isReviewed() || !ack) return;
+        step = 4;
+        paint();
+      },
     }),
   );
 
@@ -554,13 +651,25 @@ function renderStep4() {
   const card = el(
     "div",
     { class: "card" },
-    el("div", { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" }, "Start the service"),
+    el(
+      "div",
+      { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" },
+      "Start the service",
+    ),
     el(
       "div",
       { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:12px" },
       "Nothing has synced yet. Start the daemon to run the first pass you just reviewed:",
     ),
-    el("div", { class: "mono", style: "font-size:var(--fs-body);padding:10px 12px;background:var(--row);border-radius:var(--radius-control)" }, "systemctl --user start proton-syncd"),
+    el(
+      "div",
+      {
+        class: "mono",
+        style:
+          "font-size:var(--fs-body);padding:10px 12px;background:var(--row);border-radius:var(--radius-control)",
+      },
+      "systemctl --user start proton-syncd",
+    ),
     el(
       "div",
       { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-top:10px" },
@@ -572,21 +681,35 @@ function renderStep4() {
     if (recheck.status === "checking") return "Checking…";
     if (recheck.status === "idle") return "";
     if (recheck.error) return `Couldn't reach the daemon: ${recheck.error}`;
-    if (recheck.state && recheck.state !== "firstRun") return `Connected — state: ${recheck.state}. Handing off…`;
+    if (recheck.state && recheck.state !== "firstRun")
+      return `Connected — state: ${recheck.state}. Handing off…`;
     return "Still first run — waiting for the first sync to complete.";
   })();
 
   const checkCard = el(
     "div",
     { class: "card", style: "display:flex;align-items:center;gap:14px;flex-wrap:wrap" },
-    el("span", { class: "mono", style: "flex:1;min-width:0;font-size:var(--fs-meta);color:var(--muted)" }, statusLine || "Not checked yet."),
-    el("button", { class: "btn primary", disabled: recheck.status === "checking", onClick: () => recheckNow() }, recheck.status === "checking" ? "Checking…" : "Check status now"),
+    el(
+      "span",
+      { class: "mono", style: "flex:1;min-width:0;font-size:var(--fs-meta);color:var(--muted)" },
+      statusLine || "Not checked yet.",
+    ),
+    el(
+      "button",
+      { class: "btn primary", disabled: recheck.status === "checking", onClick: () => recheckNow() },
+      recheck.status === "checking" ? "Checking…" : "Check status now",
+    ),
   );
 
   return [
     card,
     checkCard,
-    footerNav({ onBack: () => { step = 3; paint(); } }),
+    footerNav({
+      onBack: () => {
+        step = 3;
+        paint();
+      },
+    }),
   ];
 }
 
@@ -605,7 +728,11 @@ function stepperHeader() {
       "div",
       { style: "flex:1;min-width:0" },
       el("div", { style: `height:3px;border-radius:2px;background:${barColor}` }),
-      el("div", { class: "mono", style: `font-size:10px;color:${textColor};margin-top:7px` }, `${n} · ${label}`),
+      el(
+        "div",
+        { class: "mono", style: `font-size:10px;color:${textColor};margin-top:7px` },
+        `${n} · ${label}`,
+      ),
     );
   });
 
@@ -616,7 +743,11 @@ function stepperHeader() {
       "div",
       { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:12px" },
       el("div", { style: "font-size:var(--fs-section);font-weight:600" }, "Set up Proton Drive Sync"),
-      el("span", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" }, `step ${step} of 4`),
+      el(
+        "span",
+        { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" },
+        `step ${step} of 4`,
+      ),
     ),
     el("div", { style: "display:flex;gap:8px" }, segments),
   );
@@ -635,13 +766,26 @@ function safetyBanner() {
   );
 }
 
-function footerNav({ backDisabled = false, onBack, hint = "", nextLabel = "Next", nextDisabled = true, onNext } = {}) {
+function footerNav({
+  backDisabled = false,
+  onBack,
+  hint = "",
+  nextLabel = "Next",
+  nextDisabled = true,
+  onNext,
+} = {}) {
   return el(
     "div",
     { class: "card", style: "display:flex;align-items:center;gap:12px" },
-    el("span", { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-right:auto" }, hint),
+    el(
+      "span",
+      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-right:auto" },
+      hint,
+    ),
     el("button", { class: "btn", disabled: backDisabled, onClick: onBack }, "Back"),
-    onNext ? el("button", { class: "btn primary", disabled: nextDisabled, onClick: onNext }, nextLabel) : null,
+    onNext
+      ? el("button", { class: "btn primary", disabled: nextDisabled, onClick: onNext }, nextLabel)
+      : null,
   );
 }
 
@@ -649,7 +793,8 @@ function footerNav({ backDisabled = false, onBack, hint = "", nextLabel = "Next"
 
 function paint() {
   if (!lastContainer) return;
-  const body = step === 1 ? renderStep1() : step === 2 ? renderStep2() : step === 3 ? renderStep3() : renderStep4();
+  const body =
+    step === 1 ? renderStep1() : step === 2 ? renderStep2() : step === 3 ? renderStep3() : renderStep4();
   lastContainer.replaceChildren(stepperHeader(), safetyBanner(), ...body);
 }
 

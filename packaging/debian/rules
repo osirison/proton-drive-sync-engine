@@ -23,8 +23,12 @@ override_dh_auto_test:
 # We drive cargo directly (see override_dh_auto_build), so debhelper's dh_auto_clean can't
 # clean the Rust build tree on its own. Remove it explicitly — matters for the 3.0 (native)
 # source format, where a stray target/ would otherwise be swept into the source tarball.
+# node_modules is the same trap: gui/ and website/ each carry a dev-only npm project (lint,
+# format, docs build), dpkg-source's default tar-ignore list does not cover node_modules, and
+# `debian/rules clean` runs before `dpkg-source -b`. Without these, a maintainer who had run
+# `npm ci` in either directory would sweep tens of MB of dev tooling into the source package.
 override_dh_auto_clean:
-	rm -rf target
+	rm -rf target gui/node_modules website/node_modules
 
 override_dh_auto_install:
 	# Nothing to do here: binaries and data files are staged via the

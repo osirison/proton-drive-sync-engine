@@ -130,7 +130,12 @@ async function applyPlan() {
       error: result?.error ?? null,
     };
   } catch (e) {
-    applyOutcome = { state: null, message: null, isError: true, error: e && e.message ? e.message : String(e) };
+    applyOutcome = {
+      state: null,
+      message: null,
+      isError: true,
+      error: e && e.message ? e.message : String(e),
+    };
   } finally {
     applying = false;
     // Consumed: applying again (destructive or not) requires a fresh gate arm.
@@ -176,7 +181,11 @@ function loadingCard() {
   return el(
     "div",
     { class: "card", style: "margin-top:var(--gap-card)" },
-    el("div", { class: "ledger-empty" }, "Running proton-syncd --dry-run… this shells the daemon and can take a while."),
+    el(
+      "div",
+      { class: "ledger-empty" },
+      "Running proton-syncd --dry-run… this shells the daemon and can take a while.",
+    ),
   );
 }
 
@@ -248,14 +257,21 @@ function planRow(row) {
     el("span", { class: `mono ${cls}`, style: "width:112px;flex:none;font-weight:600" }, row.action),
     el(
       "span",
-      { class: "mono", style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" },
+      {
+        class: "mono",
+        style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap",
+      },
       row.path,
       extra ? el("span", { style: "color:var(--muted-2);margin-left:6px" }, extra) : null,
     ),
     el("span", { class: "mono", style: "width:72px;flex:none;color:var(--muted)" }, dash(row.entity_kind)),
     el(
       "span",
-      { class: "mono", style: "width:150px;flex:none;color:var(--muted-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" },
+      {
+        class: "mono",
+        style:
+          "width:150px;flex:none;color:var(--muted-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap",
+      },
       dash(row.remote_id),
     ),
   );
@@ -268,7 +284,8 @@ function planRowsCard(sorted) {
     "div",
     {
       class: "mono",
-      style: "display:flex;gap:14px;padding:8px 12px;font-size:var(--fs-meta);color:var(--faint);border-bottom:1px solid var(--border)",
+      style:
+        "display:flex;gap:14px;padding:8px 12px;font-size:var(--fs-meta);color:var(--faint);border-bottom:1px solid var(--border)",
     },
     el("span", { style: "width:112px;flex:none" }, "action"),
     el("span", { style: "flex:1" }, "path"),
@@ -377,7 +394,14 @@ function applyFooter(requiresGate, filesAtRisk) {
   return el(
     "div",
     { style: "margin-top:var(--gap-card);display:flex;align-items:center;gap:12px;flex-wrap:wrap" },
-    el("span", { class: `mono ${requiresGate && armed ? "dir-destructive" : ""}`, style: "font-size:var(--fs-meta);color:var(--muted)" }, hint),
+    el(
+      "span",
+      {
+        class: `mono ${requiresGate && armed ? "dir-destructive" : ""}`,
+        style: "font-size:var(--fs-meta);color:var(--muted)",
+      },
+      hint,
+    ),
     el(
       "button",
       { class: `${btnClass}`, style: "margin-left:auto", disabled: !canApply, onClick: () => applyPlan() },
@@ -403,9 +427,7 @@ function applyOutcomeCard() {
     el(
       "div",
       { class: "mono", style: "margin-top:4px;font-size:var(--fs-meta);color:var(--muted)" },
-      isError
-        ? error || "unknown error"
-        : `state: ${dash(state)} · message: ${message || "(no message)"}`,
+      isError ? error || "unknown error" : `state: ${dash(state)} · message: ${message || "(no message)"}`,
     ),
     !isError
       ? el(

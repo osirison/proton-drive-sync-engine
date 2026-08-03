@@ -1,0 +1,21 @@
+{
+  "name": "proton-drive-sync-gui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lint and format tooling for the Tauri frontend in gui/src (served raw — there is no build step).",
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run lint"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "eslint-plugin-import-x": "4.17.1",
+    "globals": "17.9.0",
+    "prettier": "3.9.6"
+  }
+}

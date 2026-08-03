@@ -67,7 +67,8 @@ function describeActivity(activity) {
       if (t) {
         const verb = t.direction === "upload" ? "Uploading" : "Downloading";
         let progress = "";
-        if (t.bytes_done != null && t.bytes_total) progress = ` — ${humanBytes(t.bytes_done)} / ${humanBytes(t.bytes_total)}`;
+        if (t.bytes_done != null && t.bytes_total)
+          progress = ` — ${humanBytes(t.bytes_done)} / ${humanBytes(t.bytes_total)}`;
         else if (t.bytes_done != null) progress = ` — ${humanBytes(t.bytes_done)} so far`;
         else if (t.bytes_total != null) progress = ` — ${humanBytes(t.bytes_total)}`;
         return `${verb} ${t.path}${progress}${step}`;
@@ -97,7 +98,8 @@ function transferRows(planSummary, pending, activity) {
   const uploads = planSummary?.uploads ?? 0;
   const downloads = planSummary?.downloads ?? 0;
   if (uploads > 0) rows.push({ dir: "up", label: `Uploading ${uploads} file${uploads === 1 ? "" : "s"}` });
-  if (downloads > 0) rows.push({ dir: "down", label: `Downloading ${downloads} file${downloads === 1 ? "" : "s"}` });
+  if (downloads > 0)
+    rows.push({ dir: "down", label: `Downloading ${downloads} file${downloads === 1 ? "" : "s"}` });
   if (rows.length === 0 && pending) {
     rows.push({ dir: "sync", label: `Syncing ${pending} pending change${pending === 1 ? "" : "s"}` });
   }
@@ -121,7 +123,11 @@ function renderTransferRow(row) {
   return el(
     "div",
     { class: "transfer-row" },
-    el("span", { class: "mono", style: "width:14px;flex:none;text-align:center;color:var(--muted-2)" }, arrow),
+    el(
+      "span",
+      { class: "mono", style: "width:14px;flex:none;text-align:center;color:var(--muted-2)" },
+      arrow,
+    ),
     el("span", { class: "path" }, row.label),
     el(
       "div",

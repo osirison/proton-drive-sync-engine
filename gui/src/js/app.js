@@ -6,7 +6,7 @@ import { api } from "./api.js";
 import * as store from "./store.js";
 import { SCREENS } from "./screens.js";
 import { matrixFor, nextOnboardingLatch } from "./state-matrix.js";
-import { el, dash } from "./components.js";
+import { el } from "./components.js";
 import { renderOnboarding } from "./screens/onboarding.js";
 
 let activeTab = "overview";
@@ -91,7 +91,12 @@ function buildShell() {
   const root = document.getElementById("app-root");
 
   // title bar
-  dom.pill = el("span", { class: "state-pill" }, el("span", { class: "dot" }), el("span", { class: "pill-text mono" }, "…"));
+  dom.pill = el(
+    "span",
+    { class: "state-pill" },
+    el("span", { class: "dot" }),
+    el("span", { class: "pill-text mono" }, "…"),
+  );
   dom.rootPair = el("span", { class: "root-pair" }, "");
   const titlebar = el(
     "header",
@@ -112,7 +117,12 @@ function buildShell() {
     "div",
     { class: "pair-card" },
     el("div", { class: "pair-square" }),
-    el("div", {}, el("div", { class: "pair-name" }, "ProtonDrive"), el("div", { class: "pair-path mono" }, "—")),
+    el(
+      "div",
+      {},
+      el("div", { class: "pair-name" }, "ProtonDrive"),
+      el("div", { class: "pair-path mono" }, "—"),
+    ),
   );
   nav.append(dom.pairCard);
 

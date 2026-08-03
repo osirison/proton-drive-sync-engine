@@ -47,8 +47,7 @@ export const select = {
   // "unknown must never render as zero" — em-dash counters in these states.
   countersUnknown: () => ["unreachable", "firstRun"].includes(select.daemonState()),
 
-  pendingChanges: () =>
-    select.countersUnknown() ? null : (select.response()?.pending_changes ?? null),
+  pendingChanges: () => (select.countersUnknown() ? null : (select.response()?.pending_changes ?? null)),
   planSummary: () => select.response()?.last_plan_summary ?? null,
 
   // THE single unresolved-conflict count feeding sidebar badge, tab header, needs-you, stat tile,
@@ -56,8 +55,7 @@ export const select = {
   unresolvedConflictCount: () => state.conflicts.length,
 
   // Pending writes staged on the Conflicts screen (footer counter); "decide_later" is not a write.
-  stagedWriteCount: () =>
-    Object.values(state.staged).filter((c) => c && c !== "decide_later").length,
+  stagedWriteCount: () => Object.values(state.staged).filter((c) => c && c !== "decide_later").length,
 
   statCounters: () => {
     const unknown = select.countersUnknown();
@@ -65,8 +63,8 @@ export const select = {
     return {
       pending_changes: unknown ? null : (select.response()?.pending_changes ?? null),
       conflicts: unknown ? null : select.unresolvedConflictCount(),
-      destructive_actions: unknown ? null : (summary ? summary.destructive_actions : null),
-      skipped_unsupported: unknown ? null : (summary ? summary.skipped_unsupported : null),
+      destructive_actions: unknown ? null : summary ? summary.destructive_actions : null,
+      skipped_unsupported: unknown ? null : summary ? summary.skipped_unsupported : null,
     };
   },
 
