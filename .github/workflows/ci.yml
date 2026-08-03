@@ -15,7 +15,7 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Tauri Linux build deps
         # Required by the gui/src-tauri workspace member (webkit2gtk-4.1 + libsoup-3.0 link at build
         # time). Kept here so the whole workspace builds/lints/tests on the runner.
@@ -57,8 +57,8 @@ jobs:
       run:
         working-directory: gui
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
