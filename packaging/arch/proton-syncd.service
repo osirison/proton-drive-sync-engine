@@ -4,10 +4,20 @@ Description=Proton Drive Sync Daemon
 # network-online.target lives in the system manager (not the per-user manager), so ordering
 # against it has no effect. The daemon retries on its own (Restart=on-failure below) and the
 # proton-drive CLI it shells out to handles transient connectivity.
+#
+# It IS ordered after the graphical session, though: that unlocks the desktop keyring (the reused
+# CLI session event-driven detection needs) and imports the login PATH into the user manager.
+# Best-effort ordering (no hard dependency), so a headless session still starts the daemon; it then
+# re-acquires the reused session automatically once the keyring becomes readable.
+After=graphical-session.target
 
 [Service]
 Type=simple
 Environment=RUST_LOG=info
+# Pin a PATH with the usual user bin dirs so a bare `proton-drive` resolves even when the service
+# starts before the session imports the login PATH. If the CLI lives elsewhere, set an absolute
+# `proton_cli` in proton-sync.toml instead — that bypasses PATH entirely.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:%h/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin
 ExecStart=/usr/bin/proton-syncd --config %h/.config/proton-sync/proton-sync.toml
 Restart=on-failure
 RestartSec=10

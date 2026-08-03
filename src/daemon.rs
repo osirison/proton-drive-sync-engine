@@ -128,6 +128,12 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// (or the session could not be read), in which case every reconcile is a full-tree snapshot
     /// exactly as before this feature.
     event_source: Option<Box<dyn EventSource>>,
+    /// Rebuilds [`Self::event_source`] on demand. Invoked before each reconcile while degraded
+    /// (`events_driven` on but no source) so a daemon that started before the desktop keyring was
+    /// unlocked — the common case for a systemd user service launched at boot — resumes O(changes)
+    /// event-driven detection without a manual restart once the keyring becomes readable. Boxed so
+    /// tests can inject a fake that flips from `None` to `Some`.
+    event_source_factory: Box<dyn FnMut() -> Option<Box<dyn EventSource>> + Send>,
     /// Number of successful incremental (event-driven) passes since the last full-tree snapshot.
     /// Drives the opt-in periodic safety resync (`events_full_scan_every`, disabled by default).
     incremental_passes_since_full_scan: u64,
@@ -562,6 +568,25 @@ impl<C: ProtonClient> Daemon<C> {
         // passes) — so in practice the daemon stays purely event-driven afterward.
         let incremental_passes_since_full_scan =
             effective_full_scan_every(config.events_full_scan_every);
+        // Captured by value so the closure re-reads the keyring at runtime without holding the
+        // config. Only the feature flag is needed — `CliKeyringSession::from_cli_keyring` sources
+        // the session from the keyring itself. Quiet on failure (unlike the startup
+        // `build_event_source`, which warns once): this runs every degraded pass.
+        let events_driven = config.events_driven;
+        let event_source_factory: Box<dyn FnMut() -> Option<Box<dyn EventSource>> + Send> =
+            Box::new(move || {
+                if !events_driven {
+                    return None;
+                }
+                match CliKeyringSession::from_cli_keyring() {
+                    Ok(session) => Some(Box::new(EventsClient::new(
+                        CurlHttpTransport::new(),
+                        session,
+                        EVENTS_APP_VERSION,
+                    )) as Box<dyn EventSource>),
+                    Err(_) => None,
+                }
+            });
         let shared = Arc::new(ControlShared::new(RunningConfigInfo {
             local_root: config.local_root.clone(),
             remote_root: config.remote_root.clone(),
@@ -584,6 +609,7 @@ impl<C: ProtonClient> Daemon<C> {
             status_history,
             ipc_io_timeout: IPC_IO_TIMEOUT,
             event_source,
+            event_source_factory,
             incremental_passes_since_full_scan,
             pending_deletions: Vec::new(),
             _lock_guard: lock_guard,
@@ -874,6 +900,9 @@ impl<C: ProtonClient> Daemon<C> {
 
     fn reconcile_blocking_inner(&mut self) -> AppResult<()> {
         info!("starting reconciliation");
+        // Recover event-driven detection if it was disabled at startup because the keyring was
+        // still locked (the boot race). No-op once a source exists or when the feature is off.
+        self.reacquire_event_source_if_needed();
         // Start each pass with an empty authored-writes set: it only needs to survive from a
         // download/move to the watcher echo of that same write (which drains after this pass
         // returns from `block_in_place`, before the next pass runs). Clearing here bounds the
@@ -898,6 +927,31 @@ impl<C: ProtonClient> Daemon<C> {
         }
 
         self.bootstrap_reconcile(base_records)
+    }
+
+    /// Re-attempt building [`Self::event_source`] when event-driven detection is enabled but no
+    /// source exists — typically because the desktop keyring was still locked when the daemon
+    /// started at boot, so `build_event_source` degraded to `None` for the process lifetime. Lets
+    /// the daemon resume O(changes) event-driven detection without a manual restart once the
+    /// keyring is unlocked. No-op when the feature is off or a source already exists (so a working
+    /// source is never rebuilt, and the keyring is only re-read while actually degraded).
+    fn reacquire_event_source_if_needed(&mut self) {
+        if !self.config.events_driven || self.event_source.is_some() {
+            return;
+        }
+        if let Some(source) = (self.event_source_factory)() {
+            info!("reused CLI session became readable; resuming event-driven change detection");
+            self.event_source = Some(source);
+            // Force this pass to full-scan, exactly as a fresh process does (the "startup snapshots
+            // first" invariant). Reacquisition runs before `should_try_incremental` in the same
+            // pass, so reseeding the floor here makes the daemon snapshot now — capturing a fresh
+            // event cursor — instead of going incremental against a stale cursor persisted by a
+            // previous process (whose events the degraded snapshots never advanced past). This
+            // makes mid-life reacquisition byte-identical to a restart, so no new unproven
+            // transition is introduced.
+            self.incremental_passes_since_full_scan =
+                effective_full_scan_every(self.config.events_full_scan_every);
+        }
     }
 
     /// Whether an incremental (event-stream) pass may be attempted this cycle. Requires the
@@ -6999,6 +7053,62 @@ mod tests {
             events_full_scan_every: 20,
             ..test_config(directory, local_root)
         }
+    }
+
+    #[test]
+    fn event_source_is_reacquired_when_the_keyring_becomes_readable() {
+        // Boot race: the daemon started with the keyring locked, so `event_source` is None and it
+        // is stuck on full-tree snapshots. Once the keyring is unlocked, the next pass must resume
+        // event-driven detection without a restart.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _ops) = RecordingProtonClient::new(HashMap::new());
+        // `with_client` injects event_source = None, mirroring a keyring-locked startup.
+        let mut daemon = Daemon::with_client(event_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        assert!(
+            daemon.event_source.is_none(),
+            "precondition: no event source at a keyring-locked startup"
+        );
+        // Simulate the degraded window: the snapshot passes that ran while degraded reset the
+        // startup-snapshot floor to 0, so without a reseed the next pass would go incremental.
+        daemon.incremental_passes_since_full_scan = 0;
+
+        // Keyring now readable: the factory yields a source.
+        daemon.event_source_factory = Box::new(|| Some(Box::new(FakeEventSource::new("cursor-0"))));
+        daemon.reacquire_event_source_if_needed();
+        assert!(
+            daemon.event_source.is_some(),
+            "event-driven detection should resume once the session is readable"
+        );
+        // Reacquisition must reseed the startup-snapshot floor so this pass full-scans (capturing a
+        // fresh cursor) instead of going incremental against the stale persisted cursor — keeping
+        // mid-life reacquisition byte-identical to a restart ("startup snapshots first" invariant).
+        assert_eq!(
+            daemon.incremental_passes_since_full_scan,
+            effective_full_scan_every(daemon.config.events_full_scan_every),
+            "reacquisition must force a snapshot floor like a fresh startup"
+        );
+
+        // Idempotent: a working source is never rebuilt (the factory must not be called again).
+        daemon.event_source_factory = Box::new(|| panic!("must not rebuild an existing source"));
+        daemon.reacquire_event_source_if_needed();
+    }
+
+    #[test]
+    fn event_source_is_not_reacquired_when_events_driven_is_off() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _ops) = RecordingProtonClient::new(HashMap::new());
+        // events_driven defaults to false in `test_config`.
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        daemon.event_source_factory =
+            Box::new(|| panic!("must not build a source when the feature is off"));
+        daemon.reacquire_event_source_if_needed();
+        assert!(daemon.event_source.is_none());
     }
 
     fn remote_dir(path: &str, id: &str) -> RemoteEntity {

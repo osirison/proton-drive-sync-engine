@@ -1,10 +1,20 @@
 [Unit]
 Description=Proton Drive Sync Daemon
-After=network-online.target
+# Order after the graphical session. It unlocks the desktop keyring (the reused proton-drive CLI
+# session that event-driven detection needs) and imports the login PATH into the user manager.
+# Starting earlier is the boot race where the daemon can neither find the proton-drive CLI on PATH
+# nor read the keyring, so every reconcile fails until a manual restart. This is best-effort
+# ordering (no hard dependency): a headless/TTY session still starts the daemon, which then degrades
+# to full-tree snapshot scans and re-acquires the session automatically once the keyring is readable.
+After=graphical-session.target
 
 [Service]
 Type=simple
 Environment=RUST_LOG=info
+# Pin a PATH with the usual user bin dirs so a bare `proton-drive` (the default proton_cli) resolves
+# even when the service starts before the session imports the login PATH. If the CLI lives elsewhere,
+# set an absolute `proton_cli` in proton-sync.toml instead — that bypasses PATH entirely.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:%h/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin
 ExecStart=%h/.cargo/bin/proton-syncd --config %h/.config/proton-sync/proton-sync.toml
 Restart=on-failure
 RestartSec=10

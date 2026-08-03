@@ -3,6 +3,10 @@
 local_root = "/home/me/ProtonDrive"
 remote_root = "/Drive/RemoteFolder"
 scan_interval_secs = 300
+# A bare name is resolved via PATH. When the daemon runs as a systemd user service it can start
+# before the login PATH is imported and fail to find the CLI ("could not run the proton-drive CLI
+# ... No such file or directory"). Set an absolute path to bypass PATH entirely, e.g.:
+#   proton_cli = "~/.local/bin/proton-drive"
 proton_cli = "proton-drive"
 proton_timeout_secs = 60
 proton_list_attempts = 2
