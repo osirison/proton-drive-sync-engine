@@ -82,9 +82,18 @@ Run a `--dry-run` from the shell whenever you change `--local-root`, `--remote-r
 
 - `proton-drive` must be **on `PATH` and logged in** for the user the service runs as — the
   daemon shells it for remote file operations and reuses its keyring session for change
-  detection.
+  detection. A systemd **user** service starts with a minimal `PATH` and may run *before* your
+  login shell's `PATH` is imported into the user manager, so a bare `proton_cli = "proton-drive"`
+  can fail to resolve early in the boot session (`could not run the proton-drive CLI … No such
+  file or directory`). The shipped unit pins a `PATH` covering the usual user bin dirs
+  (`~/.local/bin`, `~/.cargo/bin`, `~/bin`); if your CLI lives elsewhere, set an **absolute**
+  `proton_cli` (e.g. `~/.local/bin/proton-drive`) in the config, which bypasses `PATH` entirely.
 - The desktop keyring must be unlocked for event-driven detection to reuse the CLI session;
-  otherwise the daemon degrades to snapshot scans.
+  otherwise the daemon degrades to snapshot scans. If the keyring is still locked when the daemon
+  starts at boot, it recovers on its own — it re-checks the keyring every pass and resumes
+  event-driven detection once it is readable, without a restart. The unit is also ordered
+  `After=graphical-session.target` so it prefers to start after the session has unlocked the
+  keyring and imported the login `PATH`.
 - Only **one daemon per user** may run (a user-global lock enforces this) because the shared
   `proton-drive` CLI cache isn't concurrency-safe.
 

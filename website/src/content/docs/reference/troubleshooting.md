@@ -42,6 +42,29 @@ If that fails, fix authentication, permissions, or the remote folder name first 
 can only be as healthy as the CLI it shells. Check the daemon's logs for the structured
 fields (operation, attempt, exit status, stderr, timeout); see [Logging](/daemon/logging/).
 
+## After a reboot the daemon fails every sync until I restart it
+
+Symptom: right after boot, `journalctl --user -u proton-syncd` shows every pass failing —
+often `could not run the proton-drive CLI … No such file or directory (os error 2)` — and a
+manual `systemctl --user restart proton-syncd` a few minutes later fixes it.
+
+This is a **boot-ordering race**. A systemd *user* service can start before your desktop
+session has (a) imported your login `PATH` into the user manager and (b) unlocked the desktop
+keyring. So the daemon can't find the `proton-drive` CLI on `PATH`, and can't read its keyring
+session. `PATH` is captured once at process start, so retries in the *same* process keep failing
+the same way — only a fresh process (a restart) picks up the corrected environment.
+
+Fixes:
+
+- **Pin an absolute `proton_cli`** in `~/.config/proton-sync/proton-sync.toml`, e.g.
+  `proton_cli = "~/.local/bin/proton-drive"`. This bypasses `PATH` and is the most reliable fix.
+- The shipped unit already sets a `PATH` covering `~/.local/bin`, `~/.cargo/bin`, and `~/bin`, and
+  is ordered `After=graphical-session.target`. If you hand-wrote your unit, re-copy the sample (or
+  re-run `setup.sh`) and `systemctl --user daemon-reload`.
+- The keyring side self-heals: the daemon re-checks the keyring every pass and resumes
+  event-driven detection once it's unlocked — no restart needed. Make sure the keyring is actually
+  unlocked at login (auto-login without a password can leave it locked).
+
 ## Event-driven passes are being skipped
 
 Event-driven detection **reuses the `proton-drive` CLI's keyring session**. If the CLI is

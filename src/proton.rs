@@ -1142,6 +1142,22 @@ impl ProtonDriveClient {
                     busy_attempts += 1;
                     std::thread::sleep(EXECUTABLE_BUSY_RETRY_DELAY);
                 }
+                // A bare `proton-drive` (default `proton_cli`) is resolved via PATH. As a systemd
+                // *user* service started at boot, the daemon inherits a minimal PATH that often
+                // lacks the CLI's directory (e.g. ~/.local/bin) until the desktop session imports
+                // the shell environment, so early passes fail to spawn it with a raw, opaque "No
+                // such file or directory (os error 2)". Translate that into an actionable message
+                // that names the executable, the current PATH, and the absolute-path escape hatch.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(boxed_error(format!(
+                        "could not run the proton-drive CLI `{}`: {error}. Install proton-drive \
+                         and make sure it is on PATH, or set `proton_cli` (config file) / \
+                         `--proton-cli` to its absolute path — as a systemd user service the CLI's \
+                         directory may not be on PATH early in the boot session. PATH={}",
+                        self.executable.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    )));
+                }
                 Err(error) => return Err(Box::new(error)),
             }
         }
@@ -2143,6 +2159,31 @@ printf '{"entries":[]}\n'
             started.elapsed() < Duration::from_secs(1),
             "timing out should not block on the fake CLI's full hang duration, took {:?}",
             started.elapsed()
+        );
+    }
+
+    #[test]
+    fn missing_cli_binary_yields_an_actionable_not_found_error() {
+        // The boot-time PATH race: the daemon's systemd user-service PATH lacks the CLI's
+        // directory, so a bare `proton-drive` fails to spawn. Surface an actionable message that
+        // names the executable and the absolute-path escape hatch, not a raw os-error-2.
+        let client = ProtonDriveClient::with_command_policy(
+            PathBuf::from("/nonexistent/definitely-not-proton-drive"),
+            CommandPolicy::new(Duration::from_secs(5), 1),
+        );
+
+        let error = client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect_err("a missing CLI binary must fail")
+            .to_string();
+
+        assert!(
+            error.contains("could not run the proton-drive CLI"),
+            "error should name the CLI: {error}"
+        );
+        assert!(
+            error.contains("proton_cli"),
+            "error should point at the proton_cli/--proton-cli escape hatch: {error}"
         );
     }
 

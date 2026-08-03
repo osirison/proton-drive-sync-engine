@@ -351,10 +351,20 @@ Description=Proton Drive Sync Daemon
 # No After=network-online.target: this is a systemd *user* unit and that target lives in the system
 # manager, so ordering against it has no effect. The daemon retries on its own (Restart below) and
 # the proton-drive CLI it shells handles transient connectivity.
+#
+# Order after the graphical session, though: it unlocks the desktop keyring (the reused proton-drive
+# CLI session event-driven detection needs) and imports the login PATH into the user manager.
+# Best-effort ordering (no hard dependency) — a headless session still starts the daemon, which
+# re-acquires the reused session automatically once the keyring becomes readable.
+After=graphical-session.target
 
 [Service]
 Type=simple
 Environment=RUST_LOG=info
+# Pin a PATH with the usual user bin dirs so a bare proton-drive resolves even when the service
+# starts before the session imports the login PATH. If the CLI lives elsewhere, set an absolute
+# proton_cli in the config instead.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:%h/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin
 ExecStart="${daemon_bin}" --config "${cfg}"
 Restart=on-failure
 RestartSec=10
