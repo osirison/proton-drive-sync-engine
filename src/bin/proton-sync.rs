@@ -47,6 +47,9 @@ enum Commands {
         #[arg(long)]
         no_wait: bool,
     },
+    /// Force a full remote re-scan on the daemon's next pass (instead of the fast warm start),
+    /// e.g. to self-heal suspected drift. Returns immediately; watch with `proton-sync status`.
+    Resync,
     /// Ask the running daemon to exit gracefully.
     Stop,
     /// List deletions currently withheld by the delete-approval guard, awaiting approval.
@@ -131,6 +134,14 @@ async fn main() -> ExitCode {
         Commands::Syncnow { no_wait } => {
             watch_syncnow(&socket_path, response, *no_wait, cli.json, &style).await
         }
+        Commands::Resync => {
+            if cli.json {
+                print_pretty_json(&response);
+            } else {
+                println!("{}", response.message);
+            }
+            ExitCode::SUCCESS
+        }
         Commands::Stop => {
             if cli.json {
                 print_pretty_json(&response);
@@ -169,6 +180,7 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         Commands::Pause => (ControlCommand::Pause, None),
         Commands::Resume => (ControlCommand::Resume, None),
         Commands::Syncnow { .. } => (ControlCommand::Syncnow, None),
+        Commands::Resync => (ControlCommand::Resync, None),
         Commands::Stop => (ControlCommand::Shutdown, None),
         Commands::Approve { path, all } => {
             (ControlCommand::Approve, approval_selector(path, *all)?)

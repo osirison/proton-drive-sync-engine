@@ -1,11 +1,12 @@
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
-    EntityKind, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
+    EntityKind, EventCursor, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
     delete_delete_approval, load_event_cursor, load_existing_index, load_index,
-    local_directory_state, local_file_state, mark_modified, matching_delete_approval,
-    open_database, path_for_proton_id, purge_record, scan_local_entities_observed,
-    scan_local_entities_reusing_hashes, store_event_cursor, upsert_delete_approval, upsert_record,
+    load_warm_start_count, local_directory_state, local_file_state, mark_modified,
+    matching_delete_approval, open_database, path_for_proton_id, purge_record,
+    scan_local_entities_observed, scan_local_entities_reusing_hashes, store_event_cursor,
+    store_warm_start_count, upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ControlCommand, ControlResponse, PendingDeletion, RunningConfigInfo, StatusHistoryEntry,
@@ -55,6 +56,54 @@ const EVENTS_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// to suppress them, or `=debug` on just this target to isolate them.
 const TRANSFER_LOG_TARGET: &str = "proton_drive_sync_engine::transfer";
 
+/// Default number of consecutive warm starts (event-driven reconciles on the first pass after
+/// boot) before the next boot forces a self-healing full-tree walk. `0` disables the periodic
+/// full walk entirely (via the same `u64::MAX` sentinel as `events_full_scan_every`), leaving the
+/// daemon warm-starting indefinitely — bounded only by the cursor-age gate and the event-stream
+/// fallbacks. Heals across **reboots**, not within a long-running process (that is what the
+/// in-run `events_full_scan_every` is for).
+pub const DEFAULT_WARM_START_FULL_WALK_EVERY: u64 = 30;
+
+/// Default maximum age of the persisted event cursor for a warm start to be attempted. Older than
+/// this and the first pass full-walks instead, so a boot after long downtime cannot warm-start
+/// against a cursor that may be past the server's event-retention window (which we cannot verify
+/// from here). `0` disables the age gate. Note this measures the last cursor *advance*, not the
+/// last successful pass — an idle volume left untouched past this window then rebooted takes an
+/// unnecessary (but always safe) full walk.
+pub const DEFAULT_WARM_START_MAX_CURSOR_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Startup-reconcile tuning: whether the first pass after boot may **warm-start** (an event-driven
+/// reconcile that swaps the O(folders) remote walk for an O(changes) cursor replay while still
+/// doing the cheap full local stat-walk to catch edits made while the daemon was down), plus the
+/// two safety bounds on it and the one-shot `--full-walk` override. See `docs/adr/0004-*`.
+#[derive(Debug, Clone)]
+pub struct WarmStartConfig {
+    /// Master switch. When `false`, the first pass after boot always full-walks (the pre-warm-start
+    /// behavior, byte-for-byte).
+    pub enabled: bool,
+    /// Force a full walk instead of a warm start every N warm starts (across restarts). `0`
+    /// disables the periodic full walk (mapped to `u64::MAX` by [`effective_full_scan_every`]).
+    pub full_walk_every: u64,
+    /// Warm-start only if the persisted event cursor is at most this old; otherwise full-walk.
+    /// `Duration::ZERO` disables the age gate.
+    pub max_cursor_age: Duration,
+    /// One-shot: force this process's first pass to full-walk regardless of eligibility (the
+    /// `--full-walk` startup flag). Sticky across a failed first pass so the requested full walk
+    /// still happens on retry; irrelevant once the first pass succeeds.
+    pub force_full_walk: bool,
+}
+
+impl Default for WarmStartConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            full_walk_every: DEFAULT_WARM_START_FULL_WALK_EVERY,
+            max_cursor_age: Duration::from_secs(DEFAULT_WARM_START_MAX_CURSOR_AGE_SECS),
+            force_full_walk: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
     pub local_root: PathBuf,
@@ -95,6 +144,8 @@ pub struct DaemonConfig {
     /// As `delete_approval_remote`, but for a deletion propagating to the local disk
     /// (`LocalDelete`) — the remote-trash-deletes-your-local-file direction.
     pub delete_approval_local: bool,
+    /// Startup-reconcile tuning (warm start; see [`WarmStartConfig`]).
+    pub warm_start: WarmStartConfig,
 }
 
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
@@ -137,6 +188,17 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// Number of successful incremental (event-driven) passes since the last full-tree snapshot.
     /// Drives the opt-in periodic safety resync (`events_full_scan_every`, disabled by default).
     incremental_passes_since_full_scan: u64,
+    /// `true` until the first reconcile of this process succeeds. The first pass is special —
+    /// `notify` has replayed nothing, so it must full-scan the local tree (either via a bootstrap
+    /// or a warm start's forced local scan) to catch edits made while the daemon was down. Cleared
+    /// only on success, so a failed first pass retries as a first pass (keeping the "startup
+    /// snapshots first" floor sticky across failures).
+    is_first_reconcile: bool,
+    /// Consecutive warm starts since the last full-tree walk, **persisted across restarts** (loaded
+    /// from / stored to the `warm_start_state` table). Drives the every-N-warm-starts self-healing
+    /// full walk (`warm_start.full_walk_every`). Distinct from the in-run
+    /// `incremental_passes_since_full_scan`.
+    warm_starts_since_full_walk: u64,
     /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
     /// plan; surfaced over IPC (`proton-sync pending`) and in the metrics sidecar.
@@ -176,6 +238,10 @@ struct ControlShared {
     syncing: AtomicBool,
     /// Count of completed reconcile attempts since startup (see `ControlResponse::reconcile_seq`).
     reconcile_seq: AtomicU64,
+    /// Set by the IPC `resync` command to force the daemon's next reconcile to a full-tree walk
+    /// (rather than a warm start / incremental pass). The daemon core consumes it with a `swap`
+    /// at the top of each pass. Written by the IPC task, read-and-cleared by the core.
+    force_full_walk: AtomicBool,
     /// The daemon core's most recently published status. The IPC task only ever reads it.
     snapshot: StdMutex<StatusSnapshot>,
     /// Live activity for the in-flight pass (see [`SyncActivity`]). Written from inside the
@@ -215,6 +281,7 @@ impl ControlShared {
             paused: AtomicBool::new(false),
             syncing: AtomicBool::new(false),
             reconcile_seq: AtomicU64::new(0),
+            force_full_walk: AtomicBool::new(false),
             snapshot: StdMutex::new(StatusSnapshot {
                 pending_changes: 0,
                 last_sync_epoch_secs: None,
@@ -556,18 +623,21 @@ impl<C: ProtonClient> Daemon<C> {
             Vec::new()
         });
 
-        // Force a full-tree snapshot on the *first* reconcile after startup (the design-note
-        // backstop). A fresh process has an empty `pending_changes` — `notify` never replays
-        // pre-existing files — so an incremental pass would idle-skip a local file that was edited
-        // while the daemon was down, stranding it until the periodic K-floor. Seeding the counter
-        // at the (effective) resync threshold makes `should_try_incremental` false on the first
-        // pass, so it snapshots (the market-data "get truth first" step), then resets the counter
-        // to 0 and streams from there. When the periodic resync is disabled (`events_full_scan_every
-        // == 0`) the effective threshold is `u64::MAX`, so the startup floor still fires once here
-        // but the counter cannot reach it again in any realistic runtime (that would take 2^64
-        // passes) — so in practice the daemon stays purely event-driven afterward.
-        let incremental_passes_since_full_scan =
-            effective_full_scan_every(config.events_full_scan_every);
+        // The first reconcile after startup is handled explicitly by `first_reconcile` (via the
+        // `is_first_reconcile` flag), which either full-walks or warm-starts — both full-scan the
+        // local tree, so a file edited while the daemon was down (an empty `pending_changes`, since
+        // `notify` never replays pre-existing files) is always caught. The in-run resync counter
+        // therefore starts at 0 and only ever gates the *periodic* in-run resync
+        // (`events_full_scan_every`), never the startup pass.
+        let incremental_passes_since_full_scan = 0;
+        // Persisted across restarts: how many warm starts have happened since the last full walk,
+        // driving the every-N-warm-starts self-healing full walk. A read failure degrades to 0
+        // (worst case: one extra warm start before the next full walk), never blocks startup.
+        let warm_starts_since_full_walk =
+            load_warm_start_count(&connection).unwrap_or_else(|error| {
+                warn!(%error, "ignoring unreadable warm-start counter; treating it as zero");
+                0
+            });
         // Captured by value so the closure re-reads the keyring at runtime without holding the
         // config. Only the feature flag is needed — `CliKeyringSession::from_cli_keyring` sources
         // the session from the keyring itself. Quiet on failure (unlike the startup
@@ -611,6 +681,8 @@ impl<C: ProtonClient> Daemon<C> {
             event_source,
             event_source_factory,
             incremental_passes_since_full_scan,
+            is_first_reconcile: true,
+            warm_starts_since_full_walk,
             pending_deletions: Vec::new(),
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
@@ -913,12 +985,34 @@ impl<C: ProtonClient> Daemon<C> {
         // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
         let base_records = load_index(&self.connection)?;
 
+        // A runtime `resync` forces this pass to a full-tree walk, overriding both the warm start
+        // and the steady-state incremental path. Consume it exactly once (a `swap`), so a later
+        // pass is not also forced. (The startup `--full-walk` flag is separate — see below.)
+        let resync_requested = self.shared.force_full_walk.swap(false, Ordering::SeqCst);
+
+        // The first reconcile after boot is special: `notify` has replayed nothing, so it must
+        // full-scan the local tree. `first_reconcile` either full-walks or warm-starts (both do
+        // that local scan). Clear `is_first_reconcile` only on success, so a failed first pass
+        // retries as a first pass — keeping the "startup snapshots first" floor sticky across
+        // failures (a failed pass must not let the next one drop into the steady-state idle
+        // fast-path, which skips the local scan and would strand an offline edit).
+        if self.is_first_reconcile {
+            // `--full-walk` (a process-lifetime config flag, not the consumed atomic) stays in
+            // force across a failed first pass, so the requested full walk still happens on retry.
+            let force_bootstrap = resync_requested || self.config.warm_start.force_full_walk;
+            let result = self.first_reconcile(base_records, force_bootstrap);
+            if result.is_ok() {
+                self.is_first_reconcile = false;
+            }
+            return result;
+        }
+
         // Event-driven steady state: attempt an incremental pass (O(changes)) before resorting to
         // a full-tree snapshot (O(folders)). Any doubt — no cursor, a server refresh, an events
         // error, or an unresolvable node — falls through to the snapshot below, which is exactly
         // today's behavior. When `events_driven` is off this predicate is always false.
-        if self.should_try_incremental(&base_records) {
-            match self.try_incremental_reconcile(&base_records)? {
+        if !resync_requested && self.should_try_incremental(&base_records) {
+            match self.try_incremental_reconcile(&base_records, false)? {
                 IncrementalOutcome::Committed | IncrementalOutcome::Idle => return Ok(()),
                 IncrementalOutcome::Fallback(reason) => {
                     info!(%reason, "event-driven pass fell back to a full-tree snapshot");
@@ -927,6 +1021,83 @@ impl<C: ProtonClient> Daemon<C> {
         }
 
         self.bootstrap_reconcile(base_records)
+    }
+
+    /// The first reconcile after this process booted. Warm-starts when eligible (an event-driven
+    /// reconcile that keeps the cheap full local stat-walk but replays the remote from the
+    /// persisted cursor instead of the O(folders) walk), otherwise full-walks. A warm start that
+    /// cannot complete falls through to a bootstrap. Both paths full-scan the local tree, so an
+    /// edit made while the daemon was down is always caught.
+    fn first_reconcile(
+        &mut self,
+        base_records: HashMap<PathBuf, FileRecord>,
+        force_bootstrap: bool,
+    ) -> AppResult<()> {
+        if !force_bootstrap && self.warm_start_eligible(&base_records) {
+            // `true` = force the local stat-walk even if the event delta is empty: on a fresh boot
+            // `pending_changes` is empty, so the idle fast-path would otherwise skip the scan and
+            // strand a file edited while the daemon was down.
+            match self.try_incremental_reconcile(&base_records, true)? {
+                IncrementalOutcome::Committed | IncrementalOutcome::Idle => {
+                    self.record_successful_warm_start();
+                    info!("warm start completed; skipped the full-tree remote walk");
+                    return Ok(());
+                }
+                IncrementalOutcome::Fallback(reason) => {
+                    info!(%reason, "warm start fell back to a full-tree snapshot");
+                }
+            }
+        }
+        self.bootstrap_reconcile(base_records)
+    }
+
+    /// Whether the first pass after boot may warm-start: the feature is enabled with a usable event
+    /// source, the every-N-warm-starts full-walk floor is not yet due, a volume and a stored cursor
+    /// exist, and that cursor is fresh enough (unlike steady-state incremental, the first pass adds
+    /// the cursor-age gate — it may be replaying a cursor persisted by a previous process across an
+    /// unknown amount of downtime).
+    fn warm_start_eligible(&self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
+        let warm = &self.config.warm_start;
+        if !warm.enabled || !self.config.events_driven || self.event_source.is_none() {
+            return false;
+        }
+        // Self-healing full walk every N warm starts (across restarts). `0` maps to `u64::MAX`.
+        if self.warm_starts_since_full_walk >= effective_full_scan_every(warm.full_walk_every) {
+            return false;
+        }
+        let Some(volume) = derive_volume_id(base_records) else {
+            return false;
+        };
+        let cursor = match load_event_cursor(&self.connection, volume) {
+            Ok(Some(cursor)) => cursor,
+            _ => return false,
+        };
+        self.cursor_is_fresh(&cursor)
+    }
+
+    /// Whether the persisted cursor is recent enough to warm-start against. Guards the one thing we
+    /// cannot verify from here — that the server signals a refresh (rather than silently truncating)
+    /// for a cursor past its event-retention window. A `Duration::ZERO` max age disables the gate; a
+    /// future `updated_at` (clock skew) reads as stale so we take the safe full walk.
+    fn cursor_is_fresh(&self, cursor: &EventCursor) -> bool {
+        let max_age = self.config.warm_start.max_cursor_age;
+        if max_age.is_zero() {
+            return true;
+        }
+        let age = current_epoch_secs() as i64 - cursor.updated_at;
+        age >= 0 && (age as u64) <= max_age.as_secs()
+    }
+
+    /// Records one more successful warm start (persisting the across-restart counter). Best-effort:
+    /// this is a heuristic that only affects *when* the next self-healing full walk fires, so a
+    /// write failure logs and is swallowed rather than failing an otherwise-successful sync.
+    fn record_successful_warm_start(&mut self) {
+        self.warm_starts_since_full_walk = self.warm_starts_since_full_walk.saturating_add(1);
+        if let Err(error) =
+            store_warm_start_count(&self.connection, self.warm_starts_since_full_walk)
+        {
+            warn!(%error, "failed to persist the warm-start counter; it may reset on restart");
+        }
     }
 
     /// Re-attempt building [`Self::event_source`] when event-driven detection is enabled but no
@@ -942,15 +1113,18 @@ impl<C: ProtonClient> Daemon<C> {
         if let Some(source) = (self.event_source_factory)() {
             info!("reused CLI session became readable; resuming event-driven change detection");
             self.event_source = Some(source);
-            // Force this pass to full-scan, exactly as a fresh process does (the "startup snapshots
-            // first" invariant). Reacquisition runs before `should_try_incremental` in the same
-            // pass, so reseeding the floor here makes the daemon snapshot now — capturing a fresh
-            // event cursor — instead of going incremental against a stale cursor persisted by a
-            // previous process (whose events the degraded snapshots never advanced past). This
-            // makes mid-life reacquisition byte-identical to a restart, so no new unproven
-            // transition is introduced.
-            self.incremental_passes_since_full_scan =
-                effective_full_scan_every(self.config.events_full_scan_every);
+            // On a *mid-life* reacquisition (not the first pass), force this pass to full-walk by
+            // reseeding the resync floor. Steady-state incremental has no cursor-age gate, so
+            // without this it would replay the cursor persisted by a previous process — which the
+            // degraded snapshots never advanced past — and miss everything since. A full walk
+            // captures a fresh cursor to stream from. On the *first* pass this reseed is skipped:
+            // `first_reconcile` already decides warm-start-vs-bootstrap with its own cursor-age
+            // gate (which subsumes this concern), and reseeding here would also risk overflowing
+            // the counter when a warm start increments it past the `u64::MAX` sentinel.
+            if !self.is_first_reconcile {
+                self.incremental_passes_since_full_scan =
+                    effective_full_scan_every(self.config.events_full_scan_every);
+            }
         }
     }
 
@@ -986,9 +1160,15 @@ impl<C: ProtonClient> Daemon<C> {
     /// `base ⊕ delta`, plan, execute, and advance the cursor inside the post-side-effects commit.
     /// Returns [`IncrementalOutcome::Fallback`] (without committing) whenever the delta cannot be
     /// turned into a complete map, so the caller re-bootstraps.
+    ///
+    /// `force_local_scan` skips the idle fast-path so the local stat-walk always runs. The warm
+    /// start (first pass after boot) sets it: `pending_changes` is empty on a fresh process, so the
+    /// idle fast-path would otherwise skip the scan and strand a file edited while the daemon was
+    /// down. Steady-state passes leave it `false` to keep the O(1) idle poll cheap.
     fn try_incremental_reconcile(
         &mut self,
         base_records: &HashMap<PathBuf, FileRecord>,
+        force_local_scan: bool,
     ) -> AppResult<IncrementalOutcome> {
         let volume = derive_volume_id(base_records)
             .expect("should_try_incremental guarantees a derivable volume id")
@@ -1024,7 +1204,10 @@ impl<C: ProtonClient> Daemon<C> {
         // re-derives it from ground truth every pass (and recomputes the pending list), so an
         // approval applies on the very next reconcile; once resolved, the pass goes idle again. (A
         // withheld `LocalDelete` is already non-idle: the held cursor keeps its event in the delta.)
-        if delta.changes.is_empty()
+        // `force_local_scan` (a warm start) suppresses this fast-path: even with an empty delta it
+        // must run the local stat-walk to catch offline edits `pending_changes` cannot know about.
+        if !force_local_scan
+            && delta.changes.is_empty()
             && self.pending_changes.is_empty()
             && self.pending_deletions.is_empty()
         {
@@ -1036,7 +1219,8 @@ impl<C: ProtonClient> Daemon<C> {
                     current_epoch_secs() as i64,
                 )?;
             }
-            self.incremental_passes_since_full_scan += 1;
+            self.incremental_passes_since_full_scan =
+                self.incremental_passes_since_full_scan.saturating_add(1);
             info!("event-driven pass idle; no remote or local changes");
             return Ok(IncrementalOutcome::Idle);
         }
@@ -1077,7 +1261,8 @@ impl<C: ProtonClient> Daemon<C> {
                 last_event_id: delta.latest_event_id,
             }),
         )?;
-        self.incremental_passes_since_full_scan += 1;
+        self.incremental_passes_since_full_scan =
+            self.incremental_passes_since_full_scan.saturating_add(1);
         Ok(IncrementalOutcome::Committed)
     }
 
@@ -1186,6 +1371,15 @@ impl<C: ProtonClient> Daemon<C> {
             cursor_update,
         )?;
         self.incremental_passes_since_full_scan = 0;
+        // A full walk is the self-healing event warm starts count toward: reset the across-restart
+        // warm-start floor so the every-N cadence restarts from this fresh baseline. Best-effort —
+        // see `record_successful_warm_start`.
+        if self.warm_starts_since_full_walk != 0 {
+            self.warm_starts_since_full_walk = 0;
+            if let Err(error) = store_warm_start_count(&self.connection, 0) {
+                warn!(%error, "failed to reset the warm-start counter after a full walk");
+            }
+        }
         Ok(())
     }
 
@@ -2360,6 +2554,26 @@ async fn handle_control_connection(
                     shared.response(message)
                 } else {
                     shared.response("daemon is shutting down; sync not scheduled")
+                }
+            }
+        }
+        ControlCommand::Resync => {
+            // Latch the full-walk request first so it survives even if the daemon is paused (it
+            // will apply on the next pass after resume), then schedule a pass via the same path as
+            // `syncnow`. The core consumes the latch with a `swap` at the top of that pass.
+            shared.force_full_walk.store(true, Ordering::SeqCst);
+            if shared.is_paused() {
+                shared.response("full resync queued; it will run when syncing resumes")
+            } else {
+                let message = if shared.is_syncing() {
+                    "full resync scheduled; it will run after the current pass"
+                } else {
+                    "full resync scheduled"
+                };
+                if loop_tx.send(LoopCommand::SyncNow).is_ok() {
+                    shared.response(message)
+                } else {
+                    shared.response("daemon is shutting down; resync not scheduled")
                 }
             }
         }
@@ -3547,6 +3761,7 @@ mod tests {
             events_full_scan_every: 20,
             delete_approval_remote: false,
             delete_approval_local: false,
+            warm_start: WarmStartConfig::default(),
         };
 
         let plan = preview_plan_with_client(&config, &FakeProtonClient { remote_files })
@@ -4619,6 +4834,9 @@ mod tests {
         .expect("seed base record");
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
 
         daemon.reconcile_blocking().expect("incremental reconcile");
 
@@ -4707,6 +4925,9 @@ mod tests {
         .expect("seed base record");
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
 
         // Pass 1 — the id takeover. Incremental: Download(b.txt) commits a row with proton_id
         // vol~nx; LocalDelete(a.txt) is withheld, so a.txt keeps its vol~nx row → duplicate id.
@@ -4819,6 +5040,9 @@ mod tests {
         .expect("seed base record");
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
         // The watcher would have observed the local deletion, so the first pass is not idle.
         daemon.pending_changes.insert(PathBuf::from("keep.txt"));
 
@@ -6853,6 +7077,14 @@ mod tests {
             // config with the guard on explicitly.
             delete_approval_remote: false,
             delete_approval_local: false,
+            // Warm start disabled in the shared fixtures: existing event tests drive the first
+            // reconcile as a steady-state incremental/bootstrap pass. Dedicated warm-start tests
+            // enable it explicitly. (`test_config` sets `events_driven: false`, so warm start would
+            // be ineligible here anyway; being explicit keeps the intent obvious.)
+            warm_start: WarmStartConfig {
+                enabled: false,
+                ..WarmStartConfig::default()
+            },
         }
     }
 
@@ -6902,6 +7134,10 @@ mod tests {
         full_walks: Arc<AtomicUsize>,
         directory_lists: Arc<AtomicUsize>,
         failed_uploads: BTreeSet<PathBuf>,
+        /// When `true`, the *next* upload fails and the flag clears itself — so a caller can make a
+        /// single pass fail and have the retry succeed (used to prove a failed first pass retries
+        /// as a first pass rather than idle-skipping the local scan).
+        fail_next_upload: Arc<AtomicBool>,
     }
 
     impl EventFakeClient {
@@ -6911,6 +7147,7 @@ mod tests {
                 full_walks: Arc::new(AtomicUsize::new(0)),
                 directory_lists: Arc::new(AtomicUsize::new(0)),
                 failed_uploads: BTreeSet::new(),
+                fail_next_upload: Arc::new(AtomicBool::new(false)),
             }
         }
     }
@@ -6963,7 +7200,9 @@ mod tests {
             _remote_root: &Path,
             relative_path: &Path,
         ) -> AppResult<()> {
-            if self.failed_uploads.contains(relative_path) {
+            if self.fail_next_upload.swap(false, Ordering::SeqCst)
+                || self.failed_uploads.contains(relative_path)
+            {
                 return Err(boxed_error(format!(
                     "upload failed for {}",
                     relative_path.display()
@@ -7074,6 +7313,9 @@ mod tests {
         // Simulate the degraded window: the snapshot passes that ran while degraded reset the
         // startup-snapshot floor to 0, so without a reseed the next pass would go incremental.
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
 
         // Keyring now readable: the factory yields a source.
         daemon.event_source_factory = Box::new(|| Some(Box::new(FakeEventSource::new("cursor-0"))));
@@ -7082,13 +7324,15 @@ mod tests {
             daemon.event_source.is_some(),
             "event-driven detection should resume once the session is readable"
         );
-        // Reacquisition must reseed the startup-snapshot floor so this pass full-scans (capturing a
-        // fresh cursor) instead of going incremental against the stale persisted cursor — keeping
-        // mid-life reacquisition byte-identical to a restart ("startup snapshots first" invariant).
+        // Mid-life reacquisition (not the first pass) must reseed the resync floor so this pass
+        // full-scans (capturing a fresh cursor) instead of streaming against the stale persisted
+        // cursor — steady-state incremental has no cursor-age gate to catch that staleness, so the
+        // reseed is what protects it. (On the *first* pass the reseed is skipped; `first_reconcile`
+        // applies its own cursor-age gate there instead.)
         assert_eq!(
             daemon.incremental_passes_since_full_scan,
             effective_full_scan_every(daemon.config.events_full_scan_every),
-            "reacquisition must force a snapshot floor like a fresh startup"
+            "mid-life reacquisition must force a snapshot floor"
         );
 
         // Idempotent: a working source is never rebuilt (the factory must not be called again).
@@ -7242,6 +7486,9 @@ mod tests {
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Simulate the mandatory startup bootstrap having already run, so this pass streams.
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
 
         daemon.reconcile_blocking().expect("incremental reconcile");
 
@@ -7300,6 +7547,9 @@ mod tests {
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Simulate the mandatory startup bootstrap having already run, so this pass streams.
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
         // Make the pass non-idle so it scans + plans the failing upload.
         daemon.pending_changes.insert(PathBuf::from("new.txt"));
 
@@ -7376,6 +7626,9 @@ mod tests {
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Simulate the mandatory startup bootstrap having already run, so this pass streams.
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
 
         daemon.reconcile_blocking().expect("incremental reconcile");
 
@@ -7430,6 +7683,9 @@ mod tests {
         // Simulate the mandatory startup bootstrap having already run, so this pass streams
         // (and then falls back to a snapshot for the reason under test, not the startup floor).
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -7472,6 +7728,9 @@ mod tests {
         // Simulate the mandatory startup bootstrap having already run, so this pass streams
         // (and then falls back to a snapshot for the reason under test, not the startup floor).
         daemon.incremental_passes_since_full_scan = 0;
+        // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
+        // bootstrap branch so this test drives the ongoing incremental path directly.
+        daemon.is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -7513,7 +7772,9 @@ mod tests {
         )
         .expect("seed keep record");
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        // Already at the resync threshold → this pass must snapshot, not go incremental.
+        // Steady state (not the first pass), already at the resync threshold → this pass must
+        // snapshot via the periodic-resync counter, not go incremental.
+        daemon.is_first_reconcile = false;
         daemon.incremental_passes_since_full_scan = 1;
 
         daemon
@@ -7554,8 +7815,9 @@ mod tests {
         )
         .expect("daemon");
 
-        // The startup floor still fires exactly once even with the resync disabled: seeded at the
-        // effective threshold (`u64::MAX`), the first pass snapshots and resets the counter to 0.
+        // The first pass after boot still full-scans exactly once even with the resync disabled:
+        // `first_reconcile` bootstraps (there is no stored cursor/baseline to warm-start from here),
+        // then hands off to the event-driven steady state, which stays incremental forever.
         daemon.reconcile_blocking().expect("bootstrap reconcile");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -7581,66 +7843,310 @@ mod tests {
         );
     }
 
-    #[test]
-    fn first_reconcile_after_startup_full_scans_even_with_a_persisted_cursor() {
-        // Restart regression. The daemon was down, a synced file was edited locally, then the
-        // daemon restarts with its event cursor still persisted. `notify` never replays the
-        // pre-existing file, so `pending_changes` is empty and the remote delta is empty — a naive
-        // incremental pass would take the idle branch and strand the edit until the K-floor
-        // (~events_full_scan_every poll intervals later). The startup floor must override the
-        // persisted cursor and force a snapshot ("get truth first") on the very first pass.
-        let directory = tempdir().expect("tempdir");
+    /// Seeds `local/keep.txt` edited to `edited`, a baseline record + remote entity at `old`, and a
+    /// warm-start-enabled event daemon. Returns the daemon, the `full_walks` counter, and the two
+    /// digests, so each first-pass test only has to set the cursor freshness / floor it exercises.
+    fn warm_start_fixture(
+        directory: &tempfile::TempDir,
+    ) -> (
+        Daemon<EventFakeClient>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        String,
+        String,
+    ) {
         let local_root = directory.path().join("local");
         fs::create_dir(&local_root).expect("local root");
-
         let old = sha1_bytes(b"keep");
         let edited = sha1_bytes(b"edited while the daemon was down");
-        // The on-disk file already differs from the baseline (it was edited while down).
         fs::write(
             local_root.join("keep.txt"),
             b"edited while the daemon was down",
         )
         .expect("local file");
-
         let remote_entities = HashMap::from([(
             PathBuf::from("keep.txt"),
             remote_file_entity("keep.txt", "vol~nk", old.as_str()),
         )]);
         let client = EventFakeClient::new(remote_entities);
         let full_walks = Arc::clone(&client.full_walks);
-        let mut daemon = Daemon::with_client_and_event_source(
-            event_config(directory.path(), &local_root),
+        let directory_lists = Arc::clone(&client.directory_lists);
+        let mut config = event_config(directory.path(), &local_root);
+        // The shared fixtures default warm start OFF; the warm-start tests opt in explicitly.
+        config.warm_start.enabled = true;
+        let daemon = Daemon::with_client_and_event_source(
+            config,
             client,
             Some(Box::new(FakeEventSource::new("cursor-0"))),
         )
         .expect("daemon");
-
-        // A persisted cursor + a synced baseline is everything an incremental pass needs. Crucially
-        // the counter is NOT reset here (unlike the steady-state tests): this is a fresh-process
-        // first pass, so the startup floor must still force a full scan.
         upsert_record(
             &daemon.connection,
             &base_record("keep.txt", Some("vol~nk"), old.as_str()),
         )
         .expect("seed keep record");
-        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        (daemon, full_walks, directory_lists, old, edited)
+    }
 
-        daemon.reconcile_blocking().expect("startup reconcile");
+    #[test]
+    fn first_reconcile_warm_starts_on_a_fresh_cursor() {
+        // The common restart: a recent, still-valid cursor. The first pass replays the remote from
+        // the cursor (no O(folders) walk, no targeted directory lists on an empty delta) while its
+        // forced local stat-walk still catches a file edited while the daemon was down.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks, directory_lists, _old, edited) =
+            warm_start_fixture(&directory);
+        store_event_cursor(
+            &daemon.connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+
+        daemon.reconcile_blocking().expect("warm-start reconcile");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
-            1,
-            "the first reconcile after startup must full-scan, not idle-skip on a persisted cursor"
+            0,
+            "a warm start must not walk the whole remote tree"
         );
-        // The edit was detected and uploaded: the baseline record now carries the new digest
-        // (commit-after-side-effects), proving the change was not stranded until the K-floor.
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            0,
+            "an empty delta resolves no directories either"
+        );
         let record = get_record(&daemon.connection, Path::new("keep.txt"))
             .expect("get record")
             .expect("keep.txt still recorded");
         assert_eq!(
             record.sha1_hash,
             Some(edited),
-            "the locally-edited file must sync on the first pass, not wait for the K-floor"
+            "the forced local scan still catches and uploads the offline edit"
+        );
+        assert_eq!(
+            daemon.warm_starts_since_full_walk, 1,
+            "a completed warm start advances the across-restart counter"
+        );
+        assert_eq!(
+            load_warm_start_count(&daemon.connection).expect("load count"),
+            1,
+            "and persists it so the floor survives a restart"
+        );
+    }
+
+    #[test]
+    fn first_reconcile_bootstraps_when_the_cursor_is_stale() {
+        // A boot after long downtime: the persisted cursor may be past the server's event-retention
+        // window. The cursor-age gate rejects it, so the first pass full-walks (safe) instead of
+        // warm-starting against a cursor whose delta the server might silently truncate. The
+        // offline edit is still caught — by the bootstrap's own full local scan.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks, _lists, _old, edited) = warm_start_fixture(&directory);
+        // updated_at = 1 (1970): far past the 7-day default age gate.
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed stale cursor");
+
+        daemon.reconcile_blocking().expect("startup reconcile");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "a stale cursor must force a full walk, not a warm start"
+        );
+        let record = get_record(&daemon.connection, Path::new("keep.txt"))
+            .expect("get record")
+            .expect("keep.txt still recorded");
+        assert_eq!(
+            record.sha1_hash,
+            Some(edited),
+            "the offline edit still syncs on the bootstrap's local scan"
+        );
+        assert_eq!(
+            daemon.warm_starts_since_full_walk, 0,
+            "no warm start happened, so the counter stays at zero"
+        );
+    }
+
+    #[test]
+    fn a_failed_first_pass_retries_as_a_first_pass_and_still_scans_locally() {
+        // Regression: `is_first_reconcile` clears only on success. If a warm start's upload fails,
+        // the next pass must retry as a *first* pass (forcing the local scan) rather than dropping
+        // into the steady-state idle fast-path — which, with an empty delta and an empty
+        // `pending_changes` on a fresh boot, would skip the scan and strand the offline edit.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks, _lists, old, edited) = warm_start_fixture(&directory);
+        let fail_next_upload = Arc::clone(&daemon.proton.fail_next_upload);
+        store_event_cursor(
+            &daemon.connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+
+        // Pass 1: the warm start scans, plans the upload, and the upload fails → the pass errors.
+        fail_next_upload.store(true, Ordering::SeqCst);
+        assert!(
+            daemon.reconcile_blocking().is_err(),
+            "the first pass must fail when its upload fails"
+        );
+        assert!(
+            daemon.is_first_reconcile,
+            "a failed first pass must stay a first pass"
+        );
+        let record = get_record(&daemon.connection, Path::new("keep.txt"))
+            .expect("get record")
+            .expect("keep.txt still recorded");
+        assert_eq!(
+            record.sha1_hash,
+            Some(old),
+            "the failed pass committed nothing; the record keeps the old digest"
+        );
+
+        // Pass 2: still a first pass → warm-starts again, forcing the local scan; the upload now
+        // succeeds and the edit lands. It never bootstrapped and never idle-skipped.
+        daemon.reconcile_blocking().expect("retry reconcile");
+        assert!(
+            !daemon.is_first_reconcile,
+            "a successful pass finally clears the first-pass flag"
+        );
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "neither pass walked the whole remote tree"
+        );
+        let record = get_record(&daemon.connection, Path::new("keep.txt"))
+            .expect("get record")
+            .expect("keep.txt still recorded");
+        assert_eq!(
+            record.sha1_hash,
+            Some(edited),
+            "the retry's forced local scan caught and uploaded the offline edit"
+        );
+    }
+
+    #[test]
+    fn the_warm_start_floor_forces_a_bootstrap_and_resets_the_counter() {
+        // Even with a fresh cursor, once `warm_starts_since_full_walk` reaches the configured floor
+        // the first pass full-walks (the self-healing cadence across reboots); the walk resets the
+        // persisted counter so the cadence restarts.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks, _lists, _old, _edited) = warm_start_fixture(&directory);
+        daemon.config.warm_start.full_walk_every = 3;
+        store_event_cursor(
+            &daemon.connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+        // The machine has already warm-started up to the floor across prior boots.
+        daemon.warm_starts_since_full_walk = 3;
+        store_warm_start_count(&daemon.connection, 3).expect("seed count");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "reaching the warm-start floor forces a full walk"
+        );
+        assert_eq!(
+            daemon.warm_starts_since_full_walk, 0,
+            "a full walk resets the warm-start floor"
+        );
+        assert_eq!(
+            load_warm_start_count(&daemon.connection).expect("load"),
+            0,
+            "and persists the reset"
+        );
+    }
+
+    #[test]
+    fn force_full_walk_config_bootstraps_the_first_pass_despite_a_fresh_cursor() {
+        // The `--full-walk` startup flag: a full walk this boot even when a warm start would be
+        // eligible.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks, _lists, _old, _edited) = warm_start_fixture(&directory);
+        daemon.config.warm_start.force_full_walk = true;
+        store_event_cursor(
+            &daemon.connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "--full-walk must force a bootstrap on the first pass"
+        );
+    }
+
+    #[test]
+    fn a_resync_request_forces_one_full_walk_then_clears() {
+        // `proton-sync resync` latches `force_full_walk`; the next pass consumes it with a full
+        // walk, and the pass after that returns to the incremental steady state. Uses an
+        // already-converged tree (local == remote == baseline) so every pass is a clean no-op and
+        // only the walk count varies.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("local file");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut config = event_config(directory.path(), &local_root);
+        config.warm_start.enabled = true;
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(
+            &daemon.connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+
+        // First pass warm-starts (no walk).
+        daemon.reconcile_blocking().expect("warm-start first pass");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "the first pass warm-started, no walk yet"
+        );
+
+        // A resync request → the next pass full-walks.
+        daemon.shared.force_full_walk.store(true, Ordering::SeqCst);
+        daemon.reconcile_blocking().expect("forced resync pass");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the resync request forces exactly one full walk"
+        );
+
+        // The latch was consumed: the following pass is incremental again.
+        daemon.reconcile_blocking().expect("back to steady state");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the force-full-walk latch is consumed after one pass"
         );
     }
 

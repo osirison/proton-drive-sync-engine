@@ -59,6 +59,27 @@ struct Cli {
     /// stays purely event-driven. Set a positive N to reinstate a self-healing safety resync.
     #[arg(long = "events-full-scan-every", value_name = "N")]
     events_full_scan_every: Option<u64>,
+    /// Warm-start on boot: the first pass after startup replays the remote from the saved event
+    /// cursor (O(changes)) instead of a full-tree walk, while still scanning the local tree. This
+    /// is the default; the flag is kept for explicitness and to override a config `warm_start =
+    /// false`.
+    #[arg(long = "warm-start")]
+    warm_start: bool,
+    /// Opt out of the warm start: always do a full-tree walk on the first pass after boot.
+    #[arg(long = "no-warm-start", conflicts_with = "warm_start")]
+    no_warm_start: bool,
+    /// Do a full-tree walk instead of a warm start every N warm starts (self-heal across reboots).
+    /// Default 30. 0 disables the periodic full walk (warm-start every boot).
+    #[arg(long = "warm-start-full-walk-every", value_name = "N")]
+    warm_start_full_walk_every: Option<u64>,
+    /// Warm-start only if the saved event cursor is at most N seconds old; otherwise full-walk.
+    /// Default 604800 (7 days). 0 disables the age check.
+    #[arg(long = "warm-start-max-cursor-age-secs", value_name = "SECS")]
+    warm_start_max_cursor_age_secs: Option<u64>,
+    /// Do a full-tree walk on this boot's first pass instead of a warm start (one-shot; e.g. to
+    /// self-heal suspected drift). While the daemon is running, `proton-sync resync` does the same.
+    #[arg(long = "full-walk")]
+    full_walk: bool,
     /// Disable the delete-approval guard globally (both directions). By default deletions are
     /// withheld pending approval; set this to let every delete apply automatically. For finer
     /// control, use `[delete_approval]` in the config file or per-directory `.proton-sync.toml`.
@@ -139,6 +160,11 @@ impl From<Cli> for DaemonConfigInput {
             events_driven: cli.events_driven,
             no_events_driven: cli.no_events_driven,
             events_full_scan_every: cli.events_full_scan_every,
+            warm_start: cli.warm_start,
+            no_warm_start: cli.no_warm_start,
+            warm_start_full_walk_every: cli.warm_start_full_walk_every,
+            warm_start_max_cursor_age_secs: cli.warm_start_max_cursor_age_secs,
+            force_full_walk: cli.full_walk,
             no_delete_approval: cli.no_delete_approval,
         }
     }
@@ -187,6 +213,46 @@ mod tests {
             result.is_err(),
             "passing both --events-driven and --no-events-driven must fail"
         );
+    }
+
+    #[test]
+    fn conflicting_warm_start_flags_are_rejected_by_cli_parser() {
+        let result = Cli::try_parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--warm-start",
+            "--no-warm-start",
+        ]);
+
+        assert!(
+            result.is_err(),
+            "passing both --warm-start and --no-warm-start must fail"
+        );
+    }
+
+    #[test]
+    fn warm_start_flags_parse_into_config_input() {
+        let cli = Cli::parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--full-walk",
+            "--warm-start-full-walk-every",
+            "15",
+            "--warm-start-max-cursor-age-secs",
+            "600",
+        ]);
+
+        let input = DaemonConfigInput::from(cli);
+
+        assert!(input.force_full_walk);
+        assert_eq!(input.warm_start_full_walk_every, Some(15));
+        assert_eq!(input.warm_start_max_cursor_age_secs, Some(600));
     }
 
     #[test]

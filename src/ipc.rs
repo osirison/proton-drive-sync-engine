@@ -16,6 +16,11 @@ pub enum ControlCommand {
     Pause,
     Resume,
     Syncnow,
+    /// Force the daemon's next reconcile to a full-tree walk instead of a warm start / incremental
+    /// pass (e.g. to self-heal suspected drift). Like `Syncnow`, it also schedules that pass. Wire
+    /// value `"resync"`; an older daemon that predates this variant rejects it as an unknown
+    /// command (the client is simply newer than the daemon).
+    Resync,
     /// Approve pending deletions so they apply on the next sync. The `argument` on the request
     /// selects the target: a relative path, or `"all"` for every currently-pending deletion.
     Approve,
