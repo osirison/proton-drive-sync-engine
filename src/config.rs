@@ -1,4 +1,7 @@
-use crate::daemon::DaemonConfig;
+use crate::daemon::{
+    DEFAULT_WARM_START_FULL_WALK_EVERY, DEFAULT_WARM_START_MAX_CURSOR_AGE_SECS, DaemonConfig,
+    WarmStartConfig,
+};
 use crate::index::ScanOptions;
 use crate::paths::{
     default_global_lock_path, default_lockfile_path, default_socket_path, default_state_db_path,
@@ -44,6 +47,19 @@ pub struct DaemonConfigInput {
     pub events_driven: bool,
     pub no_events_driven: bool,
     pub events_full_scan_every: Option<u64>,
+    /// Opt-in the first-pass warm start explicitly (default on; kept for symmetry / to override a
+    /// config-file `warm_start = false`).
+    pub warm_start: bool,
+    /// Disable the first-pass warm start (always full-walk on boot).
+    pub no_warm_start: bool,
+    /// Force a full walk instead of a warm start every N warm starts (across restarts). `0`
+    /// disables the periodic full walk.
+    pub warm_start_full_walk_every: Option<u64>,
+    /// Warm-start only if the persisted event cursor is at most this many seconds old (`0`
+    /// disables the age gate).
+    pub warm_start_max_cursor_age_secs: Option<u64>,
+    /// One-shot `--full-walk`: force this boot's first pass to a full-tree walk.
+    pub force_full_walk: bool,
     /// Coarse opt-out for the delete-approval guard: when set, disables approval for **both**
     /// directions globally (equivalent to `[delete_approval] remote = false, local = false`).
     /// Per-direction and per-subtree granularity lives in the per-directory `.proton-sync.toml`
@@ -84,6 +100,12 @@ pub struct FileConfig {
     events_driven: Option<bool>,
     #[serde(default, alias = "events-full-scan-every")]
     events_full_scan_every: Option<u64>,
+    #[serde(default, alias = "warm-start")]
+    warm_start: Option<bool>,
+    #[serde(default, alias = "warm-start-full-walk-every")]
+    warm_start_full_walk_every: Option<u64>,
+    #[serde(default, alias = "warm-start-max-cursor-age-secs")]
+    warm_start_max_cursor_age_secs: Option<u64>,
     /// Daemon-wide default for the directional delete-approval guard (the bottom of the
     /// per-directory inheritance chain). Each direction defaults to `true` (protected) when unset.
     #[serde(default, alias = "delete-approval")]
@@ -139,6 +161,31 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
     } else {
         let file = file_config.delete_approval.unwrap_or_default();
         (file.remote.unwrap_or(true), file.local.unwrap_or(true))
+    };
+    // Warm start (first-pass event-driven reconcile). Enabled by default; precedence mirrors
+    // `events_driven`: explicit opt-out flag > explicit opt-in flag > file value > default (on).
+    // `full_walk_every` and `max_cursor_age_secs` accept `0` as a meaningful "disabled" sentinel,
+    // so — like `events_full_scan_every` — they are not clamped up to 1.
+    let warm_start_enabled = if input.no_warm_start {
+        false
+    } else if input.warm_start {
+        true
+    } else {
+        file_config.warm_start.unwrap_or(true)
+    };
+    let warm_start = WarmStartConfig {
+        enabled: warm_start_enabled,
+        full_walk_every: input
+            .warm_start_full_walk_every
+            .or(file_config.warm_start_full_walk_every)
+            .unwrap_or(DEFAULT_WARM_START_FULL_WALK_EVERY),
+        max_cursor_age: Duration::from_secs(
+            input
+                .warm_start_max_cursor_age_secs
+                .or(file_config.warm_start_max_cursor_age_secs)
+                .unwrap_or(DEFAULT_WARM_START_MAX_CURSOR_AGE_SECS),
+        ),
+        force_full_walk: input.force_full_walk,
     };
     // Every local-filesystem path a user can hand us goes through `expand_tilde` first: the
     // daemon runs shell-less (systemd unit, GUI spawn), so nothing else ever expands `~` on its
@@ -231,6 +278,7 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             .unwrap_or(DEFAULT_EVENTS_FULL_SCAN_EVERY),
         delete_approval_remote,
         delete_approval_local,
+        warm_start,
     };
     validate_runtime_config(&config)?;
 
@@ -835,6 +883,112 @@ events_driven = true
 
         assert_eq!(config.events_full_scan_every, 0);
         assert_eq!(DEFAULT_EVENTS_FULL_SCAN_EVERY, 0);
+    }
+
+    #[test]
+    fn warm_start_defaults_on_with_the_documented_bounds() {
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert!(config.warm_start.enabled, "warm start is on by default");
+        assert_eq!(
+            config.warm_start.full_walk_every,
+            DEFAULT_WARM_START_FULL_WALK_EVERY
+        );
+        assert_eq!(
+            config.warm_start.max_cursor_age,
+            Duration::from_secs(DEFAULT_WARM_START_MAX_CURSOR_AGE_SECS)
+        );
+        assert!(!config.warm_start.force_full_walk);
+    }
+
+    #[test]
+    fn no_warm_start_flag_disables_it_over_a_config_file_opt_in() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+warm_start = true
+"#,
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            no_warm_start: true,
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert!(
+            !config.warm_start.enabled,
+            "--no-warm-start must override a config-file opt-in"
+        );
+    }
+
+    #[test]
+    fn warm_start_bounds_resolve_flag_over_file_over_default() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+warm_start_full_walk_every = 10
+warm_start_max_cursor_age_secs = 3600
+"#,
+        )
+        .expect("write config");
+
+        // File values beat the defaults.
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path.clone()),
+            ..DaemonConfigInput::default()
+        })
+        .expect("file config");
+        assert_eq!(config.warm_start.full_walk_every, 10);
+        assert_eq!(config.warm_start.max_cursor_age, Duration::from_secs(3600));
+
+        // Explicit flags beat the file.
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            warm_start_full_walk_every: Some(50),
+            warm_start_max_cursor_age_secs: Some(120),
+            force_full_walk: true,
+            ..DaemonConfigInput::default()
+        })
+        .expect("flag config");
+        assert_eq!(config.warm_start.full_walk_every, 50);
+        assert_eq!(config.warm_start.max_cursor_age, Duration::from_secs(120));
+        assert!(
+            config.warm_start.force_full_walk,
+            "--full-walk sets the one-shot force flag"
+        );
+    }
+
+    #[test]
+    fn zero_warm_start_bounds_are_preserved_as_disabled_sentinels() {
+        // Both bounds treat 0 as "disabled" (never periodic full walk / no age gate), so — like
+        // events_full_scan_every — a configured 0 must be preserved rather than clamped up to 1.
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            warm_start_full_walk_every: Some(0),
+            warm_start_max_cursor_age_secs: Some(0),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+
+        assert_eq!(config.warm_start.full_walk_every, 0);
+        assert_eq!(config.warm_start.max_cursor_age, Duration::ZERO);
     }
 
     #[test]

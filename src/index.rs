@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS delete_approvals (
     approved_at INTEGER NOT NULL,
     PRIMARY KEY (path, direction)
 );
+CREATE TABLE IF NOT EXISTS warm_start_state (
+    id INTEGER PRIMARY KEY CHECK (id = 0),
+    warm_starts_since_full_walk INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 /// Speeds up [`path_for_proton_id`] (turning a volume event's node id into its local path).
@@ -678,6 +682,41 @@ pub fn clear_event_cursor(connection: &Connection, scope_id: &str) -> AppResult<
     connection.execute(
         "DELETE FROM remote_event_cursor WHERE scope_id = ?1",
         params![scope_id],
+    )?;
+    Ok(())
+}
+
+/// Loads the persisted "warm starts since the last full walk" counter, or `0` if none is recorded.
+///
+/// Distinct from the daemon's in-memory `incremental_passes_since_full_scan`: that one counts
+/// event-driven passes *within a single run* to drive the opt-in periodic in-run resync; this one
+/// persists **across process restarts** so the warm-start path (event-driven reconcile on the first
+/// pass after boot) can force a self-healing full walk every N warm starts. A single-row table
+/// (`id = 0`) keyed to this database — one database per sync root, one daemon per root.
+pub fn load_warm_start_count(connection: &Connection) -> AppResult<u64> {
+    let count: Option<i64> = connection
+        .query_row(
+            "SELECT warm_starts_since_full_walk FROM warm_start_state WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(count.unwrap_or(0).max(0) as u64)
+}
+
+/// Records the "warm starts since the last full walk" counter (see [`load_warm_start_count`]).
+pub fn store_warm_start_count(connection: &Connection, count: u64) -> AppResult<()> {
+    // Saturate rather than `as`-cast into the signed column: a warm-start count is a small integer
+    // in practice, but a defensive saturate ensures a pathologically large value can never wrap to
+    // a negative (which `load_warm_start_count` would then clamp back to 0).
+    let stored = i64::try_from(count).unwrap_or(i64::MAX);
+    connection.execute(
+        r#"
+        INSERT INTO warm_start_state (id, warm_starts_since_full_walk)
+        VALUES (0, ?1)
+        ON CONFLICT(id) DO UPDATE SET warm_starts_since_full_walk = excluded.warm_starts_since_full_walk
+        "#,
+        params![stored],
     )?;
     Ok(())
 }
@@ -2310,5 +2349,61 @@ mod tests {
         assert_eq!(record.sha1_hash.as_deref(), Some("hash"));
         assert_eq!(record.proton_id.as_deref(), Some("pid"));
         assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn warm_start_state_is_added_to_a_preexisting_database_and_defaults_to_zero() {
+        // Upgrade path: an existing user's index.db predates the `warm_start_state` table.
+        // `open_database` runs `execute_batch(SCHEMA)` unconditionally (no version gate), and the
+        // table is `CREATE TABLE IF NOT EXISTS`, so opening an old DB must add it cleanly, leave
+        // existing rows intact, and report a zero warm-start count.
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            // A pre-warm-start database: the current tables minus `warm_start_state`, with a row.
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE file_index (
+                        file_path TEXT PRIMARY KEY,
+                        entity_kind TEXT NOT NULL DEFAULT 'file',
+                        file_size INTEGER NOT NULL,
+                        mtime INTEGER NOT NULL,
+                        sha1_hash TEXT,
+                        proton_id TEXT,
+                        sync_status TEXT NOT NULL
+                    );
+                    "#,
+                )
+                .expect("preexisting schema");
+            connection
+                .execute(
+                    "INSERT INTO file_index \
+                     (file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status) \
+                     VALUES (?1, 'file', 5, 9, 'hash', 'pid', 'synced')",
+                    params![path_key(Path::new("notes.txt"))],
+                )
+                .expect("preexisting row");
+        }
+
+        // Reopen through the real entry point, which must add `warm_start_state`.
+        let connection = open_database(&db_path).expect("open database upgrades cleanly");
+
+        assert_eq!(
+            load_warm_start_count(&connection).expect("load count"),
+            0,
+            "an upgraded database reports a zero warm-start count"
+        );
+        assert!(
+            get_record(&connection, Path::new("notes.txt"))
+                .expect("get_record")
+                .is_some(),
+            "the pre-existing file_index row must survive the upgrade"
+        );
+
+        // And the new table is fully usable after the upgrade.
+        store_warm_start_count(&connection, 7).expect("store count");
+        assert_eq!(load_warm_start_count(&connection).expect("reload"), 7);
     }
 }
