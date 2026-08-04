@@ -1092,7 +1092,16 @@ impl<C: ProtonClient> Daemon<C> {
     /// this is a heuristic that only affects *when* the next self-healing full walk fires, so a
     /// write failure logs and is swallowed rather than failing an otherwise-successful sync.
     fn record_successful_warm_start(&mut self) {
-        self.warm_starts_since_full_walk = self.warm_starts_since_full_walk.saturating_add(1);
+        // Cap at the floor: the counter is only ever compared against
+        // `effective_full_scan_every(full_walk_every)`, and once it reaches that a bootstrap resets
+        // it — so there is no reason to climb past it. This keeps the value small (the in-memory and
+        // persisted counts always agree, and never approach the signed-column range) except in the
+        // "floor disabled" case, where the cap is `u64::MAX` and `store_warm_start_count` saturates.
+        let floor = effective_full_scan_every(self.config.warm_start.full_walk_every);
+        self.warm_starts_since_full_walk = self
+            .warm_starts_since_full_walk
+            .saturating_add(1)
+            .min(floor);
         if let Err(error) =
             store_warm_start_count(&self.connection, self.warm_starts_since_full_walk)
         {

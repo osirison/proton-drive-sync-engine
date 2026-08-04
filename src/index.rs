@@ -706,13 +706,17 @@ pub fn load_warm_start_count(connection: &Connection) -> AppResult<u64> {
 
 /// Records the "warm starts since the last full walk" counter (see [`load_warm_start_count`]).
 pub fn store_warm_start_count(connection: &Connection, count: u64) -> AppResult<()> {
+    // Saturate rather than `as`-cast into the signed column: a warm-start count is a small integer
+    // in practice, but a defensive saturate ensures a pathologically large value can never wrap to
+    // a negative (which `load_warm_start_count` would then clamp back to 0).
+    let stored = i64::try_from(count).unwrap_or(i64::MAX);
     connection.execute(
         r#"
         INSERT INTO warm_start_state (id, warm_starts_since_full_walk)
         VALUES (0, ?1)
         ON CONFLICT(id) DO UPDATE SET warm_starts_since_full_walk = excluded.warm_starts_since_full_walk
         "#,
-        params![count as i64],
+        params![stored],
     )?;
     Ok(())
 }
