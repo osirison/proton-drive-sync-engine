@@ -96,14 +96,15 @@ for (const name of lightExplicit.keys()) {
 // value silently, and every such rgba() would then keep the dark crimson in light — on the theme
 // where seven of eleven screens have no drawn frame to catch it.
 const HAS_COLOUR = /#[0-9a-f]{3,8}\b|\brgba?\(|^\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*$/i;
+// Both loops see custom properties only — declarationsAt matches `--name`, so `color-scheme` (the
+// one non-token declaration in every block) never reaches them.
 for (const [name, value] of dark) {
-  if (name === "color-scheme") continue;
   if (HAS_COLOUR.test(value) && !lightExplicit.has(name)) {
     errors.push(`tokens.css: ${name} carries a colour in dark ("${value}") but has no light value`);
   }
 }
 for (const name of lightExplicit.keys()) {
-  if (name !== "color-scheme" && !dark.has(name))
+  if (!dark.has(name))
     errors.push(`tokens.css: ${name} is declared for light only — every token needs a dark value`);
 }
 
