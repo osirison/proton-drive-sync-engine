@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
+body{margin:0;background:#17181c;-webkit-font-smoothing:antialiased}
+a{color:#06b6d4;text-decoration:none}a:hover{color:#3b82f6}
+@keyframes hexspin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes ps-indeterminate{0%{transform:translateX(-120%)}100%{transform:translateX(360%)}}
+</style></helmet>
+
+<div style="padding:56px;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#e6edf7">
+<div style="max-width:2224px">
+<div style="font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:#8a9bb8">Recreation — current build</div>
+<h1 style="margin:10px 0 8px;font-size:34px;font-weight:600;letter-spacing:-0.02em">Proton Drive Sync · desktop app as it exists today</h1>
+<p style="margin:0;max-width:820px;font-size:15px;line-height:1.6;color:#8a9bb8;text-wrap:pretty">Rebuilt from <span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:13px;color:#c7d4ea">gui/src</span> — tokens.css, app.css, components.css and each screen module — at the shipped window size of 1040×764, dark theme. Data mirrors the mock payloads in <span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:13px;color:#c7d4ea">api.js</span>. Typeface is IBM Plex, as tokens.css specifies (the app currently falls back to system fonts because the woff2 files were never bundled).</p>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:56px;margin-top:52px;align-items:flex-start">
+
+<!-- ============ 1. OVERVIEW / RUNNING ============ -->
+<div>
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;padding:3px 8px;background:#22304c;border-radius:5px;color:#c7d4ea">S1</span><span style="font-size:14px;font-weight:600">Overview — running</span><span style="font-size:12px;color:#64748b">screens/overview.js</span></div>
+<div data-screen-label="Overview" style="width:1040px;height:764px;display:grid;grid-template-rows:42px 1fr 30px;grid-template-columns:minmax(0,1fr);overflow:hidden;background:#0b1220;color:#e6edf7;font-size:13px;border-radius:6px;box-shadow:0 24px 60px rgba(0,0,0,.5)">
+
+<header style="display:flex;align-items:center;gap:10px;padding:0 12px;background:#101a2c;border-bottom:1px solid #22304c">
+<img src="icon.svg" alt="" style="width:18px;height:18px">
+<span style="font-size:12.5px;font-weight:600">Proton Drive Sync</span>
+<span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0">~/ProtonDrive ⇄ /Drive/RemoteFolder</span>
+<span style="flex:1"></span>
+<button style="height:26px;padding:2px 10px;display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px solid #2a3550;border-radius:999px;color:#c7d4ea;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;cursor:pointer">◐ Theme</button>
+<span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;padding:3px 9px;border:1px solid #22304c;border-radius:999px"><span style="width:7px;height:7px;border-radius:50%;background:#06b6d4;flex:none"></span>running</span>
+</header>
+
+<div style="display:grid;grid-template-columns:214px 1fr;min-height:0">
+<nav style="background:#0e1728;border-right:1px solid #22304c;padding:14px 10px;display:flex;flex-direction:column;gap:6px;min-height:0;overflow:hidden">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;padding:4px 8px">Folder pair</div>
+<div style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:10px;margin-bottom:6px">
+<div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#e55b2b,#f59e0b);flex:none"></div>
+<div style="min-width:0"><div style="font-size:12.5px;font-weight:600">ProtonDrive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/ProtonDrive ⇄ /Drive/RemoteFolder</div></div>
+</div>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:#1a2740;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-weight:600;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#f59e0b">◇</span><span>Overview</span><span style="margin-left:auto"></span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">≡</span><span>Activity</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8">2</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚠</span><span>Conflicts</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">1</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⊘</span><span>Deletions</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">2</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">▤</span><span>Plan preview</span><span style="margin-left:auto"></span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◷</span><span>History</span><span style="margin-left:auto"></span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚙</span><span>Settings</span><span style="margin-left:auto"></span></button>
+<div style="margin-top:auto;padding:10px 8px 2px;border-top:1px solid #1c2942;display:grid;gap:3px"></div>
+</nav>
+
+<main style="display:flex;flex-direction:column;min-height:0;min-width:0">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;background:rgba(229,91,43,.1);border-bottom:1px solid rgba(229,91,43,.32);color:#f3d9c4;font-size:12px"><span style="font-weight:700">▲</span><span>Deleting on Proton Drive deletes the local file permanently — not to trash — and folders recursively.</span></div>
+<div style="flex:1;min-height:0;overflow:hidden;padding:16px">
+
+<div style="display:flex;gap:16px;align-items:stretch">
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px;display:flex;gap:20px;align-items:center;flex:1;min-width:0">
+<div style="position:relative;width:96px;height:96px;flex:none">
+<svg viewBox="0 0 96 96" style="width:100%;height:100%;animation:hexspin 3s linear infinite;transform-origin:50% 50%"><polygon points="48,7.5 82.5,27 82.5,69 48,88.5 13.5,69 13.5,27" style="fill:none;stroke:#22304c;stroke-width:6"></polygon><path d="M 8 48 A 40 40 0 0 1 88 48" style="fill:none;stroke:#f59e0b;stroke-width:6;stroke-linecap:round"></path><path d="M 88 48 A 40 40 0 0 1 8 48" style="fill:none;stroke:#06b6d4;stroke-width:6;stroke-linecap:round"></path></svg>
+<div style="position:absolute;inset:0;display:grid;place-items:center;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:22px;font-weight:600;color:#e6edf7">3</div>
+</div>
+<div style="flex:1;min-width:0">
+<div style="font-size:17px;font-weight:600">Syncing…</div>
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;margin-top:4px">3 change(s) pending</div>
+<div style="display:flex;flex-direction:column;gap:7px;margin-top:11px">
+<div style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:14px;flex:none;text-align:center;color:#64748b">↑</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Uploading 2 files</span><div style="height:4px;width:120px;background:#22304c;border-radius:999px;overflow:hidden;position:relative"><span style="position:absolute;inset:0 auto 0 0;width:38%;background:linear-gradient(135deg,#e55b2b,#f59e0b);animation:ps-indeterminate 1.3s ease-in-out infinite"></span></div></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:14px;flex:none;text-align:center;color:#64748b">↓</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Downloading 1 file</span><div style="height:4px;width:120px;background:#22304c;border-radius:999px;overflow:hidden;position:relative"><span style="position:absolute;inset:0 auto 0 0;width:38%;background:linear-gradient(135deg,#06b6d4,#3b82f6);animation:ps-indeterminate 1.3s ease-in-out infinite;animation-delay:-.4s"></span></div></div>
+</div>
+</div>
+<div style="margin-left:auto;border-left:1px solid #1c2942;padding-left:20px;width:140px;display:grid;gap:8px;align-content:start">
+<div><button style="width:100%;padding:9px 14px;border-radius:7px;border:none;background:linear-gradient(135deg,#e55b2b,#f59e0b);color:#0b1220;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer">Sync now</button><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#64748b;margin-top:4px">syncnow</div></div>
+<div><button style="width:100%;padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:12.5px;font-family:inherit;cursor:pointer">Pause</button><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#64748b;margin-top:4px">pause</div></div>
+</div>
+</div>
+<div style="width:210px;flex:none;display:flex;flex-direction:column;border:1px solid rgba(229,91,43,.32);border-radius:12px;padding:18px;background:#111b2e">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#f3d9c4">Needs you</div>
+<div style="font-size:26px;font-weight:700">1</div>
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;margin-top:4px">1 unresolved conflict(s)</div>
+<button style="margin-top:auto;width:100%;padding:9px 14px;border-radius:7px;border:none;background:linear-gradient(135deg,#e55b2b,#f59e0b);color:#0b1220;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer">Resolve now</button>
+</div>
+</div>
+
+<div style="margin-top:16px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700">3</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Pending</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">pending_changes</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700">1</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Conflicts</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">conflicts</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700">0</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Destructive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">destructive_actions</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700">1</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Skipped</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">skipped_unsupported</div></div>
+</div>
+
+<div style="margin-top:16px;background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px">
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+<button style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;padding:3px 10px;border-radius:999px;border:1px solid #2a3550;background:#1a2740;color:#c7d4ea;cursor:pointer">all 2</button>
+<button style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;padding:3px 10px;border-radius:999px;border:1px solid #22304c;background:transparent;color:#c7d4ea;cursor:pointer">uploads 0</button>
+<button style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;padding:3px 10px;border-radius:999px;border:1px solid #22304c;background:transparent;color:#c7d4ea;cursor:pointer">downloads 0</button>
+<button style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;padding:3px 10px;border-radius:999px;border:1px solid #22304c;background:transparent;color:#c7d4ea;cursor:pointer">moves 0</button>
+<button style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;padding:3px 10px;border-radius:999px;border:1px solid #22304c;background:transparent;color:#c7d4ea;cursor:pointer">conflicts 0</button>
+<button style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;padding:3px 10px;border-radius:999px;border:1px solid #22304c;background:transparent;color:#c7d4ea;cursor:pointer">skipped 0</button>
+<button style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;padding:3px 10px;border-radius:999px;border:1px solid #22304c;background:transparent;color:#c7d4ea;cursor:pointer">errors 0</button>
+<span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#64748b">from status_history</span>
+</div>
+<div style="display:flex;flex-direction:column">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid #1c2942;font-size:12px"><span style="width:96px;flex:none;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:600;color:#8a9bb8">sync</span><span style="flex:1;font-family:'IBM Plex Mono',ui-monospace,monospace;color:#c7d4ea;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">sync completed</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b">2m ago</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid #1c2942;font-size:12px"><span style="width:96px;flex:none;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:600;color:#8a9bb8">sync</span><span style="flex:1;font-family:'IBM Plex Mono',ui-monospace,monospace;color:#c7d4ea;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">uploaded 2 files</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b">15m ago</span></div>
+</div>
+</div>
+
+</div>
+</main>
+</div>
+
+<footer style="display:flex;align-items:center;gap:16px;padding:0 14px;background:#101a2c;border-top:1px solid #22304c;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#64748b"><span>daemon: running</span><span>cli: proton-drive</span><span>socket: connected</span><span style="margin-left:auto;color:#f3d9c4">preview (mock data)</span></footer>
+</div>
+</div>
+
+<!-- ============ 2. CONFLICTS ============ -->
+<div>
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;padding:3px 8px;background:#22304c;border-radius:5px;color:#c7d4ea">S3</span><span style="font-size:14px;font-weight:600">Conflicts</span><span style="font-size:12px;color:#64748b">screens/conflicts.js</span></div>
+<div data-screen-label="Conflicts" style="width:1040px;height:764px;display:grid;grid-template-rows:42px 1fr 30px;overflow:hidden;background:#0b1220;color:#e6edf7;font-size:13px;border-radius:6px;box-shadow:0 24px 60px rgba(0,0,0,.5)">
+<header style="display:flex;align-items:center;gap:10px;padding:0 12px;background:#101a2c;border-bottom:1px solid #22304c"><img src="icon.svg" alt="" style="width:18px;height:18px"><span style="font-size:12.5px;font-weight:600">Proton Drive Sync</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">~/ProtonDrive ⇄ /Drive/RemoteFolder</span><span style="flex:1"></span><button style="height:26px;padding:2px 10px;background:transparent;border:1px solid #2a3550;border-radius:999px;color:#c7d4ea;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;cursor:pointer">◐ Theme</button><span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;padding:3px 9px;border:1px solid #22304c;border-radius:999px"><span style="width:7px;height:7px;border-radius:50%;background:#06b6d4"></span>running</span></header>
+<div style="display:grid;grid-template-columns:214px 1fr;min-height:0">
+<nav style="background:#0e1728;border-right:1px solid #22304c;padding:14px 10px;display:flex;flex-direction:column;gap:6px;min-height:0;overflow:hidden">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;padding:4px 8px">Folder pair</div>
+<div style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:10px;margin-bottom:6px"><div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#e55b2b,#f59e0b);flex:none"></div><div style="min-width:0"><div style="font-size:12.5px;font-weight:600">ProtonDrive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/ProtonDrive ⇄ /Drive/RemoteFolder</div></div></div>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◇</span><span>Overview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">≡</span><span>Activity</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8">2</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:#1a2740;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-weight:600;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#f59e0b">⚠</span><span>Conflicts</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">1</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⊘</span><span>Deletions</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">2</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">▤</span><span>Plan preview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◷</span><span>History</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚙</span><span>Settings</span></button>
+<div style="margin-top:auto;padding:10px 8px 2px;border-top:1px solid #1c2942"></div>
+</nav>
+<main style="display:flex;flex-direction:column;min-height:0;min-width:0">
+<div style="flex:1;min-height:0;overflow:hidden;padding:16px">
+<div style="display:flex;gap:16px;height:100%;min-height:0">
+<div style="width:236px;flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid #22304c;padding-right:10px">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;padding:4px 8px">Conflicts (1)</div>
+<div style="display:flex;flex-direction:column;gap:4px;min-height:0;overflow-y:auto">
+<button style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:8px 11px;border:none;background:#1a2740;border-radius:7px;color:#c7d4ea;font-family:inherit;text-align:left;cursor:pointer"><span style="font-size:12.5px;font-weight:600">todo.txt</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8">notes/todo.txt</span></button>
+</div>
+</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0">
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-weight:600;flex:1;min-width:0;word-break:break-all">notes/todo.txt</div>
+<button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:11px;font-family:inherit;cursor:pointer">Keep mine</button>
+<button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:11px;font-family:inherit;cursor:pointer">Use Proton's</button>
+<button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:11px;font-family:inherit;cursor:pointer">Keep both</button>
+<button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:11px;font-family:inherit;cursor:pointer">Decide later</button>
+</div>
+<div style="min-height:0;flex:1;overflow-y:auto">
+<div style="display:grid;grid-template-columns:1fr 1fr;border:1px solid #22304c;border-radius:10px 10px 0 0;overflow:hidden">
+<div style="padding:6px 10px;font-size:11px;font-weight:600;background:rgba(229,91,43,.13);color:#f59e0b">Your version · 41 bytes · 5m ago</div>
+<div style="padding:6px 10px;font-size:11px;font-weight:600;background:rgba(6,182,212,.13);color:#06b6d4">Proton's version · 44 bytes · 2m ago</div>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;border:1px solid #22304c;border-top:none;border-radius:0 0 10px 10px;overflow:hidden">
+<div>
+<div style="display:flex;gap:8px;padding:0 8px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#64748b;font-size:11px">1</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1"># Todo</span></div>
+<div style="display:flex;gap:8px;padding:0 8px;background:rgba(229,91,43,.13)"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#f59e0b;font-size:11px">2</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">- buy milk</span></div>
+<div style="display:flex;gap:8px;padding:0 8px;background:rgba(229,91,43,.13)"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#f59e0b;font-size:11px"></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">&nbsp;</span></div>
+<div style="display:flex;gap:8px;padding:0 8px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#64748b;font-size:11px">3</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">- call Alice</span></div>
+<div style="display:flex;gap:8px;padding:0 8px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#64748b;font-size:11px">4</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">- ship v1</span></div>
+<div style="display:flex;gap:8px;padding:0 8px;background:rgba(229,91,43,.13)"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#f59e0b;font-size:11px"></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">&nbsp;</span></div>
+</div>
+<div style="border-left:1px solid #22304c">
+<div style="display:flex;gap:8px;padding:0 8px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#64748b;font-size:11px">1</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1"># Todo</span></div>
+<div style="display:flex;gap:8px;padding:0 8px;background:rgba(6,182,212,.13)"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#06b6d4;font-size:11px"></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">&nbsp;</span></div>
+<div style="display:flex;gap:8px;padding:0 8px;background:rgba(6,182,212,.13)"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#06b6d4;font-size:11px">2</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">- buy oat milk</span></div>
+<div style="display:flex;gap:8px;padding:0 8px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#64748b;font-size:11px">3</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">- call Alice</span></div>
+<div style="display:flex;gap:8px;padding:0 8px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#64748b;font-size:11px">4</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">- ship v1</span></div>
+<div style="display:flex;gap:8px;padding:0 8px;background:rgba(6,182,212,.13)"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:34px;flex:none;text-align:right;color:#06b6d4;font-size:11px">5</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;flex:1">- relax</span></div>
+</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin-top:10px;padding-top:10px;border-top:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">No changes staged.</span><button style="margin-left:auto;padding:9px 14px;border-radius:7px;border:none;background:linear-gradient(135deg,#e55b2b,#f59e0b);color:#0b1220;font-size:12.5px;font-weight:600;font-family:inherit;opacity:.5;cursor:default">Apply</button></div>
+</div>
+</div>
+</div>
+</main>
+</div>
+<footer style="display:flex;align-items:center;gap:16px;padding:0 14px;background:#101a2c;border-top:1px solid #22304c;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#64748b"><span>daemon: running</span><span>cli: proton-drive</span><span>socket: connected</span><span style="margin-left:auto;color:#f3d9c4">preview (mock data)</span></footer>
+</div>
+</div>
+
+<!-- ============ 3. PLAN PREVIEW ============ -->
+<div>
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;padding:3px 8px;background:#22304c;border-radius:5px;color:#c7d4ea">S4</span><span style="font-size:14px;font-weight:600">Plan preview — delete gate armed</span><span style="font-size:12px;color:#64748b">screens/plan.js</span></div>
+<div data-screen-label="Plan preview" style="width:1040px;height:764px;display:grid;grid-template-rows:42px 1fr 30px;overflow:hidden;background:#0b1220;color:#e6edf7;font-size:13px;border-radius:6px;box-shadow:0 24px 60px rgba(0,0,0,.5)">
+<header style="display:flex;align-items:center;gap:10px;padding:0 12px;background:#101a2c;border-bottom:1px solid #22304c"><img src="icon.svg" alt="" style="width:18px;height:18px"><span style="font-size:12.5px;font-weight:600">Proton Drive Sync</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">~/ProtonDrive ⇄ /Drive/RemoteFolder</span><span style="flex:1"></span><button style="height:26px;padding:2px 10px;background:transparent;border:1px solid #2a3550;border-radius:999px;color:#c7d4ea;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;cursor:pointer">◐ Theme</button><span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;padding:3px 9px;border:1px solid #22304c;border-radius:999px"><span style="width:7px;height:7px;border-radius:50%;background:#06b6d4"></span>idle</span></header>
+<div style="display:grid;grid-template-columns:214px 1fr;min-height:0">
+<nav style="background:#0e1728;border-right:1px solid #22304c;padding:14px 10px;display:flex;flex-direction:column;gap:6px;min-height:0;overflow:hidden">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;padding:4px 8px">Folder pair</div>
+<div style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:10px;margin-bottom:6px"><div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#e55b2b,#f59e0b);flex:none"></div><div style="min-width:0"><div style="font-size:12.5px;font-weight:600">ProtonDrive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/ProtonDrive ⇄ /Drive/RemoteFolder</div></div></div>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◇</span><span>Overview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">≡</span><span>Activity</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8">5</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚠</span><span>Conflicts</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">1</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⊘</span><span>Deletions</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">2</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:#1a2740;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-weight:600;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#f59e0b">▤</span><span>Plan preview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◷</span><span>History</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚙</span><span>Settings</span></button>
+<div style="margin-top:auto;padding:10px 8px 2px;border-top:1px solid #1c2942"></div>
+</nav>
+<main style="display:flex;flex-direction:column;min-height:0;min-width:0">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;background:rgba(229,91,43,.1);border-bottom:1px solid rgba(229,91,43,.32);color:#f3d9c4;font-size:12px"><span style="font-weight:700">▲</span><span>Deleting on Proton Drive deletes the local file permanently — not to trash — and folders recursively.</span></div>
+<div style="flex:1;min-height:0;overflow:hidden;padding:16px">
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:600">Sync plan preview</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;margin-top:4px">proton-syncd --dry-run · shells the daemon, index read-only · nothing changes until you apply</div></div>
+<button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:12.5px;font-family:inherit;cursor:pointer">Re-run preview</button>
+</div>
+<div style="margin-top:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;border-radius:12px;background:rgba(239,68,68,.09);border:1px solid #ef4444">
+<span style="font-size:15px;color:#fca5a5">▲</span>
+<div style="flex:1;min-width:0;font-size:12.5px;line-height:1.5;color:#fca5a5"><strong>1 permanent deletion(s) in this plan. </strong>Applying will permanently remove: archive/old-notes.md.</div>
+<input type="text" value="" placeholder="type DELETE" style="width:130px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;padding:8px 10px;border-radius:7px;background:#0b1220;color:#e6edf7;outline:none;border:1px solid #22304c">
+</div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:16px">
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#8a9bb8">9</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Total</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">total</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#f59e0b">3</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Uploads</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">uploads</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#06b6d4">2</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Downloads</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">downloads</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#f59e0b">1</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Remote dirs created</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">remote_directories_created</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#06b6d4">0</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Local dirs created</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">local_directories_created</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#8a9bb8">1</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Local moves</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">local_moves</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#8a9bb8">0</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Remote moves</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">remote_moves</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#8a9bb8">0</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Auto-links</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">auto_links</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#f59e0b">1</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Conflicts</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">conflicts</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#f59e0b">0</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Type conflicts</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">type_conflicts</div></div>
+</div>
+<div style="margin-top:16px;background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:0;overflow:hidden">
+<div style="display:flex;gap:14px;padding:8px 12px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#5b6d8c;border-bottom:1px solid #22304c"><span style="width:112px;flex:none">action</span><span style="flex:1">path</span><span style="width:72px;flex:none">entity</span><span style="width:150px;flex:none">remote_id</span></div>
+<div style="max-height:44vh;overflow-y:auto">
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942;background:rgba(239,68,68,.09)"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#fca5a5">remote_delete</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">archive/old-notes.md</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">9f3c1ab2-7de4-4c…</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#f59e0b">upload</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">docs/spec.md</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b">—</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#f59e0b">upload</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">photos/trip/img_0042.jpg</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b">—</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#f59e0b">upload</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">notes/scratch.md</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b">—</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#06b6d4">download</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">reports/q3-summary.pdf</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">7a12b0c4-33fe-41…</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#06b6d4">download</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">design/logo.svg</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2be91f77-08a1-49…</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#f59e0b">create_remote_directory</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">photos/trip</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">directory</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b">—</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#8a9bb8">move_local</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">notes/old.md<span style="color:#64748b;margin-left:6px">→ notes/archive/old.md</span></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">55dd21a9-6b7c-40…</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:112px;flex:none;font-weight:600;color:#f59e0b">conflict</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">notes/todo.txt<span style="color:#64748b;margin-left:6px">→ notes/todo.proton-cloud.txt</span></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:150px;flex:none;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">41ac6e02-b5d9-4a…</span></div>
+</div>
+</div>
+<div style="margin-top:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">Type DELETE above to enable Apply.</span><button style="margin-left:auto;padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:12.5px;font-family:inherit;opacity:.5;cursor:default">Apply</button></div>
+</div>
+</main>
+</div>
+<footer style="display:flex;align-items:center;gap:16px;padding:0 14px;background:#101a2c;border-top:1px solid #22304c;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#64748b"><span>daemon: idle</span><span>cli: proton-drive</span><span>socket: connected</span><span style="margin-left:auto;color:#f3d9c4">preview (mock data)</span></footer>
+</div>
+</div>
+
+<!-- ============ 4. DELETIONS ============ -->
+<div>
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;padding:3px 8px;background:#22304c;border-radius:5px;color:#c7d4ea">S9</span><span style="font-size:14px;font-weight:600">Deletions — approval queue</span><span style="font-size:12px;color:#64748b">screens/deletions.js</span></div>
+<div data-screen-label="Deletions" style="width:1040px;height:764px;display:grid;grid-template-rows:42px 1fr 30px;overflow:hidden;background:#0b1220;color:#e6edf7;font-size:13px;border-radius:6px;box-shadow:0 24px 60px rgba(0,0,0,.5)">
+<header style="display:flex;align-items:center;gap:10px;padding:0 12px;background:#101a2c;border-bottom:1px solid #22304c"><img src="icon.svg" alt="" style="width:18px;height:18px"><span style="font-size:12.5px;font-weight:600">Proton Drive Sync</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">~/ProtonDrive ⇄ /Drive/RemoteFolder</span><span style="flex:1"></span><button style="height:26px;padding:2px 10px;background:transparent;border:1px solid #2a3550;border-radius:999px;color:#c7d4ea;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;cursor:pointer">◐ Theme</button><span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;padding:3px 9px;border:1px solid #22304c;border-radius:999px"><span style="width:7px;height:7px;border-radius:50%;background:#06b6d4"></span>idle</span></header>
+<div style="display:grid;grid-template-columns:214px 1fr;min-height:0">
+<nav style="background:#0e1728;border-right:1px solid #22304c;padding:14px 10px;display:flex;flex-direction:column;gap:6px;min-height:0;overflow:hidden">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;padding:4px 8px">Folder pair</div>
+<div style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:10px;margin-bottom:6px"><div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#e55b2b,#f59e0b);flex:none"></div><div style="min-width:0"><div style="font-size:12.5px;font-weight:600">ProtonDrive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/ProtonDrive ⇄ /Drive/RemoteFolder</div></div></div>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◇</span><span>Overview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">≡</span><span>Activity</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8">5</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚠</span><span>Conflicts</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">1</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:#1a2740;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-weight:600;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#f59e0b">⊘</span><span>Deletions</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">2</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">▤</span><span>Plan preview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◷</span><span>History</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚙</span><span>Settings</span></button>
+<div style="margin-top:auto;padding:10px 8px 2px;border-top:1px solid #1c2942"></div>
+</nav>
+<main style="display:flex;flex-direction:column;min-height:0;min-width:0">
+<div style="flex:1;min-height:0;overflow:hidden;padding:16px">
+<div style="margin-bottom:14px"><div style="font-size:15px;font-weight:600">Delete approvals</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;margin-top:4px">The daemon withholds deletions here instead of applying them automatically. Nothing listed below happens until you approve it — read the direction on each item first: local approvals delete the file from this computer immediately, straight from disk, no trash. Proton Drive approvals move the file to Proton Drive's Trash and remove it from your synced Drive immediately.</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">2 pending — 1 would delete locally, 1 would delete on Proton Drive</div>
+<div style="display:flex;gap:8px"><button style="padding:9px 14px;border-radius:7px;border:none;background:#ef4444;color:#fff;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer">Approve all</button><button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:12.5px;font-family:inherit;cursor:pointer">Deny all</button></div>
+</div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:14px">
+<div style="min-width:0;flex:1">
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;word-break:break-all;font-size:13px">archive/old-notes.md</div>
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;margin-top:4px;font-size:11px;color:#8a9bb8">file · detected 6m ago · target of this approval: Proton Drive</div>
+<div style="margin-top:8px;font-size:13px;font-weight:600;color:#fca5a5">Already deleted on this computer. Approving moves the matching file to PROTON DRIVE'S TRASH — it disappears from your synced Drive immediately; recovering it means opening Proton Drive's own Trash yourself before it gets emptied.</div>
+</div>
+<div style="display:flex;gap:8px;flex:none"><button style="padding:9px 14px;border-radius:7px;border:none;background:#ef4444;color:#fff;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer">Approve</button><button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:12.5px;font-family:inherit;cursor:pointer">Deny</button></div>
+</div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:14px">
+<div style="min-width:0;flex:1">
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;word-break:break-all;font-size:13px">photos/2019</div>
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;margin-top:4px;font-size:11px;color:#8a9bb8">directory · detected 22m ago · target of this approval: this computer</div>
+<div style="margin-top:8px;font-size:13px;font-weight:600;color:#fca5a5">Already deleted on Proton Drive. Approving permanently deletes the matching folder, and everything inside it, on THIS COMPUTER — removed straight from disk, not moved to any trash.</div>
+</div>
+<div style="display:flex;gap:8px;flex:none"><button style="padding:9px 14px;border-radius:7px;border:none;background:#ef4444;color:#fff;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer">Approve</button><button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:12.5px;font-family:inherit;cursor:pointer">Deny</button></div>
+</div>
+</div>
+</main>
+</div>
+<footer style="display:flex;align-items:center;gap:16px;padding:0 14px;background:#101a2c;border-top:1px solid #22304c;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#64748b"><span>daemon: idle</span><span>cli: proton-drive</span><span>socket: connected</span><span style="margin-left:auto;color:#f3d9c4">preview (mock data)</span></footer>
+</div>
+</div>
+
+<!-- ============ 5. HISTORY ============ -->
+<div>
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;padding:3px 8px;background:#22304c;border-radius:5px;color:#c7d4ea">S5</span><span style="font-size:14px;font-weight:600">History</span><span style="font-size:12px;color:#64748b">screens/history.js</span></div>
+<div data-screen-label="History" style="width:1040px;height:764px;display:grid;grid-template-rows:42px 1fr 30px;overflow:hidden;background:#0b1220;color:#e6edf7;font-size:13px;border-radius:6px;box-shadow:0 24px 60px rgba(0,0,0,.5)">
+<header style="display:flex;align-items:center;gap:10px;padding:0 12px;background:#101a2c;border-bottom:1px solid #22304c"><img src="icon.svg" alt="" style="width:18px;height:18px"><span style="font-size:12.5px;font-weight:600">Proton Drive Sync</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">~/ProtonDrive ⇄ /Drive/RemoteFolder</span><span style="flex:1"></span><button style="height:26px;padding:2px 10px;background:transparent;border:1px solid #2a3550;border-radius:999px;color:#c7d4ea;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;cursor:pointer">◐ Theme</button><span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;padding:3px 9px;border:1px solid #22304c;border-radius:999px"><span style="width:7px;height:7px;border-radius:50%;background:#06b6d4"></span>idle</span></header>
+<div style="display:grid;grid-template-columns:214px 1fr;min-height:0">
+<nav style="background:#0e1728;border-right:1px solid #22304c;padding:14px 10px;display:flex;flex-direction:column;gap:6px;min-height:0;overflow:hidden">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;padding:4px 8px">Folder pair</div>
+<div style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:10px;margin-bottom:6px"><div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#e55b2b,#f59e0b);flex:none"></div><div style="min-width:0"><div style="font-size:12.5px;font-weight:600">ProtonDrive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/ProtonDrive ⇄ /Drive/RemoteFolder</div></div></div>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◇</span><span>Overview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">≡</span><span>Activity</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8">5</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚠</span><span>Conflicts</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">1</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⊘</span><span>Deletions</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">2</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">▤</span><span>Plan preview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:#1a2740;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-weight:600;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#f59e0b">◷</span><span>History</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚙</span><span>Settings</span></button>
+<div style="margin-top:auto;padding:10px 8px 2px;border-top:1px solid #1c2942"></div>
+</nav>
+<main style="display:flex;flex-direction:column;min-height:0;min-width:0">
+<div style="flex:1;min-height:0;overflow:hidden;padding:16px">
+<div style="margin-bottom:14px"><div style="font-size:15px;font-weight:600">History</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;margin-top:4px">status_history — the daemon keeps only the last 20 entries, persisted across restarts.</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b;margin-top:2px">For older history: journalctl --user -u proton-syncd</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid #1c2942;font-size:12px"><span style="width:7px;height:7px;border-radius:50%;flex:none;background:#06b6d4"></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:66px;flex:none;color:#8a9bb8">14:32:07</span><span style="flex:1">sync completed</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b">2↑ 1↓ · 1 conflict</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid #1c2942;font-size:12px"><span style="width:7px;height:7px;border-radius:50%;flex:none;background:#06b6d4"></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:66px;flex:none;color:#8a9bb8">14:17:44</span><span style="flex:1">uploaded 2 files</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b">2↑ 0↓</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid #1c2942;font-size:12px"><span style="width:7px;height:7px;border-radius:50%;flex:none;background:#ef4444"></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:66px;flex:none;color:#8a9bb8">13:58:02</span><span style="flex:1;color:#fca5a5">sync failed</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b">proton-drive: connection timed out after 60s</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid #1c2942;font-size:12px"><span style="width:7px;height:7px;border-radius:50%;flex:none;background:#06b6d4"></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:66px;flex:none;color:#8a9bb8">13:12:20</span><span style="flex:1">sync completed</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b">0↑ 4↓ · 1 move</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid #1c2942;font-size:12px"><span style="width:7px;height:7px;border-radius:50%;flex:none;background:#06b6d4"></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:66px;flex:none;color:#8a9bb8">12:45:11</span><span style="flex:1">sync completed</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b">1↑ 0↓</span></div>
+</div>
+</div>
+</main>
+</div>
+<footer style="display:flex;align-items:center;gap:16px;padding:0 14px;background:#101a2c;border-top:1px solid #22304c;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#64748b"><span>daemon: idle</span><span>cli: proton-drive</span><span>socket: connected</span><span style="margin-left:auto;color:#f3d9c4">preview (mock data)</span></footer>
+</div>
+</div>
+
+<!-- ============ 6. SETTINGS ============ -->
+<div>
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;padding:3px 8px;background:#22304c;border-radius:5px;color:#c7d4ea">S6</span><span style="font-size:14px;font-weight:600">Settings</span><span style="font-size:12px;color:#64748b">screens/settings.js</span></div>
+<div data-screen-label="Settings" style="width:1040px;height:764px;display:grid;grid-template-rows:42px 1fr 30px;overflow:hidden;background:#0b1220;color:#e6edf7;font-size:13px;border-radius:6px;box-shadow:0 24px 60px rgba(0,0,0,.5)">
+<header style="display:flex;align-items:center;gap:10px;padding:0 12px;background:#101a2c;border-bottom:1px solid #22304c"><img src="icon.svg" alt="" style="width:18px;height:18px"><span style="font-size:12.5px;font-weight:600">Proton Drive Sync</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">~/ProtonDrive ⇄ /Drive/RemoteFolder</span><span style="flex:1"></span><button style="height:26px;padding:2px 10px;background:transparent;border:1px solid #2a3550;border-radius:999px;color:#c7d4ea;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;cursor:pointer">◐ Theme</button><span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;padding:3px 9px;border:1px solid #22304c;border-radius:999px"><span style="width:7px;height:7px;border-radius:50%;background:#06b6d4"></span>idle</span></header>
+<div style="display:grid;grid-template-columns:214px 1fr;min-height:0">
+<nav style="background:#0e1728;border-right:1px solid #22304c;padding:14px 10px;display:flex;flex-direction:column;gap:6px;min-height:0;overflow:hidden">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;padding:4px 8px">Folder pair</div>
+<div style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:10px;margin-bottom:6px"><div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#e55b2b,#f59e0b);flex:none"></div><div style="min-width:0"><div style="font-size:12.5px;font-weight:600">ProtonDrive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/ProtonDrive ⇄ /Drive/RemoteFolder</div></div></div>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◇</span><span>Overview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">≡</span><span>Activity</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8">5</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚠</span><span>Conflicts</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">1</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⊘</span><span>Deletions</span><span style="margin-left:auto;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#0b1220;background:#f59e0b;border-radius:999px;padding:1px 7px">2</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">▤</span><span>Plan preview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◷</span><span>History</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:#1a2740;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-weight:600;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#f59e0b">⚙</span><span>Settings</span></button>
+<div style="margin-top:auto;padding:10px 8px 2px;border-top:1px solid #1c2942"></div>
+</nav>
+<main style="display:flex;flex-direction:column;min-height:0;min-width:0">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;background:rgba(229,91,43,.1);border-bottom:1px solid rgba(229,91,43,.32);color:#f3d9c4;font-size:12px"><span style="font-weight:700">▲</span><span>Deleting on Proton Drive deletes the local file permanently — not to trash — and folders recursively.</span></div>
+<div style="flex:1;min-height:0;overflow:hidden;padding:16px">
+<div style="margin-bottom:14px"><div style="font-size:15px;font-weight:600">Settings</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;margin-top:4px">Edits the daemon's config file directly. Save writes only the fields you changed here — comments and daemon-only keys are preserved, and the write is rejected if the daemon's own parser would refuse the result.</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px;margin-bottom:14px">
+<div style="font-size:15px;font-weight:600;margin-bottom:12px">Folders</div>
+<div style="margin-bottom:12px"><label style="display:block;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#8a9bb8;margin-bottom:4px">Local root</label><input type="text" value="~/ProtonDrive" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:7px;border:1px solid #22304c;background:#131f36;color:#e6edf7;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12.5px"></div>
+<div style="margin-bottom:12px"><label style="display:block;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#8a9bb8;margin-bottom:4px">Remote root</label><input type="text" value="/Drive/RemoteFolder" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:7px;border:1px solid #22304c;background:#131f36;color:#e6edf7;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12.5px"><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b;margin-top:4px">Path on Proton Drive, e.g. /Drive/RemoteFolder</div></div>
+</div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px;margin-bottom:14px">
+<div style="font-size:15px;font-weight:600;margin-bottom:12px">Schedule</div>
+<div style="margin-bottom:12px"><label style="display:block;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#8a9bb8;margin-bottom:4px">Scan interval (seconds)</label><input type="number" value="300" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:7px;border:1px solid #22304c;background:#131f36;color:#e6edf7;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12.5px"><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b;margin-top:4px">Periodic full-scan fallback interval.</div></div>
+<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px"><input type="checkbox" checked style="margin-top:3px;flex:none"><div><div style="font-size:13px">Event-driven reconcile</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b;margin-top:2px">Use Proton's volume-events stream for fast incremental reconcile between full scans. Off restores the byte-identical snapshot-only path.</div></div></div>
+</div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px;margin-bottom:14px">
+<div style="font-size:15px;font-weight:600;margin-bottom:12px">Selective sync</div>
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;margin-bottom:12px">Glob patterns matched against paths relative to the sync root. Exclude always beats include when a path matches both. ".sync/" (the engine's own state directory) is always ignored, regardless of these lists.</div>
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#8a9bb8;margin-bottom:6px">Include (0)</div>
+<div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b;margin-bottom:4px">No patterns.</div>
+<div style="display:flex;gap:8px;margin-top:8px"><input type="text" placeholder="e.g. docs/**" style="flex:1;box-sizing:border-box;padding:8px 10px;border-radius:7px;border:1px solid #22304c;background:#131f36;color:#e6edf7;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12.5px"><button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:12.5px;font-family:inherit;cursor:pointer">Add</button></div>
+</div>
+</div>
+</main>
+</div>
+<footer style="display:flex;align-items:center;gap:16px;padding:0 14px;background:#101a2c;border-top:1px solid #22304c;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#64748b"><span>daemon: idle</span><span>cli: proton-drive</span><span>socket: connected</span><span style="margin-left:auto;color:#f3d9c4">preview (mock data)</span></footer>
+</div>
+</div>
+
+<!-- ============ 7. ONBOARDING ============ -->
+<div>
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;padding:3px 8px;background:#22304c;border-radius:5px;color:#c7d4ea">S8</span><span style="font-size:14px;font-weight:600">Onboarding — step 3, review plan</span><span style="font-size:12px;color:#64748b">screens/onboarding.js</span></div>
+<div data-screen-label="Onboarding" style="width:1040px;height:764px;display:grid;grid-template-rows:42px 1fr 30px;overflow:hidden;background:#0b1220;color:#e6edf7;font-size:13px;border-radius:6px;box-shadow:0 24px 60px rgba(0,0,0,.5)">
+<header style="display:flex;align-items:center;gap:10px;padding:0 12px;background:#101a2c;border-bottom:1px solid #22304c"><img src="icon.svg" alt="" style="width:18px;height:18px"><span style="font-size:12.5px;font-weight:600">Proton Drive Sync</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">~/ProtonDrive ⇄ /Drive/RemoteFolder</span><span style="flex:1"></span><button style="height:26px;padding:2px 10px;background:transparent;border:1px solid #2a3550;border-radius:999px;color:#c7d4ea;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;cursor:pointer">◐ Theme</button><span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#c7d4ea;padding:3px 9px;border:1px solid #22304c;border-radius:999px"><span style="width:7px;height:7px;border-radius:50%;background:#64748b"></span>first run</span></header>
+<div style="display:grid;grid-template-columns:214px 1fr;min-height:0">
+<nav style="background:#0e1728;border-right:1px solid #22304c;padding:14px 10px;display:flex;flex-direction:column;gap:6px;min-height:0;overflow:hidden">
+<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;padding:4px 8px">Folder pair</div>
+<div style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:10px;margin-bottom:6px"><div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#e55b2b,#f59e0b);flex:none"></div><div style="min-width:0"><div style="font-size:12.5px;font-weight:600">ProtonDrive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#8a9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/ProtonDrive ⇄ /Drive/RemoteFolder</div></div></div>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:#1a2740;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-weight:600;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#f59e0b">◇</span><span>Overview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">≡</span><span>Activity</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚠</span><span>Conflicts</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⊘</span><span>Deletions</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">▤</span><span>Plan preview</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">◷</span><span>History</span></button>
+<button style="display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;border:none;background:transparent;border-radius:7px;color:#c7d4ea;font-size:12.5px;font-family:inherit;text-align:left;cursor:pointer"><span style="width:16px;text-align:center;color:#8a9bb8">⚙</span><span>Settings</span></button>
+<div style="margin-top:auto;padding:10px 8px 2px;border-top:1px solid #1c2942"></div>
+</nav>
+<main style="display:flex;flex-direction:column;min-height:0;min-width:0">
+<div style="flex:1;min-height:0;overflow:hidden;padding:16px;display:flex;flex-direction:column;gap:16px">
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px"><div style="font-size:15px;font-weight:600">Set up Proton Drive Sync</div><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">step 3 of 4</span></div>
+<div style="display:flex;gap:8px">
+<div style="flex:1;min-width:0"><div style="height:3px;border-radius:2px;background:linear-gradient(135deg,#e55b2b,#f59e0b)"></div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#8a9bb8;margin-top:7px">1 · CLI check</div></div>
+<div style="flex:1;min-width:0"><div style="height:3px;border-radius:2px;background:linear-gradient(135deg,#e55b2b,#f59e0b)"></div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#8a9bb8;margin-top:7px">2 · Folders</div></div>
+<div style="flex:1;min-width:0"><div style="height:3px;border-radius:2px;background:linear-gradient(135deg,#e55b2b,#f59e0b)"></div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#f59e0b;margin-top:7px">3 · Review plan</div></div>
+<div style="flex:1;min-width:0"><div style="height:3px;border-radius:2px;background:#22304c"></div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;color:#64748b;margin-top:7px">4 · Start service</div></div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;background:rgba(229,91,43,.1);border:1px solid rgba(229,91,43,.32);border-radius:12px;color:#f3d9c4;font-size:12px"><span style="font-weight:700">▲</span><span>The first sync is a non-destructive merge: local-only files upload, remote-only files download, matching files link automatically, and anything that differs is kept as both copies. Nothing is deleted on this first pass.</span></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px"><div style="font-size:15px;font-weight:600;margin-bottom:6px">Review what the first sync will do</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8">proton-syncd --dry-run · shells the daemon, index read-only · nothing changes until you start syncing</div></div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px">
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#f59e0b">128</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Uploads</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">uploads</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#06b6d4">341</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Downloads</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">downloads</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#8a9bb8">2</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Conflicts</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">conflicts</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#8a9bb8">3</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Skipped</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">skipped_unsupported</div></div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:14px"><div style="font-size:20px;font-weight:700;color:#fca5a5">0</div><div style="font-size:11px;color:#c7d4ea;margin-top:2px">Destructive</div><div style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9.5px;color:#64748b;margin-top:2px">destructive_actions</div></div>
+</div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:0;overflow:hidden">
+<div style="padding:8px 12px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#5b6d8c;border-bottom:1px solid #22304c;display:flex"><span>471 planned action(s)</span></div>
+<div style="max-height:150px;overflow-y:auto">
+<div style="display:flex;gap:14px;align-items:center;padding:7px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:104px;flex:none;font-weight:600;color:#f59e0b">upload</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">docs/spec.md</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:7px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:104px;flex:none;font-weight:600;color:#06b6d4">download</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">reports/q3-summary.pdf</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:7px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:104px;flex:none;font-weight:600;color:#8a9bb8">auto_link</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">photos/trip/img_0042.jpg</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span></div>
+<div style="display:flex;gap:14px;align-items:center;padding:7px 12px;border-bottom:1px solid #1c2942"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:104px;flex:none;font-weight:600;color:#f59e0b">conflict</span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">notes/todo.txt<span style="color:#64748b;margin-left:6px">→ notes/todo.proton-cloud.txt</span></span><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;width:72px;flex:none;color:#8a9bb8">file</span></div>
+</div>
+<div style="padding:8px 12px;display:flex"><button style="padding:9px 14px;border-radius:7px;border:1px solid #2a3550;background:#16213a;color:#c7d4ea;font-size:12.5px;font-family:inherit;cursor:pointer">Re-run dry run</button></div>
+</div>
+<div style="background:#111b2e;border:1px solid #22304c;border-radius:12px;padding:18px">
+<label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer"><input type="checkbox" style="margin-top:3px;flex:none"><div><div style="font-size:13px;font-weight:600;color:#fca5a5">I understand that once syncing is running, deletions propagate in both directions — deleting a file on either side deletes it on the other.</div></div></label>
+</div>
+</div>
+</main>
+</div>
+<footer style="display:flex;align-items:center;gap:16px;padding:0 14px;background:#101a2c;border-top:1px solid #22304c;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10.5px;color:#64748b"><span>daemon: first run</span><span>cli: proton-drive</span><span>socket: down</span><span style="margin-left:auto;color:#f3d9c4">preview (mock data)</span></footer>
+</div>
+</div>
+
+<!-- ============ 8. TRAY ============ -->
+<div>
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;padding:3px 8px;background:#22304c;border-radius:5px;color:#c7d4ea">S7</span><span style="font-size:14px;font-weight:600">Tray menu — running</span><span style="font-size:12px;color:#64748b">src-tauri/src/tray.rs</span></div>
+<div data-screen-label="Tray" style="width:296px;background:#111b2e;border:1px solid #22304c;border-radius:10px;padding:6px;box-shadow:0 16px 44px rgba(0,0,0,.42);font-size:12.5px;color:#c7d4ea">
+<div style="padding:8px 11px;border-radius:7px">Show window</div>
+<div style="padding:8px 11px;border-radius:7px;background:#1a2740">Sync now (3 pending)</div>
+<div style="padding:8px 11px;border-radius:7px">Pause</div>
+<div style="padding:8px 11px;border-radius:7px">Resolve 1 conflict</div>
+<div style="padding:8px 11px;border-radius:7px">Settings</div>
+<div style="height:1px;background:#22304c;margin:5px 8px"></div>
+<div style="padding:8px 11px;border-radius:7px">Close window (keeps syncing in the tray)</div>
+<div style="padding:8px 11px;border-radius:7px">Quit Proton Drive Sync</div>
+</div>
+<div style="margin-top:16px;display:flex;gap:14px;align-items:center">
+<span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#64748b">5 glyph states:</span>
+<span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;display:inline-flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#06b6d4"></span>up to date</span>
+<span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;display:inline-flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#3b82f6"></span>syncing</span>
+<span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;display:inline-flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#64748b"></span>paused</span>
+<span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;display:inline-flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b"></span>attention</span>
+<span style="font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;color:#8a9bb8;display:inline-flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#ef4444"></span>unreachable</span>
+</div>
+</div>
+
+</div>
+</div>
+
+</x-dc>
+</body>
+</html>
