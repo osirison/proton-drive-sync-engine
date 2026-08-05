@@ -78,6 +78,16 @@ const dirClass = {
 const HEXSPIN_SECONDS = 3;
 
 /** The hexagon status widget. `opts`: { pending, uploading, downloading, paused, idle }. */
+/**
+ * LEGACY (v1). Superseded by ui/hexagon.js — the design-v2 mark: pointy-top, five states, nothing
+ * nested. This one is flat-top with nested arcs, which 01-foundations.md §6 calls the single easiest
+ * way to make the redesign look off-brand.
+ *
+ * It deliberately stays until F4. The screens below it (screens/overview.js and friends) still
+ * consume it and are themselves deleted wholesale at F4 along with app.css/components.css; removing
+ * it now would break the shipped app for the five issues in between and gain nothing. F2 built the
+ * replacement; F4 and S1 wire it in, per IMPLEMENTATION-PLAN.md §7's build order.
+ */
 export function renderHexagon(opts = {}) {
   const { pending = null, uploading = false, downloading = false, paused = false, idle = false } = opts;
   const wrap = el("div", { class: "hexagon" });
