@@ -3,7 +3,7 @@
  * stylesheet — and this is deliberately NOT today's components.css, which is the v1 file F4 deletes
  * along with app.css. Keyframes written there would vanish with it and the mark would silently stop
  * animating: no error, no lint failure, nothing for CI to catch. F4 folds this into the real
- * design-v2 components.css as a deliberate move. Recorded in DEVIATIONS.md §45.
+ * design-v2 components.css as a deliberate move. Recorded in DEVIATIONS.md §31.
  *
  * Linked from index.html after base.css. Forgetting that link is the same silent failure.
  */

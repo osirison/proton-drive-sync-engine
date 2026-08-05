@@ -5,13 +5,14 @@
 // EVERY NUMBER HERE WAS MEASURED out of docs/design-v2/Drive Sync.dc.html, node by node, across all
 // 53 in-scope hexagons — not transcribed from the prose. Where the two disagree the frame wins for
 // per-element values (IMPLEMENTATION-PLAN.md §1.3 rule 2) and the difference is recorded in
-// docs/design-v2/DEVIATIONS.md §20–§35. Several of those disagreements are load-bearing:
+// docs/design-v2/DEVIATIONS.md §20–§31. Several of those disagreements are load-bearing:
 //
 //   · The size→stroke relation is a LOOKUP TABLE, not a formula. It is not single-valued (80px is
 //     drawn at both 4.4 and 4.6) and not monotonic (48→5.4 but the smaller 44→5), so no function
 //     can reproduce it. Never interpolate: an unlisted size throws rather than guessing.
-//   · The seam mask (`fill`) is ORTHOGONAL to state. Six settled/needs-you frames carry it and
-//     seven syncing frames do not, so it is a caller flag, not a property of `syncing`.
+//   · The seam mask (`fill`) is ORTHOGONAL to state. 18 in-scope marks carry one, including settled
+//     marks at 52/80/88 and a needs-you mark at 44, while `2a Settled` carries none — so it is a
+//     caller flag, not a property of `syncing`. Two masked frames have no seam element at all.
 //   · There is NO crimson hero. `2a Needs you` at 168px is byte-identical to `2a Syncing` but for
 //     its gradient ids — 03-main-screen.md: "the count in the hexagon is transfers, not decisions".
 //     The crimson mark exists only at ≤72px.
@@ -51,7 +52,7 @@ export const HEX_PATH = "M60 9.4 L103.1 33.8 L103.1 86.3 L60 110.6 L16.9 86.3 L1
 /**
  * 303.0115, not the 297 in 01-foundations.md §6 — that figure is 6 × 49.5275, which assumes a
  * REGULAR hexagon. This one is not: the two vertical sides are 52.5 units and the four slants
- * 49.5275 / 49.4783. See DEVIATIONS.md §24.
+ * 49.5275 / 49.4783. See DEVIATIONS.md §23.
  *
  * The dash arrays are not tuned against it in any case. They sum to DASH_PERIOD, which equals the
  * stroke-dashoffset travel in the keyframes — that identity is what makes the loop seamless, since
@@ -124,7 +125,7 @@ export function strokeForSize(size, family = "window") {
 // function of size: at 72px the syncing numeral is 24uu and the needs-you numeral 26uu (the numeral
 // is larger when it is the only thing inside the mark). `y` is optically centred, and drifts down
 // as the mark shrinks. Both are overridable — 11a Grouped draws 44uu at a size the rest of the
-// design draws at 34uu (DEVIATIONS.md §29).
+// design draws at 34uu (11a Grouped vs 3a Conflict diff, same 34px mark).
 const NUMERAL = {
   168: { syncing: { size: 21, y: 68 }, needs: { size: 21, y: 68 } },
   116: { syncing: { size: 20, y: 69 }, needs: { size: 20, y: 69 } },
@@ -295,7 +296,7 @@ export function renderHexagon(opts = {}) {
 
     case "paused":
       // opacity belongs on the ROOT, not the track: 10a Paused dims the bars too. §6 writes it
-      // inside the Track cell, which reads as a path property (DEVIATIONS.md §32).
+      // inside the Track cell, which reads as a path property (DEVIATIONS.md §26).
       svg.style.opacity = size <= 20 ? ".45" : ".55";
       children.push(
         svgEl("path", {
@@ -410,7 +411,11 @@ export function updateHexagon(node, opts = {}) {
   if (!node) return;
   if (opts.numeral !== undefined) {
     const text = node.querySelector("text");
-    if (text) text.textContent = opts.numeral == null ? "" : String(opts.numeral);
+    // Removed, not blanked. renderHexagon emits no <text> at all when numeral == null, and an empty
+    // one is a different DOM shape — which the F8 gate compares node for node, and which would also
+    // leave a stale text node behind if the count later came back.
+    if (opts.numeral == null) text?.remove();
+    else if (text) text.textContent = String(opts.numeral);
   }
   if (opts.style != null) node.setAttribute("style", opts.style);
 }
