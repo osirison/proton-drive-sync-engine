@@ -4,7 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Proton Drive Sync</title>
+    <!-- legacy-tokens.css comes FIRST and dies in F4: it only feeds the v1 screens still in
+         app.css/components.css, and design-v2 must win the four token names the two vocabularies
+         share. See the header in each file. -->
+    <link rel="stylesheet" href="styles/legacy-tokens.css" />
     <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/base.css" />
     <link rel="stylesheet" href="styles/app.css" />
     <link rel="stylesheet" href="styles/components.css" />
   </head>

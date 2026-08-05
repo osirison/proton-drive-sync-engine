@@ -72,3 +72,9 @@ jobs:
         run: npm run format:check
       - name: Lint
         run: npm run lint
+      # Three things no linter can see, all invisible until someone opens the app in the affected
+      # theme: the two copies of the light palette agreeing (plain CSS cannot share one declaration
+      # list between a media query and a selector), every themed token having a value in both
+      # themes, and no raw colour outside tokens.css. See gui/tools/check-tokens.mjs.
+      - name: Tokens
+        run: npm run tokens:check

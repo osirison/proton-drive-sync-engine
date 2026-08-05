@@ -32,7 +32,7 @@
 .btn.danger {
   background: var(--danger-fill);
   border: none;
-  color: #fff;
+  color: var(--btn-destructive-text);
   font-weight: 600;
 }
 .btn:disabled {

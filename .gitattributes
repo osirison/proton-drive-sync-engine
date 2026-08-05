@@ -1,0 +1,6 @@
+# Binary assets. Without this, `git diff` on a re-vendored typeface tries to render ~17 KB of
+# compressed font as text, and a merge would attempt a line-based union on it.
+*.woff2 binary
+*.woff binary
+*.png binary
+*.ico binary

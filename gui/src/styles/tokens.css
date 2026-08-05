@@ -1,211 +1,372 @@
 /*
- * Design tokens (F1) — the single source of the visual language from the handoff (§7).
+ * Design tokens — design-v2 (F1). The single source of the visual language.
  *
- * Colour rule: warm orange = local / upload, cyan = remote / download; red is reserved for
- * destructive actions and error / unreachable states (e.g. the unreachable state-pill dot and
- * error rows) — never as a decorative accent. Apply these via the semantic vars below, never raw hex.
+ * SOURCES, in the precedence order fixed by docs/design-v2/IMPLEMENTATION-PLAN.md §1.3:
+ *   1. the .md files in docs/design-v2 are normative for tokens, rules, semantics and copy;
+ *   2. the matching 1040/600/520/360 frame in "Drive Sync.dc.html" is normative for per-element
+ *      colour and geometry;
+ *   3. the illustrative swatches in the prototype's header block are not normative.
+ * Every value below that departs from a doc table was measured node-by-node out of the frames and
+ * is recorded, with its reasoning, in docs/design-v2/DEVIATIONS.md. Do not "fix" one back to the
+ * prose without reading that file first.
  *
- * Theme: dark is the default; light applies under the system preference OR when the shell stamps
- * `data-theme` on <html> (the toggle). The toggle must win in both directions, so the explicit
- * `:root[data-theme=...]` rules come after the media query.
- */
-
-/*
- * Bundled fonts: drop the IBM Plex `.woff2` files into ./fonts/ and uncomment this block
- * (see fonts/README.md). Until then the stacks below fall back to system fonts.
+ * RAW HEX LIVES HERE AND NOWHERE ELSE. `npm run tokens:check` enforces it across gui/src.
  *
- * @font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-display: swap;
- *   src: url("../fonts/ibm-plex-sans-400.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Sans"; font-weight: 500; font-display: swap;
- *   src: url("../fonts/ibm-plex-sans-500.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Sans"; font-weight: 600; font-display: swap;
- *   src: url("../fonts/ibm-plex-sans-600.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Sans"; font-weight: 700; font-display: swap;
- *   src: url("../fonts/ibm-plex-sans-700.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap;
- *   src: url("../fonts/ibm-plex-mono-400.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-display: swap;
- *   src: url("../fonts/ibm-plex-mono-500.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap;
- *   src: url("../fonts/ibm-plex-mono-600.woff2") format("woff2"); }
+ * ROLE TOKENS — read this before merging any two tokens that share a value.
+ * The dark palette reuses one hex for several roles; the light palette does not. `#23262D` is the
+ * card border AND the chrome border AND both button borders in dark, but light splits it into
+ * #E6E3DE / #E0DCD5 / #D6D2CB — measured at the same nodes in the paired 2a/3a/4a ↔ 12a frames.
+ * Same story for `#191C21` (progress track #EDEAE5 vs syncing-hexagon track #E4E1DB), `#101216`
+ * (raised surface #FFFFFF vs primary-button fill #14161A), `#FF9C9C` (decision text #BE123C vs
+ * destructive text #B91C1C) and `#0E0F12`. So several tokens deliberately carry the SAME dark
+ * value under different names. Collapsing them looks like tidying and silently breaks the light
+ * theme at 100+ sites — and light is the theme with no drawn frame for seven of eleven screens.
+ *
+ * THEME. Dark is the default. Light applies under the system preference OR when the shell stamps
+ * `data-theme` on <html> (the ⋯ menu toggle, persisted in localStorage). The toggle must win in
+ * both directions, so the explicit `:root[data-theme=...]` rule comes after the media query. The
+ * light palette is therefore declared twice, byte-identically; `npm run tokens:check` asserts the
+ * two copies agree and that neither theme is missing a token the other declares.
  */
 
 :root {
-  /* Dark is the default palette; declare it so UA-native controls/scrollbars match even when
-     no `data-theme` attribute is present. */
+  /* Declared so UA-native controls, scrollbars and the canvas match even before any attribute is
+     stamped — the window paints before app.js runs. */
   color-scheme: dark;
 
-  /* ---- non-colour tokens (theme-independent) ---- */
-  --font-sans: "IBM Plex Sans", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* ============================ theme-independent ============================ */
 
-  --fs-headline: 17px;
-  --fs-section: 15px;
-  --fs-body: 13px;
-  --fs-control: 12.5px;
-  --fs-meta: 11px;
-  --fs-mono-meta: 11px;
-  --fs-label: 10px; /* uppercase labels, 0.08em tracking; never below 10px */
-  --tracking-label: 0.08em;
+  /* Type. Exactly the two stacks the prototype declares — 'Instrument Sans' on its page wrapper,
+     'IBM Plex Mono' per mono node. The faces are bundled in ../fonts and @font-face'd in base.css;
+     the fallbacks only ever apply to glyphs outside the latin/latin-ext subsets (the Unicode
+     symbols in 01-foundations.md §8 are mostly outside both — see fonts/README.md).
+     Deliberately no --fs-* scale: 01-foundations.md §2 is a table of ~20 exact sizes, each paired
+     with its own letter-spacing, and every node in the design sets both explicitly. A token ladder
+     here would invite an inherited default, which is precisely what makes a fidelity gate noisy. */
+  --font-sans: "Instrument Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  --radius-card: 12px;
-  --radius-tile: 10px;
-  --radius-control: 7px;
-  --radius-chip: 6px;
-  --radius-pill: 999px;
+  /* Radii ladder (01-foundations.md §3). Named by value on purpose: it is a ladder, the frames set
+     literal px, and role names would multiply as screens land. Roles noted per rung. */
+  --r-5: 5px; /* tiny mono badges */
+  --r-6: 6px; /* small controls */
+  --r-7: 7px; /* menu rows */
+  --r-8: 8px; /* icon buttons, small buttons */
+  --r-9: 9px; /* buttons, inputs */
+  --r-10: 10px; /* large buttons, list cards */
+  --r-11: 11px; /* transfer rows, inline bands */
+  --r-12: 12px; /* window; radio cards */
+  --r-13: 13px; /* content panels, choice buttons */
+  --r-14: 14px; /* compact panel, emphasis cards */
+  --r-16: 16px; /* chart panel, notification banner */
+  --r-pill: 99px; /* pills, status chips */
+  --r-dot: 50%; /* dots */
 
-  --pad-card: 18px;
-  --pad-row: 14px;
-  --pad-list: 10px;
-  --gap-card: 16px;
-  --gap-tile: 12px;
-  --gap-control: 8px;
+  /* Window geometry (01-foundations.md §4). The window is fixed at this size for now. */
+  --w-window: 1040px;
+  --h-window: 764px;
+  --h-header: 52px;
+  --w-compact: 360px;
 
-  /* fixed dimensions (§7) */
-  --dim-window-w: 1040px;
-  --dim-window-h: 764px;
-  --dim-sidebar: 214px;
-  --dim-conflict-rail: 236px;
-  --dim-action-col: 140px;
-  --dim-titlebar: 42px;
-  --dim-footer: 30px;
-  --dim-tray: 296px;
+  /* Motion (01-foundations.md §7). Durations only — the keyframes themselves belong to the
+     components that own them (hexagon: F2, seam: F3). */
+  --t-press: 140ms; /* hover and press */
+  --t-appear: 220ms; /* a panel or band appearing */
+  --t-traffic: 320ms; /* seam and its columns fading in when traffic starts */
+  --ease: ease-out;
 
-  /* ---- dark palette (default) ---- */
-  --bg: #0b1220;
-  --card: #111b2e;
-  --chrome: #101a2c;
-  --sidebar: #0e1728;
-  --border: #22304c;
-  --border-soft: #1c2942;
-  --row: #131f36;
-  --text-1: #e6edf7;
-  --text-2: #c7d4ea;
-  --muted: #8a9bb8;
-  --muted-2: #64748b;
-  --faint: #5b6d8c;
-  --selected: #1a2740;
-  --selected-border: #2a3550;
-  --btn-bg: #16213a;
-  --btn-border: #2a3550;
-  --btn-text: #c7d4ea;
+  /* ============================== dark palette ============================== */
 
-  --upload-fill: linear-gradient(135deg, #e55b2b, #f59e0b);
-  --upload-text: #f59e0b;
-  --download-fill: linear-gradient(135deg, #06b6d4, #3b82f6);
-  --download-text: #06b6d4;
+  /* ---- surfaces ---- */
+  --surface: #0a0b0d; /* window background; also the mask behind anything centred on the seam */
+  --panel: #0d0e11;
+  --panel-alt: #0e0f12; /* secondary card: queued rows, inert list items */
+  --panel-raised: #101216; /* active/selected row, in-progress transfer card */
+  --track-inert: #191c21; /* progress-bar track */
 
-  --warn-bg: rgba(229, 91, 43, 0.1);
-  --warn-border: rgba(229, 91, 43, 0.32);
-  --warn-text: #f3d9c4;
+  /* ---- lines ---- */
+  --divider: #16181d; /* row separators, header/footer rules */
+  --border-subtle: #1a1d22; /* panel borders */
+  --border: #23262d; /* cards, transfer rows, inputs */
+  --border-chrome: #23262d; /* compact-panel edge, status chip — light diverges from --border */
+  --border-strong: #2e323a; /* emphasised border */
+  --line-inert: #3e454e; /* inert glyph outline, unselected radio ring (measured; undocumented) */
+  --seam: #2a2e36; /* the centre hairline — see --seam-gradient */
 
-  --danger-fill: #ef4444;
-  --danger-text: #fca5a5;
+  /* ---- text: five tiers, use them in order ---- */
+  --text: #f2f4f7; /* 15–42px headings, large numerals, primary values */
+  --text-bright: #e8ebf0; /* 12–14px row primary text, filenames */
+  --text-2: #c9d0da; /* body with emphasis, menu items, consequence sentences */
+  --text-3: #99a2ae; /* standard body, descriptions */
+  --text-4: #828b98; /* quiet body, sub-descriptions */
+  --text-5: #6d7783; /* mono captions, metadata, timestamps (4.33:1 — known deviation) */
+  --text-label: #626b78; /* 9.5–10px uppercase section labels */
+  --text-disabled: #4e5661; /* disabled control glyphs */
 
-  --on-accent: #0b1220;
+  /* ---- semantic: warm = leaving this computer ---- */
+  --up-from: #e55b2b;
+  --up-to: #ffb84d;
+  --up-label: #ff9f1c; /* "This computer" label, → arrows, upload accents */
+  --up-gradient: linear-gradient(90deg, var(--up-from), var(--up-to));
 
-  --diff-local: rgba(229, 91, 43, 0.13);
-  --diff-remote: rgba(6, 182, 212, 0.13);
+  /* ---- semantic: cool = arriving from Proton ---- */
+  --down-from: #06b6d4;
+  --down-to: #3b82f6;
+  --down-label: #22d3ee; /* "Proton Drive" label, ← arrows, download accents */
+  --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
 
-  --track: #22304c; /* idle hexagon arc / progress track */
+  /* ---- semantic: outlined crimson = a person must decide. Never filled. ---- */
+  --decision: #ff6b6b; /* stroke: hexagon, dots, rings */
+  --decision-rgb: 255, 107, 107; /* for the one-off alphas the screens need */
+  --decision-text: #ff9c9c;
+  --decision-border: rgba(255, 107, 107, 0.32);
+  --decision-bg: rgba(255, 107, 107, 0.05);
+  --decision-divider: rgba(255, 107, 107, 0.16);
+  --decision-btn-border: rgba(255, 107, 107, 0.4);
+  --decision-btn-bg: rgba(255, 107, 107, 0.1);
 
-  --shadow-card: none; /* dark uses borders, not shadows */
-  --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
+  /* ---- semantic: solid red = irreversible, right now ---- */
+  --destructive: #ff3b3b; /* the 7–8px permanent dot, armed hexagon stroke, warning glyph */
+  --destructive-rgb: 255, 59, 59;
+  --destructive-text: #ff9c9c; /* the emphasised loss inside a destructive card */
+  --destructive-border: rgba(255, 59, 59, 0.38);
+  --destructive-bg: rgba(255, 59, 59, 0.06);
+  --destructive-divider: rgba(255, 59, 59, 0.2);
+  --destructive-btn-border: rgba(255, 59, 59, 0.25);
+  --destructive-btn-bg: rgba(255, 59, 59, 0.1);
+  --destructive-input-border: rgba(255, 59, 59, 0.35); /* the typed-DELETE field */
+  --destructive-input-bg: #0a0b0d;
+
+  /* ---- buttons. Maximum contrast is the primary action, in both themes. ---- */
+  --btn-primary-bg: #f2f4f7;
+  --btn-primary-text: #0a0b0d;
+  --btn-primary-quiet-text: #3e454e; /* the sub-label under a primary button's label */
+  --btn-primary-disabled-bg: #2a2e36;
+  --btn-primary-disabled-text: #6d7783;
+  --btn-secondary-bg: #101216;
+  --btn-secondary-bg-alt: #16181d; /* §1 allows either fill; the compact panel uses this one */
+  --btn-secondary-border: #23262d;
+  --btn-secondary-text: #c9d0da;
+  --btn-quiet-bg: transparent;
+  --btn-quiet-border: #23262d;
+  --btn-quiet-text: #99a2ae;
+  --btn-destructive-bg: #ff3b3b; /* the ONLY solid-red fill in the app: Delete permanently */
+  --btn-destructive-text: #fff;
+  --btn-destructive-disabled-text: #8a5a5a;
+
+  /* ---- the hexagon (01-foundations.md §6). Five states, no sixth. ---- */
+  --hex-settled-track: #2e323a;
+  --hex-settled-check: #e8ebf0;
+  --hex-syncing-track: #191c21; /* inert track; carries fill:var(--surface) to mask the seam */
+  --hex-paused-track: #2e323a;
+  --hex-paused-bars: #99a2ae;
+  --hex-numeral: #f2f4f7;
+  --dot-inert: #2e323a; /* settled-and-inert dot */
+
+  /* ---- the seam (01-foundations.md §5). Stops vary by block height: 10–30% in, 70–90% out. ---- */
+  --seam-gradient: linear-gradient(var(--surface), var(--seam) 26%, var(--seam) 74%, var(--surface));
+
+  /* ---- glow, shadows, focus ---- */
+  --glow-settled: radial-gradient(circle, rgba(232, 235, 240, 0.05), rgba(232, 235, 240, 0) 68%);
+  --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.6);
+  --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.6);
+  --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.6);
+  --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --focus-ring: #3b82f6;
 }
 
-/* Light palette when the system prefers it AND the toggle has not overridden. */
+/*
+ * Light is not an inversion (12-light-theme.md): the accents move to the DARKER end of each ramp,
+ * because #FF9F1C and #22D3EE only work as luminance against near-black and read as pastel on
+ * white. The surface is #FAF8F5, not #fff — cards are white, so depth reads as light, not shadow.
+ *
+ * Keep the two copies below identical. `npm run tokens:check` fails the build if they drift.
+ */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
-    --bg: #f7f8fa;
-    --card: #ffffff;
-    --chrome: #ffffff;
-    --sidebar: #fbfcfd;
-    --border: #e3e7ee;
-    --border-soft: #e3e7ee;
-    --row: #f4f6fa;
-    --text-1: #1e293b;
-    --text-2: #334155;
-    --muted: #64748b;
-    --muted-2: #64748b;
-    --faint: #94a3b8;
-    --selected: #eef2f8;
-    --selected-border: #d7dde7;
-    --btn-bg: #ffffff;
-    --btn-border: #d7dde7;
-    --btn-text: #334155;
 
-    --upload-fill: linear-gradient(135deg, #e55b2b, #ea8c0b);
-    --upload-text: #b45309;
-    --download-fill: linear-gradient(135deg, #0891b2, #0891b2);
-    --download-text: #0e7490;
+    --surface: #faf8f5;
+    --panel: #ffffff;
+    --panel-alt: #fdfcfa;
+    --panel-raised: #ffffff;
+    --track-inert: #edeae5;
 
-    --warn-bg: #fff7ed;
-    --warn-border: #fed7aa;
-    --warn-text: #7c3a11;
+    --divider: #edeae5;
+    --border-subtle: #edeae5;
+    --border: #e6e3de;
+    --border-chrome: #e0dcd5;
+    --border-strong: #e0dcd5;
+    --line-inert: #c7cbd2;
+    --seam: #d9d5ce;
 
-    --danger-fill: #dc2626;
-    --danger-text: #b91c1c;
+    --text: #14161a;
+    --text-bright: #14161a;
+    --text-2: #374151;
+    --text-3: #4b5563;
+    --text-4: #4b5563;
+    --text-5: #6b7280;
+    --text-label: #6b7280;
+    --text-disabled: #b9bec6;
 
-    --on-accent: #ffffff;
+    --up-from: #b23f14;
+    --up-to: #d97706;
+    --up-label: #b23f14;
+    --up-gradient: linear-gradient(90deg, var(--up-from), var(--up-to));
 
-    --diff-local: #fff3e6;
-    --diff-remote: #e8fbff;
+    --down-from: #0e7490;
+    --down-to: #1d4ed8;
+    --down-label: #0e7490;
+    --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
 
-    --track: #e3e7ee;
+    --decision: #be123c;
+    --decision-rgb: 190, 18, 60;
+    --decision-text: #be123c;
+    --decision-border: rgba(190, 18, 60, 0.28);
+    --decision-bg: rgba(190, 18, 60, 0.03);
+    --decision-divider: rgba(190, 18, 60, 0.14);
+    --decision-btn-border: rgba(190, 18, 60, 0.38);
+    --decision-btn-bg: rgba(190, 18, 60, 0.06);
 
-    --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05);
-    --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
+    --destructive: #dc2626;
+    --destructive-rgb: 220, 38, 38;
+    --destructive-text: #b91c1c;
+    --destructive-border: rgba(220, 38, 38, 0.4);
+    --destructive-bg: rgba(220, 38, 38, 0.04);
+    --destructive-divider: rgba(220, 38, 38, 0.16);
+    --destructive-btn-border: rgba(220, 38, 38, 0.2);
+    --destructive-btn-bg: rgba(220, 38, 38, 0.07);
+    --destructive-input-border: rgba(220, 38, 38, 0.35);
+    --destructive-input-bg: #ffffff;
+
+    --btn-primary-bg: #14161a;
+    --btn-primary-text: #faf8f5;
+    --btn-primary-quiet-text: #b9bec6;
+    --btn-primary-disabled-bg: #e0dcd5;
+    --btn-primary-disabled-text: #9ca3af;
+    --btn-secondary-bg: #ffffff;
+    --btn-secondary-bg-alt: #ffffff;
+    --btn-secondary-border: #d6d2cb;
+    --btn-secondary-text: #14161a;
+    --btn-quiet-bg: transparent;
+    --btn-quiet-border: #e0dcd5;
+    --btn-quiet-text: #4b5563;
+    --btn-destructive-bg: #dc2626;
+    --btn-destructive-text: #fff;
+    --btn-destructive-disabled-text: #c08a8a;
+
+    --hex-settled-track: #c7cbd2;
+    --hex-settled-check: #14161a;
+    --hex-syncing-track: #e4e1db;
+    --hex-paused-track: #c7cbd2;
+    --hex-paused-bars: #4b5563;
+    --hex-numeral: #14161a;
+    --dot-inert: #c7cbd2;
+
+    --seam-gradient: linear-gradient(var(--surface), var(--seam) 26%, var(--seam) 74%, var(--surface));
+
+    --glow-settled: radial-gradient(circle, rgba(20, 22, 26, 0.045), rgba(20, 22, 26, 0) 68%);
+    --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.45);
+    --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.4);
+    --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
+    --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
+    --focus-ring: #1d4ed8;
   }
 }
 
-/* Explicit light theme via the toggle — wins over the system default in both directions. */
-:root[data-theme="light"] {
-  --bg: #f7f8fa;
-  --card: #ffffff;
-  --chrome: #ffffff;
-  --sidebar: #fbfcfd;
-  --border: #e3e7ee;
-  --border-soft: #e3e7ee;
-  --row: #f4f6fa;
-  --text-1: #1e293b;
-  --text-2: #334155;
-  --muted: #64748b;
-  --muted-2: #64748b;
-  --faint: #94a3b8;
-  --selected: #eef2f8;
-  --selected-border: #d7dde7;
-  --btn-bg: #ffffff;
-  --btn-border: #d7dde7;
-  --btn-text: #334155;
-
-  --upload-fill: linear-gradient(135deg, #e55b2b, #ea8c0b);
-  --upload-text: #b45309;
-  --download-fill: linear-gradient(135deg, #0891b2, #0891b2);
-  --download-text: #0e7490;
-
-  --warn-bg: #fff7ed;
-  --warn-border: #fed7aa;
-  --warn-text: #7c3a11;
-
-  --danger-fill: #dc2626;
-  --danger-text: #b91c1c;
-
-  --on-accent: #ffffff;
-
-  --diff-local: #fff3e6;
-  --diff-remote: #e8fbff;
-
-  --track: #e3e7ee;
-
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05);
-  --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
-}
-
-/* The design's dark default already matches an unset preference, but make the toggle explicit. */
-:root[data-theme="dark"] {
-  color-scheme: dark;
-}
+/* The explicit choice, which must beat the media query in both directions. */
 :root[data-theme="light"] {
   color-scheme: light;
+
+  --surface: #faf8f5;
+  --panel: #ffffff;
+  --panel-alt: #fdfcfa;
+  --panel-raised: #ffffff;
+  --track-inert: #edeae5;
+
+  --divider: #edeae5;
+  --border-subtle: #edeae5;
+  --border: #e6e3de;
+  --border-chrome: #e0dcd5;
+  --border-strong: #e0dcd5;
+  --line-inert: #c7cbd2;
+  --seam: #d9d5ce;
+
+  --text: #14161a;
+  --text-bright: #14161a;
+  --text-2: #374151;
+  --text-3: #4b5563;
+  --text-4: #4b5563;
+  --text-5: #6b7280;
+  --text-label: #6b7280;
+  --text-disabled: #b9bec6;
+
+  --up-from: #b23f14;
+  --up-to: #d97706;
+  --up-label: #b23f14;
+  --up-gradient: linear-gradient(90deg, var(--up-from), var(--up-to));
+
+  --down-from: #0e7490;
+  --down-to: #1d4ed8;
+  --down-label: #0e7490;
+  --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
+
+  --decision: #be123c;
+  --decision-rgb: 190, 18, 60;
+  --decision-text: #be123c;
+  --decision-border: rgba(190, 18, 60, 0.28);
+  --decision-bg: rgba(190, 18, 60, 0.03);
+  --decision-divider: rgba(190, 18, 60, 0.14);
+  --decision-btn-border: rgba(190, 18, 60, 0.38);
+  --decision-btn-bg: rgba(190, 18, 60, 0.06);
+
+  --destructive: #dc2626;
+  --destructive-rgb: 220, 38, 38;
+  --destructive-text: #b91c1c;
+  --destructive-border: rgba(220, 38, 38, 0.4);
+  --destructive-bg: rgba(220, 38, 38, 0.04);
+  --destructive-divider: rgba(220, 38, 38, 0.16);
+  --destructive-btn-border: rgba(220, 38, 38, 0.2);
+  --destructive-btn-bg: rgba(220, 38, 38, 0.07);
+  --destructive-input-border: rgba(220, 38, 38, 0.35);
+  --destructive-input-bg: #ffffff;
+
+  --btn-primary-bg: #14161a;
+  --btn-primary-text: #faf8f5;
+  --btn-primary-quiet-text: #b9bec6;
+  --btn-primary-disabled-bg: #e0dcd5;
+  --btn-primary-disabled-text: #9ca3af;
+  --btn-secondary-bg: #ffffff;
+  --btn-secondary-bg-alt: #ffffff;
+  --btn-secondary-border: #d6d2cb;
+  --btn-secondary-text: #14161a;
+  --btn-quiet-bg: transparent;
+  --btn-quiet-border: #e0dcd5;
+  --btn-quiet-text: #4b5563;
+  --btn-destructive-bg: #dc2626;
+  --btn-destructive-text: #fff;
+  --btn-destructive-disabled-text: #c08a8a;
+
+  --hex-settled-track: #c7cbd2;
+  --hex-settled-check: #14161a;
+  --hex-syncing-track: #e4e1db;
+  --hex-paused-track: #c7cbd2;
+  --hex-paused-bars: #4b5563;
+  --hex-numeral: #14161a;
+  --dot-inert: #c7cbd2;
+
+  --seam-gradient: linear-gradient(var(--surface), var(--seam) 26%, var(--seam) 74%, var(--surface));
+
+  --glow-settled: radial-gradient(circle, rgba(20, 22, 26, 0.045), rgba(20, 22, 26, 0) 68%);
+  --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.45);
+  --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
+  --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
+  --focus-ring: #1d4ed8;
+}
+
+/* Dark needs no re-declaration — the media query above excludes [data-theme="dark"], so :root
+   stands. This exists only so the UA is told which scheme it is painting. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }

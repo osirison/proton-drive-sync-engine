@@ -1,0 +1,168 @@
+/*
+ * LEGACY — the v1 palette, kept alive only so the shipped screens still render while design-v2 is
+ * built up around them. DELETE THIS FILE, and its <link> in index.html, in F4 — the commit that
+ * replaces app.css/components.css/screens/* with the design-v2 shell. Nothing new may consume a
+ * token from this file; tokens.css is the source of truth (see docs/design-v2/IMPLEMENTATION-PLAN.md
+ * §5, F1–F4).
+ *
+ * Loaded BEFORE tokens.css on purpose. Four names exist in both vocabularies — --border,
+ * --font-sans, --font-mono and --text-2 — and design-v2 must win every one of them, or a v2
+ * component would silently pick up a v1 navy border. They are simply absent below; the old screens
+ * borrow the new value, which is a slightly different grey and nothing more.
+ */
+
+:root {
+  --bg: #0b1220;
+  --card: #111b2e;
+  --chrome: #101a2c;
+  --sidebar: #0e1728;
+  --border-soft: #1c2942;
+  --row: #131f36;
+  --text-1: #e6edf7;
+  --muted: #8a9bb8;
+  --muted-2: #64748b;
+  --faint: #5b6d8c;
+  --selected: #1a2740;
+  --selected-border: #2a3550;
+  --btn-bg: #16213a;
+  --btn-border: #2a3550;
+  --btn-text: #c7d4ea;
+
+  --upload-fill: linear-gradient(135deg, #e55b2b, #f59e0b);
+  --upload-text: #f59e0b;
+  --download-fill: linear-gradient(135deg, #06b6d4, #3b82f6);
+  --download-text: #06b6d4;
+
+  --warn-bg: rgba(229, 91, 43, 0.1);
+  --warn-border: rgba(229, 91, 43, 0.32);
+  --warn-text: #f3d9c4;
+
+  --danger-fill: #ef4444;
+  --danger-text: #fca5a5;
+  --danger-tint: rgba(239, 68, 68, 0.09);
+
+  --on-accent: #0b1220;
+
+  --diff-local: rgba(229, 91, 43, 0.13);
+  --diff-remote: rgba(6, 182, 212, 0.13);
+
+  --track: #22304c;
+
+  --shadow-card: none;
+  --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
+
+  --fs-headline: 17px;
+  --fs-section: 15px;
+  --fs-body: 13px;
+  --fs-control: 12.5px;
+  --fs-meta: 11px;
+  --fs-mono-meta: 11px;
+  --fs-label: 10px;
+  --tracking-label: 0.08em;
+
+  --radius-card: 12px;
+  --radius-tile: 10px;
+  --radius-control: 7px;
+  --radius-chip: 6px;
+  --radius-pill: 999px;
+
+  --pad-card: 18px;
+  --pad-row: 14px;
+  --pad-list: 10px;
+  --gap-card: 16px;
+  --gap-tile: 12px;
+  --gap-control: 8px;
+
+  --dim-window-w: 1040px;
+  --dim-window-h: 764px;
+  --dim-sidebar: 214px;
+  --dim-conflict-rail: 236px;
+  --dim-action-col: 140px;
+  --dim-titlebar: 42px;
+  --dim-footer: 30px;
+  --dim-tray: 296px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --chrome: #ffffff;
+    --sidebar: #fbfcfd;
+    --border-soft: #e3e7ee;
+    --row: #f4f6fa;
+    --text-1: #1e293b;
+    --muted: #64748b;
+    --muted-2: #64748b;
+    --faint: #94a3b8;
+    --selected: #eef2f8;
+    --selected-border: #d7dde7;
+    --btn-bg: #ffffff;
+    --btn-border: #d7dde7;
+    --btn-text: #334155;
+
+    --upload-fill: linear-gradient(135deg, #e55b2b, #ea8c0b);
+    --upload-text: #b45309;
+    --download-fill: linear-gradient(135deg, #0891b2, #0891b2);
+    --download-text: #0e7490;
+
+    --warn-bg: #fff7ed;
+    --warn-border: #fed7aa;
+    --warn-text: #7c3a11;
+
+    --danger-fill: #dc2626;
+    --danger-text: #b91c1c;
+    --danger-tint: rgba(220, 38, 38, 0.09);
+
+    --on-accent: #ffffff;
+
+    --diff-local: #fff3e6;
+    --diff-remote: #e8fbff;
+
+    --track: #e3e7ee;
+
+    --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05);
+    --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #f7f8fa;
+  --card: #ffffff;
+  --chrome: #ffffff;
+  --sidebar: #fbfcfd;
+  --border-soft: #e3e7ee;
+  --row: #f4f6fa;
+  --text-1: #1e293b;
+  --muted: #64748b;
+  --muted-2: #64748b;
+  --faint: #94a3b8;
+  --selected: #eef2f8;
+  --selected-border: #d7dde7;
+  --btn-bg: #ffffff;
+  --btn-border: #d7dde7;
+  --btn-text: #334155;
+
+  --upload-fill: linear-gradient(135deg, #e55b2b, #ea8c0b);
+  --upload-text: #b45309;
+  --download-fill: linear-gradient(135deg, #0891b2, #0891b2);
+  --download-text: #0e7490;
+
+  --warn-bg: #fff7ed;
+  --warn-border: #fed7aa;
+  --warn-text: #7c3a11;
+
+  --danger-fill: #dc2626;
+  --danger-text: #b91c1c;
+  --danger-tint: rgba(220, 38, 38, 0.09);
+
+  --on-accent: #ffffff;
+
+  --diff-local: #fff3e6;
+  --diff-remote: #e8fbff;
+
+  --track: #e3e7ee;
+
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
+}
