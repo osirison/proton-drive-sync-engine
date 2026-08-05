@@ -290,7 +290,7 @@ raises what Phase 1 can hit.
 | # | Capability | Frames it drives | Verdict |
 | --- | --- | --- | --- |
 | 1 | `deletion_policy` | `8a Deletions tab` | **Phase 1.** Maps exactly onto the existing `[delete_approval] remote/local` keys: *Ask me every time* = both `true`; *Only ask about permanent ones* = `remote=false, local=true` (the recoverable direction stops asking, the permanent one keeps asking); *Never ask* = both `false`. The tab ships in full. Two things to log rather than build for: the mono key line `deletion_policy · applies to both directions` deviates (fix in G5 with a `config.rs` alias), and `dirconfig.rs` lets a `.proton-sync.toml` in any directory override this daemon-wide default — the tab writes the global value and the UI has no surface for per-directory overrides. |
-| 2 | Live skip-rule match counts | `8a Skip rules` (the whole effect column, `hiding 4 files, 3.1 GB`) | **Phase 1.** `gui-core/src/index_read.rs` already reads the index; match each exclude glob against it for counts, bytes, sample paths, and the `Matching nothing` stale marker. This is the point of the tab. |
+| 2 | Live skip-rule match counts | `8a Skip rules` (the whole effect column, `hiding 4 files, 3.1 GB`) | **Phase 1.** `gui/gui-core/src/index_read.rs` already reads the index; match each exclude glob against it for counts, bytes, sample paths, and the `Matching nothing` stale marker. This is the point of the tab. |
 | 3 | Prose diff summary | `3a Conflict` version cards, items 1 and 2 | **Phase 1.** `read_conflict_pair` already returns both texts and mtimes. A line-level classifier gives "You added a line, 5 minutes ago" and "Yours has `buy milk` where Proton's has something else". Fallback if it can't classify: metadata row only — **never** the raw diff, that's what the disclosure is for. |
 | 4 | Free-space check | `9a Review` — `Needs 38.4 GB free. You have 214 GB.` | **Phase 1.** `statvfs` on the local root in a Tauri command. |
 | 5 | Distro detection | `9a CLI missing` | **Phase 1.** `/etc/os-release`. Fall back to tarball instructions rather than guessing a package manager. |
@@ -353,8 +353,8 @@ Sequenced ahead of the screen that needs it.
 
 | Task | Work | Unblocks |
 | --- | --- | --- |
-| **C1** | `deletion_policy` ↔ `[delete_approval]` mapping in `gui-core/config_io.rs` | S6 tab 3 |
-| **C2** | Skip-rule live match counts over the index (`gui-core/index_read.rs`) | S6 tab 2 |
+| **C1** | `deletion_policy` ↔ `[delete_approval]` mapping in `gui/gui-core/src/config_io.rs` | S6 tab 3 |
+| **C2** | Skip-rule live match counts over the index (`gui/gui-core/src/index_read.rs`) | S6 tab 2 |
 | **C3** | Client-side prose diff summary over `read_conflict_pair` | S2 version cards |
 | **C4** | Free-space check on the local root | S7 step 2 |
 | **C5** | Distro detection from `/etc/os-release` | S7 CLI-missing |
