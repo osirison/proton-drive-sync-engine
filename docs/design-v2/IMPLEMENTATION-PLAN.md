@@ -88,6 +88,8 @@ The docs and the prototype **already conflict in places**. Fixed rule, applied e
 | 5 | Syncing hexagon inert track | `fill` unspecified | `fill:#0A0B0D` — it masks the seam behind the mark | Frame; **required**, or the seam shows through the hexagon |
 | 6 | Seam bottom offset (main) | `-114..-150px` | `-150px` (`2a Syncing`) | Frame |
 | 7 | Footer nav padding | `0 40px 18–22px`, `padding-top:14–20px` | `2a`: `22px`/`20px` + mono line · `7a`: `18px`/`14px`, no mono line | Per-frame; the mono line is optional per `02-shell.md` |
+| 8 | Light border tokens | `12-light-theme.md` maps **three** tokens (subtle/std/strong) to **four** values: `#EDEAE5` / `#E6E3DE` / `#E0DCD5`, `#D6D2CB` | All four occur in the light frames (16 / 8 / 10 / 5 uses) | `#D6D2CB` has its own row in the same table as the **secondary-button border**, so the trailing value is a duplicate — three tokens, three values. Which of `#E6E3DE` / `#E0DCD5` is std vs strong needs per-surface measurement; **P0.2** |
+| 9 | Light disabled text | `01-foundations.md` puts a light value (`#B9BEC6`) inline in the *dark* token table; `12-light-theme.md` gives **two** light values (`#B9BEC6`, `#9CA3AF`) for one dark token | Frames use `#B9BEC6` on a disabled button glyph and a disabled caption, `#9CA3AF` once on plain 13px text | Two light disabled tiers exist but are unlabelled. Needs the designer to name them, or a measured split; **P0.2** |
 
 ### 1.4 The gate
 
