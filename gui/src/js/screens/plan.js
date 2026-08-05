@@ -252,7 +252,7 @@ function planRow(row) {
     {
       style:
         "display:flex;gap:14px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border-soft)" +
-        (isDestructive ? ";background:rgba(239,68,68,0.09)" : ""),
+        (isDestructive ? ";background:var(--danger-tint)" : ""),
     },
     el("span", { class: `mono ${cls}`, style: "width:112px;flex:none;font-weight:600" }, row.action),
     el(
@@ -342,7 +342,7 @@ function gateBanner(requiresGate, summary, filesAtRisk) {
       {
         style:
           "margin-top:var(--gap-card);display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;" +
-          "border-radius:var(--radius-card);background:rgba(239,68,68,0.09);border:1px solid var(--danger-fill)",
+          "border-radius:var(--radius-card);background:var(--danger-tint);border:1px solid var(--danger-fill)",
       },
       el("span", { style: "font-size:15px;color:var(--danger-text)" }, "▲"),
       el(

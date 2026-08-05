@@ -174,4 +174,15 @@ export default [
     languageOptions: { globals: globals.nodeBuiltin },
     rules: { "no-console": "off" },
   },
+
+  // Same reasoning for gui/tools/: build-time helpers that never reach the webview (the font
+  // vendoring script, the token guard, and the fidelity harness when it lands in F8). They are Node
+  // programs whose entire output is console text and whose exit code is the gate, so browser
+  // globals and the no-console rule are both wrong for them. `no-restricted-syntax` stays on: a
+  // tool has even less business reaching for the Tauri injection than a screen module does.
+  {
+    files: ["**/tools/**/*.{js,mjs}"],
+    languageOptions: { globals: globals.nodeBuiltin },
+    rules: { "no-console": "off" },
+  },
 ];

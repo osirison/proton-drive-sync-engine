@@ -48,7 +48,10 @@ Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Two-way file sync for Proton Drive
 
-License:        Apache-2.0
+# The engine is Apache-2.0. proton-sync-gui additionally EMBEDS two OFL-1.1 typefaces:
+# Tauri compiles gui/src (including gui/src/fonts/*.woff2) into the binary, so the font
+# licences ship with the package and are installed alongside LICENSE below.
+License:        Apache-2.0 AND OFL-1.1
 URL:            https://github.com/osirison/proton-drive-sync-engine
 # No v0.1.0 tag exists yet at the time this spec was written (see packaging/rpm/README.md for how
 # to build from the working tree / a Copr SCM webhook in the meantime).
@@ -192,7 +195,7 @@ cargo test --release --all-targets --all-features --locked
 %endif
 
 %files
-%license LICENSE
+%license LICENSE gui/src/fonts/OFL-instrument-sans.txt gui/src/fonts/OFL-ibm-plex-mono.txt
 %doc README.md examples/proton-sync.toml
 %{_bindir}/proton-syncd
 %{_bindir}/proton-sync
