@@ -164,12 +164,12 @@ The current app is a fixed `1040×764` Tauri window (`gui/src-tauri/tauri.conf.j
 frame in the prototype is drawn at that size and **fits it exactly** — no internal scrolling
 except where explicitly noted.
 
-``@
+```
 1040 × 764
 ├─ header            52px   flex:none
 ├─ content           flex:1 min-height:0
 └─ footer nav      ~68px    flex:none
-``@
+```
 
 Some screens insert a footer action bar (`14px 32px`, `border-top:1px #16181D`) between
 content and footer nav.
@@ -188,12 +188,12 @@ dropped rather than rotated.
 A 1px vertical hairline at `left:50%` separating **this computer (left)** from
 **Proton Drive (right)**.
 
-``@css
+```css
 /* dark */
 background: linear-gradient(#0A0B0D, #2A2E36 26%, #2A2E36 74%, #0A0B0D);
 /* light */
 background: linear-gradient(#FAF8F5, #D9D5CE 26%, #D9D5CE 74%, #FAF8F5);
-``@
+```
 
 It fades in and out at both ends against the surface colour — it never touches an edge. The
 percentage stops vary by block height (`10–30%` in, `70–90%` out); pick stops that put full
@@ -218,11 +218,11 @@ Derived from `gui/src/assets/icon.svg` (`viewBox 0 0 128 128`, points
 **Pointy-top: vertex at top and bottom, flat vertical sides.** Getting this wrong (flat-top) is
 the single easiest way to make the redesign look off-brand.
 
-``@
+```
 viewBox="0 0 120 120"
 d="M60 9.4 L103.1 33.8 L103.1 86.3 L60 110.6 L16.9 86.3 L16.9 33.8 Z"
 stroke-linejoin="round"
-``@
+```
 
 Perimeter ≈ 297 units — the number the dash arrays are tuned against.
 
@@ -254,14 +254,14 @@ Centred numerals: `font-family:'IBM Plex Mono'; font-weight:600`, `text-anchor:m
 
 ## 7. Animation
 
-``@css
+```css
 @keyframes hexup { from { stroke-dashoffset: 0 } to { stroke-dashoffset: -300 } }
 @keyframes hexdn { from { stroke-dashoffset: 0 } to { stroke-dashoffset:  300 } }
 @keyframes breathe { 0%,100% { opacity:.45; transform:scale(1) }
                       50%    { opacity:.8;  transform:scale(1.06) } }
 @keyframes blip { 0%,100% { opacity:1;   transform:scale(1) }
                    50%    { opacity:.35; transform:scale(1.5) } }
-``@
+```
 
 | Where | Declaration |
 | --- | --- |

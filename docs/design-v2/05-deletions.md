@@ -20,13 +20,13 @@ because the two columns don't mean the same thing.
 
 ## Layout
 
-``@
+```
 header 52
 title block   (26px + 13.5px sub)
 flex:1        seam top:0 bottom:14px, grid 1fr 1fr, height:100%
 footer "Keep both files" row
 footer nav
-``@
+```
 
 Title: `Two files are waiting to be deleted` /
 `They were deleted on one side. Nothing happens to the other side until you say so — syncing carries on around them.`
@@ -61,7 +61,7 @@ Card contents, in this order — **what you'd lose comes first, not the path**:
 
 ### Actions — asymmetric on purpose
 **Permanent column:** a gate, not a button.
-`To delete it, type `@DELETE`@ below.` (12px `#99A2AE`) then a row: text input
+`To delete it, type DELETE below.` (12px `#99A2AE`) then a row: text input
 (`flex:1`, `padding:10px 13px; border-radius:9px; border:1px solid rgba(255,59,59,.35);
 background:#0A0B0D`, mono 12.5px, `letter-spacing:.1em`, placeholder `DELETE`) and a
 `Delete` button that is **disabled until the word matches** (`border:1px solid rgba(255,59,59,.25);
@@ -85,7 +85,7 @@ Full-window takeover. Centred, `padding:0 40px 30px`:
   `M60 38 L60 66` `stroke-width:6` and `circle cx=60 cy=79 r=3.6`.
 - `Delete 1,204 photos from this computer?` — 28px/600/`-0.025em`, `margin-top:26px`.
 - Body 14px `#C9D0DA` `line-height:1.65` `max-width:520px` centred:
-  `Everything in `@photos/2019`@ — 8.4 GB — is removed from disk. It does not go to your trash, and it is already gone from Proton Drive, so there is nothing to restore it from.`
+  `Everything in photos/2019 — 8.4 GB — is removed from disk. It does not go to your trash, and it is already gone from Proton Drive, so there is nothing to restore it from.`
 - Confirmation row `margin-top:26px; gap:10px`: a bordered box (`padding:11px 15px;
   border-radius:10px; border:1px solid rgba(255,59,59,.5); background:#0A0B0D`) containing mono
   13px `DELETE` `letter-spacing:.12em` and a `1.5×15px` `#FF6B6B` caret on

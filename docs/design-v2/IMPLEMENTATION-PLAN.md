@@ -162,11 +162,13 @@ Add `@fontsource/instrument-sans` and `@fontsource/ibm-plex-mono` as devDependen
 Latin woff2 subsets into `gui/src/fonts/`, and `@font-face` them in `tokens.css`. Both are OFL.
 The CSP already forbids external font hosts, and this is a desktop app that must render offline.
 
-**Window geometry.** `tauri.conf.json` is `resizable: true, minWidth: 900, minHeight: 600`. Every
+**Window geometry.** `tauri.conf.json` already declares `width: 1040, height: 764` — the size is
+correct. The delta is that it is also `resizable: true, minWidth: 900, minHeight: 600`, while every
 frame is drawn at 1040×764 and `01-foundations.md` §4 says the design assumes the fixed window for
-now. Set `resizable: false`, `width: 1040`, `height: 764`. The reflow rules for a resizable window
-(seam stays at 50%, columns stack below ~880px, hairline dropped) are written down in §4 — file
-them as a follow-up issue rather than building against an unfinished assumption.
+now. Set `resizable: false` and drop the two minimums; leave the dimensions alone. The reflow rules
+for a resizable window (seam stays at 50%, columns stack below ~880px, hairline dropped) are
+written down in §4 — file them as a follow-up issue rather than building against an unfinished
+assumption.
 
 **Commit the bundle.** The `ui-design` worktree currently has `docs/design/` deleted-but-uncommitted
 and `docs/design-v2/` + `docs/design-v1-old/` untracked. Land that as commit one so every

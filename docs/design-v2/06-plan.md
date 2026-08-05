@@ -16,14 +16,14 @@ an absent category is simply absent, so a simple plan produces a short screen.
 
 ## State A — a plan that would destroy something
 
-``@
+```
 header 52  (status chip = "rehearsal · nothing has changed")
 title row + "Check again"
 seam block      (two side counts)
 destructive band
 flex:1 action list
 footer action bar (gate + two buttons)
-``@
+```
 
 **Title:** `The next sync moves 9 things` (26px/600) /
 `One of them can't be undone. Everything here is a rehearsal — nothing has changed yet.`

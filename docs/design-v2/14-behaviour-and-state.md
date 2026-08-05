@@ -5,10 +5,15 @@
 Unchanged. Keep `gui/src/js/api.js` and the existing socket contract; this redesign is a
 presentation layer over the same fields.
 
-**Fields consumed** (from `status` / `status_history`):
+**Fields consumed** (from `status` / `status_history`) — names and nesting as the daemon
+actually reports them:
 `state` (`running` / `idle` / `paused` / `first run` / unreachable) · `pending_changes` ·
-`conflicts` · `destructive_actions` · `skipped_unsupported` · `local_root` · `remote_root` ·
-`scan_interval` · `event_driven_reconcile` · `socket` · `cli` · `status_history` (last 20).
+`status_history` (last 20) · `socket` · `cli`. The three counts — `conflicts`,
+`destructive_actions`, `skipped_unsupported` — live inside the **nullable**
+`last_plan_summary`, not at the top level, so a null summary means *unknown*, not zero.
+The roots (`local_root` / `remote_root`) come from `response.config`, and the config keys are
+`scan_interval_secs` and `events_driven` (**not** `event_driven_reconcile` — that key does not
+exist in the engine).
 
 **Fields consumed from `--dry-run`:** `total` · `uploads` · `downloads` ·
 `remote_directories_created` · `local_directories_created` · `local_moves` · `remote_moves` ·
@@ -37,7 +42,7 @@ Flag these as product decisions, not UI details. Where one is unavailable, the f
 
 ## App state model
 
-``@
+```
 first-run ──▶ folders ──▶ plan ──▶ first sync ──▶ consent ──▶ running
                                                                  │
         ┌────────────────────────────────────────────────────────┤
@@ -45,7 +50,7 @@ first-run ──▶ folders ──▶ plan ──▶ first sync ──▶ consen
      settled  ◀──▶  syncing        needs-decision        paused
         │                                │
         └──────────▶ unreachable ◀───────┘
-``@
+```
 
 **needs-decision is additive, not exclusive.** Conflicts and withheld deletions coexist with
 settled, syncing and paused. The hexagon shows the *transfer* state; the status chip and the

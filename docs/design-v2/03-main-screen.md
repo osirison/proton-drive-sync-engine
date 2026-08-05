@@ -18,12 +18,12 @@ always on screen is furniture, and the consequence copy moved to the moment of a
 
 ## State A — settled
 
-``@
+```
 header 52
 hero   394  (fixed height — this is what keeps the hexagon from moving)
 flex:1      (empty)
 footer nav
-``@
+```
 
 Hero: `position:relative; display:flex; flex-direction:column; align-items:center;
 justify-content:center`.

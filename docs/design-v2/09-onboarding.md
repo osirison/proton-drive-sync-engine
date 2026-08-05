@@ -34,7 +34,7 @@ Seam `top:0; height:250px`, grid `1fr 1fr` with `padding-right/left:36px`:
 | Path | mono 14px `#F2F4F7`, `word-break:break-all` | same |
 | Stats | `margin-top:12px; padding-top:12px; border-top:1px solid #1A1D22` — `341 files` / `2.1 GB` in mono 11.5px `#99A2AE` | `12,139 files` / `39.1 GB` |
 | Button | `Choose a different folder…` full-width quiet | `Browse Proton Drive…` |
-| Helper | `A new empty folder is fine — everything on Proton Drive will be brought down into it.` | `Signed in as `@you@proton.me`@ · 39.1 GB of 500 GB used` |
+| Helper | `A new empty folder is fine — everything on Proton Drive will be brought down into it.` | `Signed in as you@proton.me · 39.1 GB of 500 GB used` |
 
 **Showing the file count and size for both sides before committing is the point** — it's how
 someone notices they picked the wrong folder.

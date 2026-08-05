@@ -15,7 +15,7 @@ away. The remaining queue is a small list at the bottom of the diff view, not a 
 
 ## Layout
 
-``@
+```
 header 52
 title row        (26px title + 13.5px sub, and 1 of 3 + ‹ › on the right)
 flex:1  content  — seam top:56 bottom:8
@@ -24,7 +24,7 @@ flex:1  content  — seam top:56 bottom:8
   "See the exact differences"       (centred, masked)
 three choice buttons + note
 footer nav
-``@
+```
 
 ### Title row
 `You both changed this file` — 26px/600/`-0.025em`.
@@ -53,7 +53,7 @@ Card contents:
 1. **What happened**, 14px/600 — `You added a line, 5 minutes ago` /
    `Changed a line and added one, 2 minutes ago`.
 2. **What differs, in words**, 13px `#99A2AE` `line-height:1.55` —
-   `Yours has `@buy milk`@ where Proton's has something else, and is otherwise the same.` The
+   `Yours has buy milk where Proton's has something else, and is otherwise the same.` The
    quoted content is mono 12px `#E8EBF0` inline.
 3. **Metadata row** — `margin-top:14px; padding-top:13px; border-top:1px solid #1A1D22; gap:14px`,
    three mono 11px `#6D7783` items: bytes, line count, edit time.
@@ -69,7 +69,7 @@ here; that's what the disclosure is for.
 | Button | Style | Copy |
 | --- | --- | --- |
 | Keep mine | `border:1px solid rgba(255,107,107,.4)`, `background:rgba(255,107,107,.07)`, title `#FF9C9C` | `→` + `Keep mine` / `Your version goes to Proton Drive. Proton's version is discarded.` |
-| **Keep both** | `border:1px solid #2E323A`, `background:#F2F4F7`, title `#0A0B0D`, body `#3E454E` | `⇄` + `Keep both` / `Nothing is lost. Proton's copy lands beside yours as `@todo.proton-cloud.txt`@.` |
+| **Keep both** | `border:1px solid #2E323A`, `background:#F2F4F7`, title `#0A0B0D`, body `#3E454E` | `⇄` + `Keep both` / `Nothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.` |
 | Use Proton's | same as Keep mine | `←` + `Use Proton's` / `Proton's version replaces the file on this computer. Yours is discarded.` |
 
 **This is the most important detail on the screen.** Keep both is the primary (maximum-contrast)

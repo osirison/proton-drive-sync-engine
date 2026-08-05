@@ -83,8 +83,10 @@ If a detail is ever ambiguous, these decide it.
 
 ## Assets
 
-- `icon.svg` — the brand hexagon, copied verbatim from `gui/src/assets/icon.svg`. Used as the
-  20px app mark in every window header. **Pointy-top orientation** (vertex top and bottom).
+- `icon.svg` — the brand hexagon, from `gui/src/assets/icon.svg`. Identical geometry; the copy
+  here has been reformatted by the design tool (comments stripped, self-closing tags expanded),
+  so diff the `points` attribute rather than the file. Used as the 20px app mark in every
+  window header. **Pointy-top orientation** (vertex top and bottom).
 - All status hexagons are inline SVG derived from that same geometry — see `01-foundations.md`.
 - No other images. Every glyph in the UI is either inline SVG or a Unicode character; see the
   symbol table in `01-foundations.md`, which also recommends replacing them with a real icon set.

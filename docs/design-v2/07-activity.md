@@ -24,14 +24,14 @@ prototype as `6a` for reference but **is not the spec**.
 
 ## Layout — the quiet default
 
-``@
+```
 header 52
 title block
 search field
 seam block: "Both sides agree" + two counts
 flex:1: never-synced band + "Last things to move"
 footer nav
-``@
+```
 
 **Title:** `Activity` 26px/600 /
 `Nothing has needed to move since 14:32. Both sides matched at the last check, 2 minutes ago.`
@@ -92,7 +92,7 @@ state", ship the verdict and the two side cards and omit the history block.
 `4 files are never synced` 18px/600 /
 `They live in your folder but no copy exists on Proton Drive.` Then **grouped by why**:
 
-- `You told it to skip these` (`#FF9F1C`) + `A rule in your settings matches them: `@*.tmp`` →
+- `You told it to skip these` (`#FF9F1C`) + `A rule in your settings matches them: *.tmp` →
   rows of `path · size` → `Change this rule` (links to Settings → What to skip)
 - `Can't be synced` (`#626B78`) + `Not real files — Proton Drive has nothing to store for them.` →
   `.cache/session.sock` / `a socket`, `projects/current → ~/work/q3` / `a shortcut`

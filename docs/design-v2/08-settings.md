@@ -46,7 +46,7 @@ a full-width line sits below it.
 
 **Panel 1 — live updates.** `Notice changes the moment they happen` 14px/600 /
 `Proton tells the app when something changes on another device, so it syncs within seconds.`
-12.5px `#99A2AE` / `event_driven_reconcile` mono 11px `#6D7783`. Toggle on the right:
+12.5px `#99A2AE` / `events_driven` mono 11px `#6D7783`. Toggle on the right:
 `44×26px` `border-radius:99px`, on = `background:#F2F4F7` with a `20px` `#0A0B0D` knob at
 `top:3px; right:3px`.
 
@@ -97,7 +97,7 @@ Add row: input (`placeholder="Add a rule — e.g. *.psd or scratch/**"`, mono 12
 Bottom, `margin-top:auto`: a neutral panel — `⊘` `#626B78` +
 `Two more files can't be synced no matter what — a socket and a shortcut. Nothing you can change here.`
 + `See them` (opens the dialog from `07-activity.md`). Then mono 11px:
-`The app's own `@.sync`@ folder is always skipped and can't be added here.`
+`The app's own .sync folder is always skipped and can't be added here.`
 
 The old include-list and the precedence paragraph are gone. If include globs must stay, they belong
 behind *Advanced* — most users only ever exclude.

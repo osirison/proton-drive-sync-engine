@@ -35,9 +35,9 @@ pair moves to the footer or the seam labels; the theme toggle moves into the `�
 `padding:0 40px 18–22px`. Inside: `display:flex; align-items:center; justify-content:center;
 gap:34px; padding-top:14–20px; border-top:1px solid #16181D`.
 
-``@
+```
 Activity     Plan a sync     Settings     Details
-``@
+```
 
 13px, `#828B98` (dark) / `#4B5563` (light); the active one is `#F2F4F7` / `#14161A`.
 **These four never move and never change order**, on any screen, in any state. They replace the
