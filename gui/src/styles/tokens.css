@@ -164,6 +164,7 @@
   --hex-settled-track: #2e323a;
   --hex-settled-check: #e8ebf0;
   --hex-syncing-track: #191c21; /* inert track; carries fill:var(--surface) to mask the seam */
+  --hex-glyph-track: #2a2e36; /* tray glyph's syncing track — NOT --seam, which shares the hex */
   --hex-paused-track: #2e323a;
   --hex-paused-bars: #99a2ae;
   --hex-numeral: #f2f4f7;
@@ -268,6 +269,7 @@
     --hex-settled-track: #c7cbd2;
     --hex-settled-check: #14161a;
     --hex-syncing-track: #e4e1db;
+    --hex-glyph-track: #e4e1db;
     --hex-paused-track: #c7cbd2;
     --hex-paused-bars: #4b5563;
     --hex-numeral: #14161a;
@@ -364,6 +366,7 @@
   --hex-settled-track: #c7cbd2;
   --hex-settled-check: #14161a;
   --hex-syncing-track: #e4e1db;
+  --hex-glyph-track: #e4e1db;
   --hex-paused-track: #c7cbd2;
   --hex-paused-bars: #4b5563;
   --hex-numeral: #14161a;

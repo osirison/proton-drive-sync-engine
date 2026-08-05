@@ -1,0 +1,84 @@
+/*
+ * The hexagon's keyframes (F2). @keyframes cannot live in an inline style, so the mark needs a
+ * stylesheet — and this is deliberately NOT today's components.css, which is the v1 file F4 deletes
+ * along with app.css. Keyframes written there would vanish with it and the mark would silently stop
+ * animating: no error, no lint failure, nothing for CI to catch. F4 folds this into the real
+ * design-v2 components.css as a deliberate move. Recorded in DEVIATIONS.md §45.
+ *
+ * Linked from index.html after base.css. Forgetting that link is the same silent failure.
+ */
+
+/*
+ * 01-foundations.md §7, matching the prototype's own keyframes exactly. The ±300 travel is what the
+ * dash arrays sum to (62+238, 40+260, 70+230) — one cycle advances the pattern exactly one period,
+ * which is what makes the loop seamless. See HEX_PERIMETER in ui/hexagon.js for why 300 and not the
+ * true perimeter of 303.0115.
+ */
+@keyframes hexup {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -300;
+  }
+}
+
+@keyframes hexdn {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 300;
+  }
+}
+
+/*
+ * The settled glow. Exported here because the keyframe belongs with the mark's motion, but the
+ * ELEMENT it drives is the screen's, not the component's: it is a 480px sibling div behind a 168px
+ * mark, so a hexagon that emitted it would paint 156px outside its own box and fail the fit gate.
+ * S1 places the div; F2 owns the animation.
+ */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.06);
+  }
+}
+
+/*
+ * 01-foundations.md §7: "drop the travelling segments to a static 40%-opacity coloured outline,
+ * drop breathe and blip entirely, keep progress bars."
+ *
+ * The prototype contains ZERO prefers-reduced-motion rules, so no frame exists and §1.3 rule 2
+ * cannot apply — rule 1 governs and the doc's wording is normative. "Outline" means the dash goes
+ * too, not just the animation: a frozen dash pattern is a segment, not an outline.
+ *
+ * The paused state's dasharray must survive. It is static geometry that carries the state's whole
+ * meaning, not an animation, so a blanket "strip dasharray" rule would destroy it — hence the
+ * :not() rather than a rule on every path.
+ */
+@media (prefers-reduced-motion: reduce) {
+  svg [style*="animation:hexup"],
+  svg [style*="animation:hexdn"] {
+    animation: none !important;
+    stroke-dasharray: none !important;
+    opacity: 0.4;
+  }
+
+  /*
+   * Pinned, not merely un-animated. Removing the animation returns the element to opacity:1 —
+   * BRIGHTER than the keyframe's own .8 peak, so "respecting" the preference would make the glow
+   * more prominent than it is for everyone else.
+   */
+  [style*="animation:breathe"],
+  .hex-glow {
+    animation: none !important;
+    opacity: 0.45 !important;
+    transform: none !important;
+  }
+}
