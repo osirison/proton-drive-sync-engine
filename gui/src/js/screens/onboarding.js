@@ -59,7 +59,7 @@ async function runCliCheck() {
   cli = { status: "checking", message: null };
   paint();
 
-  let status = null;
+  let status;
   try {
     status = await ctx.api.getStatus();
   } catch (_) {
