@@ -5,15 +5,26 @@
 Unchanged. Keep `gui/src/js/api.js` and the existing socket contract; this redesign is a
 presentation layer over the same fields.
 
-**Fields consumed** (from `status` / `status_history`) — names and nesting as the daemon
-actually reports them:
-`state` (`running` / `idle` / `paused` / `first run` / unreachable) · `pending_changes` ·
-`status_history` (last 20) · `socket` · `cli`. The three counts — `conflicts`,
-`destructive_actions`, `skipped_unsupported` — live inside the **nullable**
-`last_plan_summary`, not at the top level, so a null summary means *unknown*, not zero.
-The roots (`local_root` / `remote_root`) come from `response.config`, and the config keys are
-`scan_interval_secs` and `events_driven` (**not** `event_driven_reconcile` — that key does not
-exist in the engine).
+**Fields consumed**, in the three tiers they actually come from — they are not one flat payload,
+and the redesign's summaries depend on knowing which is which:
+
+*From the daemon's `ControlResponse` (the `status` socket reply):* `status` · `paused` ·
+`syncing` · `reconcile_seq` · `pending_changes` · `message` · `last_sync_epoch_secs` ·
+`last_error` · `last_plan_summary` · `last_successful_sync_summary` · `status_history` (last 20) ·
+`pending_deletions` · `config` · `activity`.
+
+The three counts — `conflicts`, `destructive_actions`, `skipped_unsupported` — live **inside the
+nullable `last_plan_summary`**, not at the top level, so a null summary means *unknown*, not zero
+(render em-dashes, never `0`). `config` is a `RunningConfigInfo` carrying only `local_root`,
+`remote_root` and `db_path`.
+
+*Derived by the GUI*, not reported by the daemon: `state` — the `get_status` command wraps the
+reply into a `StatusPayload` whose `state` is one of `running` / `idle` / `paused` /
+`authExpired` / `unreachable` / `firstRun` (camelCase on the wire).
+
+*From the config file* via `read_config`: `scan_interval_secs` · `events_driven` (**not**
+`event_driven_reconcile` — that key does not exist in the engine) · `include` / `exclude` ·
+`proton_cli` · `socket_path` · `delete_approval_remote` / `delete_approval_local`.
 
 **Fields consumed from `--dry-run`:** `total` · `uploads` · `downloads` ·
 `remote_directories_created` · `local_directories_created` · `local_moves` · `remote_moves` ·
