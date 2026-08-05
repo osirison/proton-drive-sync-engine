@@ -153,10 +153,13 @@
  * UA behaviour that would break the shell.
  */
 
-/* The prototype opts into border-box inline, 53 times, on exactly the elements where an explicit
-   width or height meets padding or a border — panels, the 360px compact, chips. Applying it
-   globally reproduces that and is a no-op everywhere else (box-sizing has no effect on an element
-   whose size is auto or flex-derived), which is why this is safe against the fidelity gate. */
+/* The prototype opts into border-box inline 53 times, but NOT everywhere it matters: the 360px
+   compact shell does not, at all 12 frames that draw it, so it renders 362px wide overall. Applying
+   the reset globally is still the right call — 01-foundations.md §4 calls the panel "360px wide",
+   app.css already sets it, and hand-written CSS assumes it — but it is a real divergence, not the
+   no-op the first draft of this comment claimed. It is inert on any element whose size is auto or
+   flex-derived; where an explicit width meets a border it shifts the box by the border. F6 writes
+   the compact shell as 362px. Recorded in docs/design-v2/DEVIATIONS.md §19. */
 *,
 *::before,
 *::after {
@@ -178,7 +181,8 @@ body {
 }
 
 /* Form controls do not inherit the document font in any UA. The prototype writes
-   `font-family:inherit` inline on all 179 of them, so this is the same declaration, hoisted.
+   `font-family:inherit` inline on 179 of its 205 (the other 26 set an explicit mono family and
+   override this anyway), so this is the same declaration, hoisted.
    Deliberately NOT `font: inherit`: that would also reset font-size and font-weight, and the
    prototype's controls sit at the UA weight with a per-node font-size. */
 button,

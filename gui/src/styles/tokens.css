@@ -16,11 +16,13 @@
  * The dark palette reuses one hex for several roles; the light palette does not. `#23262D` is the
  * card border AND the chrome border AND both button borders in dark, but light splits it into
  * #E6E3DE / #E0DCD5 / #D6D2CB — measured at the same nodes in the paired 2a/3a/4a ↔ 12a frames.
- * Same story for `#191C21` (progress track #EDEAE5 vs syncing-hexagon track #E4E1DB), `#101216`
- * (raised surface #FFFFFF vs primary-button fill #14161A), `#FF9C9C` (decision text #BE123C vs
- * destructive text #B91C1C) and `#0E0F12`. So several tokens deliberately carry the SAME dark
- * value under different names. Collapsing them looks like tidying and silently breaks the light
- * theme at 100+ sites — and light is the theme with no drawn frame for seven of eleven screens.
+ * Same story for `#1A1D22` (panel border #EDEAE5 vs the window's own edge #E6E3DE), `#191C21`
+ * (progress track #EDEAE5 vs syncing-hexagon track #E4E1DB), `#0E0F12` (queued row #FDFCFA vs
+ * compact transfer row #FFFFFF), `#C9D0DA` (body text #374151 vs secondary-button label #14161A)
+ * and `#FF9C9C` (decision text #BE123C vs destructive text #B91C1C). So several tokens deliberately
+ * carry the SAME dark value under different names. Collapsing them looks like tidying and silently
+ * breaks the light theme at 100+ sites — and light is the theme with no drawn frame for seven of
+ * eleven screens.
  *
  * THEME. Dark is the default. Light applies under the system preference OR when the shell stamps
  * `data-theme` on <html> (the ⋯ menu toggle, persisted in localStorage). The toggle must win in
@@ -82,15 +84,17 @@
   --panel: #0d0e11;
   --panel-alt: #0e0f12; /* secondary card: queued rows, inert list items */
   --panel-raised: #101216; /* active/selected row, in-progress transfer card */
+  --compact-row: #0e0f12; /* the compact panel's transfer rows — light diverges from --panel-alt */
   --track-inert: #191c21; /* progress-bar track */
 
   /* ---- lines ---- */
   --divider: #16181d; /* row separators, header/footer rules */
   --border-subtle: #1a1d22; /* panel borders */
+  --border-window: #1a1d22; /* the window's own 1px edge — light diverges from --border-subtle */
   --border: #23262d; /* cards, transfer rows, inputs */
   --border-chrome: #23262d; /* compact-panel edge, status chip — light diverges from --border */
   --border-strong: #2e323a; /* emphasised border */
-  --line-inert: #3e454e; /* inert glyph outline, unselected radio ring (measured; undocumented) */
+  --line-inert: #3e454e; /* inert glyph outline, unselected radio ring (08-settings.md, 10-tray.md) */
   --seam: #2a2e36; /* the centre hairline — see --seam-gradient */
 
   /* ---- text: five tiers, use them in order ---- */
@@ -124,6 +128,8 @@
   --decision-divider: rgba(255, 107, 107, 0.16);
   --decision-btn-border: rgba(255, 107, 107, 0.4);
   --decision-btn-bg: rgba(255, 107, 107, 0.1);
+  --decision-choice-border: rgba(255, 107, 107, 0.4); /* the 3a Conflict choice buttons: a lighter */
+  --decision-choice-bg: rgba(255, 107, 107, 0.07); /*  tint than the 4a/2a decision button */
 
   /* ---- semantic: solid red = irreversible, right now ---- */
   --destructive: #ff3b3b; /* the 7–8px permanent dot, armed hexagon stroke, warning glyph */
@@ -140,7 +146,7 @@
   /* ---- buttons. Maximum contrast is the primary action, in both themes. ---- */
   --btn-primary-bg: #f2f4f7;
   --btn-primary-text: #0a0b0d;
-  --btn-primary-quiet-text: #3e454e; /* the sub-label under a primary button's label */
+  --btn-primary-quiet-text: #3e454e; /* primary-button sub-label; diff-view absent lines (04-conflicts.md) */
   --btn-primary-disabled-bg: #2a2e36;
   --btn-primary-disabled-text: #6d7783;
   --btn-secondary-bg: #101216;
@@ -190,10 +196,12 @@
     --panel: #ffffff;
     --panel-alt: #fdfcfa;
     --panel-raised: #ffffff;
+    --compact-row: #ffffff;
     --track-inert: #edeae5;
 
     --divider: #edeae5;
     --border-subtle: #edeae5;
+    --border-window: #e6e3de;
     --border: #e6e3de;
     --border-chrome: #e0dcd5;
     --border-strong: #e0dcd5;
@@ -227,6 +235,8 @@
     --decision-divider: rgba(190, 18, 60, 0.14);
     --decision-btn-border: rgba(190, 18, 60, 0.38);
     --decision-btn-bg: rgba(190, 18, 60, 0.06);
+    --decision-choice-border: rgba(190, 18, 60, 0.35);
+    --decision-choice-bg: rgba(190, 18, 60, 0.04);
 
     --destructive: #dc2626;
     --destructive-rgb: 220, 38, 38;
@@ -282,10 +292,12 @@
   --panel: #ffffff;
   --panel-alt: #fdfcfa;
   --panel-raised: #ffffff;
+  --compact-row: #ffffff;
   --track-inert: #edeae5;
 
   --divider: #edeae5;
   --border-subtle: #edeae5;
+  --border-window: #e6e3de;
   --border: #e6e3de;
   --border-chrome: #e0dcd5;
   --border-strong: #e0dcd5;
@@ -319,6 +331,8 @@
   --decision-divider: rgba(190, 18, 60, 0.14);
   --decision-btn-border: rgba(190, 18, 60, 0.38);
   --decision-btn-bg: rgba(190, 18, 60, 0.06);
+  --decision-choice-border: rgba(190, 18, 60, 0.35);
+  --decision-choice-bg: rgba(190, 18, 60, 0.04);
 
   --destructive: #dc2626;
   --destructive-rgb: 220, 38, 38;

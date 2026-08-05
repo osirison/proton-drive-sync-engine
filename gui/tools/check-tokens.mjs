@@ -35,7 +35,14 @@ const BASE = join(SRC, "styles", "base.css");
 const COLOUR_FILES = new Set([TOKENS, join(SRC, "styles", "legacy-tokens.css")]);
 
 const errors = [];
-const css = readFileSync(TOKENS, "utf8");
+
+// Blanked, not deleted, so offsets and line numbers survive. This must happen BEFORE the block
+// parse below, not just before the raw-colour walk: `declarationsAt` brace-matches, so a `{` or `}`
+// inside a comment either closes :root early (a flood of bogus errors) or swallows the light blocks
+// into the dark one — and in the swallowed case the guard reports OK while invariants 1 and 2 are
+// no longer being tested. A commented-out `--token: #hex;` would likewise be scraped as live.
+const blankCssComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+const css = blankCssComments(readFileSync(TOKENS, "utf8"));
 
 // ---- 1 + 2: the token blocks ------------------------------------------------------------------
 /** Pull `--name: value;` pairs out of the block that starts at the given index. */
@@ -48,8 +55,14 @@ function declarationsAt(source, openBraceIndex) {
   }
   const body = source.slice(openBraceIndex + 1, i);
   const out = new Map();
-  for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g))
-    out.set(m[1], m[2].trim().replace(/\s+/g, " "));
+  for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) {
+    const value = m[2].trim().replace(/\s+/g, " ");
+    // A token declared twice in one block is invisible to every other check here — the later
+    // declaration simply wins, and if the values differ the block does not mean what it reads as.
+    // (This fired on a real duplicate the first time it ran.)
+    if (out.has(m[1])) errors.push(`tokens.css: ${m[1]} is declared twice in the same block`);
+    out.set(m[1], value);
+  }
   return out;
 }
 
@@ -78,7 +91,11 @@ for (const name of lightExplicit.keys()) {
     errors.push(`tokens.css: ${name} is in :root[data-theme="light"] but not in the media-query light block`);
 }
 
-const HAS_COLOUR = /#[0-9a-f]{3,8}\b|\brgba?\(/i;
+// The bare-triplet arm covers --decision-rgb / --destructive-rgb, which exist so a screen can write
+// rgba(var(--decision-rgb), .09) for a one-off alpha. Without it those two could lose their light
+// value silently, and every such rgba() would then keep the dark crimson in light — on the theme
+// where seven of eleven screens have no drawn frame to catch it.
+const HAS_COLOUR = /#[0-9a-f]{3,8}\b|\brgba?\(|^\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*$/i;
 for (const [name, value] of dark) {
   if (name === "color-scheme") continue;
   if (HAS_COLOUR.test(value) && !lightExplicit.has(name)) {
@@ -134,11 +151,14 @@ for (const file of walk(SRC)) {
 }
 
 // ---- bonus: every bundled face resolves -------------------------------------------------------
-const baseCss = readFileSync(BASE, "utf8");
-for (const m of baseCss.matchAll(/url\("([^"]+\.woff2)"\)/g)) {
-  const p = resolve(dirname(BASE), m[1]);
-  if (!existsSync(p))
-    errors.push(`base.css: @font-face src does not exist: ${m[1]} — run \`npm run fonts:sync\``);
+// All three CSS url() spellings — bare, single- and double-quoted. The 12 @font-face blocks are
+// hand-maintained (sync-fonts.mjs copies files, it does not generate CSS), so a check that only
+// sees the spelling currently in use is a check that stops working the moment someone edits one.
+const baseCss = blankCssComments(readFileSync(BASE, "utf8"));
+for (const m of baseCss.matchAll(/url\(\s*(?:"([^"]+\.woff2)"|'([^']+\.woff2)'|([^)'"\s]+\.woff2))\s*\)/g)) {
+  const url = m[1] ?? m[2] ?? m[3];
+  if (!existsSync(resolve(dirname(BASE), url)))
+    errors.push(`base.css: @font-face src does not exist: ${url} — run \`npm run fonts:sync\``);
 }
 
 // ---- report -----------------------------------------------------------------------------------
