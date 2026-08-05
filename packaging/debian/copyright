@@ -22,6 +22,7 @@ License: Apache-2.0
 # They are copied verbatim from the @fontsource npm packages by
 # `npm --prefix gui run fonts:sync`; see gui/src/fonts/README.md.
 Files: gui/src/fonts/*.woff2
+       gui/src/fonts/OFL-*.txt
 Copyright: 2022 The Instrument Sans Project Authors
            2017 IBM Corp.
 License: OFL-1.1

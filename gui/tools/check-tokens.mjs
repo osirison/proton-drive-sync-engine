@@ -13,8 +13,9 @@
 //      "Frames drawn"), so a token that silently keeps its dark value in light is exactly the class
 //      of bug S10 is least able to find.
 //
-//   3. RAW HEX LIVES IN tokens.css. The F1 definition of done. A colour written into a screen is a
-//      colour that will not follow the theme.
+//   3. RAW HEX LIVES IN A TOKEN FILE. The F1 definition of done. A colour written into a screen is
+//      a colour that will not follow the theme. Two files may carry one: tokens.css, and the
+//      legacy-tokens.css shim that F4 deletes.
 //
 //   Plus: every @font-face src in base.css resolves to a committed file. A typo there is not an
 //   error anywhere — the face just never loads and the app renders in system-ui, which moves every
@@ -146,6 +147,7 @@ if (errors.length) {
   console.error(`\ncheck-tokens: ${errors.length} problem(s).`);
   process.exit(1);
 }
+const allowed = [...COLOUR_FILES].map((f) => relative(SRC, f)).join(", ");
 console.log(
-  `check-tokens: ok — ${dark.size} tokens, ${lightExplicit.size} themed, both light blocks agree, no raw colour outside tokens.css.`,
+  `check-tokens: ok — ${dark.size} tokens, ${lightExplicit.size} themed, both light blocks agree, no raw colour outside ${allowed}.`,
 );
