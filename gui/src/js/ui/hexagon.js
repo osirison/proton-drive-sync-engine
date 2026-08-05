@@ -137,6 +137,26 @@ const NUMERAL = {
 
 const MONO_STACK = "'IBM Plex Mono',ui-monospace,monospace";
 
+/**
+ * Numeral metrics per rendered mark, so updateHexagon can REBUILD a <text> node it removed rather
+ * than only mutate one that survives. A WeakMap rather than a data attribute: the frames carry no
+ * such attribute, and F8 compares attributes node for node.
+ */
+const numeralMeta = new WeakMap();
+
+function numeralNode({ y, fontSize, fill }, value) {
+  return svgEl(
+    "text",
+    {
+      x: 60,
+      y,
+      "text-anchor": "middle",
+      style: `font-family:${MONO_STACK};font-size:${fontSize}px;font-weight:600;fill:${fill}`,
+    },
+    String(value),
+  );
+}
+
 // --------------------------------------------------------------- gradients ----
 
 // SVG ids are document-scoped, so a fixed id makes the second syncing hexagon on a screen resolve
@@ -193,6 +213,11 @@ function body(strokeWidth, stroke, fill) {
  * one declares it.
  */
 export function renderHexagon(opts = {}) {
+  // Before the destructuring, not after: several defaults below call strokeForSize(size) or key
+  // off it, and a default expression is evaluated during destructuring — so a missing size
+  // otherwise surfaces as "no stroke width measured for size undefinedpx".
+  if (!opts.size) throw new Error("hexagon: size is required");
+
   const {
     size,
     state = "settled",
@@ -214,8 +239,6 @@ export function renderHexagon(opts = {}) {
     class: cls = null,
     style = null,
   } = opts;
-
-  if (!size) throw new Error("hexagon: size is required");
 
   const maskFill = masked ? "var(--surface)" : null;
   const svgStyle = [`width:${size}px`, `height:${size}px`, "flex:none", style].filter(Boolean).join(";");
@@ -382,25 +405,20 @@ export function renderHexagon(opts = {}) {
   // The numeral is appended last so it paints over the outline. `numeral == null` renders NO text
   // node at all — 5a Checking and 7a File pending animate with none, and the design has no
   // em-dash placeholder (unlike the v1 widget this replaces).
+  const measured = NUMERAL[size]?.[state === "syncing" ? "syncing" : "needs"];
+  if (numeralY != null || numeralSize != null || measured) {
+    numeralMeta.set(svg, {
+      y: numeralY ?? measured?.y,
+      fontSize: numeralSize ?? measured?.size,
+      fill: numeralTone ?? (state === "syncing" ? "var(--hex-numeral)" : TONE[tone].numeral),
+    });
+  }
   if (numeral != null) {
-    const key = state === "syncing" ? "syncing" : "needs";
-    const metrics = NUMERAL[size]?.[key];
-    if (!metrics && (numeralSize == null || numeralY == null)) {
+    const metrics = numeralMeta.get(svg);
+    if (metrics?.y == null || metrics.fontSize == null) {
       throw new Error(`hexagon: no numeral metrics measured at ${size}px — pass numeralSize and numeralY`);
     }
-    const fill = numeralTone ?? (state === "syncing" ? "var(--hex-numeral)" : TONE[tone].numeral);
-    svg.append(
-      svgEl(
-        "text",
-        {
-          x: 60,
-          y: numeralY ?? metrics.y,
-          "text-anchor": "middle",
-          style: `font-family:${MONO_STACK};font-size:${numeralSize ?? metrics.size}px;font-weight:600;fill:${fill}`,
-        },
-        String(numeral),
-      ),
-    );
+    svg.append(numeralNode(metrics, numeral));
   }
 
   return svg;
@@ -426,8 +444,27 @@ export function updateHexagon(node, opts = {}) {
     // Removed, not blanked. renderHexagon emits no <text> at all when numeral == null, and an empty
     // one is a different DOM shape — which the F8 gate compares node for node, and which would also
     // leave a stale text node behind if the count later came back.
-    if (opts.numeral == null) text?.remove();
-    else if (text) text.textContent = String(opts.numeral);
+    if (opts.numeral == null) {
+      text?.remove();
+    } else if (text) {
+      text.textContent = String(opts.numeral);
+    } else {
+      // The node was removed by an earlier null (or never drawn), and a count has come back.
+      // Rebuilding it here is the whole point of the WeakMap: re-rendering the mark instead would
+      // restart both animations, which is exactly what this function exists to avoid.
+      //
+      // Throws rather than no-opping when there are no metrics. A mark at a size the design never
+      // draws a numeral at (104px, say — neither 5a Checking nor 4a Armed has one) has nothing to
+      // rebuild from, and inventing a font-size and y here would be the same guess strokeForSize
+      // refuses to make. Failing silently would leave a mark that simply never shows its count.
+      const metrics = numeralMeta.get(node);
+      if (!metrics) {
+        throw new Error(
+          "hexagon: this mark has no numeral metrics — no numeral is drawn at its size in any frame. Pass numeralSize and numeralY to renderHexagon if it needs one.",
+        );
+      }
+      node.append(numeralNode(metrics, opts.numeral));
+    }
   }
   if (opts.style != null) node.setAttribute("style", opts.style);
 }
