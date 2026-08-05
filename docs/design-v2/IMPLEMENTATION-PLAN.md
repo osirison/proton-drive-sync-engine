@@ -48,7 +48,7 @@ thing a machine can check rather than a claim.
 
 ### 1.2 Frame classes — they are not all windows
 
-The harness must treat four different kinds of frame differently:
+The harness must treat five different kinds of frame differently:
 
 | Class | Frames | Assert |
 | --- | --- | --- |
@@ -440,6 +440,16 @@ test or `gui/gui-core` and `gui/src-tauri` are silently skipped.
 
 `14-behaviour-and-state.md` ships one. Marked here by who checks it:
 
+A naive "any `#FF3B3B`" scan would fail on eight legitimate sites, so the solid-red gate is an
+**allow-list**, keyed on the distinction the spec actually draws: solid red as a **fill** is unique
+to the armed confirmation's `Delete permanently` button (`01-foundations.md`: *"the only place in
+the app a solid-red fill appears"*); solid red as a **stroke, dot or glyph** marks the irreversible
+and the unreachable. Permitted: the armed-confirmation button fill and hexagon stroke · the 7–8px
+permanent-deletion dot (deletions column header, main-screen attention band, status chip) · the
+destructive button kind · the unreachable hexagon outline and strike · the tray can't-reach glyph ·
+the permanent-deletion and outage notification icons · the `✕` deleted-for-good glyph. Anything
+else fails. `rgba(255,59,59,…)` tints are a separate, wider allow-list.
+
 | Check | Gate |
 | --- | --- |
 | Hexagon pointy-top at every size; no nested circle or ring | harness (SVG `d` + child count) |
@@ -449,7 +459,7 @@ test or `gui/gui-core` and `gui/src-tauri` are silently skipped.
 | Every centred element on the seam has an opaque background mask | harness |
 | No colour anywhere on a settled screen | harness (hue scan of computed colours) |
 | Keep is the highest-contrast button on Conflicts and Deletions | harness |
-| Solid red only on the armed confirmation and permanent-deletion markers | harness (global `#FF3B3B` scan) |
+| Solid-red **fill** only on the armed confirmation's `Delete permanently` button | harness (allow-list scan — see above) |
 | No destructive action in any notification | review + unit test on the banner builders |
 | `Close window` / `Quit` sub-labels present in the tray | unit test |
 | Every window fits 1040×764, no clipping, no overflow onto the footer | fit gate |
