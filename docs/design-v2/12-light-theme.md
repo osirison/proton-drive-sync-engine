@@ -47,6 +47,16 @@ nowhere for a raised card to go. Cards *are* white, so depth reads as light rath
 | Settled glow | `rgba(232,235,240,.055)` | `rgba(20,22,26,.045)` |
 | Window shadow | `rgba(0,0,0,.6)` | `rgba(0,0,0,.4–.45)` |
 
+> **Two rows above are ambiguous — do not apply them mechanically without reading
+> `IMPLEMENTATION-PLAN.md` §1.3, conflicts 8 and 9.** *Border subtle / std / strong* lists four
+> values for three tokens (`#D6D2CB` is the secondary-button border and has its own row below, so
+> the mapping is three-to-three; which of `#E6E3DE` / `#E0DCD5` is std versus strong still needs
+> per-surface measurement). *Text disabled* gives two light values for one dark token — the frames
+> use `#B9BEC6` on disabled glyphs and captions, `#9CA3AF` once on plain body text, so two light
+> disabled tiers exist but are unnamed. Both are resolved by measurement in P0.2, and this table
+> is propagated to the seven screens with no light frame, so an error here does not get caught
+> later.
+
 **Everything else is identical** — geometry, type, spacing, radii, animation, symbols, copy. The
 seam mask colour changes from `#0A0B0D` to `#FAF8F5`; that's the only structural edit.
 

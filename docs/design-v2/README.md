@@ -34,11 +34,13 @@ that as a product question, not a UI detail to invent.
 this spec is the intended final value, measured from the prototypes. Recreate pixel-perfectly.
 
 Two known open items, flagged rather than hidden:
-- The `#6D7783` quiet-caption tier measures **4.33:1** on `#0A0B0D` — just under WCAG AA for
-  small text. It is used for mono captions at 10.5–12px. Either accept it as a deliberate quiet
-  tier or lift to `#767F8C` (4.6:1) before build. Decide once, globally.
+- ~~The `#6D7783` quiet-caption tier measures **4.33:1** on `#0A0B0D` — just under WCAG AA for
+  small text.~~ **Decided: keep `#6D7783` exactly as drawn**, as a deliberate quiet tier for mono
+  captions at 10.5–12px, rather than lifting to `#767F8C`. Recorded as a known accessibility
+  deviation — see `IMPLEMENTATION-PLAN.md` §Scope decisions. Do not change the token.
 - Seven of the eleven screens have no light-theme frame drawn yet. `12-light-theme.md` gives the
-  complete token mapping needed to finish them mechanically.
+  complete token mapping needed to finish them mechanically — but see the caveat at the foot of
+  that file: two of its rows are ambiguous and must be resolved by measurement first.
 
 ## How to read this bundle
 
