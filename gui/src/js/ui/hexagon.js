@@ -202,6 +202,7 @@ export function renderHexagon(opts = {}) {
     direction = "both",
     dryRun = false,
     masked = false,
+    mono = false,
     numeralTone = null,
     strokeWidth = strokeForSize(size, state === "warning" && STROKE[size]?.warning ? "warning" : family),
     numeralSize = null,
@@ -250,9 +251,20 @@ export function renderHexagon(opts = {}) {
       const upDur = dryRun ? "2.4s" : family === "tray" ? "2.4s" : "3.2s";
       const dnDur = dryRun ? "3.2s" : "4.4s";
 
+      // The tray glyph's track is its own colour, not the in-window one: 10a Glyph states draws the
+      // colour form's track at #2A2E36 (--hex-glyph-track) and the monochrome form's at #3E454E
+      // (--line-inert), against #191C21 in every panel. A tray icon may be forced single-colour by
+      // the desktop, which is why the mono form exists at all (10-tray.md).
+      const track =
+        family === "tray"
+          ? mono
+            ? "var(--line-inert)"
+            : "var(--hex-glyph-track)"
+          : "var(--hex-syncing-track)";
+
       children.push(
         svgEl("defs", {}, gradient(upId, "up"), twoWay ? gradient(dnId, "down") : null),
-        body(strokeWidth, "var(--hex-syncing-track)", maskFill),
+        body(strokeWidth, track, maskFill),
         svgEl("path", {
           d: HEX_PATH,
           fill: "none",
