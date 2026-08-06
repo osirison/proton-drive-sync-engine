@@ -34,6 +34,11 @@ export const api = {
   startService: () => invoke("start_service"),
   restartService: () => invoke("restart_service"),
   notify: (title, body) => invoke("notify", { title, body }),
+  // F4's Ctrl W / Ctrl Q. Both go through the same backend paths the tray menu uses, so the
+  // shortcut and the menu item cannot drift apart. Note quitting does NOT stop the daemon — see
+  // the comment on `quit_app` in commands.rs.
+  closeWindow: () => invoke("close_window"),
+  quitApp: () => invoke("quit_app"),
   // Subscribe to the backend's `tray-navigate` event (tray menu → tab switch). Routed through the
   // facade so screens/shell never touch `window.__TAURI__` directly; a no-op in browser preview.
   onTrayNavigate: (cb) => {

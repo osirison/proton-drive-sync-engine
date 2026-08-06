@@ -10,7 +10,7 @@ the precedence rule in `IMPLEMENTATION-PLAN.md` §1.3:
 
 **Status: partial.** Sections are numbered in the order they were resolved and grouped by the task
 that resolved them: **§8–§19 F1** (#165, `tokens.css`), **§20–§31 F2** (#166, the hexagon),
-**§32–§39 F3** (#167, the seam). Of conflicts 1–7 in `IMPLEMENTATION-PLAN.md` §1.3, **1** reaches a
+**§32–§39 F3** (#167, the seam), **§40–§46 F4** (#168, the shell). Of conflicts 1–7 in `IMPLEMENTATION-PLAN.md` §1.3, **1** reaches a
 token (§18) and **2, 3, 5 and 6** are per-component colour or geometry that F2 and F3 have now
 measured; 4 and 7 belong to their screens. The full sweep is **P0.2** (#163).
 
@@ -571,6 +571,162 @@ cannot transition, and the screen owns when — or whether — to take it out af
 for `hexagon.css`: a media query cannot be inline. It needs its own `<link>` in `index.html`, and
 omitting that is the same silent failure — the seam snaps instead of fading, with nothing for lint
 or CI to catch.
+
+## The shell (F4)
+
+Measured the same way as the seam: the prototype rendered and read off `getBoundingClientRect`, over
+the 22 in-scope frames drawn at 1040 (the compacts and the two desktop mocks are F6's and S8's). A
+52px header is a number you can read out of the source, but *"does this screen have a footer nav"* is
+a fact about the tree, and the padding that separates four otherwise-identical footers is layout.
+
+The shell is verified rather than eyeballed: `gui/src/index.html` is loaded in a browser on the
+mock-data path and the chrome it builds is asserted against these numbers — 27 checks covering the
+header, the chip, the doors, the door/action-bar switch and the home affordance.
+
+## 40. The four doors are not on every screen
+
+`02-shell.md` §"Footer navigation": *"These four never move and never change order, on any screen, in
+any state."* True about order, and it reads as *present everywhere*. Measured, every in-scope 1040
+frame carries **either** the four doors **or** a footer action bar — never both, never neither:
+
+| | Frames |
+| --- | --- |
+| four doors (13) | `2a` ×3 · `3a` ×2 · `4a` ×2 · `6a Activity passes` · `7a` ×2 · `12a` ×4 |
+| footer action bar (6) | `5a Plan` · `5a Plan safe` · `8a Settings` · `8a Skip rules` · `9a Folders` · `9a Review` |
+
+The action bar **replaces** the doors on the screens that commit something. That is coherent — you do
+not wander off mid-commit — but it has a consequence the docs do not draw: **Settings, Plan and
+onboarding have no navigation at all.** The only ways out are the action bar's own secondary button
+and the app mark.
+
+Which settles half of `IMPLEMENTATION-PLAN.md` §3.3's open question by elimination. The plan
+*assumes* "clicking the active door returns to root, and the app mark is also a home affordance"; for
+Activity the first works, but on Settings and Plan there is no door to click, so **the app mark is
+not optional**. `routes.js` carries a `footer` field per route for this, and `renderHeader` takes an
+`onHome`.
+
+## 41. The footer nav has four padding variants, not a range (§1.3 conflict 7, closed)
+
+`0 40px 18–22px` with `padding-top:14–20px`. All four combinations are drawn, so — like the seam's
+`-114`/`-150` (§33a) — it is a table, not a range to pick from:
+
+| bottom / top | Mono line | Height | Frames |
+| --- | --- | --- | --- |
+| 22 / 20 | yes | 89 | `2a Settled` · `2a Syncing` + both light twins |
+| 20 / 16 | no | 53 | `2a Needs you` |
+| 18 / 15 | no | 50 | `3a` ×2 · `4a` ×2 · `6a Activity passes` · `12a Deletions/Conflict light` |
+| 18 / 14 | no | 49 | `7a Activity quiet` · `7a File lookup` |
+
+§1.3 conflict 7 names two of the four (`2a` 22/20, `7a` 18/14). The **majority** variant, 18/15 across
+six frames, is in neither the conflict note nor `02-shell.md`. The mono line appears on exactly the
+two frames with the widest padding, which is what the extra 4px is for.
+
+Everything else is invariant across all thirteen: `gap:34px`, centred, `border-top:1px #16181D`, doors
+at 13px/**400** (§11's finding again — the prose never names a weight and 400 is what is drawn),
+`#828B98` inactive and `#F2F4F7` active. No light frame draws an *active* door, so the light active
+colour (`#14161A`, from the doc) joins the unverified list in §15.
+
+## 42. The header dims off the status chip, not off the screen
+
+§1's table gives the mark `opacity:.65–.75` "on settled/secondary screens" and `1` "when something is
+happening", and the product name `#99A2AE` when settled. "Settled/secondary" is a judgement to be made
+per screen. Measured, it is a predicate: **`chip === "idle"`**. All six idle frames dim both the mark
+and the name; all fourteen non-idle frames dim neither — including `5a Plan`, whose chip is
+`rehearsal`, and `9a Folders`, whose chip is `step 1 of 2`.
+
+And `.65–.75` is not a range either: it is **`0.75` in dark and `0.65` in light**. One light settled
+frame exists (`12a Settled light`), so this rests on a single sample; `--app-mark-quiet` carries it
+and it belongs on §15's unverified list until S10 confirms.
+
+The home affordance costs one node the frames do not draw: the mark becomes a `<button>` so it is
+keyboard-reachable, sized to exactly 20×20 with no padding so the header's 12px gaps do not move.
+
+## 43. The status chip — six variants, a 1px ring, and a token the palette lacked
+
+Five variants in §2's table, all confirmed with one correction, plus a sixth the doc describes in prose
+and leaves out of the table.
+
+| Variant | Border | Text | Dot |
+| --- | --- | --- | --- |
+| idle | none | `--text-label` | `--dot-inert`, 6px |
+| syncing | 1px `--border-chrome` | `--text-3` | `--up-to` + `blip 1.6s` |
+| n waiting (decisions) | 1px `--chip-attention-border` | `--decision-text` | **1px** ring `--decision` |
+| n waiting (deletions) | 1px `--chip-attention-border` | `--decision-text` | filled `--destructive` |
+| rehearsal | 1px `--border-chrome` | `--text-3` | none |
+| **step N of 2** | none | `--text-5` | none — **and no ⋯ button** |
+
+- **The ring is 1px, not the 2px §2 states** — in both themes.
+- **Onboarding drops the ⋯ button too.** §2 says only that the chip is "omitted on onboarding
+  (replaced by `step 1 of 2`)". Both `9a` frames have **four** header slots, not five. A menu whose
+  only item is the theme toggle has no place in a two-step flow that cannot be left.
+- **The border needed a new token.** Measured `rgba(255,107,107,.35)` dark → `rgba(190,18,60,.30)`
+  light, against `--decision-border`'s `.32`/`.28`. Close enough to look like the same value and not
+  it; the alphas differ per theme, so no `rgba(var(--decision-rgb), …)` form covers both. Added as
+  `--chip-attention-border`.
+- The syncing dot measures 8.8px rather than 6px only because `blip` scales it 1.5× and the reading
+  caught it mid-cycle. It is a 6px dot in every variant that has one.
+- `blip` lands in `shell.css`, which is where §29 said it belonged: it drives this dot and (F5) a text
+  caret, and never a hexagon.
+
+## 44. Chip priority: measured where the frames settle it, chosen where they do not
+
+`2a Needs you` is syncing **and** has three decisions waiting, and its chip reads `3 waiting` — so a
+decision outranks a transfer. That is the only ordering the frames settle. Two are chosen:
+
+- **Deletions over decisions.** Nothing draws both at once. Deletions win because that is the one that
+  ends with a file gone.
+- **`paused`, `unreachable` and `authExpired` have no drawn chip anywhere.** They take the quiet form
+  with their own text rather than an invented colour — the hexagon and the main screen carry those
+  states, which is where the design puts them.
+
+## 45. `Ctrl Q` — the design and the shipped app disagree about what Quit does. **Open.**
+
+`14-behaviour-and-state.md` and `10-tray.md` are explicit and consistent with each other: `Ctrl W`
+closes the window *keeps syncing*, `Ctrl Q` quits *stops syncing*, and the tray must carry those as
+sub-labels because *"this is the single worst misunderstanding a tray app can cause"*.
+
+The shipped `tray.rs` does something else, deliberately and with a comment: `quit` is `app.exit(0)`,
+ending the GUI process while **the daemon keeps running**, "a separate process and unaffected by
+either" (v1 design §3.7, refined in #88).
+
+F4 wires `Ctrl Q` to the **existing** path, so the shortcut and the tray item beside it cannot mean
+different things, and does not resolve the contradiction. Stopping the daemon is a lifecycle decision
+with data consequences; it belongs to S8 (#187), which owns the tray, and guessing the more
+destructive of two readings from a keyboard shortcut is the wrong way to settle it.
+
+## 45a. The shell is built once and patched, never rebuilt on the poll
+
+Not a deviation from the design — a constraint the design already stated, which the first version of
+`app.js` broke. `updateHexagon`'s comment (§F2) says the screens "must call this rather than
+re-rendering", because `replaceChildren` restarts both CSS animations from 0%; that was written
+about the hexagon, and it is a shell problem before it is ever a screen problem.
+
+Measured on the first draft: the shell re-rendered on every status poll (~2 s), and tabbing to a
+door dropped keyboard focus to `<body>` **within 1.2 seconds**. `14-behaviour-and-state.md` requires
+every control to be keyboard-reachable "because this is a desktop app", and a window that discards
+focus twice a second is not one.
+
+So `render()` patches: `updateHeader` and `updateFooterNav` return `false` when the change is
+structural (the ⋯ appearing, a different footer variant) and the caller rebuilds only then, and the
+body is replaced only when the route changes. The status chip's node is replaced only when its
+*variant* changes, so a count ticking 2 → 3 does not restart the `blip` on its dot. Asserted: focus
+and node identity both survive two poll ticks.
+
+This is a constraint on S1–S11 as much as on F4 — a screen that rebuilds its own subtree on every
+poll reintroduces it locally.
+
+## 46. Two more things nothing draws, and one the frames disagree with
+
+- **The ⋯ menu is never drawn open.** `02-shell.md` gives it one sentence — the theme toggle moves
+  there from the title bar — and that is the whole specification. Same footing as §30 and §38.
+- **The content region's `overflow`.** §2 calls this "a real bug found twice during this design" and
+  offers two fixes: `overflow:hidden`, or size the content to fit. The frames take the second — 21 of
+  22 leave it `visible`, and only `6a Activity passes` sets `hidden`. `.content-region` takes the
+  **first**, because sizing-to-fit is a property of a fixed dataset and the app's data is not fixed:
+  one long filename is all it takes. Clipping is the recoverable failure; painting over the footer is
+  not.
+- **Content `margin-top` is not `22–26px`.** Measured across the frames: 14, 18, 20, 22, 24, 26, 30,
+  34 and 36. It is per-screen, so the shell does not set it and each screen carries its own.
 
 ---
 

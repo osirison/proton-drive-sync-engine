@@ -14,9 +14,7 @@
         "title": "Proton Drive Sync",
         "width": 1040,
         "height": 764,
-        "minWidth": 900,
-        "minHeight": 600,
-        "resizable": true,
+        "resizable": false,
         "decorations": true
       }
     ],

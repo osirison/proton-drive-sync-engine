@@ -4,16 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Proton Drive Sync</title>
-    <!-- legacy-tokens.css comes FIRST and dies in F4: it only feeds the v1 screens still in
-         app.css/components.css, and design-v2 must win the four token names the two vocabularies
-         share. See the header in each file. -->
-    <link rel="stylesheet" href="styles/legacy-tokens.css" />
+    <!-- F4 deleted legacy-tokens.css, app.css and components.css along with the v1 screens they
+         styled. What is left is the design-v2 stack, in dependency order: tokens, then the reset and
+         @font-face, then one stylesheet per foundation primitive. Each of the last three carries
+         rules that cannot be inline — @keyframes and media queries — and each needs its own <link>
+         here. Forgetting one is silent: the mark stops animating, or the seam snaps instead of
+         fading, with no error and nothing for lint or CI to catch. -->
     <link rel="stylesheet" href="styles/tokens.css" />
     <link rel="stylesheet" href="styles/base.css" />
+    <link rel="stylesheet" href="styles/shell.css" />
     <link rel="stylesheet" href="styles/hexagon.css" />
     <link rel="stylesheet" href="styles/seam.css" />
-    <link rel="stylesheet" href="styles/app.css" />
-    <link rel="stylesheet" href="styles/components.css" />
   </head>
   <body>
     <div id="app-root"></div>
