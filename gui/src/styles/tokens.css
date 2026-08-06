@@ -128,16 +128,34 @@
   --decision: #ff6b6b; /* stroke: hexagon, dots, rings */
   --decision-rgb: 255, 107, 107; /* for the one-off alphas the screens need */
   --decision-text: #ff9c9c;
-  --decision-border: rgba(255, 107, 107, 0.32);
-  /* The status chip's attention border. NOT --decision-border: measured 0.35 dark / 0.30 light
-     against that token's 0.32 / 0.28, and the alphas differ per theme so no single rgba(var(--rgb))
-     form covers both. Drawn on `2a Needs you`, `3a Conflict` x2, `4a Deletions` x2 and their light
-     twins. DEVIATIONS.md §41. */
+  /* The status chip's attention border. NOT a crimson-surface token: measured 0.35 dark / 0.30
+     light, and the alphas differ per theme so no single rgba(var(--rgb)) form covers both. Drawn on
+     `2a Needs you`, `3a Conflict` x2, `4a Deletions` x2 and their light twins. DEVIATIONS.md §41. */
   --chip-attention-border: rgba(255, 107, 107, 0.35);
   /* The header mark's dimmed opacity, when the status chip is idle. 01-foundations.md/02-shell.md
      give ".65-.75" as a range; measured it is a light/dark split, on one light frame. */
   --app-mark-quiet: 0.75;
-  --decision-bg: rgba(255, 107, 107, 0.05);
+
+  /* TWO crimson surfaces, not one. They were a single --decision-bg/--decision-border pair until
+     F5 censused the bands, and that pair was broken in a way neither theme could reveal alone: its
+     DARK value was measured off the attention band and its LIGHT value off the recoverable deletion
+     card, because no light frame draws the attention band at all. Whichever surface used it, one
+     theme rendered the other surface's tint. Same class as --chip-attention-border above, same fix
+     — name the site (DEVIATIONS.md §43, and §52 for this one).
+
+     Three of the four light values are measured. The fourth, --decision-band-* in light, is CHOSEN:
+     nothing draws it. Derived from the card, which IS drawn in both themes — 0.04/0.30 dark becomes
+     0.03/0.28 light, so the band's 0.05/0.32 becomes 0.04/0.30. The cross-theme ratio and the
+     band-to-card delta give the same two numbers, which is the only corroboration available without
+     a frame. S10 owns confirming it when the light mapping is propagated. */
+
+  /* The attention band. `2a Needs you`: one container, both waiting items, 976x127. */
+  --decision-band-bg: rgba(255, 107, 107, 0.05);
+  --decision-band-border: rgba(255, 107, 107, 0.32);
+  /* The recoverable deletion card (`4a Deletions` right column) and the consent panel
+     (`9a Consent`). One notch softer than the band, in both themes. */
+  --decision-card-bg: rgba(255, 107, 107, 0.04);
+  --decision-card-border: rgba(255, 107, 107, 0.3);
   --decision-divider: rgba(255, 107, 107, 0.16);
   --decision-btn-border: rgba(255, 107, 107, 0.4);
   --decision-btn-bg: rgba(255, 107, 107, 0.1);
@@ -249,10 +267,12 @@
     --decision: #be123c;
     --decision-rgb: 190, 18, 60;
     --decision-text: #be123c;
-    --decision-border: rgba(190, 18, 60, 0.28);
     --chip-attention-border: rgba(190, 18, 60, 0.3);
     --app-mark-quiet: 0.65;
-    --decision-bg: rgba(190, 18, 60, 0.03);
+    --decision-band-bg: rgba(190, 18, 60, 0.04);
+    --decision-band-border: rgba(190, 18, 60, 0.3);
+    --decision-card-bg: rgba(190, 18, 60, 0.03);
+    --decision-card-border: rgba(190, 18, 60, 0.28);
     --decision-divider: rgba(190, 18, 60, 0.14);
     --decision-btn-border: rgba(190, 18, 60, 0.38);
     --decision-btn-bg: rgba(190, 18, 60, 0.06);
@@ -350,10 +370,12 @@
   --decision: #be123c;
   --decision-rgb: 190, 18, 60;
   --decision-text: #be123c;
-  --decision-border: rgba(190, 18, 60, 0.28);
   --chip-attention-border: rgba(190, 18, 60, 0.3);
   --app-mark-quiet: 0.65;
-  --decision-bg: rgba(190, 18, 60, 0.03);
+  --decision-band-bg: rgba(190, 18, 60, 0.04);
+  --decision-band-border: rgba(190, 18, 60, 0.3);
+  --decision-card-bg: rgba(190, 18, 60, 0.03);
+  --decision-card-border: rgba(190, 18, 60, 0.28);
   --decision-divider: rgba(190, 18, 60, 0.14);
   --decision-btn-border: rgba(190, 18, 60, 0.38);
   --decision-btn-bg: rgba(190, 18, 60, 0.06);

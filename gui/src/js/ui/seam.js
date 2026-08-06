@@ -414,8 +414,8 @@ export function auditSeams(root = document.body, { selector = ".seam" } = {}) {
       const straddles = b.left < centre - 1 && b.right > centre + 1;
       if (!straddles || cover === 0) continue;
 
-      // (a) it does not actually cover. `--decision-bg` is rgba(255, 107, 107, .05) — a real token
-      // that hides nothing; a hairline under 50% alpha is a hairline at half strength.
+      // (a) it does not actually cover. `--decision-band-bg` is rgba(255, 107, 107, .05) — a real
+      // token that hides nothing; a hairline under 50% alpha is a hairline at half strength.
       if (cover < 1) {
         problems.push({
           rule: 3,

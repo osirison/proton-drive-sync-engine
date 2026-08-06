@@ -515,7 +515,7 @@ visually identical node fails the style gate.
 
 A mask can fail two ways, and `auditSeams()` reports both. It can paint underneath (the above), or
 it can fail to cover: a background at less than full opacity leaves the hairline showing at reduced
-strength, and `--decision-bg` is `rgba(255, 107, 107, .05)`, a real token that hides nothing. The
+strength, and `--decision-band-bg` is `rgba(255, 107, 107, .05)`, a real token that hides nothing. The
 subject of the check is anything *claiming* to mask — an element with a background of any opacity
 straddling the line. An element with no background at all is not reported, because otherwise every
 centred flex wrapper in the design is a violation and a check that cries wolf is a check nobody
@@ -660,9 +660,10 @@ and leaves out of the table.
   (replaced by `step 1 of 2`)". Both `9a` frames have **four** header slots, not five. A menu whose
   only item is the theme toggle has no place in a two-step flow that cannot be left.
 - **The border needed a new token.** Measured `rgba(255,107,107,.35)` dark → `rgba(190,18,60,.30)`
-  light, against `--decision-border`'s `.32`/`.28`. Close enough to look like the same value and not
-  it; the alphas differ per theme, so no `rgba(var(--decision-rgb), …)` form covers both. Added as
-  `--chip-attention-border`.
+  light, against the then-`--decision-border`'s `.32`/`.28`. Close enough to look like the same value
+  and not it; the alphas differ per theme, so no `rgba(var(--decision-rgb), …)` form covers both.
+  Added as `--chip-attention-border`. **§52 later found that the `.32`/`.28` compared against here
+  was not one token's theme pair at all** — it was two different bands, one measured per theme.
 - The syncing dot measures 8.8px rather than 6px only because `blip` scales it 1.5× and the reading
   caught it mid-cycle. It is a 6px dot in every variant that has one.
 - `blip` lands in `shell.css`, which is where §29 said it belonged: it drives this dot and (F5) a text
@@ -827,6 +828,76 @@ The engine is Chromium rather than the WebKit the issue asks for, because Playwr
 host packages this machine cannot install without `sudo`. It is the same engine every measurement in
 §8–§50 came from, so the numbers here and the numbers there are consistent — but WebKitGTK is what
 ships, and CI should add it when the runner allows.
+
+---
+
+## Controls, rows and bands (F5)
+
+## 52. `--decision-bg`/`--decision-border` were one token pair holding two different bands
+
+Found by censusing the band tints before writing `bands.js`, not by looking at the app — the defect
+is invisible in either theme on its own.
+
+Sweeping all 51 frames for a translucent fill over a translucent border returns **ten** crimson,
+red and amber band surfaces. Two of them are relevant here:
+
+| site | dark | light |
+| --- | --- | --- |
+| attention band — `2a Needs you` | `rgba(255,107,107,.05)` / `.32` | **not drawn** |
+| recoverable card — `4a Deletions` right column, `9a Consent` | `rgba(255,107,107,.04)` / `.30` | `rgba(190,18,60,.03)` / `.28` (`12a Deletions light`) |
+
+F1 carried one pair: `--decision-bg`/`--decision-border`, dark `.05`/`.32` and light `.03`/`.28`.
+Those are **the attention band in dark and the recoverable card in light** — two different surfaces,
+one token. It could not have been otherwise: the light frame set is settled / syncing / compact ×3 /
+conflict / deletions / tray, and **no light frame draws the attention band**, so the light value had
+to come from somewhere else.
+
+Nothing consumed the pair yet, so nothing rendered wrong. It would have gone wrong the moment
+`bands.js` used it — whichever band claimed it, one theme would have drawn the other band's tint,
+and no screenshot review of a single theme could catch that.
+
+**Resolution.** Split by site, the same move §43 made for `--chip-attention-border`:
+
+| token | dark | light |
+| --- | --- | --- |
+| `--decision-band-bg` | `rgba(255,107,107,.05)` | `rgba(190,18,60,.04)` — **chosen** |
+| `--decision-band-border` | `rgba(255,107,107,.32)` | `rgba(190,18,60,.30)` — **chosen** |
+| `--decision-card-bg` | `rgba(255,107,107,.04)` | `rgba(190,18,60,.03)` |
+| `--decision-card-border` | `rgba(255,107,107,.30)` | `rgba(190,18,60,.28)` |
+
+Three of the four light values are measured. The light attention band is **chosen**, because nothing
+draws it. Derived from the card, which is drawn in both themes: `.04`/`.30` dark → `.03`/`.28` light,
+so the band's `.05`/`.32` → `.04`/`.30`. The cross-theme ratio (×0.75 on the fill) and the
+band-to-card delta (−`.01`/−`.02`) independently give the same two numbers, which is the only
+corroboration available without a frame. **S10 owns confirming it** when the light mapping is
+propagated to the undrawn screens.
+
+The `--destructive-*` pair was checked for the same defect and is clean: dark `.06`/`.38` and light
+`.04`/`.40` both come from `4a Deletions`' permanent card and its light twin. One token pair was
+broken, not the family.
+
+### 52a. The rest of the band tints, for whoever writes `bands.js`
+
+The other eight, unresolved here because they want measuring in place rather than up front:
+
+| site | fill | border |
+| --- | --- | --- |
+| `4a Deletions` permanent, `5a Plan` | `rgba(255,59,59,.06)` | `.38` |
+| `4a Compact` permanent | `rgba(255,59,59,.05)` | `.32` |
+| `4a Compact` recoverable | `rgba(255,107,107,.035)` | `.26` |
+| `8a Deletions tab` | `rgba(255,59,59,.04)` | `.30` |
+| `11a Rules` | `rgba(255,59,59,.05)` | `.30` |
+| `7a Activity quiet` never-synced | `rgba(255,159,28,.04)` | `.28` |
+
+Two things fall out. **The compact panel steps every alpha down one notch** (crimson `.04`→`.035`,
+`.30`→`.26`; red `.06`→`.05`, `.38`→`.32`), so tone and density are independent axes — the same
+shape `controls.js` found for kind and size. And **the never-synced band's amber has no token in
+either theme**: `--up-label` is the same hue in dark (`#ff9f1c`) but `#b23f14` in light, a different
+colour entirely. No light frame draws that band either, so it lands in the same chosen-value
+position as the attention band above.
+
+No band carries a solid fill in any frame. The one solid red in the app remains the
+`Delete permanently` button.
 
 ---
 
