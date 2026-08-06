@@ -27,8 +27,15 @@ import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 
 // ---- shell state ----
 let route = "main"; // the root or door currently showing
-let overlay = null; // the overlay stacked over it, if any
-let overlayReturn = null; // where to send focus when the overlay closes — see focusKeyOf
+// TWO OVERLAY LAYERS, because F5 measured that "overlay" was two things (routes.js `presentation`).
+// A screen overlay REPLACES the body; a dialog FLOATS over whatever body is showing. One slot for
+// both cannot represent a dialog over a screen overlay — and every screen overlay draws the four
+// doors, so opening `Details` from the Deletions screen is a click away. Collapsed into one slot it
+// silently dropped the user back to the door underneath, which is the exact "lose your place"
+// failure F4's note on the `details` route warns about. DEVIATIONS §57b.
+let screenStack = []; // [{ id, back }] — body-replacing overlays, innermost last
+let dialogOverlay = null; // the floating one, at most one at a time
+let dialogReturn = null; // where to send focus when it closes — see focusKeyOf
 let menuOpen = false;
 let configInfo = null;
 let configLoaded = false; // has the GUI config file been read at least once (even if empty)?
@@ -97,7 +104,12 @@ function navigate(id) {
   // IMPLEMENTATION-PLAN §3.3's assumption, and on Settings and Plan there is no other way back:
   // clicking the door you are already on returns to the main screen.
   route = route === id ? "main" : id;
-  closeOverlay();
+  // A door leaves everything stacked over the old screen behind — both layers, not just the top
+  // one. Cleared directly rather than by popping: the door itself keeps focus, so there is no
+  // return target to honour.
+  screenStack = [];
+  dialogOverlay = null;
+  dialogReturn = null;
   render();
 }
 
@@ -120,26 +132,46 @@ function focusKeyOf(node) {
 }
 
 function openOverlay(id, opener = null) {
-  const from = opener ?? document.activeElement;
-  overlay = id;
-  overlayReturn = { key: focusKeyOf(from), node: from };
+  const back = { key: focusKeyOf(opener ?? document.activeElement), node: opener ?? document.activeElement };
+  if (isDialog(id)) {
+    dialogOverlay = id;
+    dialogReturn = back;
+  } else {
+    // A dialog belonged to the screen it was opened over; moving to a different screen closes it
+    // rather than leaving it floating above something it was never about.
+    dialogOverlay = null;
+    dialogReturn = null;
+    screenStack.push({ id, back });
+  }
   render();
 }
 
-function closeOverlay() {
-  if (!overlay) return false;
-  // The takeover is not dismissible: it is entered by the latch and left by the daemon coming up.
-  if (ROUTES[overlay]?.takeover) return false;
-  overlay = null;
-  const back = overlayReturn;
-  overlayReturn = null;
-  render();
-  // Focus returns to whatever opened it — a dialog that drops focus to <body> makes the keyboard
-  // user start the screen again. Re-queried after the render, because the node it opened from may
-  // have been rebuilt in the meantime.
+/** Focus returns to whatever opened the layer. Re-queried after the render, because the node it
+ *  opened from may have been rebuilt in the meantime — see focusKeyOf. */
+function restoreFocus(back) {
   const target =
     (back?.key && document.querySelector(back.key)) || (back?.node?.isConnected ? back.node : null);
   target?.focus();
+}
+
+/** Close the topmost layer. The dialog is always above the screen stack, so it goes first. */
+function closeOverlay() {
+  if (dialogOverlay) {
+    dialogOverlay = null;
+    const back = dialogReturn;
+    dialogReturn = null;
+    render();
+    restoreFocus(back);
+    return true;
+  }
+  const top = screenStack[screenStack.length - 1];
+  if (!top) return false;
+  // The takeover is not dismissible: it is entered by the latch and left by the daemon coming up.
+  // Defensive — the latch drives onboarding without ever putting it on this stack.
+  if (ROUTES[top.id]?.takeover) return false;
+  screenStack.pop();
+  render();
+  restoreFocus(top.back);
   return true;
 }
 
@@ -272,12 +304,11 @@ function render() {
     statusPolled,
   );
 
-  // A dialog floats over the screen you were on; every other overlay replaces its body. Only the
-  // second kind reaches `active`, which is what keeps the screen underneath mounted — and mounted is
-  // the whole point, because F4's note on the `details` route asks for exactly that: "clicking it
-  // must not lose your place". See routes.js `isDialog` and DEVIATIONS §57.
-  const dialogRoute = !onboardingLatch && overlay && isDialog(overlay) ? overlay : null;
-  const active = onboardingLatch ? "onboarding" : dialogRoute ? route : (overlay ?? route);
+  // The two layers, read back out. A dialog floats over whatever body is showing — which may be a
+  // screen overlay and not `route`, and getting that wrong is what loses the user's place. See
+  // routes.js `isDialog` and DEVIATIONS §57.
+  const dialogRoute = onboardingLatch ? null : dialogOverlay;
+  const active = onboardingLatch ? "onboarding" : (screenStack[screenStack.length - 1]?.id ?? route);
   const spec = ROUTES[active];
   const chip = chipFor();
 
@@ -397,8 +428,10 @@ function render() {
             title,
             id: "dialog-title",
             size: w >= 600 ? "wide" : "compact",
-            // Esc closes it too, through F4's precedence chain. This is the pointer affordance.
-            onClose: () => closeOverlay(),
+            // Per route, not always. `8a Save refused` and `9a CLI missing` draw no ✕ at all — they
+            // are asking you to choose between two repairs, and a dismiss button in the corner is a
+            // third answer the design does not offer. Esc still closes them, through F4's chain.
+            onClose: dspec.closable ? () => closeOverlay() : null,
           }),
           screenPlaceholder(title, dspec.task && dspec.issue ? `${dspec.task} · issue ${dspec.issue}` : null),
         ],

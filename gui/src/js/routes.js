@@ -28,9 +28,14 @@ export const ROUTES = {
 
   // Details is the fourth FOOTER LABEL but the first overlay: 5a/6a draw it as a panel over the
   // screen you were on, not as a destination. Clicking it must not lose your place.
+  // `closable` is the ✕, and it is measured per dialog rather than assumed. The two INFORMATIONAL
+  // dialogs have one; `saveRefused` does not, because it is asking you to choose between two
+  // repairs and a dismiss button in the corner is a third answer the design does not offer. Esc
+  // still closes all three — the ✕ is the pointer affordance, not the only way out.
   details: {
     kind: "overlay",
     presentation: "dialog",
+    closable: true,
     label: "Details",
     size: [522, 462],
     task: "S5",
@@ -55,6 +60,7 @@ export const ROUTES = {
   neverSynced: {
     kind: "overlay",
     presentation: "dialog",
+    closable: true,
     size: [602, 602],
     task: "S5",
     issue: 184,
@@ -62,6 +68,7 @@ export const ROUTES = {
   saveRefused: {
     kind: "overlay",
     presentation: "dialog",
+    closable: false,
     tone: "refusal",
     size: [600, null],
     task: "S6",

@@ -94,7 +94,7 @@ test("an unknown id passes through unchanged, for the caller to reject", () => {
 //
 // `presentation` is what decides whether an overlay floats behind a scrim or replaces the screen's
 // body, and it was measured rather than chosen: a dialog is a standalone surface with no app header
-// and no footer doors, while the other overlays are full 1042x764 windows that keep both. Asserted
+// and no footer doors, while the other overlays are full 1042x766 windows that keep both. Asserted
 // here because the two are one word apart in the table and the wrong one is not a crash — it is a
 // scrim over a screen that should have been replaced, or a full window with no way back.
 
@@ -130,5 +130,17 @@ test("every dialog carries the drawn size, not the declared one", () => {
   const drawn = { details: [522, 462], neverSynced: [602, 602], saveRefused: [600, null] };
   for (const [id, size] of Object.entries(drawn)) {
     assert.deepEqual(ROUTES[id].size, size, `${id} must carry its drawn box`);
+  }
+});
+
+test("the ✕ is per dialog, and the refusal has none", () => {
+  // `8a Save refused` and `9a CLI missing` draw no close button: they ask you to choose between two
+  // repairs, and a dismiss in the corner is a third answer the design does not offer. Esc still
+  // closes them — the ✕ is the pointer affordance, not the only way out.
+  assert.equal(ROUTES.details.closable, true);
+  assert.equal(ROUTES.neverSynced.closable, true);
+  assert.equal(ROUTES.saveRefused.closable, false);
+  for (const id of Object.keys(ROUTES).filter(isDialog)) {
+    assert.equal(typeof ROUTES[id].closable, "boolean", `${id} must say whether it has a ✕`);
   }
 });

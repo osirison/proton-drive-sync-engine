@@ -54,8 +54,13 @@ const TONE = {
  * which is what the four `box-sizing:border-box` frames do.
  *
  * `label` names the dialog for a screen reader when it has no visible title; `labelledBy` points at
- * the id of the one it does have. A modal with neither announces itself as "dialog" and nothing
- * else, which for `8a Save refused` would drop the entire reason it opened.
+ * the id of the one it does have. EXACTLY ONE, enforced rather than documented: ARIA gives
+ * `aria-labelledby` precedence, so passing both is not an error that surfaces — it is a `label` that
+ * silently does nothing, and the caller who wrote it believes the dialog is named the other way.
+ *
+ * Neither is a throw. A modal announcing itself as "dialog" and nothing else is an accessibility
+ * defect rather than a degraded experience, and for `8a Save refused` it would drop the entire
+ * reason the thing opened. Better to fail in the one place that can still be fixed cheaply.
  */
 export function dialog({
   width,
@@ -69,6 +74,10 @@ export function dialog({
   if (!width) throw new Error("dialog: width is required — write the drawn number, see §48a");
   const border = TONE[tone];
   if (!border) throw new Error(`dialog: unknown tone "${tone}". Known: ${Object.keys(TONE).join(", ")}`);
+  if (!label && !labelledBy)
+    throw new Error("dialog: needs a `label` or a `labelledBy` — see the note above");
+  if (label && labelledBy)
+    throw new Error("dialog: pass `label` OR `labelledBy`, not both — aria-labelledby would win silently");
 
   const surface = el(
     "div",

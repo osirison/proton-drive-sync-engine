@@ -1142,6 +1142,37 @@ the armed deletion's typed-`DELETE` field clears on blur by design, so a layer r
 poll would destroy the field mid-word and make the gate impossible to finish. Verified by holding a
 node reference across two polls.
 
+### 57b. One overlay slot cannot hold two layers — found in review
+
+The first version of the dialog layer kept F4's single `overlay` variable and derived the body from
+it: `active = dialogRoute ? route : (overlay ?? route)`. That reads as conservative and is not. With
+one slot, opening a dialog **overwrites** whatever screen overlay was showing, and the fallback to
+`route` then drops the user onto the door underneath.
+
+It is one click away, not a corner case: **all three screen overlays draw the four doors**, `Details`
+among them, measured on `3a Conflict`, `4a Deletions` and `4a Armed`. So opening Details from the
+Deletions screen lost the Deletions screen — the exact failure F4's note on the `details` route warns
+about, reintroduced by the module written to honour it.
+
+Fixed by giving the two presentations two pieces of state: a **stack** for screen overlays (so
+`4a Armed` over `4a Deletions` returns to the deletions screen rather than to a door) and a single
+slot for the dialog, which is always above it. `Esc` closes the topmost — dialog first, then the
+stack — and each layer carries its own focus-return key. Opening a screen overlay dismisses any
+dialog, because the dialog belonged to the screen being left.
+
+Verified end to end: screen overlay open → dialog over it keeps the screen mounted → `Esc` closes
+only the dialog and returns focus to the door that opened it → `Esc` again closes the screen overlay.
+
+Two smaller things from the same review, both real:
+
+- **The ✕ is per dialog.** The layer passed `onClose` unconditionally, contradicting this file's own
+  §57 table — `8a Save refused` and `9a CLI missing` draw no close button, because they ask you to
+  choose between two repairs and a dismiss in the corner is a third answer the design does not offer.
+  Now `closable` in `routes.js`, with a test. `Esc` still closes all three.
+- **A dialog takes `label` or `labelledBy`, never both and never neither.** ARIA gives
+  `aria-labelledby` precedence, so passing both is not an error that surfaces — it is a `label` that
+  silently does nothing while its author believes the dialog is named. Both cases now throw.
+
 ---
 
 ## Phase-1 capability deviations
