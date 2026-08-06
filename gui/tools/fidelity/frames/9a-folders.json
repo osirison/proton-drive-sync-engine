@@ -1,0 +1,1239 @@
+{
+  "label": "9a Folders",
+  "kind": "window",
+  "width": 1042,
+  "height": 766,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "box": {
+        "w": 1042,
+        "h": 766
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "width": "1040px",
+        "height": "764px",
+        "display": "flex",
+        "flex-direction": "column",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "header",
+      "tag": "header",
+      "box": {
+        "w": 1040,
+        "h": 52
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "20px",
+        "padding-left": "20px",
+        "width": "1000px",
+        "height": "52px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "header/img",
+      "tag": "img",
+      "box": {
+        "w": 20,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "20px",
+        "height": "20px",
+        "overflow": "clip"
+      }
+    },
+    {
+      "key": "header/span[0]",
+      "tag": "span",
+      "text": "Proton Drive Sync",
+      "box": {
+        "w": 107.52,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "600",
+        "letter-spacing": "-0.13px",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "107.516px",
+        "height": "16px"
+      }
+    },
+    {
+      "key": "header/span[1]",
+      "tag": "span",
+      "box": {
+        "w": 763.88,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "763.875px",
+        "height": "0px",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "header/span[2]",
+      "tag": "span",
+      "text": "step 1 of 2",
+      "box": {
+        "w": 72.61,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "width": "72.6094px",
+        "height": "14px"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "box": {
+        "w": 1040,
+        "h": 84
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-top": "20px",
+        "padding-right": "32px",
+        "padding-left": "32px",
+        "width": "976px",
+        "height": "64px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[0]/div[0]",
+      "tag": "div",
+      "text": "Which two folders should match?",
+      "box": {
+        "w": 976,
+        "h": 37
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "30px",
+        "font-weight": "600",
+        "letter-spacing": "-0.9px",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "976px",
+        "height": "37px"
+      }
+    },
+    {
+      "key": "div[0]/div[1]",
+      "tag": "div",
+      "text": "One on this computer, one on Proton Drive. From then on they stay identical.",
+      "box": {
+        "w": 976,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-top": "9px",
+        "width": "976px",
+        "height": "18px"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "box": {
+        "w": 1040,
+        "h": 521
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "32px",
+        "padding-left": "32px",
+        "margin-top": "36px",
+        "width": "976px",
+        "height": "521px",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "position": "relative",
+        "top": "0px",
+        "right": "0px",
+        "bottom": "0px",
+        "left": "0px"
+      }
+    },
+    {
+      "key": "div[1]/div[0]",
+      "tag": "div",
+      "box": {
+        "w": 1,
+        "h": 250
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-image": "linear-gradient(rgb(10, 11, 13), rgb(42, 46, 54) 22%, rgb(42, 46, 54) 78%, rgb(10, 11, 13))",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "1px",
+        "height": "250px",
+        "position": "absolute",
+        "top": "0px",
+        "right": "519px",
+        "bottom": "271px",
+        "left": "520px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]",
+      "tag": "div",
+      "box": {
+        "w": 976,
+        "h": 221.5
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "976px",
+        "height": "221.5px",
+        "display": "grid",
+        "grid-template-columns": "488px 488px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]",
+      "tag": "div",
+      "box": {
+        "w": 488,
+        "h": 221.5
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "36px",
+        "width": "452px",
+        "height": "221.5px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[0]",
+      "tag": "div",
+      "box": {
+        "w": 452,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "452px",
+        "height": "13px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "10px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[0]/span[0]",
+      "tag": "span",
+      "box": {
+        "w": 8,
+        "h": 8
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(255, 159, 28)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%",
+        "width": "8px",
+        "height": "8px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[0]/span[1]",
+      "tag": "span",
+      "text": "This computer",
+      "box": {
+        "w": 102.97,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(255, 159, 28)",
+        "border-top-color": "rgb(255, 159, 28)",
+        "border-right-color": "rgb(255, 159, 28)",
+        "border-bottom-color": "rgb(255, 159, 28)",
+        "border-left-color": "rgb(255, 159, 28)",
+        "width": "102.969px",
+        "height": "13px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[1]",
+      "tag": "div",
+      "box": {
+        "w": 452,
+        "h": 147
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(46, 50, 58)",
+        "border-right-color": "rgb(46, 50, 58)",
+        "border-bottom-color": "rgb(46, 50, 58)",
+        "border-left-color": "rgb(46, 50, 58)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "14px",
+        "border-top-right-radius": "14px",
+        "border-bottom-right-radius": "14px",
+        "border-bottom-left-radius": "14px",
+        "padding-top": "18px",
+        "padding-right": "20px",
+        "padding-bottom": "18px",
+        "padding-left": "20px",
+        "margin-top": "13px",
+        "width": "410px",
+        "height": "109px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[1]/div[0]",
+      "tag": "div",
+      "text": "~/ProtonDrive",
+      "box": {
+        "w": 410,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "14px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "410px",
+        "height": "18px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[1]/div[1]",
+      "tag": "div",
+      "box": {
+        "w": 410,
+        "h": 28
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "12px",
+        "margin-top": "12px",
+        "width": "410px",
+        "height": "15px",
+        "display": "flex",
+        "gap": "16px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[1]/div[1]/span[0]",
+      "tag": "span",
+      "text": "341 files",
+      "box": {
+        "w": 62.11,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "width": "62.1094px",
+        "height": "15px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[1]/div[1]/span[1]",
+      "tag": "span",
+      "text": "2.1 GB",
+      "box": {
+        "w": 41.41,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "width": "41.4062px",
+        "height": "15px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[1]/button",
+      "tag": "button",
+      "text": "Choose a different folder…",
+      "box": {
+        "w": 410,
+        "h": 37
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "9px",
+        "border-top-right-radius": "9px",
+        "border-bottom-right-radius": "9px",
+        "border-bottom-left-radius": "9px",
+        "padding-top": "10px",
+        "padding-right": "10px",
+        "padding-bottom": "10px",
+        "padding-left": "10px",
+        "margin-top": "14px",
+        "width": "410px",
+        "height": "37px",
+        "display": "inline-block"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]/div[2]",
+      "tag": "div",
+      "text": "A new empty folder is fine — everything on Proton Drive will be brought down into it.",
+      "box": {
+        "w": 452,
+        "h": 37.5
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.75px",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "margin-top": "11px",
+        "width": "452px",
+        "height": "37.5px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]",
+      "tag": "div",
+      "box": {
+        "w": 488,
+        "h": 221.5
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-left": "36px",
+        "width": "452px",
+        "height": "221.5px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[0]",
+      "tag": "div",
+      "box": {
+        "w": 452,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "452px",
+        "height": "13px",
+        "display": "flex",
+        "align-items": "center",
+        "justify-content": "flex-end",
+        "gap": "10px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[0]/span[0]",
+      "tag": "span",
+      "text": "Proton Drive",
+      "box": {
+        "w": 93.36,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(34, 211, 238)",
+        "border-top-color": "rgb(34, 211, 238)",
+        "border-right-color": "rgb(34, 211, 238)",
+        "border-bottom-color": "rgb(34, 211, 238)",
+        "border-left-color": "rgb(34, 211, 238)",
+        "width": "93.3594px",
+        "height": "13px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[0]/span[1]",
+      "tag": "span",
+      "box": {
+        "w": 8,
+        "h": 8
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(34, 211, 238)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%",
+        "width": "8px",
+        "height": "8px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[1]",
+      "tag": "div",
+      "box": {
+        "w": 452,
+        "h": 147
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(46, 50, 58)",
+        "border-right-color": "rgb(46, 50, 58)",
+        "border-bottom-color": "rgb(46, 50, 58)",
+        "border-left-color": "rgb(46, 50, 58)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "14px",
+        "border-top-right-radius": "14px",
+        "border-bottom-right-radius": "14px",
+        "border-bottom-left-radius": "14px",
+        "padding-top": "18px",
+        "padding-right": "20px",
+        "padding-bottom": "18px",
+        "padding-left": "20px",
+        "margin-top": "13px",
+        "width": "410px",
+        "height": "109px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[1]/div[0]",
+      "tag": "div",
+      "text": "/Drive/RemoteFolder",
+      "box": {
+        "w": 410,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "14px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "right",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "410px",
+        "height": "18px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[1]/div[1]",
+      "tag": "div",
+      "box": {
+        "w": 410,
+        "h": 28
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "12px",
+        "margin-top": "12px",
+        "width": "410px",
+        "height": "15px",
+        "display": "flex",
+        "justify-content": "flex-end",
+        "gap": "16px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[1]/div[1]/span[0]",
+      "tag": "span",
+      "text": "12,139 files",
+      "box": {
+        "w": 82.81,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "width": "82.8125px",
+        "height": "15px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[1]/div[1]/span[1]",
+      "tag": "span",
+      "text": "39.1 GB",
+      "box": {
+        "w": 48.31,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "width": "48.3125px",
+        "height": "15px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[1]/button",
+      "tag": "button",
+      "text": "Browse Proton Drive…",
+      "box": {
+        "w": 410,
+        "h": 37
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "9px",
+        "border-top-right-radius": "9px",
+        "border-bottom-right-radius": "9px",
+        "border-bottom-left-radius": "9px",
+        "padding-top": "10px",
+        "padding-right": "10px",
+        "padding-bottom": "10px",
+        "padding-left": "10px",
+        "margin-top": "14px",
+        "width": "410px",
+        "height": "37px",
+        "display": "inline-block"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[2]",
+      "tag": "div",
+      "text": "Signed in as · 39.1 GB of 500 GB used",
+      "box": {
+        "w": 452,
+        "h": 18.75
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.75px",
+        "text-align": "right",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "margin-top": "11px",
+        "width": "452px",
+        "height": "18.75px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]/div[2]/span",
+      "tag": "span",
+      "text": "you@proton.me",
+      "box": {
+        "w": 93.61,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "right",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "width": "auto",
+        "height": "auto",
+        "display": "inline"
+      }
+    },
+    {
+      "key": "div[1]/div[2]",
+      "tag": "div",
+      "box": {
+        "w": 976,
+        "h": 63
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(13, 14, 17)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "padding-top": "14px",
+        "padding-right": "18px",
+        "padding-bottom": "14px",
+        "padding-left": "18px",
+        "margin-top": "34px",
+        "width": "938px",
+        "height": "33px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/span",
+      "tag": "span",
+      "text": "⊘",
+      "box": {
+        "w": 10.91,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)",
+        "width": "10.9062px",
+        "height": "16px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div",
+      "tag": "div",
+      "text": "You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.",
+      "box": {
+        "w": 791.11,
+        "h": 18.75
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.75px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "width": "791.109px",
+        "height": "18.75px",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/button",
+      "tag": "button",
+      "text": "Add skip rules",
+      "box": {
+        "w": 111.98,
+        "h": 33
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "9px",
+        "border-top-right-radius": "9px",
+        "border-bottom-right-radius": "9px",
+        "border-bottom-left-radius": "9px",
+        "padding-top": "8px",
+        "padding-right": "15px",
+        "padding-bottom": "8px",
+        "padding-left": "15px",
+        "width": "111.984px",
+        "height": "33px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]",
+      "tag": "div",
+      "box": {
+        "w": 1040,
+        "h": 71
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "14px",
+        "padding-right": "32px",
+        "padding-bottom": "18px",
+        "padding-left": "32px",
+        "width": "976px",
+        "height": "38px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[2]/span[0]",
+      "tag": "span",
+      "text": "Nothing is copied or changed until you approve the plan.",
+      "box": {
+        "w": 307.03,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "width": "307.031px",
+        "height": "15px"
+      }
+    },
+    {
+      "key": "div[2]/span[1]",
+      "tag": "span",
+      "box": {
+        "w": 468.72,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "468.719px",
+        "height": "0px",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/button",
+      "tag": "button",
+      "text": "See what will happen",
+      "box": {
+        "w": 176.25,
+        "h": 38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(10, 11, 13)",
+        "background-color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(10, 11, 13)",
+        "border-right-color": "rgb(10, 11, 13)",
+        "border-bottom-color": "rgb(10, 11, 13)",
+        "border-left-color": "rgb(10, 11, 13)",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "24px",
+        "padding-bottom": "11px",
+        "padding-left": "24px",
+        "width": "176.25px",
+        "height": "38px"
+      }
+    }
+  ]
+}

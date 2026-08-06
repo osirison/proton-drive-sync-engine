@@ -1,0 +1,846 @@
+{
+  "label": "7a Never synced",
+  "kind": "dialog",
+  "width": 602,
+  "height": 602,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "box": {
+        "w": 602,
+        "h": 602
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "width": "600px",
+        "height": "600px",
+        "display": "flex",
+        "flex-direction": "column",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "box": {
+        "w": 600,
+        "h": 69.38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-top": "22px",
+        "padding-right": "24px",
+        "padding-left": "24px",
+        "width": "552px",
+        "height": "47.375px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "flex-start",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[0]/div",
+      "tag": "div",
+      "box": {
+        "w": 514,
+        "h": 47.38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "514px",
+        "height": "47.375px",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[0]/div/div[0]",
+      "tag": "div",
+      "text": "4 files are never synced",
+      "box": {
+        "w": 514,
+        "h": 22
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "18px",
+        "font-weight": "600",
+        "letter-spacing": "-0.36px",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "514px",
+        "height": "22px"
+      }
+    },
+    {
+      "key": "div[0]/div/div[1]",
+      "tag": "div",
+      "text": "They live in your folder but no copy exists on Proton Drive.",
+      "box": {
+        "w": 514,
+        "h": 19.38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "19.375px",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-top": "6px",
+        "width": "514px",
+        "height": "19.375px"
+      }
+    },
+    {
+      "key": "div[0]/button",
+      "tag": "button",
+      "text": "✕",
+      "box": {
+        "w": 26,
+        "h": 26
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "7px",
+        "border-top-right-radius": "7px",
+        "border-bottom-right-radius": "7px",
+        "border-bottom-left-radius": "7px",
+        "padding-top": "1px",
+        "padding-right": "6px",
+        "padding-bottom": "1px",
+        "padding-left": "6px",
+        "width": "26px",
+        "height": "26px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "box": {
+        "w": 600,
+        "h": 430.63
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "24px",
+        "padding-left": "24px",
+        "margin-top": "20px",
+        "width": "552px",
+        "height": "430.625px",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[1]/div[0]",
+      "tag": "div",
+      "text": "You told it to skip these",
+      "box": {
+        "w": 552,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(255, 159, 28)",
+        "border-top-color": "rgb(255, 159, 28)",
+        "border-right-color": "rgb(255, 159, 28)",
+        "border-bottom-color": "rgb(255, 159, 28)",
+        "border-left-color": "rgb(255, 159, 28)",
+        "width": "552px",
+        "height": "13px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]",
+      "tag": "div",
+      "text": "A rule in your settings matches them:",
+      "box": {
+        "w": 552,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-top": "7px",
+        "width": "552px",
+        "height": "18px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/span",
+      "tag": "span",
+      "text": "*.tmp",
+      "box": {
+        "w": 34.5,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "17.25px",
+        "text-align": "start",
+        "color": "rgb(201, 208, 218)",
+        "border-top-color": "rgb(201, 208, 218)",
+        "border-right-color": "rgb(201, 208, 218)",
+        "border-bottom-color": "rgb(201, 208, 218)",
+        "border-left-color": "rgb(201, 208, 218)",
+        "width": "auto",
+        "height": "auto",
+        "display": "inline"
+      }
+    },
+    {
+      "key": "div[1]/div[2]",
+      "tag": "div",
+      "box": {
+        "w": 552,
+        "h": 35
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "9px",
+        "padding-right": "2px",
+        "padding-bottom": "9px",
+        "padding-left": "2px",
+        "margin-top": "11px",
+        "width": "548px",
+        "height": "16px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/span[0]",
+      "tag": "span",
+      "text": "exports/draft.tmp",
+      "box": {
+        "w": 496.39,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(201, 208, 218)",
+        "border-top-color": "rgb(201, 208, 218)",
+        "border-right-color": "rgb(201, 208, 218)",
+        "border-bottom-color": "rgb(201, 208, 218)",
+        "border-left-color": "rgb(201, 208, 218)",
+        "width": "496.391px",
+        "height": "16px",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/span[1]",
+      "tag": "span",
+      "text": "2.1 MB",
+      "box": {
+        "w": 39.61,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "width": "39.6094px",
+        "height": "14px"
+      }
+    },
+    {
+      "key": "div[1]/div[3]",
+      "tag": "div",
+      "box": {
+        "w": 552,
+        "h": 35
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "9px",
+        "padding-right": "2px",
+        "padding-bottom": "9px",
+        "padding-left": "2px",
+        "width": "548px",
+        "height": "16px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[1]/div[3]/span[0]",
+      "tag": "span",
+      "text": "exports/render-final.tmp",
+      "box": {
+        "w": 496.39,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(201, 208, 218)",
+        "border-top-color": "rgb(201, 208, 218)",
+        "border-right-color": "rgb(201, 208, 218)",
+        "border-bottom-color": "rgb(201, 208, 218)",
+        "border-left-color": "rgb(201, 208, 218)",
+        "width": "496.391px",
+        "height": "16px",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[1]/div[3]/span[1]",
+      "tag": "span",
+      "text": "840 KB",
+      "box": {
+        "w": 39.61,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "width": "39.6094px",
+        "height": "14px"
+      }
+    },
+    {
+      "key": "div[1]/button",
+      "tag": "button",
+      "text": "Change this rule",
+      "box": {
+        "w": 119.86,
+        "h": 31
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "7px",
+        "padding-right": "14px",
+        "padding-bottom": "7px",
+        "padding-left": "14px",
+        "margin-top": "12px",
+        "width": "119.859px",
+        "height": "31px",
+        "display": "inline-block"
+      }
+    },
+    {
+      "key": "div[1]/div[4]",
+      "tag": "div",
+      "text": "Can't be synced",
+      "box": {
+        "w": 552,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)",
+        "margin-top": "26px",
+        "width": "552px",
+        "height": "13px"
+      }
+    },
+    {
+      "key": "div[1]/div[5]",
+      "tag": "div",
+      "text": "Not real files — Proton Drive has nothing to store for them.",
+      "box": {
+        "w": 552,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-top": "7px",
+        "width": "552px",
+        "height": "18px"
+      }
+    },
+    {
+      "key": "div[1]/div[6]",
+      "tag": "div",
+      "box": {
+        "w": 552,
+        "h": 35
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "9px",
+        "padding-right": "2px",
+        "padding-bottom": "9px",
+        "padding-left": "2px",
+        "margin-top": "11px",
+        "width": "548px",
+        "height": "16px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[1]/div[6]/span[0]",
+      "tag": "span",
+      "text": ".cache/session.sock",
+      "box": {
+        "w": 492.52,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "width": "492.516px",
+        "height": "16px",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[1]/div[6]/span[1]",
+      "tag": "span",
+      "text": "a socket",
+      "box": {
+        "w": 43.48,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "width": "43.4844px",
+        "height": "14px"
+      }
+    },
+    {
+      "key": "div[1]/div[7]",
+      "tag": "div",
+      "box": {
+        "w": 552,
+        "h": 36
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "9px",
+        "padding-right": "2px",
+        "padding-bottom": "9px",
+        "padding-left": "2px",
+        "width": "548px",
+        "height": "17px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[1]/div[7]/span[0]",
+      "tag": "span",
+      "text": "projects/current → ~/work/q3",
+      "box": {
+        "w": 482.77,
+        "h": 17
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "width": "482.766px",
+        "height": "17px",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[1]/div[7]/span[1]",
+      "tag": "span",
+      "text": "a shortcut",
+      "box": {
+        "w": 53.23,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "width": "53.2344px",
+        "height": "14px"
+      }
+    },
+    {
+      "key": "div[2]",
+      "tag": "div",
+      "box": {
+        "w": 600,
+        "h": 66
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "14px",
+        "padding-right": "24px",
+        "padding-bottom": "18px",
+        "padding-left": "24px",
+        "margin-top": "14px",
+        "width": "552px",
+        "height": "33px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[2]/span[0]",
+      "tag": "span",
+      "text": "Nothing here is at risk — it's just not backed up.",
+      "box": {
+        "w": 253.53,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "width": "253.531px",
+        "height": "15px"
+      }
+    },
+    {
+      "key": "div[2]/span[1]",
+      "tag": "span",
+      "box": {
+        "w": 211.27,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "width": "211.266px",
+        "height": "0px",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/button",
+      "tag": "button",
+      "text": "Done",
+      "box": {
+        "w": 63.2,
+        "h": 33
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "9px",
+        "border-top-right-radius": "9px",
+        "border-bottom-right-radius": "9px",
+        "border-bottom-left-radius": "9px",
+        "padding-top": "8px",
+        "padding-right": "15px",
+        "padding-bottom": "8px",
+        "padding-left": "15px",
+        "width": "63.2031px",
+        "height": "33px"
+      }
+    }
+  ]
+}
