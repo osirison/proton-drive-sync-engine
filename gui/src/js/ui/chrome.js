@@ -128,6 +128,38 @@ export function renderHeader({ chip = "idle", chipText = "idle", onMenu = null, 
   );
 }
 
+/**
+ * Patch a rendered header across a poll. Same reason as updateFooterNav: a rebuild every 2s makes
+ * the ⋯ button unfocusable and restarts the syncing dot's `blip` mid-cycle, which is precisely the
+ * failure `updateHexagon` was built to avoid one primitive earlier.
+ *
+ * The chip node is REPLACED only when its variant changes, and its text patched otherwise — so a
+ * count ticking from 2 to 3 does not restart the animation on a dot that has one.
+ *
+ * Returns false when the header's shape changed (the ⋯ or the home button appearing or
+ * disappearing), which is the caller's signal to rebuild.
+ */
+export function updateHeader(
+  header,
+  { chip = "idle", chipText = "idle", hasMenu = true, hasHome = false } = {},
+) {
+  if (Boolean(header.querySelector(".menu-btn")) !== hasMenu) return false;
+  if (Boolean(header.querySelector("button.app-home")) !== hasHome) return false;
+
+  const quiet = isQuietChip(chip);
+  header.querySelector(".app-mark").classList.toggle("is-quiet", quiet);
+  header.querySelector(".app-name").classList.toggle("is-quiet", quiet);
+
+  const current = header.querySelector(".chip");
+  if (current.dataset.variant === chip) {
+    const text = current.querySelector(".chip-text");
+    if (text.textContent !== chipText) text.textContent = chipText;
+  } else {
+    current.replaceWith(statusChip(chip, chipText));
+  }
+  return true;
+}
+
 // --------------------------------------------------------------------------- the footer nav ----
 
 /**
@@ -184,6 +216,9 @@ export function renderFooterNav({
         "button",
         {
           class: "door" + (id === active ? " is-active" : ""),
+          // The route id, so the shell can patch the active door across a poll instead of
+          // rebuilding the footer — see updateFooterNav.
+          "data-route": id,
           onClick: () => onNavigate(id),
           "aria-current": id === active ? "page" : null,
         },
@@ -200,6 +235,35 @@ export function renderFooterNav({
   );
   nav.style.paddingBottom = `${spec.bottom}px`;
   return nav;
+}
+
+/**
+ * Patch a rendered footer nav across a poll: the active door, and the mono line's text.
+ *
+ * This exists for the same reason `updateHexagon` does, and its absence was a worse bug than the
+ * one that motivated that. The shell re-renders on every status poll (~2s); rebuilding the footer
+ * destroys the button the user is standing on, so **keyboard focus dropped to `<body>` within 1.2
+ * seconds** of tabbing to a door — measured, not theorised. `14-behaviour-and-state.md`: "Every
+ * control must be keyboard-reachable — this is a desktop app."
+ *
+ * Returns false when the change is structural (a different padding variant, or the line appearing
+ * or disappearing), which is the caller's signal to rebuild instead.
+ */
+export function updateFooterNav(nav, { active = null, variant = "standard", line = null } = {}) {
+  const spec = FOOTER_NAV[variant];
+  if (!spec) return false;
+  if (`${spec.bottom}px` !== nav.style.paddingBottom) return false;
+  const lineNode = nav.querySelector(".footer-line");
+  if (Boolean(spec.line && line) !== Boolean(lineNode)) return false;
+
+  for (const door of nav.querySelectorAll("[data-route]")) {
+    const isActive = door.dataset.route === active;
+    door.classList.toggle("is-active", isActive);
+    if (isActive) door.setAttribute("aria-current", "page");
+    else door.removeAttribute("aria-current");
+  }
+  if (lineNode && lineNode.textContent !== line) lineNode.textContent = line;
+  return true;
 }
 
 // -------------------------------------------------------------------- the footer action bar ----

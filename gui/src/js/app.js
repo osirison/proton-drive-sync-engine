@@ -15,7 +15,14 @@ import { api } from "./api.js";
 import * as store from "./store.js";
 import { ROUTES, FOOTER_ORDER, isOverlay, nextOnboardingLatch } from "./routes.js";
 import { el } from "./ui/el.js";
-import { renderHeader, renderFooterNav, renderActionBar, screenPlaceholder } from "./ui/chrome.js";
+import {
+  renderHeader,
+  updateHeader,
+  renderFooterNav,
+  updateFooterNav,
+  renderActionBar,
+  screenPlaceholder,
+} from "./ui/chrome.js";
 
 // ---- shell state ----
 let route = "main"; // the root or door currently showing
@@ -195,6 +202,20 @@ function renderMenu() {
 
 // ---- render ----
 
+// Rendered nodes, held across polls. THE SHELL IS BUILT ONCE AND PATCHED, never rebuilt on a timer.
+//
+// This is not an optimisation. The shell re-renders on every status poll (~2 s), and a rebuild
+// destroys whatever the user is standing on: tab to a door and focus drops to `<body>` inside 1.2
+// seconds — measured on the first version of this file, not theorised. `14-behaviour-and-state.md`
+// is explicit that every control must be keyboard-reachable "because this is a desktop app", and a
+// window that silently discards focus twice a second is not.
+//
+// It is also the constraint F2 wrote down. `updateHexagon`'s comment says the screens "must call
+// this rather than re-rendering", because replaceChildren restarts both CSS animations from 0% —
+// the v1 spinner bug. The chip's `blip` dot is the same hazard one primitive earlier, and every
+// hexagon S1 puts on the main screen will be too.
+const dom = { header: null, body: null, footer: null, footerKind: null, bodyRoute: null };
+
 function render() {
   const root = document.getElementById("app-root");
   const st = store.select.daemonState();
@@ -218,51 +239,86 @@ function render() {
   const spec = ROUTES[active];
   const chip = chipFor();
 
-  const header = renderHeader({
+  const onMain = route === "main" && !overlay;
+  const headerOpts = {
     chip: chip.variant,
     chipText: chip.text,
     // Onboarding drops the ⋯ button, not just the chip — both 9a frames have four header slots.
-    onMenu: onboardingLatch
-      ? null
-      : () => {
-          menuOpen = !menuOpen;
-          render();
-        },
-    onHome: route === "main" && !overlay ? null : () => navigate("main"),
-  });
+    hasMenu: !onboardingLatch,
+    hasHome: !onMain,
+  };
+  const navOpts = {
+    active: ROUTES[route]?.kind === "door" ? route : null,
+    // The mono line is drawn only on the settled and syncing main screens; every other footer with
+    // doors omits it and tightens by 4px.
+    variant: onMain ? "withLine" : "standard",
+    line: onMain ? `${localRoot ?? "—"} ⇄ ${remoteRoot ?? "—"}` : null,
+  };
 
-  // The main screen has no S-task of its own in the route table, so it gets no issue chip rather
-  // than an "F4 · issue" with nothing after it.
-  const body = screenPlaceholder(
-    spec.label ?? titleFor(active),
-    spec.task && spec.issue ? `${spec.task} · issue ${spec.issue}` : null,
-  );
+  // --- header: patched in place, rebuilt only when its shape changes
+  if (!dom.header || !updateHeader(dom.header, headerOpts)) {
+    const built = renderHeader({
+      ...headerOpts,
+      onMenu: headerOpts.hasMenu
+        ? () => {
+            menuOpen = !menuOpen;
+            render();
+          }
+        : null,
+      onHome: headerOpts.hasHome ? () => navigate("main") : null,
+    });
+    if (dom.header) dom.header.replaceWith(built);
+    else root.append(built);
+    dom.header = built;
+  }
 
-  // Either the four doors or an action bar — never both, never neither. The 13-to-6 split is
-  // measured, not chosen; see routes.js.
-  const footer =
-    (spec.footer ?? "doors") === "actionBar"
-      ? renderActionBar({
-          consequence: "This screen is not built yet.",
-          // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
-          bottom: spec.takeover ? 18 : 14,
-        })
-      : renderFooterNav({
-          order: FOOTER_ORDER,
-          active: ROUTES[route]?.kind === "door" ? route : null,
-          labels: Object.fromEntries(FOOTER_ORDER.map((id) => [id, ROUTES[id].label])),
-          onNavigate: navigate,
-          // The mono line is drawn only on the settled and syncing main screens; every other footer
-          // with doors omits it and tightens by 4px.
-          variant: route === "main" && !overlay ? "withLine" : "standard",
-          line: route === "main" && !overlay ? `${localRoot ?? "—"} ⇄ ${remoteRoot ?? "—"}` : null,
-        });
+  // --- body: replaced only when the route changes, so a screen can hold its own nodes across polls
+  if (dom.bodyRoute !== active) {
+    // The main screen has no S-task of its own in the route table, so it gets no issue chip rather
+    // than an "F4 · issue" with nothing after it.
+    const built = screenPlaceholder(
+      spec.label ?? titleFor(active),
+      spec.task && spec.issue ? `${spec.task} · issue ${spec.issue}` : null,
+    );
+    if (dom.body) dom.body.replaceWith(built);
+    else root.append(built);
+    dom.body = built;
+    dom.bodyRoute = active;
+  }
 
-  // `.filter(Boolean)` is load-bearing: `replaceChildren(null)` appends a literal "null" TEXT NODE
-  // rather than nothing, so a closed ⋯ menu would print the word in the top-left corner. The v1
-  // app.js carried this guard and a comment saying so; dropping it in the rewrite reintroduced the
-  // bug, and every class-based assertion still passed — it took looking at a screenshot.
-  root.replaceChildren(...[header, renderMenu(), body, footer].filter(Boolean));
+  // --- footer: either the four doors or an action bar — never both, never neither. The 13-to-6
+  // split is measured, not chosen; see routes.js.
+  const kind = spec.footer ?? "doors";
+  const navPatched = kind === "doors" && dom.footerKind === "doors" && updateFooterNav(dom.footer, navOpts);
+  if (!navPatched) {
+    const built =
+      kind === "actionBar"
+        ? renderActionBar({
+            consequence: "This screen is not built yet.",
+            // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
+            bottom: spec.takeover ? 18 : 14,
+          })
+        : renderFooterNav({
+            ...navOpts,
+            order: FOOTER_ORDER,
+            labels: Object.fromEntries(FOOTER_ORDER.map((id) => [id, ROUTES[id].label])),
+            onNavigate: navigate,
+          });
+    if (dom.footer) dom.footer.replaceWith(built);
+    else root.append(built);
+    dom.footer = built;
+    dom.footerKind = kind;
+  }
+
+  // --- the ⋯ menu, the one part that is genuinely torn down and rebuilt. It has no animation and
+  // no focus to lose that closing it would not have taken anyway.
+  root.querySelector(".menu-popover")?.remove();
+  // Appended, never passed to replaceChildren: `replaceChildren(null)` appends the literal string
+  // "null" as a TEXT NODE. The v1 app.js carried that guard and a comment saying so; dropping it in
+  // the rewrite printed "null" in the corner of the window, and every class-based assertion still
+  // passed — it took looking at a screenshot.
+  const menu = renderMenu();
+  if (menu) dom.header.after(menu);
 }
 
 function titleFor(id) {

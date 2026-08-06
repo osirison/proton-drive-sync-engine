@@ -694,6 +694,27 @@ different things, and does not resolve the contradiction. Stopping the daemon is
 with data consequences; it belongs to S8 (#187), which owns the tray, and guessing the more
 destructive of two readings from a keyboard shortcut is the wrong way to settle it.
 
+## 45a. The shell is built once and patched, never rebuilt on the poll
+
+Not a deviation from the design — a constraint the design already stated, which the first version of
+`app.js` broke. `updateHexagon`'s comment (§F2) says the screens "must call this rather than
+re-rendering", because `replaceChildren` restarts both CSS animations from 0%; that was written
+about the hexagon, and it is a shell problem before it is ever a screen problem.
+
+Measured on the first draft: the shell re-rendered on every status poll (~2 s), and tabbing to a
+door dropped keyboard focus to `<body>` **within 1.2 seconds**. `14-behaviour-and-state.md` requires
+every control to be keyboard-reachable "because this is a desktop app", and a window that discards
+focus twice a second is not one.
+
+So `render()` patches: `updateHeader` and `updateFooterNav` return `false` when the change is
+structural (the ⋯ appearing, a different footer variant) and the caller rebuilds only then, and the
+body is replaced only when the route changes. The status chip's node is replaced only when its
+*variant* changes, so a count ticking 2 → 3 does not restart the `blip` on its dot. Asserted: focus
+and node identity both survive two poll ticks.
+
+This is a constraint on S1–S11 as much as on F4 — a screen that rebuilds its own subtree on every
+poll reintroduces it locally.
+
 ## 46. Two more things nothing draws, and one the frames disagree with
 
 - **The ⋯ menu is never drawn open.** `02-shell.md` gives it one sentence — the theme toggle moves
