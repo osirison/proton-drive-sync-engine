@@ -323,21 +323,26 @@ export function seamMask(node, opts = {}) {
 // ------------------------------------------------------------------------ rules 2 and 3: audit ---
 
 /**
- * Does this computed background actually cover what is behind it? Tested by the alpha channel
- * rather than against the literal `rgba(0, 0, 0, 0)` a browser serialises `transparent` to — partly
- * because tools/check-tokens.mjs reads that literal as a raw colour and fails the build on it, and
- * partly because a half-transparent tint is not a mask either and this catches that too.
+ * How much of what is behind this element does its background hide? `0` for none, `1` for all.
  *
- * The alpha must be matched inside the four-argument FORM, not as "ends in `, 0)`": an engine
- * serialises an opaque colour as `rgb(r, g, b)`, so a trailing-comma-zero test reads pure black as
- * transparent and would wave through a mask that is doing its job.
+ * Read out of the computed value rather than compared against the literal `rgba(0, 0, 0, 0)` that a
+ * browser serialises `transparent` to: tools/check-tokens.mjs reads that literal as a raw colour and
+ * fails the build on it. Alpha lives in the fourth argument of the `rgba()` form, and *only* there —
+ * an engine serialises an opaque colour as `rgb(r, g, b)`, so a "does it end in `, 0)`" test reads
+ * pure black, and every other zero-blue colour, as transparent.
+ *
+ * A background-image counts as 1. It usually is — the only one in the frames is the seam itself —
+ * but a gradient can be transparent at any stop and resolving that means rasterising. Recorded
+ * rather than guessed: if a screen ever masks with a gradient, this is where the audit goes blind.
  */
-const FULLY_TRANSPARENT = /^rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*0(\.0+)?\s*\)$/;
+const RGBA_ALPHA = /^rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)$/;
 
-function coversWhatIsBehind(styles) {
-  if (styles.backgroundImage !== "none") return true;
+function backgroundOpacity(styles) {
+  if (styles.backgroundImage !== "none") return 1;
   const bg = styles.backgroundColor;
-  return bg !== "transparent" && !FULLY_TRANSPARENT.test(bg);
+  if (bg === "transparent") return 0;
+  const alpha = RGBA_ALPHA.exec(bg);
+  return alpha ? Number(alpha[1]) : 1; // rgb(...) has no alpha channel: opaque
 }
 
 /**
@@ -366,26 +371,30 @@ function coversWhatIsBehind(styles) {
 export function auditSeams(root = document.body, { selector = ".seam" } = {}) {
   const problems = [];
   const rootBox = root.getBoundingClientRect();
+  // Collected once. The inner loop is already O(seams × elements) and every iteration forces a
+  // style resolve; re-walking the tree per seam on top of that is pure waste on the screens most
+  // worth auditing, which are the ones with two seams and a few hundred nodes.
+  const candidates = [...root.querySelectorAll("*")];
 
   for (const seam of root.querySelectorAll(selector)) {
     const box = seam.getBoundingClientRect();
     if (!box.height) continue;
     const centre = box.left + box.width / 2;
 
-    for (const other of root.querySelectorAll("*")) {
+    for (const other of candidates) {
       if (other === seam || seam.contains(other) || other.contains(seam)) continue;
       const b = other.getBoundingClientRect();
       if (!b.width || !b.height) continue;
       if (b.top >= box.bottom || b.bottom <= box.top) continue;
 
       const styles = getComputedStyle(other);
-      const opaque = coversWhatIsBehind(styles);
+      const cover = backgroundOpacity(styles);
 
       // Rule 2 — the seam stops above any full-width band. A band spans the window, so anything
       // narrower is a card or a column and is allowed to sit beside the line. The check is not
       // limited to opaque bands: every band in the prototype is drawn transparent with a 1px
       // `border-top`, and one the line runs THROUGH is still the overlap the rule forbids.
-      if (b.width >= rootBox.width - 4 && (opaque || parseFloat(styles.borderTopWidth) > 0)) {
+      if (b.width >= rootBox.width - 4 && (cover > 0 || parseFloat(styles.borderTopWidth) > 0)) {
         problems.push({
           rule: 2,
           seam,
@@ -395,9 +404,29 @@ export function auditSeams(root = document.body, { selector = ".seam" } = {}) {
         continue;
       }
 
-      // Rule 3 — anything centred on the seam masks it, and a mask must be positioned.
+      // Rule 3 — anything centred on the seam masks it.
+      //
+      // The subject is anything that CLAIMS to mask: a background is what a screen reaches for, so
+      // a background of any opacity is the signal. An element with none is not attempting the mask
+      // and is not reported — otherwise every centred flex wrapper in the design is a violation,
+      // and a check that cries wolf is a check nobody runs. Given the claim, two things can be
+      // wrong with it, and both are invisible until someone looks at the pixels.
       const straddles = b.left < centre - 1 && b.right > centre + 1;
-      if (!straddles || !opaque) continue;
+      if (!straddles || cover === 0) continue;
+
+      // (a) it does not actually cover. `--decision-bg` is rgba(255, 107, 107, .05) — a real token
+      // that hides nothing; a hairline under 50% alpha is a hairline at half strength.
+      if (cover < 1) {
+        problems.push({
+          rule: 3,
+          seam,
+          element: other,
+          message: `an element centred on the seam has a background of only ${cover} opacity — the line shows through it`,
+        });
+        continue;
+      }
+
+      // (b) it covers, but paints underneath. The rule §5 does not state.
       let node = other;
       let positioned = false;
       while (node && node !== seam.offsetParent) {

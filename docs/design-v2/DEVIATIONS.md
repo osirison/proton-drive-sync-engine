@@ -513,6 +513,14 @@ form. **F8 must generate mask fixtures per site**, not from one expected shape: 
 so neither form alone reproduces the frames — the same trap as §27's `fill="none"`, where the
 visually identical node fails the style gate.
 
+A mask can fail two ways, and `auditSeams()` reports both. It can paint underneath (the above), or
+it can fail to cover: a background at less than full opacity leaves the hairline showing at reduced
+strength, and `--decision-bg` is `rgba(255, 107, 107, .05)`, a real token that hides nothing. The
+subject of the check is anything *claiming* to mask — an element with a background of any opacity
+straddling the line. An element with no background at all is not reported, because otherwise every
+centred flex wrapper in the design is a violation and a check that cries wolf is a check nobody
+runs.
+
 ## 37. Mask padding: three side values, two vertical, no function of font-size
 
 `padding:0 14–18px` is right about the range and wrong that vertical is always 0. Of the 34 in-scope
