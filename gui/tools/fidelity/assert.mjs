@@ -86,9 +86,28 @@ for (const entry of index) {
   const frame = JSON.parse(readFileSync(join(FRAMES, entry.file), "utf8"));
   const expected = new Map(frame.nodes.map((n) => [n.key, n]));
 
+  // PIN THE COLOUR SCHEME. tokens.css publishes the light palette under
+  // `@media (prefers-color-scheme: light)`, and a headless browser's default for that query is a
+  // property of the platform — dark on this developer's box, light on ubuntu-latest. Unpinned, the
+  // gate compared a dark frame against a light app and produced 187 colour failures in CI that no
+  // developer could reproduce. The frame decides: the `12a` set IS the light theme, everything else
+  // is drawn dark.
+  const scheme = frame.label.startsWith("12a") ? "light" : "dark";
+  await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
+
   await page.goto(`http://127.0.0.1:${port}/index.html?frame=${encodeURIComponent(frame.label)}`, {
     waitUntil: "networkidle0",
   });
+  // The ⋯ menu persists an explicit choice in localStorage, and `:root[data-theme]` beats the media
+  // query by design — so a stray value would silently override the emulation above. localStorage
+  // survives navigation within a browser context, so clear it and reload rather than clearing after
+  // the app has already read it.
+  const hadTheme = await page.evaluate(() => {
+    const saved = localStorage.getItem("theme");
+    localStorage.removeItem("theme");
+    return saved;
+  });
+  if (hadTheme) await page.reload({ waitUntil: "networkidle0" });
   // The shell renders on its first status poll; wait for it rather than racing it.
   await page.waitForSelector("#app-root > *", { timeout: 5000 }).catch(() => {});
 
