@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Syncidle⋯Everything is up to datelast synced 2 minutes ago · 12,480 files · 41.2 GBSync nowPauseActivityPlan a syncSettingsDetails~/ProtonDrive ⇄ /Drive/RemoteFolder",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Syncidle⋯",
       "box": {
         "w": 1040,
         "h": 52
@@ -244,6 +246,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Everything is up to datelast synced 2 minutes ago · 12,480 files · 41.2 GBSync nowPause",
       "box": {
         "w": 1040,
         "h": 394
@@ -278,8 +281,8 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "box": {
-        "w": 482.35,
-        "h": 482.35
+        "w": 487.86,
+        "h": 487.86
       },
       "styles": {
         "font-family": "\"Instrument Sans\", system-ui, sans-serif",
@@ -290,7 +293,7 @@
         "text-align": "start",
         "color": "rgb(242, 244, 247)",
         "background-image": "radial-gradient(circle, rgba(232, 235, 240, 0.05), rgba(232, 235, 240, 0) 68%)",
-        "opacity": "0.478578",
+        "opacity": "0.545535",
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
@@ -470,6 +473,7 @@
     {
       "key": "div[0]/div[3]",
       "tag": "div",
+      "fullText": "Sync nowPause",
       "box": {
         "w": 199.3,
         "h": 40
@@ -606,6 +610,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails~/ProtonDrive ⇄ /Drive/RemoteFolder",
       "box": {
         "w": 1040,
         "h": 89
@@ -633,6 +638,7 @@
     {
       "key": "div[2]/div[0]",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 960,
         "h": 37

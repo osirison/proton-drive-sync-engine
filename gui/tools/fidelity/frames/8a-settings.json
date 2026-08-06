@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Syncidle⋯SettingsChanges here take effect on the next sync. Nothing is written until you save.FoldersWhat to skipDeletionsAdvancedThe pair being kept in stepThis computerChoose…12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.Proton DriveFolder on your Proton Drive. Must already exist.How often it checksNotice changes the moment they happenProton tells the app when something changes on another device, so it syncs within seconds.event_driven_reconcileCompare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.WeeklyMonthlyEveryMonTueWedThuFriSatSunat−03:00＋full_scan_schedule · weekly sun 03:00Run one nowFull sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.Sweep nowSaving writes only what you changed. Your comments and anything the app doesn't understand are left alone.Discard changesSave",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Syncidle⋯",
       "box": {
         "w": 1040,
         "h": 52
@@ -244,6 +246,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "SettingsChanges here take effect on the next sync. Nothing is written until you save.",
       "box": {
         "w": 1040,
         "h": 58
@@ -320,6 +323,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "FoldersWhat to skipDeletionsAdvanced",
       "box": {
         "w": 1040,
         "h": 31
@@ -511,6 +515,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "The pair being kept in stepThis computerChoose…12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.Proton DriveFolder on your Proton Drive. Must already exist.How often it checksNotice changes the moment they happenProton tells the app when something changes on another device, so it syncs within seconds.event_driven_reconcileCompare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.WeeklyMonthlyEveryMonTueWedThuFriSatSunat−03:00＋full_scan_schedule · weekly sun 03:00Run one nowFull sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.Sweep now",
       "box": {
         "w": 1040,
         "h": 512
@@ -598,6 +603,7 @@
     {
       "key": "div[2]/div[2]",
       "tag": "div",
+      "fullText": "This computerChoose…12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.Proton DriveFolder on your Proton Drive. Must already exist.",
       "box": {
         "w": 976,
         "h": 109
@@ -624,6 +630,7 @@
     {
       "key": "div[2]/div[2]/div[0]",
       "tag": "div",
+      "fullText": "This computerChoose…12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.",
       "box": {
         "w": 488,
         "h": 109
@@ -673,6 +680,7 @@
     {
       "key": "div[2]/div[2]/div[0]/div[1]",
       "tag": "div",
+      "fullText": "Choose…",
       "box": {
         "w": 458,
         "h": 41
@@ -699,6 +707,9 @@
     {
       "key": "div[2]/div[2]/div[0]/div[1]/input",
       "tag": "input",
+      "attrs": {
+        "value": "~/ProtonDrive"
+      },
       "box": {
         "w": 364.8,
         "h": 41
@@ -808,6 +819,7 @@
     {
       "key": "div[2]/div[2]/div[1]",
       "tag": "div",
+      "fullText": "Proton DriveFolder on your Proton Drive. Must already exist.",
       "box": {
         "w": 488,
         "h": 109
@@ -881,6 +893,9 @@
     {
       "key": "div[2]/div[2]/div[1]/div[1]/input",
       "tag": "input",
+      "attrs": {
+        "value": "/Drive/RemoteFolder"
+      },
       "box": {
         "w": 458,
         "h": 41
@@ -974,6 +989,7 @@
     {
       "key": "div[2]/div[4]",
       "tag": "div",
+      "fullText": "Notice changes the moment they happenProton tells the app when something changes on another device, so it syncs within seconds.event_driven_reconcile",
       "box": {
         "w": 976,
         "h": 89.13
@@ -1018,6 +1034,7 @@
     {
       "key": "div[2]/div[4]/div[0]",
       "tag": "div",
+      "fullText": "Notice changes the moment they happenProton tells the app when something changes on another device, so it syncs within seconds.event_driven_reconcile",
       "box": {
         "w": 876,
         "h": 61.13
@@ -1184,6 +1201,7 @@
     {
       "key": "div[2]/div[5]",
       "tag": "div",
+      "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.WeeklyMonthlyEveryMonTueWedThuFriSatSunat−03:00＋full_scan_schedule · weekly sun 03:00",
       "box": {
         "w": 976,
         "h": 120.13
@@ -1225,6 +1243,7 @@
     {
       "key": "div[2]/div[5]/div[0]",
       "tag": "div",
+      "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.WeeklyMonthly",
       "box": {
         "w": 938,
         "h": 40.13
@@ -1251,6 +1270,7 @@
     {
       "key": "div[2]/div[5]/div[0]/div[0]",
       "tag": "div",
+      "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.",
       "box": {
         "w": 762.88,
         "h": 40.13
@@ -1325,6 +1345,7 @@
     {
       "key": "div[2]/div[5]/div[0]/div[1]",
       "tag": "div",
+      "fullText": "WeeklyMonthly",
       "box": {
         "w": 155.13,
         "h": 35
@@ -1433,6 +1454,7 @@
     {
       "key": "div[2]/div[5]/div[1]",
       "tag": "div",
+      "fullText": "EveryMonTueWedThuFriSatSunat−03:00＋full_scan_schedule · weekly sun 03:00",
       "box": {
         "w": 938,
         "h": 41
@@ -1488,6 +1510,7 @@
     {
       "key": "div[2]/div[5]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "MonTueWedThuFriSatSun",
       "box": {
         "w": 324,
         "h": 29
@@ -1807,6 +1830,7 @@
     {
       "key": "div[2]/div[5]/div[1]/div[1]",
       "tag": "div",
+      "fullText": "−03:00＋",
       "box": {
         "w": 116,
         "h": 28
@@ -2016,6 +2040,7 @@
     {
       "key": "div[2]/div[7]",
       "tag": "div",
+      "fullText": "Full sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.Sweep now",
       "box": {
         "w": 976,
         "h": 68.13
@@ -2060,6 +2085,7 @@
     {
       "key": "div[2]/div[7]/div",
       "tag": "div",
+      "fullText": "Full sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.",
       "box": {
         "w": 808.03,
         "h": 40.13
@@ -2176,6 +2202,7 @@
     {
       "key": "div[3]",
       "tag": "div",
+      "fullText": "Saving writes only what you changed. Your comments and anything the app doesn't understand are left alone.Discard changesSave",
       "box": {
         "w": 1040,
         "h": 69

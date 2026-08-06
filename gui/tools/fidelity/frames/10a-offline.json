@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Can't reach Proton DriveNothing is lost. 4 changes are waiting and will go as soon as it's back.retrying in 40s · last reached 13:58Try again nowOpen Drive SyncQuitstops syncing",
       "box": {
         "w": 362,
         "h": 345.5
@@ -44,6 +45,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Can't reach Proton DriveNothing is lost. 4 changes are waiting and will go as soon as it's back.retrying in 40s · last reached 13:58",
       "box": {
         "w": 360,
         "h": 220.5
@@ -237,6 +239,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "Try again nowOpen Drive SyncQuitstops syncing",
       "box": {
         "w": 360,
         "h": 123
@@ -359,6 +362,7 @@
     {
       "key": "div[1]/div[3]",
       "tag": "div",
+      "fullText": "Quitstops syncing",
       "box": {
         "w": 348,
         "h": 33

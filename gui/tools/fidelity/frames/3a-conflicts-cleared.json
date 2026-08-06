@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Sync⋯Nothing left to decideYou settled 3 files. Two kept both versions, one took Proton's copy.Back to syncActivityPlan a syncSettingsDetails",
       "box": {
         "w": 522,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Sync⋯",
       "box": {
         "w": 520,
         "h": 52
@@ -181,6 +183,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Nothing left to decideYou settled 3 files. Two kept both versions, one took Proton's copy.Back to sync",
       "box": {
         "w": 520,
         "h": 663
@@ -394,6 +397,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 520,
         "h": 49
@@ -421,6 +425,7 @@
     {
       "key": "div[1]/div",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 472,
         "h": 31

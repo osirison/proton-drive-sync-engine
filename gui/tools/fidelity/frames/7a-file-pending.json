@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "photos/trip/img_0042.jpgOn its way to Proton DriveStarted 8 seconds ago · 2.8 MBonly on this computer so farOpen folder",
       "box": {
         "w": 600,
         "h": 239
@@ -48,6 +49,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "photos/trip/img_0042.jpgOn its way to Proton DriveStarted 8 seconds ago · 2.8 MB",
       "box": {
         "w": 546,
         "h": 127
@@ -394,6 +396,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "only on this computer so farOpen folder",
       "box": {
         "w": 546,
         "h": 31

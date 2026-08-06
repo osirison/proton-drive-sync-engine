@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Nothing waiting to be deletedWhen a file disappears from one side, it waits here for you instead of vanishing from the other.",
       "box": {
         "w": 522,
         "h": 422
@@ -46,6 +47,7 @@
     {
       "key": "div",
       "tag": "div",
+      "fullText": "Nothing waiting to be deletedWhen a file disappears from one side, it waits here for you instead of vanishing from the other.",
       "box": {
         "w": 520,
         "h": 420

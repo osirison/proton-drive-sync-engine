@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "22 files waiting to be deletedphotos/20191,204 photos gone from this computer, permanentlyarchive/old-notes.mdto Proton's Trash — recoverableReview themsyncing continuesLater",
       "box": {
         "w": 362,
         "h": 377.34
@@ -44,6 +45,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "22 files waiting to be deleted",
       "box": {
         "w": 360,
         "h": 140
@@ -74,6 +76,7 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fullText": "2",
       "box": {
         "w": 64,
         "h": 64
@@ -186,6 +189,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "photos/20191,204 photos gone from this computer, permanentlyarchive/old-notes.mdto Proton's Trash — recoverable",
       "box": {
         "w": 360,
         "h": 139.34
@@ -215,6 +219,7 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fullText": "photos/20191,204 photos gone from this computer, permanently",
       "box": {
         "w": 332,
         "h": 60.67
@@ -255,6 +260,7 @@
     {
       "key": "div[1]/div[0]/div[0]",
       "tag": "div",
+      "fullText": "photos/2019",
       "box": {
         "w": 304,
         "h": 15
@@ -362,6 +368,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "archive/old-notes.mdto Proton's Trash — recoverable",
       "box": {
         "w": 332,
         "h": 60.67
@@ -402,6 +409,7 @@
     {
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "archive/old-notes.md",
       "box": {
         "w": 304,
         "h": 15
@@ -516,6 +524,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "Review them",
       "box": {
         "w": 360,
         "h": 49
@@ -584,6 +593,7 @@
     {
       "key": "div[3]",
       "tag": "div",
+      "fullText": "syncing continuesLater",
       "box": {
         "w": 360,
         "h": 47

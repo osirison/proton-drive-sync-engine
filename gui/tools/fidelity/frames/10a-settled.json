@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Up to date2 minutes ago · 12,480 filesOpen Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
       "box": {
         "w": 362,
         "h": 365
@@ -44,6 +45,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Up to date2 minutes ago · 12,480 files",
       "box": {
         "w": 360,
         "h": 174
@@ -214,6 +216,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "Open Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
       "box": {
         "w": 360,
         "h": 189
@@ -368,6 +371,7 @@
     {
       "key": "div[1]/div[4]",
       "tag": "div",
+      "fullText": "Close windowkeeps syncing",
       "box": {
         "w": 348,
         "h": 33
@@ -450,6 +454,7 @@
     {
       "key": "div[1]/div[5]",
       "tag": "div",
+      "fullText": "Quitstops syncing",
       "box": {
         "w": 348,
         "h": 33

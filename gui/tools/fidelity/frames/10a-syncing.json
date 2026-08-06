@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "This computerProton3Syncing 3 changesdocs/spec.md→←reports/q3-summary.pdfOpen Drive SyncPause syncingClose windowkeeps syncingQuitstops syncing",
       "box": {
         "w": 362,
         "h": 405
@@ -44,6 +45,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "This computerProton3Syncing 3 changes",
       "box": {
         "w": 360,
         "h": 159
@@ -105,6 +107,7 @@
     {
       "key": "div[0]/div[1]",
       "tag": "div",
+      "fullText": "This computerProton",
       "box": {
         "w": 320,
         "h": 11
@@ -181,6 +184,7 @@
     {
       "key": "div[0]/div[2]",
       "tag": "div",
+      "fullText": "3Syncing 3 changes",
       "box": {
         "w": 320,
         "h": 104
@@ -213,6 +217,7 @@
     {
       "key": "div[0]/div[2]/svg",
       "tag": "svg",
+      "fullText": "3",
       "box": {
         "w": 72,
         "h": 72
@@ -571,6 +576,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "docs/spec.md→←reports/q3-summary.pdf",
       "box": {
         "w": 360,
         "h": 88
@@ -600,6 +606,7 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fullText": "docs/spec.md→",
       "box": {
         "w": 332,
         "h": 35
@@ -753,6 +760,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "←reports/q3-summary.pdf",
       "box": {
         "w": 332,
         "h": 35
@@ -906,6 +914,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "Open Drive SyncPause syncingClose windowkeeps syncingQuitstops syncing",
       "box": {
         "w": 360,
         "h": 156
@@ -1028,6 +1037,7 @@
     {
       "key": "div[2]/div[3]",
       "tag": "div",
+      "fullText": "Close windowkeeps syncing",
       "box": {
         "w": 348,
         "h": 33
@@ -1110,6 +1120,7 @@
     {
       "key": "div[2]/div[4]",
       "tag": "div",
+      "fullText": "Quitstops syncing",
       "box": {
         "w": 348,
         "h": 33

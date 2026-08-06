@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "4 files are never syncedThey live in your folder but no copy exists on Proton Drive.✕You told it to skip theseA rule in your settings matches them: *.tmpexports/draft.tmp2.1 MBexports/render-final.tmp840 KBChange this ruleCan't be syncedNot real files — Proton Drive has nothing to store for them..cache/session.socka socketprojects/current → ~/work/q3a shortcutNothing here is at risk — it's just not backed up.Done",
       "box": {
         "w": 602,
         "h": 602
@@ -46,6 +47,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "4 files are never syncedThey live in your folder but no copy exists on Proton Drive.✕",
       "box": {
         "w": 600,
         "h": 69.38
@@ -76,6 +78,7 @@
     {
       "key": "div[0]/div",
       "tag": "div",
+      "fullText": "4 files are never syncedThey live in your folder but no copy exists on Proton Drive.",
       "box": {
         "w": 514,
         "h": 47.38
@@ -191,6 +194,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "You told it to skip theseA rule in your settings matches them: *.tmpexports/draft.tmp2.1 MBexports/render-final.tmp840 KBChange this ruleCan't be syncedNot real files — Proton Drive has nothing to store for them..cache/session.socka socketprojects/current → ~/work/q3a shortcut",
       "box": {
         "w": 600,
         "h": 430.63
@@ -245,6 +249,7 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "text": "A rule in your settings matches them:",
+      "fullText": "A rule in your settings matches them: *.tmp",
       "box": {
         "w": 552,
         "h": 18
@@ -294,6 +299,7 @@
     {
       "key": "div[1]/div[2]",
       "tag": "div",
+      "fullText": "exports/draft.tmp2.1 MB",
       "box": {
         "w": 552,
         "h": 35
@@ -378,6 +384,7 @@
     {
       "key": "div[1]/div[3]",
       "tag": "div",
+      "fullText": "exports/render-final.tmp840 KB",
       "box": {
         "w": 552,
         "h": 35
@@ -554,6 +561,7 @@
     {
       "key": "div[1]/div[6]",
       "tag": "div",
+      "fullText": ".cache/session.socka socket",
       "box": {
         "w": 552,
         "h": 35
@@ -638,6 +646,7 @@
     {
       "key": "div[1]/div[7]",
       "tag": "div",
+      "fullText": "projects/current → ~/work/q3a shortcut",
       "box": {
         "w": 552,
         "h": 36
@@ -721,6 +730,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "Nothing here is at risk — it's just not backed up.Done",
       "box": {
         "w": 600,
         "h": 66

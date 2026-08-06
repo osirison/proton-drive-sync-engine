@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Syncidle⋯Activity18 of the last 20 passes finished cleanly. One failed and retried on its own.FilesSync passesDetailsLast 20 passeshow long each took · 12:45 onwardmost recent 14:32Finished cleanly2 sent, 1 brought here · 1 conflict kept14:32Finished cleanly2 sent14:17Couldn't reach Proton Driveretried at 14:17 and worked13:58proton-drive: connection timed out after 60sFinished cleanly4 brought here · 1 move followed13:12Finished cleanly1 sent12:45Finished cleanlynothing to do12:30Only the last 20 passes are kept. Anything older lives in the system log.Open the system logActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Syncidle⋯",
       "box": {
         "w": 1040,
         "h": 52
@@ -244,6 +246,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Activity18 of the last 20 passes finished cleanly. One failed and retried on its own.",
       "box": {
         "w": 1040,
         "h": 61
@@ -320,6 +323,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "FilesSync passesDetails",
       "box": {
         "w": 1040,
         "h": 33
@@ -496,6 +500,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "Last 20 passeshow long each took · 12:45 onwardmost recent 14:32",
       "box": {
         "w": 1040,
         "h": 136
@@ -523,6 +528,7 @@
     {
       "key": "div[2]/div",
       "tag": "div",
+      "fullText": "Last 20 passeshow long each took · 12:45 onwardmost recent 14:32",
       "box": {
         "w": 976,
         "h": 136
@@ -1215,6 +1221,7 @@
     {
       "key": "div[2]/div/div[2]",
       "tag": "div",
+      "fullText": "how long each took · 12:45 onwardmost recent 14:32",
       "box": {
         "w": 934,
         "h": 14
@@ -1289,6 +1296,7 @@
     {
       "key": "div[3]",
       "tag": "div",
+      "fullText": "Finished cleanly2 sent, 1 brought here · 1 conflict kept14:32Finished cleanly2 sent14:17Couldn't reach Proton Driveretried at 14:17 and worked13:58proton-drive: connection timed out after 60sFinished cleanly4 brought here · 1 move followed13:12Finished cleanly1 sent12:45Finished cleanlynothing to do12:30Only the last 20 passes are kept. Anything older lives in the system log.Open the system log",
       "box": {
         "w": 1040,
         "h": 372
@@ -1318,6 +1326,7 @@
     {
       "key": "div[3]/div[0]",
       "tag": "div",
+      "fullText": "Finished cleanly2 sent, 1 brought here · 1 conflict kept14:32",
       "box": {
         "w": 976,
         "h": 41
@@ -1455,6 +1464,7 @@
     {
       "key": "div[3]/div[1]",
       "tag": "div",
+      "fullText": "Finished cleanly2 sent14:17",
       "box": {
         "w": 976,
         "h": 41
@@ -1592,6 +1602,7 @@
     {
       "key": "div[3]/div[2]",
       "tag": "div",
+      "fullText": "Couldn't reach Proton Driveretried at 14:17 and worked13:58proton-drive: connection timed out after 60s",
       "box": {
         "w": 1000,
         "h": 84
@@ -1626,6 +1637,7 @@
     {
       "key": "div[3]/div[2]/div[0]",
       "tag": "div",
+      "fullText": "Couldn't reach Proton Driveretried at 14:17 and worked13:58",
       "box": {
         "w": 976,
         "h": 16
@@ -1807,6 +1819,7 @@
     {
       "key": "div[3]/div[3]",
       "tag": "div",
+      "fullText": "Finished cleanly4 brought here · 1 move followed13:12",
       "box": {
         "w": 976,
         "h": 41
@@ -1944,6 +1957,7 @@
     {
       "key": "div[3]/div[4]",
       "tag": "div",
+      "fullText": "Finished cleanly1 sent12:45",
       "box": {
         "w": 976,
         "h": 41
@@ -2081,6 +2095,7 @@
     {
       "key": "div[3]/div[5]",
       "tag": "div",
+      "fullText": "Finished cleanlynothing to do12:30",
       "box": {
         "w": 976,
         "h": 41
@@ -2218,6 +2233,7 @@
     {
       "key": "div[3]/div[6]",
       "tag": "div",
+      "fullText": "Only the last 20 passes are kept. Anything older lives in the system log.Open the system log",
       "box": {
         "w": 976,
         "h": 48
@@ -2339,6 +2355,7 @@
     {
       "key": "div[4]",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1040,
         "h": 50
@@ -2366,6 +2383,7 @@
     {
       "key": "div[4]/div",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 960,
         "h": 32

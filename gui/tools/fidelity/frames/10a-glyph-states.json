@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "monocolourwhat it meansUp to dateHollow outline. The resting shape everything else is measured against.SyncingA segment travels the edge. Motion reads at 16px where a colour shift doesn't.Needs youFilled centre — the only state that adds mass, so it's noticeable without being alarming.PausedDashed and dimmed — the outline is interrupted, which is exactly what's happening.Can't reach ProtonStruck through. Nothing is syncing and nothing is lost — it's waiting.Every state is distinguishable in one colour, at 16px, on a light or dark panel. Colour repeats the message for people who can use it.",
       "box": {
         "w": 560,
         "h": 569.19
@@ -47,6 +48,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "monocolourwhat it meansUp to dateHollow outline. The resting shape everything else is measured against.SyncingA segment travels the edge. Motion reads at 16px where a colour shift doesn't.Needs youFilled centre — the only state that adds mass, so it's noticeable without being alarming.PausedDashed and dimmed — the outline is interrupted, which is exactly what's happening.Can't reach ProtonStruck through. Nothing is syncing and nothing is lost — it's waiting.",
       "box": {
         "w": 506,
         "h": 445
@@ -343,6 +345,7 @@
     {
       "key": "div[0]/div[6]",
       "tag": "div",
+      "fullText": "Up to dateHollow outline. The resting shape everything else is measured against.",
       "box": {
         "w": 366,
         "h": 67
@@ -781,6 +784,7 @@
     {
       "key": "div[0]/div[10]",
       "tag": "div",
+      "fullText": "SyncingA segment travels the edge. Motion reads at 16px where a colour shift doesn't.",
       "box": {
         "w": 366,
         "h": 67
@@ -1109,6 +1113,7 @@
     {
       "key": "div[0]/div[14]",
       "tag": "div",
+      "fullText": "Needs youFilled centre — the only state that adds mass, so it's noticeable without being alarming.",
       "box": {
         "w": 366,
         "h": 67
@@ -1381,6 +1386,7 @@
     {
       "key": "div[0]/div[18]",
       "tag": "div",
+      "fullText": "PausedDashed and dimmed — the outline is interrupted, which is exactly what's happening.",
       "box": {
         "w": 366,
         "h": 67
@@ -1709,6 +1715,7 @@
     {
       "key": "div[0]/div[22]",
       "tag": "div",
+      "fullText": "Can't reach ProtonStruck through. Nothing is syncing and nothing is lost — it's waiting.",
       "box": {
         "w": 366,
         "h": 67

@@ -92,11 +92,27 @@ const frames = await page.evaluate(
           .join("")
           .replace(/\s+/g, " ")
           .trim();
+        // The whole subtree's text, recorded only when it differs from this node's own. The copy
+        // deck's sentences are routinely split by an inline child — 25 <strong> elements mid-
+        // paragraph — so "Yours has buy milk where Proton's..." is own-text "Yours has where
+        // Proton's..." plus a <strong>buy milk</strong>. The copy gate needs the joined form; the
+        // style gate needs to know which node actually holds the words. Record both.
+        const fullText = (el.textContent || "").replace(/\s+/g, " ").trim();
+        // User-visible strings that are NOT text nodes. A placeholder is copy — "Add a rule — e.g.
+        // *.psd or scratch/**" appears nowhere in any textContent — and a gate that cannot see it
+        // silently exempts every input in the design.
+        const attrs = {};
+        for (const a of ["placeholder", "value", "title", "aria-label", "alt"]) {
+          const v = el.getAttribute(a);
+          if (v) attrs[a] = v;
+        }
         const box = el.getBoundingClientRect();
         return {
           key: keyOfNode(el, frame),
           tag: el.tagName.toLowerCase(),
           text: ownText || undefined,
+          fullText: fullText && fullText !== ownText ? fullText : undefined,
+          attrs: Object.keys(attrs).length ? attrs : undefined,
           box: { w: +box.width.toFixed(2), h: +box.height.toFixed(2) },
           styles,
           svgAttrs: Object.keys(svgAttrs).length ? svgAttrs : undefined,

@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "ActivitiesTue 14:41▲◐▮▾Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReviewDrive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLaterDrive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
       "box": {
         "w": 1040,
         "h": 560
@@ -41,6 +42,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "ActivitiesTue 14:41▲◐▮▾",
       "box": {
         "w": 1040,
         "h": 32
@@ -152,6 +154,7 @@
     {
       "key": "div[0]/span[3]",
       "tag": "span",
+      "fullText": "▲◐▮▾",
       "box": {
         "w": 95.14,
         "h": 15
@@ -362,6 +365,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReviewDrive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLaterDrive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
       "box": {
         "w": 1040,
         "h": 454.5
@@ -394,6 +398,7 @@
     {
       "key": "div[1]/div",
       "tag": "div",
+      "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReviewDrive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLaterDrive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
       "box": {
         "w": 372,
         "h": 454.5
@@ -420,6 +425,7 @@
     {
       "key": "div[1]/div/div[0]",
       "tag": "div",
+      "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReview",
       "box": {
         "w": 372,
         "h": 170.5
@@ -460,6 +466,7 @@
     {
       "key": "div[1]/div/div[0]/div[0]",
       "tag": "div",
+      "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.",
       "box": {
         "w": 336,
         "h": 93.5
@@ -575,6 +582,7 @@
     {
       "key": "div[1]/div/div[0]/div[0]/div",
       "tag": "div",
+      "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.",
       "box": {
         "w": 289,
         "h": 93.5
@@ -600,6 +608,7 @@
     {
       "key": "div[1]/div/div[0]/div[0]/div/div[0]",
       "tag": "div",
+      "fullText": "Drive Syncnow",
       "box": {
         "w": 289,
         "h": 15
@@ -725,6 +734,7 @@
       "key": "div[1]/div/div[0]/div[0]/div/div[2]",
       "tag": "div",
       "text": "was deleted on Proton Drive. Nothing has happened here yet.",
+      "fullText": "photos/2019 was deleted on Proton Drive. Nothing has happened here yet.",
       "box": {
         "w": 289,
         "h": 37.5
@@ -774,6 +784,7 @@
     {
       "key": "div[1]/div/div[0]/div[1]",
       "tag": "div",
+      "fullText": "Keep themReview",
       "box": {
         "w": 336,
         "h": 33
@@ -885,6 +896,7 @@
     {
       "key": "div[1]/div/div[1]",
       "tag": "div",
+      "fullText": "Drive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLater",
       "box": {
         "w": 372,
         "h": 154.5
@@ -925,6 +937,7 @@
     {
       "key": "div[1]/div/div[1]/div[0]",
       "tag": "div",
+      "fullText": "Drive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.",
       "box": {
         "w": 336,
         "h": 77.5
@@ -1040,6 +1053,7 @@
     {
       "key": "div[1]/div/div[1]/div[0]/div",
       "tag": "div",
+      "fullText": "Drive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.",
       "box": {
         "w": 289,
         "h": 77.5
@@ -1065,6 +1079,7 @@
     {
       "key": "div[1]/div/div[1]/div[0]/div/div[0]",
       "tag": "div",
+      "fullText": "Drive Sync2m ago",
       "box": {
         "w": 289,
         "h": 15
@@ -1214,6 +1229,7 @@
     {
       "key": "div[1]/div/div[1]/div[1]",
       "tag": "div",
+      "fullText": "CompareLater",
       "box": {
         "w": 336,
         "h": 33
@@ -1325,6 +1341,7 @@
     {
       "key": "div[1]/div/div[2]",
       "tag": "div",
+      "fullText": "Drive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
       "box": {
         "w": 372,
         "h": 109.5
@@ -1365,6 +1382,7 @@
     {
       "key": "div[1]/div/div[2]/div",
       "tag": "div",
+      "fullText": "Drive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
       "box": {
         "w": 336,
         "h": 77.5
@@ -1482,6 +1500,7 @@
     {
       "key": "div[1]/div/div[2]/div/div",
       "tag": "div",
+      "fullText": "Drive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
       "box": {
         "w": 289,
         "h": 77.5
@@ -1507,6 +1526,7 @@
     {
       "key": "div[1]/div/div[2]/div/div/div[0]",
       "tag": "div",
+      "fullText": "Drive Sync14:12",
       "box": {
         "w": 289,
         "h": 15

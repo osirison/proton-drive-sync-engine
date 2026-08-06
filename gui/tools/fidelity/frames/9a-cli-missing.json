@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive's command line tool isn't installedThis app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. Detected Debian — other distributions are in the help.$sudo apt install proton-driveCopyCheck againInstallation help",
       "box": {
         "w": 600,
         "h": 224
@@ -48,6 +49,7 @@
     {
       "key": "div",
       "tag": "div",
+      "fullText": "Proton Drive's command line tool isn't installedThis app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. Detected Debian — other distributions are in the help.$sudo apt install proton-driveCopyCheck againInstallation help",
       "box": {
         "w": 546,
         "h": 176
@@ -194,6 +196,7 @@
     {
       "key": "div/div",
       "tag": "div",
+      "fullText": "Proton Drive's command line tool isn't installedThis app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. Detected Debian — other distributions are in the help.$sudo apt install proton-driveCopyCheck againInstallation help",
       "box": {
         "w": 498,
         "h": 176
@@ -268,6 +271,7 @@
     {
       "key": "div/div/div[2]",
       "tag": "div",
+      "fullText": "$sudo apt install proton-driveCopy",
       "box": {
         "w": 498,
         "h": 48
@@ -402,6 +406,7 @@
     {
       "key": "div/div/div[3]",
       "tag": "div",
+      "fullText": "Check againInstallation help",
       "box": {
         "w": 498,
         "h": 35

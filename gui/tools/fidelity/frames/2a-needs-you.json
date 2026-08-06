@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Sync3 waiting⋯This computer~/ProtonDriveProton Drive/Drive/RemoteFolder3Syncing 3 changes3 other changes are waiting on youPausedocs/spec.md1.2 MB→←reports/q3-summary.pdf2.4 MBOne file changed on both sidesnotes/todo.txt · both copies kept, nothing lostCompareTwo deletions are waiting on you1 removes from this computer permanently · 1 goes to Proton's TrashReviewActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Sync3 waiting⋯",
       "box": {
         "w": 1040,
         "h": 52
@@ -258,6 +260,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "This computer~/ProtonDriveProton Drive/Drive/RemoteFolder3Syncing 3 changes3 other changes are waiting on youPause",
       "box": {
         "w": 1040,
         "h": 394
@@ -320,6 +323,7 @@
     {
       "key": "div[0]/div[1]",
       "tag": "div",
+      "fullText": "This computer~/ProtonDrive",
       "box": {
         "w": 102.97,
         "h": 34
@@ -398,6 +402,7 @@
     {
       "key": "div[0]/div[2]",
       "tag": "div",
+      "fullText": "Proton Drive/Drive/RemoteFolder",
       "box": {
         "w": 136.81,
         "h": 34
@@ -476,6 +481,7 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fullText": "3",
       "box": {
         "w": 168,
         "h": 168
@@ -879,6 +885,7 @@
     {
       "key": "div[0]/div[5]",
       "tag": "div",
+      "fullText": "Pause",
       "box": {
         "w": 83.84,
         "h": 40
@@ -951,6 +958,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "docs/spec.md1.2 MB→←reports/q3-summary.pdf2.4 MB",
       "box": {
         "w": 1040,
         "h": 86
@@ -981,6 +989,7 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fullText": "docs/spec.md1.2 MB→",
       "box": {
         "w": 488,
         "h": 40
@@ -1008,6 +1017,7 @@
     {
       "key": "div[1]/div[0]/div",
       "tag": "div",
+      "fullText": "docs/spec.md1.2 MB→",
       "box": {
         "w": 462,
         "h": 40
@@ -1054,6 +1064,7 @@
     {
       "key": "div[1]/div[0]/div/div[0]",
       "tag": "div",
+      "fullText": "docs/spec.md1.2 MB→",
       "box": {
         "w": 434,
         "h": 16
@@ -1208,6 +1219,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "←reports/q3-summary.pdf2.4 MB",
       "box": {
         "w": 488,
         "h": 40
@@ -1235,6 +1247,7 @@
     {
       "key": "div[1]/div[1]/div",
       "tag": "div",
+      "fullText": "←reports/q3-summary.pdf2.4 MB",
       "box": {
         "w": 462,
         "h": 40
@@ -1281,6 +1294,7 @@
     {
       "key": "div[1]/div[1]/div/div[0]",
       "tag": "div",
+      "fullText": "←reports/q3-summary.pdf2.4 MB",
       "box": {
         "w": 434,
         "h": 16
@@ -1435,6 +1449,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "One file changed on both sidesnotes/todo.txt · both copies kept, nothing lostCompareTwo deletions are waiting on you1 removes from this computer permanently · 1 goes to Proton's TrashReview",
       "box": {
         "w": 1040,
         "h": 145
@@ -1462,6 +1477,7 @@
     {
       "key": "div[2]/div",
       "tag": "div",
+      "fullText": "One file changed on both sidesnotes/todo.txt · both copies kept, nothing lostCompareTwo deletions are waiting on you1 removes from this computer permanently · 1 goes to Proton's TrashReview",
       "box": {
         "w": 976,
         "h": 127
@@ -1499,6 +1515,7 @@
     {
       "key": "div[2]/div/div[0]",
       "tag": "div",
+      "fullText": "One file changed on both sidesnotes/todo.txt · both copies kept, nothing lostCompare",
       "box": {
         "w": 974,
         "h": 63
@@ -1567,6 +1584,7 @@
     {
       "key": "div[2]/div/div[0]/div",
       "tag": "div",
+      "fullText": "One file changed on both sidesnotes/todo.txt · both copies kept, nothing lost",
       "box": {
         "w": 816.52,
         "h": 34
@@ -1682,6 +1700,7 @@
     {
       "key": "div[2]/div/div[1]",
       "tag": "div",
+      "fullText": "Two deletions are waiting on you1 removes from this computer permanently · 1 goes to Proton's TrashReview",
       "box": {
         "w": 974,
         "h": 62
@@ -1741,6 +1760,7 @@
     {
       "key": "div[2]/div/div[1]/div",
       "tag": "div",
+      "fullText": "Two deletions are waiting on you1 removes from this computer permanently · 1 goes to Proton's Trash",
       "box": {
         "w": 829.83,
         "h": 34
@@ -1856,6 +1876,7 @@
     {
       "key": "div[3]",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1040,
         "h": 53
@@ -1883,6 +1904,7 @@
     {
       "key": "div[3]/div",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 960,
         "h": 33

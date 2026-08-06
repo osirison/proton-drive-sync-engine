@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "ActivitiesTue 14:41▲◐▮▾33 things need youOne file changed on both sides.Two deletions are waiting.Review themOpen Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
       "box": {
         "w": 1040,
         "h": 520
@@ -41,6 +42,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "ActivitiesTue 14:41▲◐▮▾",
       "box": {
         "w": 1040,
         "h": 32
@@ -152,6 +154,7 @@
     {
       "key": "div[0]/span[3]",
       "tag": "span",
+      "fullText": "▲◐▮▾",
       "box": {
         "w": 105.14,
         "h": 21
@@ -401,6 +404,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "33 things need youOne file changed on both sides.Two deletions are waiting.Review themOpen Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
       "box": {
         "w": 362,
         "h": 441.5
@@ -443,6 +447,7 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fullText": "33 things need youOne file changed on both sides.Two deletions are waiting.Review them",
       "box": {
         "w": 360,
         "h": 250.5
@@ -473,6 +478,7 @@
     {
       "key": "div[1]/div[0]/svg",
       "tag": "svg",
+      "fullText": "3",
       "box": {
         "w": 72,
         "h": 72
@@ -676,6 +682,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "Open Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
       "box": {
         "w": 360,
         "h": 189
@@ -830,6 +837,7 @@
     {
       "key": "div[1]/div[1]/div[4]",
       "tag": "div",
+      "fullText": "Close windowkeeps syncing",
       "box": {
         "w": 348,
         "h": 33
@@ -912,6 +920,7 @@
     {
       "key": "div[1]/div[1]/div[5]",
       "tag": "div",
+      "fullText": "Quitstops syncing",
       "box": {
         "w": 348,
         "h": 33

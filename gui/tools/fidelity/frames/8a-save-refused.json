@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "That folder doesn't exist on Proton DriveNothing was saved — your old settings are still running. Create the folder on Proton Drive first, or pick a different one.remote_root: /Drive/Archive2026 — not foundGo back and fix itCreate it on Proton Drive",
       "box": {
         "w": 600,
         "h": 213
@@ -48,6 +49,7 @@
     {
       "key": "div",
       "tag": "div",
+      "fullText": "That folder doesn't exist on Proton DriveNothing was saved — your old settings are still running. Create the folder on Proton Drive first, or pick a different one.remote_root: /Drive/Archive2026 — not foundGo back and fix itCreate it on Proton Drive",
       "box": {
         "w": 546,
         "h": 165
@@ -194,6 +196,7 @@
     {
       "key": "div/div",
       "tag": "div",
+      "fullText": "That folder doesn't exist on Proton DriveNothing was saved — your old settings are still running. Create the folder on Proton Drive first, or pick a different one.remote_root: /Drive/Archive2026 — not foundGo back and fix itCreate it on Proton Drive",
       "box": {
         "w": 498,
         "h": 165
@@ -310,6 +313,7 @@
     {
       "key": "div/div/div[3]",
       "tag": "div",
+      "fullText": "Go back and fix itCreate it on Proton Drive",
       "box": {
         "w": 498,
         "h": 35

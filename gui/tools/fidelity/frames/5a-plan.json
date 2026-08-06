@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯The next sync moves 9 thingsOne of them can't be undone. Everything here is a rehearsal — nothing has changed yet.Check againLeaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.Leave it aloneEvery action, in order9 actions · 1 conflict kept as both copies✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lostOnly needed because this plan deletes something.Run it without the deletionRun this sync",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯",
       "box": {
         "w": 1040,
         "h": 52
@@ -223,6 +225,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "The next sync moves 9 thingsOne of them can't be undone. Everything here is a rehearsal — nothing has changed yet.Check again",
       "box": {
         "w": 1040,
         "h": 61
@@ -253,6 +256,7 @@
     {
       "key": "div[0]/div",
       "tag": "div",
+      "fullText": "The next sync moves 9 thingsOne of them can't be undone. Everything here is a rehearsal — nothing has changed yet.",
       "box": {
         "w": 854.95,
         "h": 55
@@ -368,6 +372,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "Leaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.",
       "box": {
         "w": 1040,
         "h": 96.38
@@ -429,6 +434,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "Leaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.",
       "box": {
         "w": 976,
         "h": 96.38
@@ -454,6 +460,7 @@
     {
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "Leaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.",
       "box": {
         "w": 488,
         "h": 96.38
@@ -503,6 +510,7 @@
     {
       "key": "div[1]/div[1]/div[0]/div[1]",
       "tag": "div",
+      "fullText": "3files, 4.1 MB",
       "box": {
         "w": 458,
         "h": 42
@@ -603,6 +611,7 @@
     {
       "key": "div[1]/div[1]/div[1]",
       "tag": "div",
+      "fullText": "Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.",
       "box": {
         "w": 488,
         "h": 96.38
@@ -652,6 +661,7 @@
     {
       "key": "div[1]/div[1]/div[1]/div[1]",
       "tag": "div",
+      "fullText": "2files, 2.6 MB",
       "box": {
         "w": 458,
         "h": 42
@@ -753,6 +763,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.Leave it alone",
       "box": {
         "w": 1040,
         "h": 76.59
@@ -780,6 +791,7 @@
     {
       "key": "div[2]/div",
       "tag": "div",
+      "fullText": "One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.Leave it alone",
       "box": {
         "w": 976,
         "h": 76.59
@@ -942,6 +954,7 @@
     {
       "key": "div[2]/div/div",
       "tag": "div",
+      "fullText": "One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.",
       "box": {
         "w": 756.3,
         "h": 42.59
@@ -992,6 +1005,7 @@
       "key": "div[2]/div/div/div[1]",
       "tag": "div",
       "text": "is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.",
+      "fullText": "archive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.",
       "box": {
         "w": 756.3,
         "h": 19.59
@@ -1083,6 +1097,7 @@
     {
       "key": "div[3]",
       "tag": "div",
+      "fullText": "Every action, in order9 actions · 1 conflict kept as both copies✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lost",
       "box": {
         "w": 1040,
         "h": 343.03
@@ -1113,6 +1128,7 @@
     {
       "key": "div[3]/div[0]",
       "tag": "div",
+      "fullText": "Every action, in order9 actions · 1 conflict kept as both copies",
       "box": {
         "w": 976,
         "h": 14
@@ -1214,6 +1230,7 @@
     {
       "key": "div[3]/div[1]",
       "tag": "div",
+      "fullText": "✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lost",
       "box": {
         "w": 976,
         "h": 319.03
@@ -1242,6 +1259,7 @@
     {
       "key": "div[3]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "✕archive/old-notes.mddeleted for good on Proton",
       "box": {
         "w": 976,
         "h": 33
@@ -1351,6 +1369,7 @@
     {
       "key": "div[3]/div[1]/div[1]",
       "tag": "div",
+      "fullText": "→docs/spec.mdsent to Proton",
       "box": {
         "w": 976,
         "h": 33
@@ -1459,6 +1478,7 @@
     {
       "key": "div[3]/div[1]/div[2]",
       "tag": "div",
+      "fullText": "→photos/trip/img_0042.jpgsent to Proton",
       "box": {
         "w": 976,
         "h": 33
@@ -1567,6 +1587,7 @@
     {
       "key": "div[3]/div[1]/div[3]",
       "tag": "div",
+      "fullText": "→notes/scratch.mdsent to Proton",
       "box": {
         "w": 976,
         "h": 33
@@ -1675,6 +1696,7 @@
     {
       "key": "div[3]/div[1]/div[4]",
       "tag": "div",
+      "fullText": "＋photos/tripfolder created on Proton",
       "box": {
         "w": 976,
         "h": 33
@@ -1783,6 +1805,7 @@
     {
       "key": "div[3]/div[1]/div[5]",
       "tag": "div",
+      "fullText": "←reports/q3-summary.pdfbrought to this computer",
       "box": {
         "w": 976,
         "h": 33
@@ -1891,6 +1914,7 @@
     {
       "key": "div[3]/div[1]/div[6]",
       "tag": "div",
+      "fullText": "←design/logo.svgbrought to this computer",
       "box": {
         "w": 976,
         "h": 33
@@ -1999,6 +2023,7 @@
     {
       "key": "div[3]/div[1]/div[7]",
       "tag": "div",
+      "fullText": "↷notes/old.md → notes/archive/old.mdmoved to match Proton",
       "box": {
         "w": 976,
         "h": 34
@@ -2107,6 +2132,7 @@
     {
       "key": "div[3]/div[1]/div[8]",
       "tag": "div",
+      "fullText": "notes/todo.txtboth copies kept, nothing lost",
       "box": {
         "w": 976,
         "h": 33
@@ -2228,6 +2254,7 @@
     {
       "key": "div[4]",
       "tag": "div",
+      "fullText": "Only needed because this plan deletes something.Run it without the deletionRun this sync",
       "box": {
         "w": 1040,
         "h": 69
@@ -2261,6 +2288,7 @@
     {
       "key": "div[4]/div",
       "tag": "div",
+      "fullText": "Only needed because this plan deletes something.",
       "box": {
         "w": 409,
         "h": 37
@@ -2287,6 +2315,9 @@
     {
       "key": "div[4]/div/input",
       "tag": "input",
+      "attrs": {
+        "placeholder": "type DELETE to allow it"
+      },
       "box": {
         "w": 190,
         "h": 37

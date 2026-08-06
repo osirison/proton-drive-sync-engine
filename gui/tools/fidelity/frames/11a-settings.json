@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "When to interrupt meEverything else stays in Activity regardless.Only when you need medefaultThe four events on the left. Roughly once a week, in a quiet month.Only permanent deletionsThe single event that can cost you files. Conflicts wait quietly in the app.NeverThe menu bar glyph still changes, and things still wait for you rather than happening on their own.notify_policy",
       "box": {
         "w": 520,
         "h": 426.25
@@ -96,6 +97,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "Only when you need medefaultThe four events on the left. Roughly once a week, in a quiet month.Only permanent deletionsThe single event that can cost you files. Conflicts wait quietly in the app.NeverThe menu bar glyph still changes, and things still wait for you rather than happening on their own.",
       "box": {
         "w": 466,
         "h": 280.88
@@ -123,6 +125,7 @@
     {
       "key": "div[2]/div[0]",
       "tag": "div",
+      "fullText": "Only when you need medefaultThe four events on the left. Roughly once a week, in a quiet month.",
       "box": {
         "w": 466,
         "h": 77.38
@@ -163,6 +166,7 @@
     {
       "key": "div[2]/div[0]/div[0]",
       "tag": "div",
+      "fullText": "Only when you need medefault",
       "box": {
         "w": 432,
         "h": 20
@@ -317,6 +321,7 @@
     {
       "key": "div[2]/div[1]",
       "tag": "div",
+      "fullText": "Only permanent deletionsThe single event that can cost you files. Conflicts wait quietly in the app.",
       "box": {
         "w": 466,
         "h": 92.75
@@ -357,6 +362,7 @@
     {
       "key": "div[2]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "Only permanent deletions",
       "box": {
         "w": 432,
         "h": 16
@@ -471,6 +477,7 @@
     {
       "key": "div[2]/div[2]",
       "tag": "div",
+      "fullText": "NeverThe menu bar glyph still changes, and things still wait for you rather than happening on their own.",
       "box": {
         "w": 466,
         "h": 92.75
@@ -511,6 +518,7 @@
     {
       "key": "div[2]/div[2]/div[0]",
       "tag": "div",
+      "fullText": "Never",
       "box": {
         "w": 432,
         "h": 16

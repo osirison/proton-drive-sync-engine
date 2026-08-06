@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Syncstep 2 of 2Nothing gets deleted todayThe first sync only adds. Files you have go up, files on Proton come down, and anything that exists on both sides in different versions is kept as two copies so you can look at them later.Going up to Proton128files · 1.4 GBFiles that only exist on this computer.Coming down to this computer341files · 38.4 GBNeeds 38.4 GB free. You have 214 GB.11,798 files already match on both sidesleft alone2 files differ on both sidesboth copies kept — you decide later3 files can't be synced — a socket and two shortcutsskippedNothing will be deletedon either sideworked out 40 seconds ago · about 25 minutes to finishSee all 471 actionsBackStart the first sync",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Syncstep 2 of 2",
       "box": {
         "w": 1040,
         "h": 52
@@ -172,6 +174,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Nothing gets deleted todayThe first sync only adds. Files you have go up, files on Proton come down, and anything that exists on both sides in different versions is kept as two copies so you can look at them later.",
       "box": {
         "w": 1040,
         "h": 212.78
@@ -399,6 +402,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "Going up to Proton128files · 1.4 GBFiles that only exist on this computer.Coming down to this computer341files · 38.4 GBNeeds 38.4 GB free. You have 214 GB.11,798 files already match on both sidesleft alone2 files differ on both sidesboth copies kept — you decide later3 files can't be synced — a socket and two shortcutsskippedNothing will be deletedon either sideworked out 40 seconds ago · about 25 minutes to finishSee all 471 actions",
       "box": {
         "w": 1040,
         "h": 396.22
@@ -432,6 +436,7 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fullText": "Going up to Proton128files · 1.4 GBFiles that only exist on this computer.Coming down to this computer341files · 38.4 GBNeeds 38.4 GB free. You have 214 GB.",
       "box": {
         "w": 976,
         "h": 90.75
@@ -457,6 +462,7 @@
     {
       "key": "div[1]/div[0]/div[0]",
       "tag": "div",
+      "fullText": "Going up to Proton128files · 1.4 GBFiles that only exist on this computer.",
       "box": {
         "w": 488,
         "h": 90.75
@@ -506,6 +512,7 @@
     {
       "key": "div[1]/div[0]/div[0]/div[1]",
       "tag": "div",
+      "fullText": "128files · 1.4 GB",
       "box": {
         "w": 452,
         "h": 38
@@ -606,6 +613,7 @@
     {
       "key": "div[1]/div[0]/div[1]",
       "tag": "div",
+      "fullText": "Coming down to this computer341files · 38.4 GBNeeds 38.4 GB free. You have 214 GB.",
       "box": {
         "w": 488,
         "h": 90.75
@@ -655,6 +663,7 @@
     {
       "key": "div[1]/div[0]/div[1]/div[1]",
       "tag": "div",
+      "fullText": "341files · 38.4 GB",
       "box": {
         "w": 452,
         "h": 38
@@ -756,6 +765,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "11,798 files already match on both sidesleft alone2 files differ on both sidesboth copies kept — you decide later3 files can't be synced — a socket and two shortcutsskippedNothing will be deletedon either side",
       "box": {
         "w": 976,
         "h": 163
@@ -783,6 +793,7 @@
     {
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "11,798 files already match on both sidesleft alone",
       "box": {
         "w": 976,
         "h": 39
@@ -896,6 +907,7 @@
     {
       "key": "div[1]/div[1]/div[1]",
       "tag": "div",
+      "fullText": "2 files differ on both sidesboth copies kept — you decide later",
       "box": {
         "w": 976,
         "h": 39
@@ -1016,6 +1028,7 @@
     {
       "key": "div[1]/div[1]/div[2]",
       "tag": "div",
+      "fullText": "3 files can't be synced — a socket and two shortcutsskipped",
       "box": {
         "w": 976,
         "h": 39
@@ -1129,6 +1142,7 @@
     {
       "key": "div[1]/div[1]/div[3]",
       "tag": "div",
+      "fullText": "Nothing will be deletedon either side",
       "box": {
         "w": 976,
         "h": 40
@@ -1272,6 +1286,7 @@
     {
       "key": "div[1]/div[2]",
       "tag": "div",
+      "fullText": "worked out 40 seconds ago · about 25 minutes to finishSee all 471 actions",
       "box": {
         "w": 976,
         "h": 31
@@ -1388,6 +1403,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "BackStart the first sync",
       "box": {
         "w": 1040,
         "h": 73

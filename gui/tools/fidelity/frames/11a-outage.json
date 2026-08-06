@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Drive SyncnowNothing has synced since yesterdayProton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.Sign inOpen Drive Sync",
       "box": {
         "w": 520,
         "h": 154.5
@@ -47,6 +48,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Drive SyncnowNothing has synced since yesterdayProton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.",
       "box": {
         "w": 484,
         "h": 77.5
@@ -162,6 +164,7 @@
     {
       "key": "div[0]/div",
       "tag": "div",
+      "fullText": "Drive SyncnowNothing has synced since yesterdayProton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.",
       "box": {
         "w": 437,
         "h": 77.5
@@ -187,6 +190,7 @@
     {
       "key": "div[0]/div/div[0]",
       "tag": "div",
+      "fullText": "Drive Syncnow",
       "box": {
         "w": 437,
         "h": 15
@@ -336,6 +340,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "Sign inOpen Drive Sync",
       "box": {
         "w": 484,
         "h": 33

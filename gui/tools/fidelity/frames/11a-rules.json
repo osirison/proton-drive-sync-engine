@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Interrupts you — 4Something would be deleted permanentlyThe one event where waiting silently could cost you files you'd never get back.A file changed on both sidesNothing is lost, but you're now editing two versions of the same thing without knowing it.The first sync finishedOnce, at the end of a long wait you were told to walk away from.Nothing has synced for a dayNot a blip — a real outage, wrong password, or full drive. Silence here is dangerous.Stays silent — on purposeevery sync passevery file sentevery file receivedfolders followedrenamesa single failed passretriesscheduled sweepsskipped filespause and resumerecoverable deletionssettings savedAll of it is in Activity, where you go looking for it. A notification you didn't need is a notification you'll switch off.Never a button in a bannerDelete. Discard a version. Approve all. Anything irreversible needs a window where you can see what you're losing — a banner only ever offers the safe direction.",
       "box": {
         "w": 600,
         "h": 633.38
@@ -72,6 +73,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "Something would be deleted permanentlyThe one event where waiting silently could cost you files you'd never get back.",
       "box": {
         "w": 546,
         "h": 62
@@ -133,6 +135,7 @@
     {
       "key": "div[1]/div",
       "tag": "div",
+      "fullText": "Something would be deleted permanentlyThe one event where waiting silently could cost you files you'd never get back.",
       "box": {
         "w": 526,
         "h": 37
@@ -207,6 +210,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "A file changed on both sidesNothing is lost, but you're now editing two versions of the same thing without knowing it.",
       "box": {
         "w": 546,
         "h": 62
@@ -274,6 +278,7 @@
     {
       "key": "div[2]/div",
       "tag": "div",
+      "fullText": "A file changed on both sidesNothing is lost, but you're now editing two versions of the same thing without knowing it.",
       "box": {
         "w": 526,
         "h": 37
@@ -348,6 +353,7 @@
     {
       "key": "div[3]",
       "tag": "div",
+      "fullText": "The first sync finishedOnce, at the end of a long wait you were told to walk away from.",
       "box": {
         "w": 546,
         "h": 62
@@ -408,6 +414,7 @@
     {
       "key": "div[3]/div",
       "tag": "div",
+      "fullText": "The first sync finishedOnce, at the end of a long wait you were told to walk away from.",
       "box": {
         "w": 526,
         "h": 37
@@ -482,6 +489,7 @@
     {
       "key": "div[4]",
       "tag": "div",
+      "fullText": "Nothing has synced for a dayNot a blip — a real outage, wrong password, or full drive. Silence here is dangerous.",
       "box": {
         "w": 546,
         "h": 62
@@ -542,6 +550,7 @@
     {
       "key": "div[4]/div",
       "tag": "div",
+      "fullText": "Nothing has synced for a dayNot a blip — a real outage, wrong password, or full drive. Silence here is dangerous.",
       "box": {
         "w": 526,
         "h": 37
@@ -642,6 +651,7 @@
     {
       "key": "div[6]",
       "tag": "div",
+      "fullText": "every sync passevery file sentevery file receivedfolders followedrenamesa single failed passretriesscheduled sweepsskipped filespause and resumerecoverable deletionssettings saved",
       "box": {
         "w": 546,
         "h": 95
@@ -1149,6 +1159,7 @@
       "key": "div[7]",
       "tag": "div",
       "text": "All of it is in , where you go looking for it. A notification you didn't need is a notification you'll switch off.",
+      "fullText": "All of it is in Activity, where you go looking for it. A notification you didn't need is a notification you'll switch off.",
       "box": {
         "w": 546,
         "h": 37.19
@@ -1198,6 +1209,7 @@
     {
       "key": "div[8]",
       "tag": "div",
+      "fullText": "Never a button in a bannerDelete. Discard a version. Approve all. Anything irreversible needs a window where you can see what you're losing — a banner only ever offers the safe direction.",
       "box": {
         "w": 546,
         "h": 89.19

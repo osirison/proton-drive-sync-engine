@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Up to date2 minutes ago12,480 filesPauseOpen",
       "box": {
         "w": 362,
         "h": 227
@@ -44,6 +45,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Up to date2 minutes ago",
       "box": {
         "w": 360,
         "h": 178
@@ -214,6 +216,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "12,480 filesPauseOpen",
       "box": {
         "w": 360,
         "h": 47

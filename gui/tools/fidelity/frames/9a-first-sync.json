@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "This computerProton Drive312Bringing everything together159 of 471 done · about 17 minutes left44 sent115 receivedYou can close this window — it keeps going in the background.nothing deleted · 2 conflicts kept as copiesPause",
       "box": {
         "w": 602,
         "h": 542
@@ -46,6 +47,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "This computerProton Drive312Bringing everything together159 of 471 done · about 17 minutes left44 sent115 receivedYou can close this window — it keeps going in the background.",
       "box": {
         "w": 600,
         "h": 477
@@ -171,6 +173,7 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fullText": "312",
       "box": {
         "w": 116,
         "h": 116
@@ -574,6 +577,7 @@
     {
       "key": "div[0]/div[5]",
       "tag": "div",
+      "fullText": "44 sent115 received",
       "box": {
         "w": 400,
         "h": 26
@@ -681,6 +685,7 @@
     {
       "key": "div[0]/div[5]/div[1]",
       "tag": "div",
+      "fullText": "44 sent115 received",
       "box": {
         "w": 400,
         "h": 14
@@ -790,6 +795,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "nothing deleted · 2 conflicts kept as copiesPause",
       "box": {
         "w": 600,
         "h": 63

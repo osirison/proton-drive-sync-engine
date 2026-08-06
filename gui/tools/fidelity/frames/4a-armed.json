@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Sync2 waiting⋯Delete 1,204 photos from this computer?Everything in photos/2019 — 8.4 GB — is removed from disk. It does not go to your trash, and it is already gone from Proton Drive, so there is nothing to restore it from.DELETEDelete permanentlyKeep it — put it back on Proton DrivePress Esc to cancel.ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Sync2 waiting⋯",
       "box": {
         "w": 1040,
         "h": 52
@@ -251,6 +253,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Delete 1,204 photos from this computer?Everything in photos/2019 — 8.4 GB — is removed from disk. It does not go to your trash, and it is already gone from Proton Drive, so there is nothing to restore it from.DELETEDelete permanentlyKeep it — put it back on Proton DrivePress Esc to cancel.",
       "box": {
         "w": 1040,
         "h": 662
@@ -427,6 +430,7 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "text": "Everything in — 8.4 GB — is removed from disk. It does not go to your trash, and it is already gone from Proton Drive, so there is nothing to restore it from.",
+      "fullText": "Everything in photos/2019 — 8.4 GB — is removed from disk. It does not go to your trash, and it is already gone from Proton Drive, so there is nothing to restore it from.",
       "box": {
         "w": 520,
         "h": 69.28
@@ -476,6 +480,7 @@
     {
       "key": "div[0]/div[2]",
       "tag": "div",
+      "fullText": "DELETEDelete permanently",
       "box": {
         "w": 280.94,
         "h": 41
@@ -503,6 +508,7 @@
     {
       "key": "div[0]/div[2]/div",
       "tag": "div",
+      "fullText": "DELETE",
       "box": {
         "w": 100.67,
         "h": 41
@@ -571,8 +577,8 @@
       "key": "div[0]/div[2]/div/span[1]",
       "tag": "span",
       "box": {
-        "w": 2.13,
-        "h": 21.34
+        "w": 1.64,
+        "h": 16.43
       },
       "styles": {
         "font-family": "\"Instrument Sans\", system-ui, sans-serif",
@@ -583,7 +589,7 @@
         "text-align": "start",
         "color": "rgb(242, 244, 247)",
         "background-color": "rgb(255, 107, 107)",
-        "opacity": "0.450277",
+        "opacity": "0.87582",
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
@@ -699,6 +705,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1040,
         "h": 50
@@ -726,6 +733,7 @@
     {
       "key": "div[1]/div",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 960,
         "h": 32

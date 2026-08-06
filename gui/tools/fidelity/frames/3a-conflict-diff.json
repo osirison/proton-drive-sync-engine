@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Sync3 waiting⋯3notes/todo.txtTwo lines differ. Everything else in the file matches.1 of 3‹›Your versionProton's version1# Todo2- buy milk3- call Alice4- ship v1·not in your version1# Todo2- buy oat milk3- call Alice4- ship v15- relax2 lines differ · 3 lines identicalOpen both in an editorHide differencesStill waiting after this onedesign/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Sync3 waiting⋯",
       "box": {
         "w": 1040,
         "h": 52
@@ -258,6 +260,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "3notes/todo.txtTwo lines differ. Everything else in the file matches.1 of 3‹›",
       "box": {
         "w": 1040,
         "h": 44
@@ -288,6 +291,7 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fullText": "3",
       "box": {
         "w": 34,
         "h": 34
@@ -376,6 +380,7 @@
     {
       "key": "div[0]/div[0]",
       "tag": "div",
+      "fullText": "notes/todo.txtTwo lines differ. Everything else in the file matches.",
       "box": {
         "w": 796.59,
         "h": 38
@@ -450,6 +455,7 @@
     {
       "key": "div[0]/div[1]",
       "tag": "div",
+      "fullText": "1 of 3‹›",
       "box": {
         "w": 117.41,
         "h": 30
@@ -582,6 +588,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "Your versionProton's version1# Todo2- buy milk3- call Alice4- ship v1·not in your version1# Todo2- buy oat milk3- call Alice4- ship v15- relax2 lines differ · 3 lines identicalOpen both in an editorHide differencesStill waiting after this onedesign/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3",
       "box": {
         "w": 1040,
         "h": 598
@@ -612,6 +619,7 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fullText": "Your versionProton's version",
       "box": {
         "w": 976,
         "h": 13
@@ -689,6 +697,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "1# Todo2- buy milk3- call Alice4- ship v1·not in your version1# Todo2- buy oat milk3- call Alice4- ship v15- relax",
       "box": {
         "w": 976,
         "h": 136
@@ -729,6 +738,7 @@
     {
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "1# Todo2- buy milk3- call Alice4- ship v1·not in your version",
       "box": {
         "w": 486.5,
         "h": 134
@@ -754,6 +764,7 @@
     {
       "key": "div[1]/div[1]/div[0]/div[0]",
       "tag": "div",
+      "fullText": "1# Todo",
       "box": {
         "w": 486.5,
         "h": 22
@@ -832,6 +843,7 @@
     {
       "key": "div[1]/div[1]/div[0]/div[1]",
       "tag": "div",
+      "fullText": "2- buy milk",
       "box": {
         "w": 486.5,
         "h": 22
@@ -911,6 +923,7 @@
     {
       "key": "div[1]/div[1]/div[0]/div[2]",
       "tag": "div",
+      "fullText": "3- call Alice",
       "box": {
         "w": 486.5,
         "h": 22
@@ -989,6 +1002,7 @@
     {
       "key": "div[1]/div[1]/div[0]/div[3]",
       "tag": "div",
+      "fullText": "4- ship v1",
       "box": {
         "w": 486.5,
         "h": 22
@@ -1067,6 +1081,7 @@
     {
       "key": "div[1]/div[1]/div[0]/div[4]",
       "tag": "div",
+      "fullText": "·not in your version",
       "box": {
         "w": 486.5,
         "h": 22
@@ -1169,6 +1184,7 @@
     {
       "key": "div[1]/div[1]/div[2]",
       "tag": "div",
+      "fullText": "1# Todo2- buy oat milk3- call Alice4- ship v15- relax",
       "box": {
         "w": 486.5,
         "h": 134
@@ -1194,6 +1210,7 @@
     {
       "key": "div[1]/div[1]/div[2]/div[0]",
       "tag": "div",
+      "fullText": "1# Todo",
       "box": {
         "w": 486.5,
         "h": 22
@@ -1272,6 +1289,7 @@
     {
       "key": "div[1]/div[1]/div[2]/div[1]",
       "tag": "div",
+      "fullText": "2- buy oat milk",
       "box": {
         "w": 486.5,
         "h": 22
@@ -1351,6 +1369,7 @@
     {
       "key": "div[1]/div[1]/div[2]/div[2]",
       "tag": "div",
+      "fullText": "3- call Alice",
       "box": {
         "w": 486.5,
         "h": 22
@@ -1429,6 +1448,7 @@
     {
       "key": "div[1]/div[1]/div[2]/div[3]",
       "tag": "div",
+      "fullText": "4- ship v1",
       "box": {
         "w": 486.5,
         "h": 22
@@ -1507,6 +1527,7 @@
     {
       "key": "div[1]/div[1]/div[2]/div[4]",
       "tag": "div",
+      "fullText": "5- relax",
       "box": {
         "w": 486.5,
         "h": 22
@@ -1586,6 +1607,7 @@
     {
       "key": "div[1]/div[2]",
       "tag": "div",
+      "fullText": "2 lines differ · 3 lines identicalOpen both in an editorHide differences",
       "box": {
         "w": 976,
         "h": 31
@@ -1742,6 +1764,7 @@
     {
       "key": "div[1]/div[3]",
       "tag": "div",
+      "fullText": "Still waiting after this onedesign/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3",
       "box": {
         "w": 976,
         "h": 104
@@ -1793,6 +1816,7 @@
     {
       "key": "div[1]/div[3]/div[1]",
       "tag": "div",
+      "fullText": "design/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3",
       "box": {
         "w": 976,
         "h": 68
@@ -1819,6 +1843,7 @@
     {
       "key": "div[1]/div[3]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "design/logo.svgboth changed it2 of 3",
       "box": {
         "w": 976,
         "h": 33
@@ -1962,6 +1987,7 @@
     {
       "key": "div[1]/div[3]/div[1]/div[1]",
       "tag": "div",
+      "fullText": "photos/tripa folder here, a file there3 of 3",
       "box": {
         "w": 976,
         "h": 33
@@ -2105,6 +2131,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1040,
         "h": 50
@@ -2132,6 +2159,7 @@
     {
       "key": "div[2]/div",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 960,
         "h": 32

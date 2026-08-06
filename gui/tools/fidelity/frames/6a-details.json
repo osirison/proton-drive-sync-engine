@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Details✕pending_changes0conflicts3destructive_actions1skipped_unsupported1scan_interval300sevent_streamonsourcestatus_historysocketconnectedCopy allOpen the system log",
       "box": {
         "w": 522,
         "h": 462
@@ -46,6 +47,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "Details✕",
       "box": {
         "w": 520,
         "h": 46
@@ -142,6 +144,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "pending_changes0conflicts3destructive_actions1skipped_unsupported1scan_interval300sevent_streamonsourcestatus_historysocketconnected",
       "box": {
         "w": 520,
         "h": 338
@@ -171,6 +174,7 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fullText": "pending_changes0",
       "box": {
         "w": 476,
         "h": 32
@@ -250,6 +254,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "conflicts3",
       "box": {
         "w": 476,
         "h": 32
@@ -329,6 +334,7 @@
     {
       "key": "div[1]/div[2]",
       "tag": "div",
+      "fullText": "destructive_actions1",
       "box": {
         "w": 476,
         "h": 32
@@ -408,6 +414,7 @@
     {
       "key": "div[1]/div[3]",
       "tag": "div",
+      "fullText": "skipped_unsupported1",
       "box": {
         "w": 476,
         "h": 32
@@ -487,6 +494,7 @@
     {
       "key": "div[1]/div[4]",
       "tag": "div",
+      "fullText": "scan_interval300s",
       "box": {
         "w": 476,
         "h": 32
@@ -566,6 +574,7 @@
     {
       "key": "div[1]/div[5]",
       "tag": "div",
+      "fullText": "event_streamon",
       "box": {
         "w": 476,
         "h": 32
@@ -645,6 +654,7 @@
     {
       "key": "div[1]/div[6]",
       "tag": "div",
+      "fullText": "sourcestatus_history",
       "box": {
         "w": 476,
         "h": 32
@@ -724,6 +734,7 @@
     {
       "key": "div[1]/div[7]",
       "tag": "div",
+      "fullText": "socketconnected",
       "box": {
         "w": 476,
         "h": 32
@@ -803,6 +814,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "Copy allOpen the system log",
       "box": {
         "w": 520,
         "h": 64

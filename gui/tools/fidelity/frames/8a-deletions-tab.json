@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "When a file is deletedDeleting on one side would normally delete it on the other. This is how much say you get.Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.deletion_policy · applies to both directions",
       "box": {
         "w": 600,
         "h": 520
@@ -99,6 +100,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.",
       "box": {
         "w": 546,
         "h": 300.25
@@ -126,6 +128,7 @@
     {
       "key": "div[2]/div[0]",
       "tag": "div",
+      "fullText": "Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.",
       "box": {
         "w": 546,
         "h": 96.75
@@ -166,6 +169,7 @@
     {
       "key": "div[2]/div[0]/div[0]",
       "tag": "div",
+      "fullText": "Ask me every timerecommended",
       "box": {
         "w": 512,
         "h": 20
@@ -320,6 +324,7 @@
     {
       "key": "div[2]/div[1]",
       "tag": "div",
+      "fullText": "Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.",
       "box": {
         "w": 546,
         "h": 92.75
@@ -360,6 +365,7 @@
     {
       "key": "div[2]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "Only ask about permanent ones",
       "box": {
         "w": 512,
         "h": 16
@@ -474,6 +480,7 @@
     {
       "key": "div[2]/div[2]",
       "tag": "div",
+      "fullText": "Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.",
       "box": {
         "w": 546,
         "h": 92.75
@@ -514,6 +521,7 @@
     {
       "key": "div[2]/div[2]/div[0]",
       "tag": "div",
+      "fullText": "Never ask",
       "box": {
         "w": 512,
         "h": 16

@@ -7,6 +7,7 @@
     {
       "key": "",
       "tag": "div",
+      "fullText": "Proton Drive Syncidle⋯⌕spec.md1 match✕docs/spec.mdSafely on both sidesIdentical here and on Proton Drive since 14:32 today.This computer1.2 MBedited 14:31~/ProtonDrive/docs/spec.mdProton Drive1.2 MBreceived 14:32/Drive/RemoteFolder/docs/spec.mdThis file's history→Sent to Proton Drivetoday 14:32→Sent to Proton DriveMon 09:14Both sides had changed — you kept yoursFri 16:02←First brought to this computer12 JulOpen folderOpen on Proton Drivelinked · id 4c8f…9a21ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
     {
       "key": "header",
       "tag": "header",
+      "fullText": "Proton Drive Syncidle⋯",
       "box": {
         "w": 1040,
         "h": 52
@@ -244,6 +246,7 @@
     {
       "key": "div[0]",
       "tag": "div",
+      "fullText": "⌕spec.md1 match✕",
       "box": {
         "w": 1040,
         "h": 54
@@ -271,6 +274,7 @@
     {
       "key": "div[0]/div",
       "tag": "div",
+      "fullText": "⌕spec.md1 match✕",
       "box": {
         "w": 976,
         "h": 50
@@ -428,6 +432,7 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fullText": "docs/spec.mdSafely on both sidesIdentical here and on Proton Drive since 14:32 today.This computer1.2 MBedited 14:31~/ProtonDrive/docs/spec.mdProton Drive1.2 MBreceived 14:32/Drive/RemoteFolder/docs/spec.md",
       "box": {
         "w": 1040,
         "h": 253
@@ -489,6 +494,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
+      "fullText": "docs/spec.mdSafely on both sidesIdentical here and on Proton Drive since 14:32 today.",
       "box": {
         "w": 976,
         "h": 139
@@ -696,6 +702,7 @@
     {
       "key": "div[1]/div[2]",
       "tag": "div",
+      "fullText": "This computer1.2 MBedited 14:31~/ProtonDrive/docs/spec.mdProton Drive1.2 MBreceived 14:32/Drive/RemoteFolder/docs/spec.md",
       "box": {
         "w": 976,
         "h": 92
@@ -722,6 +729,7 @@
     {
       "key": "div[1]/div[2]/div[0]",
       "tag": "div",
+      "fullText": "This computer1.2 MBedited 14:31~/ProtonDrive/docs/spec.md",
       "box": {
         "w": 488,
         "h": 92
@@ -771,6 +779,7 @@
     {
       "key": "div[1]/div[2]/div[0]/div[1]",
       "tag": "div",
+      "fullText": "1.2 MBedited 14:31~/ProtonDrive/docs/spec.md",
       "box": {
         "w": 458,
         "h": 68
@@ -812,6 +821,7 @@
     {
       "key": "div[1]/div[2]/div[0]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "1.2 MBedited 14:31",
       "box": {
         "w": 424,
         "h": 15
@@ -910,6 +920,7 @@
     {
       "key": "div[1]/div[2]/div[1]",
       "tag": "div",
+      "fullText": "Proton Drive1.2 MBreceived 14:32/Drive/RemoteFolder/docs/spec.md",
       "box": {
         "w": 488,
         "h": 92
@@ -959,6 +970,7 @@
     {
       "key": "div[1]/div[2]/div[1]/div[1]",
       "tag": "div",
+      "fullText": "1.2 MBreceived 14:32/Drive/RemoteFolder/docs/spec.md",
       "box": {
         "w": 458,
         "h": 68
@@ -1000,6 +1012,7 @@
     {
       "key": "div[1]/div[2]/div[1]/div[1]/div[0]",
       "tag": "div",
+      "fullText": "1.2 MBreceived 14:32",
       "box": {
         "w": 424,
         "h": 15
@@ -1099,6 +1112,7 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fullText": "This file's history→Sent to Proton Drivetoday 14:32→Sent to Proton DriveMon 09:14Both sides had changed — you kept yoursFri 16:02←First brought to this computer12 JulOpen folderOpen on Proton Drivelinked · id 4c8f…9a21",
       "box": {
         "w": 1040,
         "h": 296
@@ -1155,6 +1169,7 @@
     {
       "key": "div[2]/div[1]",
       "tag": "div",
+      "fullText": "→Sent to Proton Drivetoday 14:32",
       "box": {
         "w": 976,
         "h": 34
@@ -1262,6 +1277,7 @@
     {
       "key": "div[2]/div[2]",
       "tag": "div",
+      "fullText": "→Sent to Proton DriveMon 09:14",
       "box": {
         "w": 976,
         "h": 34
@@ -1369,6 +1385,7 @@
     {
       "key": "div[2]/div[3]",
       "tag": "div",
+      "fullText": "Both sides had changed — you kept yoursFri 16:02",
       "box": {
         "w": 976,
         "h": 34
@@ -1489,6 +1506,7 @@
     {
       "key": "div[2]/div[4]",
       "tag": "div",
+      "fullText": "←First brought to this computer12 Jul",
       "box": {
         "w": 976,
         "h": 34
@@ -1596,6 +1614,7 @@
     {
       "key": "div[2]/div[5]",
       "tag": "div",
+      "fullText": "Open folderOpen on Proton Drivelinked · id 4c8f…9a21",
       "box": {
         "w": 976,
         "h": 46
@@ -1757,6 +1776,7 @@
     {
       "key": "div[3]",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 1040,
         "h": 49
@@ -1784,6 +1804,7 @@
     {
       "key": "div[3]/div",
       "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
       "box": {
         "w": 960,
         "h": 31
