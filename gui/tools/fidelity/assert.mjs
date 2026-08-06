@@ -25,7 +25,7 @@ import { readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX } from "./props.mjs";
+import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX, boxIsComparable } from "./props.mjs";
 import { OWES_FIT } from "./frame-classes.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -93,7 +93,19 @@ for (const entry of index) {
   // developer could reproduce. The frame decides: the `12a` set IS the light theme, everything else
   // is drawn dark.
   const scheme = frame.label.startsWith("12a") ? "light" : "dark";
-  await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
+  await page.emulateMediaFeatures([
+    { name: "prefers-color-scheme", value: scheme },
+    // `prefers-reduced-motion` is the same hazard, found by auditing rather than by CI. FOUR of the
+    // app's stylesheets answer it and every one sets `animation: none` or `transition: none` — and
+    // animation-name/duration/delay/timing-function are all asserted properties. The prototype has
+    // no reduced-motion rules anywhere (DEVIATIONS.md §30), so a runner that reported `reduce` would
+    // compare a motionless app against animated ground truth and fail exactly as the colour scheme
+    // did. Both values are legitimate app states; the gate has to say which one it is looking at.
+    { name: "prefers-reduced-motion", value: "no-preference" },
+    // `forced-colors` is NOT pinned: puppeteer rejects it as an unsupported media feature. Nothing
+    // in the app answers it today, so nothing is unpinned in practice — but the first stylesheet
+    // that does will need a way to fix it, and this is where to look.
+  ]);
 
   await page.goto(`http://127.0.0.1:${port}/index.html?frame=${encodeURIComponent(frame.label)}`, {
     waitUntil: "networkidle0",
@@ -174,8 +186,9 @@ for (const entry of index) {
       asserted++;
       if (reason) failures.push({ frame: frame.label, key: node.key, prop, detail: reason });
     }
-    // Size, as a border box in both documents — see the note on `width` in props.mjs.
-    for (const side of ["w", "h"]) {
+    // Size, as a border box in both documents — see the note on `width` in props.mjs. Skipped where
+    // the node's text needs a glyph no bundled font provides; that width measures the machine.
+    for (const side of boxIsComparable(want) ? ["w", "h"] : []) {
       asserted++;
       if (Math.abs(want.box[side] - node.box[side]) > LENGTH_TOLERANCE_PX) {
         failures.push({

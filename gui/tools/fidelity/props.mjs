@@ -161,6 +161,39 @@ export const INITIAL = {
 /** Resolve a recorded value, filling in the initial for a property the fixture omitted. */
 export const valueOf = (styles, prop) => styles[prop] ?? INITIAL[prop];
 
+/**
+ * Characters the bundled typefaces do not cover, so their glyphs come from whatever the machine has
+ * installed — and their advance widths differ between machines by whole pixels, not fractions.
+ *
+ * F1 flagged this when it vendored the fonts: "the fallbacks only ever apply to glyphs outside the
+ * latin/latin-ext subsets (the Unicode symbols in 01-foundations.md §8 are mostly outside both)".
+ * The design leans on them — `⇄` in the folder pair, `⌕` for lookup, `⊘` for never-synced, `▲◐▮▾`
+ * in the desktop mocks — and their measured widths moved 10.89 → 8.47 between a developer box and
+ * ubuntu-latest.
+ *
+ * The blocks below are arrows, mathematical operators, miscellaneous technical, geometric shapes and
+ * symbols. General Punctuation (em dash, curly quotes, `›`, `…`) is deliberately NOT here: Google's
+ * `latin` subset includes U+2000–206F, so those glyphs come from the bundled files and are
+ * deterministic.
+ */
+const UNBUNDLED_GLYPH = /[\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u25A0-\u25FF\u2600-\u27BF\u2B00-\u2BFF]/;
+
+/**
+ * Should this node's measured box be compared at all?
+ *
+ * No, when its text contains a glyph no bundled font provides — the width then measures the
+ * machine's font stack rather than the design. Everything else about such a node (colour, padding,
+ * font-size, position) is still asserted; only the size it happens to occupy is not.
+ *
+ * This is the honest version of a limitation, not a workaround: nothing can make an unbundled glyph
+ * deterministic except bundling a font for it, which would change what ships. Recorded in the
+ * harness README.
+ */
+export function boxIsComparable(node) {
+  const text = `${node.text ?? ""}${node.fullText ?? ""}`;
+  return !UNBUNDLED_GLYPH.test(text);
+}
+
 /** Lengths compare at ±0.5px; everything else is exact after normalisation. */
 export const LENGTH_TOLERANCE_PX = 0.5;
 

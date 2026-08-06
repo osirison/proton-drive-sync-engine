@@ -82,6 +82,39 @@ They are not all windows.
 | `crop`         | 2     | everything except its own width; drawn at 600 inside the 1040 Settings window |
 | `specimen`     | 4     | only the inner artefact; the wallpaper and taskbar are scenery                |
 
+## Pinning the environment
+
+Three of this harness's first four CI failures were the environment leaking into the measurement,
+never the code. A fidelity gate that does not pin its environment measures its environment, so both
+scripts fix the same things at the same call sites:
+
+| Pinned                                      | Why                                                                                                                                                                                                                      |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| viewport `1040×764`, `deviceScaleFactor: 1` | a length must be one CSS pixel, rounded once                                                                                                                                                                             |
+| `prefers-color-scheme` **per frame**        | the `12a` set is the light theme; everything else is dark. A headless browser's default is a property of the platform, and unpinned this compared dark frames to a light app — 187 failures no developer could reproduce |
+| `prefers-reduced-motion: no-preference`     | four app stylesheets answer it and every one sets `animation: none`, and animation properties are asserted. The prototype has no reduced-motion rules at all                                                             |
+| `@font-face` injected into the prototype    | it declares the families and has no `@font-face`, so unpinned it renders in whatever the machine falls back to                                                                                                           |
+| every animation seeked to 0 and paused      | otherwise the harness records animation _phase_: `opacity` 0.82 one run and 0.79 the next, and a `blip` dot measured 8.8px because the reading caught the 1.5× transform mid-cycle                                       |
+
+`forced-colors` is **not** pinned — puppeteer rejects it as unsupported. Nothing in the app answers
+it today, so nothing is unpinned in practice, but the first stylesheet that does will need a way.
+
+Animations are frozen through the Web Animations API rather than an `animation-play-state: paused`
+override, because the declarations are themselves asserted. Overriding a property in order to
+measure it is how a gate ends up agreeing with itself.
+
+### The one thing that cannot be pinned
+
+**Glyphs no bundled font provides.** The design uses `⇄`, `⌕`, `⊘`, `›`, `▲◐▮▾`; F1 vendored the
+latin and latin-ext subsets, and most of those symbols are outside both. Their advance widths come
+from whatever the machine has installed and differ by whole pixels — `10.89` here, `8.47` on
+ubuntu-latest.
+
+So a node whose text needs one is **exempt from box comparison only** (`boxIsComparable`). Its
+colour, padding, font-size and position are still asserted; only the width it happens to occupy is
+not. Nothing can make this deterministic except bundling a symbol font, which would change what
+ships.
+
 ## What this cannot cover, ever
 
 Stated rather than implied, because a gate that seems to cover more than it does is worse than one

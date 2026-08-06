@@ -71,7 +71,15 @@ const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] 
 const page = await browser.newPage();
 // Wide enough that no frame is squeezed by the viewport. Computed styles do not depend on scroll
 // position, so the whole document is read in one pass.
-await page.setViewport({ width: 1400, height: 1000 });
+await page.setViewport({ width: 1400, height: 1000, deviceScaleFactor: 1 });
+// Pinned for the same reason assert.mjs pins them. The prototype answers no media queries at all —
+// it has no @media anywhere — so none of this changes what is extracted today. It is here so that
+// the two sides are pinned identically and stay that way: the moment someone adds a query to the
+// prototype, the ground truth would start depending on the extracting machine again.
+await page.emulateMediaFeatures([
+  { name: "prefers-color-scheme", value: "dark" },
+  { name: "prefers-reduced-motion", value: "no-preference" },
+]);
 await page.goto(pathToFileURL(PROTOTYPE).href, { waitUntil: "networkidle0" });
 
 // THE PROTOTYPE HAS NO @font-face. It names 'Instrument Sans' and 'IBM Plex Mono' and falls back to

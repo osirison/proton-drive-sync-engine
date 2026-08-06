@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX } from "./props.mjs";
+import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX, boxIsComparable } from "./props.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const COMMITTED = join(HERE, "frames");
@@ -65,7 +65,7 @@ for (const file of new Set([...committedFiles, ...freshFiles])) {
         );
       }
     }
-    for (const side of ["w", "h"]) {
+    for (const side of boxIsComparable(node) ? ["w", "h"] : []) {
       if (Math.abs(old.box[side] - node.box[side]) > LENGTH_TOLERANCE_PX) {
         drift.push(`${was.label} · ${node.key} · box.${side}: ${old.box[side]} vs ${node.box[side]}`);
       }
