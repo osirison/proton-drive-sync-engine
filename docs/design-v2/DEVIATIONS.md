@@ -936,9 +936,33 @@ Two details the correct sentence also gives, worth keeping together with it:
 
 ### 53a. Three smaller things the row census settled
 
-- **The flat rows are one shape at four rungs.** history, fact, pass and action are all
-  `padding:<y> 2px` over a 1px `--divider` top rule, flex, centred: `9/13`, `11/14`, `12/14`,
-  `13/14` (y / gap). Written once in `rows.css` with four rungs rather than four builders.
+- **The flat rows are one shape at several rungs, and F5 models five of them.** history, path,
+  fact, pass and action are all `padding:<y> 2px` over a 1px `--divider` rule, flex, centred:
+  `9/13`, `9/12`, `11/14`, `12/14`, `13/14` (y / gap). Written once in `rows.css` as five rungs
+  rather than five builders.
+
+  **These five are not the whole set, and the ladder is deliberately open.** Censused over the
+  prototype, `padding:<y> 2px` beside `#16181D` also yields an `8px 2px` gap-13 rung — and that one
+  puts the rule on the **bottom**, not the top. `5a Plan` draws nine of them (`div[3]/div[1]/div[0..8]`,
+  976×33); eleven `border-bottom` separators across the prototype in all, against ninety-two
+  `border-top`. That is S4's screen, not F5's scope, so F5 does not model it; a screen that needs a
+  rung adds one. Stated because "four rungs" written as though exhaustive is the same failure mode
+  as §53's arrow gloss — a sentence the next person trusts instead of re-measuring.
+
+- **`7a Never synced`'s entries are not fact rows**, though they sit one screen away and look like
+  them. No dot, `gap:12` against `14`, and a **mono** path rather than a sans sentence — plus a
+  dimmed variant that separates *you told it to skip these* from *can't be synced*. Modelled as
+  `pathRow` rather than stretched onto `factRow`. Its `Change this rule` is likewise **not** an
+  action row: a standalone `inline-block` button after the group, at controls.js's plain `small`
+  size (`7px 14px`, `--r-8`).
+
+- **A sub-pixel border in the prototype that never reaches the pixels.** `5a Plan`'s conflict dot is
+  authored `border:1.5px solid #FF6B6B`, but Chromium floors a sub-pixel border at `deviceScaleFactor:1`
+  and the frame records **1px** — there is not a single `1.5px` border in any of the 51 fixtures.
+  So the decision dot's ring is 2px at 7 and 8 and 1px at 6 everywhere that is drawn, and `dot()`
+  defaults off size accordingly. Recorded because reading the prototype and "restoring" the 1.5px
+  changes nothing on screen while making the source disagree with the ground truth. The one real
+  constraint is that a 2px ring on a 6px dot leaves a 2px hole and reads as a fill.
 - **`02-shell.md` §2's transfer row is the compact one.** It gives `border-radius:9px;
   padding:9px 11px`, against `03-main-screen.md`'s `11px` / `11px 13px`. Not a conflict: that
   section describes the 360px panel (its hexagon is 72px), and the frames measure exactly those two

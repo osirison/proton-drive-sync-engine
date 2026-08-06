@@ -6,10 +6,15 @@
 // a fixture cannot carry — `box` records width and height but no position, so the vertical rhythm
 // inside a card is not derivable from JSON at all. Three things shape the API:
 //
-//   · THE FLAT ROWS ARE ONE SHAPE AT FOUR SIZES. history, fact, pass and action are all
-//     `padding:<y> 2px` over a 1px `--divider` top rule, flex, centred, with a gap. Only y and the
-//     gap move: 9/13, 11/14, 12/14, 13/14. Modelling them as four unrelated builders would hide
-//     that and let the fifth screen invent a fifth rhythm.
+//   · THE FLAT ROWS ARE ONE SHAPE AT SEVERAL RUNGS. history, path, fact, pass and action are all
+//     `padding:<y> 2px` over a 1px `--divider` rule, flex, centred, with a gap. Only y and the gap
+//     move: 9/13, 9/12, 11/14, 12/14, 13/14. Modelling them as five unrelated builders would hide
+//     that and let the sixth screen invent a sixth rhythm.
+//     THE FIVE HERE ARE NOT THE WHOLE SET. `5a Plan` draws nine rows at `8px 2px` gap-13 with the
+//     rule on the BOTTOM rather than the top — eleven border-bottom rows across the prototype
+//     against ninety-two border-top. That is S4's screen and not F5's scope, so it is not modelled
+//     here; the ladder is open, and a screen that needs a rung adds one rather than assuming these
+//     five are exhaustive. DEVIATIONS §53a.
 //   · MIRRORING IS NOT ONE RULE. Two things straddle the seam and they flip in OPPOSITE
 //     directions — see `transferRow` and `deletionCard`. Generalising either one produces a wrong
 //     screen, which is why they are written out separately rather than sharing a `side` helper.
@@ -32,14 +37,19 @@ import { button } from "./controls.js";
  * crimson: an outline is a choice waiting for you, a fill is a thing that will happen. A solid
  * `decision` dot would say the conflict is already resolved.
  *
- * Ring width is a function of size because that is how it is drawn: 2px at 7 and 8, 1px at 6. A
- * 2px ring on a 6px dot leaves a 2px hole and reads as a fill.
+ * Ring width defaults off size: 2px at 7 and 8, 1px at 6. That holds for everything drawn — the
+ * prototype writes `border:1.5px` on `5a Plan`'s conflict dot, but Chromium floors a sub-pixel
+ * border at DSF 1, so the frame records 1px and there is not a single 1.5px border in any of the 51
+ * fixtures. Do not "restore" the 1.5px: it renders identically and only makes the source disagree
+ * with the ground truth. The override is here for a size nothing has drawn yet, not for that.
+ *
+ * A 2px ring on a 6px dot leaves a 2px hole and reads as a fill. That is the one hard constraint.
  */
-export function dot({ tone = "inert", size = 7 } = {}) {
+export function dot({ tone = "inert", size = 7, ring = null } = {}) {
   const node = el("span", { class: `dot dot-${tone}` });
   node.style.width = `${size}px`;
   node.style.height = `${size}px`;
-  if (tone === "decision") node.style.borderWidth = size <= 6 ? "1px" : "2px";
+  if (tone === "decision") node.style.borderWidth = ring ?? (size <= 6 ? "1px" : "2px");
   return node;
 }
 
@@ -131,14 +141,37 @@ function flatRow(kind, children, { class: cls = null, ...rest } = {}) {
 }
 
 /**
- * A statement of fact with a dot beside it. `9a Review`'s merge summary and `7a Never synced`'s
- * entries. The note on the right is the qualifier — `left alone`, `a socket`, `2.1 MB`.
+ * A statement of fact with a dot beside it, in prose. `9a Review`'s merge summary — the four rows
+ * that say what the first sync will and will not touch. The note on the right is the qualifier:
+ * `left alone`, `nothing is deleted`.
+ *
+ * NOT `7a Never synced`'s entries, which look similar and are not this: no dot, `gap:12`, and a
+ * mono subject rather than a sans sentence. That is `pathRow` below. Two rows this close together
+ * are exactly where a shared builder gets stretched until it fits neither.
  */
 export function factRow({ tone = "inert", label, note = null } = {}) {
   return flatRow("fact", [
     dot({ tone, size: 6 }),
     el("span", { class: "row-label" }, label),
     note ? el("span", { class: "row-note" }, note) : null,
+  ]);
+}
+
+/**
+ * A file named by its path, with a qualifier. `7a Never synced` draws four.
+ *
+ * The subject is mono because it is a path, and there is no dot — nothing here has a severity, which
+ * is the screen's whole point: *nothing here is at risk, it's just not backed up*.
+ *
+ * `dim` drops the path from `--text-2` to `--text-3`, which is how the frame separates the two
+ * groups: files you chose to skip read at full strength, files that cannot be synced at all read
+ * quieter. `mono` on the note follows the design's own division — `2.1 MB` is data and sets in
+ * mono, `a socket` is prose and does not.
+ */
+export function pathRow({ path, note = null, mono = false, dim = false } = {}) {
+  return flatRow("path", [
+    el("span", { class: "path-name" + (dim ? " is-dim" : "") }, path),
+    note ? el("span", { class: "path-note" + (mono ? " is-mono" : "") }, note) : null,
   ]);
 }
 
@@ -199,8 +232,9 @@ export function historyRow({ direction = null, label, time = null, emphasis = fa
 }
 
 /**
- * A row that ends in a button. `8a Skip rules` draws three; `7a Never synced` reuses the shape for
- * `Change this rule`.
+ * A row that ends in a button. `8a Skip rules` draws three, and they are the only ones drawn —
+ * `7a Never synced`'s `Change this rule` looks like it belongs here and does not: it is a
+ * standalone `inline-block` button sitting after the group, at controls.js's plain `small` size.
  *
  * `lead` is the subject in mono at a fixed 180px — a skip rule is a pattern, and patterns line up
  * or they cannot be compared. `action` takes a built control rather than a label so the caller
@@ -364,5 +398,25 @@ export function keepButton({ label, onClick = null } = {}) {
     radius: "var(--r-9)",
     fontSize: "13px",
     class: "deletion-keep",
+  });
+}
+
+/**
+ * `Move to Proton's Trash` — the recoverable card's own action, and the quieter of its two buttons.
+ *
+ * A helper rather than a note telling the caller to pass `padding:"10px"`, because controls.js
+ * writes padding INLINE and an inline style beats any rule `rows.css` could carry. There is no way
+ * for the stylesheet to correct a caller who reaches for a plain `button()` here, so the only place
+ * the geometry can live is a builder. Same reason `keepButton` exists.
+ */
+export function trashButton({ label, onClick = null } = {}) {
+  return button({
+    kind: "decision",
+    size: "standard",
+    label,
+    onClick,
+    padding: "10px",
+    radius: "var(--r-9)",
+    fontSize: "13px",
   });
 }
