@@ -136,7 +136,7 @@ const px = (n) => (n === 0 ? "0" : `${n}px`);
 /**
  * The gradient, in one of the three shapes the prototype draws.
  *
- *   both ends fade   `S, L a%, L b%, S`     13 sites — the form §5 documents
+ *   both ends fade   `S, L a%, L b%, S`     10 sites, 14 drawn — the form §5 documents
  *   bottom cut       `S, L a%, L 100%`       5 sites — 9a Review, 7a Activity quiet, 7a File
  *                                            lookup, 5a Plan, 5a Plan safe (hero)
  *   top cut          `L, L b%, S`            1 site  — 5a Plan safe (list)
