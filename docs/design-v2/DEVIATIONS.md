@@ -976,6 +976,77 @@ Two details the correct sentence also gives, worth keeping together with it:
 this card at a smaller size and are left to F6 with the rest of the panel. They also need the two
 compact band alphas §52a records, which no token carries yet.
 
+## 54. The never-synced band's amber had no token in either theme
+
+§52a flagged it; `bands.js` needed it. Measured `rgba(255,159,28,.04)` over `rgba(255,159,28,.28)`
+at `7a Activity quiet`, radius `13`, padding `15px 18px` — the only site.
+
+The nearest existing token was `--up-label`, which carries the same `#FF9F1C` in dark and a quite
+different `#B23F14` in light. Reusing it would have worked in dark and made the band's meaning
+depend on a token named for upload accents, so **`--warn` is a new token with the same value in both
+themes and deliberately not an alias**. `tokens.css` already keeps several same-valued pairs apart
+for exactly this reason — `--border` / `--border-chrome`, `--panel-alt` / `--compact-row` — so that
+either can move in light without dragging the other.
+
+| token | dark | light |
+| --- | --- | --- |
+| `--warn` | `#FF9F1C` | `#B23F14` |
+| `--warn-band-bg` | `rgba(255,159,28,.04)` | `rgba(178,63,20,.03)` — **chosen** |
+| `--warn-band-border` | `rgba(255,159,28,.28)` | `rgba(178,63,20,.28)` — **chosen** |
+
+Both light tints are chosen, because no light frame draws this band. Derived as §52 derived the
+light attention band — from a drawn pair starting at the same dark alpha. The recoverable card is
+`.04`/`.30` dark and `.03`/`.28` light, so a `.04`/`.28` dark band maps to `.03`/`.28`. **S10 owns
+confirming it.**
+
+**Why warm and not crimson, restated because it is the band most likely to be "corrected":** nothing
+in it is at risk. The screen's own closing line is *"Nothing here is at risk — it's just not backed
+up."* Four skipped temp files inside a crimson band would be a lie about severity, and the amber is
+the design saying so.
+
+### 54a. What the band census settled about layout
+
+- **The attention band is ONE box, not one per item.** `2a Needs you` is a single 976×127 container
+  holding both waiting items, split by a 1px `--decision-divider` rule, `overflow:hidden` so the
+  rules do not cross the 14px radius. Two conflicts and a deletion queue are one interruption.
+- **Every value moves with tone, not with size.** The destructive band and the never-synced band
+  differ in padding (`16px 20px` / `15px 18px`), radius (`14` / `13`), gap (`16` / `12`), title size
+  (`14` / `13.5`), note colour (`--text-2` / `--text-3`) and title colour (`--destructive-text` /
+  plain `--text`). Tone is the axis, the way kind is in `controls.js`.
+- **No band holds a destructive action, and none is ever a solid fill.** `11a Rules` states the
+  first for banners; the four bands here keep it too — `Review`, `Compare`, `Show them`, `Leave it
+  alone` all route to the screen that owns the decision.
+- **`8a Deletions tab` and `11a Rules` are tinted like bands and are not bands.** The first is
+  `controls.js`'s `radioCard` wearing a destructive tone (546×92.75, a 15px ring at `#6B3A3A` — a
+  ring colour no token carries, S6's to mint); the second is a prose callout on a spec sheet, with
+  no glyph and no button. Neither is modelled by `noticeBand`.
+
+## 55. The one drawn checkbox disagreed with `controls.css` in six places
+
+`9a Consent`'s `I understand deletions travel both ways.` is the **only** checkbox in any of the 51
+frames — swept for 17×17 nodes at radius 5, exactly one hit. F5's controls commit wrote the block
+from the general control conventions instead, and nothing caught it until `bands.js` built the
+consent panel around it and the panel came out **2.5px short**.
+
+| property | was | drawn |
+| --- | --- | --- |
+| box border | `--border-strong` `#2E323A` | `--text-5` `#6D7783` |
+| box background | `--panel-alt` | transparent |
+| box `margin-top` | — | `1px` |
+| row `gap` | `10px` | `11px` |
+| label colour | `--text-2` | `--text-bright` |
+| label `line-height` | `normal` | `1.5` |
+
+Two of those are load-bearing rather than cosmetic. The box is **transparent** because it sits on the
+consent panel's crimson tint and a `--panel-alt` fill punches a dark hole in it. And the border is
+**`--text-5`, not `--line-inert`** — `--line-inert` (`#3E454E`) is the *unselected radio ring*, and a
+checkbox you have not ticked is drawn brighter than an unselected radio, because it is the thing
+standing between you and continuing.
+
+The `line-height` is what the missing 2.5px was: `normal` closes the leading on a sentence that
+wraps. Recorded because a 2.5px height error is invisible by eye, sits inside the style gate's
+tolerance for nothing else, and would have been attributed to S7 when it landed.
+
 ---
 
 ## Phase-1 capability deviations

@@ -159,13 +159,22 @@
 
 /* ----------------------------------------------------------------------------- checkbox ---- */
 
+/* Every value here comes off `9a Consent`'s `I understand deletions travel both ways.`, which is the
+   ONLY checkbox drawn in any of the 51 frames. The first version of this block was written from the
+   general control conventions instead and disagreed with it in six places; bands.js building the
+   consent panel is what surfaced them, because the panel came out 2.5px short. */
 .checkbox {
   display: inline-flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 11px;
   cursor: pointer;
   font-size: 13px;
-  color: var(--text-2);
+  color: var(--text-bright);
+}
+/* 1.5, not `normal`. The label is the sentence someone is agreeing to and it wraps; `normal` closes
+   the leading and is what made the panel measure short. */
+.checkbox-label {
+  line-height: 1.5;
 }
 /* Visually hidden rather than `display:none`: a hidden input is not focusable, and this one carries
    the real checked state and the keyboard interaction. */
@@ -177,13 +186,21 @@
   margin: 0;
   cursor: pointer;
 }
+/* `--text-5`, NOT `--line-inert`. The unselected radio ring is `--line-inert` (#3E454E) and this
+   measures #6D7783 — a checkbox you have not ticked yet is drawn brighter than an unselected radio,
+   because it is the thing standing between you and continuing.
+
+   Transparent, not `--panel-alt`: the box sits on the consent panel's crimson tint and a filled one
+   would punch a dark hole in it. `margin-top:1px` aligns it to the first line of a label that wraps,
+   rather than to the middle of both. */
 .checkbox-box {
   flex: none;
   width: 17px;
   height: 17px;
-  border: 1px solid var(--border-strong);
+  margin-top: 1px;
+  border: 1px solid var(--text-5);
   border-radius: var(--r-5);
-  background: var(--panel-alt);
+  background: transparent;
   position: relative;
 }
 .checkbox-input:checked + .checkbox-box {
