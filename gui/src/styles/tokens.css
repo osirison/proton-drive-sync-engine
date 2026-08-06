@@ -96,6 +96,11 @@
   --border-strong: #2e323a; /* emphasised border */
   --line-inert: #3e454e; /* inert glyph outline, unselected radio ring (08-settings.md, 10-tray.md) */
   --seam: #2a2e36; /* the centre hairline — see --seam-gradient */
+  /* The second drawn seam value: the 360px compact panel, the tray panel and the 522px checking
+     dialog. Its own token because NEITHER existing one is right in both themes — --border is
+     #23262d in dark but #e6e3de in light, where this measures #d9d5ce, the same as --seam. So the
+     two seam colours part in dark and meet again in light. DEVIATIONS.md §17 and §35. */
+  --seam-panel: #23262d;
 
   /* ---- text: five tiers, use them in order ---- */
   --text: #f2f4f7; /* 15–42px headings, large numerals, primary values */
@@ -208,6 +213,7 @@
     --border-strong: #e0dcd5;
     --line-inert: #c7cbd2;
     --seam: #d9d5ce;
+    --seam-panel: #d9d5ce;
 
     --text: #14161a;
     --text-bright: #14161a;
@@ -305,6 +311,7 @@
   --border-strong: #e0dcd5;
   --line-inert: #c7cbd2;
   --seam: #d9d5ce;
+  --seam-panel: #d9d5ce;
 
   --text: #14161a;
   --text-bright: #14161a;

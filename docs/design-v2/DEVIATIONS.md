@@ -8,11 +8,11 @@ the precedence rule in `IMPLEMENTATION-PLAN.md` §1.3:
    per-element colour**;
 3. the illustrative swatches in the prototype's "The system" header block are **not** normative.
 
-**Status: partial.** This file currently records only what **F1** (#165) had to resolve to write
-`gui/src/styles/tokens.css` — the token-level conflicts, plus what the measurement turned up on the
-way. Of conflicts 1–7 in `IMPLEMENTATION-PLAN.md` §1.3, only **1** reaches a token (below); 2, 3, 5
-and 6 are per-component colour or geometry owned by F2/F3, and 4 and 7 belong to their screens. The
-full sweep is **P0.2** (#163).
+**Status: partial.** Sections are numbered in the order they were resolved and grouped by the task
+that resolved them: **§8–§19 F1** (#165, `tokens.css`), **§20–§31 F2** (#166, the hexagon),
+**§32–§39 F3** (#167, the seam). Of conflicts 1–7 in `IMPLEMENTATION-PLAN.md` §1.3, **1** reaches a
+token (§18) and **2, 3, 5 and 6** are per-component colour or geometry that F2 and F3 have now
+measured; 4 and 7 belong to their screens. The full sweep is **P0.2** (#163).
 
 **One caveat on the method, learned the hard way.** The lockstep walk compares each frame's
 *descendants*. The frame element itself — the 1040×764 window box — is not a descendant of itself,
@@ -367,6 +367,202 @@ file with the same name. Keyframes written into today's copy would vanish at F4 
 silently stop animating: no error, no lint signal. Recorded so F4 folds this in deliberately rather
 than by name collision. It also requires a `<link>` in `index.html`; omitting that is the same
 silent failure.
+
+## The seam (F3)
+
+Measured differently from the hexagon, and it had to be. A hexagon is a self-contained `<svg>` whose
+attributes can be read out of the source; a seam is a 1px box whose height, and therefore every one
+of its gradient stops, is produced by layout. So the prototype was **rendered** — loaded into a real
+engine at 1400px and read off `getBoundingClientRect` — and the tokens were injected into that same
+page so `var(--seam)` and a literal `#2A2E36` resolve to the same `rgb()` and can be compared
+directly. All 22 drawn seams were found by the same structural test used below
+(`width:1px` + a `linear-gradient` with no angle), which agrees exactly with the 22 no-angle
+gradients in the raw text.
+
+**Roundtrip.** Each of the 16 sites in `ui/seam.js` was rebuilt with `renderSeam({site})`, inserted
+next to the seam it reproduces in the prototype's own containing block, and required to match on
+computed `background-image` and on all four numbers of the laid-out box. 20 of 20 drawn seams —
+including the four light twins, checked under `data-theme="light"` — match exactly. That harness
+caught one real defect before this landed: `??` and destructuring defaults both treat the `null`
+that means "this end is cut" as absent, which silently restored a 74% fade-out on all six cut ends.
+
+## 32. Rule 1 over-predicts; the 16 drawn sites are the authority
+
+§5 rule 1: the seam is drawn *"when data is moving, or when a decision has two sides"*. Taken as a
+predicate that would put a seam on `2a Compact needs you`, `12a Compact needs light`, `4a Compact`
+and `3a Conflicts cleared` — every one a two-sided decision, none of which draws one. 32 in-scope
+frames have no seam. §25's finding points the same way from the other side: `7a File pending` and
+`3a Conflict diff` carry the hexagon's seam mask with no seam element anywhere in the frame, so a
+masked mark does not imply a seam either.
+
+The rule is right about *intent* and cannot be mechanised. `auditSeams()` therefore checks rules 2
+and 3 and deliberately does not check rule 1 — a rule-1 check would report four of the design's own
+screens as violations. S1–S11 should add a seam where `SEAM_SITES` has a row and nowhere else.
+
+## 33. It does touch an edge — there are three gradient shapes, not one
+
+§5: *"It fades in and out at both ends against the surface colour — it never touches an edge."* Six
+of the 20 run at **full colour** into one end:
+
+| Shape | Sites | Form |
+| --- | --- | --- |
+| both ends fade | 10 sites, 14 drawn | `S, L a%, L b%, S` |
+| bottom cut | `5a Plan`, `5a Plan safe` (hero), `7a Activity quiet`, `7a File lookup`, `9a Review` | `S, L a%, L 100%` |
+| top cut | `5a Plan safe` (list) | `L, L b%, S` |
+
+The seam fades where it **stops**, not where it is handed to the block below. `5a Plan safe` makes
+the point twice over: it draws **two** seam elements, in two different blocks, that overlap by 66px
+(`bottom:-40px` on the upper, `top:-40px` on the lower) and read as one unbroken line across the gap.
+The lower one has no top fade at all, which is the whole reason the joint is invisible.
+
+Emitting four stops always and writing `100` into one of them reproduces the bottom-cut form by
+accident and gets the top-cut form wrong — `S, L 0%, L 82%, S` still fades up from the surface over
+the first pixel row, which is exactly the seam the pair exists to remove. `ui/seam.js` expresses a
+cut end as `null`, not as `100`.
+
+Related: the seam routinely **overflows its container**, which the prose does not mention. `2a
+Syncing` runs 150px past the bottom of its 394px hero, down through the transfer rows; `2a Needs
+you` 114px; `9a Review` 56px; `5a Plan safe` 40px; `7a File lookup` 24px. A screen that clips its
+seam to its own padding box has not drawn this design.
+
+### 33a. §1.3 conflict 6 is closed, and it was not a conflict
+
+`IMPLEMENTATION-PLAN.md` §1.3 row 6 reads the doc's `-114..-150px` as a range the frame narrows to
+`-150px`. It is not a range: **both values are drawn**, at two different sites, and rule 2 is what
+separates them. `2a Needs you`'s attention band starts 567px into the frame; its seam ends at 561px
+— a 6px clearance — which is what `-114px` buys. `2a Syncing` has no band there and runs the full
+`-150px` to the bottom of the transfer rows. `mainHero` and `mainHeroAttention` are separate rows of
+`SEAM_SITES` for that reason, and they differ in their fade-out too (74 vs 78).
+
+Worth noting for S1: the attention band is 976px wide inside a 1040px frame, so it is not
+full-width in the sense `auditSeams()` tests for. Rule 2's "spans the window" is about *reading* as
+a band, and an inset card with a crimson border reads as one. The audit will not catch a seam run
+into it; the site rows will.
+
+## 34. The stops are not a function of height, and the fade is a quarter, not an eighth
+
+§5: *"The percentage stops vary by block height (10–30% in, 70–90% out); pick stops that put full
+opacity across the content and fade over roughly the top and bottom eighth."* Three claims; the
+envelope is right, the other two are not.
+
+**Not a function of height** — two clean disproofs, both between same-shape symmetric seams:
+
+| | height | stops | fade-in |
+| --- | --- | --- | --- |
+| `2a Needs you` | 508px | 26/78 | 132.1px |
+| `4a Deletions` | 514px | 10/90 | 51.4px |
+| `5a Checking` | 543px | 30/70 | 162.9px |
+| `2a Syncing` | 544px | 26/74 | 141.4px |
+
+Six pixels apart with a 132px fade against a 51px one, and one pixel apart at 30% against 26%. The
+16 sites carry 12 distinct stop pairs.
+
+**A quarter, not an eighth.** The ten symmetric sites fade 10, 12, 22, 24, 26, 26, 26, 30, 30, 30 —
+median 26%. §5's "roughly the top and bottom eighth" (12.5%) describes two of the ten. The
+`10–30% in` envelope, by contrast, is exactly right and is what `seamStops()` clamps into; `70–90%
+out` is right for the symmetric shape and does not cover the cut shape's 100%.
+
+So `SEAM_SITES` is the authority for anything reproducing a frame, and `seamStops()` is a documented
+fallback for heights nobody drew. Unlike `strokeForSize` (§21) it does not throw: a stop 4% out is
+invisible where a stroke 0.5px out is not, and a seam's height is frequently flex-derived at runtime
+in a way a hexagon's size never is. Its `height` argument earns its place only through `fadePx`,
+converting an intent of "about 40px of fade" into the percentage CSS actually needs.
+
+## 35. The second seam colour had no token — `--seam-panel`
+
+§17 recorded that `2a Compact syncing` draws `#23262D` where every full-window seam draws `#2A2E36`,
+and concluded the helper "needs a colour parameter". It does — but it also needs a **token**, and
+neither existing one works, because §17's "both map to `#D9D5CE` in light" is a statement about the
+*measurement*, not about `tokens.css`:
+
+| | dark | light |
+| --- | --- | --- |
+| `--seam` | `#2A2E36` | `#D9D5CE` |
+| `--border` | `#23262D` | `#E6E3DE` |
+| **the panel seam, as drawn** | `#23262D` | **`#D9D5CE`** |
+
+`var(--border)` is right in dark and wrong in light; `var(--seam)` is the reverse. The two seam
+colours part in dark and meet again in light, so F3 adds `--seam-panel` (`#23262d` / `#d9d5ce`).
+This is the §8 pattern with the themes swapped: there, tokens sharing a dark value diverge in light.
+
+Three sites use it: the 360px compact panel, the tray panel, and — the surprise — `5a Checking`, a
+522×766 *window*. The 602×542 `9a First sync` window keeps `var(--seam)`, so this is not a
+width rule. All three also happen to be the only 30/70 seams in the design; recorded as an
+observation, not a rule, on four samples.
+
+## 36. Rule 3 is missing its load-bearing half: the mask must be POSITIONED
+
+§5 rule 3: *"Centred text and centred buttons that sit on the seam get `background:<surface>` plus
+`padding:0 14–18px` so the line passes behind them. `z-index` alone is not enough — the line would
+still show between glyphs."* The warning is about the wrong hazard. The seam is
+`position:absolute`, so it paints with the positioned descendants — CSS 2.1 Appendix E step 8 —
+**above** both the background (step 4) and the text (step 7) of any static sibling, however late in
+the DOM that sibling sits. Background and padding on a static element do nothing.
+
+Confirmed two ways. An isolated page with one absolute 1px line and three following siblings: the
+`position:static` block and the inline `<span>` are both painted over; the `position:relative` block
+wins. And the frames themselves are a natural experiment — **all 34 in-scope masks are positioned**,
+17 on the node itself and 17 inside a `position:relative` wrapper at depth 1, and every one of them
+hides the line under a with/without-seam pixel diff. The single drawn mask that is neither is
+`1a Compact`, a round-one frame, and it ships the bug: the seam runs visibly between "Syncing" and
+"3" in its headline. Applying `seamMask()` to that node makes its seam column pixel-identical to the
+same shot with the seam deleted.
+
+`maskStyle()` therefore emits `position:relative` by default, with `position:false` for the wrapper
+form. **F8 must generate mask fixtures per site**, not from one expected shape: the split is 17–17,
+so neither form alone reproduces the frames — the same trap as §27's `fill="none"`, where the
+visually identical node fails the style gate.
+
+## 37. Mask padding: three side values, two vertical, no function of font-size
+
+`padding:0 14–18px` is right about the range and wrong that vertical is always 0. Of the 34 in-scope
+masks, 27 are text blocks the helper is for; side padding across them is 14 (13 nodes), 16 (7) or
+18 (7), and vertical is `0` on 15 (headlines) and `2px` on 12 (the small mono sub-labels). The
+headline tiers are clean — ≥28px→18, 17–22px→16, ≤15px→14 — but four sub-labels take their block's
+padding instead of their own tier (`9a Review` 14px→18, `5a Plan safe` 13.5px→18, `2a Syncing` and
+`12a Syncing light` 13px→16), so no function of font-size reproduces the set. It is a property of
+the centred block, chosen by eye: `maskStyle()` takes `pad`/`padY` with a mid-band default of 16/0
+and the screens quote their frame.
+
+The other seven are not text. Six are buttons, which mask with their own fill and their own padding:
+`2a Syncing`'s `Pause` uses `--panel-raised` and `11px 22px`, `5a Checking`'s `Stop` the surface and
+`9px 18px`. Pass `surface:null, pad:null` and let the control's own styling do the masking — all it
+is missing is the positioning. The seventh is `9a First sync`'s 3px progress bar, which masks purely
+by being an opaque 400px box on the centre line, with no padding at all.
+
+## 38. The 320ms transition and its reduced-motion behaviour have no frame
+
+§7 lists `320ms ease-out` "for the seam and its columns", and the prototype contains no seam
+animation or transition at all — nor any `prefers-reduced-motion` rule anywhere (§30). Prose is
+normative on its own here, the same footing as §30. Two decisions recorded rather than measured:
+
+- **Only `opacity` transitions.** A seam's geometry moves whenever the block it spans resizes, and
+  transitioning `top`/`bottom`/`height` would drag the line across the content for a third of a
+  second every time a list gains a row.
+- **Reduced motion drops the transition, never the seam.** Rule 1 makes *presence* carry meaning, so
+  suppressing the element under that preference would remove information rather than movement — the
+  same reasoning that keeps the paused hexagon's dasharray in §30.
+
+`setSeamVisible()` leaves the node in the DOM at `opacity:0` rather than removing it: a removed node
+cannot transition, and the screen owns when — or whether — to take it out afterwards.
+
+## 39. Two things that look like the seam and are not
+
+- **`--seam-gradient` is one shape of three and one stop pair of twelve.** F1's token is the
+  symmetric 26/74 form, which is right for `2a Syncing`, `8a Settings` and `12a Syncing light` and
+  wrong everywhere else. `seamGradient()` returns the token for exactly that case, so the most
+  common form keeps a single retune point, and composes the other eleven from `--surface`, `--seam`
+  and `--seam-panel`.
+- **The conflict diff gutter is not this component.** `3a Conflict diff` builds it from
+  `grid-template-columns:1fr 1px 1fr` over a `#0D0E11` panel — a flat 1px column showing the panel
+  behind it, with no gradient and no fade. `06-plan.md`'s and IMPLEMENTATION-PLAN §5's phrasing
+  ("turns the seam into the diff gutter") is about meaning, not construction. S2 should not reach
+  for `renderSeam()` there.
+
+`gui/src/styles/seam.css` is a second new stylesheet §3.4 does not list, for the reason §31 gives
+for `hexagon.css`: a media query cannot be inline. It needs its own `<link>` in `index.html`, and
+omitting that is the same silent failure — the seam snaps instead of fading, with nothing for lint
+or CI to catch.
 
 ---
 
