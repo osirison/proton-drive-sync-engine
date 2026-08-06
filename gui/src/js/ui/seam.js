@@ -324,14 +324,20 @@ export function seamMask(node, opts = {}) {
 
 /**
  * Does this computed background actually cover what is behind it? Tested by the alpha channel
- * rather than against the literal `rgba(0, 0, 0, 0)` that browsers serialise `transparent` to —
- * partly because tools/check-tokens.mjs reads that literal as a raw colour and fails the build on
- * it, and partly because a half-transparent tint is not a mask either and this catches that too.
+ * rather than against the literal `rgba(0, 0, 0, 0)` a browser serialises `transparent` to — partly
+ * because tools/check-tokens.mjs reads that literal as a raw colour and fails the build on it, and
+ * partly because a half-transparent tint is not a mask either and this catches that too.
+ *
+ * The alpha must be matched inside the four-argument FORM, not as "ends in `, 0)`": an engine
+ * serialises an opaque colour as `rgb(r, g, b)`, so a trailing-comma-zero test reads pure black as
+ * transparent and would wave through a mask that is doing its job.
  */
+const FULLY_TRANSPARENT = /^rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*0(\.0+)?\s*\)$/;
+
 function coversWhatIsBehind(styles) {
   if (styles.backgroundImage !== "none") return true;
   const bg = styles.backgroundColor;
-  return bg !== "transparent" && !/,\s*0(\.0+)?\s*\)\s*$/.test(bg);
+  return bg !== "transparent" && !FULLY_TRANSPARENT.test(bg);
 }
 
 /**
