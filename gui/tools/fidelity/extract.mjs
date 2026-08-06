@@ -13,7 +13,7 @@
 // libicu74/libjpeg-turbo8 through sudo), and a gate nobody can run locally is a gate nobody
 // develops. `launch()` is a parameter for exactly this reason; see the README.
 
-import { mkdirSync, writeFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import puppeteer from "puppeteer";
@@ -24,6 +24,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..", "..");
 const PROTOTYPE = join(REPO, "docs", "design-v2", "Drive Sync.dc.html");
 const OUT_DIR = join(HERE, "frames");
+const SRC_STYLES = join(REPO, "gui", "src", "styles");
 
 /**
  * The node key. Path-based, one segment per level, `tag` plus an index among same-tag element
@@ -60,6 +61,30 @@ const page = await browser.newPage();
 // position, so the whole document is read in one pass.
 await page.setViewport({ width: 1400, height: 1000 });
 await page.goto(pathToFileURL(PROTOTYPE).href, { waitUntil: "networkidle0" });
+
+// THE PROTOTYPE HAS NO @font-face. It names 'Instrument Sans' and 'IBM Plex Mono' and falls back to
+// whatever the machine happens to have — which on a machine that has neither is a different font on
+// Fedora than on ubuntu-latest. Without this the fixtures encode the EXTRACTING MACHINE'S fallback,
+// every text node's box is wrong by a few pixels somewhere else, and CI can never agree with a
+// developer. It is the failure CI caught on the harness's first run.
+//
+// F1 bundled these faces for exactly this reason — "font metrics move every measurement in
+// docs/design-v2, so no fidelity assertion is meaningful until F1 lands" — so the fix is to give the
+// prototype the same faces the app loads, from the same files, and measure once they are ready.
+//
+// ONLY the @font-face blocks. base.css also carries the global `box-sizing: border-box` reset, and
+// injecting that would quietly give the prototype the app's box model — erasing the very divergence
+// DEVIATIONS.md §48 exists to record, and making the gate agree by changing the ground truth. The
+// url()s are relative to base.css, so the tag is given a matching base href.
+const FONT_FACES = readFileSync(join(SRC_STYLES, "base.css"), "utf8").match(/@font-face\s*\{[^}]*\}/g) ?? [];
+if (FONT_FACES.length === 0) throw new Error("extract: no @font-face blocks found in base.css");
+await page.addStyleTag({
+  content: FONT_FACES.join("\n").replace(
+    /url\(["']?\.\.\/fonts\//g,
+    `url("${pathToFileURL(join(SRC_STYLES, "..", "fonts")).href}/`,
+  ),
+});
+await page.evaluate(() => document.fonts.ready);
 
 const frames = await page.evaluate(
   (OOS, PROPS, ATTRS, keySrc, INITIALS) => {

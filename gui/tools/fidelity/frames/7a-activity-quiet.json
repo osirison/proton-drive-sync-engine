@@ -627,7 +627,7 @@
       "tag": "div",
       "text": "Both sides agree",
       "box": {
-        "w": 164.19,
+        "w": 164.2,
         "h": 20
       },
       "styles": {
@@ -750,7 +750,7 @@
       "tag": "span",
       "text": "12,480",
       "box": {
-        "w": 86.39,
+        "w": 86.38,
         "h": 30
       },
       "styles": {
@@ -890,7 +890,7 @@
       "tag": "span",
       "text": "12,480",
       "box": {
-        "w": 86.39,
+        "w": 86.38,
         "h": 30
       },
       "styles": {
@@ -1232,7 +1232,7 @@
       "tag": "span",
       "text": "Last things to move",
       "box": {
-        "w": 143.64,
+        "w": 143.63,
         "h": 13
       },
       "styles": {
@@ -1254,7 +1254,7 @@
       "key": "div[3]/div[1]/div[0]/span[1]",
       "tag": "span",
       "box": {
-        "w": 636.75,
+        "w": 636.77,
         "h": 0
       },
       "styles": {

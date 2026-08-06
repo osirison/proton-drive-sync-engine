@@ -370,7 +370,7 @@
       "tag": "button",
       "text": "Sync passes",
       "box": {
-        "w": 104.28,
+        "w": 104.27,
         "h": 31
       },
       "styles": {
@@ -408,7 +408,7 @@
       "key": "div[1]/span",
       "tag": "span",
       "box": {
-        "w": 721.84,
+        "w": 721.86,
         "h": 0
       },
       "styles": {

@@ -205,7 +205,7 @@
       "tag": "span",
       "text": "Drive Sync",
       "box": {
-        "w": 60.13,
+        "w": 60.14,
         "h": 15
       },
       "styles": {
@@ -226,7 +226,7 @@
       "key": "div[0]/div/div[0]/span[1]",
       "tag": "span",
       "box": {
-        "w": 341.06,
+        "w": 341.05,
         "h": 0
       },
       "styles": {

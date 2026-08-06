@@ -128,7 +128,7 @@
       "tag": "span",
       "text": "This computer",
       "box": {
-        "w": 95.36,
+        "w": 95.34,
         "h": 11
       },
       "styles": {
@@ -151,7 +151,7 @@
       "tag": "span",
       "text": "Proton",
       "box": {
-        "w": 47.77,
+        "w": 47.75,
         "h": 11
       },
       "styles": {

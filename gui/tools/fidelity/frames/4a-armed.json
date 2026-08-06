@@ -380,7 +380,7 @@
       "tag": "div",
       "text": "Delete 1,204 photos from this computer?",
       "box": {
-        "w": 507.81,
+        "w": 507.73,
         "h": 34
       },
       "styles": {
@@ -539,8 +539,8 @@
       "key": "div[0]/div[2]/div/span[1]",
       "tag": "span",
       "box": {
-        "w": 1.93,
-        "h": 19.34
+        "w": 1.71,
+        "h": 17.07
       },
       "styles": {
         "font-family": "\"Instrument Sans\", system-ui, sans-serif",
@@ -551,7 +551,7 @@
         "text-align": "start",
         "color": "rgb(242, 244, 247)",
         "background-color": "rgb(255, 107, 107)",
-        "opacity": "0.624277",
+        "opacity": "0.820829",
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",

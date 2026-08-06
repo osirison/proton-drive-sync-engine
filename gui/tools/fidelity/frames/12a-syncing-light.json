@@ -182,8 +182,8 @@
       "key": "header/span[2]/span",
       "tag": "span",
       "box": {
-        "w": 9,
-        "h": 9
+        "w": 8.91,
+        "h": 8.91
       },
       "styles": {
         "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
@@ -194,7 +194,7 @@
         "text-align": "start",
         "color": "rgb(75, 85, 99)",
         "background-color": "rgb(217, 119, 6)",
-        "opacity": "0.35",
+        "opacity": "0.370214",
         "border-top-color": "rgb(75, 85, 99)",
         "border-right-color": "rgb(75, 85, 99)",
         "border-bottom-color": "rgb(75, 85, 99)",

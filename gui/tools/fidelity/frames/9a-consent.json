@@ -158,7 +158,7 @@
       "tag": "div",
       "text": "Both sides now match",
       "box": {
-        "w": 234.77,
+        "w": 234.75,
         "h": 29
       },
       "styles": {
@@ -422,7 +422,7 @@
       "key": "div[2]/span[1]",
       "tag": "span",
       "box": {
-        "w": 184.72,
+        "w": 184.7,
         "h": 0
       },
       "styles": {
@@ -446,7 +446,7 @@
       "tag": "button",
       "text": "Start syncing",
       "box": {
-        "w": 125.44,
+        "w": 125.45,
         "h": 38
       },
       "styles": {

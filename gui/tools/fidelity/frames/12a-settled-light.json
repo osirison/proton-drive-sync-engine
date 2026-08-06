@@ -263,8 +263,8 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "box": {
-        "w": 483.09,
-        "h": 483.09
+        "w": 483.94,
+        "h": 483.94
       },
       "styles": {
         "font-family": "\"Instrument Sans\", system-ui, sans-serif",
@@ -275,7 +275,7 @@
         "text-align": "start",
         "color": "rgb(242, 244, 247)",
         "background-image": "radial-gradient(circle, rgba(20, 22, 26, 0.043), rgba(20, 22, 26, 0) 68%)",
-        "opacity": "0.487609",
+        "opacity": "0.497891",
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
@@ -389,7 +389,7 @@
       "tag": "div",
       "text": "Everything is up to date",
       "box": {
-        "w": 328.31,
+        "w": 328.33,
         "h": 39
       },
       "styles": {

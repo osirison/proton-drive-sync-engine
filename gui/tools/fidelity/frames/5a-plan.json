@@ -1078,7 +1078,7 @@
       "tag": "span",
       "text": "Every action, in order",
       "box": {
-        "w": 159.55,
+        "w": 159.56,
         "h": 13
       },
       "styles": {
@@ -1100,7 +1100,7 @@
       "key": "div[3]/div[0]/span[1]",
       "tag": "span",
       "box": {
-        "w": 515.25,
+        "w": 515.23,
         "h": 0
       },
       "styles": {

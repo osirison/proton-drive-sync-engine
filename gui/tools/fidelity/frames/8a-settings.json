@@ -1955,7 +1955,7 @@
       "tag": "div",
       "fullText": "Full sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.",
       "box": {
-        "w": 808.03,
+        "w": 808.05,
         "h": 40.13
       },
       "styles": {
@@ -1979,7 +1979,7 @@
       "tag": "div",
       "text": "Full sweep now",
       "box": {
-        "w": 808.03,
+        "w": 808.05,
         "h": 18
       },
       "styles": {
@@ -2001,7 +2001,7 @@
       "tag": "div",
       "text": "Takes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.",
       "box": {
-        "w": 808.03,
+        "w": 808.05,
         "h": 18.13
       },
       "styles": {
@@ -2024,7 +2024,7 @@
       "tag": "button",
       "text": "Sweep now",
       "box": {
-        "w": 111.97,
+        "w": 111.95,
         "h": 38
       },
       "styles": {

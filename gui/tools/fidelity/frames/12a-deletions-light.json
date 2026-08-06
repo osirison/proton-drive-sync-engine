@@ -581,7 +581,7 @@
       "tag": "span",
       "text": "photos/2019",
       "box": {
-        "w": 94.7,
+        "w": 94.69,
         "h": 20
       },
       "styles": {
@@ -649,7 +649,7 @@
       "tag": "strong",
       "text": "1,204 photos, 8.4 GB",
       "box": {
-        "w": 122.3,
+        "w": 122.27,
         "h": 16
       },
       "styles": {
@@ -1218,7 +1218,7 @@
       "tag": "strong",
       "text": "Proton Drive's Trash",
       "box": {
-        "w": 120.7,
+        "w": 120.69,
         "h": 16
       },
       "styles": {

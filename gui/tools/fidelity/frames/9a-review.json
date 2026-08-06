@@ -314,7 +314,7 @@
       "tag": "div",
       "text": "Nothing gets deleted today",
       "box": {
-        "w": 395.09,
+        "w": 395.11,
         "h": 37
       },
       "styles": {
@@ -506,7 +506,7 @@
       "tag": "span",
       "text": "128",
       "box": {
-        "w": 54.83,
+        "w": 54.8,
         "h": 38
       },
       "styles": {
@@ -646,7 +646,7 @@
       "tag": "span",
       "text": "341",
       "box": {
-        "w": 55.23,
+        "w": 55.22,
         "h": 38
       },
       "styles": {
@@ -1376,7 +1376,7 @@
       "key": "div[2]/span",
       "tag": "span",
       "box": {
-        "w": 724.5,
+        "w": 724.48,
         "h": 0
       },
       "styles": {
@@ -1400,7 +1400,7 @@
       "tag": "button",
       "text": "Start the first sync",
       "box": {
-        "w": 160.41,
+        "w": 160.42,
         "h": 38
       },
       "styles": {
