@@ -377,14 +377,29 @@ export function deleteHint(sentence, word = "DELETE") {
   );
 }
 
-/** The gate row: the typed-`DELETE` field beside the button it unlocks. */
+/**
+ * The gate row: the typed-`DELETE` field beside the button it unlocks.
+ *
+ * THE GROUP IS WHERE "CLEARS ON BLUR" IS ENFORCED, not the field — see `deleteGate` in controls.js
+ * for why the field alone cannot do it without making the gate impossible to complete. The field
+ * stands down for any blur landing inside `[data-delete-gate]`; this row watches `focusout` and
+ * clears the moment focus leaves the pair, which is the boundary the design's rule actually means.
+ *
+ * The clear goes back through a dispatched `input` event rather than through a callback this
+ * function would have to be handed. That keeps one path — whatever `deleteGate` was given as
+ * `onChange` recomputes from the field's real value, and there is no second place to keep in step.
+ */
 export function deletionGate({ hint, field, confirm }) {
-  return el(
-    "div",
-    { class: "deletion-gate" },
-    hint,
-    el("div", { class: "deletion-gate-row" }, field, confirm),
-  );
+  const row = el("div", { class: "deletion-gate-row", "data-delete-gate": "" }, field, confirm);
+  row.addEventListener("focusout", (e) => {
+    // Still inside the pair — moving between the field and its button is not leaving.
+    if (row.contains(e.relatedTarget)) return;
+    const input = row.querySelector(".delete-gate");
+    if (!input || input.value === "") return;
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  return el("div", { class: "deletion-gate" }, hint, row);
 }
 
 /** `Keep it — …`, the safe choice, full width and the strongest button in either column. */

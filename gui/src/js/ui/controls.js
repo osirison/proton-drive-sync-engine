@@ -234,6 +234,19 @@ export function textInput({ value = "", placeholder = "", mono = false, onInput 
  * Case-sensitive for the same reason: `delete` is a word people type by habit, `DELETE` is not.
  * The copy deck spells the word in caps everywhere it appears, and it is the one place voice rule 5
  * (no shouting) is deliberately broken.
+ *
+ * BUT BLUR IS NOT THE SAME AS LEAVING, and the first version of this made the gate impossible to
+ * complete. Reaching the button the gate unlocks blurs the field on the way — so the field cleared,
+ * `onChange(false)` disabled the button, and the click already in flight landed on a disabled
+ * control. Confirmed for the POINTER (mousedown blurs before click dispatches) and for the KEYBOARD
+ * (Tab blurs before Enter), so the only irreversible action in the app could not be performed at
+ * all.
+ *
+ * So the field defers to its group: a blur whose `relatedTarget` is inside `[data-delete-gate]` is
+ * the second half of the same act, not an abandonment. `deletionGate` in rows.js stamps that
+ * attribute and watches the group's own `focusout`, which is where "you went and did something
+ * else" is actually observable. The rule the design asks for is unchanged — it is enforced at the
+ * boundary that means it. DEVIATIONS §55a.
  */
 export function deleteGate({ onChange = null, word = "DELETE" } = {}) {
   const field = textInput({
@@ -243,6 +256,9 @@ export function deleteGate({ onChange = null, word = "DELETE" } = {}) {
     onInput: (e) => onChange?.(e.target.value === word),
     onBlur: (e) => {
       if (e.target.value === "") return;
+      // `closest` and not `contains`: relatedTarget is the node RECEIVING focus, which is the
+      // confirm button — a sibling of this field, not a descendant of it.
+      if (e.relatedTarget?.closest?.("[data-delete-gate]")) return;
       e.target.value = "";
       onChange?.(false);
     },

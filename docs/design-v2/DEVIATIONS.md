@@ -850,7 +850,9 @@ lives in `gui/tools/fidelity/README.md` as well:
   parses is invisible, as is anything about §30's open reduced-motion question.
 - **Native tray rendering** and **the desktop's own notification chrome.** Neither is a webview.
 - **Motion, focus order and hover states.** The gate reads a static tree. F4's focus-survival check
-  and the seam audit cover their own corners of this; nothing covers it in general.
+  and the seam audit cover their own corners of this; nothing covers it in general. §55a is what
+  that gap costs: a control can satisfy every asserted property and still be impossible to operate,
+  and the typed-`DELETE` gate did.
 
 The engine is Chromium rather than the WebKit the issue asks for, because Playwright's WebKit needs
 host packages this machine cannot install without `sudo`. It is the same engine every measurement in
@@ -1074,6 +1076,40 @@ standing between you and continuing.
 The `line-height` is what the missing 2.5px was: `normal` closes the leading on a sentence that
 wraps. Recorded because a 2.5px height error is invisible by eye, sits inside the style gate's
 tolerance for nothing else, and would have been attributed to S7 when it landed.
+
+### 55a. "Clears on blur" made the typed-`DELETE` gate impossible to complete
+
+`14-behaviour-and-state.md` asks for a field that is case-sensitive, keeps the confirm button
+disabled until the word matches, and **clears on blur**. Implemented literally, on the field's own
+`blur`, all three hold and the gate cannot be used.
+
+Reaching the button the gate unlocks blurs the field on the way to it. So the field cleared,
+`onChange(false)` disabled the button, and the click already in flight landed on a disabled control.
+Reproduced headlessly with a consumer that patches the button rather than rebuilding it:
+
+| path | before | after |
+| --- | --- | --- |
+| pointer — click `Delete` | handler fired **0** times | fires |
+| keyboard — `Tab` then `Enter` | handler fired **0** times | fires |
+
+Both, because `mousedown` blurs before `click` dispatches and `Tab` blurs before `Enter` arrives.
+The only irreversible action in the app could not be performed at all, by any means.
+
+**The rule is right; the boundary was wrong.** "You went and did something else" is not observable at
+the field — moving to the button the field unlocks is the second half of the same act. It is
+observable at the PAIR. So `deleteGate` stands down for any blur whose `relatedTarget` is inside
+`[data-delete-gate]`, and `deletionGate` stamps that attribute and watches the group's own
+`focusout`. Both halves are needed: without the first the gate cannot be completed, and without the
+second a gate left armed while you tab past the button stays armed, which is the formality the rule
+exists to prevent.
+
+Verified in all four directions — click completes, `Tab`+`Enter` completes, focusing anything outside
+the pair clears, and tabbing past the confirm button without pressing it clears.
+
+**No automated regression guard**, and that is a real gap on the app's most safety-critical control.
+It is DOM-behavioural, so `node:test` cannot reach it, and the fidelity gate reads a static tree —
+§51 already lists focus order among what it cannot cover. The reproduction above is the recipe;
+whoever builds S3 should carry it into whatever browser-driven harness that screen earns.
 
 ## 56. The scrim behind a dialog has no ground truth anywhere. **Open.**
 
