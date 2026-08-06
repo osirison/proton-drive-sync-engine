@@ -15,6 +15,7 @@
     "fidelity": "node tools/fidelity/assert.mjs && node tools/fidelity/copy-gate.mjs",
     "fidelity:extract": "node tools/fidelity/extract.mjs",
     "fidelity:stale": "node tools/fidelity/check-stale.mjs",
+    "fidelity:determinism": "node tools/fidelity/check-determinism.mjs",
     "fonts:sync": "node tools/sync-fonts.mjs"
   },
   "devDependencies": {

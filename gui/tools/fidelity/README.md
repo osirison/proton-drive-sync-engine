@@ -138,3 +138,18 @@ mapped for three frames — 2,109 assertions — and 48 frames are waiting for t
 Building the harness before the screens is deliberate: each S-task's definition of done is "my
 frames pass", and eleven screens written against no gate at all would be eleven screens to re-check
 afterwards. It found six classes of drift in the shell on its first live run.
+
+## Determinism, checked rather than assumed
+
+```
+npm run fidelity:determinism   # extract twice, require byte-identical output
+```
+
+Every cross-machine failure this harness has had was an unpinned input, and the cheapest way to find
+one is to look for it on a single machine first. Two extractions of the same prototype seconds apart
+must produce identical bytes; when they do not, something is being measured that is not the design.
+
+It found the last one: `opacity` under `breathe` read `0.45` on one run and `0.450015` on the next.
+The animation freeze was seeking and _then_ pausing, which leaves a gap for the compositor to
+advance — and the freeze ran in a separate evaluation from the measurement, which leaves a second
+one. Pausing first and freezing inside the measuring call closed both.

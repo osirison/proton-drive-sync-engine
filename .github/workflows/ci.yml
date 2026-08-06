@@ -119,3 +119,8 @@ jobs:
       # that had already cost this PR a round of phantom failures.
       - name: Fixtures are up to date
         run: npm run fidelity:stale
+      # Two extractions on ONE machine must produce identical bytes. Cheaper than discovering an
+      # unpinned input by watching a developer and a runner disagree, which is how the previous four
+      # were found.
+      - name: Extraction is deterministic
+        run: npm run fidelity:determinism

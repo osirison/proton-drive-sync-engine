@@ -105,16 +105,17 @@ await page.addStyleTag({
   ),
 });
 await page.evaluate(() => document.fonts.ready);
-await page.evaluate(() => {
-  for (const animation of document.getAnimations()) {
-    animation.currentTime = 0;
-    animation.pause();
-  }
-});
 
 const frames = await page.evaluate(
   (OOS, PROPS, ATTRS, keySrc, INITIALS) => {
     const keyOfNode = new Function(`return ${keySrc}`)();
+    // PAUSE FIRST, THEN SEEK. Seeking a running animation and pausing afterwards leaves a gap in
+    // which the compositor can advance it: `opacity` under `breathe` read 0.45 on one run and
+    // 0.450015 on the next, from the same machine seconds apart. Pausing first makes the seek final.
+    for (const animation of document.getAnimations()) {
+      animation.pause();
+      animation.currentTime = 0;
+    }
     const out = [];
 
     for (const frame of document.querySelectorAll("[data-screen-label]")) {

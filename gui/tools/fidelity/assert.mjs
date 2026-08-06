@@ -122,19 +122,19 @@ for (const entry of index) {
   if (hadTheme) await page.reload({ waitUntil: "networkidle0" });
   // The shell renders on its first status poll; wait for it rather than racing it.
   await page.waitForSelector("#app-root > *", { timeout: 5000 }).catch(() => {});
-  // Freeze every animation at its first keyframe, exactly as extract.mjs does to the prototype.
-  // Unfrozen, the gate compares one animation phase against another: the chip's `blip` dot measures
-  // 6px at t=0 and 9px mid-cycle, and both sides drift independently. Seeking rather than disabling,
-  // because animation-name/duration/delay/timing-function are themselves asserted.
-  await page.evaluate(() => {
-    for (const animation of document.getAnimations()) {
-      animation.currentTime = 0;
-      animation.pause();
-    }
-  });
 
   const seen = await page.evaluate(
     (label, PROPS, ATTRS) => {
+      // Frozen exactly as extract.mjs freezes the prototype, and in the same evaluation as the
+      // measurement so nothing can advance in between. Seeking rather than disabling, because
+      // animation-name/duration/delay/timing-function are themselves asserted.
+      // PAUSE FIRST, THEN SEEK. Seeking a running animation and pausing afterwards leaves a gap in
+      // which the compositor can advance it: `opacity` under `breathe` read 0.45 on one run and
+      // 0.450015 on the next, from the same machine seconds apart. Pausing first makes the seek final.
+      for (const animation of document.getAnimations()) {
+        animation.pause();
+        animation.currentTime = 0;
+      }
       const out = [];
       for (const el of document.querySelectorAll(`[data-fid^="${CSS.escape(label)}:"]`)) {
         const key = el.getAttribute("data-fid").slice(label.length + 1);
