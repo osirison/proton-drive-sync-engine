@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "ActivitiesTue 14:41▲◐▮▾Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReviewDrive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLaterDrive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 560
@@ -41,6 +42,7 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "ActivitiesTue 14:41▲◐▮▾",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 32
@@ -145,6 +147,7 @@
       "key": "div[0]/span[3]",
       "tag": "span",
       "fullText": "▲◐▮▾",
+      "unbundled": true,
       "box": {
         "w": 95.14,
         "h": 15
@@ -252,6 +255,7 @@
       "key": "div[0]/span[3]/span[0]",
       "tag": "span",
       "text": "▲",
+      "unbundled": true,
       "box": {
         "w": 10.89,
         "h": 14
@@ -274,6 +278,7 @@
       "key": "div[0]/span[3]/span[1]",
       "tag": "span",
       "text": "◐",
+      "unbundled": true,
       "box": {
         "w": 6.66,
         "h": 14
@@ -296,6 +301,7 @@
       "key": "div[0]/span[3]/span[2]",
       "tag": "span",
       "text": "▮",
+      "unbundled": true,
       "box": {
         "w": 6.06,
         "h": 14
@@ -318,6 +324,7 @@
       "key": "div[0]/span[3]/span[3]",
       "tag": "span",
       "text": "▾",
+      "unbundled": true,
       "box": {
         "w": 4.53,
         "h": 11

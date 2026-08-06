@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Sync3 waiting⋯3notes/todo.txtTwo lines differ. Everything else in the file matches.1 of 3‹›Your versionProton's version1# Todo2- buy milk3- call Alice4- ship v1·not in your version1# Todo2- buy oat milk3- call Alice4- ship v15- relax2 lines differ · 3 lines identicalOpen both in an editorHide differencesStill waiting after this onedesign/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3ActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Sync3 waiting⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -215,6 +217,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30

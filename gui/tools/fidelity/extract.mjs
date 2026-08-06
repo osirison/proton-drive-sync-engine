@@ -96,7 +96,27 @@ await page.goto(pathToFileURL(PROTOTYPE).href, { waitUntil: "networkidle0" });
 // injecting that would quietly give the prototype the app's box model — erasing the very divergence
 // DEVIATIONS.md §48 exists to record, and making the gate agree by changing the ground truth. The
 // url()s are relative to base.css, so the tag is given a matching base href.
-const FONT_FACES = readFileSync(join(SRC_STYLES, "base.css"), "utf8").match(/@font-face\s*\{[^}]*\}/g) ?? [];
+const BASE_CSS = readFileSync(join(SRC_STYLES, "base.css"), "utf8");
+const FONT_FACES = BASE_CSS.match(/@font-face\s*\{[^}]*\}/g) ?? [];
+
+/**
+ * Exactly what the bundled faces cover, taken from their own `unicode-range` declarations rather
+ * than from a hand-written list of blocks.
+ *
+ * A hand-written list is what the previous attempt used, and it missed U+FF0B — the FULLWIDTH plus
+ * sign the plan screens draw, which looks like `+` and is nowhere near it. The @font-face rules are
+ * the authority on what ships; deriving from them means the rule follows F1's subsets automatically
+ * if they ever change.
+ */
+const COVERED = [];
+for (const m of BASE_CSS.matchAll(/unicode-range:\s*([^;]+);/g)) {
+  for (const part of m[1].split(",")) {
+    const range = part.trim().replace(/^U\+/i, "");
+    const [from, to] = range.split("-");
+    COVERED.push([parseInt(from, 16), parseInt(to ?? from, 16)]);
+  }
+}
+if (COVERED.length === 0) throw new Error("extract: no unicode-range found in base.css");
 if (FONT_FACES.length === 0) throw new Error("extract: no @font-face blocks found in base.css");
 await page.addStyleTag({
   content: FONT_FACES.join("\n").replace(
@@ -107,7 +127,18 @@ await page.addStyleTag({
 await page.evaluate(() => document.fonts.ready);
 
 const frames = await page.evaluate(
-  (OOS, PROPS, ATTRS, keySrc, INITIALS) => {
+  (OOS, PROPS, ATTRS, keySrc, INITIALS, COVERED_RANGES) => {
+    // A glyph the bundled faces do not cover comes from whatever the machine has installed, and its
+    // advance width differs by whole pixels between machines. Flagged here, once, where base.css's
+    // own unicode-range declarations are available to say what "covered" means.
+    const needsUnbundledGlyph = (text) => {
+      for (const ch of text ?? "") {
+        const cp = ch.codePointAt(0);
+        if (cp < 0x20) continue; // control/whitespace: no glyph
+        if (!COVERED_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi)) return true;
+      }
+      return false;
+    };
     const keyOfNode = new Function(`return ${keySrc}`)();
     // PAUSE FIRST, THEN SEEK. Seeking a running animation and pausing afterwards leaves a gap in
     // which the compositor can advance it: `opacity` under `breathe` read 0.45 on one run and
@@ -164,6 +195,7 @@ const frames = await page.evaluate(
           tag: el.tagName.toLowerCase(),
           text: ownText || undefined,
           fullText: fullText && fullText !== ownText ? fullText : undefined,
+          unbundled: needsUnbundledGlyph(fullText || ownText) || undefined,
           attrs: Object.keys(attrs).length ? attrs : undefined,
           box: { w: +box.width.toFixed(2), h: +box.height.toFixed(2) },
           styles,
@@ -191,6 +223,7 @@ const frames = await page.evaluate(
   SVG_ATTRS,
   keyOf.toString(),
   INITIAL,
+  COVERED,
 );
 
 await browser.close();

@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Syncsyncing⋯This computer~/ProtonDriveProton Drive/Drive/RemoteFolder3Syncing 3 changesstarted 14 seconds ago · 2 leaving, 1 arrivingPausedocs/spec.md1.2 MB→notes/scratch.mdqueued→←reports/q3-summary.pdf2.4 MBActivityPlan a syncSettingsDetails386 MB sent · 1.1 GB received today",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Syncsyncing⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -212,6 +214,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30
@@ -892,6 +895,7 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→notes/scratch.mdqueued→←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 195
@@ -921,6 +925,7 @@
       "key": "div[1]/div[0]",
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→notes/scratch.mdqueued→",
+      "unbundled": true,
       "box": {
         "w": 488,
         "h": 88
@@ -947,6 +952,7 @@
       "key": "div[1]/div[0]/div[0]",
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→",
+      "unbundled": true,
       "box": {
         "w": 462,
         "h": 40
@@ -992,6 +998,7 @@
       "key": "div[1]/div[0]/div[0]/div[0]",
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→",
+      "unbundled": true,
       "box": {
         "w": 434,
         "h": 16
@@ -1064,6 +1071,7 @@
       "key": "div[1]/div[0]/div[0]/div[0]/span[2]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 16
@@ -1135,6 +1143,7 @@
       "key": "div[1]/div[0]/div[1]",
       "tag": "div",
       "fullText": "notes/scratch.mdqueued→",
+      "unbundled": true,
       "box": {
         "w": 462,
         "h": 40
@@ -1224,6 +1233,7 @@
       "key": "div[1]/div[0]/div[1]/span[2]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 16
@@ -1246,6 +1256,7 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 488,
         "h": 88
@@ -1272,6 +1283,7 @@
       "key": "div[1]/div[1]/div",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 462,
         "h": 40
@@ -1317,6 +1329,7 @@
       "key": "div[1]/div[1]/div/div[0]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 434,
         "h": 16
@@ -1342,6 +1355,7 @@
       "key": "div[1]/div[1]/div/div[0]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 16

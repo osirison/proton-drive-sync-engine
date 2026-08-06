@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Sync3 waiting⋯This computer~/ProtonDriveProton Drive/Drive/RemoteFolder3Syncing 3 changes3 other changes are waiting on youPausedocs/spec.md1.2 MB→←reports/q3-summary.pdf2.4 MBOne file changed on both sidesnotes/todo.txt · both copies kept, nothing lostCompareTwo deletions are waiting on you1 removes from this computer permanently · 1 goes to Proton's TrashReviewActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Sync3 waiting⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -215,6 +217,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30
@@ -895,6 +898,7 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 86
@@ -924,6 +928,7 @@
       "key": "div[1]/div[0]",
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→",
+      "unbundled": true,
       "box": {
         "w": 488,
         "h": 40
@@ -950,6 +955,7 @@
       "key": "div[1]/div[0]/div",
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→",
+      "unbundled": true,
       "box": {
         "w": 462,
         "h": 40
@@ -995,6 +1001,7 @@
       "key": "div[1]/div[0]/div/div[0]",
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→",
+      "unbundled": true,
       "box": {
         "w": 434,
         "h": 16
@@ -1067,6 +1074,7 @@
       "key": "div[1]/div[0]/div/div[0]/span[2]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 16
@@ -1138,6 +1146,7 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 488,
         "h": 40
@@ -1164,6 +1173,7 @@
       "key": "div[1]/div[1]/div",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 462,
         "h": 40
@@ -1209,6 +1219,7 @@
       "key": "div[1]/div[1]/div/div[0]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 434,
         "h": 16
@@ -1234,6 +1245,7 @@
       "key": "div[1]/div[1]/div/div[0]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 16

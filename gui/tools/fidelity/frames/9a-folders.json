@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Syncstep 1 of 2Which two folders should match?One on this computer, one on Proton Drive. From then on they stay identical.This computer~/ProtonDrive341 files2.1 GBChoose a different folder…A new empty folder is fine — everything on Proton Drive will be brought down into it.Proton Drive/Drive/RemoteFolder12,139 files39.1 GBBrowse Proton Drive…Signed in as you@proton.me · 39.1 GB of 500 GB used⊘You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.Add skip rulesNothing is copied or changed until you approve the plan.See what will happen",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -234,6 +235,7 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "This computer~/ProtonDrive341 files2.1 GBChoose a different folder…A new empty folder is fine — everything on Proton Drive will be brought down into it.Proton Drive/Drive/RemoteFolder12,139 files39.1 GBBrowse Proton Drive…Signed in as you@proton.me · 39.1 GB of 500 GB used⊘You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.Add skip rules",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 521
@@ -933,6 +935,7 @@
       "key": "div[1]/div[2]",
       "tag": "div",
       "fullText": "⊘You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.Add skip rules",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 63
@@ -976,6 +979,7 @@
       "key": "div[1]/div[2]/span",
       "tag": "span",
       "text": "⊘",
+      "unbundled": true,
       "box": {
         "w": 10.91,
         "h": 16

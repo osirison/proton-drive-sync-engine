@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Syncidle⋯SettingsChanges here take effect on the next sync. Nothing is written until you save.FoldersWhat to skipDeletionsAdvancedAnything matching a rule below stays on this computer and is never copied to Proton Drive. Rules are matched against the path inside your sync folder.Your ruleshiding 4 files, 3.1 GB in total*.tmpSkipping 2 files right nowexports/draft.tmp, exports/render-final.tmpRemovevideo-raw/**Skipping 2 files, 3.1 GBadded 14 Jul · the folder still exists on this computerRemoveold-backups/**Matching nothingno such folder here any more — safe to removeRemoveAdd⊘Two more files can't be synced no matter what — a socket and a shortcut. Nothing you can change here.See themThe app's own .sync folder is always skipped and can't be added here.One rule removed — 2 files, 3.1 GB will start syncing.Discard changesSave",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Syncidle⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -201,6 +203,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30
@@ -484,6 +487,7 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Anything matching a rule below stays on this computer and is never copied to Proton Drive. Rules are matched against the path inside your sync folder.Your ruleshiding 4 files, 3.1 GB in total*.tmpSkipping 2 files right nowexports/draft.tmp, exports/render-final.tmpRemovevideo-raw/**Skipping 2 files, 3.1 GBadded 14 Jul · the folder still exists on this computerRemoveold-backups/**Matching nothingno such folder here any more — safe to removeRemoveAdd⊘Two more files can't be synced no matter what — a socket and a shortcut. Nothing you can change here.See themThe app's own .sync folder is always skipped and can't be added here.",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 512
@@ -1247,6 +1251,7 @@
       "key": "div[2]/div[2]",
       "tag": "div",
       "fullText": "⊘Two more files can't be synced no matter what — a socket and a shortcut. Nothing you can change here.See themThe app's own .sync folder is always skipped and can't be added here.",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 105
@@ -1271,6 +1276,7 @@
       "key": "div[2]/div[2]/div[0]",
       "tag": "div",
       "fullText": "⊘Two more files can't be synced no matter what — a socket and a shortcut. Nothing you can change here.See them",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 59
@@ -1313,6 +1319,7 @@
       "key": "div[2]/div[2]/div[0]/span",
       "tag": "span",
       "text": "⊘",
+      "unbundled": true,
       "box": {
         "w": 10.91,
         "h": 16

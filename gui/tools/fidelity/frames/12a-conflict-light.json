@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Sync3 waiting⋯You both changed this fileNothing has been lost — both versions are still here, and syncing carries on around this.1 of 3‹›3notes/todo.txta plain text file · last agreed 3 hours agoYour version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41See the exact differences→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.Discarding a version can't be undone from here.Decide laterActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Sync3 waiting⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -215,6 +217,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30
@@ -1288,6 +1291,7 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.Discarding a version can't be undone from here.Decide later",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 150
@@ -1314,6 +1318,7 @@
       "key": "div[2]/div[0]",
       "tag": "div",
       "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 90
@@ -1339,6 +1344,7 @@
       "key": "div[2]/div[0]/button[0]",
       "tag": "button",
       "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.",
+      "unbundled": true,
       "box": {
         "w": 317.33,
         "h": 90
@@ -1378,6 +1384,7 @@
       "key": "div[2]/div[0]/button[0]/div[0]",
       "tag": "div",
       "fullText": "→Keep mine",
+      "unbundled": true,
       "box": {
         "w": 281.33,
         "h": 16
@@ -1403,6 +1410,7 @@
       "key": "div[2]/div[0]/button[0]/div[0]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 12,
         "h": 15
@@ -1470,6 +1478,7 @@
       "key": "div[2]/div[0]/button[1]",
       "tag": "button",
       "fullText": "⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.",
+      "unbundled": true,
       "box": {
         "w": 317.33,
         "h": 90
@@ -1501,6 +1510,7 @@
       "key": "div[2]/div[0]/button[1]/div[0]",
       "tag": "div",
       "fullText": "⇄Keep both",
+      "unbundled": true,
       "box": {
         "w": 283.33,
         "h": 16
@@ -1526,6 +1536,7 @@
       "key": "div[2]/div[0]/button[1]/div[0]/span[0]",
       "tag": "span",
       "text": "⇄",
+      "unbundled": true,
       "box": {
         "w": 10.06,
         "h": 15
@@ -1617,6 +1628,7 @@
       "key": "div[2]/div[0]/button[2]",
       "tag": "button",
       "fullText": "←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.",
+      "unbundled": true,
       "box": {
         "w": 317.34,
         "h": 90
@@ -1656,6 +1668,7 @@
       "key": "div[2]/div[0]/button[2]/div[0]",
       "tag": "div",
       "fullText": "←Use Proton's",
+      "unbundled": true,
       "box": {
         "w": 281.34,
         "h": 16
@@ -1681,6 +1694,7 @@
       "key": "div[2]/div[0]/button[2]/div[0]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 12,
         "h": 15

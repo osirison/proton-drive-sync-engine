@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯Nothing gets deletedFive files move, both sides end up with everything. This plan is safe to run.Leaving this computer3files, 4.1 MB→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folderArriving from Proton2files, 2.6 MB←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmovedChecked 40 seconds ago against both sides.Check againRun this sync",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -182,6 +184,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30
@@ -424,6 +427,7 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MB→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folderArriving from Proton2files, 2.6 MB←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmoved",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 213
@@ -482,6 +486,7 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MB→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folderArriving from Proton2files, 2.6 MB←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmoved",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 213
@@ -506,6 +511,7 @@
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MB→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folder",
+      "unbundled": true,
       "box": {
         "w": 488,
         "h": 213
@@ -622,6 +628,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]",
       "tag": "div",
       "fullText": "→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folder",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 130
@@ -648,6 +655,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[0]",
       "tag": "div",
       "fullText": "→docs/spec.md1.2 MB",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 31
@@ -677,6 +685,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[0]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -747,6 +756,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[1]",
       "tag": "div",
       "fullText": "→photos/trip/img_0042.jpg2.8 MB",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 31
@@ -776,6 +786,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[1]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -846,6 +857,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[2]",
       "tag": "div",
       "fullText": "→notes/scratch.md96 KB",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 31
@@ -875,6 +887,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[2]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -945,6 +958,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[3]",
       "tag": "div",
       "fullText": "＋photos/tripnew folder",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 31
@@ -974,6 +988,7 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[3]/span[0]",
       "tag": "span",
       "text": "＋",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 16
@@ -1044,6 +1059,7 @@
       "key": "div[1]/div[1]/div[1]",
       "tag": "div",
       "fullText": "Arriving from Proton2files, 2.6 MB←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmoved",
+      "unbundled": true,
       "box": {
         "w": 488,
         "h": 213
@@ -1161,6 +1177,7 @@
       "key": "div[1]/div[1]/div[1]/div[2]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmoved",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 98
@@ -1187,6 +1204,7 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[0]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 31
@@ -1216,6 +1234,7 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[0]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1286,6 +1305,7 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[1]",
       "tag": "div",
       "fullText": "←design/logo.svg184 KB",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 31
@@ -1315,6 +1335,7 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[1]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1385,6 +1406,7 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[2]",
       "tag": "div",
       "fullText": "↷notes/old.md → notes/archive/old.mdmoved",
+      "unbundled": true,
       "box": {
         "w": 458,
         "h": 32
@@ -1414,6 +1436,7 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[2]/span[0]",
       "tag": "span",
       "text": "↷",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1437,6 +1460,7 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[2]/span[1]",
       "tag": "span",
       "text": "notes/old.md → notes/archive/old.md",
+      "unbundled": true,
       "box": {
         "w": 386.5,
         "h": 17

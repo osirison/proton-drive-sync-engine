@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Sync⋯Working out what would changeComparing both sides. Nothing is being touched.8,431 of 12,480 filesStopActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 522,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Sync⋯",
+      "unbundled": true,
       "box": {
         "w": 520,
         "h": 52
@@ -141,6 +143,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30

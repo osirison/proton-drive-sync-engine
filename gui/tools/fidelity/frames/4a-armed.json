@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Sync2 waiting⋯Delete 1,204 photos from this computer?Everything in photos/2019 — 8.4 GB — is removed from disk. It does not go to your trash, and it is already gone from Proton Drive, so there is nothing to restore it from.DELETEDelete permanentlyKeep it — put it back on Proton DrivePress Esc to cancel.ActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Sync2 waiting⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -208,6 +210,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30

@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "This computerProton3Syncing 3 changesdocs/spec.md→←reports/q3-summary.pdfOpen Drive SyncPause syncingClose windowkeeps syncingQuitstops syncing",
+      "unbundled": true,
       "box": {
         "w": 362,
         "h": 405
@@ -537,6 +538,7 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "docs/spec.md→←reports/q3-summary.pdf",
+      "unbundled": true,
       "box": {
         "w": 360,
         "h": 88
@@ -565,6 +567,7 @@
       "key": "div[1]/div[0]",
       "tag": "div",
       "fullText": "docs/spec.md→",
+      "unbundled": true,
       "box": {
         "w": 332,
         "h": 35
@@ -638,6 +641,7 @@
       "key": "div[1]/div[0]/span[1]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 12,
         "h": 15
@@ -709,6 +713,7 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf",
+      "unbundled": true,
       "box": {
         "w": 332,
         "h": 35
@@ -757,6 +762,7 @@
       "key": "div[1]/div[1]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 12,
         "h": 15

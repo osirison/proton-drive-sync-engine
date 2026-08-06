@@ -161,50 +161,31 @@ export const INITIAL = {
 /** Resolve a recorded value, filling in the initial for a property the fixture omitted. */
 export const valueOf = (styles, prop) => styles[prop] ?? INITIAL[prop];
 
-/**
- * Characters the bundled typefaces do not cover, so their glyphs come from whatever the machine has
- * installed — and their advance widths differ between machines by whole pixels, not fractions.
- *
- * F1 flagged this when it vendored the fonts: "the fallbacks only ever apply to glyphs outside the
- * latin/latin-ext subsets (the Unicode symbols in 01-foundations.md §8 are mostly outside both)".
- * The design leans on them — `⇄` in the folder pair, `⌕` for lookup, `⊘` for never-synced, `▲◐▮▾`
- * in the desktop mocks — and their measured widths moved 10.89 → 8.47 between a developer box and
- * ubuntu-latest.
- *
- * The blocks below are arrows, mathematical operators, miscellaneous technical, geometric shapes and
- * symbols. General Punctuation (em dash, curly quotes, `›`, `…`) is deliberately NOT here: Google's
- * `latin` subset includes U+2000–206F, so those glyphs come from the bundled files and are
- * deterministic.
- */
-const UNBUNDLED_GLYPH = /[\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u25A0-\u25FF\u2600-\u27BF\u2B00-\u2BFF]/;
-
-const hasUnbundledGlyph = (node) => UNBUNDLED_GLYPH.test(`${node.text ?? ""}${node.fullText ?? ""}`);
-
 /** A node key's parent key. Keys are slash paths, so this is textual. `""` is the frame root. */
 const parentKey = (key) => (key.includes("/") ? key.slice(0, key.lastIndexOf("/")) : "");
 
 /**
  * Which nodes of a frame may have their measured box compared across machines.
  *
- * An unbundled glyph does not only corrupt its own width — it MOVES ITS NEIGHBOURS. `10a Syncing`
+ * `node.unbundled` is set by extract.mjs for text needing a glyph the bundled faces do not cover —
+ * determined from base.css's own `unicode-range` declarations, so it follows F1's subsets rather
+ * than a hand-written block list. Those glyphs come from whatever the machine has installed and
+ * their advance widths differ by whole pixels.
+ *
+ * An unbundled glyph does not only corrupt its own width — IT MOVES ITS NEIGHBOURS. `10a Syncing`
  * draws a filename and a `→` in one flex row: the arrow measured 12px here and 10.06px on
  * ubuntu-latest, and the 1.94px it gave up landed on the filename beside it, which contains nothing
- * but Latin. Exempting only the node holding the glyph left the node next to it failing, which is
- * how CI found this after the first attempt.
+ * but Latin. So the rule follows the layout: **a box is comparable only if no unbundled glyph
+ * appears anywhere inside its PARENT's subtree** — covering the node, every sibling sharing flex or
+ * grid space with it, and every ancestor whose size sums it.
  *
- * So the rule follows the layout: **a box is comparable only if no unbundled glyph appears anywhere
- * inside its PARENT's subtree.** That covers the node itself, every sibling it shares flex or grid
- * space with, and — because the same test applied to an ancestor asks about the ancestor's parent —
- * every ancestor whose size sums it.
- *
- * Everything else about these nodes is still asserted: colour, padding, font-size, position, border.
+ * Everything else about those nodes is still asserted: colour, padding, font-size, position, border.
  * Only the size they happen to occupy is not.
  */
 export function boxComparability(nodes) {
   const tainted = new Set();
   for (const node of nodes) {
-    if (!hasUnbundledGlyph(node)) continue;
-    // Mark every ancestor chain position, so a lookup by parent key is a single Set hit.
+    if (!node.unbundled) continue;
     for (let key = node.key; ; key = parentKey(key)) {
       tainted.add(key);
       if (key === "") break;

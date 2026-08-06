@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Sync⋯Nothing left to decideYou settled 3 files. Two kept both versions, one took Proton's copy.Back to syncActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 522,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Sync⋯",
+      "unbundled": true,
       "box": {
         "w": 520,
         "h": 52
@@ -142,6 +144,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30

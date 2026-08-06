@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Details✕pending_changes0conflicts3destructive_actions1skipped_unsupported1scan_interval300sevent_streamonsourcestatus_historysocketconnectedCopy allOpen the system log",
+      "unbundled": true,
       "box": {
         "w": 522,
         "h": 462
@@ -46,6 +47,7 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Details✕",
+      "unbundled": true,
       "box": {
         "w": 520,
         "h": 46
@@ -99,6 +101,7 @@
       "key": "div[0]/button",
       "tag": "button",
       "text": "✕",
+      "unbundled": true,
       "box": {
         "w": 26,
         "h": 26

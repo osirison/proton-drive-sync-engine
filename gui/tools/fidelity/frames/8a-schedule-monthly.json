@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net.WeeklyMonthlyOn day1234567891011121314151617181920full_scan_schedule · monthly day 15, 03:00−03:00＋Months without a 15th are skipped to the last day.",
+      "unbundled": true,
       "box": {
         "w": 600,
         "h": 229.75
@@ -245,6 +246,7 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "On day1234567891011121314151617181920full_scan_schedule · monthly day 15, 03:00−03:00＋Months without a 15th are skipped to the last day.",
+      "unbundled": true,
       "box": {
         "w": 558,
         "h": 137
@@ -1066,6 +1068,7 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "full_scan_schedule · monthly day 15, 03:00−03:00＋",
+      "unbundled": true,
       "box": {
         "w": 558,
         "h": 28
@@ -1116,6 +1119,7 @@
       "key": "div[1]/div[1]/div",
       "tag": "div",
       "fullText": "−03:00＋",
+      "unbundled": true,
       "box": {
         "w": 116,
         "h": 28
@@ -1203,6 +1207,7 @@
       "key": "div[1]/div[1]/div/button[1]",
       "tag": "button",
       "text": "＋",
+      "unbundled": true,
       "box": {
         "w": 28,
         "h": 28

@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Syncidle⋯ActivityNothing has needed to move since 14:32. Both sides matched at the last check, 2 minutes ago.⌕Check a file — type any name or pathCtrl FBoth sides agreeThis computer12,480files · 41.2 GBwatched continuously · checked 2m agoProton Drive12,480files · 41.2 GBnext full check in 4m⊘4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.Show themLast things to move7 files in the last 3 days→docs/spec.mdsent to Protontoday←reports/q3-summary.pdfbrought heretoday→design/brand-guide.pdfsent to ProtonyesterdayQuiet is normal — most days nothing needs to move.All 7 filesSync passesActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Syncidle⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -201,6 +203,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30
@@ -302,6 +305,7 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "⌕Check a file — type any name or pathCtrl F",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 48
@@ -328,6 +332,7 @@
       "key": "div[1]/div",
       "tag": "div",
       "fullText": "⌕Check a file — type any name or pathCtrl F",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 48
@@ -370,6 +375,7 @@
       "key": "div[1]/div/span[0]",
       "tag": "span",
       "text": "⌕",
+      "unbundled": true,
       "box": {
         "w": 8.41,
         "h": 18
@@ -956,6 +962,7 @@
       "key": "div[3]",
       "tag": "div",
       "fullText": "⊘4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.Show themLast things to move7 files in the last 3 days→docs/spec.mdsent to Protontoday←reports/q3-summary.pdfbrought heretoday→design/brand-guide.pdfsent to ProtonyesterdayQuiet is normal — most days nothing needs to move.All 7 filesSync passes",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 313
@@ -985,6 +992,7 @@
       "key": "div[3]/div[0]",
       "tag": "div",
       "fullText": "⊘4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.Show them",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 70.75
@@ -1024,6 +1032,7 @@
       "key": "div[3]/div[0]/div",
       "tag": "div",
       "fullText": "⊘4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.Show them",
+      "unbundled": true,
       "box": {
         "w": 938,
         "h": 38.75
@@ -1049,6 +1058,7 @@
       "key": "div[3]/div[0]/div/span",
       "tag": "span",
       "text": "⊘",
+      "unbundled": true,
       "box": {
         "w": 10.91,
         "h": 16
@@ -1180,6 +1190,7 @@
       "key": "div[3]/div[1]",
       "tag": "div",
       "fullText": "Last things to move7 files in the last 3 days→docs/spec.mdsent to Protontoday←reports/q3-summary.pdfbrought heretoday→design/brand-guide.pdfsent to ProtonyesterdayQuiet is normal — most days nothing needs to move.All 7 filesSync passes",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 165
@@ -1299,6 +1310,7 @@
       "key": "div[3]/div[1]/div[1]",
       "tag": "div",
       "fullText": "→docs/spec.mdsent to Protontoday",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 35
@@ -1330,6 +1342,7 @@
       "key": "div[3]/div[1]/div[1]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1424,6 +1437,7 @@
       "key": "div[3]/div[1]/div[2]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdfbrought heretoday",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 35
@@ -1455,6 +1469,7 @@
       "key": "div[3]/div[1]/div[2]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1549,6 +1564,7 @@
       "key": "div[3]/div[1]/div[3]",
       "tag": "div",
       "fullText": "→design/brand-guide.pdfsent to Protonyesterday",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 35
@@ -1580,6 +1596,7 @@
       "key": "div[3]/div[1]/div[3]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15

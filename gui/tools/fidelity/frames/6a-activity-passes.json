@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Syncidle⋯Activity18 of the last 20 passes finished cleanly. One failed and retried on its own.FilesSync passesDetailsLast 20 passeshow long each took · 12:45 onwardmost recent 14:32Finished cleanly2 sent, 1 brought here · 1 conflict kept14:32Finished cleanly2 sent14:17Couldn't reach Proton Driveretried at 14:17 and worked13:58proton-drive: connection timed out after 60sFinished cleanly4 brought here · 1 move followed13:12Finished cleanly1 sent12:45Finished cleanlynothing to do12:30Only the last 20 passes are kept. Anything older lives in the system log.Open the system logActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Syncidle⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -201,6 +203,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30

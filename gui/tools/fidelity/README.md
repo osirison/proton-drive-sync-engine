@@ -105,10 +105,14 @@ measure it is how a gate ends up agreeing with itself.
 
 ### The one thing that cannot be pinned
 
-**Glyphs no bundled font provides.** The design uses `⇄`, `⌕`, `⊘`, `›`, `▲◐▮▾`; F1 vendored the
-latin and latin-ext subsets, and most of those symbols are outside both. Their advance widths come
-from whatever the machine has installed and differ by whole pixels — `10.89` here, `8.47` on
-ubuntu-latest.
+**Glyphs no bundled font provides.** The design uses `⇄`, `⌕`, `⊘`, `▲◐▮▾` and — least obviously —
+`＋`, the FULLWIDTH plus sign, which looks like `+` and is nowhere near it in Unicode. F1 vendored
+the latin and latin-ext subsets; those are outside them. Their advance widths come from whatever the
+machine has installed and differ by whole pixels: `10.89` here, `8.47` on ubuntu-latest.
+
+Coverage is read from `base.css`'s own `unicode-range` declarations rather than a hand-written list
+of blocks. The hand-written version is what missed `＋`, and it would have gone stale the moment F1's
+subsets changed. 246 nodes across the 51 frames are flagged.
 
 An unbundled glyph does not only corrupt its own width — **it moves its neighbours**. `10a Syncing`
 draws a filename and a `→` in one flex row; the arrow measured 12px here and 10.06px on

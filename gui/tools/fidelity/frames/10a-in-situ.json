@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "ActivitiesTue 14:41▲◐▮▾33 things need youOne file changed on both sides.Two deletions are waiting.Review themOpen Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 520
@@ -41,6 +42,7 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "ActivitiesTue 14:41▲◐▮▾",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 32
@@ -145,6 +147,7 @@
       "key": "div[0]/span[3]",
       "tag": "span",
       "fullText": "▲◐▮▾",
+      "unbundled": true,
       "box": {
         "w": 105.14,
         "h": 21
@@ -289,6 +292,7 @@
       "key": "div[0]/span[3]/span[1]",
       "tag": "span",
       "text": "▲",
+      "unbundled": true,
       "box": {
         "w": 10.89,
         "h": 14
@@ -311,6 +315,7 @@
       "key": "div[0]/span[3]/span[2]",
       "tag": "span",
       "text": "◐",
+      "unbundled": true,
       "box": {
         "w": 6.66,
         "h": 14
@@ -333,6 +338,7 @@
       "key": "div[0]/span[3]/span[3]",
       "tag": "span",
       "text": "▮",
+      "unbundled": true,
       "box": {
         "w": 6.06,
         "h": 14
@@ -355,6 +361,7 @@
       "key": "div[0]/span[3]/span[4]",
       "tag": "span",
       "text": "▾",
+      "unbundled": true,
       "box": {
         "w": 4.53,
         "h": 11

@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Syncidle⋯⌕spec.md1 match✕docs/spec.mdSafely on both sidesIdentical here and on Proton Drive since 14:32 today.This computer1.2 MBedited 14:31~/ProtonDrive/docs/spec.mdProton Drive1.2 MBreceived 14:32/Drive/RemoteFolder/docs/spec.mdThis file's history→Sent to Proton Drivetoday 14:32→Sent to Proton DriveMon 09:14Both sides had changed — you kept yoursFri 16:02←First brought to this computer12 JulOpen folderOpen on Proton Drivelinked · id 4c8f…9a21ActivityPlan a syncSettingsDetails",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Syncidle⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -201,6 +203,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30
@@ -231,6 +234,7 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "⌕spec.md1 match✕",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 54
@@ -257,6 +261,7 @@
       "key": "div[0]/div",
       "tag": "div",
       "fullText": "⌕spec.md1 match✕",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 50
@@ -299,6 +304,7 @@
       "key": "div[0]/div/span[0]",
       "tag": "span",
       "text": "⌕",
+      "unbundled": true,
       "box": {
         "w": 8.41,
         "h": 18
@@ -367,6 +373,7 @@
       "key": "div[0]/div/button",
       "tag": "button",
       "text": "✕",
+      "unbundled": true,
       "box": {
         "w": 22,
         "h": 22
@@ -1037,6 +1044,7 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "This file's history→Sent to Proton Drivetoday 14:32→Sent to Proton DriveMon 09:14Both sides had changed — you kept yoursFri 16:02←First brought to this computer12 JulOpen folderOpen on Proton Drivelinked · id 4c8f…9a21",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 296
@@ -1090,6 +1098,7 @@
       "key": "div[2]/div[1]",
       "tag": "div",
       "fullText": "→Sent to Proton Drivetoday 14:32",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 34
@@ -1121,6 +1130,7 @@
       "key": "div[2]/div[1]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1190,6 +1200,7 @@
       "key": "div[2]/div[2]",
       "tag": "div",
       "fullText": "→Sent to Proton DriveMon 09:14",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 34
@@ -1221,6 +1232,7 @@
       "key": "div[2]/div[2]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1403,6 +1415,7 @@
       "key": "div[2]/div[4]",
       "tag": "div",
       "fullText": "←First brought to this computer12 Jul",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 34
@@ -1434,6 +1447,7 @@
       "key": "div[2]/div[4]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15

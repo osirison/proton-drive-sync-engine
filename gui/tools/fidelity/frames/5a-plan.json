@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯The next sync moves 9 thingsOne of them can't be undone. Everything here is a rehearsal — nothing has changed yet.Check againLeaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.Leave it aloneEvery action, in order9 actions · 1 conflict kept as both copies✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lostOnly needed because this plan deletes something.Run it without the deletionRun this sync",
+      "unbundled": true,
       "box": {
         "w": 1042,
         "h": 766
@@ -46,6 +47,7 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 52
@@ -182,6 +184,7 @@
       "key": "header/button",
       "tag": "button",
       "text": "⋯",
+      "unbundled": true,
       "box": {
         "w": 30,
         "h": 30
@@ -1022,6 +1025,7 @@
       "key": "div[3]",
       "tag": "div",
       "fullText": "Every action, in order9 actions · 1 conflict kept as both copies✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lost",
+      "unbundled": true,
       "box": {
         "w": 1040,
         "h": 343.03
@@ -1145,6 +1149,7 @@
       "key": "div[3]/div[1]",
       "tag": "div",
       "fullText": "✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lost",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 319.03
@@ -1172,6 +1177,7 @@
       "key": "div[3]/div[1]/div[0]",
       "tag": "div",
       "fullText": "✕archive/old-notes.mddeleted for good on Proton",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 33
@@ -1204,6 +1210,7 @@
       "key": "div[3]/div[1]/div[0]/span[0]",
       "tag": "span",
       "text": "✕",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1274,6 +1281,7 @@
       "key": "div[3]/div[1]/div[1]",
       "tag": "div",
       "fullText": "→docs/spec.mdsent to Proton",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 33
@@ -1305,6 +1313,7 @@
       "key": "div[3]/div[1]/div[1]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1375,6 +1384,7 @@
       "key": "div[3]/div[1]/div[2]",
       "tag": "div",
       "fullText": "→photos/trip/img_0042.jpgsent to Proton",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 33
@@ -1406,6 +1416,7 @@
       "key": "div[3]/div[1]/div[2]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1476,6 +1487,7 @@
       "key": "div[3]/div[1]/div[3]",
       "tag": "div",
       "fullText": "→notes/scratch.mdsent to Proton",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 33
@@ -1507,6 +1519,7 @@
       "key": "div[3]/div[1]/div[3]/span[0]",
       "tag": "span",
       "text": "→",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1577,6 +1590,7 @@
       "key": "div[3]/div[1]/div[4]",
       "tag": "div",
       "fullText": "＋photos/tripfolder created on Proton",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 33
@@ -1608,6 +1622,7 @@
       "key": "div[3]/div[1]/div[4]/span[0]",
       "tag": "span",
       "text": "＋",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 16
@@ -1678,6 +1693,7 @@
       "key": "div[3]/div[1]/div[5]",
       "tag": "div",
       "fullText": "←reports/q3-summary.pdfbrought to this computer",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 33
@@ -1709,6 +1725,7 @@
       "key": "div[3]/div[1]/div[5]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1779,6 +1796,7 @@
       "key": "div[3]/div[1]/div[6]",
       "tag": "div",
       "fullText": "←design/logo.svgbrought to this computer",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 33
@@ -1810,6 +1828,7 @@
       "key": "div[3]/div[1]/div[6]/span[0]",
       "tag": "span",
       "text": "←",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1880,6 +1899,7 @@
       "key": "div[3]/div[1]/div[7]",
       "tag": "div",
       "fullText": "↷notes/old.md → notes/archive/old.mdmoved to match Proton",
+      "unbundled": true,
       "box": {
         "w": 976,
         "h": 34
@@ -1911,6 +1931,7 @@
       "key": "div[3]/div[1]/div[7]/span[0]",
       "tag": "span",
       "text": "↷",
+      "unbundled": true,
       "box": {
         "w": 13,
         "h": 15
@@ -1934,6 +1955,7 @@
       "key": "div[3]/div[1]/div[7]/span[1]",
       "tag": "span",
       "text": "notes/old.md → notes/archive/old.md",
+      "unbundled": true,
       "box": {
         "w": 803.2,
         "h": 17

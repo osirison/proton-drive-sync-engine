@@ -8,6 +8,7 @@
       "key": "",
       "tag": "div",
       "fullText": "Activities▲◐▮The glyph inverts to near-black and keeps its five forms. Because state is carried by fill rather than hue, nothing has to be re-specified for a light panel.",
+      "unbundled": true,
       "box": {
         "w": 360,
         "h": 137.78
@@ -47,6 +48,7 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Activities▲◐▮",
+      "unbundled": true,
       "box": {
         "w": 318,
         "h": 30
@@ -238,6 +240,7 @@
       "key": "div[0]/span[3]",
       "tag": "span",
       "text": "▲",
+      "unbundled": true,
       "box": {
         "w": 9.91,
         "h": 13
@@ -260,6 +263,7 @@
       "key": "div[0]/span[4]",
       "tag": "span",
       "text": "◐",
+      "unbundled": true,
       "box": {
         "w": 6.05,
         "h": 13
@@ -282,6 +286,7 @@
       "key": "div[0]/span[5]",
       "tag": "span",
       "text": "▮",
+      "unbundled": true,
       "box": {
         "w": 5.52,
         "h": 13
