@@ -14,6 +14,7 @@
     "tokens:check": "node tools/check-tokens.mjs",
     "fidelity": "node tools/fidelity/assert.mjs && node tools/fidelity/copy-gate.mjs",
     "fidelity:extract": "node tools/fidelity/extract.mjs",
+    "fidelity:stale": "node tools/fidelity/check-stale.mjs",
     "fonts:sync": "node tools/sync-fonts.mjs"
   },
   "devDependencies": {

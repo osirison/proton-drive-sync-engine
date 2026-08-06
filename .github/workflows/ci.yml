@@ -113,8 +113,9 @@ jobs:
         run: npm run fidelity
       # The fixtures are checked in so a prototype change is a reviewable diff. If regenerating them
       # produces one, they are stale — the prototype moved and nobody re-extracted.
+      # Re-extracts to a temp directory and compares with the SAME tolerances the gate uses, rather
+      # than `git diff`. Sub-pixel text layout is not byte-identical across platforms even with the
+      # same font files, so a byte comparison here reports the runner, not staleness — the mistake
+      # that had already cost this PR a round of phantom failures.
       - name: Fixtures are up to date
-        run: |
-          npm run fidelity:extract
-          git diff --exit-code --stat tools/fidelity/frames \
-            || { echo "::error::frames/*.json are stale — run 'npm run fidelity:extract' and commit"; exit 1; }
+        run: npm run fidelity:stale

@@ -23,7 +23,9 @@ import { STYLE_PROPS, SVG_ATTRS, INITIAL } from "./props.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..", "..");
 const PROTOTYPE = join(REPO, "docs", "design-v2", "Drive Sync.dc.html");
-const OUT_DIR = join(HERE, "frames");
+// Overridable so check-stale.mjs can re-extract somewhere else and compare, rather than overwriting
+// the committed fixtures to find out whether they needed overwriting.
+const OUT_DIR = process.argv[2] ? resolve(process.argv[2]) : join(HERE, "frames");
 const SRC_STYLES = join(REPO, "gui", "src", "styles");
 
 /**
@@ -55,6 +57,16 @@ function keyOf(node, stopAt) {
   return parts.join("/");
 }
 
+// FREEZE EVERY ANIMATION BEFORE MEASURING. Otherwise the harness records animation PHASE as ground
+// truth: `opacity` under `breathe` sampled at 0.82 one run and 0.79 the next, and a `blip` dot
+// measured 8.8px wide because getBoundingClientRect includes the 1.5x transform mid-cycle. Both are
+// real values; neither is the design.
+//
+// The Web Animations API rather than a `animation-play-state: paused` stylesheet, because the
+// declarations themselves are asserted — animation-name, duration, delay and timing-function are all
+// in STYLE_PROPS, and overriding them to measure them is the mistake that would make the gate agree
+// with itself. Seeking to 0 pins the first keyframe without touching what is declared.
+
 const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
 const page = await browser.newPage();
 // Wide enough that no frame is squeezed by the viewport. Computed styles do not depend on scroll
@@ -85,6 +97,12 @@ await page.addStyleTag({
   ),
 });
 await page.evaluate(() => document.fonts.ready);
+await page.evaluate(() => {
+  for (const animation of document.getAnimations()) {
+    animation.currentTime = 0;
+    animation.pause();
+  }
+});
 
 const frames = await page.evaluate(
   (OOS, PROPS, ATTRS, keySrc, INITIALS) => {
