@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX, boxIsComparable } from "./props.mjs";
+import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX, boxComparability } from "./props.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const COMMITTED = join(HERE, "frames");
@@ -43,6 +43,9 @@ for (const file of new Set([...committedFiles, ...freshFiles])) {
   const was = load(COMMITTED, file);
   const now = load(fresh, file);
   const byKey = new Map(was.nodes.map((n) => [n.key, n]));
+  // Computed from the COMMITTED side: the question is whether this fixture's box was ever a
+  // machine-independent number, not whether today's render happens to contain a glyph.
+  const boxComparable = boxComparability(was.nodes);
 
   if (was.nodes.length !== now.nodes.length) {
     drift.push(`${was.label}: ${was.nodes.length} nodes committed, ${now.nodes.length} drawn`);
@@ -65,7 +68,7 @@ for (const file of new Set([...committedFiles, ...freshFiles])) {
         );
       }
     }
-    for (const side of boxIsComparable(node) ? ["w", "h"] : []) {
+    for (const side of boxComparable(node) ? ["w", "h"] : []) {
       if (Math.abs(old.box[side] - node.box[side]) > LENGTH_TOLERANCE_PX) {
         drift.push(`${was.label} · ${node.key} · box.${side}: ${old.box[side]} vs ${node.box[side]}`);
       }

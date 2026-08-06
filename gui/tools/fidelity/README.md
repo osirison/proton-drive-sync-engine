@@ -110,10 +110,18 @@ latin and latin-ext subsets, and most of those symbols are outside both. Their a
 from whatever the machine has installed and differ by whole pixels — `10.89` here, `8.47` on
 ubuntu-latest.
 
-So a node whose text needs one is **exempt from box comparison only** (`boxIsComparable`). Its
-colour, padding, font-size and position are still asserted; only the width it happens to occupy is
-not. Nothing can make this deterministic except bundling a symbol font, which would change what
-ships.
+An unbundled glyph does not only corrupt its own width — **it moves its neighbours**. `10a Syncing`
+draws a filename and a `→` in one flex row; the arrow measured 12px here and 10.06px on
+ubuntu-latest, and the 1.94px it gave up landed on the filename beside it, which contains nothing but
+Latin. Exempting only the node holding the glyph left its neighbour failing.
+
+So the rule follows the layout: **a box is comparable only if no unbundled glyph appears anywhere
+inside its parent's subtree** (`boxComparability`). That covers the node itself, every sibling it
+shares flex or grid space with, and every ancestor whose size sums it.
+
+Everything else about those nodes is still asserted — colour, padding, font-size, position, border.
+Only the size they happen to occupy is not. Nothing can make this deterministic except bundling a
+symbol font, which would change what ships.
 
 ## What this cannot cover, ever
 

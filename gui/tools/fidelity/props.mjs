@@ -178,20 +178,39 @@ export const valueOf = (styles, prop) => styles[prop] ?? INITIAL[prop];
  */
 const UNBUNDLED_GLYPH = /[\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u25A0-\u25FF\u2600-\u27BF\u2B00-\u2BFF]/;
 
+const hasUnbundledGlyph = (node) => UNBUNDLED_GLYPH.test(`${node.text ?? ""}${node.fullText ?? ""}`);
+
+/** A node key's parent key. Keys are slash paths, so this is textual. `""` is the frame root. */
+const parentKey = (key) => (key.includes("/") ? key.slice(0, key.lastIndexOf("/")) : "");
+
 /**
- * Should this node's measured box be compared at all?
+ * Which nodes of a frame may have their measured box compared across machines.
  *
- * No, when its text contains a glyph no bundled font provides — the width then measures the
- * machine's font stack rather than the design. Everything else about such a node (colour, padding,
- * font-size, position) is still asserted; only the size it happens to occupy is not.
+ * An unbundled glyph does not only corrupt its own width — it MOVES ITS NEIGHBOURS. `10a Syncing`
+ * draws a filename and a `→` in one flex row: the arrow measured 12px here and 10.06px on
+ * ubuntu-latest, and the 1.94px it gave up landed on the filename beside it, which contains nothing
+ * but Latin. Exempting only the node holding the glyph left the node next to it failing, which is
+ * how CI found this after the first attempt.
  *
- * This is the honest version of a limitation, not a workaround: nothing can make an unbundled glyph
- * deterministic except bundling a font for it, which would change what ships. Recorded in the
- * harness README.
+ * So the rule follows the layout: **a box is comparable only if no unbundled glyph appears anywhere
+ * inside its PARENT's subtree.** That covers the node itself, every sibling it shares flex or grid
+ * space with, and — because the same test applied to an ancestor asks about the ancestor's parent —
+ * every ancestor whose size sums it.
+ *
+ * Everything else about these nodes is still asserted: colour, padding, font-size, position, border.
+ * Only the size they happen to occupy is not.
  */
-export function boxIsComparable(node) {
-  const text = `${node.text ?? ""}${node.fullText ?? ""}`;
-  return !UNBUNDLED_GLYPH.test(text);
+export function boxComparability(nodes) {
+  const tainted = new Set();
+  for (const node of nodes) {
+    if (!hasUnbundledGlyph(node)) continue;
+    // Mark every ancestor chain position, so a lookup by parent key is a single Set hit.
+    for (let key = node.key; ; key = parentKey(key)) {
+      tainted.add(key);
+      if (key === "") break;
+    }
+  }
+  return (node) => !tainted.has(parentKey(node.key)) && !tainted.has(node.key);
 }
 
 /** Lengths compare at ±0.5px; everything else is exact after normalisation. */

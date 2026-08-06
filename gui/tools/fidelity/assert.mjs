@@ -25,7 +25,7 @@ import { readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX, boxIsComparable } from "./props.mjs";
+import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX, boxComparability } from "./props.mjs";
 import { OWES_FIT } from "./frame-classes.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -85,6 +85,7 @@ const unmappedFrames = [];
 for (const entry of index) {
   const frame = JSON.parse(readFileSync(join(FRAMES, entry.file), "utf8"));
   const expected = new Map(frame.nodes.map((n) => [n.key, n]));
+  const boxComparable = boxComparability(frame.nodes);
 
   // PIN THE COLOUR SCHEME. tokens.css publishes the light palette under
   // `@media (prefers-color-scheme: light)`, and a headless browser's default for that query is a
@@ -188,7 +189,7 @@ for (const entry of index) {
     }
     // Size, as a border box in both documents — see the note on `width` in props.mjs. Skipped where
     // the node's text needs a glyph no bundled font provides; that width measures the machine.
-    for (const side of boxIsComparable(want) ? ["w", "h"] : []) {
+    for (const side of boxComparable(want) ? ["w", "h"] : []) {
       asserted++;
       if (Math.abs(want.box[side] - node.box[side]) > LENGTH_TOLERANCE_PX) {
         failures.push({
