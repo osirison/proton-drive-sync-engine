@@ -623,6 +623,36 @@ pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), 
         .map_err(|e| e.to_string())
 }
 
+/// `Ctrl W` — hide the window to the tray. Deliberately the SAME path as the tray's
+/// `Close window (keeps syncing in the tray)` item and as the window-manager close button
+/// (`on_window_event` in lib.rs prevents the close and hides): three ways to do one thing, and a
+/// keyboard shortcut that did something subtly different would be the worst of the three.
+///
+/// Synchronous on purpose. The rule that GUI commands must be `async` + `spawn_blocking` is about
+/// commands that shell out, walk the filesystem, or do a socket round trip — one of those blocking
+/// the WebKitGTK main loop is what aborted the process in #142. `hide()` does none of that.
+#[tauri::command]
+pub fn close_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "no main window".to_string())?;
+    window.hide().map_err(|e| e.to_string())
+}
+
+/// `Ctrl Q` — end the GUI process, tray included.
+///
+/// **The daemon keeps running.** That matches the tray's `quit` handler and this crate's existing
+/// behaviour, and it contradicts `10-tray.md` and `14-behaviour-and-state.md`, which both say Quit
+/// "stops syncing" and require the tray to carry that as a sub-label. F4 will not resolve that from
+/// a keyboard shortcut: stopping the daemon is a lifecycle decision with data consequences, it
+/// belongs to S8 (#187) which owns the tray, and a `Ctrl Q` that silently stopped syncing while the
+/// tray item beside it did not would be the more dangerous of the two readings to guess at.
+/// Recorded in DEVIATIONS.md §44.
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::strip_ansi;

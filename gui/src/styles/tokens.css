@@ -129,6 +129,14 @@
   --decision-rgb: 255, 107, 107; /* for the one-off alphas the screens need */
   --decision-text: #ff9c9c;
   --decision-border: rgba(255, 107, 107, 0.32);
+  /* The status chip's attention border. NOT --decision-border: measured 0.35 dark / 0.30 light
+     against that token's 0.32 / 0.28, and the alphas differ per theme so no single rgba(var(--rgb))
+     form covers both. Drawn on `2a Needs you`, `3a Conflict` x2, `4a Deletions` x2 and their light
+     twins. DEVIATIONS.md §41. */
+  --chip-attention-border: rgba(255, 107, 107, 0.35);
+  /* The header mark's dimmed opacity, when the status chip is idle. 01-foundations.md/02-shell.md
+     give ".65-.75" as a range; measured it is a light/dark split, on one light frame. */
+  --app-mark-quiet: 0.75;
   --decision-bg: rgba(255, 107, 107, 0.05);
   --decision-divider: rgba(255, 107, 107, 0.16);
   --decision-btn-border: rgba(255, 107, 107, 0.4);
@@ -238,6 +246,8 @@
     --decision-rgb: 190, 18, 60;
     --decision-text: #be123c;
     --decision-border: rgba(190, 18, 60, 0.28);
+    --chip-attention-border: rgba(190, 18, 60, 0.3);
+    --app-mark-quiet: 0.65;
     --decision-bg: rgba(190, 18, 60, 0.03);
     --decision-divider: rgba(190, 18, 60, 0.14);
     --decision-btn-border: rgba(190, 18, 60, 0.38);
@@ -336,6 +346,8 @@
   --decision-rgb: 190, 18, 60;
   --decision-text: #be123c;
   --decision-border: rgba(190, 18, 60, 0.28);
+  --chip-attention-border: rgba(190, 18, 60, 0.3);
+  --app-mark-quiet: 0.65;
   --decision-bg: rgba(190, 18, 60, 0.03);
   --decision-divider: rgba(190, 18, 60, 0.14);
   --decision-btn-border: rgba(190, 18, 60, 0.38);

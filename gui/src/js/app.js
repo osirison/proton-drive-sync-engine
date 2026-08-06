@@ -1,242 +1,211 @@
-// App shell bootstrap + router (F2). Builds the chrome/sidebar/footer, wires the theme toggle,
-// runs the status polling loop (2 s focused / 10 s unfocused, socket error = its own state), and
-// mounts the active screen. Screens are pure render(container, ctx) functions from screens.js.
+// The app shell and router (F4). Replaces the v1 build's 214px sidebar, title bar and tab registry
+// with the design-v2 skeleton: a 52px header, the screen, and either the four doors or a footer
+// action bar. 02-shell.md — "Every window shares this skeleton. Build it once."
+//
+// WHAT THIS COMMIT DELETES, and why it has to. app.css, components.css and legacy-tokens.css go,
+// which F1 recorded in legacy-tokens.css's own header as F4's job. Every v1 screen module is styled
+// entirely by those files — 2 to 60 class references each — so they cannot outlive them: left in
+// place they would render as unstyled markup, which is worse than an honest "not built yet". They
+// are replaced by placeholders, one per route, each naming the S-task that fills it in.
+//
+// The route table lives in routes.js so an S-task edits its own screen module and one line there,
+// never this file.
 
 import { api } from "./api.js";
 import * as store from "./store.js";
-import { SCREENS } from "./screens.js";
-import { matrixFor, nextOnboardingLatch } from "./state-matrix.js";
-import { el } from "./components.js";
-import { renderOnboarding } from "./screens/onboarding.js";
+import { ROUTES, FOOTER_ORDER, isOverlay, nextOnboardingLatch } from "./routes.js";
+import { el } from "./ui/el.js";
+import { renderHeader, renderFooterNav, renderActionBar, screenPlaceholder } from "./ui/chrome.js";
 
-let activeTab = "overview";
+// ---- shell state ----
+let route = "main"; // the root or door currently showing
+let overlay = null; // the overlay stacked over it, if any
+let overlayOpener = null; // the element to return focus to when the overlay closes
+let menuOpen = false;
 let configInfo = null;
 let configLoaded = false; // has the GUI config file been read at least once (even if empty)?
 let statusPolled = false; // has at least one get_status round trip completed (success or failure)?
-let onboardingLatch = false; // sticky: are we in the first-run onboarding takeover? (see state-matrix.js)
+let onboardingLatch = false; // sticky: are we in the first-run onboarding takeover? (see routes.js)
 let pollTimer = null;
 let lastConflictScan = 0;
 
-const dom = {};
-
-function screenById(id) {
-  return SCREENS.find((s) => s.id === id) ?? SCREENS[0];
-}
-
 // ---- theme ----
+// The toggle moved out of the title bar and into the ⋯ menu (02-shell.md). Persistence is
+// unchanged: an explicit choice beats the media query in both directions, which is why tokens.css
+// declares the light palette twice.
 function initTheme() {
   const saved = localStorage.getItem("theme");
-  if (saved === "light" || saved === "dark") {
-    document.documentElement.setAttribute("data-theme", saved);
-  }
+  if (saved === "light" || saved === "dark") document.documentElement.setAttribute("data-theme", saved);
+}
+function currentTheme() {
+  return (
+    document.documentElement.getAttribute("data-theme") ||
+    (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+  );
 }
 function toggleTheme() {
-  const current =
-    document.documentElement.getAttribute("data-theme") ||
-    (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
-  const next = current === "light" ? "dark" : "light";
+  const next = currentTheme() === "light" ? "dark" : "light";
   document.documentElement.setAttribute("data-theme", next);
   localStorage.setItem("theme", next);
-}
-
-// ---- confirmation strip ----
-function showConfirm(message, isError = false) {
-  dom.confirm.hidden = false;
-  dom.confirm.classList.toggle("is-error", isError);
-  dom.confirmText.textContent = message;
-}
-function hideConfirm() {
-  dom.confirm.hidden = true;
-}
-
-// ---- actions passed to screens ----
-const actions = {
-  setTab,
-  setLedgerFilter: (f) => store.setLedgerFilter(f),
-  async runAction(action) {
-    const cmd = action.cmd;
-    if (cmd === "syncNow" || cmd === "pause" || cmd === "resume") {
-      showConfirm(`${action.label}…`);
-      try {
-        const payload = await api[cmd]();
-        store.setStatus(payload);
-        showConfirm(payload?.response?.message || payload?.error || "done", !!payload?.error);
-      } catch (e) {
-        showConfirm(String(e), true);
-      }
-    } else if (cmd === "previewPlan") {
-      setTab("plan");
-    } else if (cmd === "chooseFolders") {
-      setTab("settings");
-    } else if (cmd === "startService") {
-      showConfirm("Starting proton-syncd…");
-      try {
-        const message = await api.startService();
-        showConfirm(message || "start requested — waiting for the daemon to come up");
-      } catch (e) {
-        showConfirm(String(e), true);
-      }
-    } else if (cmd === "journal") {
-      showConfirm("View logs with: journalctl --user -u proton-syncd");
-    } else if (cmd === "reauth") {
-      showConfirm("Re-authenticate with: proton-drive login");
-    }
-  },
-};
-
-const ctx = { select: store.select, api, actions };
-
-// ---- shell construction ----
-function buildShell() {
-  const root = document.getElementById("app-root");
-
-  // title bar
-  dom.pill = el(
-    "span",
-    { class: "state-pill" },
-    el("span", { class: "dot" }),
-    el("span", { class: "pill-text mono" }, "…"),
-  );
-  dom.rootPair = el("span", { class: "root-pair" }, "");
-  const titlebar = el(
-    "header",
-    { class: "titlebar" },
-    el("img", { class: "app-icon", src: "assets/icon.svg", alt: "" }),
-    el("span", { class: "app-title" }, "Proton Drive Sync"),
-    dom.rootPair,
-    el("span", { class: "spacer" }),
-    el("button", { class: "tb-btn theme-toggle mono", onClick: toggleTheme }, "◐ Theme"),
-    dom.pill,
-  );
-
-  // sidebar nav (pre-declared from SCREENS)
-  dom.navRows = {};
-  const nav = el("nav", { class: "sidebar" });
-  nav.append(el("div", { class: "label" }, "Folder pair"));
-  dom.pairCard = el(
-    "div",
-    { class: "pair-card" },
-    el("div", { class: "pair-square" }),
-    el(
-      "div",
-      {},
-      el("div", { class: "pair-name" }, "ProtonDrive"),
-      el("div", { class: "pair-path mono" }, "—"),
-    ),
-  );
-  nav.append(dom.pairCard);
-
-  for (const s of SCREENS) {
-    const count = el("span", { class: "nav-count mono" }, "");
-    const badge = el("span", { class: "nav-badge", hidden: true }, "");
-    const row = el(
-      "button",
-      { class: "nav-row", onClick: () => setTab(s.id) },
-      el("span", { class: "nav-icon" }, s.icon),
-      el("span", {}, s.label),
-      s.badge ? badge : count,
-    );
-    dom.navRows[s.id] = { row, count, badge };
-    nav.append(row);
-  }
-
-  dom.footerBlock = el("div", { class: "footer-block" });
-  nav.append(dom.footerBlock);
-
-  // content
-  dom.banner = el(
-    "div",
-    { class: "safety-banner" },
-    el("span", { class: "glyph" }, "▲"),
-    el(
-      "span",
-      {},
-      "Deleting on Proton Drive deletes the local file permanently — not to trash — and folders recursively.",
-    ),
-  );
-  dom.confirmText = el("span", {}, "");
-  dom.confirm = el(
-    "div",
-    { class: "confirm-strip", hidden: true },
-    dom.confirmText,
-    el("button", { class: "dismiss", onClick: hideConfirm }, "×"),
-  );
-  dom.screen = el("div", { id: "screen" });
-  const content = el("main", { class: "content" }, dom.banner, dom.confirm, dom.screen);
-
-  const body = el("div", { class: "body" }, nav, content);
-
-  // footer
-  dom.footer = el("footer", { class: "statusbar" });
-
-  root.replaceChildren(titlebar, body, dom.footer);
-}
-
-function setTab(id) {
-  activeTab = id;
   render();
 }
 
-// ---- render (called on every store change + tab switch) ----
-function render() {
-  const st = store.select.daemonState();
-  const matrix = matrixFor(st);
+// ---- the status chip ----
 
-  // state pill
-  dom.pill.className = `state-pill is-${st}`;
-  dom.pill.querySelector(".pill-text").textContent = matrix.pillMono;
+/**
+ * Which of the six chip variants this moment is in, and the mono string beside it.
+ *
+ * Priority is measured where the frames settle it and chosen where they do not. `2a Needs you` is
+ * syncing AND has three decisions waiting, and its chip reads `3 waiting` — so a decision outranks
+ * transfer. Nothing draws decisions and deletions at once; deletions win here because the deletion
+ * is the one that ends with a file gone. Recorded in DEVIATIONS.md §43.
+ *
+ * `paused`, `unreachable` and `authExpired` have NO drawn chip anywhere in the prototype. They take
+ * the quiet form with their own text rather than an invented colour — the hexagon and the main
+ * screen carry those states, which is where the design puts them.
+ */
+function chipFor() {
+  if (onboardingLatch) return { variant: "step", text: "step 1 of 2" };
 
-  // nav active + counters/badges
-  for (const s of SCREENS) {
-    const refs = dom.navRows[s.id];
-    refs.row.classList.toggle("active", s.id === activeTab);
-    if (s.id === "activity" && refs.count) {
-      const n = store.select.response()?.status_history?.length ?? 0;
-      refs.count.textContent = n ? String(n) : "";
+  const state = store.select.daemonState();
+  const decisions = store.select.unresolvedConflictCount();
+  const deletions = store.select.pendingDeletions().length;
+
+  if (deletions > 0) return { variant: "deletions", text: `${deletions} waiting` };
+  if (decisions > 0) return { variant: "decisions", text: `${decisions} waiting` };
+  if (state === "running") return { variant: "syncing", text: "syncing" };
+  if (state === "paused") return { variant: "idle", text: "paused" };
+  if (state === "unreachable") return { variant: "idle", text: "unreachable" };
+  if (state === "authExpired") return { variant: "idle", text: "sign-in expired" };
+  if (state === "firstRun") return { variant: "idle", text: "first run" };
+  return { variant: "idle", text: "idle" };
+}
+
+// ---- routing ----
+
+function navigate(id) {
+  if (!ROUTES[id]) throw new Error(`app: no route "${id}"`);
+  if (isOverlay(id)) return openOverlay(id);
+  // IMPLEMENTATION-PLAN §3.3's assumption, and on Settings and Plan there is no other way back:
+  // clicking the door you are already on returns to the main screen.
+  route = route === id ? "main" : id;
+  closeOverlay();
+  render();
+}
+
+function openOverlay(id, opener = null) {
+  overlay = id;
+  overlayOpener = opener ?? document.activeElement;
+  render();
+}
+
+function closeOverlay() {
+  if (!overlay) return false;
+  // The takeover is not dismissible: it is entered by the latch and left by the daemon coming up.
+  if (ROUTES[overlay]?.takeover) return false;
+  overlay = null;
+  render();
+  // Focus returns to whatever opened it — a dialog that drops focus to <body> makes the keyboard
+  // user start the screen again.
+  if (overlayOpener?.isConnected) overlayOpener.focus();
+  overlayOpener = null;
+  return true;
+}
+
+// ---- keyboard map (02-shell.md / 14-behaviour-and-state.md) ----
+
+/**
+ * The shell owns the shortcuts that are about the WINDOW; the ones that act on a screen's own
+ * controls are re-broadcast as events so the screen that owns them can listen without the shell
+ * importing it. `Ctrl F` and `Ctrl S` reach a lookup field and a Save button that F4 does not
+ * build; dispatching is how they stay wired now and keep working when S5/S6 land.
+ */
+function onKeydown(e) {
+  const ctrl = e.ctrlKey || e.metaKey;
+
+  if (e.key === "Escape") {
+    if (menuOpen) {
+      menuOpen = false;
+      render();
+      e.preventDefault();
+      return;
     }
-    if (s.id === "conflicts" && refs.badge) {
-      const n = store.select.unresolvedConflictCount();
-      refs.badge.hidden = n === 0;
-      refs.badge.textContent = String(n);
-    }
-    if (s.id === "deletions" && refs.badge) {
-      const n = store.select.pendingDeletions().length;
-      refs.badge.hidden = n === 0;
-      refs.badge.textContent = String(n);
-    }
+    // Esc also cancels a confirmation, which is a screen's business — it gets the event only if no
+    // overlay took it.
+    if (closeOverlay()) e.preventDefault();
+    else document.dispatchEvent(new CustomEvent("shell:cancel"));
+    return;
   }
 
-  // folder pair: the running daemon's reported roots are ground truth; the GUI config file is the
-  // fallback when no daemon is reachable. Em-dashes only when neither knows.
+  if (ctrl && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    if (route !== "activity") navigate("activity");
+    document.dispatchEvent(new CustomEvent("shell:focus-lookup"));
+    return;
+  }
+  if (ctrl && e.key === ",") {
+    e.preventDefault();
+    navigate("settings");
+    return;
+  }
+  if (ctrl && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    document.dispatchEvent(new CustomEvent("shell:save"));
+    return;
+  }
+  if (ctrl && e.key.toLowerCase() === "w") {
+    e.preventDefault();
+    api.closeWindow();
+    return;
+  }
+  if (ctrl && e.key.toLowerCase() === "q") {
+    e.preventDefault();
+    api.quitApp();
+    return;
+  }
+  // ← → move between conflicts. Not swallowed when a control has focus: arrows inside a text field,
+  // a select or a slider mean what they normally mean.
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const t = e.target;
+    if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))
+      return;
+    document.dispatchEvent(
+      new CustomEvent("shell:step", { detail: { delta: e.key === "ArrowLeft" ? -1 : 1 } }),
+    );
+  }
+}
+
+// ---- the ⋯ menu ----
+
+// No frame draws this menu open (DEVIATIONS.md §45), so its contents come from 02-shell.md's one
+// sentence: the theme toggle moved here from the title bar.
+function renderMenu() {
+  if (!menuOpen) return null;
+  const light = currentTheme() === "light";
+  return el(
+    "div",
+    { class: "menu-popover", role: "menu" },
+    el(
+      "button",
+      { class: "menu-item", role: "menuitem", onClick: toggleTheme },
+      light ? "Dark theme" : "Light theme",
+    ),
+  );
+}
+
+// ---- render ----
+
+function render() {
+  const root = document.getElementById("app-root");
+  const st = store.select.daemonState();
+
+  // The folder pair: the running daemon's reported roots are ground truth; the GUI config file is
+  // the fallback when no daemon is reachable. Em-dashes only when neither knows.
   const live = store.select.response()?.config ?? null;
   const localRoot = live?.local_root ?? configInfo?.local_root ?? null;
   const remoteRoot = live?.remote_root ?? configInfo?.remote_root ?? null;
-  const pairText = `${localRoot ?? "—"} ⇄ ${remoteRoot ?? "—"}`;
-  const localName = (localRoot || "").split("/").filter(Boolean).pop() || "ProtonDrive";
-  dom.pairCard.querySelector(".pair-name").textContent = localName;
-  const pairPath = dom.pairCard.querySelector(".pair-path");
-  pairPath.textContent = pairText;
-  pairPath.title = pairText;
-  dom.rootPair.textContent = pairText;
-  dom.rootPair.title = pairText;
 
-  // footer — build then drop the null-ish entries; `replaceChildren(null)` would render a literal
-  // "null" text node.
-  const socketOk = st !== "unreachable";
-  const footerItems = [
-    el("span", { class: "sb-item" }, `daemon: ${matrix.pillMono}`),
-    el("span", { class: "sb-item" }, `cli: ${configInfo?.proton_cli ?? "proton-drive"}`),
-    el("span", { class: "sb-item" }, `socket: ${socketOk ? "connected" : "down"}`),
-    api.isMock() ? el("span", { class: "lock-holder" }, "preview (mock data)") : null,
-  ].filter(Boolean);
-  dom.footer.replaceChildren(...footerItems);
-
-  // onboarding is a full-window takeover, not a normal tab (S8, #89). It's a *latched* decision
-  // (see nextOnboardingLatch): entered on firstRun OR a genuinely fresh machine (a completed poll
-  // reports the daemon unreachable and no folder pair is configured), and held across the mid-flow
-  // config write so writing the pair in step 2 doesn't eject the user to the unreachable screen.
-  // `localRoot`/`remoteRoot` were resolved above for the folder-pair display (live daemon config
-  // first, GUI config file second).
+  // Latched, not a raw read of the daemon state — see routes.js for the whole reason.
   onboardingLatch = nextOnboardingLatch(
     onboardingLatch,
     st,
@@ -245,19 +214,63 @@ function render() {
     statusPolled,
   );
 
-  // safety banner only on the screens that require it — and never stacked over the onboarding
-  // takeover, which shows its own (opposite) "the first sync is a non-destructive merge" banner.
-  dom.banner.hidden = !screenById(activeTab).banner || onboardingLatch;
+  const active = onboardingLatch ? "onboarding" : (overlay ?? route);
+  const spec = ROUTES[active];
+  const chip = chipFor();
 
-  // mount active screen
-  if (onboardingLatch) renderOnboarding(dom.screen, ctx);
-  else screenById(activeTab).render(dom.screen, ctx);
+  const header = renderHeader({
+    chip: chip.variant,
+    chipText: chip.text,
+    // Onboarding drops the ⋯ button, not just the chip — both 9a frames have four header slots.
+    onMenu: onboardingLatch
+      ? null
+      : () => {
+          menuOpen = !menuOpen;
+          render();
+        },
+    onHome: route === "main" && !overlay ? null : () => navigate("main"),
+  });
+
+  // The main screen has no S-task of its own in the route table, so it gets no issue chip rather
+  // than an "F4 · issue" with nothing after it.
+  const body = screenPlaceholder(
+    spec.label ?? titleFor(active),
+    spec.task && spec.issue ? `${spec.task} · issue ${spec.issue}` : null,
+  );
+
+  // Either the four doors or an action bar — never both, never neither. The 13-to-6 split is
+  // measured, not chosen; see routes.js.
+  const footer =
+    (spec.footer ?? "doors") === "actionBar"
+      ? renderActionBar({
+          consequence: "This screen is not built yet.",
+          // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
+          bottom: spec.takeover ? 18 : 14,
+        })
+      : renderFooterNav({
+          order: FOOTER_ORDER,
+          active: ROUTES[route]?.kind === "door" ? route : null,
+          labels: Object.fromEntries(FOOTER_ORDER.map((id) => [id, ROUTES[id].label])),
+          onNavigate: navigate,
+          // The mono line is drawn only on the settled and syncing main screens; every other footer
+          // with doors omits it and tightens by 4px.
+          variant: route === "main" && !overlay ? "withLine" : "standard",
+          line: route === "main" && !overlay ? `${localRoot ?? "—"} ⇄ ${remoteRoot ?? "—"}` : null,
+        });
+
+  // `.filter(Boolean)` is load-bearing: `replaceChildren(null)` appends a literal "null" TEXT NODE
+  // rather than nothing, so a closed ⋯ menu would print the word in the top-left corner. The v1
+  // app.js carried this guard and a comment saying so; dropping it in the rewrite reintroduced the
+  // bug, and every class-based assertion still passed — it took looking at a screenshot.
+  root.replaceChildren(...[header, renderMenu(), body, footer].filter(Boolean));
+}
+
+function titleFor(id) {
+  return id.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
 }
 
 // ---- data ----
 async function refreshConfig() {
-  // Loads the GUI config file for the footer + fallback pair display; the actual pair rendering
-  // happens in render(), which prefers the live daemon-reported roots over this file.
   try {
     configInfo = await api.readConfig();
     // A missing config file reads back as an empty doc (not an error), so a successful read means we
@@ -296,32 +309,29 @@ async function poll() {
     refreshConfig();
   }
   // Pending deletions ride on the status reply itself — no second IPC round trip per tick.
-  if (payload?.response) {
-    store.setPendingDeletions(payload.response.pending_deletions ?? []);
-  }
+  if (payload?.response) store.setPendingDeletions(payload.response.pending_deletions ?? []);
   scheduleNextPoll();
 }
 
 function scheduleNextPoll() {
   clearTimeout(pollTimer);
-  const interval = document.hasFocus() ? 2000 : 10000;
-  pollTimer = setTimeout(poll, interval);
+  pollTimer = setTimeout(poll, document.hasFocus() ? 2000 : 10000);
 }
 
 // ---- boot ----
 function main() {
   initTheme();
-  buildShell();
   store.subscribe(render);
   render();
   refreshConfig();
   poll();
   window.addEventListener("focus", scheduleNextPoll);
+  document.addEventListener("keydown", onKeydown);
 
-  // Tray menu items ("Resolve conflicts", "Settings", "View journal") ask the shell to switch tabs
-  // (S7). Routed through the api facade — no direct window.__TAURI__ here.
-  api.onTrayNavigate((tab) => {
-    if (typeof tab === "string") setTab(tab);
+  // Tray menu items ask the shell to navigate. Routed through the api facade — no direct
+  // window.__TAURI__ here.
+  api.onTrayNavigate((id) => {
+    if (typeof id === "string" && ROUTES[id]) navigate(id);
   });
 }
 

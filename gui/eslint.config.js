@@ -185,4 +185,15 @@ export default [
     languageOptions: { globals: globals.nodeBuiltin },
     rules: { "no-console": "off" },
   },
+
+  // gui/test/ runs under `node --test`, not in the webview. Declared for the same reason as the two
+  // blocks above and not because anything currently needs it: the suite imports `node:test` and
+  // `node:assert` explicitly, so it lints clean under browser globals TODAY. The first test that
+  // reaches for `process` or logs while debugging would fail CI with "'process' is not defined" in
+  // a plainly-Node file — the confusing error this config exists to prevent.
+  {
+    files: ["**/test/**/*.{js,mjs}"],
+    languageOptions: { globals: globals.nodeBuiltin },
+    rules: { "no-console": "off" },
+  },
 ];

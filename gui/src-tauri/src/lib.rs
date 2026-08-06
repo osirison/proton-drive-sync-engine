@@ -31,6 +31,9 @@ pub fn run() {
             commands::start_service,
             commands::restart_service,
             commands::notify,
+            // F4's keyboard map: Ctrl W and Ctrl Q. Same two paths the tray menu already offers.
+            commands::close_window,
+            commands::quit_app,
         ])
         .setup(|app| {
             tray::setup(app.handle())?;
