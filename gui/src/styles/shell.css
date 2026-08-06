@@ -76,7 +76,9 @@
 }
 
 .menu-btn {
-  flex: none;
+  /* `flex-shrink` stays at its initial 1, as the frames draw it. `flex:none` would be the reflex
+     here and it is a fidelity failure: the button has a fixed width, so nothing shrinks it anyway. */
+  flex: 0 1 auto;
   width: 30px;
   height: 30px;
   border-radius: 8px;
@@ -95,7 +97,7 @@
 /* ------------------------------------------------------------------------ the status chip ---- */
 
 .chip {
-  flex: none;
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -110,7 +112,9 @@
   width: 6px;
   height: 6px;
   border-radius: var(--r-dot);
-  flex: none;
+  /* `flex-shrink` left at 1, as drawn. The dot has a fixed width inside a chip that never runs out
+     of room, so `flex:none` changes nothing visible and fails the gate. */
+  flex: 0 1 auto;
   box-sizing: border-box;
 }
 
@@ -161,6 +165,11 @@
 }
 
 .door {
+  /* `start`, as the frames draw it. A <button> defaults to `text-align:center` in the UA sheet
+     where the frames' <span> doors inherit `start`, so this has to be said explicitly. It is
+     invisible either way — the bar centres them with `justify-content` — which is exactly why only
+     a gate would ever notice. */
+  text-align: start;
   border: none;
   background: none;
   cursor: pointer;

@@ -1,0 +1,621 @@
+{
+  "label": "8a Deletions tab",
+  "kind": "crop",
+  "width": 600,
+  "height": 520,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "fullText": "When a file is deletedDeleting on one side would normally delete it on the other. This is how much say you get.Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.deletion_policy · applies to both directions",
+      "box": {
+        "w": 600,
+        "h": 520
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "padding-top": "24px",
+        "padding-right": "26px",
+        "padding-bottom": "24px",
+        "padding-left": "26px",
+        "display": "flex",
+        "flex-direction": "column",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "text": "When a file is deleted",
+      "box": {
+        "w": 546,
+        "h": 22
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "18px",
+        "font-weight": "600",
+        "letter-spacing": "-0.36px",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "text": "Deleting on one side would normally delete it on the other. This is how much say you get.",
+      "box": {
+        "w": 546,
+        "h": 19.38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "19.375px",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-top": "6px"
+      }
+    },
+    {
+      "key": "div[2]",
+      "tag": "div",
+      "fullText": "Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.",
+      "box": {
+        "w": 546,
+        "h": 300.25
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "20px",
+        "display": "flex",
+        "flex-direction": "column",
+        "gap": "9px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]",
+      "tag": "div",
+      "fullText": "Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.",
+      "box": {
+        "w": 546,
+        "h": 96.75
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(46, 50, 58)",
+        "border-right-color": "rgb(46, 50, 58)",
+        "border-bottom-color": "rgb(46, 50, 58)",
+        "border-left-color": "rgb(46, 50, 58)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "padding-top": "14px",
+        "padding-right": "16px",
+        "padding-bottom": "14px",
+        "padding-left": "16px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/div[0]",
+      "tag": "div",
+      "fullText": "Ask me every timerecommended",
+      "box": {
+        "w": 512,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "11px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/div[0]/span[0]",
+      "tag": "span",
+      "box": {
+        "w": 15,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "4px",
+        "border-right-width": "4px",
+        "border-bottom-width": "4px",
+        "border-left-width": "4px",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/div[0]/span[1]",
+      "tag": "span",
+      "text": "Ask me every time",
+      "box": {
+        "w": 389.69,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/div[0]/span[2]",
+      "tag": "span",
+      "text": "recommended",
+      "box": {
+        "w": 85.31,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "10.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "5px",
+        "border-top-right-radius": "5px",
+        "border-bottom-right-radius": "5px",
+        "border-bottom-left-radius": "5px",
+        "padding-top": "2px",
+        "padding-right": "7px",
+        "padding-bottom": "2px",
+        "padding-left": "7px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/div[1]",
+      "tag": "div",
+      "text": "Deletions wait in a queue until you approve them. Nothing disappears behind your back.",
+      "box": {
+        "w": 512,
+        "h": 38.75
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "19.375px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "padding-left": "26px",
+        "margin-top": "8px"
+      }
+    },
+    {
+      "key": "div[2]/div[1]",
+      "tag": "div",
+      "fullText": "Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.",
+      "box": {
+        "w": 546,
+        "h": 92.75
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(13, 14, 17)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "padding-top": "14px",
+        "padding-right": "16px",
+        "padding-bottom": "14px",
+        "padding-left": "16px"
+      }
+    },
+    {
+      "key": "div[2]/div[1]/div[0]",
+      "tag": "div",
+      "fullText": "Only ask about permanent ones",
+      "box": {
+        "w": 512,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "11px"
+      }
+    },
+    {
+      "key": "div[2]/div[1]/div[0]/span[0]",
+      "tag": "span",
+      "box": {
+        "w": 15,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(62, 69, 78)",
+        "border-right-color": "rgb(62, 69, 78)",
+        "border-bottom-color": "rgb(62, 69, 78)",
+        "border-left-color": "rgb(62, 69, 78)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]/div[1]/div[0]/span[1]",
+      "tag": "span",
+      "text": "Only ask about permanent ones",
+      "box": {
+        "w": 486,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(201, 208, 218)",
+        "border-top-color": "rgb(201, 208, 218)",
+        "border-right-color": "rgb(201, 208, 218)",
+        "border-bottom-color": "rgb(201, 208, 218)",
+        "border-left-color": "rgb(201, 208, 218)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/div[1]/div[1]",
+      "tag": "div",
+      "text": "Deletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.",
+      "box": {
+        "w": 512,
+        "h": 38.75
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "19.375px",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "padding-left": "26px",
+        "margin-top": "8px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]",
+      "tag": "div",
+      "fullText": "Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.",
+      "box": {
+        "w": 546,
+        "h": 92.75
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgba(255, 59, 59, 0.04)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgba(255, 59, 59, 0.3)",
+        "border-right-color": "rgba(255, 59, 59, 0.3)",
+        "border-bottom-color": "rgba(255, 59, 59, 0.3)",
+        "border-left-color": "rgba(255, 59, 59, 0.3)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "padding-top": "14px",
+        "padding-right": "16px",
+        "padding-bottom": "14px",
+        "padding-left": "16px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]",
+      "tag": "div",
+      "fullText": "Never ask",
+      "box": {
+        "w": 512,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "11px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]/span[0]",
+      "tag": "span",
+      "box": {
+        "w": 15,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(107, 58, 58)",
+        "border-right-color": "rgb(107, 58, 58)",
+        "border-bottom-color": "rgb(107, 58, 58)",
+        "border-left-color": "rgb(107, 58, 58)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]/span[1]",
+      "tag": "span",
+      "text": "Never ask",
+      "box": {
+        "w": 486,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(255, 156, 156)",
+        "border-top-color": "rgb(255, 156, 156)",
+        "border-right-color": "rgb(255, 156, 156)",
+        "border-bottom-color": "rgb(255, 156, 156)",
+        "border-left-color": "rgb(255, 156, 156)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[1]",
+      "tag": "div",
+      "text": "Deleting a file on either side deletes it on the other immediately, including permanently from this computer.",
+      "box": {
+        "w": 512,
+        "h": 38.75
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "19.375px",
+        "text-align": "start",
+        "color": "rgb(201, 208, 218)",
+        "border-top-color": "rgb(201, 208, 218)",
+        "border-right-color": "rgb(201, 208, 218)",
+        "border-bottom-color": "rgb(201, 208, 218)",
+        "border-left-color": "rgb(201, 208, 218)",
+        "padding-left": "26px",
+        "margin-top": "8px"
+      }
+    },
+    {
+      "key": "div[3]",
+      "tag": "div",
+      "text": "deletion_policy · applies to both directions",
+      "box": {
+        "w": 546,
+        "h": 30
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "padding-top": "16px",
+        "margin-top": "72.375px"
+      }
+    }
+  ]
+}

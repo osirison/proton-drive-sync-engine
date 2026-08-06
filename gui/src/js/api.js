@@ -2,6 +2,8 @@
 // directly — so the same frontend runs inside Tauri (real daemon) and in a plain browser (mock data
 // for design preview). The command names here are the fixed surface defined in gui/src-tauri.
 
+import { activeFixture } from "./fixtures/frames.js";
+
 const inTauri = () => typeof window !== "undefined" && !!window.__TAURI__;
 
 export async function invoke(cmd, args) {
@@ -54,7 +56,18 @@ export const api = {
 };
 
 // ---- browser-preview mock (never runs inside Tauri) ----
+// `?frame=<label>` swaps the generic mock for that frame's fixture (F9), so the same dataset drives
+// the fidelity harness and the design preview. Without a frame the generic mock below still runs,
+// which is what keeps the browser preview useful before every frame has a fixture.
 function mockInvoke(cmd, _args) {
+  const fixture = activeFixture();
+  if (fixture) {
+    if (cmd === "get_status") return Promise.resolve(fixture.status);
+    if (cmd === "scan_conflicts") return Promise.resolve(fixture.conflicts ?? []);
+    if (cmd === "list_pending_deletions")
+      return Promise.resolve(fixture.status?.response?.pending_deletions ?? []);
+    if (cmd === "read_config") return Promise.resolve(fixture.status?.response?.config ?? {});
+  }
   switch (cmd) {
     case "get_status":
       return Promise.resolve({

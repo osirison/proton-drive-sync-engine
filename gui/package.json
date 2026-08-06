@@ -12,6 +12,10 @@
     "test": "node --test test/*.test.js",
     "check": "npm run format:check && npm run lint && npm run tokens:check && npm test",
     "tokens:check": "node tools/check-tokens.mjs",
+    "fidelity": "node tools/fidelity/assert.mjs && node tools/fidelity/copy-gate.mjs",
+    "fidelity:extract": "node tools/fidelity/extract.mjs",
+    "fidelity:stale": "node tools/fidelity/check-stale.mjs",
+    "fidelity:determinism": "node tools/fidelity/check-determinism.mjs",
     "fonts:sync": "node tools/sync-fonts.mjs"
   },
   "devDependencies": {
@@ -21,6 +25,7 @@
     "eslint": "10.8.0",
     "eslint-plugin-import-x": "4.17.1",
     "globals": "17.9.0",
-    "prettier": "3.9.6"
+    "prettier": "3.9.6",
+    "puppeteer": "^25.5.0"
   }
 }

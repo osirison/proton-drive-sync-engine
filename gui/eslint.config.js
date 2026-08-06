@@ -84,7 +84,12 @@ export default [
       // A cycle in real ESM is a TDZ ReferenceError at load time, not a lazy-init warning.
       "import-x/no-cycle": ["error", { ignoreExternal: true }],
       "import-x/no-self-import": "error",
-      "import-x/no-useless-path-segments": ["error", { noUselessIndex: true }],
+      // `noUselessIndex` is OFF, and this is the one rule in the file whose default is actively
+      // dangerous here. It wants `./fixtures/index.js` rewritten to `./fixtures` — a bundler
+      // convention. Nothing resolves a directory to its index in a raw-served webview, so taking
+      // the advice produces exactly the blank window `import-x/extensions` exists to prevent. The
+      // rest of the rule (`./foo/../bar`) is still worth having.
+      "import-x/no-useless-path-segments": ["error", { noUselessIndex: false }],
       "import-x/no-duplicates": "error",
       // `export let` hands importers a live binding that mutates under them.
       "import-x/no-mutable-exports": "error",

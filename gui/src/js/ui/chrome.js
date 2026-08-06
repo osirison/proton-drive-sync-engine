@@ -16,6 +16,10 @@
 //   · THE DECISION RING IS 1px, not the 2px §2 states — in both themes.
 
 import { el } from "./el.js";
+// `data-fid` stamping (F8/F9). A no-op unless `?frame=` selected a fixture, so the attribute never
+// reaches a user — it exists so the fidelity harness knows which drawn node each app node stands
+// for. Nothing can derive that: the app's tree is not the prototype's.
+import { fid } from "../fixtures/frames.js";
 
 // ------------------------------------------------------------------------- the status chip ----
 
@@ -89,12 +93,13 @@ export function statusChip(variant, text) {
  */
 export function renderHeader({ chip = "idle", chipText = "idle", onMenu = null, onHome = null } = {}) {
   const quiet = isQuietChip(chip);
+  // No width/height ATTRIBUTES: the frames set neither, and shell.css already sizes the mark. The
+  // fidelity gate compares attributes node for node, so a redundant one fails on a node that looks
+  // correct — the same trap DEVIATIONS.md §27 records for a redundant `fill="none"`.
   const mark = el("img", {
     class: "app-mark" + (quiet ? " is-quiet" : ""),
     src: "assets/icon.svg",
     alt: "",
-    width: 20,
-    height: 20,
   });
   const name = el("span", { class: "app-name" + (quiet ? " is-quiet" : "") }, "Proton Drive Sync");
 
@@ -115,17 +120,20 @@ export function renderHeader({ chip = "idle", chipText = "idle", onMenu = null, 
       )
     : mark;
 
-  return el(
-    "header",
-    { class: "shell-header" },
-    home,
-    name,
-    el("span", { class: "shell-spacer" }),
-    statusChip(chip, chipText),
-    onMenu
-      ? el("button", { class: "menu-btn", onClick: onMenu, "aria-label": "More", title: "More" }, "⋯")
-      : null,
-  );
+  const chipNode = statusChip(chip, chipText);
+  fid(mark, "mark");
+  fid(name, "name");
+  fid(chipNode, "chip");
+  fid(chipNode.querySelector(".chip-dot"), "chipDot");
+  const spacer = fid(el("span", { class: "shell-spacer" }), "spacer");
+  const menu = onMenu
+    ? fid(
+        el("button", { class: "menu-btn", onClick: onMenu, "aria-label": "More", title: "More" }, "⋯"),
+        "menu",
+      )
+    : null;
+
+  return fid(el("header", { class: "shell-header" }, home, name, spacer, chipNode, menu), "header");
 }
 
 /**
@@ -211,30 +219,26 @@ export function renderFooterNav({
   const bar = el("div", { class: "footer-nav-bar" });
   bar.style.paddingTop = `${spec.top}px`;
   for (const id of order) {
-    bar.append(
-      el(
-        "button",
-        {
-          class: "door" + (id === active ? " is-active" : ""),
-          // The route id, so the shell can patch the active door across a poll instead of
-          // rebuilding the footer — see updateFooterNav.
-          "data-route": id,
-          onClick: () => onNavigate(id),
-          "aria-current": id === active ? "page" : null,
-        },
-        labels[id],
-      ),
+    const door = el(
+      "button",
+      {
+        class: "door" + (id === active ? " is-active" : ""),
+        // The route id, so the shell can patch the active door across a poll instead of
+        // rebuilding the footer — see updateFooterNav.
+        "data-route": id,
+        onClick: () => onNavigate(id),
+        "aria-current": id === active ? "page" : null,
+      },
+      labels[id],
     );
+    bar.append(fid(door, "door", order.indexOf(id)));
   }
 
-  const nav = el(
-    "nav",
-    { class: "footer-nav" },
-    bar,
-    spec.line && line ? el("div", { class: "footer-line" }, line) : null,
-  );
+  fid(bar, "footerBar");
+  const lineNode = spec.line && line ? fid(el("div", { class: "footer-line" }, line), "footerLine") : null;
+  const nav = el("nav", { class: "footer-nav" }, bar, lineNode);
   nav.style.paddingBottom = `${spec.bottom}px`;
-  return nav;
+  return fid(nav, "footerNav");
 }
 
 /**
