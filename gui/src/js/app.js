@@ -13,7 +13,7 @@
 
 import { api } from "./api.js";
 import * as store from "./store.js";
-import { ROUTES, FOOTER_ORDER, isOverlay, resolveRoute, nextOnboardingLatch } from "./routes.js";
+import { ROUTES, FOOTER_ORDER, isOverlay, isDialog, resolveRoute, nextOnboardingLatch } from "./routes.js";
 import { el } from "./ui/el.js";
 import {
   renderHeader,
@@ -23,6 +23,7 @@ import {
   renderActionBar,
   screenPlaceholder,
 } from "./ui/chrome.js";
+import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 
 // ---- shell state ----
 let route = "main"; // the root or door currently showing
@@ -237,7 +238,20 @@ function renderMenu() {
 // this rather than re-rendering", because replaceChildren restarts both CSS animations from 0% —
 // the v1 spinner bug. The chip's `blip` dot is the same hazard one primitive earlier, and every
 // hexagon S1 puts on the main screen will be too.
-const dom = { header: null, body: null, footer: null, footerKind: null, bodyRoute: null };
+const dom = {
+  header: null,
+  body: null,
+  footer: null,
+  footerKind: null,
+  bodyRoute: null,
+  // The dialog layer (F5). Keyed like the body, and for a harder reason: the armed deletion's
+  // typed-`DELETE` field CLEARS ON BLUR by design, so a layer rebuilt on the ~2s poll would destroy
+  // the field mid-word and make the gate impossible to finish. Same failure class as the focus loss
+  // this cache was built for, one level in.
+  dialog: null,
+  dialogRoute: null,
+  dialogDetach: null,
+};
 
 function render() {
   const root = document.getElementById("app-root");
@@ -258,11 +272,21 @@ function render() {
     statusPolled,
   );
 
-  const active = onboardingLatch ? "onboarding" : (overlay ?? route);
+  // A dialog floats over the screen you were on; every other overlay replaces its body. Only the
+  // second kind reaches `active`, which is what keeps the screen underneath mounted — and mounted is
+  // the whole point, because F4's note on the `details` route asks for exactly that: "clicking it
+  // must not lose your place". See routes.js `isDialog` and DEVIATIONS §57.
+  const dialogRoute = !onboardingLatch && overlay && isDialog(overlay) ? overlay : null;
+  const active = onboardingLatch ? "onboarding" : dialogRoute ? route : (overlay ?? route);
   const spec = ROUTES[active];
   const chip = chipFor();
 
-  const onMain = route === "main" && !overlay;
+  // `active`, not `route && !overlay`. A DIALOG MUST NOT CHANGE THE SCREEN UNDERNEATH IT: keyed off
+  // the raw `overlay` this flips false when Details opens over the main screen, which swaps the
+  // footer's mono line away and grows a home button in the header — the shell visibly rearranging
+  // behind a panel that is supposed to be sitting on top of it. `active` already collapses a dialog
+  // back to its underlying route, so the screen beneath renders as though nothing had opened.
+  const onMain = active === "main";
   // An attention band is showing when something is waiting on a decision — which is what the two
   // attention chip variants mean. S1 draws the band itself; the footer only needs to know it is
   // there, because the band displaces the mono line.
@@ -337,6 +361,45 @@ function render() {
     else root.append(built);
     dom.footer = built;
     dom.footerKind = kind;
+  }
+
+  // --- the dialog layer: mounted when the route changes, PATCHED (i.e. left alone) otherwise.
+  //
+  // The identity check is the whole safety property — see `dom`'s comment. Rebuilding this on the
+  // poll would restart the appear animation twice a second and clear the armed deletion's typed
+  // field mid-word.
+  if (dom.dialogRoute !== dialogRoute) {
+    dom.dialogDetach?.();
+    dom.dialog?.remove();
+    dom.dialog = null;
+    dom.dialogDetach = null;
+    if (dialogRoute) {
+      const dspec = ROUTES[dialogRoute];
+      const [w, h] = dspec.size ?? [522, null];
+      const title = dspec.label ?? titleFor(dialogRoute);
+      const built = dialog({
+        width: w,
+        height: h,
+        tone: dspec.tone ?? "plain",
+        labelledBy: "dialog-title",
+        children: [
+          dialogHead({
+            title,
+            id: "dialog-title",
+            size: w >= 600 ? "wide" : "compact",
+            // Esc closes it too, through F4's precedence chain. This is the pointer affordance.
+            onClose: () => closeOverlay(),
+          }),
+          screenPlaceholder(title, dspec.task && dspec.issue ? `${dspec.task} · issue ${dspec.issue}` : null),
+        ],
+      });
+      root.append(built);
+      dom.dialog = built;
+      // Attached after append: the trap focuses on attach, and focus() on a detached node is a
+      // silent no-op that leaves the keyboard on whatever opened the dialog.
+      dom.dialogDetach = focusTrap(built);
+    }
+    dom.dialogRoute = dialogRoute;
   }
 
   // --- the ⋯ menu, the one part that is genuinely torn down and rebuilt. It has no animation and

@@ -28,14 +28,45 @@ export const ROUTES = {
 
   // Details is the fourth FOOTER LABEL but the first overlay: 5a/6a draw it as a panel over the
   // screen you were on, not as a destination. Clicking it must not lose your place.
-  details: { kind: "overlay", label: "Details", size: [520, 460], task: "S5", issue: 184 },
+  details: {
+    kind: "overlay",
+    presentation: "dialog",
+    label: "Details",
+    size: [522, 462],
+    task: "S5",
+    issue: 184,
+  },
 
   // overlays — no door, reached from a band, the chip, a notification or another screen.
-  conflicts: { kind: "overlay", task: "S2", issue: 181 },
-  deletions: { kind: "overlay", task: "S3", issue: 182 },
-  neverSynced: { kind: "overlay", task: "S5", issue: 184 },
-  saveRefused: { kind: "overlay", task: "S6", issue: 185 },
-  armed: { kind: "overlay", task: "S3", issue: 182 },
+  //
+  // `presentation` splits them, and it is structural rather than cosmetic — F5 measured that only
+  // THREE of the seven are drawn as something floating. A dialog is a standalone surface with no app
+  // header and no footer doors, stacked over the screen you were on behind a scrim. The rest are
+  // full 1042x766 windows that keep the header and the four doors and replace only the content
+  // area, so the body swap F4 already does is exactly right and a scrim would be wrong.
+  // DEVIATIONS §57.
+  //
+  // `size` is the DRAWN box, not the declared one. Four of the ten drawn dialogs opt into
+  // `box-sizing:border-box` and six do not, so 520 is drawn 522 while 600 is drawn 600 — there is no
+  // offset to apply, only a number to read off the frame. §48a. A null height sizes to content.
+  conflicts: { kind: "overlay", presentation: "screen", task: "S2", issue: 181 },
+  deletions: { kind: "overlay", presentation: "screen", task: "S3", issue: 182 },
+  armed: { kind: "overlay", presentation: "screen", task: "S3", issue: 182 },
+  neverSynced: {
+    kind: "overlay",
+    presentation: "dialog",
+    size: [602, 602],
+    task: "S5",
+    issue: 184,
+  },
+  saveRefused: {
+    kind: "overlay",
+    presentation: "dialog",
+    tone: "refusal",
+    size: [600, null],
+    task: "S6",
+    issue: 185,
+  },
 
   // The onboarding takeover is an overlay in the routing sense — it covers everything — but it is
   // not opened by the user and cannot be dismissed with Esc. It is entered by the latch below.
@@ -51,6 +82,15 @@ export const FOOTER_ORDER = ["activity", "plan", "settings", "details"];
 
 /** Overlay routes stack over whatever is underneath; a door replaces it. */
 export const isOverlay = (id) => ROUTES[id]?.kind === "overlay";
+
+/**
+ * Does this overlay float over the screen, or replace its body?
+ *
+ * The onboarding takeover answers false deliberately. It covers everything and cannot be dismissed,
+ * so a scrim would darken a screen nobody can reach and a focus trap would duplicate the fact that
+ * there is nothing else on the window to focus.
+ */
+export const isDialog = (id) => ROUTES[id]?.presentation === "dialog";
 
 /**
  * v1 route ids that outlived the screens they named, and where they land now.

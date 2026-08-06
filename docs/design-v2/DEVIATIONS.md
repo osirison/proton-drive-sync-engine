@@ -770,6 +770,34 @@ properties are not asserted at all. Comparing those would measure the box model,
 same element reports `1000px` in one document and `1040px` in the other while occupying identical
 space on screen.
 
+### 48a. "+2px" is a consequence, not a rule — four of the ten dialogs opt in
+
+F5's dialog layer needed a number to write, so the ten `kind: dialog` frames were read back against
+the prototype rather than offset by two. **Four of them declare `box-sizing:border-box` inline**, and
+those come out at exactly their nominal size:
+
+| declares `border-box` | declared = drawn |
+| --- | --- |
+| `9a Consent`, `9a CLI missing`, `8a Save refused`, `7a File pending` | `600` |
+
+| does not | declared → drawn |
+| --- | --- |
+| `3a Conflicts cleared`, `5a Checking`, `4a Empty`, `6a Details` | `520` → **522** |
+| `9a First sync`, `7a Never synced` | `600` → **602** |
+
+The split is not arbitrary: the four that opt in are the four that carry `padding` on the dialog
+itself, and the six that do not are `display:flex` columns with a fixed height that pad their
+children instead. An author reaching for padding reached for `border-box` in the same breath.
+
+So **there is no offset to apply — only a number to read off the frame**, and `routes.js` carries the
+drawn box per dialog with a test asserting it. Under `base.css`'s global `border-box`, writing the
+drawn number is always right; writing the declared one is right four times out of ten.
+
+`3a Conflicts cleared` and `5a Checking` are worth naming separately. Both are `522×766` and both
+contain **the app header and the four footer doors**, so they are not 520px dialogs at all — they are
+the product window drawn narrow, because their content is a centred empty state and 1040px of it
+would be mostly whitespace. Neither is modelled by the dialog layer.
+
 ## 49. The copy deck outlived one of its drawings
 
 `13-copy-deck.md`'s Activity section carries `Nothing has moved in the last hour.` under "Quiet:".
@@ -1046,6 +1074,73 @@ standing between you and continuing.
 The `line-height` is what the missing 2.5px was: `normal` closes the leading on a sentence that
 wraps. Recorded because a 2.5px height error is invisible by eye, sits inside the style gate's
 tolerance for nothing else, and would have been attributed to S7 when it landed.
+
+## 56. The scrim behind a dialog has no ground truth anywhere. **Open.**
+
+Every dialog in the bundle is drawn in isolation — its own `data-screen-label`, its own box, on the
+spec sheet's background. **Not one frame shows a dialog over a screen**, so the layer between them
+is undrawn. Neither `02-shell.md` nor `14-behaviour-and-state.md` specifies it either; the only
+mention of dialogs in either is `14-behaviour-and-state.md:116`, "`Esc` cancel a confirmation or
+close a dialog".
+
+Chosen rather than left absent, because a modal with no scrim over a live screen is a worse default
+than a slightly wrong one — the screen behind stays visually clickable and the modality is invisible.
+
+`--scrim: rgba(0,0,0,.5)` dark, `rgba(0,0,0,.33)` light. Derived from the one related pair that IS
+drawn: `--shadow-dialog` steps `.6` dark → `.4` light, and `.5 × (.4/.6) = .33`. Deliberately modest
+— the dialog already carries a `0 24px 60px` shadow at `.6`, and a heavy scrim under it draws the
+same separation twice.
+
+**A designer should confirm the value.** Unlike §52 and §54, there is no drawn analogue at the same
+site to derive from, only a proportion borrowed from a shadow. Filed as open in the same sense as
+§45.
+
+## 57. Only three of the seven "overlay" routes are dialogs
+
+F4's route table gave seven routes `kind: "overlay"`, which is correct about routing — all seven
+stack over what you were doing, all seven return focus to their opener, all seven answer `Esc`. It
+is not a statement about presentation, and F5 needed one.
+
+Measured by what each route's frame actually is:
+
+| route | frame | drawn as |
+| --- | --- | --- |
+| `details` | `6a Details` `522×462` | **dialog** — standalone surface, ✕, no header, no doors |
+| `neverSynced` | `7a Never synced` `602×602` | **dialog** — ✕ and a `Done` |
+| `saveRefused` | `8a Save refused` `600×213` | **dialog** — no ✕, two actions |
+| `conflicts` | `3a Conflict` `1042×766` | screen — keeps header and doors |
+| `deletions` | `4a Deletions` `1042×766` | screen — keeps header and doors |
+| `armed` | `4a Armed` `1042×766` | screen — keeps header and doors, replaces the content area only |
+| `onboarding` | `9a` ×5 | takeover — non-dismissible, already special-cased by F4 |
+
+So four of the seven need **no scrim, no focus trap and no layer at all**: the body swap F4 already
+does is exactly right for them, and wrapping them would put a scrim over a window that has nothing
+behind it. `routes.js` carries `presentation: "dialog" | "screen"` with tests, because the two are
+one word apart in the table and the wrong one is not a crash — it is a scrim over a screen that
+should have been replaced, or a full window with no way back.
+
+`4a Armed` is the one worth stating outright: **the full-window delete confirmation is a body swap,
+not a dialog.** It keeps the live status chip and the four doors, draws `Press Esc to cancel.` on
+screen, and is centred on the 104px warning hexagon. It needs the layer least of all seven and would
+have been the most tempting to wrap.
+
+### 57a. What the layer had to change in F4, and what it must not touch
+
+**One branch.** `app.js:305` was the only place keyed off the overlay; the header and footer already
+read `route`. A dialog now collapses back to its underlying route so the screen beneath renders as
+though nothing had opened — including `onMain`, which keyed off `!overlay` and would otherwise swap
+the footer's mono line away and grow a home button in the header the moment Details opened. The
+shell visibly rearranging behind a panel sitting on top of it is exactly what F4's own note on the
+`details` route asks to avoid: *"clicking it must not lose your place."*
+
+**No second `Escape` handler.** F4 owns the key and its precedence chain — menu, then overlay, then
+the screen's `shell:cancel`. A listener in the dialog layer would give one keypress two effects.
+`dialog.js` handles `Tab` and nothing else.
+
+**The layer is keyed and patched, never rebuilt.** Same discipline as §45a and for a harder reason:
+the armed deletion's typed-`DELETE` field clears on blur by design, so a layer rebuilt on the ~2s
+poll would destroy the field mid-word and make the gate impossible to finish. Verified by holding a
+node reference across two polls.
 
 ---
 

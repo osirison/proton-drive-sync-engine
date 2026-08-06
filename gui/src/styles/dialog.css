@@ -1,0 +1,113 @@
+/* The dialog layer (F5) — see js/ui/dialog.js, which explains what F4 already owns and why there is
+ * no Escape handling in this module.
+ */
+
+/* Fixed rather than absolute: the window is a fixed 1040x764 and the scrim must cover the header
+   too, which is a sibling and not an ancestor. */
+.dialog-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  /* min-height:0 on a flex column is what lets an inner scroll region actually scroll instead of
+     growing the dialog past its own height. Every fixed-height frame here has one. */
+  min-height: 0;
+  max-height: calc(100% - 32px);
+  border: 1px solid var(--dialog-border);
+  border-radius: var(--r-12);
+  background: var(--surface);
+  box-shadow: var(--shadow-dialog);
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------------- head ---- */
+
+.dialog-head {
+  display: flex;
+  align-items: flex-start;
+  flex: none;
+}
+/* The two rungs track the width family, not anything semantic: 520 gets the tighter one. */
+.dialog-head-compact {
+  gap: 10px;
+  padding: 20px 22px;
+  align-items: center;
+}
+.dialog-head-wide {
+  gap: 12px;
+  padding: 22px 24px;
+}
+
+.dialog-headings {
+  flex: 1;
+  min-width: 0;
+}
+.dialog-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.dialog-head-wide .dialog-title {
+  font-size: 18px;
+  letter-spacing: -0.36px;
+}
+.dialog-subtitle {
+  font-size: 12.5px;
+  color: var(--text-4);
+}
+
+.dialog-close {
+  flex: none;
+}
+
+/* --------------------------------------------------------------------------------- motion ---- */
+
+/* --t-appear, the duration 01-foundations.md §7 gives for "a panel or band appearing". A transform
+   rather than a size change so nothing reflows mid-animation, and 6px rather than a slide, because
+   the dialog is arriving in front of the screen and not from an edge of it.
+
+   base.css already reduces every transition-duration to 0.01ms under prefers-reduced-motion, but an
+   ANIMATION is not a transition and that rule does not reach this one — so it is answered here.
+   DEVIATIONS §30's rule 1: the dialog still appears, it just stops moving to do it. */
+@keyframes dialog-appear {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* The scrim only fades. Sharing dialog-appear would translate the whole layer, which slides the
+   darkening off the top edge of the window for the length of the animation. */
+@keyframes scrim-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.dialog {
+  animation: dialog-appear var(--t-appear) var(--ease);
+}
+.dialog-scrim {
+  animation: scrim-appear var(--t-appear) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog,
+  .dialog-scrim {
+    animation: none;
+  }
+}

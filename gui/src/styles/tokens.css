@@ -230,6 +230,13 @@
   --glow-settled: radial-gradient(circle, rgba(232, 235, 240, 0.05), rgba(232, 235, 240, 0) 68%);
   --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.6);
   --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.6);
+  /* The scrim behind a dialog. CHOSEN — no frame draws one, and neither 02-shell.md nor
+     14-behaviour-and-state.md specifies it; every dialog is drawn in isolation, so the layer
+     between it and the screen has no ground truth anywhere in the bundle. Derived from the one
+     related pair that IS drawn: --shadow-dialog steps .6 dark -> .4 light, so a .5 scrim steps
+     to .33. Deliberately modest — the dialog already carries a 60px shadow at .6, and a heavy
+     scrim under it draws the same separation twice. DEVIATIONS §56 — OPEN, wants a designer. */
+  --scrim: rgba(0, 0, 0, 0.5);
   --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.6);
   --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.5);
   --focus-ring: #3b82f6;
@@ -343,6 +350,7 @@
     --glow-settled: radial-gradient(circle, rgba(20, 22, 26, 0.045), rgba(20, 22, 26, 0) 68%);
     --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.45);
     --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.4);
+    --scrim: rgba(0, 0, 0, 0.33);
     --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
     --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
     --focus-ring: #1d4ed8;
@@ -450,6 +458,7 @@
   --glow-settled: radial-gradient(circle, rgba(20, 22, 26, 0.045), rgba(20, 22, 26, 0) 68%);
   --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.45);
   --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --scrim: rgba(0, 0, 0, 0.33);
   --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
   --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
   --focus-ring: #1d4ed8;

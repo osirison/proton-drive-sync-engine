@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ROUTES, FOOTER_ORDER, isOverlay, ROUTE_ALIASES, resolveRoute } from "../src/js/routes.js";
+import { ROUTES, FOOTER_ORDER, isOverlay, isDialog, ROUTE_ALIASES, resolveRoute } from "../src/js/routes.js";
 
 test("the four doors, in this order, and no others", () => {
   // Hard-coded rather than derived: deriving it from ROUTES would let a reordering of the object
@@ -88,4 +88,47 @@ test("every alias points at a route that exists", () => {
 
 test("an unknown id passes through unchanged, for the caller to reject", () => {
   assert.equal(resolveRoute("somethingElse"), "somethingElse");
+});
+
+// ---- the dialog/screen split (F5) ----
+//
+// `presentation` is what decides whether an overlay floats behind a scrim or replaces the screen's
+// body, and it was measured rather than chosen: a dialog is a standalone surface with no app header
+// and no footer doors, while the other overlays are full 1042x764 windows that keep both. Asserted
+// here because the two are one word apart in the table and the wrong one is not a crash — it is a
+// scrim over a screen that should have been replaced, or a full window with no way back.
+
+test("only the three drawn dialogs are dialogs", () => {
+  const dialogs = Object.keys(ROUTES).filter((id) => isDialog(id));
+  assert.deepEqual(dialogs.sort(), ["details", "neverSynced", "saveRefused"]);
+});
+
+test("every overlay declares a presentation, and no door does", () => {
+  for (const [id, spec] of Object.entries(ROUTES)) {
+    if (spec.kind !== "overlay") {
+      assert.equal(spec.presentation, undefined, `${id} is not an overlay and must not declare one`);
+      continue;
+    }
+    // Onboarding is the exception: a takeover is neither, and routes.js says why.
+    if (spec.takeover) continue;
+    assert.ok(
+      spec.presentation === "dialog" || spec.presentation === "screen",
+      `${id} must declare presentation: "dialog" or "screen"`,
+    );
+  }
+});
+
+test("the onboarding takeover is not a dialog", () => {
+  // A scrim would darken a screen nobody can reach, and Esc must not close it.
+  assert.equal(isDialog("onboarding"), false);
+  assert.equal(ROUTES.onboarding.takeover, true);
+});
+
+test("every dialog carries the drawn size, not the declared one", () => {
+  // §48a: four of the ten drawn dialogs opt into border-box and six do not, so 520 is drawn 522
+  // while 600 is drawn 600. There is no offset to apply — only a number read off the frame.
+  const drawn = { details: [522, 462], neverSynced: [602, 602], saveRefused: [600, null] };
+  for (const [id, size] of Object.entries(drawn)) {
+    assert.deepEqual(ROUTES[id].size, size, `${id} must carry its drawn box`);
+  }
 });
