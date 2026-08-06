@@ -296,7 +296,17 @@ function render() {
     chipText: chip.text,
     // Onboarding drops the ⋯ button, not just the chip — both 9a frames have four header slots.
     hasMenu: !onboardingLatch,
-    hasHome: !onMain,
+    // `&& !onboardingLatch` is NOT redundant, and leaving it off was a regression this file already
+    // shipped once. `onMain` used to read `route === "main" && !overlay`, which is TRUE during the
+    // takeover on a fresh machine — route is still "main" and no overlay is open — so the mark
+    // stayed an <img>. Rewriting it as `active === "main"` for the dialog layer flipped that: active
+    // is "onboarding", so the mark became a <button class="app-home">.
+    //
+    // Not a cosmetic slot. routes.js says the takeover "cannot be dismissed with Esc", and 02-shell
+    // makes the app mark the home affordance now that onboarding has no footer nav — so a home
+    // button there is a working door out of a flow that is not supposed to have one, on a machine
+    // with no folder pair chosen yet.
+    hasHome: !onMain && !onboardingLatch,
   };
   const navOpts = {
     active: ROUTES[route]?.kind === "door" ? route : null,
