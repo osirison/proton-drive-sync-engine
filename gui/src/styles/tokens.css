@@ -150,6 +150,10 @@
   --destructive-text: #ff9c9c; /* the emphasised loss inside a destructive card */
   --destructive-border: rgba(255, 59, 59, 0.38);
   --destructive-bg: rgba(255, 59, 59, 0.06);
+  /* The disabled `Delete` on `4a Armed`, before the word is typed. NOT --destructive-bg: measured
+     0.1 against that token's 0.06, and DEVIATIONS §27 already records .08 as a third value on the
+     warning hexagon's tint. Three alphas of one hue, each drawn somewhere. */
+  --btn-destructive-disabled-bg: rgba(255, 59, 59, 0.1);
   --destructive-divider: rgba(255, 59, 59, 0.2);
   --destructive-btn-border: rgba(255, 59, 59, 0.25);
   --destructive-btn-bg: rgba(255, 59, 59, 0.1);
@@ -260,6 +264,7 @@
     --destructive-text: #b91c1c;
     --destructive-border: rgba(220, 38, 38, 0.4);
     --destructive-bg: rgba(220, 38, 38, 0.04);
+    --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
     --destructive-divider: rgba(220, 38, 38, 0.16);
     --destructive-btn-border: rgba(220, 38, 38, 0.2);
     --destructive-btn-bg: rgba(220, 38, 38, 0.07);
@@ -360,6 +365,7 @@
   --destructive-text: #b91c1c;
   --destructive-border: rgba(220, 38, 38, 0.4);
   --destructive-bg: rgba(220, 38, 38, 0.04);
+  --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
   --destructive-divider: rgba(220, 38, 38, 0.16);
   --destructive-btn-border: rgba(220, 38, 38, 0.2);
   --destructive-btn-bg: rgba(220, 38, 38, 0.07);

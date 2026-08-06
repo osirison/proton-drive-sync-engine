@@ -1,0 +1,302 @@
+/*
+ * Controls (F5) — the interactive states, and the structure the inline styles do not carry.
+ *
+ * ui/controls.js sets colour, radius, padding and weight inline, because those are the measured
+ * per-kind values and the fidelity gate compares them node by node. What lives here is everything a
+ * style attribute cannot express: `:hover`, `:active`, `:focus-visible`, `:disabled`, and the
+ * pseudo-elements the toggle and checkbox are built from.
+ *
+ * The interactive states come from `14-behaviour-and-state.md` §"Interactive states" and are a
+ * SURFACE STEP, not an opacity change: hover moves a surface up one level (#0D0E11 → #101216) and a
+ * border up one (#23262D → #2E323A). Dimming instead would collide with the disabled kinds, which
+ * are their own fill.
+ */
+
+/* The kind's colours arrive as custom properties from ui/controls.js — see the note there for why
+   they cannot be plain inline `background`/`color`. */
+.btn {
+  font-family: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+  color: var(--btn-fg);
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-border);
+  transition:
+    background var(--t-press) var(--ease),
+    border-color var(--t-press) var(--ease);
+}
+
+/* §"Interactive states": hover steps the SURFACE up one level and the BORDER up one, 140ms ease-out.
+   The text is left alone — brightening it would wash out a primary, which is the one thing on the
+   screen that is deliberately maximum contrast. */
+.btn:hover:not(:disabled) {
+  background: var(--btn-bg-hover);
+  border-color: var(--btn-border-hover);
+}
+
+/* Press steps up once more, and has NO TRANSFORM. A button that moves under the cursor is a
+   convention from another design language; here the only things that move are two hexagon
+   segments. */
+.btn:active:not(:disabled) {
+  background: var(--btn-bg-active);
+  transform: none;
+}
+
+/* Disabled has its own fill and text (the `*Disabled` kinds), so it needs no dimming — and must
+   not respond to hover at all. */
+.btn:disabled {
+  cursor: default;
+}
+.btn:disabled:hover {
+  background: var(--btn-bg);
+  border-color: var(--btn-border);
+}
+
+/* The sub-label inside a primary — `Keep both`'s consequence sentence. A quieter tier ON the fill,
+   which is why it is --btn-primary-quiet-text and not a disabled colour (DEVIATIONS §12). */
+.btn-sub {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--btn-primary-quiet-text);
+  margin-top: 3px;
+}
+
+/* NO focus rule for buttons, inputs, toggles or radio cards: base.css already applies the 2px ring
+   at 2px offset to every `:focus-visible` element, and repeating it here would be a second place to
+   keep in step. The checkbox is the one exception — its real <input> is visually hidden, so the
+   global rule would ring nothing a user can see; the ring has to move to the box that stands in for
+   it. */
+.checkbox-input:focus-visible + .checkbox-box {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------------------- inputs ---- */
+
+.input {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--r-9);
+  padding: 9px 12px;
+  transition:
+    border-color var(--t-press) var(--ease),
+    background var(--t-press) var(--ease);
+}
+.input.is-mono {
+  font-family: var(--font-mono);
+}
+.input::placeholder {
+  color: var(--text-5);
+}
+.input:hover {
+  border-color: var(--border-strong);
+}
+
+/* The typed-DELETE gate. Mono, because the word is a literal to be reproduced exactly — the same
+   reason every daemon string in this design is mono. */
+.delete-gate {
+  letter-spacing: 0.08em;
+  text-align: center;
+  max-width: 160px;
+}
+
+/* ------------------------------------------------------------------------------ toggles ---- */
+
+/* 44×26 with a 26px knob track. Two states, nothing between. */
+.toggle {
+  flex: none;
+  width: 44px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--panel-alt);
+  cursor: pointer;
+  position: relative;
+  transition:
+    background var(--t-press) var(--ease),
+    border-color var(--t-press) var(--ease);
+}
+.toggle.is-on {
+  background: var(--text);
+  border-color: var(--text);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-dot);
+  background: var(--text-4);
+  transition:
+    transform var(--t-press) var(--ease),
+    background var(--t-press) var(--ease);
+}
+.toggle.is-on .toggle-knob {
+  transform: translateX(18px);
+  background: var(--surface);
+}
+
+/* Reduced motion: the knob still moves, because its POSITION is the state — removing the transition
+   makes it jump, which is correct, rather than removing the movement, which would delete the
+   information. Same reasoning as the paused hexagon's dasharray in DEVIATIONS §30. */
+@media (prefers-reduced-motion: reduce) {
+  .toggle-knob {
+    transition: none;
+  }
+}
+
+/* ----------------------------------------------------------------------------- checkbox ---- */
+
+.checkbox {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-2);
+}
+/* Visually hidden rather than `display:none`: a hidden input is not focusable, and this one carries
+   the real checked state and the keyboard interaction. */
+.checkbox-input {
+  position: absolute;
+  opacity: 0;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  cursor: pointer;
+}
+.checkbox-box {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-5);
+  background: var(--panel-alt);
+  position: relative;
+}
+.checkbox-input:checked + .checkbox-box {
+  background: var(--text);
+  border-color: var(--text);
+}
+.checkbox-input:checked + .checkbox-box::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--surface);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* -------------------------------------------------------------------- tabs, chips, stepper ---- */
+
+.pill-tabs,
+.day-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.day-chips .btn {
+  width: 44px;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.stepper-value {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+  min-width: 3ch;
+  text-align: center;
+}
+
+/* -------------------------------------------------------------------------- radio cards ---- */
+
+.radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-12);
+  background: var(--panel);
+  cursor: pointer;
+  transition:
+    background var(--t-press) var(--ease),
+    border-color var(--t-press) var(--ease);
+}
+.radio-card:hover {
+  border-color: var(--border-strong);
+}
+/* §"Interactive states": selected is the border AND the surface step AND the ring dot — all three,
+   because the ring alone is a 4px signal on a 13px row. */
+.radio-card.is-selected {
+  border-color: var(--border-strong);
+  background: var(--panel-raised);
+}
+/* The Deletions tab's "Never ask" card is tinted destructive: there is no gate on the control, so
+   the card itself has to carry the weight. */
+.radio-card.tone-destructive {
+  border-color: var(--destructive-border);
+  background: var(--destructive-bg);
+}
+
+.radio-ring {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  border-radius: var(--r-dot);
+  /* 1.5px, not 1px — `08-settings.md` gives the unselected ring its own width, and DEVIATIONS §12
+     tokenised the colour as --line-inert. */
+  border: 1.5px solid var(--line-inert);
+  position: relative;
+}
+.radio-ring.is-selected {
+  border-color: var(--text);
+}
+.radio-ring.is-selected::after {
+  content: "";
+  position: absolute;
+  inset: 3.5px;
+  border-radius: var(--r-dot);
+  background: var(--text);
+}
+
+.radio-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-bright);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.radio-note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-5);
+}
+.radio-text {
+  font-size: 12.5px;
+  color: var(--text-4);
+  line-height: 1.55;
+  margin-top: 5px;
+}
