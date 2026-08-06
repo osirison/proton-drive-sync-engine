@@ -13,7 +13,7 @@
 
 import { api } from "./api.js";
 import * as store from "./store.js";
-import { ROUTES, FOOTER_ORDER, isOverlay, nextOnboardingLatch } from "./routes.js";
+import { ROUTES, FOOTER_ORDER, isOverlay, resolveRoute, nextOnboardingLatch } from "./routes.js";
 import { el } from "./ui/el.js";
 import {
   renderHeader,
@@ -27,7 +27,7 @@ import {
 // ---- shell state ----
 let route = "main"; // the root or door currently showing
 let overlay = null; // the overlay stacked over it, if any
-let overlayOpener = null; // the element to return focus to when the overlay closes
+let overlayReturn = null; // where to send focus when the overlay closes — see focusKeyOf
 let menuOpen = false;
 let configInfo = null;
 let configLoaded = false; // has the GUI config file been read at least once (even if empty)?
@@ -100,9 +100,28 @@ function navigate(id) {
   render();
 }
 
+/**
+ * A stable way to find the control that opened an overlay, AFTER the overlay has closed.
+ *
+ * Holding the element itself is not enough and was the bug Copilot caught: opening an overlay
+ * replaces the body, so an opener that lived there is disconnected by the time we want to focus it
+ * and `isConnected` is false — focus silently never returns. A key survives the rebuild because it
+ * is looked up again in the new tree.
+ *
+ * The element is kept as a fallback for openers with no key that happen to survive (a door button,
+ * now that the footer is patched rather than rebuilt).
+ */
+function focusKeyOf(node) {
+  if (!(node instanceof HTMLElement)) return null;
+  if (node.dataset.focusKey) return node.dataset.focusKey;
+  if (node.dataset.route) return `[data-route="${node.dataset.route}"]`;
+  return null;
+}
+
 function openOverlay(id, opener = null) {
+  const from = opener ?? document.activeElement;
   overlay = id;
-  overlayOpener = opener ?? document.activeElement;
+  overlayReturn = { key: focusKeyOf(from), node: from };
   render();
 }
 
@@ -111,11 +130,15 @@ function closeOverlay() {
   // The takeover is not dismissible: it is entered by the latch and left by the daemon coming up.
   if (ROUTES[overlay]?.takeover) return false;
   overlay = null;
+  const back = overlayReturn;
+  overlayReturn = null;
   render();
   // Focus returns to whatever opened it — a dialog that drops focus to <body> makes the keyboard
-  // user start the screen again.
-  if (overlayOpener?.isConnected) overlayOpener.focus();
-  overlayOpener = null;
+  // user start the screen again. Re-queried after the render, because the node it opened from may
+  // have been rebuilt in the meantime.
+  const target =
+    (back?.key && document.querySelector(back.key)) || (back?.node?.isConnected ? back.node : null);
+  target?.focus();
   return true;
 }
 
@@ -387,7 +410,11 @@ function main() {
   // Tray menu items ask the shell to navigate. Routed through the api facade — no direct
   // window.__TAURI__ here.
   api.onTrayNavigate((id) => {
-    if (typeof id === "string" && ROUTES[id]) navigate(id);
+    if (typeof id !== "string") return;
+    // tray.rs is Rust and does not move when this table does — it still emits the v1 `history`.
+    const target = resolveRoute(id);
+    if (ROUTES[target]) navigate(target);
+    else console.warn(`tray-navigate: no route for "${id}" — add an alias in routes.js`);
   });
 }
 
