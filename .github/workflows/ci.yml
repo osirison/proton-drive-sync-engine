@@ -85,3 +85,36 @@ jobs:
       # every branch of it is a bug that shipped once already.
       - name: Test
         run: npm test
+
+  # The fidelity gate (F8). Its own job rather than a step in `frontend`, for one reason: it needs a
+  # Chromium download, and `frontend` is a 15-second lint job that many PRs depend on. Keeping them
+  # apart means a dependency bump does not wait on a browser.
+  #
+  # Deliberately NOT path-filtered, for the same reason `frontend` is not: this is intended to become
+  # a required check, and a required check that is path-filtered never reports on PRs outside its
+  # filter — they sit forever on "Expected — waiting for status to be reported".
+  fidelity:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      # The style and fit gates against every frame the app maps, then the copy gate over all 224
+      # drawn strings in ui/copy.js. See gui/tools/fidelity/README.md for what they cannot cover.
+      - name: Fidelity
+        run: npm run fidelity
+      # The fixtures are checked in so a prototype change is a reviewable diff. If regenerating them
+      # produces one, they are stale — the prototype moved and nobody re-extracted.
+      - name: Fixtures are up to date
+        run: |
+          npm run fidelity:extract
+          git diff --exit-code --stat tools/fidelity/frames \
+            || { echo "::error::frames/*.json are stale — run 'npm run fidelity:extract' and commit"; exit 1; }

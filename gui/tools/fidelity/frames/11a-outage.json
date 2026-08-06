@@ -40,9 +40,7 @@
         "padding-top": "15px",
         "padding-right": "17px",
         "padding-bottom": "15px",
-        "padding-left": "17px",
-        "width": "520px",
-        "height": "154.5px"
+        "padding-left": "17px"
       }
     },
     {
@@ -65,8 +63,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "484px",
-        "height": "77.5px",
         "display": "flex",
         "gap": "13px"
       }
@@ -91,8 +87,6 @@
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "margin-top": "1px",
-        "width": "34px",
-        "height": "34px",
         "flex-shrink": "0",
         "overflow": "hidden"
       },
@@ -119,8 +113,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "auto",
-        "height": "auto",
         "display": "inline"
       },
       "svgAttrs": {
@@ -150,8 +142,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "auto",
-        "height": "auto",
         "display": "inline"
       },
       "svgAttrs": {
@@ -181,8 +171,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "437px",
-        "height": "77.5px",
         "flex-grow": "1",
         "flex-basis": "0%"
       }
@@ -207,8 +195,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "437px",
-        "height": "15px",
         "display": "flex",
         "align-items": "baseline",
         "gap": "8px"
@@ -233,9 +219,7 @@
         "border-top-color": "rgb(153, 162, 174)",
         "border-right-color": "rgb(153, 162, 174)",
         "border-bottom-color": "rgb(153, 162, 174)",
-        "border-left-color": "rgb(153, 162, 174)",
-        "width": "60.125px",
-        "height": "15px"
+        "border-left-color": "rgb(153, 162, 174)"
       }
     },
     {
@@ -257,8 +241,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "341.062px",
-        "height": "0px",
         "flex-grow": "1",
         "flex-basis": "0%"
       }
@@ -282,9 +264,7 @@
         "border-top-color": "rgb(109, 119, 131)",
         "border-right-color": "rgb(109, 119, 131)",
         "border-bottom-color": "rgb(109, 119, 131)",
-        "border-left-color": "rgb(109, 119, 131)",
-        "width": "19.8125px",
-        "height": "14px"
+        "border-left-color": "rgb(109, 119, 131)"
       }
     },
     {
@@ -307,9 +287,7 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "margin-top": "5px",
-        "width": "437px",
-        "height": "16px"
+        "margin-top": "5px"
       }
     },
     {
@@ -332,9 +310,7 @@
         "border-right-color": "rgb(201, 208, 218)",
         "border-bottom-color": "rgb(201, 208, 218)",
         "border-left-color": "rgb(201, 208, 218)",
-        "margin-top": "4px",
-        "width": "437px",
-        "height": "37.5px"
+        "margin-top": "4px"
       }
     },
     {
@@ -358,8 +334,6 @@
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "margin-top": "12px",
-        "width": "484px",
-        "height": "33px",
         "display": "flex",
         "gap": "8px"
       }
@@ -401,8 +375,6 @@
         "padding-right": "8px",
         "padding-bottom": "8px",
         "padding-left": "8px",
-        "width": "238px",
-        "height": "33px",
         "flex-grow": "1",
         "flex-basis": "0%"
       }
@@ -443,8 +415,6 @@
         "padding-right": "8px",
         "padding-bottom": "8px",
         "padding-left": "8px",
-        "width": "238px",
-        "height": "33px",
         "flex-grow": "1",
         "flex-basis": "0%"
       }

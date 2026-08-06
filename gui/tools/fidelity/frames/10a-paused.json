@@ -37,8 +37,6 @@
         "border-top-right-radius": "14px",
         "border-bottom-right-radius": "14px",
         "border-bottom-left-radius": "14px",
-        "width": "360px",
-        "height": "319.5px",
         "overflow": "hidden"
       }
     },
@@ -66,8 +64,6 @@
         "padding-right": "22px",
         "padding-bottom": "20px",
         "padding-left": "22px",
-        "width": "316px",
-        "height": "150.5px",
         "display": "flex",
         "flex-direction": "column",
         "align-items": "center"
@@ -93,8 +89,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "72px",
-        "height": "72px",
         "overflow": "hidden"
       },
       "svgAttrs": {
@@ -120,8 +114,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "auto",
-        "height": "auto",
         "display": "inline"
       },
       "svgAttrs": {
@@ -152,8 +144,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "5.5px",
-        "height": "22px",
         "display": "inline"
       },
       "svgAttrs": {
@@ -184,8 +174,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "5.5px",
-        "height": "22px",
         "display": "inline"
       },
       "svgAttrs": {
@@ -217,9 +205,7 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "margin-top": "15px",
-        "width": "59.2344px",
-        "height": "20px"
+        "margin-top": "15px"
       }
     },
     {
@@ -242,9 +228,7 @@
         "border-right-color": "rgb(130, 139, 152)",
         "border-bottom-color": "rgb(130, 139, 152)",
         "border-left-color": "rgb(130, 139, 152)",
-        "margin-top": "6px",
-        "width": "316px",
-        "height": "37.5px"
+        "margin-top": "6px"
       }
     },
     {
@@ -272,9 +256,7 @@
         "padding-top": "6px",
         "padding-right": "6px",
         "padding-bottom": "6px",
-        "padding-left": "6px",
-        "width": "348px",
-        "height": "110px"
+        "padding-left": "6px"
       }
     },
     {
@@ -305,9 +287,7 @@
         "padding-top": "9px",
         "padding-right": "13px",
         "padding-bottom": "9px",
-        "padding-left": "13px",
-        "width": "322px",
-        "height": "15px"
+        "padding-left": "13px"
       }
     },
     {
@@ -337,9 +317,7 @@
         "padding-top": "9px",
         "padding-right": "13px",
         "padding-bottom": "9px",
-        "padding-left": "13px",
-        "width": "322px",
-        "height": "15px"
+        "padding-left": "13px"
       }
     },
     {
@@ -365,9 +343,7 @@
         "margin-top": "5px",
         "margin-right": "10px",
         "margin-bottom": "5px",
-        "margin-left": "10px",
-        "width": "328px",
-        "height": "1px"
+        "margin-left": "10px"
       }
     },
     {
@@ -398,8 +374,6 @@
         "padding-right": "13px",
         "padding-bottom": "9px",
         "padding-left": "13px",
-        "width": "322px",
-        "height": "15px",
         "display": "flex",
         "align-items": "baseline",
         "gap": "8px"
@@ -424,9 +398,7 @@
         "border-top-color": "rgb(201, 208, 218)",
         "border-right-color": "rgb(201, 208, 218)",
         "border-bottom-color": "rgb(201, 208, 218)",
-        "border-left-color": "rgb(201, 208, 218)",
-        "width": "25.0156px",
-        "height": "15px"
+        "border-left-color": "rgb(201, 208, 218)"
       }
     },
     {
@@ -448,9 +420,7 @@
         "border-top-color": "rgb(109, 119, 131)",
         "border-right-color": "rgb(109, 119, 131)",
         "border-bottom-color": "rgb(109, 119, 131)",
-        "border-left-color": "rgb(109, 119, 131)",
-        "width": "72.0938px",
-        "height": "14px"
+        "border-left-color": "rgb(109, 119, 131)"
       }
     }
   ]

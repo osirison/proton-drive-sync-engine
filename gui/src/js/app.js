@@ -263,6 +263,10 @@ function render() {
   const chip = chipFor();
 
   const onMain = route === "main" && !overlay;
+  // An attention band is showing when something is waiting on a decision — which is what the two
+  // attention chip variants mean. S1 draws the band itself; the footer only needs to know it is
+  // there, because the band displaces the mono line.
+  const banded = chip.variant === "decisions" || chip.variant === "deletions";
   const headerOpts = {
     chip: chip.variant,
     chipText: chip.text,
@@ -272,10 +276,12 @@ function render() {
   };
   const navOpts = {
     active: ROUTES[route]?.kind === "door" ? route : null,
-    // The mono line is drawn only on the settled and syncing main screens; every other footer with
-    // doors omits it and tightens by 4px.
-    variant: onMain ? "withLine" : "standard",
-    line: onMain ? `${localRoot ?? "—"} ⇄ ${remoteRoot ?? "—"}` : null,
+    // The mono line is drawn on the settled and syncing main screens ONLY. `2a Needs you` is also
+    // the main screen and drops it — the attention band has taken the space, and the footer tightens
+    // from 22/20 to 20/16 to match. Measured, and the fidelity gate caught the first version of this
+    // line assuming every main screen was the same.
+    variant: onMain ? (banded ? "banded" : "withLine") : "standard",
+    line: onMain && !banded ? `${localRoot ?? "—"} ⇄ ${remoteRoot ?? "—"}` : null,
   };
 
   // --- header: patched in place, rebuilt only when its shape changes

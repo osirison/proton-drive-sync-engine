@@ -46,8 +46,12 @@ export const STYLE_PROPS = [
   "margin-right",
   "margin-bottom",
   "margin-left",
-  "width",
-  "height",
+  // NOT `width`/`height`. The prototype does not opt into `border-box` and base.css opts the app
+  // in globally, so the SAME element reports `width:1000px` in one document and `width:1040px` in
+  // the other while occupying an identical 1040px on screen. Comparing the computed property
+  // measures the box model, not the design. Size is compared through `box` (getBoundingClientRect,
+  // always the border box) which is model-independent and is what a person actually sees.
+  // See frame-classes.mjs BORDER_BOX_INSET and DEVIATIONS.md §48.
   // layout
   "display",
   "flex-direction",

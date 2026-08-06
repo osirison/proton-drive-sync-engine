@@ -12,6 +12,8 @@
     "test": "node --test test/*.test.js",
     "check": "npm run format:check && npm run lint && npm run tokens:check && npm test",
     "tokens:check": "node tools/check-tokens.mjs",
+    "fidelity": "node tools/fidelity/assert.mjs && node tools/fidelity/copy-gate.mjs",
+    "fidelity:extract": "node tools/fidelity/extract.mjs",
     "fonts:sync": "node tools/sync-fonts.mjs"
   },
   "devDependencies": {

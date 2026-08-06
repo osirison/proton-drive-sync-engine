@@ -41,8 +41,6 @@
         "padding-right": "26px",
         "padding-bottom": "22px",
         "padding-left": "26px",
-        "width": "600px",
-        "height": "224px",
         "overflow": "hidden"
       }
     },
@@ -66,8 +64,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "546px",
-        "height": "176px",
         "display": "flex",
         "align-items": "flex-start",
         "gap": "14px"
@@ -93,8 +89,6 @@
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "margin-top": "2px",
-        "width": "34px",
-        "height": "34px",
         "flex-shrink": "0",
         "overflow": "hidden"
       },
@@ -121,8 +115,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "auto",
-        "height": "auto",
         "display": "inline"
       },
       "svgAttrs": {
@@ -152,8 +144,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "auto",
-        "height": "auto",
         "display": "inline"
       },
       "svgAttrs": {
@@ -182,8 +172,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "auto",
-        "height": "auto",
         "display": "inline"
       },
       "svgAttrs": {
@@ -213,8 +201,6 @@
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
-        "width": "498px",
-        "height": "176px",
         "flex-grow": "1",
         "flex-basis": "0%"
       }
@@ -238,9 +224,7 @@
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
-        "border-left-color": "rgb(242, 244, 247)",
-        "width": "498px",
-        "height": "20px"
+        "border-left-color": "rgb(242, 244, 247)"
       }
     },
     {
@@ -263,9 +247,7 @@
         "border-right-color": "rgb(153, 162, 174)",
         "border-bottom-color": "rgb(153, 162, 174)",
         "border-left-color": "rgb(153, 162, 174)",
-        "margin-top": "7px",
-        "width": "498px",
-        "height": "40px"
+        "margin-top": "7px"
       }
     },
     {
@@ -306,8 +288,6 @@
         "padding-bottom": "11px",
         "padding-left": "13px",
         "margin-top": "12px",
-        "width": "470px",
-        "height": "24px",
         "display": "flex",
         "align-items": "center",
         "gap": "10px"
@@ -332,9 +312,7 @@
         "border-top-color": "rgb(109, 119, 131)",
         "border-right-color": "rgb(109, 119, 131)",
         "border-bottom-color": "rgb(109, 119, 131)",
-        "border-left-color": "rgb(109, 119, 131)",
-        "width": "6.90625px",
-        "height": "15px"
+        "border-left-color": "rgb(109, 119, 131)"
       }
     },
     {
@@ -357,8 +335,6 @@
         "border-right-color": "rgb(201, 208, 218)",
         "border-bottom-color": "rgb(201, 208, 218)",
         "border-left-color": "rgb(201, 208, 218)",
-        "width": "394.688px",
-        "height": "15px",
         "flex-grow": "1",
         "flex-basis": "0%"
       }
@@ -398,9 +374,7 @@
         "padding-top": "4px",
         "padding-right": "10px",
         "padding-bottom": "4px",
-        "padding-left": "10px",
-        "width": "48.4062px",
-        "height": "24px"
+        "padding-left": "10px"
       }
     },
     {
@@ -424,8 +398,6 @@
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "margin-top": "14px",
-        "width": "498px",
-        "height": "35px",
         "display": "flex",
         "gap": "9px"
       }
@@ -466,9 +438,7 @@
         "padding-top": "9px",
         "padding-right": "16px",
         "padding-bottom": "9px",
-        "padding-left": "16px",
-        "width": "106.844px",
-        "height": "35px"
+        "padding-left": "16px"
       }
     },
     {
@@ -506,9 +476,7 @@
         "padding-top": "9px",
         "padding-right": "16px",
         "padding-bottom": "9px",
-        "padding-left": "16px",
-        "width": "124.516px",
-        "height": "35px"
+        "padding-left": "16px"
       }
     }
   ]
