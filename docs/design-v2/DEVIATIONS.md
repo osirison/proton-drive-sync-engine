@@ -10,7 +10,7 @@ the precedence rule in `IMPLEMENTATION-PLAN.md` §1.3:
 
 **Status: partial.** Sections are numbered in the order they were resolved and grouped by the task
 that resolved them: **§8–§19 F1** (#165, `tokens.css`), **§20–§31 F2** (#166, the hexagon),
-**§32–§39 F3** (#167, the seam), **§40–§46 F4** (#168, the shell). Of conflicts 1–7 in `IMPLEMENTATION-PLAN.md` §1.3, **1** reaches a
+**§32–§39 F3** (#167, the seam), **§40–§46 F4** (#168, the shell), **§47–§51 F7/F8** (#171/#172, the copy deck and the fidelity harness). Of conflicts 1–7 in `IMPLEMENTATION-PLAN.md` §1.3, **1** reaches a
 token (§18) and **2, 3, 5 and 6** are per-component colour or geometry that F2 and F3 have now
 measured; 4 and 7 belong to their screens. The full sweep is **P0.2** (#163).
 
@@ -727,6 +727,106 @@ poll reintroduces it locally.
   not.
 - **Content `margin-top` is not `22–26px`.** Measured across the frames: 14, 18, 20, 22, 24, 26, 30,
   34 and 36. It is per-screen, so the shell does not set it and each screen carries its own.
+
+## The fidelity harness and the copy deck (F7, F8)
+
+## 47. The harness renders the prototype; it does not parse it
+
+`IMPLEMENTATION-PLAN.md` §1.4 and the F8 issue both describe `extract.mjs` as parsing
+`Drive Sync.dc.html` and emitting "inline styles expanded to longhand". It renders it instead, in a
+real engine, and that is what makes the output comparable at all.
+
+`assert.mjs` reads the app through `getComputedStyle`. If the prototype's side came from a parse, the
+two would not be the same kind of thing: a parse yields `padding:0 20px` where the app yields four
+longhand pixel values, and every cascade, inheritance, UA default and shorthand expansion is missing.
+Expanding shorthands by hand would reimplement a CSS engine badly.
+
+Same reason F3 rendered the prototype to measure the seam, and F4 to measure the shell: what is being
+compared is what an engine computes, so an engine has to compute both sides.
+
+## 48. Every framed surface is drawn 2px larger than it is declared
+
+`DEVIATIONS.md` §19 recorded this for the 360px compact panel and told F6 to write 362. It is
+general. The prototype does not opt these nodes into `border-box`, so the 1px border sits outside the
+declared box:
+
+| Surface | Declared | Drawn |
+| --- | --- | --- |
+| the window | `1040×764` | `1042×766` |
+| `5a Checking` | `520×764` | `522×766` |
+| `6a Details` | `520×460` | `522×462` |
+| `9a First sync` | `600×540` | `602×542` |
+| the compact panel | `360×296` | `362×298` |
+
+`base.css` sets `box-sizing:border-box` globally, so an app surface written at its nominal size comes
+out **2px narrower than the frame**. F5's dialog layer and F6's panel both have to write the drawn
+number, or set `content-box` on that one element. `IMPLEMENTATION-PLAN.md` §3.3's "Details opens a
+520×460 dialog" is the declared size, not the drawn one.
+
+The harness sidesteps the whole question rather than encoding an offset: **size is compared as a
+border box** (`getBoundingClientRect`, identical in both box models) and the computed `width`/`height`
+properties are not asserted at all. Comparing those would measure the box model, not the design — the
+same element reports `1000px` in one document and `1040px` in the other while occupying identical
+space on screen.
+
+## 49. The copy deck outlived one of its drawings
+
+`13-copy-deck.md`'s Activity section carries `Nothing has moved in the last hour.` under "Quiet:".
+Its only frame is `6a Quiet`, one of the two demoted tide-chart Activity frames that
+`IMPLEMENTATION-PLAN.md` §1.2 puts out of scope — so the deck specifies a string the in-scope design
+never draws.
+
+It stays in `ui/copy.js`, because `14-behaviour-and-state.md`'s empty-state table still specifies it
+("Activity › files: `Nothing has moved in the last hour.` + flat line") and S5 will need it. The copy
+gate exempts it by name with that reason, which is the point of having the exemption list be explicit
+rather than a threshold.
+
+### 49a. Two things the copy gate had to learn to see
+
+Neither is a copy error; both would have silently exempted whole categories of string.
+
+- **Sentences are split by inline children.** The deck has 25 `<strong>` elements mid-paragraph, so
+  `"Yours has buy milk where Proton's has..."` is a node whose own text is `"Yours has where
+  Proton's has..."` plus a child. The fixtures now record the joined subtree text alongside each
+  node's own — the style gate needs to know which node holds the words, the copy gate needs the
+  sentence.
+- **A placeholder is copy.** `"Add a rule — e.g. *.psd or scratch/**"` appears in no `textContent`
+  anywhere in the prototype. The fixtures now record `placeholder`, `value`, `title`, `aria-label`
+  and `alt`; without them every input in the design is exempt from the gate for free.
+
+## 50. What the first live run of the style gate found
+
+Recorded because it is the argument for building the harness before the screens rather than after.
+Six classes of drift in F4's shell, all fixed in the same commit, none of them visible by eye:
+
+| Drift | Why it survived review |
+| --- | --- |
+| the app mark carried `width`/`height` **attributes** the frames do not set | identical rendering; §27's redundant-`fill` trap in a new place |
+| `.chip`, `.chip-dot` and `.menu-btn` used `flex:none` where the frames leave `flex-shrink:1` | all three have fixed widths, so nothing ever shrinks them |
+| `.door` had a `<button>`'s UA `text-align:center` where the frames' `<span>`s inherit `start` | the bar centres them with `justify-content` regardless |
+| the footer used the `withLine` variant on every main screen | `2a Needs you` drops the mono line and tightens 22/20 → 20/16 — the attention band has taken the space |
+
+The last one is a real bug, not a technicality, and it is the kind that would have been copied into
+S1 and every screenshot after it.
+
+## 51. What the harness cannot cover, stated rather than implied
+
+A gate that appears to cover more than it does is worse than one that admits its edges, so this list
+lives in `gui/tools/fidelity/README.md` as well:
+
+- **The seven screens with no drawn light frame.** S10 asserts those against `12-light-theme.md`'s
+  mapping table, which is prose, not a drawn artefact — the same standing already given to §15's
+  unverified light values.
+- **Whether an animation looks right.** Only the declaration is comparable. A wrong easing that
+  parses is invisible, as is anything about §30's open reduced-motion question.
+- **Native tray rendering** and **the desktop's own notification chrome.** Neither is a webview.
+- **Motion, focus order and hover states.** The gate reads a static tree. F4's focus-survival check
+  and the seam audit cover their own corners of this; nothing covers it in general.
+
+The engine is Chromium rather than the WebKit the issue asks for, because Playwright's WebKit needs
+host packages this machine cannot install without `sudo`. It is the same engine every measurement in
+§8–§50 came from, so the numbers here and the numbers there are consistent — but WebKitGTK is what
+ships, and CI should add it when the runner allows.
 
 ---
 
