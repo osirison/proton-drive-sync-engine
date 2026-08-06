@@ -899,6 +899,59 @@ position as the attention band above.
 No band carries a solid fill in any frame. The one solid red in the app remains the
 `Delete permanently` button.
 
+## 53. The transfer row's arrow is beside the seam, not on the outside edge
+
+`03-main-screen.md` §"Transfer row":
+
+> Left column: filename → size → `→` `#FF9F1C`. Right column: `←` `#22D3EE` first, then filename,
+> then size. **The arrow is on the outside edge in both columns**, pointing away from the seam.
+
+The first sentence is correct and the second contradicts it. `div[1]` on `2a Syncing` is
+`grid-template-columns: 488px 488px`, so `div[0]` is the left, leaving column. Measured child order:
+
+| column | order | where the arrow lands |
+| --- | --- | --- |
+| left — leaving | `[name] [size] [→]` | the right end, **beside the seam** |
+| right — arriving | `[←] [name] [size]` | the left end, **beside the seam** |
+
+Both arrows sit against the centre line and both point across it, which is also the direction of
+travel. "Outside edge" and "pointing away from the seam" are wrong on both counts.
+
+**Checked against the light pair rather than assumed.** `12a Syncing light` (`div[1]` likewise
+`488px 488px`) and `12a Compact syncing light` carry the identical order. All four drawn frames
+agree — this is prose against frames, never frame against frame, so §1.3 settles it without a
+judgement call.
+
+Issue #169 repeats the wrong gloss verbatim, so the sentence has already propagated once. `rows.js`
+carries the rule in a pure `transferSlotOrder()` with its own test, because a screen built from the
+prose still looks plausible and the style gate cannot catch it until S1 maps `2a Syncing`.
+
+Two details the correct sentence also gives, worth keeping together with it:
+
+- **It is a rotation, not a mirror.** `[name][size][arrow]` becomes `[arrow][name][size]`; the name
+  precedes the size on both sides. A mirror would put the size first on the right, and nothing
+  draws that.
+- **Placement follows direction, not column.** `2a Compact syncing` is a single 360px column with
+  no seam and no second side, and its arriving row still leads with the arrow.
+
+### 53a. Three smaller things the row census settled
+
+- **The flat rows are one shape at four rungs.** history, fact, pass and action are all
+  `padding:<y> 2px` over a 1px `--divider` top rule, flex, centred: `9/13`, `11/14`, `12/14`,
+  `13/14` (y / gap). Written once in `rows.css` with four rungs rather than four builders.
+- **`02-shell.md` §2's transfer row is the compact one.** It gives `border-radius:9px;
+  padding:9px 11px`, against `03-main-screen.md`'s `11px` / `11px 13px`. Not a conflict: that
+  section describes the 360px panel (its hexagon is 72px), and the frames measure exactly those two
+  rungs — 11/11×13 on `2a Syncing`, 9/9×11 on `2a Compact syncing`. `--r-11`'s "transfer rows"
+  comment is right for the main screen and needs the compact rung read off `--r-9`.
+- **The deletion card's headline is 16px sans — the only filename in the app that is not mono.**
+  Measured on both cards of `4a Deletions`. Deliberate rather than a slip: the card is naming the
+  thing you are about to lose, and the path itself is in the facts strip below in mono.
+
+`4a Compact`'s two deletion rows (332×61, no facts strip, no gate, no second button) are **not**
+this card at a smaller size and are left to F6 with the rest of the panel. They also need the two
+compact band alphas §52a records, which no token carries yet.
+
 ---
 
 ## Phase-1 capability deviations

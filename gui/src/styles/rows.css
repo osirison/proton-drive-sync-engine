@@ -1,0 +1,455 @@
+/* Rows (F5) — see js/ui/rows.js for what each one is and where it is drawn.
+ *
+ * Every value here is measured: the fixtures give the boxes, colours and gaps, and the prototype
+ * gives the vertical rhythm inside a card, which `box` (width and height, no position) cannot.
+ *
+ * Interactive states are deliberately thin. A row is not a control — the CONTROLS inside it are,
+ * and controls.css already carries their hover, press and focus. The two exceptions here are rows
+ * that are themselves clickable in a later screen; they get the same one-level surface step
+ * 14-behaviour-and-state.md specifies, not a brightness filter.
+ */
+
+/* ------------------------------------------------------------------------------ primitives -- */
+
+.dot {
+  flex: none;
+  border-radius: var(--r-dot);
+  box-sizing: border-box;
+}
+.dot-inert {
+  background: var(--dot-inert);
+}
+.dot-destructive {
+  background: var(--destructive);
+}
+/* An outline, never a fill: crimson that is waiting on you rather than crimson that is happening.
+   The width is set inline because it tracks the size — see rows.js. */
+.dot-decision {
+  border-style: solid;
+  border-color: var(--decision);
+}
+
+.eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  /* .16em is the 1.6px the frames measure at 10px, written as an em so it survives a size change. */
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.eyebrow-start {
+  text-align: left;
+}
+.eyebrow-end {
+  text-align: right;
+}
+.eyebrow-up {
+  color: var(--up-label);
+}
+.eyebrow-down {
+  color: var(--down-label);
+}
+.eyebrow-neutral {
+  color: var(--text-label);
+}
+.eyebrow-decision {
+  color: var(--decision-text);
+}
+
+/* -------------------------------------------------------------------------- transfer rows -- */
+
+.transfer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-11);
+  background: var(--panel-raised);
+  /* Both load-bearing: the progress bar is absolutely positioned against this row, and it is 2px
+     tall at the very bottom edge inside an 11px radius — without the clip its corners overhang. */
+  position: relative;
+  overflow: hidden;
+}
+
+.transfer-queued {
+  border-color: var(--border-subtle);
+  background: var(--panel-alt);
+}
+
+/* The compact panel's rows are their own surface, not the queued one — they coincide in dark
+   (#0E0F12) and diverge in light, where the panel's rows are #FFFFFF and a queued row on the main
+   screen is #FDFCFA. That is why --compact-row exists. DEVIATIONS §15. */
+.transfer-row.is-compact {
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: var(--r-9);
+  border-color: var(--border-subtle);
+  background: var(--compact-row);
+}
+
+.transfer-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-bright);
+  /* All three needed, and none of them is asserted by the fidelity gate — props.mjs captures
+     neither text-overflow nor white-space, so a path that should ellipsis and instead wraps the row
+     to two lines passes every automated check. Verified by eye against `2a Syncing`. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transfer-queued .transfer-name {
+  color: var(--text-3);
+}
+.transfer-row.is-compact .transfer-name {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.transfer-detail {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+.transfer-arrow {
+  flex: none;
+  font-size: 13px;
+}
+.transfer-row.is-compact .transfer-arrow {
+  font-size: 12px;
+}
+.transfer-up .transfer-arrow {
+  color: var(--up-label);
+}
+.transfer-down .transfer-arrow {
+  color: var(--down-label);
+}
+/* A queued row's arrow goes inert in both directions — it is not moving yet, so it carries no side.
+   In light this one node is drawn #9CA3AF against sixteen other --text-5 nodes at #6B7280;
+   DEVIATIONS §9 settled that as a drawing inconsistency rather than a tier, so --text-5 it is. */
+.transfer-queued .transfer-arrow {
+  color: var(--text-5);
+}
+
+.transfer-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--track-inert);
+}
+.transfer-fill {
+  height: 100%;
+}
+.transfer-up .transfer-fill {
+  background: var(--up-gradient);
+}
+.transfer-down .transfer-fill {
+  background: var(--down-gradient);
+}
+
+/* -------------------------------------------------------------------------- the flat rows -- */
+
+/* One shape, four rungs. The horizontal 2px is not padding for its own sake: it keeps a focus ring
+   on a control inside the row from being clipped by the list's own overflow. */
+.row {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--divider);
+}
+.row-history {
+  gap: 13px;
+  padding: 9px 2px;
+}
+.row-fact {
+  gap: 14px;
+  padding: 11px 2px;
+}
+.row-pass {
+  gap: 14px;
+  padding: 12px 2px;
+}
+.row-action {
+  gap: 14px;
+  padding: 13px 2px;
+}
+
+.row-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-bright);
+}
+.row-note {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--text-4);
+}
+.row-time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* ---- pass rows */
+
+/* Both are fixed widths rather than content widths, and that is the point: six passes in a column
+   with ragged detail and time columns reads as six unrelated events. */
+.pass-detail {
+  flex: none;
+  width: 230px;
+  font-size: 12.5px;
+  color: var(--text-4);
+}
+.pass-time {
+  flex: none;
+  width: 44px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+  text-align: right;
+}
+
+/* A failed pass stops being a row and becomes a block: it holds a second line, so the flex that
+   centres the others would fight it. The negative margin against the wider padding is what makes
+   the tint run past the list's inset; rounded at the bottom only, because it hangs off the row. */
+.row-pass.is-failed {
+  display: block;
+  margin: 0 -12px;
+  padding: 12px;
+  border-radius: 0 0 var(--r-10) var(--r-10);
+  background: var(--decision-band-bg);
+}
+.pass-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.row-pass.is-failed .row-label {
+  font-weight: 600;
+  color: var(--decision-text);
+}
+/* The daemon's exact string, never a paraphrase (S5). Set on --surface inside the tinted block so
+   it reads as a quotation rather than as more of the sentence above it. The 21px indent is the dot
+   plus the gap, so the quote starts under the label it belongs to. */
+.pass-error {
+  margin-top: 9px;
+  margin-left: 21px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-8);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* ---- history rows */
+
+.row-history .row-label {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.row-history .row-label.is-bright {
+  color: var(--text-bright);
+}
+.history-arrow {
+  flex: none;
+  width: 13px;
+  font-size: 12px;
+  text-align: center;
+}
+.history-up {
+  color: var(--up-label);
+}
+.history-down {
+  color: var(--down-label);
+}
+
+/* ---- action rows */
+
+/* Fixed, because a skip rule is a pattern and patterns that do not line up cannot be compared. */
+.action-lead {
+  flex: none;
+  width: 180px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+}
+.action-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.action-title {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.action-note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------------- deletion cards -- */
+
+.deletion {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* The seam inset. Severity sorts across it — permanent left, recoverable right (S3) — so the
+   padding follows severity through the class rows.js puts on the card. */
+.deletion-start {
+  padding-right: 30px;
+}
+.deletion-end {
+  padding-left: 30px;
+}
+
+/* The dot sits on the OUTSIDE edge, which is the opposite of the transfer row's arrow. rows.js
+   reverses the children; this only has to move the row's alignment to match. */
+.deletion-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.deletion-end .deletion-head {
+  justify-content: flex-end;
+}
+
+.deletion-policy {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-4);
+}
+/* Only the two lines outside the card mirror. Inside it everything stays left-aligned in both
+   columns — a paragraph you have to read before deleting something is not a place for novelty. */
+.deletion-end .deletion-policy {
+  text-align: right;
+}
+
+.deletion-card {
+  margin-top: 16px;
+  padding: 18px 20px;
+  border: 1px solid;
+  border-radius: var(--r-14);
+}
+.deletion-permanent .deletion-card {
+  border-color: var(--destructive-border);
+  background: var(--destructive-bg);
+}
+.deletion-recoverable .deletion-card {
+  border-color: var(--decision-card-border);
+  background: var(--decision-card-bg);
+}
+
+.deletion-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+/* 16px SANS, and the only filename in the app that is not mono. It is naming the thing you are
+   about to lose, not printing a path — the path is in the facts strip below. */
+.deletion-name {
+  font-size: 16px;
+  font-weight: 600;
+}
+.deletion-kind {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-4);
+}
+
+.deletion-consequence {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+/* Bold in both cards, COLOURED in only one. `1,204 photos, 8.4 GB` is what you lose, so it takes
+   the destructive text tier; `Proton Drive's Trash` is where the file goes, so it stays body colour
+   and only gains weight. Colouring both would say the recoverable card is also a loss. */
+.deletion-emphasis {
+  font-weight: 600;
+}
+.deletion-permanent .deletion-emphasis {
+  color: var(--destructive-text);
+}
+
+.deletion-facts {
+  display: flex;
+  gap: 16px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid;
+}
+.deletion-permanent .deletion-facts {
+  border-top-color: var(--destructive-divider);
+}
+.deletion-recoverable .deletion-facts {
+  border-top-color: var(--decision-divider);
+}
+.deletion-fact {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+.deletion-gate {
+  margin-top: 16px;
+}
+.deletion-hint {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.deletion-hint-word {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--destructive-text);
+}
+.deletion-gate-row {
+  display: flex;
+  gap: 9px;
+}
+/* The typed-DELETE field. controls.js builds it; its crimson border and mono tracking are the
+   card's business, because the same input elsewhere is an ordinary text field. */
+.deletion-gate-row .delete-gate {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 13px;
+  border-color: var(--destructive-input-border);
+  background: var(--destructive-input-bg);
+  font-size: 12.5px;
+  letter-spacing: 0.1em;
+}
+.deletion-gate-row .btn {
+  flex: none;
+  padding: 10px 17px;
+}
+
+.deletion-action {
+  display: flex;
+  gap: 9px;
+  margin-top: 16px;
+}
+.deletion-action .btn {
+  flex: 1;
+}
+
+/* Full width and the strongest button in either column — the safe choice is the loud one. */
+.deletion-keep {
+  width: 100%;
+  margin-top: 9px;
+}
