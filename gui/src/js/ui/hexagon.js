@@ -209,8 +209,14 @@ function body(strokeWidth, stroke, fill) {
  * in their screen's flex or grid, and the 168px ones carry position:relative precisely so they
  * stack over the settled glow. A wrapper would break that.
  *
- * `flex:none` is emitted because a bare <svg> in a flex row shrinks, and every frame that sits in
- * one declares it.
+ * `flexNone` IS A PER-SITE PROPERTY, not a property of the mark — corrected in F6, which was the
+ * first task to put a hexagon in front of the fidelity gate. This function used to emit `flex:none`
+ * unconditionally on the strength of "a bare <svg> in a flex row shrinks, and every frame that sits
+ * in one declares it". Censused across the 53 in-scope marks, TEN declare it and forty-three do not,
+ * and `flex-shrink` is an asserted property — so the unconditional form failed every compact frame
+ * and would have failed every dialog and panel after them. The ten are the marks sharing a flex ROW
+ * with text: `11a Grouped`, `11a Outage`, the three `11a In situ` banners, `3a Conflict diff`,
+ * `5a Plan`, `8a Save refused`, `9a CLI missing`, `9a Review`. Those sites pass `flexNone: true`.
  */
 export function renderHexagon(opts = {}) {
   // Before the destructuring, not after: several defaults below call strokeForSize(size) or key
@@ -227,6 +233,7 @@ export function renderHexagon(opts = {}) {
     direction = "both",
     dryRun = false,
     masked = false,
+    flexNone = false,
     mono = false,
     numeralTone = null,
     strokeWidth = strokeForSize(size, state === "warning" && STROKE[size]?.warning ? "warning" : family),
@@ -241,7 +248,9 @@ export function renderHexagon(opts = {}) {
   } = opts;
 
   const maskFill = masked ? "var(--surface)" : null;
-  const svgStyle = [`width:${size}px`, `height:${size}px`, "flex:none", style].filter(Boolean).join(";");
+  const svgStyle = [`width:${size}px`, `height:${size}px`, flexNone ? "flex:none" : null, style]
+    .filter(Boolean)
+    .join(";");
   const svg = svgEl("svg", { viewBox: HEX_VIEWBOX, style: svgStyle, class: cls, "aria-hidden": "true" });
 
   const children = [];

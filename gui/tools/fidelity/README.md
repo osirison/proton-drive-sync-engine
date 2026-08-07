@@ -145,7 +145,19 @@ that admits its edges:
 
 `assert.mjs` reports how many frames carry a `data-fid` and lists the rest every run, so "the gate is
 green" can never be confused with "the gate looked at anything". Today the shell's own chrome is
-mapped for three frames — 2,109 assertions — and 48 frames are waiting for their screens.
+mapped for three frames and F6's compact panel for eight more — **11 of 51, 11,199 assertions** — and
+40 frames are waiting for their screens.
+
+F6 was the first task to put a hexagon, a transfer row and an SVG colour in front of the gate, and it
+found three things wrong with them rather than with itself; `DEVIATIONS.md` §58c has all three. The
+one that changed this harness: **`fill` and `stroke` are compared as the engine computes them, not as
+attribute strings.** The prototype writes `#2E323A` and the app writes `var(--hex-settled-track)`,
+because `tokens.css` is the only file allowed a raw colour and light is a token swap — compared
+literally, no themed mark could ever pass. `var()` resolves inside a presentation attribute, so both
+sides come out `rgb(46, 50, 58)`, which is the same footing every style property is already on. A
+`url(#id)` reference matches any other: the id must be unique per instance (`10a Glyph states` draws
+ten marks on one page), so it is not design — the gradient's stops are, and those are asserted on the
+stop nodes.
 
 Building the harness before the screens is deliberate: each S-task's definition of done is "my
 frames pass", and eleven screens written against no gate at all would be eleven screens to re-check

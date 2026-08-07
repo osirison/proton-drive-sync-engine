@@ -24,6 +24,8 @@ import {
   screenPlaceholder,
 } from "./ui/chrome.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
+import { renderCompactPanel, trayMenu } from "./ui/compact.js";
+import { activeFixture } from "./fixtures/frames.js";
 
 // ---- shell state ----
 let route = "main"; // the root or door currently showing
@@ -283,10 +285,42 @@ const dom = {
   dialog: null,
   dialogRoute: null,
   dialogDetach: null,
+  panel: null,
 };
+
+/**
+ * The compact frames' preview route (F6).
+ *
+ * `?frame=2a Compact syncing` renders the 362px panel ALONE, because that is what the frame is —
+ * a panel, not a 1040 window with a panel somewhere in it. Without this the harness opens the shell,
+ * finds no `data-fid` and files eight frames under "screen not built yet", so the component would
+ * ship with nothing comparing it to what it was measured from.
+ *
+ * Mounted ONCE and then left alone. A fixture cannot change, and rebuilding on the ~2s poll would
+ * restart both hexagon segments from 0% — the failure `updateHexagon` exists to prevent, and the one
+ * `updateCompactPanel` gives the real screens a way around.
+ *
+ * F9 generalises this to every frame; the shape it needs is the same one F4 established when it
+ * hand-wrote the first three fixtures into a file nominally belonging to that task.
+ */
+function mountFramePanel(root) {
+  if (dom.panel) return true;
+  const spec = activeFixture()?.panel;
+  if (!spec) return false;
+  dom.panel = renderCompactPanel({
+    ...spec,
+    // `menu: true` means "the standard rows for this state". Resolved here rather than in the
+    // fixture because fixtures/frames.js cannot import ui/compact.js — that module imports `fid`
+    // from it, and the cycle is a lint error.
+    menu: spec.menu === true ? trayMenu(spec.state) : (spec.menu ?? null),
+  });
+  root.replaceChildren(dom.panel);
+  return true;
+}
 
 function render() {
   const root = document.getElementById("app-root");
+  if (mountFramePanel(root)) return;
   const st = store.select.daemonState();
 
   // The folder pair: the running daemon's reported roots are ground truth; the GUI config file is

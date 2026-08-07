@@ -76,7 +76,10 @@ export const STYLE_PROPS = [
   "animation-iteration-count",
 ];
 
-/** SVG presentation attributes, read as attributes rather than computed styles. */
+/**
+ * SVG presentation attributes, read as attributes rather than computed styles — with the exception
+ * of the two that carry a COLOUR. See `compareSvgAttr`.
+ */
 export const SVG_ATTRS = [
   "d",
   "viewBox",
@@ -96,6 +99,60 @@ export const SVG_ATTRS = [
   "height",
   "text-anchor",
 ];
+
+/**
+ * The two SVG attributes that hold a colour, and therefore cannot be compared as strings.
+ *
+ * ADDED IN F6, which was the first task to put a hexagon in front of this gate. The prototype writes
+ * `stroke="#2E323A"`; the app writes `stroke="var(--hex-settled-track)"` and MUST, because
+ * `tokens.css` is the only file allowed to carry a raw colour (`check-tokens.mjs` enforces it) and
+ * because the light theme is a token swap — a literal hex here would be a mark that never changes
+ * theme. Compared literally, those two can never be equal, so every hexagon in all 51 frames would
+ * have failed and the honest fix would have looked like "stop theming the mark".
+ *
+ * So a colour attribute is compared the way every style property already is: as what the ENGINE
+ * computes. `fill` and `stroke` are CSS properties, `var()` resolves in a presentation attribute,
+ * and `getComputedStyle` returns `rgb(46, 50, 58)` on both sides. The fixture's recorded hex is
+ * converted here rather than re-extracted, so `frames/*.json` is untouched.
+ *
+ * A `url(#id)` reference is equal to any other. The id names a gradient the app must make unique per
+ * instance — `10a Glyph states` puts ten marks on one page and a fixed id makes the tenth resolve to
+ * the first one's defs — so the id itself is not design. What the gradient CONTAINS is, and its
+ * stops are driven from tokens; that is asserted on the stop nodes, not here.
+ */
+export const COLOUR_ATTRS = new Set(["stroke", "fill"]);
+
+const HEX_COLOUR = /^#([0-9a-f]{3,8})$/i;
+
+/** `#2E323A` / `#fff` / `#0A0B0DFF` → the `rgb()`/`rgba()` form an engine serialises, or null. */
+function hexToRgb(value) {
+  const m = HEX_COLOUR.exec(String(value ?? ""));
+  if (!m) return null;
+  let hex = m[1];
+  if (hex.length === 3 || hex.length === 4) hex = [...hex].map((c) => c + c).join("");
+  if (hex.length !== 6 && hex.length !== 8) return null;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  if (hex.length === 6) return `rgb(${r}, ${g}, ${b})`;
+  // Alpha serialises as a number, and an engine drops a trailing zero (`0.50` → `0.5`).
+  const a = Number((parseInt(hex.slice(6, 8), 16) / 255).toFixed(2));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+/**
+ * Compare one SVG attribute. `computed` is the app's `getComputedStyle` value for the same
+ * attribute, and is only supplied — and only meaningful — for the two colour attributes.
+ */
+export function compareSvgAttr(attr, expected, actual, computed = null) {
+  if (expected === actual) return null;
+  if (!COLOUR_ATTRS.has(attr)) return `${expected} vs ${actual}`;
+
+  const ref = (v) => /^url\(/.test(String(v ?? ""));
+  if (ref(expected) && ref(actual)) return null;
+
+  const want = hexToRgb(expected);
+  if (want != null && computed != null && want === computed) return null;
+  return `${expected} vs ${actual}`;
+}
 
 /**
  * Properties whose computed value is a fixed constant when nothing sets them, and that constant.
