@@ -62,12 +62,7 @@ export const api = {
 function mockInvoke(cmd, args) {
   const fixture = activeFixture();
   if (fixture) {
-    // ONE COMMAND PER LINE, and a fixture key only where the reply is not already inside the status.
-    // `list_pending_deletions` reads through to `status.response.pending_deletions` because that is
-    // literally what commands.rs does — it sends a plain `Status` and returns that field — so a
-    // fixture carrying both cannot be made to disagree with a real daemon. `read_config` falls back
-    // the same way: a daemon that is up reports its own roots, and its reply outranks the file.
-    //
+    // ONE COMMAND PER LINE, and a fixture key ONLY where the reply is not already inside the status.
     // A command a fixture says nothing about falls through to the generic mock below, which is what
     // keeps a partly-described frame useful rather than blank.
     switch (cmd) {
@@ -76,7 +71,16 @@ function mockInvoke(cmd, args) {
       case "scan_conflicts":
         return Promise.resolve(fixture.conflicts ?? []);
       case "list_pending_deletions":
-        return Promise.resolve(fixture.deletions ?? fixture.status?.response?.pending_deletions ?? []);
+        // NOT A REPLY OF ITS OWN. `commands.rs` sends a plain `Status` and returns
+        // `response.pending_deletions` from it, so on a real daemon these two are the same bytes by
+        // construction. There is therefore no fixture key for it: reading through is the only thing
+        // that cannot drift, and a top-level `deletions` would be a second source of truth for one
+        // list — which is exactly the thing it would eventually disagree with.
+        //
+        // The first version accepted a `deletions` key and preferred it, under a comment claiming
+        // the two "cannot be made to disagree". They could; the comment described the daemon and the
+        // code described the fixture.
+        return Promise.resolve(fixture.status?.response?.pending_deletions ?? []);
       case "read_config":
         // NO FALLBACK TO `status.response.config`, and the near-miss is the point: both are called
         // `config` and both carry `local_root`/`remote_root`, but they are different types answering

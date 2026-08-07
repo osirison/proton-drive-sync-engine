@@ -4,12 +4,16 @@
 // payloads above it. It sits at the foot of this file, moved from frames.js by F9 so that every
 // frame of a set is in the module named for the set, and unchanged otherwise.)
 //
-// THE QUEUE IS WRITTEN ONCE AND REFERENCED TWICE, and that is a statement about the wire rather than
-// a shortcut. `list_pending_deletions` does not have a reply of its own: commands.rs sends a plain
-// `Status` and returns `response.pending_deletions` from it. The two therefore cannot disagree in a
-// real daemon, so a fixture that spelled them out separately would be describing one that cannot
-// exist — and browser preview reads the status copy while the contract's entry shape names the
-// command copy, so writing only one of them would leave half the surfaces empty.
+// THE QUEUE IS WRITTEN ONCE AND LIVES IN THE STATUS, and that is a statement about the wire rather
+// than a shortcut. `list_pending_deletions` has no reply of its own: commands.rs sends a plain
+// `Status` and returns `response.pending_deletions` from it, so on a real daemon the command's
+// answer IS that field. `api.js` reads through to it for the same reason.
+//
+// So there is no top-level `deletions` key here. An earlier version carried one beside the status
+// — the same array, so nothing was wrong — under a comment saying the two could not disagree. They
+// could: nothing stopped a later edit changing one, and the mock preferred whichever it found
+// first. A second source of truth for one list is the thing that eventually disagrees with itself,
+// and the argument for writing it once is the argument for storing it once.
 //
 // SEVERITY IS THE SCREEN AND `direction` IS THE FIELD, which is the one thing here that is easy to
 // get backwards. `DeleteDirection::Local` means "apply the delete on the local disk, because it went
@@ -127,7 +131,6 @@ const idleWith = (pendingDeletions) => ({
 export const DELETION_FIXTURES = {
   "4a Deletions": {
     status: idleWith(PENDING),
-    deletions: PENDING,
     pathStatus: PATH_STATUS,
     conflicts: [],
   },
@@ -143,7 +146,6 @@ export const DELETION_FIXTURES = {
   // on `PENDING` above.
   "4a Armed": {
     status: idleWith(PENDING),
-    deletions: PENDING,
     pathStatus: PATH_STATUS,
     conflicts: [],
     ui: { armed: "photos/2019" },
@@ -156,7 +158,6 @@ export const DELETION_FIXTURES = {
   // an empty one are the same on this wire (`#[serde(default)]`) and only one of them says so.
   "4a Empty": {
     status: idleWith([]),
-    deletions: [],
     conflicts: [],
   },
 
