@@ -483,6 +483,14 @@ export function renderCompactPanel(opts = {}) {
  * writes what it can find and returns true, and its failure is silent: the panel goes on showing
  * `Nothing is lost. 4 changes are waiting…` with no line saying when it will next try, because the
  * meta line did not exist when it was built and nothing said so.
+ *
+ * VERIFIED BY DRIVING IT, not by a unit test — `gui/test` has no DOM (no jsdom, deliberately: the
+ * fidelity gate is this frontend's real check) and this function is all DOM. Run against the
+ * `2a Compact syncing` preview in headless Chromium: the headline, the numeral, both progress fills
+ * and the footer status all patch; `querySelector("svg")` returns the SAME node afterwards, which is
+ * the property that keeps the two `hexup`/`hexdn` animations running; and a wrong state, a changed
+ * row count, an absent meta line and an array `sub` each return false with the panel's text
+ * unchanged. It has no consumer until S1 and S8, which is exactly why it was driven now.
  */
 export function updateCompactPanel(node, opts = {}) {
   if (!node) return false;
