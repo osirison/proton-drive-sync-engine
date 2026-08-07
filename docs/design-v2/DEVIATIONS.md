@@ -1386,6 +1386,24 @@ before the change it passed silently.
 What is still not compared, and now genuinely is not: the gradient's `id`, deliberately, because the
 app must make it unique per instance (`10a Glyph states` draws ten marks on one page).
 
+### 59a. It also settles S10's gradient question, three tasks early
+
+`12-light-theme.md` calls theme-aware SVG gradient stops *"the one structural edit light needs beyond
+the mask colour"*, and offers two ways: duplicate the `defs` per theme, or drive the stops from CSS
+variables. F2 took the second and verified it by sampling pixels. Extracting `stop-color` puts the
+drawn answer in the fixtures, and the two sides match exactly:
+
+| stop | `2a Compact syncing` | `12a Compact syncing light` | token |
+| --- | --- | --- | --- |
+| up 0% | `rgb(229, 91, 43)` | `rgb(178, 63, 20)` | `--up-from` |
+| up 100% | `rgb(255, 184, 77)` | `rgb(217, 119, 6)` | `--up-to` |
+| down 0% | `rgb(6, 182, 212)` | `rgb(14, 116, 144)` | `--down-from` |
+| down 100% | `rgb(59, 130, 246)` | `rgb(29, 78, 216)` | `--down-to` |
+
+The prototype duplicates its `defs` per theme; the app's single pair resolves to the same eight
+values through `var()`. **S10 does not need to duplicate anything, and the day the `12a` frames can be
+mapped (§58b) this becomes an assertion rather than a table.**
+
 ---
 
 ## Phase-1 capability deviations
