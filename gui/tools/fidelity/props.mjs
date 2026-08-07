@@ -117,8 +117,13 @@ export const SVG_ATTRS = [
  *
  * A `url(#id)` reference is equal to any other. The id names a gradient the app must make unique per
  * instance — `10a Glyph states` puts ten marks on one page and a fixed id makes the tenth resolve to
- * the first one's defs — so the id itself is not design. What the gradient CONTAINS is, and its
- * stops are driven from tokens; that is asserted on the stop nodes, not here.
+ * the first one's defs — so the id itself is not design.
+ *
+ * WHAT THE GRADIENT CONTAINS IS DESIGN, AND IS NOT COMPARED EITHER — stated here rather than
+ * implied, because a gate that seems to cover more than it does is worse than one that admits its
+ * edges. `stop-color`, `offset` and `x1`/`y1`/`x2`/`y2` are in neither property list, so a syncing
+ * mark with its up and down gradients swapped — leaving files reading cool, arriving files warm —
+ * passes. Closing it means adding those and regenerating all 51 fixtures: issue #204.
  */
 export const COLOUR_ATTRS = new Set(["stroke", "fill"]);
 

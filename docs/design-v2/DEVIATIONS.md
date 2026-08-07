@@ -1327,8 +1327,13 @@ S1 through S10 identically:
   compares `fill` and `stroke` as the **engine computes them** (`var()` resolves in a presentation
   attribute; both sides come out `rgb(46, 50, 58)`), which is what it already does for every style
   property. `url(#id)` matches any other `url(#id)`: the id must be unique per instance —
-  `10a Glyph states` puts ten marks on one page — so the id is not design, and the gradient's stops
-  are asserted on the stop nodes. `frames/*.json` is untouched.
+  `10a Glyph states` puts ten marks on one page — so the id is not design. `frames/*.json` is
+  untouched.
+
+  **The gradient that reference points at is design, and is still not compared.** `stop-color`,
+  `offset` and `x1`/`y1`/`x2`/`y2` are in neither property list, so a syncing mark with its up and
+  down gradients swapped — leaving files reading cool, arriving files warm — passes every gate.
+  Adding them regenerates all 51 fixtures, so it is **issue #204** rather than part of F6.
 
 ---
 
