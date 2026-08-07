@@ -78,7 +78,22 @@ function mockInvoke(cmd, args) {
       case "list_pending_deletions":
         return Promise.resolve(fixture.deletions ?? fixture.status?.response?.pending_deletions ?? []);
       case "read_config":
-        return Promise.resolve(fixture.config ?? fixture.status?.response?.config ?? {});
+        // NO FALLBACK TO `status.response.config`, and the near-miss is the point: both are called
+        // `config` and both carry `local_root`/`remote_root`, but they are different types answering
+        // different questions. `read_config` returns `ConfigPayload` — what the TOML file says, with
+        // `toml`, `exists`, `include`/`exclude`, `scan_interval_secs` and the rest. A status reply's
+        // `config` is `RunningConfigInfo`: three paths describing the process that is actually
+        // running. The old fallback handed the file's shape to a screen and filled it with the
+        // daemon's, which reads correctly on the two shared keys and is missing every other one —
+        // so Settings would have drawn an empty skip list rather than an unanswered one.
+        //
+        // An empty doc is the honest answer for a frame that describes no config file, and it is a
+        // real state the app already handles: `refreshConfig` treats a missing file as `{}` rather
+        // than an error. The 38 frames without one lose nothing — the footer's folder pair reads the
+        // STATUS first (`app.js`'s `live?.local_root ?? configInfo?.local_root`), which is the
+        // correct precedence anyway: a running daemon's roots are ground truth and the file is the
+        // fallback.
+        return Promise.resolve(fixture.config ?? {});
       case "read_conflict_pair":
         if (fixture.conflictPair) return Promise.resolve(fixture.conflictPair);
         break;
