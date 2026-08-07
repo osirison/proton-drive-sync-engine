@@ -47,15 +47,18 @@ import { compactFids } from "./fids.js";
  *     aggregates one, and a directory's `file_size` in `file_index` is not a subtree total.
  *   · `last opened Mar 2024` is an atime. The index stores mtime only — and an absolute date is a
  *     literal by clock.js's rule in any case.
- *   · `4 KB` and `last edited Jan 2026` ARE reachable today, but not from here:
- *     `path_sync_status` returns the index record's `file_size` and `mtime` for one path. That is a
- *     per-path lookup, not part of the deletions reply, so it is not this fixture's data to carry.
+ *   · `4 KB` and `last edited Jan 2026` are reachable today — `path_sync_status` returns the index
+ *     record's `file_size` and `mtime` for one path — just not from the deletions reply. So they are
+ *     CARRIED, in `pathStatus` below, keyed by path: a second command's reply is exactly what the
+ *     fixture entry shape has that key for, and leaving a reproducible node unreproducible because
+ *     its data arrives from a different command would be the rule misapplied. `last edited Jan 2026`
+ *     is still absolute and so is not derived from the `mtime` — see the note there.
  *
- * None of that is one of the ten capabilities in `14-behaviour-and-state.md`, and none of it is one
- * of the four Phase-2 gaps in `IMPLEMENTATION-PLAN.md` §4 — so it is an undocumented gap, and it is
- * left out here rather than invented, which is the whole of the fixture rule. The deck narrows the
- * `4a Armed` half of it to exactly one number: `DELETIONS.armedBody` already hardcodes `photos/2019`
- * and `8.4 GB`, so only `armedTitle(n)`'s count has nowhere to come from.
+ * The first two ARE genuinely unproducible, and neither is one of the ten capabilities in
+ * `14-behaviour-and-state.md` nor one of the four Phase-2 gaps in `IMPLEMENTATION-PLAN.md` §4. They
+ * are left out rather than invented, and filed as their own gap. The deck narrows the `4a Armed` half
+ * to exactly one number: `DELETIONS.armedBody` already hardcodes `photos/2019` and `8.4 GB`, so only
+ * `armedTitle(n)`'s count has nowhere to come from.
  */
 const PENDING = [
   {
@@ -73,6 +76,31 @@ const PENDING = [
     detected_epoch_secs: ago(6 * 60),
   },
 ];
+
+/**
+ * `path_sync_status` replies, keyed by the path asked for — verbatim `EmblemStatus`
+ * (`commands.rs`), whose every field but `tracked` is nullable because a record may not exist.
+ *
+ * ONE ROW, BECAUSE ONE ROW CAN BE ANSWERED. The file card's `4 KB` is `file_size` through
+ * `format.bytes`, which renders 4096 as exactly `4 KB`. The folder card's `1,204 photos, 8.4 GB` is
+ * a subtree aggregate and there is no `EmblemStatus` for a directory that carries one, so
+ * `photos/2019` is absent here rather than present with an invented total — the difference between
+ * the two cards is the difference between a gap and a lookup.
+ *
+ * `last edited Jan 2026` is NOT rendered from `mtime`. It is an absolute date, which clock.js says a
+ * fixture writes literally, and the epoch here would format to whatever month the reader's timezone
+ * puts it in. The pin is corroboration — a real index record has one — not the drawn string's source.
+ */
+const PATH_STATUS = {
+  "archive/old-notes.md": {
+    tracked: true,
+    sync_status: "synced",
+    entity_kind: "file",
+    file_size: 4096,
+    mtime: 1_767_000_000,
+    proton_id: "vol_2QF9xR7k~node_1aB8xY2z",
+  },
+};
 
 /**
  * The daemon behind all three frames, differing only in what is queued — which is the honest model:
@@ -100,6 +128,7 @@ export const DELETION_FIXTURES = {
   "4a Deletions": {
     status: idleWith(PENDING),
     deletions: PENDING,
+    pathStatus: PATH_STATUS,
     conflicts: [],
   },
 
@@ -115,6 +144,7 @@ export const DELETION_FIXTURES = {
   "4a Armed": {
     status: idleWith(PENDING),
     deletions: PENDING,
+    pathStatus: PATH_STATUS,
     conflicts: [],
     ui: { armed: "photos/2019" },
   },

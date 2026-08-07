@@ -72,7 +72,7 @@ export function activeFrame() {
  * file on why the three light compacts were mapped, run, and taken back out. Inheriting a twin's
  * `fids` would silently undo that decision the moment S1 maps a dark frame.
  */
-function resolveFixture(label, seen = new Set()) {
+export function resolveFixture(label, seen = new Set()) {
   const entry = FIXTURES[label];
   if (!entry?.sameAs || seen.has(label)) return entry ?? null;
   seen.add(label);

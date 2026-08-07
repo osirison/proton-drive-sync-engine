@@ -291,6 +291,12 @@ const dom = {
   dialogRoute: null,
   dialogDetach: null,
   panel: null,
+  // The preview's own pages (F9). Latched for the same reason `panel` is, and it is not hypothetical:
+  // `render()` returning early does not stop the poll — `main()` starts it unconditionally and
+  // `store.subscribe(render)` re-enters here on every reply — so without this the frame index rebuilt
+  // its whole list every ~2 s and a tabbed-to link lost focus, which is the failure this cache exists
+  // for. Its content cannot change either: it is derived from the registry, which is a constant.
+  preview: false,
 };
 
 /**
@@ -326,10 +332,15 @@ function mountFramePanel(root) {
 function render() {
   const root = document.getElementById("app-root");
   // The preview's own pages — the frame index, and the diagnostic for a `?frame=` label that has no
-  // fixture. Both take the window, so the shell never boots behind them and nothing polls a daemon.
+  // fixture. Both take the window: the shell never renders behind them. (The poll still runs — this
+  // is a `render()` early return, not a boot switch — which is exactly why `dom.preview` latches.)
   // First, ahead of the panel mount, because an unknown label must not fall through to the generic
   // mock and draw a plausible screen that is not the frame you asked for.
-  if (mountPreview(root)) return;
+  if (dom.preview) return;
+  if (mountPreview(root)) {
+    dom.preview = true;
+    return;
+  }
   if (mountFramePanel(root)) return;
   const st = store.select.daemonState();
 

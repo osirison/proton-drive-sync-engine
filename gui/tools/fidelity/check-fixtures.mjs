@@ -25,7 +25,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FIXTURES } from "../../src/js/fixtures/frames.js";
+import { FIXTURES, resolveFixture } from "../../src/js/fixtures/frames.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FRAMES = join(HERE, "frames");
@@ -67,14 +67,12 @@ const REQUIRED = {
   specimen: "specimen",
 };
 
-/** Follow `sameAs` — the light frames say "same data, swapped tokens" rather than copying it. */
-function resolve(label, seen = new Set()) {
-  const entry = FIXTURES[label];
-  if (!entry?.sameAs) return entry;
-  if (seen.has(label)) return null; // a cycle; reported by the caller as an unresolvable fixture
-  seen.add(label);
-  return FIXTURES[entry.sameAs] ? resolve(entry.sameAs, seen) : null;
-}
+// `sameAs` — the light frames say "same data, swapped tokens" rather than copying it — is resolved
+// by IMPORTING the app's own resolver rather than reimplementing it here. The first version of this
+// file had a second copy that returned the twin and dropped the entry's own keys, which agrees with
+// `frames.js` only while no `sameAs` entry carries an override. The first `{ sameAs: "2a Settled",
+// status: {…} }` S10 writes would have been shape-checked against the wrong object, and a gate that
+// disagrees with the thing it gates is worse than no gate. One rule, one implementation.
 
 const nonEmpty = (v) =>
   v != null && (typeof v !== "object" || (Array.isArray(v) ? v.length > 0 : Object.keys(v).length > 0));
@@ -90,7 +88,7 @@ for (const [label, entry] of Object.entries(FIXTURES)) {
     fail(label, `sameAs: "${entry.sameAs}" names no fixture`);
     continue;
   }
-  const resolved = resolve(label);
+  const resolved = resolveFixture(label);
   if (!resolved) {
     fail(label, `sameAs chain does not resolve (cycle, or a missing link)`);
     continue;

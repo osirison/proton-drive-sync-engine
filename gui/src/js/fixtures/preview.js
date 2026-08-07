@@ -104,8 +104,12 @@ function href(label) {
 }
 
 /**
- * The index. Rendered only for `?frames`, and it takes over the window — the shell never boots, so
- * nothing polls a daemon behind it.
+ * The index. Rendered only for `?frames`, and it takes over the window — the shell never renders
+ * behind it.
+ *
+ * It is NOT true that nothing polls behind it: `main()` starts the status poll unconditionally, and
+ * an early return from `render()` does not undo that. `app.js` latches `dom.preview` so this runs
+ * once instead of every ~2 s, which matters because a rebuilt list drops focus from a tabbed-to link.
  */
 function renderIndex(root) {
   const labels = Object.keys(FIXTURES);

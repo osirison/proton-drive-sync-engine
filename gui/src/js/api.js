@@ -59,14 +59,42 @@ export const api = {
 // `?frame=<label>` swaps the generic mock for that frame's fixture (F9), so the same dataset drives
 // the fidelity harness and the design preview. Without a frame the generic mock below still runs,
 // which is what keeps the browser preview useful before every frame has a fixture.
-function mockInvoke(cmd, _args) {
+function mockInvoke(cmd, args) {
   const fixture = activeFixture();
   if (fixture) {
-    if (cmd === "get_status") return Promise.resolve(fixture.status);
-    if (cmd === "scan_conflicts") return Promise.resolve(fixture.conflicts ?? []);
-    if (cmd === "list_pending_deletions")
-      return Promise.resolve(fixture.status?.response?.pending_deletions ?? []);
-    if (cmd === "read_config") return Promise.resolve(fixture.status?.response?.config ?? {});
+    // ONE COMMAND PER LINE, and a fixture key only where the reply is not already inside the status.
+    // `list_pending_deletions` reads through to `status.response.pending_deletions` because that is
+    // literally what commands.rs does — it sends a plain `Status` and returns that field — so a
+    // fixture carrying both cannot be made to disagree with a real daemon. `read_config` falls back
+    // the same way: a daemon that is up reports its own roots, and its reply outranks the file.
+    //
+    // A command a fixture says nothing about falls through to the generic mock below, which is what
+    // keeps a partly-described frame useful rather than blank.
+    switch (cmd) {
+      case "get_status":
+        return Promise.resolve(fixture.status);
+      case "scan_conflicts":
+        return Promise.resolve(fixture.conflicts ?? []);
+      case "list_pending_deletions":
+        return Promise.resolve(fixture.deletions ?? fixture.status?.response?.pending_deletions ?? []);
+      case "read_config":
+        return Promise.resolve(fixture.config ?? fixture.status?.response?.config ?? {});
+      case "read_conflict_pair":
+        if (fixture.conflictPair) return Promise.resolve(fixture.conflictPair);
+        break;
+      case "run_dry_run":
+        if (fixture.dryRun) return Promise.resolve(fixture.dryRun);
+        break;
+      case "path_sync_status":
+        // Keyed by the path asked for. An unlisted path answers `tracked: false` rather than falling
+        // through to the generic mock: "this frame does not describe that file" is a real answer, and
+        // it is the one a never-synced file gets from the real command.
+        if (fixture.pathStatus)
+          return Promise.resolve(fixture.pathStatus[args?.relativePath] ?? { tracked: false });
+        break;
+      default:
+        break;
+    }
   }
   switch (cmd) {
     case "get_status":

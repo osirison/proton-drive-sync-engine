@@ -29,6 +29,29 @@
 // they are not a single scenario, and treating them as one would mean picking which frame to break.
 
 import { ago } from "./clock.js";
+import { action, bulk, summaryOf } from "./dryrun.js";
+
+/**
+ * The first-sync merge `9a Review` previews: 474 rows, of which the frame draws only four counts.
+ *
+ * Generated rather than written out, and derived-from rather than described, because `DryRunReport`'s
+ * two halves are one fact — see `dryrun.js`. The bulk paths carry no meaning and say so by being
+ * obviously generated; the five rows that the screen names individually are written individually.
+ *
+ * `conflict` rows are the `2 files differ on both sides` line, and they carry a `conflict_path`
+ * because the engine writes a sidecar for exactly this case — that is what "both copies kept" is.
+ */
+const REVIEW_PLAN = [
+  ...bulk("first-sync/up", "upload", 128),
+  ...bulk("first-sync/down", "download", 341),
+  action("notes/todo.txt", "conflict", { conflict_path: "notes/todo.proton-cloud.txt" }),
+  action("design/logo.svg", "conflict", { conflict_path: "design/logo.proton-cloud.svg" }),
+  // `3 files can't be synced — a socket and two shortcuts`. The frame names the three kinds, so the
+  // three rows are those kinds rather than three anonymous paths.
+  action("run/daemon.sock", "skip_unsupported"),
+  action("Desktop/proton.desktop", "skip_unsupported"),
+  action("Desktop/inbox.lnk", "skip_unsupported"),
+];
 
 /**
  * A fresh machine: no daemon, so no `response` at all. `StatusPayload` omits `response` on failure
@@ -118,10 +141,18 @@ export const ONBOARDING_FIXTURES = {
    * carries `CHOSEN_CONFIG` while step 1 carries none: step 1 must write the pair before this screen
    * can compute anything.
    *
-   * `plan` IS DELIBERATELY EMPTY. The frame draws no action rows — only `See all 471 actions`, whose
-   * count is `summary.total`. A fixture cannot carry 471 rows, and carrying four "representative"
-   * ones would be worse: a screen reading `plan.length` would get a plausible-looking number instead
-   * of an obviously wrong one. The rows belong to the screen `See all 471 actions` opens.
+   * THE PLAN IS GENERATED, AND THE SUMMARY DERIVED FROM IT, because the alternative does not exist.
+   * `DryRunReport` is `{ summary, plan }` parsed verbatim from the daemon's stdout, and the daemon
+   * builds the summary with `PlanSummary::from_plan` — `total: plan.len()`, one counter incremented
+   * per row. A summary beside an empty plan is a payload the daemon cannot emit, and this fixture
+   * shipped one: `total: 471` against 474 rows' worth of counters and `plan: []`. `summaryOf` makes
+   * that unrepresentable.
+   *
+   * WHERE 471 COMES FROM, since it is not `summary.total`. The frame draws `See all 471 actions` AND
+   * `3 files can't be synced`, and both are true: `SkipUnsupported` IS a plan row (`sync.rs`'s match
+   * counts it like any other), so `total` is 474 and the button names the 471 that will actually
+   * happen — `total - skipped_unsupported`. Not a contradiction in the frame, a derivation the
+   * screen does. **S7 must render it that way**; reading `total` straight would draw `474`.
    *
    * `requires_delete_gate: false` and `files_at_risk: []` are the payload restating the headline:
    * nothing gets deleted today.
@@ -131,25 +162,8 @@ export const ONBOARDING_FIXTURES = {
     config: CHOSEN_CONFIG,
     dryRun: {
       report: {
-        // 128 up + 341 down + 2 conflicts = 471, the total the button names.
-        summary: {
-          total: 471,
-          uploads: 128,
-          downloads: 341,
-          remote_directories_created: 0,
-          local_directories_created: 0,
-          local_moves: 0,
-          remote_moves: 0,
-          auto_links: 0,
-          conflicts: 2,
-          type_conflicts: 0,
-          remote_deletes: 0,
-          local_deletes: 0,
-          purges: 0,
-          skipped_unsupported: 3,
-          destructive_actions: 0,
-        },
-        plan: [],
+        summary: summaryOf(REVIEW_PLAN),
+        plan: REVIEW_PLAN,
       },
       requires_delete_gate: false,
       files_at_risk: [],
@@ -162,11 +176,19 @@ export const ONBOARDING_FIXTURES = {
     // numbers here are the true ones; the trailing `.0` is a defect in the formatter's one-decimal
     // rule, not something to dodge by writing the string.
     freeSpace: { needed: 38_400_000_000, available: 214_000_000_000 },
-    // Three drawn numbers with no source at all. `alreadyMatching` counts files the plan does NOT
-    // act on, so it is absent from `PlanSummary` by construction; the two byte totals are absent
-    // because `PlannedAction` carries no size. G2 (#191) is the nearest filed work — per-direction
-    // byte totals — but it is scoped to what a sync pass moved, not to what a plan would move.
-    planTotals: { alreadyMatching: 11_798, upBytes: 1_400_000_000, downBytes: 38_400_000_000 },
+    // `11,798 files already match on both sides` — a count of files the plan does NOT act on, so it
+    // is absent from `PlanSummary` by construction rather than by omission. Carried because the
+    // number has nowhere else to come from and no possible field shape to pre-empt: it is a scalar,
+    // not a structure.
+    //
+    // THE TWO BYTE TOTALS ARE NOT CARRIED. The frame draws `files · 1.4 GB` going up and
+    // `files · 38.4 GB` coming down, and `PlannedAction` has `path`, `destination_path`, `action`,
+    // `entity_kind`, `conflict_path`, `remote_id` — no size, at any level of the dry-run surface. An
+    // earlier version of this fixture minted `{ upBytes, downBytes }` for them, which is the one
+    // thing the F9 contract forbids: `plan.js` refuses the identical numbers on `5a Plan` and names
+    // G2 (#191) as the reason, so the family would have carried two answers to one question and the
+    // fixture would have settled a Phase-2 design. Left absent; DEVIATIONS carries it.
+    planTotals: { alreadyMatching: 11_798 },
     // `worked out 40 seconds ago · about 25 minutes to finish` (`ONBOARDING.workedOut`). The first
     // half is relative, so it is an offset per the clock convention; the second is an estimate no
     // command produces — `run_dry_run` reports what would happen, never how long it would take.

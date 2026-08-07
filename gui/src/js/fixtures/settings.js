@@ -125,10 +125,16 @@ const LOCAL_TOTALS = { files: 12480, bytes: 41_200_000_000 };
  * The skip rules with their live effects — C2's (#175) four fields per rule, and only those:
  * `files`, `bytes`, `samples`, `stale`.
  *
- * THE BYTES RECONCILE ON PURPOSE. `hiding 4 files, 3.1 GB in total` is the sum of the rows, so
- * `*.tmp`'s 2.8 MB and `video-raw/**`'s 3.1 GB have to add up to a total that still formats as
- * `3.1 GB` — 3,102,800,000 B does. A fixture whose parts contradicted its own total would make the
- * first thing S6 renders look like a rounding bug in `format.bytes`.
+ * THE BYTES RECONCILE, AND `*.tmp` CONTRIBUTING NOTHING IS WHAT THE FRAME SAYS rather than a value
+ * left blank. The total is `hiding 4 files, 3.1 GB in total` and `video-raw/**` alone is `3.1 GB`, so
+ * the frame's own arithmetic gives `*.tmp` zero at this precision. That reading is confirmed by the
+ * row itself: the deck has two forms, `skippingNow(n)` = `Skipping 2 files right now` and
+ * `skippingSize(n, size)` = `Skipping 2 files, 3.1 GB`, and `*.tmp` is drawn with the FIRST.
+ *
+ * So `bytes` is the discriminator S6 renders on, and it has to stay zero here. An earlier version
+ * gave `*.tmp` 2.8 MB — a number the frame draws nowhere, chosen so the parts would sum to a total
+ * that still rounds to `3.1 GB`. It does round, and it also destroyed the only field that says which
+ * of the two deck strings this row takes.
  *
  * `added` is on `video-raw/**` alone, because it is the only row whose second line is the
  * added-date (`SETTINGS.ruleAdded`) rather than sample paths or the stale note. It is a literal
@@ -139,7 +145,7 @@ const SKIP_RULES = [
   {
     pattern: "*.tmp",
     files: 2,
-    bytes: 2_800_000,
+    bytes: 0,
     samples: ["exports/draft.tmp", "exports/render-final.tmp"],
     stale: false,
   },

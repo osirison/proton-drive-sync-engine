@@ -272,12 +272,21 @@ export const ACTIVITY_FIXTURES = {
   // short registers.
   //
   // `next full check in 4m` IS derivable and so is derived: the countdown is a relative render, and
-  // `scan_interval_secs: 360` with a check 120s old leaves 240s = `4m`. Two notes on that number.
-  // It is 360 rather than the 300 default *because the frame draws 4m beside a 2-minutes-ago check*
-  // — 300 would draw `3m` — and `6a Details` in this same file draws `scan_interval 300s`, so the
-  // two frames disagree about the interval and each fixture reproduces its own. And the "full
-  // check" this counts down to is really G4's absent `full_scan_schedule` (#193); `scan_interval` is
-  // the Phase-1 stand-in, not the thing the design means.
+  // `scan_interval_secs` minus the age of the last check is what it counts down. Three notes on
+  // that number, because it is the least obvious value in this file.
+  //
+  // It is not the 300s default: 300 with a check 120s old leaves 180s and would draw `3m`, and the
+  // frame draws `4m` beside a check it calls `2 minutes ago`. `6a Details` in this same file draws
+  // `scan_interval 300s`, so the two frames disagree about the interval and each fixture reproduces
+  // its own rather than averaging them.
+  //
+  // It is 370 rather than the round 360 to keep the answer off a bucket boundary. 360 leaves
+  // *exactly* 240s at import, so a screen that floors reads `4m` at load and `3m` one second later;
+  // 370 leaves 250s, which floors and rounds to `4m` with ten seconds of slack either way. The
+  // page's poll re-renders this every two seconds, so the slack is not theoretical.
+  //
+  // And the "full check" it counts down to is really G4's absent `full_scan_schedule` (#193);
+  // `scan_interval` is the Phase-1 stand-in, not the thing the design means.
   //
   // WHAT NO COMMAND RETURNS — three of this file's six omissions, all on this one frame:
   //
@@ -299,7 +308,9 @@ export const ACTIVITY_FIXTURES = {
         pass(ago(120), { done: summary({ total: 4, uploads: 2, downloads: 1, conflicts: 1 }) }),
       ],
     }),
-    config: fileConfig({ scan_interval_secs: 360 }),
+    // The same machine as `7a Never synced`, which this screen's `Show them` opens: one skip rule,
+    // `*.tmp`. A screen and the dialog it links to must not describe two different configurations.
+    config: fileConfig({ scan_interval_secs: 370, exclude: ["*.tmp"] }),
     ui: {
       tab: "files",
       // `Nothing has needed to move since 14:32.` — the absolute half of `ago(120)` above.
@@ -383,8 +394,11 @@ export const ACTIVITY_FIXTURES = {
         message: "daemon status",
         last_sync_epoch_secs: ago(900),
         last_error: null,
+        // The pass in flight planned five actions; the last one that FINISHED was the 15-minutes-ago
+        // pass, whose summary is what `last_successful_sync_summary` still holds. The two disagree
+        // mid-pass by design — that is what makes the carry-over field readable as "last good".
         last_plan_summary: summary({ total: 5, uploads: 3, downloads: 2 }),
-        last_successful_sync_summary: null,
+        last_successful_sync_summary: summary({ total: 2, uploads: 2 }),
         status_history: [pass(ago(900), { done: summary({ total: 2, uploads: 2 }) })],
         pending_deletions: [],
         config: {
@@ -404,9 +418,18 @@ export const ACTIVITY_FIXTURES = {
             path: "photos/trip/img_0042.jpg",
             bytes_total: 2_800_000, // `2.8 MB`
             bytes_done: null, // downloads only — see above
-            started_epoch_secs: ago(8),
+            // A getter for the same reason `5a Plan safe`'s `checkedAt` is one: `Started 8 seconds
+            // ago` is a SECOND-resolution render, and a fixture module is imported once. Frozen at
+            // import, the line reads `10 seconds ago` by the time the harness extracts and keeps
+            // climbing on every 2s poll; read as a property, `ago(8)` is 8 at the moment it renders.
+            // Minute-resolution offsets elsewhere in this file need no such care.
+            get started_epoch_secs() {
+              return ago(8);
+            },
           },
-          since_epoch_secs: ago(8),
+          get since_epoch_secs() {
+            return ago(8);
+          },
         },
       },
     },
@@ -444,8 +467,11 @@ export const ACTIVITY_FIXTURES = {
   // cannot draw its `4 files are never synced` band: the count is as unavailable as the list.
   "7a Never synced": {
     status: idleDaemon({
+      // `skipped_unsupported: 1` is the closest the wire comes to this dialog's subject, and it is
+      // not close: it counts REMOTE files the CLI could not fetch, not local files a rule hides.
+      // Carried so the number is on the page, not as a stand-in for the four rows.
       last_plan_summary: summary({
-        total: 4,
+        total: 5,
         uploads: 2,
         downloads: 1,
         conflicts: 1,
