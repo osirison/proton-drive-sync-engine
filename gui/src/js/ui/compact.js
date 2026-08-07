@@ -348,6 +348,16 @@ export function renderCompactPanel(opts = {}) {
   mark.querySelectorAll("path").forEach((path, i) => fid(path, "hexPath", i));
   mark.querySelectorAll("rect").forEach((rect, i) => fid(rect, "hexRect", i));
   fid(mark.querySelector("text"), "hexNumeral");
+  // The defs subtree, stamped since #204 gave it something to say. Before that these nodes carried
+  // no asserted property that was not inherited and mapping them asserted nothing; now the stops
+  // carry `stop-color`/`offset` and the gradients `x1`/`y1`/`x2`/`y2`, which is what distinguishes
+  // the warm up-gradient from the cool down one. The `url(#id)` reference itself is deliberately
+  // matched loosely — the id has to be unique per instance — so THIS is where a swapped pair fails.
+  fid(mark.querySelector("defs"), "hexDefs");
+  mark.querySelectorAll("defs > linearGradient").forEach((grad, i) => {
+    fid(grad, "hexGradient", i);
+    grad.querySelectorAll("stop").forEach((stop, j) => fid(stop, "hexStop", i, j));
+  });
 
   const title = headline(state, headlineText);
   const subNode = sub == null ? null : subLine(sub, { mono: subMono });
