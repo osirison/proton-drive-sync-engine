@@ -1,20 +1,25 @@
-# The fidelity harness (F8)
+# The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Three gates over the 51 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Four gates over the 51 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
-npm run fidelity:extract   # regenerate frames/*.json from the prototype
-npm run fidelity           # style + fit gates, then the copy gate
+npm run fidelity:extract    # regenerate frames/*.json from the prototype
+npm run fidelity            # style + fit gates, then the copy gate      (needs Chromium)
+npm run fidelity:fixtures   # the fixture registry gate                  (Node only)
 ```
 
-## The three gates
+## The four gates
 
-| Gate                     | Compares                                                                        | Runs today?                      |
-| ------------------------ | ------------------------------------------------------------------------------- | -------------------------------- |
-| **style** `assert.mjs`   | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid` |
-| **fit** `assert.mjs`     | every full window renders at exactly 1040×764, nothing painting over the footer | yes                              |
-| **copy** `copy-gate.mjs` | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 224                     |
+| Gate                              | Compares                                                                        | Runs today?                      |
+| --------------------------------- | ------------------------------------------------------------------------------- | -------------------------------- |
+| **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid` |
+| **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                              |
+| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 224                     |
+| **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                      |
+
+The first three need a browser and run in the `fidelity` CI job. The fourth does not, and runs in
+`frontend` alongside the linters — a gate that can run in the fifteen-second job should.
 
 ## The node key, and why it is a path
 
@@ -145,8 +150,13 @@ that admits its edges:
 
 `assert.mjs` reports how many frames carry a `data-fid` and lists the rest every run, so "the gate is
 green" can never be confused with "the gate looked at anything". Today the shell's own chrome is
-mapped for three frames and F6's compact panel for eight more — **11 of 51, 11,199 assertions** — and
+mapped for three frames and F6's compact panel for eight more — **11 of 51, 12,441 assertions** — and
 40 frames are waiting for their screens.
+
+**All 51 have a dataset** (F9), which is a different claim and deliberately kept separate: a fixture
+is what the app is fed, a `data-fid` is what gets compared. `check-fixtures.mjs` proves the first,
+`assert.mjs` counts the second, and neither number can inflate the other. Adding the 40 datasets
+moved 11/51 not at all.
 
 F6 was the first task to put a hexagon, a transfer row and an SVG colour in front of the gate, and it
 found three things wrong with them rather than with itself; `DEVIATIONS.md` §58c has all three. The
@@ -169,6 +179,37 @@ swapping them.
 Building the harness before the screens is deliberate: each S-task's definition of done is "my
 frames pass", and eleven screens written against no gate at all would be eleven screens to re-check
 afterwards. It found six classes of drift in the shell on its first live run.
+
+## The fixtures, and the preview that shares them (F9)
+
+`src/js/fixtures/` holds one deterministic dataset per in-scope frame label, selected by
+`?frame=<label>`. The same data drives this harness and the browser design preview, and the pairing
+is the point: **a frame that passes CI is a frame a human can open and look at**, so "green" stays
+falsifiable by eye. A gate whose inputs nobody can see is a gate nobody trusts.
+
+```
+?frames                 the index — every in-scope frame, linked
+?frame=<label>          that frame's dataset, served to every command by api.js's mock
+?theme=light|dark       an explicit override, for a light frame on a dark machine
+```
+
+One module per screen family (`conflicts.js`, `deletions.js`, …), plus `fids.js` for the node-key
+tables and `clock.js` for the one value a fixture may read from the wall clock. `frames.js` is the
+registry that assembles them and the only module `ui/` imports.
+
+**What a fixture may not do.** Compute a displayed string — anything drawn is either a literal or is
+rendered by the app from a number the fixture pins. Relative renders (`2 minutes ago`) are pinned as
+`ago(120)`; absolute ones (`14:38`) are written literally, because an epoch formatted as a clock time
+depends on the machine's timezone and moves across midnight. `check-fixtures.mjs` fails on a `new
+Date()` anywhere in the directory.
+
+**What a fixture may not invent.** Four frames draw content no Phase-1 command returns — the engine
+gaps G1–G4. A plausible-looking field shape for those would pre-empt a design nobody has agreed to,
+so the fixture carries only the Phase-1 surface and `DEVIATIONS.md` carries the difference.
+
+`fids` is not part of a dataset. It maps app nodes onto drawn nodes, which needs the screen to exist,
+so each S-task adds its own — and `check-fixtures.mjs` fails on a slot whose key exists in no frame
+that declares it, which is how F6's dead `hexRect`/`hexNumeral` declarations were found.
 
 ## Determinism, checked rather than assumed
 

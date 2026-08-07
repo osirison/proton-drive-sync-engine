@@ -1,0 +1,240 @@
+// Plan-a-sync fixtures (F9) — the three `5a` frames, one deterministic dataset each.
+//
+// The rehearsal screen is the only one in the design driven by a COMMAND RATHER THAN A POLL: S4
+// calls `run_dry_run`, which shells `proton-syncd --dry-run` and resolves once with a
+// `DryRunPayload` (`{ report, requires_delete_gate, files_at_risk }` — see
+// `gui/src-tauri/src/commands.rs`). So each entry here carries two things that answer two different
+// questions: a `status` (what the daemon is, which is what the shell around the screen renders) and
+// a `dryRun` (what the rehearsal found, which is the screen itself).
+//
+// `5a Checking` carries no `dryRun` at all, and that absence IS the frame: it is the state between
+// the call and its answer.
+//
+// WHAT IS DELIBERATELY MISSING, and it is the most important thing in this file. `5a Plan` draws
+// `3 files, 4.1 MB` leaving and `2 files, 2.6 MB` arriving; `5a Plan safe` draws a size on every
+// row (`1.2 MB`, `2.8 MB`, `96 KB`, `2.4 MB`, `184 KB`). **No byte total exists anywhere in the
+// dry-run surface.** `PlanSummary` counts actions and `PlannedAction` carries `path`,
+// `destination_path`, `action`, `entity_kind`, `conflict_path`, `remote_id` — and no size. That is
+// the substance of engine gap G2 (per-direction byte totals, #191), landing on a `5a` frame rather
+// than on the `2a`/`7a` frames IMPLEMENTATION-PLAN.md lists for it. Inventing a `bytes` field on a
+// planned action here would pre-empt that design, so the counts are pinned and the sizes are not.
+//
+// `Run it without the deletion` (drawn in `5a Plan`'s footer) is G3 (#192), the filtered apply. It
+// is not a data question at all — nothing in `DryRunPayload` says whether a partial apply is
+// possible — so there is nothing to leave out; S4 hides the button until the daemon can honour it
+// (06-plan.md: "if unavailable, hide the button rather than faking it").
+
+import { ago } from "./clock.js";
+
+/**
+ * The daemon behind all three rehearsal frames: reachable, idle, nothing in flight.
+ *
+ * Shaped exactly as `ControlResponse` reaches the frontend, which is worth two notes because both
+ * are easy to get subtly wrong:
+ *
+ *   · `status` is the DAEMON's own word and is only ever `syncing` / `paused` / `running` (see
+ *     `ControlShared::response` in src/daemon.rs). `idle` is the *derived* `DaemonState` and belongs
+ *     in `state`, never in `response.status`.
+ *   · `last_sync_epoch_secs` must be present, or `derive_state` returns `FirstRun` (a reachable
+ *     daemon with no last sync and an empty history is the onboarding signal) and the shell would
+ *     render the takeover instead of the screen.
+ *
+ * None of the three frames draws a relative time from this value — `5a Plan safe`'s
+ * `Checked 40 seconds ago` is about the REHEARSAL, not the last sync (see its `ui.checkedAt`) — so
+ * the 2-minute offset is just a plausible recent pass.
+ */
+function idleDaemon() {
+  return {
+    state: "idle",
+    response: {
+      status: "running",
+      paused: false,
+      syncing: false,
+      reconcile_seq: 41,
+      pending_changes: 0,
+      message: "daemon status",
+      last_sync_epoch_secs: ago(120),
+      last_error: null,
+      last_plan_summary: null,
+      last_successful_sync_summary: null,
+      status_history: [],
+      pending_deletions: [],
+      config: {
+        local_root: "~/ProtonDrive",
+        remote_root: "/Drive/RemoteFolder",
+        db_path: "~/ProtonDrive/.sync/sync_index.db",
+      },
+      activity: null,
+    },
+  };
+}
+
+/**
+ * A planned action, with the two fields that are almost always null spelled out.
+ *
+ * `remote_id` is the asymmetry `plan.rs`'s own test pins: a row for something that does not exist on
+ * Proton yet (an upload, a folder to create) has none, and a row about an existing node carries the
+ * composed `volumeId~nodeId`. The design doc's "every row has a remote id" is false, and a fixture
+ * that filled them all in would hide that from S4.
+ */
+function action(path, act, extra = {}) {
+  return {
+    path,
+    destination_path: null,
+    action: act,
+    entity_kind: "file",
+    conflict_path: null,
+    remote_id: null,
+    ...extra,
+  };
+}
+
+/** `PlanSummary`, in full. Every counter is written out because the daemon writes every one. */
+function summary(counts) {
+  return {
+    total: 0,
+    uploads: 0,
+    downloads: 0,
+    remote_directories_created: 0,
+    local_directories_created: 0,
+    local_moves: 0,
+    remote_moves: 0,
+    auto_links: 0,
+    conflicts: 0,
+    type_conflicts: 0,
+    remote_deletes: 0,
+    local_deletes: 0,
+    purges: 0,
+    skipped_unsupported: 0,
+    destructive_actions: 0,
+    ...counts,
+  };
+}
+
+export const PLAN_FIXTURES = {
+  // ---- 5a Checking — the rehearsal in flight -------------------------------------------------
+  //
+  // A 522×766 window (not a dialog: it keeps the app header and the four footer doors, and is drawn
+  // narrow only because a centred empty state does not need 1040px — DEVIATIONS §48a).
+  //
+  // There is no `dryRun` key because the command has not resolved. That is the whole state.
+  //
+  // The progress line `8,431 of 12,480 files` is `PLAN.checkingProgress(done, total)`, so the
+  // fixture pins two numbers and the app renders the string (rule 2). They live in `ui` because
+  // NOTHING PRODUCES THEM: `run_dry_run` is a single async command with no progress channel — it
+  // resolves once, at the end — and the daemon's `SyncActivity` (which does carry `files_scanned`)
+  // describes the daemon's own reconcile, not the GUI's separate `--dry-run` child process. There
+  // is also no index-wide file count anywhere in the command surface for the `of 12,480` half; the
+  // same missing counter is why `7a Activity quiet` cannot draw `12,480 files · 41.2 GB`.
+  //
+  // Streaming dry-run progress is not one of the recorded gaps G1–G4. Reported with the fixtures.
+  "5a Checking": {
+    status: idleDaemon(),
+    ui: { checking: true, scanned: 8431, total: 12480 },
+  },
+
+  // ---- 5a Plan — a plan that would destroy something ------------------------------------------
+  //
+  // Nine actions, one of them a `remote_delete`, which is what arms the typed-DELETE gate. The
+  // distinction `plan.rs` encodes and the design conflated: `requires_delete_gate` keys on
+  // `SyncAction::delete_direction()`, so a `purge`-only plan is display-destructive but never
+  // gated. This plan has no purge, so the two sets happen to coincide here — which is exactly why
+  // the fixture says both explicitly rather than letting a reader infer one from the other.
+  //
+  // THE ROW ORDER IS THE DRAWN ORDER, and that is not a coincidence to be tidied away:
+  // `plan.rs::sorted_for_display` floats display-destructive rows to the top and is otherwise
+  // stable, so a plan written in the order the frame draws it comes out of the sort in the order
+  // the frame draws it. (The daemon's own emission order would differ; nothing in the screen
+  // depends on it.)
+  "5a Plan": {
+    status: idleDaemon(),
+    dryRun: {
+      report: {
+        // 3 uploads + 2 downloads + 1 remote mkdir + 1 local move + 1 conflict + 1 remote delete.
+        summary: summary({
+          total: 9,
+          uploads: 3,
+          downloads: 2,
+          remote_directories_created: 1,
+          local_moves: 1,
+          conflicts: 1,
+          remote_deletes: 1,
+          destructive_actions: 1,
+        }),
+        plan: [
+          action("archive/old-notes.md", "remote_delete", { remote_id: "8b3c1f2a~e91d4a77b0c5" }),
+          action("docs/spec.md", "upload"),
+          action("photos/trip/img_0042.jpg", "upload"),
+          action("notes/scratch.md", "upload"),
+          // The folder the three uploads need. `entity_kind: "directory"` is the engine's own
+          // spelling (`EntityKind` serializes snake_case: `file` / `directory`).
+          action("photos/trip", "create_remote_directory", { entity_kind: "directory" }),
+          action("reports/q3-summary.pdf", "download", { remote_id: "8b3c1f2a~4d70e2f9a118" }),
+          action("design/logo.svg", "download", { remote_id: "8b3c1f2a~c02a5b6e7d34" }),
+          // A rename that happened on Proton: the local copy moves to match, so the action is
+          // `move_local` and `destination_path` carries where it lands. The frame draws both paths
+          // in one row (`notes/old.md → notes/archive/old.md`).
+          action("notes/old.md", "move_local", {
+            destination_path: "notes/archive/old.md",
+            remote_id: "8b3c1f2a~f5619ac8d270",
+          }),
+          // Both sides changed it; the engine keeps both copies and names the sidecar. The
+          // `.proton-cloud` spelling is the engine's conflict convention (src/sync.rs), not a
+          // choice made here.
+          action("notes/todo.txt", "conflict", {
+            conflict_path: "notes/todo.proton-cloud.txt",
+            remote_id: "8b3c1f2a~2ab7c9e04f61",
+          }),
+        ],
+      },
+      requires_delete_gate: true,
+      // Only gated rows contribute — the user-data files a destructive apply would remove. A purge
+      // would never appear here even though it is tinted like one.
+      files_at_risk: ["archive/old-notes.md"],
+    },
+  },
+
+  // ---- 5a Plan safe — the ordinary plan, and the reason the screen shrinks ---------------------
+  //
+  // The same seven harmless actions as above with the delete and the conflict gone: nothing is
+  // destructive, so there is no band, no gate, and `Run this sync` is simply enabled. It is the
+  // control case for the safety logic — `requires_delete_gate: false` with `destructive_actions: 0`
+  // proves the gate is not merely "the plan is big".
+  "5a Plan safe": {
+    status: idleDaemon(),
+    dryRun: {
+      report: {
+        summary: summary({
+          total: 7,
+          uploads: 3,
+          downloads: 2,
+          remote_directories_created: 1,
+          local_moves: 1,
+        }),
+        // Grouped as drawn: the three uploads and the new folder under `Leaving this computer`,
+        // then the two downloads and the move under `Arriving from Proton`. With nothing
+        // destructive, `sorted_for_display` is a no-op and this order survives untouched.
+        plan: [
+          action("docs/spec.md", "upload"),
+          action("photos/trip/img_0042.jpg", "upload"),
+          action("notes/scratch.md", "upload"),
+          action("photos/trip", "create_remote_directory", { entity_kind: "directory" }),
+          action("reports/q3-summary.pdf", "download", { remote_id: "8b3c1f2a~4d70e2f9a118" }),
+          action("design/logo.svg", "download", { remote_id: "8b3c1f2a~c02a5b6e7d34" }),
+          action("notes/old.md", "move_local", {
+            destination_path: "notes/archive/old.md",
+            remote_id: "8b3c1f2a~f5619ac8d270",
+          }),
+        ],
+      },
+      requires_delete_gate: false,
+      files_at_risk: [],
+    },
+    // `Checked 40 seconds ago against both sides.` is `PLAN.checkedAgo(<relative time>)`, and the
+    // time it measures is WHEN THE CLIENT RAN THE REHEARSAL — `DryRunPayload` carries no timestamp,
+    // because the payload is the answer and not the asking. So it is UI state, pinned as an epoch
+    // offset (rule 3: a relative render is an offset, never a literal), and `since()` turns
+    // `ago(40)` into `40 seconds ago` on any machine at any hour.
+    ui: { checkedAt: ago(40) },
+  },
+};

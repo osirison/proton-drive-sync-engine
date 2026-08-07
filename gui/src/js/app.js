@@ -26,6 +26,7 @@ import {
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
 import { activeFixture } from "./fixtures/frames.js";
+import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
 
 // ---- shell state ----
 let route = "main"; // the root or door currently showing
@@ -53,6 +54,10 @@ let lastConflictScan = 0;
 function initTheme() {
   const saved = localStorage.getItem("theme");
   if (saved === "light" || saved === "dark") document.documentElement.setAttribute("data-theme", saved);
+  // `?theme=` beats the stored choice, and writes nothing back — it is a preview override for
+  // looking at a light frame on a dark machine, not a decision the user made. Applied last so it
+  // wins; see fixtures/preview.js for why it is never inferred from a `12a` label.
+  applyPreviewTheme();
 }
 function currentTheme() {
   return (
@@ -320,6 +325,11 @@ function mountFramePanel(root) {
 
 function render() {
   const root = document.getElementById("app-root");
+  // The preview's own pages — the frame index, and the diagnostic for a `?frame=` label that has no
+  // fixture. Both take the window, so the shell never boots behind them and nothing polls a daemon.
+  // First, ahead of the panel mount, because an unknown label must not fall through to the generic
+  // mock and draw a plausible screen that is not the frame you asked for.
+  if (mountPreview(root)) return;
   if (mountFramePanel(root)) return;
   const st = store.select.daemonState();
 

@@ -78,6 +78,12 @@ jobs:
       # themes, and no raw colour outside tokens.css. See gui/tools/check-tokens.mjs.
       - name: Tokens
         run: npm run tokens:check
+      # The fixture registry (F9): every in-scope frame has a dataset, of the shape its frame class
+      # implies, and every `fids` key names a node that exists in that frame. It lives here rather
+      # than in `fidelity` because it needs no browser — and the stale-key check it does is one
+      # assert.mjs can only make for nodes a built screen actually stamps, at runtime.
+      - name: Fixtures
+        run: npm run fidelity:fixtures
       # `node --test`, no framework and no dependency — it is in the Node 22 this job already
       # installs. The frontend is mostly DOM composition that a unit test cannot say much about;
       # what is here is the logic that is pure, load-bearing and not re-derivable from reading it.
