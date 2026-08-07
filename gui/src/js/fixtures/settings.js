@@ -17,8 +17,9 @@
 //     (`index_read.rs`): per rule a match count, total bytes, sample paths and a stale marker. The
 //     `skipRules` block below is shaped as those four fields and nothing more.
 //   · the folder totals — `12,480 files, 41.2 GB in here today`, `A full check of all 12,480 files`.
-//     No command returns them and NO ISSUE IS FILED for them; C2 is the nearest neighbour (it walks
-//     the same index) but is scoped to per-rule counts. Pinned as `localTotals` and flagged here.
+//     No command returns them; C2 is the nearest neighbour (it walks the same index) but is scoped
+//     to per-rule counts. Filed as G7 (#207) once F9 found the same numbers on six frames across
+//     four screens. Pinned as `localTotals`.
 //   · the schedule — `full_scan_schedule · weekly sun 03:00`. G4 (#193). See `8a Schedule monthly`.
 //   · a rule's `added 14 Jul` date. A TOML array of globs carries no per-entry timestamps, so this
 //     has no possible source in the config file; it is pinned as a literal on the rule it belongs to.
@@ -116,8 +117,10 @@ local = true
  * the fixture pins numbers and the screen formats them — 41_200_000_000 is `41.2 GB` through
  * `format.bytes`, which is decimal and one decimal place.
  *
- * NO COMMAND RETURNS THIS AND NO ISSUE ASKS FOR IT. It is the same pair of numbers `2a Settled`
- * draws in its sub-line, so it is not a Settings problem alone.
+ * NO COMMAND RETURNS THIS. It is the same pair `2a Settled` draws in its sub-line, and the same
+ * count `7a Activity quiet` and `5a Checking` draw — six frames across four screens — so it was
+ * never a Settings problem alone. Now filed as G7 (#207); `plan.js`'s `5a Checking` carries it
+ * under the same key so the frames that draw it agree.
  */
 const LOCAL_TOTALS = { files: 12480, bytes: 41_200_000_000 };
 

@@ -13,6 +13,7 @@
 //
 //   1. per-pass DURATION — `6a Activity passes`, the twenty chart bars
 //   2. whole-index totals — `7a Activity quiet`, `12,480 files · 41.2 GB` on both seam sides
+//      (now filed as G7, #207; carried as `localTotals`, since a scalar pre-empts no design)
 //   3. per-file recent activity — `7a Activity quiet`, the `Last things to move` rows
 //   4. never-synced enumeration — `7a Never synced`, all four rows
 //   5. per-path history — `7a File lookup`, the `This file's history` block (G1, #190)
@@ -30,6 +31,10 @@
 
 import { ACTIVITY } from "../ui/copy.js";
 import { ago } from "./clock.js";
+// `summary` here is the counters-only form: these are `status_history` entries, whose summaries
+// describe plans the daemon has already discarded, so there is no plan to derive one from. `total`
+// and `destructive_actions` are still derived — they are the two a hand-written summary gets wrong.
+import { summaryFromCounts as summary } from "./dryrun.js";
 
 /**
  * The daemon behind the five idle frames. See `plan.js`'s twin for the two traps in this shape:
@@ -65,28 +70,6 @@ function idleDaemon(response = {}) {
       activity: null,
       ...response,
     },
-  };
-}
-
-/** `PlanSummary`, in full — the daemon writes every counter, so the fixture does too. */
-function summary(counts) {
-  return {
-    total: 0,
-    uploads: 0,
-    downloads: 0,
-    remote_directories_created: 0,
-    local_directories_created: 0,
-    local_moves: 0,
-    remote_moves: 0,
-    auto_links: 0,
-    conflicts: 0,
-    type_conflicts: 0,
-    remote_deletes: 0,
-    local_deletes: 0,
-    purges: 0,
-    skipped_unsupported: 0,
-    destructive_actions: 0,
-    ...counts,
   };
 }
 
@@ -175,39 +158,39 @@ export const ACTIVITY_FIXTURES = {
   // written in IMPLEMENTATION-PLAN.md (`2a Syncing` footer, `7a` seam counts) does not cover.
   "6a Activity passes": {
     status: idleDaemon({
-      last_plan_summary: summary({ total: 4, uploads: 2, downloads: 1, conflicts: 1 }),
-      last_successful_sync_summary: summary({ total: 4, uploads: 2, downloads: 1, conflicts: 1 }),
+      last_plan_summary: summary({ uploads: 2, downloads: 1, conflicts: 1 }),
+      last_successful_sync_summary: summary({ uploads: 2, downloads: 1, conflicts: 1 }),
       status_history: [
         // 12:30 — a pass with nothing to do.
         pass(ago(7440), { planned: summary({}), done: summary({}) }),
         // 12:45 — `1 sent`.
         pass(ago(6540), {
-          planned: summary({ total: 1, uploads: 1 }),
-          done: summary({ total: 1, uploads: 1 }),
+          planned: summary({ uploads: 1 }),
+          done: summary({ uploads: 1 }),
         }),
         // 13:12 — `4 brought here · 1 move followed`.
         pass(ago(4920), {
-          planned: summary({ total: 5, downloads: 4, local_moves: 1 }),
-          done: summary({ total: 5, downloads: 4, local_moves: 1 }),
+          planned: summary({ downloads: 4, local_moves: 1 }),
+          done: summary({ downloads: 4, local_moves: 1 }),
         }),
         // 13:58 — the failure. `plan_summary` is what this pass had planned before it could not
         // reach Proton; `successful_sync_summary` is 13:12's, carried over (see above).
         pass(ago(2160), {
           error: ACTIVITY.passes.exampleDaemonError,
-          planned: summary({ total: 2, uploads: 2 }),
-          done: summary({ total: 5, downloads: 4, local_moves: 1 }),
+          planned: summary({ uploads: 2 }),
+          done: summary({ downloads: 4, local_moves: 1 }),
         }),
         // 14:17 — `2 sent`. This is the pass the failed row points at with `retried at 14:17 and
         // worked`: the retry is not a field, it is the next successful pass, and its clock time is
         // already in `ui.clock.passes`.
         pass(ago(1020), {
-          planned: summary({ total: 2, uploads: 2 }),
-          done: summary({ total: 2, uploads: 2 }),
+          planned: summary({ uploads: 2 }),
+          done: summary({ uploads: 2 }),
         }),
         // 14:32 — `2 sent, 1 brought here · 1 conflict kept`, and the daemon's last word.
         pass(ago(120), {
-          planned: summary({ total: 4, uploads: 2, downloads: 1, conflicts: 1 }),
-          done: summary({ total: 4, uploads: 2, downloads: 1, conflicts: 1 }),
+          planned: summary({ uploads: 2, downloads: 1, conflicts: 1 }),
+          done: summary({ uploads: 2, downloads: 1, conflicts: 1 }),
         }),
       ],
     }),
@@ -245,21 +228,18 @@ export const ACTIVITY_FIXTURES = {
     status: idleDaemon({
       pending_changes: 0,
       // `total` is `plan.len()` — the sum of every counter, not a subset of them
-      // (`PlanSummary::from_plan`), and `destructive_actions` is
-      // `remote_deletes + local_deletes + purges`. Both are written out rather than left to a
-      // reader's arithmetic because this panel is where a wrong one would be read as the truth.
+      // (`PlanSummary::from_plan`) — and `destructive_actions` is
+      // `remote_deletes + local_deletes + purges`. Neither is written here: `summaryFromCounts`
+      // derives both and refuses to accept either, which is stricter than stating them and is what
+      // this panel needs, since a wrong one HERE would be read as the truth about a sync.
       last_plan_summary: summary({
-        total: 8,
         uploads: 2,
         downloads: 1,
         conflicts: 3,
         remote_deletes: 1,
         skipped_unsupported: 1,
-        destructive_actions: 1,
       }),
-      status_history: [
-        pass(ago(120), { done: summary({ total: 4, uploads: 2, downloads: 1, conflicts: 1 }) }),
-      ],
+      status_history: [pass(ago(120), { done: summary({ uploads: 2, downloads: 1, conflicts: 1 }) })],
     }),
     config: fileConfig(),
     ui: { dialog: "details" },
@@ -304,13 +284,16 @@ export const ACTIVITY_FIXTURES = {
   // about being mostly Phase 2.
   "7a Activity quiet": {
     status: idleDaemon({
-      status_history: [
-        pass(ago(120), { done: summary({ total: 4, uploads: 2, downloads: 1, conflicts: 1 }) }),
-      ],
+      status_history: [pass(ago(120), { done: summary({ uploads: 2, downloads: 1, conflicts: 1 }) })],
     }),
     // The same machine as `7a Never synced`, which this screen's `Show them` opens: one skip rule,
     // `*.tmp`. A screen and the dialog it links to must not describe two different configurations.
     config: fileConfig({ scan_interval_secs: 370, exclude: ["*.tmp"] }),
+    // G7 (#207). Same key and same numbers as `8a Settings` and `5a Checking` — the three frames
+    // that draw this count were describing one missing capability in three different ways until it
+    // was filed, and a fixture carrying it on one frame and not the others was that inconsistency
+    // made durable.
+    localTotals: { files: 12480, bytes: 41_200_000_000 },
     ui: {
       tab: "files",
       // `Nothing has needed to move since 14:32.` — the absolute half of `ago(120)` above.
@@ -350,14 +333,21 @@ export const ACTIVITY_FIXTURES = {
   // a field behind it.
   "7a File lookup": {
     status: idleDaemon(),
+    // KEYED BY PATH, because `path_sync_status` takes one. A flat `EmblemStatus` here reads as the
+    // answer to every question, and `api.js` serves this key by looking the asked-for path up — so a
+    // flat one resolved to `undefined` and the frame drew an UNTRACKED file: no verdict, no size, no
+    // id, which is very nearly the opposite of what it says. `deletions.js` carries the same shape
+    // for the same reason.
     pathStatus: {
-      tracked: true,
-      sync_status: "synced",
-      entity_kind: "file",
-      file_size: 1_200_000, // `1.2 MB` through format.js's decimal `bytes()`
-      // 14:31, a minute before the 14:32 pass that agreed the two sides.
-      mtime: ago(180),
-      proton_id: "8b3c1f2a~4c8f2e7d10b64f2ca39c5e0b8d7f9a21",
+      "docs/spec.md": {
+        tracked: true,
+        sync_status: "synced",
+        entity_kind: "file",
+        file_size: 1_200_000, // `1.2 MB` through format.js's decimal `bytes()`
+        // 14:31, a minute before the 14:32 pass that agreed the two sides.
+        mtime: ago(180),
+        proton_id: "8b3c1f2a~4c8f2e7d10b64f2ca39c5e0b8d7f9a21",
+      },
     },
     ui: {
       query: "spec.md",
@@ -397,9 +387,9 @@ export const ACTIVITY_FIXTURES = {
         // The pass in flight planned five actions; the last one that FINISHED was the 15-minutes-ago
         // pass, whose summary is what `last_successful_sync_summary` still holds. The two disagree
         // mid-pass by design — that is what makes the carry-over field readable as "last good".
-        last_plan_summary: summary({ total: 5, uploads: 3, downloads: 2 }),
-        last_successful_sync_summary: summary({ total: 2, uploads: 2 }),
-        status_history: [pass(ago(900), { done: summary({ total: 2, uploads: 2 }) })],
+        last_plan_summary: summary({ uploads: 3, downloads: 2 }),
+        last_successful_sync_summary: summary({ uploads: 2 }),
+        status_history: [pass(ago(900), { done: summary({ uploads: 2 }) })],
         pending_deletions: [],
         config: {
           local_root: "~/ProtonDrive",
@@ -471,7 +461,6 @@ export const ACTIVITY_FIXTURES = {
       // not close: it counts REMOTE files the CLI could not fetch, not local files a rule hides.
       // Carried so the number is on the page, not as a stand-in for the four rows.
       last_plan_summary: summary({
-        total: 5,
         uploads: 2,
         downloads: 1,
         conflicts: 1,

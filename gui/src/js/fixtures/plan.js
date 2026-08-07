@@ -130,17 +130,24 @@ export const PLAN_FIXTURES = {
   // There is no `dryRun` key because the command has not resolved. That is the whole state.
   //
   // The progress line `8,431 of 12,480 files` is `PLAN.checkingProgress(done, total)`, so the
-  // fixture pins two numbers and the app renders the string (rule 2). They live in `ui` because
-  // NOTHING PRODUCES THEM: `run_dry_run` is a single async command with no progress channel — it
-  // resolves once, at the end — and the daemon's `SyncActivity` (which does carry `files_scanned`)
-  // describes the daemon's own reconcile, not the GUI's separate `--dry-run` child process. There
-  // is also no index-wide file count anywhere in the command surface for the `of 12,480` half; the
-  // same missing counter is why `7a Activity quiet` cannot draw `12,480 files · 41.2 GB`.
+  // fixture pins two numbers and the app renders the string (rule 2). NEITHER HALF HAS A SOURCE, and
+  // they are two separate gaps that happen to meet in one sentence:
   //
-  // Streaming dry-run progress is not one of the recorded gaps G1–G4. Reported with the fixtures.
+  //   · `8,431` — `run_dry_run` is a single async command with NO progress channel: it resolves
+  //     once, at the end. The daemon's `SyncActivity` does carry `files_scanned`, but it describes
+  //     the daemon's own reconcile, not the GUI's separate `--dry-run` child process. **G9 (#209.)**
+  //   · `of 12,480` — the index-wide file count, which nothing reports. **G7 (#207)**, and the same
+  //     number `7a Activity quiet` and `8a Settings` draw.
+  //
+  // Both are pinned rather than omitted, and the distinction is the one the contract draws: neither
+  // is a field SHAPE that could pre-empt the design of the thing that fills it. `12,480` is a scalar
+  // and will be a scalar whatever #207 lands as, so carrying it settles nothing — where a
+  // `{ upBytes, downBytes }` for G2 would have. `activity.js` and `settings.js` carry the same count
+  // for the same reason, so the three frames drawing it agree.
   "5a Checking": {
     status: idleDaemon(),
-    ui: { checking: true, scanned: 8431, total: 12480 },
+    localTotals: { files: 12_480 },
+    ui: { checking: true, scanned: 8431 },
   },
 
   // ---- 5a Plan — a plan that would destroy something ------------------------------------------

@@ -89,6 +89,32 @@ export function summaryOf(plan) {
 }
 
 /**
+ * A `PlanSummary` from its per-action counters, for the one place a plan is not available: the
+ * `status_history` entries of a status reply, whose `plan_summary` / `successful_sync_summary` are
+ * summaries of plans the daemon has long since discarded.
+ *
+ * `total` and `destructive_actions` are DERIVED and cannot be passed in. That is the whole point —
+ * they are the two fields the daemon computes rather than accumulates, and they are exactly the two
+ * a fixture gets wrong by hand, because getting them right means re-adding a column of numbers every
+ * time one of them changes.
+ */
+export function summaryFromCounts(counts) {
+  const summary = summaryOf([]);
+  for (const [key, value] of Object.entries(counts)) {
+    if (!(key in summary)) throw new Error(`no such PlanSummary counter: "${key}"`);
+    if (key === "total" || key === "destructive_actions") {
+      throw new Error(`"${key}" is derived from the other counters — do not pass it`);
+    }
+    summary[key] = value;
+  }
+  summary.total = Object.entries(summary)
+    .filter(([key]) => key !== "total" && key !== "destructive_actions")
+    .reduce((sum, [, value]) => sum + value, 0);
+  summary.destructive_actions = summary.remote_deletes + summary.local_deletes + summary.purges;
+  return summary;
+}
+
+/**
  * `n` rows of one action, named so a reader can tell generated bulk from a row that matters.
  *
  * `9a Review` is the only frame that needs this: a first-sync merge is 474 rows, and the screen draws
