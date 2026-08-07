@@ -124,20 +124,56 @@
   --down-label: #22d3ee; /* "Proton Drive" label, ← arrows, download accents */
   --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
 
+  /* ---- semantic: amber = here, but not backed up. NOTHING IS AT RISK. ----
+     The never-synced band on `7a Activity quiet` is the only site. Warm rather than crimson on
+     purpose, and the copy says why: "Nothing here is at risk — it's just not backed up." A crimson
+     band would make four skipped temp files look like four files in danger.
+
+     --warn carries the same value as --up-label in both themes and is deliberately NOT an alias:
+     one is an upload accent, the other is a warning glyph, and tokens.css already keeps several
+     same-valued pairs apart for exactly this reason (--border / --border-chrome, --panel-alt /
+     --compact-row) so that either can move without dragging the other.
+
+     Both light values are CHOSEN — no light frame draws this band. Derived the way §52 derived the
+     light attention band: from a drawn pair that starts at the same dark alpha. The recoverable
+     card is .04/.30 dark and .03/.28 light, so a .04/.28 dark band maps to .03/.28. S10 confirms.
+     DEVIATIONS §54. */
+  --warn: #ff9f1c;
+  --warn-band-bg: rgba(255, 159, 28, 0.04);
+  --warn-band-border: rgba(255, 159, 28, 0.28);
+
   /* ---- semantic: outlined crimson = a person must decide. Never filled. ---- */
   --decision: #ff6b6b; /* stroke: hexagon, dots, rings */
   --decision-rgb: 255, 107, 107; /* for the one-off alphas the screens need */
   --decision-text: #ff9c9c;
-  --decision-border: rgba(255, 107, 107, 0.32);
-  /* The status chip's attention border. NOT --decision-border: measured 0.35 dark / 0.30 light
-     against that token's 0.32 / 0.28, and the alphas differ per theme so no single rgba(var(--rgb))
-     form covers both. Drawn on `2a Needs you`, `3a Conflict` x2, `4a Deletions` x2 and their light
-     twins. DEVIATIONS.md §41. */
+  /* The status chip's attention border. NOT a crimson-surface token: measured 0.35 dark / 0.30
+     light, and the alphas differ per theme so no single rgba(var(--rgb)) form covers both. Drawn on
+     `2a Needs you`, `3a Conflict` x2, `4a Deletions` x2 and their light twins. DEVIATIONS.md §41. */
   --chip-attention-border: rgba(255, 107, 107, 0.35);
   /* The header mark's dimmed opacity, when the status chip is idle. 01-foundations.md/02-shell.md
      give ".65-.75" as a range; measured it is a light/dark split, on one light frame. */
   --app-mark-quiet: 0.75;
-  --decision-bg: rgba(255, 107, 107, 0.05);
+
+  /* TWO crimson surfaces, not one. They were a single --decision-bg/--decision-border pair until
+     F5 censused the bands, and that pair was broken in a way neither theme could reveal alone: its
+     DARK value was measured off the attention band and its LIGHT value off the recoverable deletion
+     card, because no light frame draws the attention band at all. Whichever surface used it, one
+     theme rendered the other surface's tint. Same class as --chip-attention-border above, same fix
+     — name the site (DEVIATIONS.md §43, and §52 for this one).
+
+     Three of the four light values are measured. The fourth, --decision-band-* in light, is CHOSEN:
+     nothing draws it. Derived from the card, which IS drawn in both themes — 0.04/0.30 dark becomes
+     0.03/0.28 light, so the band's 0.05/0.32 becomes 0.04/0.30. The cross-theme ratio and the
+     band-to-card delta give the same two numbers, which is the only corroboration available without
+     a frame. S10 owns confirming it when the light mapping is propagated. */
+
+  /* The attention band. `2a Needs you`: one container, both waiting items, 976x127. */
+  --decision-band-bg: rgba(255, 107, 107, 0.05);
+  --decision-band-border: rgba(255, 107, 107, 0.32);
+  /* The recoverable deletion card (`4a Deletions` right column) and the consent panel
+     (`9a Consent`). One notch softer than the band, in both themes. */
+  --decision-card-bg: rgba(255, 107, 107, 0.04);
+  --decision-card-border: rgba(255, 107, 107, 0.3);
   --decision-divider: rgba(255, 107, 107, 0.16);
   --decision-btn-border: rgba(255, 107, 107, 0.4);
   --decision-btn-bg: rgba(255, 107, 107, 0.1);
@@ -150,6 +186,10 @@
   --destructive-text: #ff9c9c; /* the emphasised loss inside a destructive card */
   --destructive-border: rgba(255, 59, 59, 0.38);
   --destructive-bg: rgba(255, 59, 59, 0.06);
+  /* The disabled `Delete` on `4a Armed`, before the word is typed. NOT --destructive-bg: measured
+     0.1 against that token's 0.06, and DEVIATIONS §27 already records .08 as a third value on the
+     warning hexagon's tint. Three alphas of one hue, each drawn somewhere. */
+  --btn-destructive-disabled-bg: rgba(255, 59, 59, 0.1);
   --destructive-divider: rgba(255, 59, 59, 0.2);
   --destructive-btn-border: rgba(255, 59, 59, 0.25);
   --destructive-btn-bg: rgba(255, 59, 59, 0.1);
@@ -190,6 +230,13 @@
   --glow-settled: radial-gradient(circle, rgba(232, 235, 240, 0.05), rgba(232, 235, 240, 0) 68%);
   --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.6);
   --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.6);
+  /* The scrim behind a dialog. CHOSEN — no frame draws one, and neither 02-shell.md nor
+     14-behaviour-and-state.md specifies it; every dialog is drawn in isolation, so the layer
+     between it and the screen has no ground truth anywhere in the bundle. Derived from the one
+     related pair that IS drawn: --shadow-dialog steps .6 dark -> .4 light, so a .5 scrim steps
+     to .33. Deliberately modest — the dialog already carries a 60px shadow at .6, and a heavy
+     scrim under it draws the same separation twice. DEVIATIONS §56 — OPEN, wants a designer. */
+  --scrim: rgba(0, 0, 0, 0.5);
   --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.6);
   --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.5);
   --focus-ring: #3b82f6;
@@ -242,13 +289,19 @@
     --down-label: #0e7490;
     --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
 
+    --warn: #b23f14;
+    --warn-band-bg: rgba(178, 63, 20, 0.03);
+    --warn-band-border: rgba(178, 63, 20, 0.28);
+
     --decision: #be123c;
     --decision-rgb: 190, 18, 60;
     --decision-text: #be123c;
-    --decision-border: rgba(190, 18, 60, 0.28);
     --chip-attention-border: rgba(190, 18, 60, 0.3);
     --app-mark-quiet: 0.65;
-    --decision-bg: rgba(190, 18, 60, 0.03);
+    --decision-band-bg: rgba(190, 18, 60, 0.04);
+    --decision-band-border: rgba(190, 18, 60, 0.3);
+    --decision-card-bg: rgba(190, 18, 60, 0.03);
+    --decision-card-border: rgba(190, 18, 60, 0.28);
     --decision-divider: rgba(190, 18, 60, 0.14);
     --decision-btn-border: rgba(190, 18, 60, 0.38);
     --decision-btn-bg: rgba(190, 18, 60, 0.06);
@@ -260,6 +313,7 @@
     --destructive-text: #b91c1c;
     --destructive-border: rgba(220, 38, 38, 0.4);
     --destructive-bg: rgba(220, 38, 38, 0.04);
+    --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
     --destructive-divider: rgba(220, 38, 38, 0.16);
     --destructive-btn-border: rgba(220, 38, 38, 0.2);
     --destructive-btn-bg: rgba(220, 38, 38, 0.07);
@@ -296,6 +350,7 @@
     --glow-settled: radial-gradient(circle, rgba(20, 22, 26, 0.045), rgba(20, 22, 26, 0) 68%);
     --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.45);
     --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.4);
+    --scrim: rgba(0, 0, 0, 0.33);
     --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
     --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
     --focus-ring: #1d4ed8;
@@ -342,13 +397,19 @@
   --down-label: #0e7490;
   --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
 
+  --warn: #b23f14;
+  --warn-band-bg: rgba(178, 63, 20, 0.03);
+  --warn-band-border: rgba(178, 63, 20, 0.28);
+
   --decision: #be123c;
   --decision-rgb: 190, 18, 60;
   --decision-text: #be123c;
-  --decision-border: rgba(190, 18, 60, 0.28);
   --chip-attention-border: rgba(190, 18, 60, 0.3);
   --app-mark-quiet: 0.65;
-  --decision-bg: rgba(190, 18, 60, 0.03);
+  --decision-band-bg: rgba(190, 18, 60, 0.04);
+  --decision-band-border: rgba(190, 18, 60, 0.3);
+  --decision-card-bg: rgba(190, 18, 60, 0.03);
+  --decision-card-border: rgba(190, 18, 60, 0.28);
   --decision-divider: rgba(190, 18, 60, 0.14);
   --decision-btn-border: rgba(190, 18, 60, 0.38);
   --decision-btn-bg: rgba(190, 18, 60, 0.06);
@@ -360,6 +421,7 @@
   --destructive-text: #b91c1c;
   --destructive-border: rgba(220, 38, 38, 0.4);
   --destructive-bg: rgba(220, 38, 38, 0.04);
+  --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
   --destructive-divider: rgba(220, 38, 38, 0.16);
   --destructive-btn-border: rgba(220, 38, 38, 0.2);
   --destructive-btn-bg: rgba(220, 38, 38, 0.07);
@@ -396,6 +458,7 @@
   --glow-settled: radial-gradient(circle, rgba(20, 22, 26, 0.045), rgba(20, 22, 26, 0) 68%);
   --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.45);
   --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --scrim: rgba(0, 0, 0, 0.33);
   --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
   --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
   --focus-ring: #1d4ed8;

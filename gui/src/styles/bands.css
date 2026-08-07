@@ -1,0 +1,131 @@
+/* Bands (F5) — see js/ui/bands.js for what each one is and where it is drawn.
+ *
+ * The tint arrives as two custom properties rather than as a class-per-tone background, so a tone
+ * is one lookup in bands.js instead of a rule here and a branch there. The rest — padding, radius,
+ * gap, type — genuinely differs per band and is written out per band.
+ */
+
+.band {
+  background: var(--band-bg);
+  border: 1px solid var(--band-border);
+}
+
+/* ------------------------------------------------------------------------ attention band -- */
+
+/* `overflow:hidden` is load-bearing, not tidiness: the items carry the internal rules right to the
+   band's edge, and without the clip they cross the 14px corner radius. */
+.band-attention {
+  border-radius: var(--r-14);
+  overflow: hidden;
+}
+
+.band-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--decision-divider);
+}
+/* One box, N items, N-1 rules. The last item closes against the band's own border. */
+.band-item:last-child {
+  border-bottom: none;
+}
+
+.band-item-body {
+  flex: 1;
+  min-width: 0;
+}
+.band-item-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+/* Mono, because every note here names a file or counts them. */
+.band-item-note {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-4);
+}
+
+/* --------------------------------------------------------------------------- notice bands -- */
+
+.band-notice {
+  display: flex;
+  align-items: center;
+}
+.band-notice-body {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A band about something irreversible is drawn a size louder in every dimension than one about
+   something merely absent — padding, radius, gap, both type sizes and both colours. */
+.band-notice-destructive {
+  gap: 16px;
+  padding: 16px 20px;
+  border-radius: var(--r-14);
+}
+.band-notice-destructive .band-notice-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--destructive-text);
+}
+.band-notice-destructive .band-notice-note {
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+
+.band-notice-warn {
+  gap: 12px;
+  padding: 15px 18px;
+  border-radius: var(--r-13);
+}
+/* The title keeps the ordinary text colour. Only the GLYPH is amber — the sentence is not a
+   warning, it is a count. */
+.band-notice-warn .band-notice-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.band-notice-warn .band-notice-note {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+/* The `⊘`. A bare glyph rather than an icon, at the same 13px as the row arrows. */
+.band-glyph {
+  flex: none;
+  font-size: 13px;
+  color: var(--warn);
+}
+
+/* -------------------------------------------------------------------------- consent panel -- */
+
+.band-consent {
+  padding: 16px 18px;
+  border-radius: var(--r-13);
+}
+.band-consent-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--decision-text);
+}
+.band-consent-body {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+/* The rule separates what you are agreeing to from the act of agreeing. `flex-start` because the
+   sentence wraps to two lines and the box belongs beside the first of them, not centred on both. */
+.band-consent-footer {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--decision-divider);
+}

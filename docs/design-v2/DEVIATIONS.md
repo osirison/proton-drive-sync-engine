@@ -515,7 +515,7 @@ visually identical node fails the style gate.
 
 A mask can fail two ways, and `auditSeams()` reports both. It can paint underneath (the above), or
 it can fail to cover: a background at less than full opacity leaves the hairline showing at reduced
-strength, and `--decision-bg` is `rgba(255, 107, 107, .05)`, a real token that hides nothing. The
+strength, and `--decision-band-bg` is `rgba(255, 107, 107, .05)`, a real token that hides nothing. The
 subject of the check is anything *claiming* to mask — an element with a background of any opacity
 straddling the line. An element with no background at all is not reported, because otherwise every
 centred flex wrapper in the design is a violation and a check that cries wolf is a check nobody
@@ -660,9 +660,10 @@ and leaves out of the table.
   (replaced by `step 1 of 2`)". Both `9a` frames have **four** header slots, not five. A menu whose
   only item is the theme toggle has no place in a two-step flow that cannot be left.
 - **The border needed a new token.** Measured `rgba(255,107,107,.35)` dark → `rgba(190,18,60,.30)`
-  light, against `--decision-border`'s `.32`/`.28`. Close enough to look like the same value and not
-  it; the alphas differ per theme, so no `rgba(var(--decision-rgb), …)` form covers both. Added as
-  `--chip-attention-border`.
+  light, against the then-`--decision-border`'s `.32`/`.28`. Close enough to look like the same value
+  and not it; the alphas differ per theme, so no `rgba(var(--decision-rgb), …)` form covers both.
+  Added as `--chip-attention-border`. **§52 later found that the `.32`/`.28` compared against here
+  was not one token's theme pair at all** — it was two different bands, one measured per theme.
 - The syncing dot measures 8.8px rather than 6px only because `blip` scales it 1.5× and the reading
   caught it mid-cycle. It is a 6px dot in every variant that has one.
 - `blip` lands in `shell.css`, which is where §29 said it belonged: it drives this dot and (F5) a text
@@ -769,6 +770,34 @@ properties are not asserted at all. Comparing those would measure the box model,
 same element reports `1000px` in one document and `1040px` in the other while occupying identical
 space on screen.
 
+### 48a. "+2px" is a consequence, not a rule — four of the ten dialogs opt in
+
+F5's dialog layer needed a number to write, so the ten `kind: dialog` frames were read back against
+the prototype rather than offset by two. **Four of them declare `box-sizing:border-box` inline**, and
+those come out at exactly their nominal size:
+
+| declares `border-box` | declared = drawn |
+| --- | --- |
+| `9a Consent`, `9a CLI missing`, `8a Save refused`, `7a File pending` | `600` |
+
+| does not | declared → drawn |
+| --- | --- |
+| `3a Conflicts cleared`, `5a Checking`, `4a Empty`, `6a Details` | `520` → **522** |
+| `9a First sync`, `7a Never synced` | `600` → **602** |
+
+The split is not arbitrary: the four that opt in are the four that carry `padding` on the dialog
+itself, and the six that do not are `display:flex` columns with a fixed height that pad their
+children instead. An author reaching for padding reached for `border-box` in the same breath.
+
+So **there is no offset to apply — only a number to read off the frame**, and `routes.js` carries the
+drawn box per dialog with a test asserting it. Under `base.css`'s global `border-box`, writing the
+drawn number is always right; writing the declared one is right four times out of ten.
+
+`3a Conflicts cleared` and `5a Checking` are worth naming separately. Both are `522×766` and both
+contain **the app header and the four footer doors**, so they are not 520px dialogs at all — they are
+the product window drawn narrow, because their content is a centred empty state and 1040px of it
+would be mostly whitespace. Neither is modelled by the dialog layer.
+
 ## 49. The copy deck outlived one of its drawings
 
 `13-copy-deck.md`'s Activity section carries `Nothing has moved in the last hour.` under "Quiet:".
@@ -821,12 +850,396 @@ lives in `gui/tools/fidelity/README.md` as well:
   parses is invisible, as is anything about §30's open reduced-motion question.
 - **Native tray rendering** and **the desktop's own notification chrome.** Neither is a webview.
 - **Motion, focus order and hover states.** The gate reads a static tree. F4's focus-survival check
-  and the seam audit cover their own corners of this; nothing covers it in general.
+  and the seam audit cover their own corners of this; nothing covers it in general. §55a is what
+  that gap costs: a control can satisfy every asserted property and still be impossible to operate,
+  and the typed-`DELETE` gate did.
 
 The engine is Chromium rather than the WebKit the issue asks for, because Playwright's WebKit needs
 host packages this machine cannot install without `sudo`. It is the same engine every measurement in
 §8–§50 came from, so the numbers here and the numbers there are consistent — but WebKitGTK is what
 ships, and CI should add it when the runner allows.
+
+---
+
+## Controls, rows and bands (F5)
+
+## 52. `--decision-bg`/`--decision-border` were one token pair holding two different bands
+
+Found by censusing the band tints before writing `bands.js`, not by looking at the app — the defect
+is invisible in either theme on its own.
+
+Sweeping all 51 frames for a translucent fill over a translucent border returns **ten** crimson,
+red and amber band surfaces. Two of them are relevant here:
+
+| site | dark | light |
+| --- | --- | --- |
+| attention band — `2a Needs you` | `rgba(255,107,107,.05)` / `.32` | **not drawn** |
+| recoverable card — `4a Deletions` right column, `9a Consent` | `rgba(255,107,107,.04)` / `.30` | `rgba(190,18,60,.03)` / `.28` (`12a Deletions light`) |
+
+F1 carried one pair: `--decision-bg`/`--decision-border`, dark `.05`/`.32` and light `.03`/`.28`.
+Those are **the attention band in dark and the recoverable card in light** — two different surfaces,
+one token. It could not have been otherwise: the light frame set is settled / syncing / compact ×3 /
+conflict / deletions / tray, and **no light frame draws the attention band**, so the light value had
+to come from somewhere else.
+
+Nothing consumed the pair yet, so nothing rendered wrong. It would have gone wrong the moment
+`bands.js` used it — whichever band claimed it, one theme would have drawn the other band's tint,
+and no screenshot review of a single theme could catch that.
+
+**Resolution.** Split by site, the same move §43 made for `--chip-attention-border`:
+
+| token | dark | light |
+| --- | --- | --- |
+| `--decision-band-bg` | `rgba(255,107,107,.05)` | `rgba(190,18,60,.04)` — **chosen** |
+| `--decision-band-border` | `rgba(255,107,107,.32)` | `rgba(190,18,60,.30)` — **chosen** |
+| `--decision-card-bg` | `rgba(255,107,107,.04)` | `rgba(190,18,60,.03)` |
+| `--decision-card-border` | `rgba(255,107,107,.30)` | `rgba(190,18,60,.28)` |
+
+Three of the four light values are measured. The light attention band is **chosen**, because nothing
+draws it. Derived from the card, which is drawn in both themes: `.04`/`.30` dark → `.03`/`.28` light,
+so the band's `.05`/`.32` → `.04`/`.30`. The cross-theme ratio (×0.75 on the fill) and the
+band-to-card delta (−`.01`/−`.02`) independently give the same two numbers, which is the only
+corroboration available without a frame. **S10 owns confirming it** when the light mapping is
+propagated to the undrawn screens.
+
+The `--destructive-*` pair was checked for the same defect and is clean: dark `.06`/`.38` and light
+`.04`/`.40` both come from `4a Deletions`' permanent card and its light twin. One token pair was
+broken, not the family.
+
+### 52a. The rest of the band tints, for whoever writes `bands.js`
+
+The other eight, unresolved here because they want measuring in place rather than up front:
+
+| site | fill | border |
+| --- | --- | --- |
+| `4a Deletions` permanent, `5a Plan` | `rgba(255,59,59,.06)` | `.38` |
+| `4a Compact` permanent | `rgba(255,59,59,.05)` | `.32` |
+| `4a Compact` recoverable | `rgba(255,107,107,.035)` | `.26` |
+| `8a Deletions tab` | `rgba(255,59,59,.04)` | `.30` |
+| `11a Rules` | `rgba(255,59,59,.05)` | `.30` |
+| `7a Activity quiet` never-synced | `rgba(255,159,28,.04)` | `.28` |
+
+Two things fall out. **The compact panel steps every alpha down one notch** (crimson `.04`→`.035`,
+`.30`→`.26`; red `.06`→`.05`, `.38`→`.32`), so tone and density are independent axes — the same
+shape `controls.js` found for kind and size. And **the never-synced band's amber has no token in
+either theme**: `--up-label` is the same hue in dark (`#ff9f1c`) but `#b23f14` in light, a different
+colour entirely. No light frame draws that band either, so it lands in the same chosen-value
+position as the attention band above.
+
+No band carries a solid fill in any frame. The one solid red in the app remains the
+`Delete permanently` button.
+
+## 53. The transfer row's arrow is beside the seam, not on the outside edge
+
+`03-main-screen.md` §"Transfer row":
+
+> Left column: filename → size → `→` `#FF9F1C`. Right column: `←` `#22D3EE` first, then filename,
+> then size. **The arrow is on the outside edge in both columns**, pointing away from the seam.
+
+The first sentence is correct and the second contradicts it. `div[1]` on `2a Syncing` is
+`grid-template-columns: 488px 488px`, so `div[0]` is the left, leaving column. Measured child order:
+
+| column | order | where the arrow lands |
+| --- | --- | --- |
+| left — leaving | `[name] [size] [→]` | the right end, **beside the seam** |
+| right — arriving | `[←] [name] [size]` | the left end, **beside the seam** |
+
+Both arrows sit against the centre line and both point across it, which is also the direction of
+travel. "Outside edge" and "pointing away from the seam" are wrong on both counts.
+
+**Checked against the light pair rather than assumed.** `12a Syncing light` (`div[1]` likewise
+`488px 488px`) and `12a Compact syncing light` carry the identical order. All four drawn frames
+agree — this is prose against frames, never frame against frame, so §1.3 settles it without a
+judgement call.
+
+Issue #169 repeats the wrong gloss verbatim, so the sentence has already propagated once. `rows.js`
+carries the rule in a pure `transferSlotOrder()` with its own test, because a screen built from the
+prose still looks plausible and the style gate cannot catch it until S1 maps `2a Syncing`.
+
+Two details the correct sentence also gives, worth keeping together with it:
+
+- **It is a rotation, not a mirror.** `[name][size][arrow]` becomes `[arrow][name][size]`; the name
+  precedes the size on both sides. A mirror would put the size first on the right, and nothing
+  draws that.
+- **Placement follows direction, not column.** `2a Compact syncing` is a single 360px column with
+  no seam and no second side, and its arriving row still leads with the arrow.
+
+### 53a. Three smaller things the row census settled
+
+- **The flat rows are one shape at several rungs, and F5 models five of them.** history, path,
+  fact, pass and action are all `padding:<y> 2px` over a 1px `--divider` rule, flex, centred:
+  `9/13`, `9/12`, `11/14`, `12/14`, `13/14` (y / gap). Written once in `rows.css` as five rungs
+  rather than five builders.
+
+  **These five are not the whole set, and the ladder is deliberately open.** Censused over the
+  prototype, `padding:<y> 2px` beside `#16181D` also yields an `8px 2px` gap-13 rung — and that one
+  puts the rule on the **bottom**, not the top. `5a Plan` draws nine of them (`div[3]/div[1]/div[0..8]`,
+  976×33); eleven `border-bottom` separators across the prototype in all, against ninety-two
+  `border-top`. That is S4's screen, not F5's scope, so F5 does not model it; a screen that needs a
+  rung adds one. Stated because "four rungs" written as though exhaustive is the same failure mode
+  as §53's arrow gloss — a sentence the next person trusts instead of re-measuring.
+
+- **`7a Never synced`'s entries are not fact rows**, though they sit one screen away and look like
+  them. No dot, `gap:12` against `14`, and a **mono** path rather than a sans sentence — plus a
+  dimmed variant that separates *you told it to skip these* from *can't be synced*. Modelled as
+  `pathRow` rather than stretched onto `factRow`. Its `Change this rule` is likewise **not** an
+  action row: a standalone `inline-block` button after the group, at controls.js's plain `small`
+  size (`7px 14px`, `--r-8`).
+
+- **A sub-pixel border in the prototype that never reaches the pixels.** `5a Plan`'s conflict dot is
+  authored `border:1.5px solid #FF6B6B`, but Chromium floors a sub-pixel border at `deviceScaleFactor:1`
+  and the frame records **1px** — there is not a single `1.5px` border in any of the 51 fixtures.
+  So the decision dot's ring is 2px at 7 and 8 and 1px at 6 everywhere that is drawn, and `dot()`
+  defaults off size accordingly. Recorded because reading the prototype and "restoring" the 1.5px
+  changes nothing on screen while making the source disagree with the ground truth. The one real
+  constraint is that a 2px ring on a 6px dot leaves a 2px hole and reads as a fill.
+- **`02-shell.md` §2's transfer row is the compact one.** It gives `border-radius:9px;
+  padding:9px 11px`, against `03-main-screen.md`'s `11px` / `11px 13px`. Not a conflict: that
+  section describes the 360px panel (its hexagon is 72px), and the frames measure exactly those two
+  rungs — 11/11×13 on `2a Syncing`, 9/9×11 on `2a Compact syncing`. `--r-11`'s "transfer rows"
+  comment is right for the main screen and needs the compact rung read off `--r-9`.
+- **The deletion card's headline is 16px sans — the only filename in the app that is not mono.**
+  Measured on both cards of `4a Deletions`. Deliberate rather than a slip: the card is naming the
+  thing you are about to lose, and the path itself is in the facts strip below in mono.
+
+`4a Compact`'s two deletion rows (332×61, no facts strip, no gate, no second button) are **not**
+this card at a smaller size and are left to F6 with the rest of the panel. They also need the two
+compact band alphas §52a records, which no token carries yet.
+
+## 54. The never-synced band's amber had no token in either theme
+
+§52a flagged it; `bands.js` needed it. Measured `rgba(255,159,28,.04)` over `rgba(255,159,28,.28)`
+at `7a Activity quiet`, radius `13`, padding `15px 18px` — the only site.
+
+The nearest existing token was `--up-label`, which carries the same `#FF9F1C` in dark and a quite
+different `#B23F14` in light. Reusing it would have worked in dark and made the band's meaning
+depend on a token named for upload accents, so **`--warn` is a new token with the same value in both
+themes and deliberately not an alias**. `tokens.css` already keeps several same-valued pairs apart
+for exactly this reason — `--border` / `--border-chrome`, `--panel-alt` / `--compact-row` — so that
+either can move in light without dragging the other.
+
+| token | dark | light |
+| --- | --- | --- |
+| `--warn` | `#FF9F1C` | `#B23F14` |
+| `--warn-band-bg` | `rgba(255,159,28,.04)` | `rgba(178,63,20,.03)` — **chosen** |
+| `--warn-band-border` | `rgba(255,159,28,.28)` | `rgba(178,63,20,.28)` — **chosen** |
+
+Both light tints are chosen, because no light frame draws this band. Derived as §52 derived the
+light attention band — from a drawn pair starting at the same dark alpha. The recoverable card is
+`.04`/`.30` dark and `.03`/`.28` light, so a `.04`/`.28` dark band maps to `.03`/`.28`. **S10 owns
+confirming it.**
+
+**Why warm and not crimson, restated because it is the band most likely to be "corrected":** nothing
+in it is at risk. The screen's own closing line is *"Nothing here is at risk — it's just not backed
+up."* Four skipped temp files inside a crimson band would be a lie about severity, and the amber is
+the design saying so.
+
+### 54a. What the band census settled about layout
+
+- **The attention band is ONE box, not one per item.** `2a Needs you` is a single 976×127 container
+  holding both waiting items, split by a 1px `--decision-divider` rule, `overflow:hidden` so the
+  rules do not cross the 14px radius. Two conflicts and a deletion queue are one interruption.
+- **Every value moves with tone, not with size.** The destructive band and the never-synced band
+  differ in padding (`16px 20px` / `15px 18px`), radius (`14` / `13`), gap (`16` / `12`), title size
+  (`14` / `13.5`), note colour (`--text-2` / `--text-3`) and title colour (`--destructive-text` /
+  plain `--text`). Tone is the axis, the way kind is in `controls.js`.
+- **No band holds a destructive action, and none is ever a solid fill.** `11a Rules` states the
+  first for banners; the four bands here keep it too — `Review`, `Compare`, `Show them`, `Leave it
+  alone` all route to the screen that owns the decision.
+- **`8a Deletions tab` and `11a Rules` are tinted like bands and are not bands.** The first is
+  `controls.js`'s `radioCard` wearing a destructive tone (546×92.75, a 15px ring at `#6B3A3A` — a
+  ring colour no token carries, S6's to mint); the second is a prose callout on a spec sheet, with
+  no glyph and no button. Neither is modelled by `noticeBand`.
+
+## 55. The one drawn checkbox disagreed with `controls.css` in six places
+
+`9a Consent`'s `I understand deletions travel both ways.` is the **only** checkbox in any of the 51
+frames — swept for 17×17 nodes at radius 5, exactly one hit. F5's controls commit wrote the block
+from the general control conventions instead, and nothing caught it until `bands.js` built the
+consent panel around it and the panel came out **2.5px short**.
+
+| property | was | drawn |
+| --- | --- | --- |
+| box border | `--border-strong` `#2E323A` | `--text-5` `#6D7783` |
+| box background | `--panel-alt` | transparent |
+| box `margin-top` | — | `1px` |
+| row `gap` | `10px` | `11px` |
+| label colour | `--text-2` | `--text-bright` |
+| label `line-height` | `normal` | `1.5` |
+
+Two of those are load-bearing rather than cosmetic. The box is **transparent** because it sits on the
+consent panel's crimson tint and a `--panel-alt` fill punches a dark hole in it. And the border is
+**`--text-5`, not `--line-inert`** — `--line-inert` (`#3E454E`) is the *unselected radio ring*, and a
+checkbox you have not ticked is drawn brighter than an unselected radio, because it is the thing
+standing between you and continuing.
+
+The same control also carried a **second, stale source of truth**: an `is-checked` class stamped on
+the box from the `checked` argument at build time. Nothing consumed it — the visual state comes from
+`.checkbox-input:checked + .checkbox-box`, which the browser keeps current for free — so nothing was
+visibly wrong. It was a trap for whoever styled it next: a class that reads like state and freezes at
+its initial value the moment anyone ticks the box. Removed.
+
+**`toggle`'s `is-on` and `radioCard`'s `is-selected` are not the same thing and must stay.** Neither
+has an `<input>` beneath it — a toggle is a `<button role="switch">`, a radio card a
+`<div role="radio">` — so there the class *is* the state and the caller re-renders to change it. The
+distinction is whether the DOM already knows; the checkbox is the only one of the three where it
+does. Written into the builder's own docstring, because "consistency" is exactly the argument that
+would put `is-checked` back.
+
+The `line-height` is what the missing 2.5px was: `normal` closes the leading on a sentence that
+wraps. Recorded because a 2.5px height error is invisible by eye, sits inside the style gate's
+tolerance for nothing else, and would have been attributed to S7 when it landed.
+
+### 55a. "Clears on blur" made the typed-`DELETE` gate impossible to complete
+
+`14-behaviour-and-state.md` asks for a field that is case-sensitive, keeps the confirm button
+disabled until the word matches, and **clears on blur**. Implemented literally, on the field's own
+`blur`, all three hold and the gate cannot be used.
+
+Reaching the button the gate unlocks blurs the field on the way to it. So the field cleared,
+`onChange(false)` disabled the button, and the click already in flight landed on a disabled control.
+Reproduced headlessly with a consumer that patches the button rather than rebuilding it:
+
+| path | before | after |
+| --- | --- | --- |
+| pointer — click `Delete` | handler fired **0** times | fires |
+| keyboard — `Tab` then `Enter` | handler fired **0** times | fires |
+
+Both, because `mousedown` blurs before `click` dispatches and `Tab` blurs before `Enter` arrives.
+The only irreversible action in the app could not be performed at all, by any means.
+
+**The rule is right; the boundary was wrong.** "You went and did something else" is not observable at
+the field — moving to the button the field unlocks is the second half of the same act. It is
+observable at the PAIR. So `deleteGate` stands down for any blur whose `relatedTarget` is inside
+`[data-delete-gate]`, and `deletionGate` stamps that attribute and watches the group's own
+`focusout`. Both halves are needed: without the first the gate cannot be completed, and without the
+second a gate left armed while you tab past the button stays armed, which is the formality the rule
+exists to prevent.
+
+Verified in all four directions — click completes, `Tab`+`Enter` completes, focusing anything outside
+the pair clears, and tabbing past the confirm button without pressing it clears.
+
+**No automated regression guard**, and that is a real gap on the app's most safety-critical control.
+It is DOM-behavioural, so `node:test` cannot reach it, and the fidelity gate reads a static tree —
+§51 already lists focus order among what it cannot cover. The reproduction above is the recipe;
+whoever builds S3 should carry it into whatever browser-driven harness that screen earns.
+
+## 56. The scrim behind a dialog has no ground truth anywhere. **Open.**
+
+Every dialog in the bundle is drawn in isolation — its own `data-screen-label`, its own box, on the
+spec sheet's background. **Not one frame shows a dialog over a screen**, so the layer between them
+is undrawn. Neither `02-shell.md` nor `14-behaviour-and-state.md` specifies it either; the only
+mention of dialogs in either is `14-behaviour-and-state.md:116`, "`Esc` cancel a confirmation or
+close a dialog".
+
+Chosen rather than left absent, because a modal with no scrim over a live screen is a worse default
+than a slightly wrong one — the screen behind stays visually clickable and the modality is invisible.
+
+`--scrim: rgba(0,0,0,.5)` dark, `rgba(0,0,0,.33)` light. Derived from the one related pair that IS
+drawn: `--shadow-dialog` steps `.6` dark → `.4` light, and `.5 × (.4/.6) = .33`. Deliberately modest
+— the dialog already carries a `0 24px 60px` shadow at `.6`, and a heavy scrim under it draws the
+same separation twice.
+
+**A designer should confirm the value.** Unlike §52 and §54, there is no drawn analogue at the same
+site to derive from, only a proportion borrowed from a shadow. Filed as open in the same sense as
+§45.
+
+## 57. Only three of the seven "overlay" routes are dialogs
+
+F4's route table gave seven routes `kind: "overlay"`, which is correct about routing — all seven
+stack over what you were doing, all seven return focus to their opener, all seven answer `Esc`. It
+is not a statement about presentation, and F5 needed one.
+
+Measured by what each route's frame actually is:
+
+| route | frame | drawn as |
+| --- | --- | --- |
+| `details` | `6a Details` `522×462` | **dialog** — standalone surface, ✕, no header, no doors |
+| `neverSynced` | `7a Never synced` `602×602` | **dialog** — ✕ and a `Done` |
+| `saveRefused` | `8a Save refused` `600×213` | **dialog** — no ✕, two actions |
+| `conflicts` | `3a Conflict` `1042×766` | screen — keeps header and doors |
+| `deletions` | `4a Deletions` `1042×766` | screen — keeps header and doors |
+| `armed` | `4a Armed` `1042×766` | screen — keeps header and doors, replaces the content area only |
+| `onboarding` | `9a` ×5 | takeover — non-dismissible, already special-cased by F4 |
+
+So four of the seven need **no scrim, no focus trap and no layer at all**: the body swap F4 already
+does is exactly right for them, and wrapping them would put a scrim over a window that has nothing
+behind it. `routes.js` carries `presentation: "dialog" | "screen"` with tests, because the two are
+one word apart in the table and the wrong one is not a crash — it is a scrim over a screen that
+should have been replaced, or a full window with no way back.
+
+`4a Armed` is the one worth stating outright: **the full-window delete confirmation is a body swap,
+not a dialog.** It keeps the live status chip and the four doors, draws `Press Esc to cancel.` on
+screen, and is centred on the 104px warning hexagon. It needs the layer least of all seven and would
+have been the most tempting to wrap.
+
+### 57a. What the layer had to change in F4, and what it must not touch
+
+**One branch.** `app.js:305` was the only place keyed off the overlay; the header and footer already
+read `route`. A dialog now collapses back to its underlying route so the screen beneath renders as
+though nothing had opened — including `onMain`, which keyed off `!overlay` and would otherwise swap
+the footer's mono line away and grow a home button in the header the moment Details opened. The
+shell visibly rearranging behind a panel sitting on top of it is exactly what F4's own note on the
+`details` route asks to avoid: *"clicking it must not lose your place."*
+
+**No second `Escape` handler.** F4 owns the key and its precedence chain — menu, then overlay, then
+the screen's `shell:cancel`. A listener in the dialog layer would give one keypress two effects.
+`dialog.js` handles `Tab` and nothing else.
+
+**The layer is keyed and patched, never rebuilt.** Same discipline as §45a and for a harder reason:
+the armed deletion's typed-`DELETE` field clears on blur by design, so a layer rebuilt on the ~2s
+poll would destroy the field mid-word and make the gate impossible to finish. Verified by holding a
+node reference across two polls.
+
+### 57b. One overlay slot cannot hold two layers — found in review
+
+The first version of the dialog layer kept F4's single `overlay` variable and derived the body from
+it: `active = dialogRoute ? route : (overlay ?? route)`. That reads as conservative and is not. With
+one slot, opening a dialog **overwrites** whatever screen overlay was showing, and the fallback to
+`route` then drops the user onto the door underneath.
+
+It is one click away, not a corner case: **all three screen overlays draw the four doors**, `Details`
+among them, measured on `3a Conflict`, `4a Deletions` and `4a Armed`. So opening Details from the
+Deletions screen lost the Deletions screen — the exact failure F4's note on the `details` route warns
+about, reintroduced by the module written to honour it.
+
+Fixed by giving the two presentations two pieces of state: a **stack** for screen overlays (so
+`4a Armed` over `4a Deletions` returns to the deletions screen rather than to a door) and a single
+slot for the dialog, which is always above it. `Esc` closes the topmost — dialog first, then the
+stack — and each layer carries its own focus-return key. Opening a screen overlay dismisses any
+dialog, because the dialog belonged to the screen being left.
+
+Verified end to end: screen overlay open → dialog over it keeps the screen mounted → `Esc` closes
+only the dialog and returns focus to the door that opened it → `Esc` again closes the screen overlay.
+
+Two smaller things from the same review, both real:
+
+- **The ✕ is per dialog.** The layer passed `onClose` unconditionally, contradicting this file's own
+  §57 table — `8a Save refused` and `9a CLI missing` draw no close button, because they ask you to
+  choose between two repairs and a dismiss in the corner is a third answer the design does not offer.
+  Now `closable` in `routes.js`, with a test. `Esc` still closes all three.
+- **A dialog takes `label` or `labelledBy`, never both and never neither.** ARIA gives
+  `aria-labelledby` precedence, so passing both is not an error that surfaces — it is a `label` that
+  silently does nothing while its author believes the dialog is named. Both cases now throw.
+
+### 57c. The onboarding takeover hid the layers instead of discarding them
+
+The first version forced `dialogRoute` to `null` and `active` to `"onboarding"` while the latch was
+set, which is correct for what is *shown* and wrong about what is *kept*. The latch releases when the
+daemon comes up (`nextOnboardingLatch`), and anything still held came back on the way out.
+
+Reproduced by driving the app rather than by reading it: open the Conflicts screen with a Details
+dialog over it, wipe the daemon back to `firstRun`, let the takeover engage, then bring the daemon
+back. **You finish first-run setup and land on the Conflicts screen with a Details dialog floating
+over it** — both from before the wipe, both about a state that no longer exists.
+
+Reachable rather than likely: it needs the daemon reset to first-run, or made unreachable *and* its
+folder pair removed, while the window is open with a layer showing. The cost of getting there is low
+and the landing is wrong in a way the user cannot explain, which is the combination worth fixing.
+
+Entering the takeover now discards both layers. **Edge-triggered on entry**, not asserted on every
+render while the latch is set: the two are equivalent today, but the second would quietly forbid
+onboarding from ever opening a layer of its own, and that is S7's call rather than this line's.
 
 ---
 
