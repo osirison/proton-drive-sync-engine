@@ -31,9 +31,13 @@ export const TRAY_FIXTURES = {
     },
   },
 
-  // The GNOME top bar with our indicator open. The panel inside it is the needs-you compact panel
-  // with the tray menu below it — the same component and the same state `2a Compact needs you`
-  // carries, so the panel's arguments already exist and are not restated here.
+  // The GNOME top bar with our indicator open. The panel inside it is `ui/compact.js` in its
+  // needs-you state with the TRAY MENU as its tail — which is a combination no fixture carries:
+  // `2a Compact needs you` is the same state with a footer instead, and the four panels above are
+  // the menu tail in the other four states. So there is a real gap here, and leaving it is still
+  // right: `frame-classes.mjs` classifies this frame `specimen` and asserts only the inner artefact,
+  // so a panel written for it would be data nothing compares, invented to fill a slot. S8 draws it
+  // and owns the arguments.
   "10a In situ": {
     specimen: {
       note: "the tray panel (ui/compact.js, needs-you + menu) positioned under the indicator by S8; the 32px bar, the clock and the status cluster are a desktop mock and are never asserted",

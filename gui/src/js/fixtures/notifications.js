@@ -33,6 +33,12 @@ export const NOTIFICATION_FIXTURES = {
   // that exposes: `format.js`'s `since(ago(0), "short")` is `0s ago`, and no formatter in the app
   // yields `now` at all. The fixture still pins the epoch — a literal `"now"` would bypass the
   // formatter and hide the gap — and S9 owes the threshold that turns a few seconds into `now`.
+  //
+  // AND IT IS A GETTER, for the reason plan.js measured on `ui.checkedAt`: a plain `at: ago(0)` is
+  // evaluated ONCE, when the module is imported, so the offset ages from there — the harness reaches
+  // extraction seconds after load, and a preview tab left open renders minutes later. Invisible at
+  // minute resolution and fatal at this one, which is the only register a banner header draws.
+  // Reading the property re-runs `ago`, so it is 0 at the moment it renders, whenever that is.
 
   "11a Grouped": {
     notification: {
@@ -45,7 +51,9 @@ export const NOTIFICATION_FIXTURES = {
       // The notification server's application name, which is the app's short name and not
       // `CHROME.productName` ("Proton Drive Sync"). Not in the deck.
       app: "Drive Sync",
-      at: ago(0),
+      get at() {
+        return ago(0);
+      },
       // Both not in the deck. The body counts VERSIONS (ten, from five files changed on both sides),
       // not files — the reassurance is that nothing was overwritten, so the number is deliberately
       // the larger one.
@@ -75,7 +83,9 @@ export const NOTIFICATION_FIXTURES = {
       // the banner and the indicator agree at a glance. No numeral: the count is in the body.
       icon: { state: "unreachable" },
       app: "Drive Sync",
-      at: ago(0),
+      get at() {
+        return ago(0);
+      },
       // Not in the deck. Voice rule 3 is doing visible work in the body: the sign-in problem is
       // named first and "nothing is lost" closes the sentence, which is the inverse of how an error
       // dialog would write it. `61 changes` is written into the literal rather than pinned as a

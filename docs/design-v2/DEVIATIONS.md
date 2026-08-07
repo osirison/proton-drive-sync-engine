@@ -15,7 +15,7 @@ token (§18) and **2, 3, 5 and 6** are per-component colour or geometry that F2 
 measured; 4 and 7 belong to their screens. The full sweep is **P0.2** (#163).
 
 **One caveat on the method, learned the hard way.** The lockstep walk compares each frame's
-*descendants*. The frame element itself — the 1040×764 window box — is not a descendant of itself,
+_descendants_. The frame element itself — the 1040×764 window box — is not a descendant of itself,
 so its own properties were invisible in the first pass and a wrong `--border-subtle` reached the
 light theme before deviation 8a caught it. Any later use of this method must include the root node.
 
@@ -25,15 +25,15 @@ Every row below was measured, not read. `docs/design-v2/Drive Sync.dc.html` is p
 tree; each of the seven drawn dark/light frame pairs is walked **in lockstep** and every differing
 CSS property recorded as a `dark → light` substitution at a known node:
 
-| Dark frame | Light frame | Nodes |
-| --- | --- | --- |
-| `2a Settled` | `12a Settled light` | 26 |
-| `2a Syncing` | `12a Syncing light` | 60 |
-| `4a Deletions` | `12a Deletions light` | 63 |
-| `3a Conflict` | `12a Conflict light` | 75 |
-| `2a Compact settled` | `12a Compact settled light` | 12 |
-| `2a Compact syncing` | `12a Compact syncing light` | 36 |
-| `2a Compact needs you` | `12a Compact needs light` | 13 |
+| Dark frame             | Light frame                 | Nodes |
+| ---------------------- | --------------------------- | ----- |
+| `2a Settled`           | `12a Settled light`         | 26    |
+| `2a Syncing`           | `12a Syncing light`         | 60    |
+| `4a Deletions`         | `12a Deletions light`       | 63    |
+| `3a Conflict`          | `12a Conflict light`        | 75    |
+| `2a Compact settled`   | `12a Compact settled light` | 12    |
+| `2a Compact syncing`   | `12a Compact syncing light` | 36    |
+| `2a Compact needs you` | `12a Compact needs light`   | 13    |
 
 The pairs align exactly — same node count, same tree path, in all seven — so a light value can be
 attributed to the dark token it replaces rather than guessed from a table. That is what makes
@@ -43,28 +43,28 @@ conflicts 8 and 9 answerable instead of arguable.
 
 ## 8. Light border tiers — three tokens, four values
 
-**Resolved.** `12-light-theme.md` maps *border subtle / std / strong* to `#EDEAE5` / `#E6E3DE` /
+**Resolved.** `12-light-theme.md` maps _border subtle / std / strong_ to `#EDEAE5` / `#E6E3DE` /
 `#E0DCD5`, `#D6D2CB`. The mismatch is not a typo in the table: the **dark** palette is what is
 under-specified. `#23262D` does five jobs in dark, and light splits them apart — measured at the
 same nodes:
 
-| Dark | Light | Sites | Role |
-| --- | --- | --- | --- |
-| `#23262D` | `#E6E3DE` | 4 | transfer cards, conflict version cards |
-| `#23262D` | `#E0DCD5` | 10 | compact-panel edge, status chip, **quiet** buttons (`Pause`, `‹`) |
-| `#23262D` | `#D6D2CB` | 5 | **secondary** buttons (`Sync now`, `Open`, `›`) |
-| `#23262D` | `#D9D5CE` | 1 | the compact panel's seam — see deviation 17 |
-| `#1A1D22` | `#EDEAE5` | 5 | panel borders |
-| `#1A1D22` | `#E6E3DE` | 4 | **the window's own 1px edge** — see 8a |
-| `#16181D` | `#EDEAE5` | 7 | dividers (`border-top`) |
-| `#2E323A` | *(border dropped)* | 4 | primary buttons — light primary is a near-black fill, no border |
+| Dark      | Light              | Sites | Role                                                              |
+| --------- | ------------------ | ----- | ----------------------------------------------------------------- |
+| `#23262D` | `#E6E3DE`          | 4     | transfer cards, conflict version cards                            |
+| `#23262D` | `#E0DCD5`          | 10    | compact-panel edge, status chip, **quiet** buttons (`Pause`, `‹`) |
+| `#23262D` | `#D6D2CB`          | 5     | **secondary** buttons (`Sync now`, `Open`, `›`)                   |
+| `#23262D` | `#D9D5CE`          | 1     | the compact panel's seam — see deviation 17                       |
+| `#1A1D22` | `#EDEAE5`          | 5     | panel borders                                                     |
+| `#1A1D22` | `#E6E3DE`          | 4     | **the window's own 1px edge** — see 8a                            |
+| `#16181D` | `#EDEAE5`          | 7     | dividers (`border-top`)                                           |
+| `#2E323A` | _(border dropped)_ | 4     | primary buttons — light primary is a near-black fill, no border   |
 
 So `#23262D` splits **four** ways, not three. The counts reproduce `IMPLEMENTATION-PLAN.md` §1.3
 conflict 8's independent tally of 16 / 8 / 10 / 5 uses for `#EDEAE5` / `#E6E3DE` / `#E0DCD5` /
 `#D6D2CB` across the light frames.
 
 The quiet/secondary split is the one `01-foundations.md` §1 already draws — **secondary** is
-`bg #101216` *or* `#16181D`, text `#C9D0DA`/`#E8EBF0`; **quiet** is `bg transparent`, text
+`bg #101216` _or_ `#16181D`, text `#C9D0DA`/`#E8EBF0`; **quiet** is `bg transparent`, text
 `#99A2AE`. Note the frames use both secondary fills (`Sync now` in `2a Settled` is drawn
 `background:transparent`, which is `IMPLEMENTATION-PLAN.md` §1.3 conflict 4, still open; the two
 compact `Open` buttons use `#16181D`), so `--btn-secondary-bg-alt` exists alongside
@@ -79,7 +79,7 @@ So `tokens.css` carries `--border`, `--border-chrome`, `--btn-quiet-border` and
 `#374151` vs `#14161A`) and `--decision-text` vs `--destructive-text` (both `#FF9C9C`; light
 `#BE123C` vs `#B91C1C`).
 
-`#2E323A` never appears as a *border* in a drawn light frame, so `--border-strong`'s light value
+`#2E323A` never appears as a _border_ in a drawn light frame, so `--border-strong`'s light value
 `#E0DCD5` is taken from the doc's positional order and is **unverified**. Flagged for P0.2.
 
 ### 8a. The window's own border
@@ -108,7 +108,7 @@ borders", which is why the doc alone cannot separate them — and why the first 
 - `#B9BEC6` ← `#4E5661` at the disabled `‹` in `3a Conflict`. Correct.
 - `#B9BEC6` ← `#3E454E` at the sub-label inside the primary `Keep both` button — a different role
   (text **on** the primary fill), not a disabled tier. See deviation 12.
-- `#9CA3AF` ← `#6D7783` (`--text-5`) at exactly one node: the `→` in a *queued* transfer row in
+- `#9CA3AF` ← `#6D7783` (`--text-5`) at exactly one node: the `→` in a _queued_ transfer row in
   `12a Syncing light`. **Sixteen** other `#6D7783` nodes map to `#6B7280`. One node against sixteen
   is a drawing inconsistency, not a tier.
 
@@ -128,13 +128,13 @@ tiers where dark has seven.** That is a property of the design, not an error —
 
 ## 11. Font weights — the frames contradict the prose
 
-`01-foundations.md` §2: *"Weights in use: 500, 600, 700 (sans); 400, 600 (mono). Nothing is
-400-weight sans except long body paragraphs."* Measured over every frame:
+`01-foundations.md` §2: _"Weights in use: 500, 600, 700 (sans); 400, 600 (mono). Nothing is
+400-weight sans except long body paragraphs."_ Measured over every frame:
 
-| | 400 | 500 | 600 | 700 |
-| --- | --- | --- | --- | --- |
-| Instrument Sans | **504** | 13 | 244 | **0** |
-| IBM Plex Mono | 352 | **0** | 19 | 0 |
+|                 | 400     | 500   | 600 | 700   |
+| --------------- | ------- | ----- | --- | ----- |
+| Instrument Sans | **504** | 13    | 244 | **0** |
+| IBM Plex Mono   | 352     | **0** | 19  | 0     |
 
 Sans 400 is the most common weight in the design; 700 does not occur. All 25 `<strong>` elements
 carry an explicit inline `font-weight:600`, so no UA default is hiding a 700 anywhere, and all 30
@@ -181,15 +181,15 @@ These are in `tokens.css` because a token needs a value in both themes, but noth
 Each is a guess constrained by the surrounding ramp. **S10 must verify or replace them, and P0.2
 should ask the designer:**
 
-| Token | Light value | Basis |
-| --- | --- | --- |
-| `--border-strong` | `#E0DCD5` | doc's positional order (deviation 8) |
-| `--line-inert` | `#C7CBD2` | settled-hexagon track (deviation 12) |
-| `--btn-primary-disabled-bg` | `#E0DCD5` | doc gives dark `#2A2E36` only |
-| `--btn-primary-disabled-text` | `#9CA3AF` | the one light grey in the frames that is not a tier |
-| `--hex-paused-track` / `--hex-paused-bars` | `#C7CBD2` / `#4B5563` | no light `10a Paused` exists |
-| `--btn-destructive-text` | `#fff` | `4a Armed` has no light frame; white on `#DC2626` holds |
-| `--shadow-banner` | `.4` alpha | `12-light-theme.md` says light uses `.4–.45` |
+| Token                                      | Light value           | Basis                                                   |
+| ------------------------------------------ | --------------------- | ------------------------------------------------------- |
+| `--border-strong`                          | `#E0DCD5`             | doc's positional order (deviation 8)                    |
+| `--line-inert`                             | `#C7CBD2`             | settled-hexagon track (deviation 12)                    |
+| `--btn-primary-disabled-bg`                | `#E0DCD5`             | doc gives dark `#2A2E36` only                           |
+| `--btn-primary-disabled-text`              | `#9CA3AF`             | the one light grey in the frames that is not a tier     |
+| `--hex-paused-track` / `--hex-paused-bars` | `#C7CBD2` / `#4B5563` | no light `10a Paused` exists                            |
+| `--btn-destructive-text`                   | `#fff`                | `4a Armed` has no light frame; white on `#DC2626` holds |
+| `--shadow-banner`                          | `.4` alpha            | `12-light-theme.md` says light uses `.4–.45`            |
 
 ## 16. Two per-element light values the token can't carry
 
@@ -259,41 +259,41 @@ at **4.2**, below the stated 4.4 floor, and 72px is claimed by both the `4.4-4.6
 power-law fit still errs 17-18%, far outside the +/-0.5px the fidelity gate allows, so a guess would
 be a plausible wrong number. 80px has no default at all; the caller must pass one.
 
-Two sizes are drawn at two widths by *family*: 72px is 4.5 in the `2a`/`12a` compacts but 4.6 in the
+Two sizes are drawn at two widths by _family_: 72px is 4.5 in the `2a`/`12a` compacts but 4.6 in the
 `10a` tray panels, and 34px is 6 in-window but 7 in every `11a` notification. The 72px split
 contradicts §1.2's "shared component; the tray reuses it" — **F2 and F6 need a joint designer call**.
 
 ## 22. "The mark reads as the same weight at every size" is not what is drawn
 
-§6. Rendered stroke falls monotonically from 4.76px at 168 to 1.05px at 14, while *relative* weight
+§6. Rendered stroke falls monotonically from 4.76px at 168 to 1.05px at 14, while _relative_ weight
 rises from 2.8% to 10% of the mark. That is an optical-compensation ramp, and a good one — but it is
 the opposite of constant, so the sentence cannot be implemented as written.
 
 ## 23. The perimeter is 303.0115, not ~297 — and the dash arrays are not tuned to it
 
-§6 says *"Perimeter = 297 units - the number the dash arrays are tuned against."* 297 is
+§6 says _"Perimeter = 297 units - the number the dash arrays are tuned against."_ 297 is
 `6 x 49.5275`, which assumes a **regular** hexagon. This one is not: the two vertical sides are 52.5
 units, the four slants 49.5275 and 49.4783. The true perimeter is **303.0115** (verified twice,
 independently).
 
 The dash arrays are tuned against something else entirely: `62+238`, `40+260` and `70+230` all sum
-to **300**, which is exactly the `stroke-dashoffset` travel in `hexup`/`hexdn`. *Dash period equals
-offset travel* is what makes the loop seamless. The 3.0115-unit remainder leaves a permanent stub of
+to **300**, which is exactly the `stroke-dashoffset` travel in `hexup`/`hexdn`. _Dash period equals
+offset travel_ is what makes the loop seamless. The 3.0115-unit remainder leaves a permanent stub of
 "on" at the path start (the top vertex) — visible in every drawn frame. **Do not retune**: matching
 the true perimeter would remove the stub and break the F8 gate against the frames. Doc error, code
 unchanged.
 
-## 24. There is no crimson hero — `2a Needs you` draws the *syncing* mark
+## 24. There is no crimson hero — `2a Needs you` draws the _syncing_ mark
 
 The most likely thing to build wrong. At 168px, `2a Needs you` is byte-identical to `2a Syncing`
 apart from its gradient ids: same `#191C21` track, same two travelling segments, same neutral
-`#F2F4F7` numeral. Not a bug — `03-main-screen.md` says *"the count in the hexagon is transfers, not
-decisions"*, and the attention band carries the decisions. **The crimson mark exists only at
+`#F2F4F7` numeral. Not a bug — `03-main-screen.md` says _"the count in the hexagon is transfers, not
+decisions"_, and the attention band carries the decisions. **The crimson mark exists only at
 <=72px.** §6's five-state table reads as though every state has a hero form; it does not.
 
 ## 25. The seam mask is orthogonal to state, and the plan is wrong in both directions
 
-IMPLEMENTATION-PLAN §5's F2 row says *"syncing track carries `fill:<surface>`"*. Measured, `fill`
+IMPLEMENTATION-PLAN §5's F2 row says _"syncing track carries `fill:<surface>`"_. Measured, `fill`
 tracks whether the mark sits over the seam, not the state: **18 in-scope hexagons carry a fill** and
 they include settled marks (`9a Review` 80, `5a Plan safe` 88, `7a Activity quiet`/`File lookup` 52)
 and needs-you marks (`3a Conflict` 44) — while `2a Settled` and seven other syncing-less frames carry
@@ -307,7 +307,7 @@ none. It is not derivable from "does this frame have a seam" either: `7a File pe
 - **The check is dropped entirely at <=20px.** The tray settled glyph and the 13px bullet are bare
   outlines. Reusing the panel construction at tray size ships a checkmark that is not in the design.
 - **Paused `opacity` sits on the `<svg>` root, not the track** (`10a Paused`), so the bars dim too.
-  §6 writes it inside the *Track* cell, which reads as a path property; applying it there leaves the
+  §6 writes it inside the _Track_ cell, which reads as a path property; applying it there leaves the
   bars 45% too bright. `.55` at 72px, `.45` at tray size, and the tray form has **no bars**.
 - **The unreachable strike has two forms**: `M40 40 L80 80` at 34/72, and the longer
   `M38 38 L82 82` at <=20px so it still reads at tray size. §6 and `10-tray.md` are each right for
@@ -337,22 +337,22 @@ segment) joins the unverified list in §15.
 
 IMPLEMENTATION-PLAN §5's F2 row lists both keyframes. `blip` never touches a hexagon in any frame
 (it drives a 6px status dot and a 1.5x15px caret) and belongs to F4/F5. `breathe` drives the settled
-*glow* — a **sibling** 480px div behind a 168px mark, present on only 2 of 9 in-scope settled
+_glow_ — a **sibling** 480px div behind a 168px mark, present on only 2 of 9 in-scope settled
 hexagons. A component that emitted it would paint 156px outside its own box and fail the fit gate,
 so F2 ships the keyframe and S1 places the div.
 
 ## 30. Reduced motion: rule 1 governs, and one case needs a designer
 
 The prototype contains **zero** `prefers-reduced-motion` rules, so no frame exists and rule 2 cannot
-apply. §7's wording is normative: *"drop the travelling segments to a static 40%-opacity coloured
-outline"* — which means the **dasharray goes too**, since a frozen dash is a segment, not an outline.
+apply. §7's wording is normative: _"drop the travelling segments to a static 40%-opacity coloured
+outline"_ — which means the **dasharray goes too**, since a frozen dash is a segment, not an outline.
 Two consequences worth stating:
 
 - **The paused dasharray must survive.** It is static geometry carrying the state's meaning, not an
   animation; a blanket "strip dasharray under reduced motion" rule destroys the state.
 - **The glow must be pinned to `.45`, not merely un-animated.** Removing the animation returns it to
   `opacity:1` — brighter than the keyframe's own `.8` peak, so honouring the preference would make
-  it *more* prominent.
+  it _more_ prominent.
 
 **Open.** With both segments un-dashed, the cool path (painted last) fully occludes the warm one and
 the direction contract disappears. §7's sentence was written for the single-segment case. Options:
@@ -388,27 +388,27 @@ that means "this end is cut" as absent, which silently restored a 74% fade-out o
 
 ## 32. Rule 1 over-predicts; the 16 drawn sites are the authority
 
-§5 rule 1: the seam is drawn *"when data is moving, or when a decision has two sides"*. Taken as a
+§5 rule 1: the seam is drawn _"when data is moving, or when a decision has two sides"_. Taken as a
 predicate that would put a seam on `2a Compact needs you`, `12a Compact needs light`, `4a Compact`
 and `3a Conflicts cleared` — every one a two-sided decision, none of which draws one. 32 in-scope
 frames have no seam. §25's finding points the same way from the other side: `7a File pending` and
 `3a Conflict diff` carry the hexagon's seam mask with no seam element anywhere in the frame, so a
 masked mark does not imply a seam either.
 
-The rule is right about *intent* and cannot be mechanised. `auditSeams()` therefore checks rules 2
+The rule is right about _intent_ and cannot be mechanised. `auditSeams()` therefore checks rules 2
 and 3 and deliberately does not check rule 1 — a rule-1 check would report four of the design's own
 screens as violations. S1–S11 should add a seam where `SEAM_SITES` has a row and nowhere else.
 
 ## 33. It does touch an edge — there are three gradient shapes, not one
 
-§5: *"It fades in and out at both ends against the surface colour — it never touches an edge."* Six
+§5: _"It fades in and out at both ends against the surface colour — it never touches an edge."_ Six
 of the 20 run at **full colour** into one end:
 
-| Shape | Sites | Form |
-| --- | --- | --- |
-| both ends fade | 10 sites, 14 drawn | `S, L a%, L b%, S` |
-| bottom cut | `5a Plan`, `5a Plan safe` (hero), `7a Activity quiet`, `7a File lookup`, `9a Review` | `S, L a%, L 100%` |
-| top cut | `5a Plan safe` (list) | `L, L b%, S` |
+| Shape          | Sites                                                                                | Form               |
+| -------------- | ------------------------------------------------------------------------------------ | ------------------ |
+| both ends fade | 10 sites, 14 drawn                                                                   | `S, L a%, L b%, S` |
+| bottom cut     | `5a Plan`, `5a Plan safe` (hero), `7a Activity quiet`, `7a File lookup`, `9a Review` | `S, L a%, L 100%`  |
+| top cut        | `5a Plan safe` (list)                                                                | `L, L b%, S`       |
 
 The seam fades where it **stops**, not where it is handed to the block below. `5a Plan safe` makes
 the point twice over: it draws **two** seam elements, in two different blocks, that overlap by 66px
@@ -435,24 +435,24 @@ separates them. `2a Needs you`'s attention band starts 567px into the frame; its
 `SEAM_SITES` for that reason, and they differ in their fade-out too (74 vs 78).
 
 Worth noting for S1: the attention band is 976px wide inside a 1040px frame, so it is not
-full-width in the sense `auditSeams()` tests for. Rule 2's "spans the window" is about *reading* as
+full-width in the sense `auditSeams()` tests for. Rule 2's "spans the window" is about _reading_ as
 a band, and an inset card with a crimson border reads as one. The audit will not catch a seam run
 into it; the site rows will.
 
 ## 34. The stops are not a function of height, and the fade is a quarter, not an eighth
 
-§5: *"The percentage stops vary by block height (10–30% in, 70–90% out); pick stops that put full
-opacity across the content and fade over roughly the top and bottom eighth."* Three claims; the
+§5: _"The percentage stops vary by block height (10–30% in, 70–90% out); pick stops that put full
+opacity across the content and fade over roughly the top and bottom eighth."_ Three claims; the
 envelope is right, the other two are not.
 
 **Not a function of height** — two clean disproofs, both between same-shape symmetric seams:
 
-| | height | stops | fade-in |
-| --- | --- | --- | --- |
-| `2a Needs you` | 508px | 26/78 | 132.1px |
-| `4a Deletions` | 514px | 10/90 | 51.4px |
-| `5a Checking` | 543px | 30/70 | 162.9px |
-| `2a Syncing` | 544px | 26/74 | 141.4px |
+|                | height | stops | fade-in |
+| -------------- | ------ | ----- | ------- |
+| `2a Needs you` | 508px  | 26/78 | 132.1px |
+| `4a Deletions` | 514px  | 10/90 | 51.4px  |
+| `5a Checking`  | 543px  | 30/70 | 162.9px |
+| `2a Syncing`   | 544px  | 26/74 | 141.4px |
 
 Six pixels apart with a 132px fade against a 51px one, and one pixel apart at 30% against 26%. The
 16 sites carry 12 distinct stop pairs.
@@ -473,12 +473,12 @@ converting an intent of "about 40px of fade" into the percentage CSS actually ne
 §17 recorded that `2a Compact syncing` draws `#23262D` where every full-window seam draws `#2A2E36`,
 and concluded the helper "needs a colour parameter". It does — but it also needs a **token**, and
 neither existing one works, because §17's "both map to `#D9D5CE` in light" is a statement about the
-*measurement*, not about `tokens.css`:
+_measurement_, not about `tokens.css`:
 
-| | dark | light |
-| --- | --- | --- |
-| `--seam` | `#2A2E36` | `#D9D5CE` |
-| `--border` | `#23262D` | `#E6E3DE` |
+|                              | dark      | light         |
+| ---------------------------- | --------- | ------------- |
+| `--seam`                     | `#2A2E36` | `#D9D5CE`     |
+| `--border`                   | `#23262D` | `#E6E3DE`     |
 | **the panel seam, as drawn** | `#23262D` | **`#D9D5CE`** |
 
 `var(--border)` is right in dark and wrong in light; `var(--seam)` is the reverse. The two seam
@@ -486,15 +486,15 @@ colours part in dark and meet again in light, so F3 adds `--seam-panel` (`#23262
 This is the §8 pattern with the themes swapped: there, tokens sharing a dark value diverge in light.
 
 Three sites use it: the 360px compact panel, the tray panel, and — the surprise — `5a Checking`, a
-522×766 *window*. The 602×542 `9a First sync` window keeps `var(--seam)`, so this is not a
+522×766 _window_. The 602×542 `9a First sync` window keeps `var(--seam)`, so this is not a
 width rule. All three also happen to be the only 30/70 seams in the design; recorded as an
 observation, not a rule, on four samples.
 
 ## 36. Rule 3 is missing its load-bearing half: the mask must be POSITIONED
 
-§5 rule 3: *"Centred text and centred buttons that sit on the seam get `background:<surface>` plus
+§5 rule 3: _"Centred text and centred buttons that sit on the seam get `background:<surface>` plus
 `padding:0 14–18px` so the line passes behind them. `z-index` alone is not enough — the line would
-still show between glyphs."* The warning is about the wrong hazard. The seam is
+still show between glyphs."_ The warning is about the wrong hazard. The seam is
 `position:absolute`, so it paints with the positioned descendants — CSS 2.1 Appendix E step 8 —
 **above** both the background (step 4) and the text (step 7) of any static sibling, however late in
 the DOM that sibling sits. Background and padding on a static element do nothing.
@@ -516,7 +516,7 @@ visually identical node fails the style gate.
 A mask can fail two ways, and `auditSeams()` reports both. It can paint underneath (the above), or
 it can fail to cover: a background at less than full opacity leaves the hairline showing at reduced
 strength, and `--decision-band-bg` is `rgba(255, 107, 107, .05)`, a real token that hides nothing. The
-subject of the check is anything *claiming* to mask — an element with a background of any opacity
+subject of the check is anything _claiming_ to mask — an element with a background of any opacity
 straddling the line. An element with no background at all is not reported, because otherwise every
 centred flex wrapper in the design is a violation and a check that cries wolf is a check nobody
 runs.
@@ -547,7 +547,7 @@ normative on its own here, the same footing as §30. Two decisions recorded rath
 - **Only `opacity` transitions.** A seam's geometry moves whenever the block it spans resizes, and
   transitioning `top`/`bottom`/`height` would drag the line across the content for a third of a
   second every time a list gains a row.
-- **Reduced motion drops the transition, never the seam.** Rule 1 makes *presence* carry meaning, so
+- **Reduced motion drops the transition, never the seam.** Rule 1 makes _presence_ carry meaning, so
   suppressing the element under that preference would remove information rather than movement — the
   same reasoning that keeps the paused hexagon's dasharray in §30.
 
@@ -576,7 +576,7 @@ or CI to catch.
 
 Measured the same way as the seam: the prototype rendered and read off `getBoundingClientRect`, over
 the 22 in-scope frames drawn at 1040 (the compacts and the two desktop mocks are F6's and S8's). A
-52px header is a number you can read out of the source, but *"does this screen have a footer nav"* is
+52px header is a number you can read out of the source, but _"does this screen have a footer nav"_ is
 a fact about the tree, and the padding that separates four otherwise-identical footers is layout.
 
 The shell is verified rather than eyeballed: `gui/src/index.html` is loaded in a browser on the
@@ -585,13 +585,13 @@ header, the chip, the doors, the door/action-bar switch and the home affordance.
 
 ## 40. The four doors are not on every screen
 
-`02-shell.md` §"Footer navigation": *"These four never move and never change order, on any screen, in
-any state."* True about order, and it reads as *present everywhere*. Measured, every in-scope 1040
+`02-shell.md` §"Footer navigation": _"These four never move and never change order, on any screen, in
+any state."_ True about order, and it reads as _present everywhere_. Measured, every in-scope 1040
 frame carries **either** the four doors **or** a footer action bar — never both, never neither:
 
-| | Frames |
-| --- | --- |
-| four doors (13) | `2a` ×3 · `3a` ×2 · `4a` ×2 · `6a Activity passes` · `7a` ×2 · `12a` ×4 |
+|                       | Frames                                                                                    |
+| --------------------- | ----------------------------------------------------------------------------------------- |
+| four doors (13)       | `2a` ×3 · `3a` ×2 · `4a` ×2 · `6a Activity passes` · `7a` ×2 · `12a` ×4                   |
 | footer action bar (6) | `5a Plan` · `5a Plan safe` · `8a Settings` · `8a Skip rules` · `9a Folders` · `9a Review` |
 
 The action bar **replaces** the doors on the screens that commit something. That is coherent — you do
@@ -600,7 +600,7 @@ onboarding have no navigation at all.** The only ways out are the action bar's o
 and the app mark.
 
 Which settles half of `IMPLEMENTATION-PLAN.md` §3.3's open question by elimination. The plan
-*assumes* "clicking the active door returns to root, and the app mark is also a home affordance"; for
+_assumes_ "clicking the active door returns to root, and the app mark is also a home affordance"; for
 Activity the first works, but on Settings and Plan there is no door to click, so **the app mark is
 not optional**. `routes.js` carries a `footer` field per route for this, and `renderHeader` takes an
 `onHome`.
@@ -610,12 +610,12 @@ not optional**. `routes.js` carries a `footer` field per route for this, and `re
 `0 40px 18–22px` with `padding-top:14–20px`. All four combinations are drawn, so — like the seam's
 `-114`/`-150` (§33a) — it is a table, not a range to pick from:
 
-| bottom / top | Mono line | Height | Frames |
-| --- | --- | --- | --- |
-| 22 / 20 | yes | 89 | `2a Settled` · `2a Syncing` + both light twins |
-| 20 / 16 | no | 53 | `2a Needs you` |
-| 18 / 15 | no | 50 | `3a` ×2 · `4a` ×2 · `6a Activity passes` · `12a Deletions/Conflict light` |
-| 18 / 14 | no | 49 | `7a Activity quiet` · `7a File lookup` |
+| bottom / top | Mono line | Height | Frames                                                                    |
+| ------------ | --------- | ------ | ------------------------------------------------------------------------- |
+| 22 / 20      | yes       | 89     | `2a Settled` · `2a Syncing` + both light twins                            |
+| 20 / 16      | no        | 53     | `2a Needs you`                                                            |
+| 18 / 15      | no        | 50     | `3a` ×2 · `4a` ×2 · `6a Activity passes` · `12a Deletions/Conflict light` |
+| 18 / 14      | no        | 49     | `7a Activity quiet` · `7a File lookup`                                    |
 
 §1.3 conflict 7 names two of the four (`2a` 22/20, `7a` 18/14). The **majority** variant, 18/15 across
 six frames, is in neither the conflict note nor `02-shell.md`. The mono line appears on exactly the
@@ -623,7 +623,7 @@ two frames with the widest padding, which is what the extra 4px is for.
 
 Everything else is invariant across all thirteen: `gap:34px`, centred, `border-top:1px #16181D`, doors
 at 13px/**400** (§11's finding again — the prose never names a weight and 400 is what is drawn),
-`#828B98` inactive and `#F2F4F7` active. No light frame draws an *active* door, so the light active
+`#828B98` inactive and `#F2F4F7` active. No light frame draws an _active_ door, so the light active
 colour (`#14161A`, from the doc) joins the unverified list in §15.
 
 ## 42. The header dims off the status chip, not off the screen
@@ -646,14 +646,14 @@ keyboard-reachable, sized to exactly 20×20 with no padding so the header's 12px
 Five variants in §2's table, all confirmed with one correction, plus a sixth the doc describes in prose
 and leaves out of the table.
 
-| Variant | Border | Text | Dot |
-| --- | --- | --- | --- |
-| idle | none | `--text-label` | `--dot-inert`, 6px |
-| syncing | 1px `--border-chrome` | `--text-3` | `--up-to` + `blip 1.6s` |
-| n waiting (decisions) | 1px `--chip-attention-border` | `--decision-text` | **1px** ring `--decision` |
-| n waiting (deletions) | 1px `--chip-attention-border` | `--decision-text` | filled `--destructive` |
-| rehearsal | 1px `--border-chrome` | `--text-3` | none |
-| **step N of 2** | none | `--text-5` | none — **and no ⋯ button** |
+| Variant               | Border                        | Text              | Dot                        |
+| --------------------- | ----------------------------- | ----------------- | -------------------------- |
+| idle                  | none                          | `--text-label`    | `--dot-inert`, 6px         |
+| syncing               | 1px `--border-chrome`         | `--text-3`        | `--up-to` + `blip 1.6s`    |
+| n waiting (decisions) | 1px `--chip-attention-border` | `--decision-text` | **1px** ring `--decision`  |
+| n waiting (deletions) | 1px `--chip-attention-border` | `--decision-text` | filled `--destructive`     |
+| rehearsal             | 1px `--border-chrome`         | `--text-3`        | none                       |
+| **step N of 2**       | none                          | `--text-5`        | none — **and no ⋯ button** |
 
 - **The ring is 1px, not the 2px §2 states** — in both themes.
 - **Onboarding drops the ⋯ button too.** §2 says only that the chip is "omitted on onboarding
@@ -683,8 +683,8 @@ decision outranks a transfer. That is the only ordering the frames settle. Two a
 ## 45. `Ctrl Q` — the design and the shipped app disagree about what Quit does. **Open.**
 
 `14-behaviour-and-state.md` and `10-tray.md` are explicit and consistent with each other: `Ctrl W`
-closes the window *keeps syncing*, `Ctrl Q` quits *stops syncing*, and the tray must carry those as
-sub-labels because *"this is the single worst misunderstanding a tray app can cause"*.
+closes the window _keeps syncing_, `Ctrl Q` quits _stops syncing_, and the tray must carry those as
+sub-labels because _"this is the single worst misunderstanding a tray app can cause"_.
 
 The shipped `tray.rs` does something else, deliberately and with a comment: `quit` is `app.exit(0)`,
 ending the GUI process while **the daemon keeps running**, "a separate process and unaffected by
@@ -710,7 +710,7 @@ focus twice a second is not one.
 So `render()` patches: `updateHeader` and `updateFooterNav` return `false` when the change is
 structural (the ⋯ appearing, a different footer variant) and the caller rebuilds only then, and the
 body is replaced only when the route changes. The status chip's node is replaced only when its
-*variant* changes, so a count ticking 2 → 3 does not restart the `blip` on its dot. Asserted: focus
+_variant_ changes, so a count ticking 2 → 3 does not restart the `blip` on its dot. Asserted: focus
 and node identity both survive two poll ticks.
 
 This is a constraint on S1–S11 as much as on F4 — a screen that rebuilds its own subtree on every
@@ -751,13 +751,13 @@ compared is what an engine computes, so an engine has to compute both sides.
 general. The prototype does not opt these nodes into `border-box`, so the 1px border sits outside the
 declared box:
 
-| Surface | Declared | Drawn |
-| --- | --- | --- |
-| the window | `1040×764` | `1042×766` |
-| `5a Checking` | `520×764` | `522×766` |
-| `6a Details` | `520×460` | `522×462` |
-| `9a First sync` | `600×540` | `602×542` |
-| the compact panel | `360×296` | `362×298` |
+| Surface           | Declared   | Drawn      |
+| ----------------- | ---------- | ---------- |
+| the window        | `1040×764` | `1042×766` |
+| `5a Checking`     | `520×764`  | `522×766`  |
+| `6a Details`      | `520×460`  | `522×462`  |
+| `9a First sync`   | `600×540`  | `602×542`  |
+| the compact panel | `360×296`  | `362×298`  |
 
 `base.css` sets `box-sizing:border-box` globally, so an app surface written at its nominal size comes
 out **2px narrower than the frame**. F5's dialog layer and F6's panel both have to write the drawn
@@ -776,14 +776,14 @@ F5's dialog layer needed a number to write, so the ten `kind: dialog` frames wer
 the prototype rather than offset by two. **Four of them declare `box-sizing:border-box` inline**, and
 those come out at exactly their nominal size:
 
-| declares `border-box` | declared = drawn |
-| --- | --- |
-| `9a Consent`, `9a CLI missing`, `8a Save refused`, `7a File pending` | `600` |
+| declares `border-box`                                                | declared = drawn |
+| -------------------------------------------------------------------- | ---------------- |
+| `9a Consent`, `9a CLI missing`, `8a Save refused`, `7a File pending` | `600`            |
 
-| does not | declared → drawn |
-| --- | --- |
-| `3a Conflicts cleared`, `5a Checking`, `4a Empty`, `6a Details` | `520` → **522** |
-| `9a First sync`, `7a Never synced` | `600` → **602** |
+| does not                                                        | declared → drawn |
+| --------------------------------------------------------------- | ---------------- |
+| `3a Conflicts cleared`, `5a Checking`, `4a Empty`, `6a Details` | `520` → **522**  |
+| `9a First sync`, `7a Never synced`                              | `600` → **602**  |
 
 The split is not arbitrary: the four that opt in are the four that carry `padding` on the dialog
 itself, and the six that do not are `display:flex` columns with a fixed height that pad their
@@ -816,7 +816,7 @@ Neither is a copy error; both would have silently exempted whole categories of s
 
 - **Sentences are split by inline children.** The deck has 25 `<strong>` elements mid-paragraph, so
   `"Yours has buy milk where Proton's has..."` is a node whose own text is `"Yours has where
-  Proton's has..."` plus a child. The fixtures now record the joined subtree text alongside each
+Proton's has..."` plus a child. The fixtures now record the joined subtree text alongside each
   node's own — the style gate needs to know which node holds the words, the copy gate needs the
   sentence.
 - **A placeholder is copy.** `"Add a rule — e.g. *.psd or scratch/**"` appears in no `textContent`
@@ -828,12 +828,12 @@ Neither is a copy error; both would have silently exempted whole categories of s
 Recorded because it is the argument for building the harness before the screens rather than after.
 Six classes of drift in F4's shell, all fixed in the same commit, none of them visible by eye:
 
-| Drift | Why it survived review |
-| --- | --- |
-| the app mark carried `width`/`height` **attributes** the frames do not set | identical rendering; §27's redundant-`fill` trap in a new place |
-| `.chip`, `.chip-dot` and `.menu-btn` used `flex:none` where the frames leave `flex-shrink:1` | all three have fixed widths, so nothing ever shrinks them |
-| `.door` had a `<button>`'s UA `text-align:center` where the frames' `<span>`s inherit `start` | the bar centres them with `justify-content` regardless |
-| the footer used the `withLine` variant on every main screen | `2a Needs you` drops the mono line and tightens 22/20 → 20/16 — the attention band has taken the space |
+| Drift                                                                                         | Why it survived review                                                                                 |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| the app mark carried `width`/`height` **attributes** the frames do not set                    | identical rendering; §27's redundant-`fill` trap in a new place                                        |
+| `.chip`, `.chip-dot` and `.menu-btn` used `flex:none` where the frames leave `flex-shrink:1`  | all three have fixed widths, so nothing ever shrinks them                                              |
+| `.door` had a `<button>`'s UA `text-align:center` where the frames' `<span>`s inherit `start` | the bar centres them with `justify-content` regardless                                                 |
+| the footer used the `withLine` variant on every main screen                                   | `2a Needs you` drops the mono line and tightens 22/20 → 20/16 — the attention band has taken the space |
 
 The last one is a real bug, not a technicality, and it is the kind that would have been copied into
 S1 and every screenshot after it.
@@ -871,9 +871,9 @@ is invisible in either theme on its own.
 Sweeping all 51 frames for a translucent fill over a translucent border returns **ten** crimson,
 red and amber band surfaces. Two of them are relevant here:
 
-| site | dark | light |
-| --- | --- | --- |
-| attention band — `2a Needs you` | `rgba(255,107,107,.05)` / `.32` | **not drawn** |
+| site                                                         | dark                            | light                                                 |
+| ------------------------------------------------------------ | ------------------------------- | ----------------------------------------------------- |
+| attention band — `2a Needs you`                              | `rgba(255,107,107,.05)` / `.32` | **not drawn**                                         |
 | recoverable card — `4a Deletions` right column, `9a Consent` | `rgba(255,107,107,.04)` / `.30` | `rgba(190,18,60,.03)` / `.28` (`12a Deletions light`) |
 
 F1 carried one pair: `--decision-bg`/`--decision-border`, dark `.05`/`.32` and light `.03`/`.28`.
@@ -888,12 +888,12 @@ and no screenshot review of a single theme could catch that.
 
 **Resolution.** Split by site, the same move §43 made for `--chip-attention-border`:
 
-| token | dark | light |
-| --- | --- | --- |
-| `--decision-band-bg` | `rgba(255,107,107,.05)` | `rgba(190,18,60,.04)` — **chosen** |
+| token                    | dark                    | light                              |
+| ------------------------ | ----------------------- | ---------------------------------- |
+| `--decision-band-bg`     | `rgba(255,107,107,.05)` | `rgba(190,18,60,.04)` — **chosen** |
 | `--decision-band-border` | `rgba(255,107,107,.32)` | `rgba(190,18,60,.30)` — **chosen** |
-| `--decision-card-bg` | `rgba(255,107,107,.04)` | `rgba(190,18,60,.03)` |
-| `--decision-card-border` | `rgba(255,107,107,.30)` | `rgba(190,18,60,.28)` |
+| `--decision-card-bg`     | `rgba(255,107,107,.04)` | `rgba(190,18,60,.03)`              |
+| `--decision-card-border` | `rgba(255,107,107,.30)` | `rgba(190,18,60,.28)`              |
 
 Three of the four light values are measured. The light attention band is **chosen**, because nothing
 draws it. Derived from the card, which is drawn in both themes: `.04`/`.30` dark → `.03`/`.28` light,
@@ -910,14 +910,14 @@ broken, not the family.
 
 The other eight, unresolved here because they want measuring in place rather than up front:
 
-| site | fill | border |
-| --- | --- | --- |
-| `4a Deletions` permanent, `5a Plan` | `rgba(255,59,59,.06)` | `.38` |
-| `4a Compact` permanent | `rgba(255,59,59,.05)` | `.32` |
-| `4a Compact` recoverable | `rgba(255,107,107,.035)` | `.26` |
-| `8a Deletions tab` | `rgba(255,59,59,.04)` | `.30` |
-| `11a Rules` | `rgba(255,59,59,.05)` | `.30` |
-| `7a Activity quiet` never-synced | `rgba(255,159,28,.04)` | `.28` |
+| site                                | fill                     | border |
+| ----------------------------------- | ------------------------ | ------ |
+| `4a Deletions` permanent, `5a Plan` | `rgba(255,59,59,.06)`    | `.38`  |
+| `4a Compact` permanent              | `rgba(255,59,59,.05)`    | `.32`  |
+| `4a Compact` recoverable            | `rgba(255,107,107,.035)` | `.26`  |
+| `8a Deletions tab`                  | `rgba(255,59,59,.04)`    | `.30`  |
+| `11a Rules`                         | `rgba(255,59,59,.05)`    | `.30`  |
+| `7a Activity quiet` never-synced    | `rgba(255,159,28,.04)`   | `.28`  |
 
 Two things fall out. **The compact panel steps every alpha down one notch** (crimson `.04`→`.035`,
 `.30`→`.26`; red `.06`→`.05`, `.38`→`.32`), so tone and density are independent axes — the same
@@ -939,10 +939,10 @@ No band carries a solid fill in any frame. The one solid red in the app remains 
 The first sentence is correct and the second contradicts it. `div[1]` on `2a Syncing` is
 `grid-template-columns: 488px 488px`, so `div[0]` is the left, leaving column. Measured child order:
 
-| column | order | where the arrow lands |
-| --- | --- | --- |
-| left — leaving | `[name] [size] [→]` | the right end, **beside the seam** |
-| right — arriving | `[←] [name] [size]` | the left end, **beside the seam** |
+| column           | order               | where the arrow lands              |
+| ---------------- | ------------------- | ---------------------------------- |
+| left — leaving   | `[name] [size] [→]` | the right end, **beside the seam** |
+| right — arriving | `[←] [name] [size]` | the left end, **beside the seam**  |
 
 Both arrows sit against the centre line and both point across it, which is also the direction of
 travel. "Outside edge" and "pointing away from the seam" are wrong on both counts.
@@ -981,7 +981,7 @@ Two details the correct sentence also gives, worth keeping together with it:
 
 - **`7a Never synced`'s entries are not fact rows**, though they sit one screen away and look like
   them. No dot, `gap:12` against `14`, and a **mono** path rather than a sans sentence — plus a
-  dimmed variant that separates *you told it to skip these* from *can't be synced*. Modelled as
+  dimmed variant that separates _you told it to skip these_ from _can't be synced_. Modelled as
   `pathRow` rather than stretched onto `factRow`. Its `Change this rule` is likewise **not** an
   action row: a standalone `inline-block` button after the group, at controls.js's plain `small`
   size (`7px 14px`, `--r-8`).
@@ -994,7 +994,7 @@ Two details the correct sentence also gives, worth keeping together with it:
   changes nothing on screen while making the source disagree with the ground truth. The one real
   constraint is that a 2px ring on a 6px dot leaves a 2px hole and reads as a fill.
 - **`02-shell.md` §2's transfer row is the compact one.** It gives `border-radius:9px;
-  padding:9px 11px`, against `03-main-screen.md`'s `11px` / `11px 13px`. Not a conflict: that
+padding:9px 11px`, against `03-main-screen.md`'s `11px` / `11px 13px`. Not a conflict: that
   section describes the 360px panel (its hexagon is 72px), and the frames measure exactly those two
   rungs — 11/11×13 on `2a Syncing`, 9/9×11 on `2a Compact syncing`. `--r-11`'s "transfer rows"
   comment is right for the main screen and needs the compact rung read off `--r-9`.
@@ -1018,10 +1018,10 @@ themes and deliberately not an alias**. `tokens.css` already keeps several same-
 for exactly this reason — `--border` / `--border-chrome`, `--panel-alt` / `--compact-row` — so that
 either can move in light without dragging the other.
 
-| token | dark | light |
-| --- | --- | --- |
-| `--warn` | `#FF9F1C` | `#B23F14` |
-| `--warn-band-bg` | `rgba(255,159,28,.04)` | `rgba(178,63,20,.03)` — **chosen** |
+| token                | dark                   | light                              |
+| -------------------- | ---------------------- | ---------------------------------- |
+| `--warn`             | `#FF9F1C`              | `#B23F14`                          |
+| `--warn-band-bg`     | `rgba(255,159,28,.04)` | `rgba(178,63,20,.03)` — **chosen** |
 | `--warn-band-border` | `rgba(255,159,28,.28)` | `rgba(178,63,20,.28)` — **chosen** |
 
 Both light tints are chosen, because no light frame draws this band. Derived as §52 derived the
@@ -1030,8 +1030,8 @@ light attention band — from a drawn pair starting at the same dark alpha. The 
 confirming it.**
 
 **Why warm and not crimson, restated because it is the band most likely to be "corrected":** nothing
-in it is at risk. The screen's own closing line is *"Nothing here is at risk — it's just not backed
-up."* Four skipped temp files inside a crimson band would be a lie about severity, and the amber is
+in it is at risk. The screen's own closing line is _"Nothing here is at risk — it's just not backed
+up."_ Four skipped temp files inside a crimson band would be a lie about severity, and the amber is
 the design saying so.
 
 ### 54a. What the band census settled about layout
@@ -1045,7 +1045,7 @@ the design saying so.
   plain `--text`). Tone is the axis, the way kind is in `controls.js`.
 - **No band holds a destructive action, and none is ever a solid fill.** `11a Rules` states the
   first for banners; the four bands here keep it too — `Review`, `Compare`, `Show them`, `Leave it
-  alone` all route to the screen that owns the decision.
+alone` all route to the screen that owns the decision.
 - **`8a Deletions tab` and `11a Rules` are tinted like bands and are not bands.** The first is
   `controls.js`'s `radioCard` wearing a destructive tone (546×92.75, a 15px ring at `#6B3A3A` — a
   ring colour no token carries, S6's to mint); the second is a prose callout on a spec sheet, with
@@ -1058,18 +1058,18 @@ frames — swept for 17×17 nodes at radius 5, exactly one hit. F5's controls co
 from the general control conventions instead, and nothing caught it until `bands.js` built the
 consent panel around it and the panel came out **2.5px short**.
 
-| property | was | drawn |
-| --- | --- | --- |
-| box border | `--border-strong` `#2E323A` | `--text-5` `#6D7783` |
-| box background | `--panel-alt` | transparent |
-| box `margin-top` | — | `1px` |
-| row `gap` | `10px` | `11px` |
-| label colour | `--text-2` | `--text-bright` |
-| label `line-height` | `normal` | `1.5` |
+| property            | was                         | drawn                |
+| ------------------- | --------------------------- | -------------------- |
+| box border          | `--border-strong` `#2E323A` | `--text-5` `#6D7783` |
+| box background      | `--panel-alt`               | transparent          |
+| box `margin-top`    | —                           | `1px`                |
+| row `gap`           | `10px`                      | `11px`               |
+| label colour        | `--text-2`                  | `--text-bright`      |
+| label `line-height` | `normal`                    | `1.5`                |
 
 Two of those are load-bearing rather than cosmetic. The box is **transparent** because it sits on the
 consent panel's crimson tint and a `--panel-alt` fill punches a dark hole in it. And the border is
-**`--text-5`, not `--line-inert`** — `--line-inert` (`#3E454E`) is the *unselected radio ring*, and a
+**`--text-5`, not `--line-inert`** — `--line-inert` (`#3E454E`) is the _unselected radio ring_, and a
 checkbox you have not ticked is drawn brighter than an unselected radio, because it is the thing
 standing between you and continuing.
 
@@ -1081,7 +1081,7 @@ its initial value the moment anyone ticks the box. Removed.
 
 **`toggle`'s `is-on` and `radioCard`'s `is-selected` are not the same thing and must stay.** Neither
 has an `<input>` beneath it — a toggle is a `<button role="switch">`, a radio card a
-`<div role="radio">` — so there the class *is* the state and the caller re-renders to change it. The
+`<div role="radio">` — so there the class _is_ the state and the caller re-renders to change it. The
 distinction is whether the DOM already knows; the checkbox is the only one of the three where it
 does. Written into the builder's own docstring, because "consistency" is exactly the argument that
 would put `is-checked` back.
@@ -1100,9 +1100,9 @@ Reaching the button the gate unlocks blurs the field on the way to it. So the fi
 `onChange(false)` disabled the button, and the click already in flight landed on a disabled control.
 Reproduced headlessly with a consumer that patches the button rather than rebuilding it:
 
-| path | before | after |
-| --- | --- | --- |
-| pointer — click `Delete` | handler fired **0** times | fires |
+| path                          | before                    | after |
+| ----------------------------- | ------------------------- | ----- |
+| pointer — click `Delete`      | handler fired **0** times | fires |
 | keyboard — `Tab` then `Enter` | handler fired **0** times | fires |
 
 Both, because `mousedown` blurs before `click` dispatches and `Tab` blurs before `Enter` arrives.
@@ -1152,15 +1152,15 @@ is not a statement about presentation, and F5 needed one.
 
 Measured by what each route's frame actually is:
 
-| route | frame | drawn as |
-| --- | --- | --- |
-| `details` | `6a Details` `522×462` | **dialog** — standalone surface, ✕, no header, no doors |
-| `neverSynced` | `7a Never synced` `602×602` | **dialog** — ✕ and a `Done` |
-| `saveRefused` | `8a Save refused` `600×213` | **dialog** — no ✕, two actions |
-| `conflicts` | `3a Conflict` `1042×766` | screen — keeps header and doors |
-| `deletions` | `4a Deletions` `1042×766` | screen — keeps header and doors |
-| `armed` | `4a Armed` `1042×766` | screen — keeps header and doors, replaces the content area only |
-| `onboarding` | `9a` ×5 | takeover — non-dismissible, already special-cased by F4 |
+| route         | frame                       | drawn as                                                        |
+| ------------- | --------------------------- | --------------------------------------------------------------- |
+| `details`     | `6a Details` `522×462`      | **dialog** — standalone surface, ✕, no header, no doors         |
+| `neverSynced` | `7a Never synced` `602×602` | **dialog** — ✕ and a `Done`                                     |
+| `saveRefused` | `8a Save refused` `600×213` | **dialog** — no ✕, two actions                                  |
+| `conflicts`   | `3a Conflict` `1042×766`    | screen — keeps header and doors                                 |
+| `deletions`   | `4a Deletions` `1042×766`   | screen — keeps header and doors                                 |
+| `armed`       | `4a Armed` `1042×766`       | screen — keeps header and doors, replaces the content area only |
+| `onboarding`  | `9a` ×5                     | takeover — non-dismissible, already special-cased by F4         |
 
 So four of the seven need **no scrim, no focus trap and no layer at all**: the body swap F4 already
 does is exactly right for them, and wrapping them would put a scrim over a window that has nothing
@@ -1180,7 +1180,7 @@ read `route`. A dialog now collapses back to its underlying route so the screen 
 though nothing had opened — including `onMain`, which keyed off `!overlay` and would otherwise swap
 the footer's mono line away and grow a home button in the header the moment Details opened. The
 shell visibly rearranging behind a panel sitting on top of it is exactly what F4's own note on the
-`details` route asks to avoid: *"clicking it must not lose your place."*
+`details` route asks to avoid: _"clicking it must not lose your place."_
 
 **No second `Escape` handler.** F4 owns the key and its precedence chain — menu, then overlay, then
 the screen's `shell:cancel`. A listener in the dialog layer would give one keypress two effects.
@@ -1225,7 +1225,7 @@ Two smaller things from the same review, both real:
 ### 57c. The onboarding takeover hid the layers instead of discarding them
 
 The first version forced `dialogRoute` to `null` and `active` to `"onboarding"` while the latch was
-set, which is correct for what is *shown* and wrong about what is *kept*. The latch releases when the
+set, which is correct for what is _shown_ and wrong about what is _kept_. The latch releases when the
 daemon comes up (`nextOnboardingLatch`), and anything still held came back on the way out.
 
 Reproduced by driving the app rather than by reading it: open the Conflicts screen with a Details
@@ -1233,7 +1233,7 @@ dialog over it, wipe the daemon back to `firstRun`, let the takeover engage, the
 back. **You finish first-run setup and land on the Conflicts screen with a Details dialog floating
 over it** — both from before the wipe, both about a state that no longer exists.
 
-Reachable rather than likely: it needs the daemon reset to first-run, or made unreachable *and* its
+Reachable rather than likely: it needs the daemon reset to first-run, or made unreachable _and_ its
 folder pair removed, while the window is open with a layer showing. The cost of getting there is low
 and the landing is wrong in a way the user cannot explain, which is the combination worth fixing.
 
@@ -1257,10 +1257,10 @@ Measured across the eight in-scope dark frames — `2a Compact settled/syncing/n
 The two frames that would carry one — `2a Compact needs you` and `4a Compact` — instead put a
 full-width button where the band would go:
 
-| frame | what the band's slot actually holds |
-| --- | --- |
+| frame                  | what the band's slot actually holds                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------- |
 | `2a Compact needs you` | `316×38` button, `padding:10px`, radius `9`, 13px/500, `rgba(255,107,107,.1)` on `.4` |
-| `4a Compact` | two `332×61` deletion rows, then a `332×37` `Review them` at 12.5px/600 |
+| `4a Compact`           | two `332×61` deletion rows, then a `332×37` `Review them` at 12.5px/600               |
 
 Frame wins (rule 2). The band is a 1040-screen component (`2a Needs you` draws one at 976×127) and
 `bands.js` already has it; the panel says the same thing in a button, which is also the only thing
@@ -1273,9 +1273,9 @@ for it and find a button.
 
 §52a listed them and left them for whoever wrote the rows. F6 wrote them, as four tokens:
 
-| token | dark (measured) | light (derived) |
-| --- | --- | --- |
-| `--compact-permanent-bg` / `-border` | `rgba(255,59,59,.05)` / `.32` | `rgba(220,38,38,.03)` / `.34` |
+| token                                  | dark (measured)                  | light (derived)                |
+| -------------------------------------- | -------------------------------- | ------------------------------ |
+| `--compact-permanent-bg` / `-border`   | `rgba(255,59,59,.05)` / `.32`    | `rgba(220,38,38,.03)` / `.34`  |
 | `--compact-recoverable-bg` / `-border` | `rgba(255,107,107,.035)` / `.26` | `rgba(190,18,60,.025)` / `.24` |
 
 `4a Compact` has no `12a` twin, so the light column is derived the way §52 derived the attention
@@ -1283,7 +1283,7 @@ band's: by the delta each family shows between a card that IS drawn in both them
 `.06`→`.04` and `.38`→`.40`; decision moves `.04`→`.03` and `.30`→`.28`. **S10 owns confirming them.**
 
 The fifth token is not derived. `--compact-attention-border` — the panel's own edge when something
-is waiting — is measured at `.3` in *both* themes (`2a Compact needs you`, `4a Compact`,
+is waiting — is measured at `.3` in _both_ themes (`2a Compact needs you`, `4a Compact`,
 `12a Compact needs light`). It is deliberately not `--decision-card-border`, which is `.3` dark and
 `.28` light: the two coincide in one theme and part in the other, which is the exact failure mode
 §52 records for the pair it had to split.
@@ -1353,20 +1353,20 @@ already so there is a hook and no one has to reach for a `[data-state]` guess.
 
 ## 59. The gradient a syncing mark points at is now compared (#204)
 
-The direction rule is one the design states outright — `01-foundations.md` §5, *warm = leaving this
-computer, cool = arriving from Proton* — and it was the one rule with nothing checking it. §58c
+The direction rule is one the design states outright — `01-foundations.md` §5, _warm = leaving this
+computer, cool = arriving from Proton_ — and it was the one rule with nothing checking it. §58c
 closed half the hole by comparing `fill`/`stroke` as computed values; the other half was that a
 `url(#id)` reference is matched loosely, and the gradient it named carried no asserted property.
 
 **Six properties close it**, split by which side each is written on:
 
-| property | prototype | app | so it goes in |
-| --- | --- | --- | --- |
-| `stop-color` | `stop-color="#E55B2B"` (presentation attribute) | `style="stop-color:var(--up-from)"` | `STYLE_PROPS` — both compute to `rgb(229, 91, 43)` |
-| `offset` | attribute | attribute | `SVG_ATTRS` |
-| `x1` `y1` `x2` `y2` | attribute | attribute | `SVG_ATTRS` |
+| property            | prototype                                       | app                                 | so it goes in                                      |
+| ------------------- | ----------------------------------------------- | ----------------------------------- | -------------------------------------------------- |
+| `stop-color`        | `stop-color="#E55B2B"` (presentation attribute) | `style="stop-color:var(--up-from)"` | `STYLE_PROPS` — both compute to `rgb(229, 91, 43)` |
+| `offset`            | attribute                                       | attribute                           | `SVG_ATTRS`                                        |
+| `x1` `y1` `x2` `y2` | attribute                                       | attribute                           | `SVG_ATTRS`                                        |
 
-`stop-color` being a *style* property and not an attribute is the whole trick, and it is the same one
+`stop-color` being a _style_ property and not an attribute is the whole trick, and it is the same one
 §58c used one layer up: the two sides write a colour in different syntaxes and an engine resolves
 both. Listing it as an attribute would have failed on every stop — the app sets no such attribute.
 
@@ -1388,21 +1388,106 @@ app must make it unique per instance (`10a Glyph states` draws ten marks on one 
 
 ### 59a. It also settles S10's gradient question, three tasks early
 
-`12-light-theme.md` calls theme-aware SVG gradient stops *"the one structural edit light needs beyond
-the mask colour"*, and offers two ways: duplicate the `defs` per theme, or drive the stops from CSS
+`12-light-theme.md` calls theme-aware SVG gradient stops _"the one structural edit light needs beyond
+the mask colour"_, and offers two ways: duplicate the `defs` per theme, or drive the stops from CSS
 variables. F2 took the second and verified it by sampling pixels. Extracting `stop-color` puts the
 drawn answer in the fixtures, and the two sides match exactly:
 
-| stop | `2a Compact syncing` | `12a Compact syncing light` | token |
-| --- | --- | --- | --- |
-| up 0% | `rgb(229, 91, 43)` | `rgb(178, 63, 20)` | `--up-from` |
-| up 100% | `rgb(255, 184, 77)` | `rgb(217, 119, 6)` | `--up-to` |
-| down 0% | `rgb(6, 182, 212)` | `rgb(14, 116, 144)` | `--down-from` |
-| down 100% | `rgb(59, 130, 246)` | `rgb(29, 78, 216)` | `--down-to` |
+| stop      | `2a Compact syncing` | `12a Compact syncing light` | token         |
+| --------- | -------------------- | --------------------------- | ------------- |
+| up 0%     | `rgb(229, 91, 43)`   | `rgb(178, 63, 20)`          | `--up-from`   |
+| up 100%   | `rgb(255, 184, 77)`  | `rgb(217, 119, 6)`          | `--up-to`     |
+| down 0%   | `rgb(6, 182, 212)`   | `rgb(14, 116, 144)`         | `--down-from` |
+| down 100% | `rgb(59, 130, 246)`  | `rgb(29, 78, 216)`          | `--down-to`   |
 
 The prototype duplicates its `defs` per theme; the app's single pair resolves to the same eight
 values through `var()`. **S10 does not need to duplicate anything, and the day the `12a` frames can be
 mapped (§58b) this becomes an assertion rather than a table.**
+
+---
+
+## Per-frame fixtures (F9)
+
+---
+
+## 60. Four more capability gaps, found by writing a dataset for every frame
+
+The reconciliation sweep (P0.2) compared docs against frames and caught every place the two
+disagreed. It could not catch this class, because these are not disagreements: the doc and the frame
+say the same thing, and **nothing in the command surface can produce it.** An absence in a reply
+shape is invisible until someone tries to fill the reply in, which is what F9 is.
+
+Four, none of them among the ten capabilities in `IMPLEMENTATION-PLAN.md` §4 and none among G1–G4:
+
+| #   | what is missing                                                                                        | frames                                                                                                                 | issue                                                                   |
+| --- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| G6  | a **size on a planned action** — `PlannedAction` has no size field at any level of the dry-run surface | `5a Plan` (`3 files, 4.1 MB`), `5a Plan safe` (a size per row), `9a Review` (`1.4 GB` / `38.4 GB`)                     | [#206](https://github.com/osirison/proton-drive-sync-engine/issues/206) |
+| G7  | **index-wide totals** — how many files, how many bytes                                                 | `2a Settled`, `2a Compact settled`, `10a Settled`, `7a Activity quiet`, `8a Settings`, `5a Checking`                   | [#207](https://github.com/osirison/proton-drive-sync-engine/issues/207) |
+| G8  | a **subtree aggregate** for a directory about to be deleted, and an atime                              | `4a Deletions` (`1,204 photos, 8.4 GB`, `last opened Mar 2024`), `4a Armed` (the same count in the confirmation title) | [#208](https://github.com/osirison/proton-drive-sync-engine/issues/208) |
+| G9  | **dry-run progress** — `run_dry_run` resolves once and reports nothing while it runs                   | `5a Checking` (`8,431 of 12,480 files`)                                                                                | [#209](https://github.com/osirison/proton-drive-sync-engine/issues/209) |
+
+**G6 is not G2.** #191 is byte totals _per direction, per time window_ — what a pass moved. G6 is the
+size of files a plan _would_ move, which is a field on a plan row. The distinction matters because
+`9a Review` pairs its figure with `Needs 38.4 GB free. You have 214 GB.`, so it feeds C4's
+free-space check: a **safety** statement resting on a number nothing computes.
+
+**G8 is the other safety one.** `05-deletions.md` makes the count load-bearing — the armed
+confirmation asks `Delete 1,204 photos from this computer?`, naming the magnitude in the question you
+are answering. It is the one place in this design where a missing number is a safety problem rather
+than a blank. The file card beside it (`4 KB`, `last edited Jan 2026`) _is_ answerable, via
+`path_sync_status`, and the fixtures carry it — the two cards differ by whether a gap or a lookup
+stands between the screen and its data.
+
+**Phase-1 fallbacks are in the fixtures, at the point where the field would go.** No fixture invents a
+shape for any of these, or for G1–G4: a plausible-looking `{ upBytes, downBytes }` would settle a
+Phase-2 design from a preview dataset, which is the one thing the F9 contract forbids outright.
+
+---
+
+## 61. `See all 471 actions` is a derivation, not the plan's total
+
+`9a Review` draws **both** `See all 471 actions` and `3 files can't be synced — a socket and two
+shortcuts`, which looks like the frame contradicting itself. It does not.
+
+`SkipUnsupported` is a `SyncAction` like any other, so a skipped file **is** a plan row and
+`PlanSummary::from_plan` counts it: 128 uploads + 341 downloads + 2 conflicts + 3 skips is
+`total: 474`. The button names the 471 that will actually happen — `total - skipped_unsupported`.
+
+**S7 must render it that way.** Reading `summary.total` straight draws `474` and the frame says 471;
+the three skipped rows are listed separately, immediately above, so counting them twice would be
+visible on the same screen.
+
+Recorded because the first version of the fixture resolved it the other way, by writing `total: 471`
+next to an empty plan — a reply the daemon cannot emit, since `total` is `plan.len()`. The screen
+built against that would have looked correct.
+
+---
+
+## 62. Where a light frame's dataset lives, and why it is a reference
+
+All seven drawn light/dark pairs carry **identical text** — same node count, same tree keys, same
+strings, walked in lockstep:
+
+| light                       | dark                   | nodes | strings |
+| --------------------------- | ---------------------- | ----- | ------- |
+| `12a Settled light`         | `2a Settled`           | 26    | 12      |
+| `12a Syncing light`         | `2a Syncing`           | 60    | 25      |
+| `12a Conflict light`        | `3a Conflict`          | 75    | 42      |
+| `12a Deletions light`       | `4a Deletions`         | 63    | 33      |
+| `12a Compact settled light` | `2a Compact settled`   | 12    | 5       |
+| `12a Compact syncing light` | `2a Compact syncing`   | 36    | 11      |
+| `12a Compact needs light`   | `2a Compact needs you` | 13    | 6       |
+
+Which is `12-light-theme.md`'s "Everything else is identical" measured rather than taken on trust,
+and it settles how the fixtures are written: **there is no such thing as light-theme data.** Each
+light entry names its twin (`sameAs`) instead of restating it, so the day S1 changes what
+`4a Deletions` withholds, the light frame cannot keep the old queue.
+
+The resolution inherits **data and never `fids`**, which keeps §58b's decision from being undone by
+accident: the three light compacts were mapped, run and taken back out because the prototype draws
+every frame on one dark page and a `12a` node that sets no colour of its own inherits `#F2F4F7`. If
+`sameAs` inherited the mapping, mapping a dark frame in S1 would silently re-map its light twin and
+reintroduce all 142 failures.
 
 ---
 
