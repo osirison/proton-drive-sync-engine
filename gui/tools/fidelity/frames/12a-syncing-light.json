@@ -519,6 +519,12 @@
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "display": "inline"
+      },
+      "svgAttrs": {
+        "x1": "0",
+        "y1": "0",
+        "x2": "1",
+        "y2": "1"
       }
     },
     {
@@ -536,11 +542,15 @@
         "line-height": "normal",
         "text-align": "start",
         "color": "rgb(242, 244, 247)",
+        "stop-color": "rgb(178, 63, 20)",
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "display": "inline"
+      },
+      "svgAttrs": {
+        "offset": "0%"
       }
     },
     {
@@ -558,11 +568,15 @@
         "line-height": "normal",
         "text-align": "start",
         "color": "rgb(242, 244, 247)",
+        "stop-color": "rgb(217, 119, 6)",
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "display": "inline"
+      },
+      "svgAttrs": {
+        "offset": "100%"
       }
     },
     {
@@ -585,6 +599,12 @@
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "display": "inline"
+      },
+      "svgAttrs": {
+        "x1": "0",
+        "y1": "1",
+        "x2": "1",
+        "y2": "0"
       }
     },
     {
@@ -602,11 +622,15 @@
         "line-height": "normal",
         "text-align": "start",
         "color": "rgb(242, 244, 247)",
+        "stop-color": "rgb(14, 116, 144)",
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "display": "inline"
+      },
+      "svgAttrs": {
+        "offset": "0%"
       }
     },
     {
@@ -624,11 +648,15 @@
         "line-height": "normal",
         "text-align": "start",
         "color": "rgb(242, 244, 247)",
+        "stop-color": "rgb(29, 78, 216)",
         "border-top-color": "rgb(242, 244, 247)",
         "border-right-color": "rgb(242, 244, 247)",
         "border-bottom-color": "rgb(242, 244, 247)",
         "border-left-color": "rgb(242, 244, 247)",
         "display": "inline"
+      },
+      "svgAttrs": {
+        "offset": "100%"
       }
     },
     {

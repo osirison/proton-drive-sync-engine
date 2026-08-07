@@ -21,6 +21,14 @@ export const STYLE_PROPS = [
   "background-color",
   "background-image",
   "opacity",
+  // Gradient stops (#204). A CSS property on BOTH sides and therefore not in SVG_ATTRS: the
+  // prototype writes the presentation attribute `stop-color="#E55B2B"` and the app writes
+  // `style="stop-color:var(--up-from)"`, which as strings never match and as computed values are the
+  // same `rgb(229, 91, 43)`. Same resolution as `fill`/`stroke`, reached one layer lower down.
+  // `stop-opacity` records nothing anywhere today — nothing in the design draws a translucent stop —
+  // which is exactly what makes it worth listing: it costs no bytes and closes the hole.
+  "stop-color",
+  "stop-opacity",
   // box
   "border-top-width",
   "border-right-width",
@@ -98,6 +106,14 @@ export const SVG_ATTRS = [
   "width",
   "height",
   "text-anchor",
+  // The gradient's geometry and its stop positions (#204). `x1`/`y1`/`x2`/`y2` are what make an up
+  // gradient an UP gradient — `0,0 → 1,1` against the down form's `0,1 → 1,0` — so with these
+  // asserted, a syncing mark whose two directions are swapped now fails instead of passing.
+  "offset",
+  "x1",
+  "y1",
+  "x2",
+  "y2",
 ];
 
 /**
@@ -119,11 +135,11 @@ export const SVG_ATTRS = [
  * instance — `10a Glyph states` puts ten marks on one page and a fixed id makes the tenth resolve to
  * the first one's defs — so the id itself is not design.
  *
- * WHAT THE GRADIENT CONTAINS IS DESIGN, AND IS NOT COMPARED EITHER — stated here rather than
- * implied, because a gate that seems to cover more than it does is worse than one that admits its
- * edges. `stop-color`, `offset` and `x1`/`y1`/`x2`/`y2` are in neither property list, so a syncing
- * mark with its up and down gradients swapped — leaving files reading cool, arriving files warm —
- * passes. Closing it means adding those and regenerating all 51 fixtures: issue #204.
+ * WHAT THE GRADIENT CONTAINS IS COMPARED, and that is what makes the wildcard safe (#204). It was
+ * not, for one commit: `stop-color`, `offset` and `x1`/`y1`/`x2`/`y2` were in neither list, so a
+ * syncing mark with its up and down gradients swapped — leaving files reading cool, arriving files
+ * warm — passed everything. They are in both lists now, which is what a `url()` wildcard has to be
+ * paid for with: the reference is the app's to name, the thing referenced is the design's.
  */
 export const COLOUR_ATTRS = new Set(["stroke", "fill"]);
 
@@ -218,6 +234,12 @@ export const INITIAL = {
   "animation-delay": "0s",
   "animation-timing-function": "ease",
   "animation-iteration-count": "1",
+  // Every element that is not a gradient stop computes these, and computes them to the initial —
+  // verified across `div`, `svg`, `defs` and `linearGradient` before they were added. So listing
+  // them here means only the ~50 real stops carry a value, and adding `stop-opacity` costs the
+  // fixtures nothing at all.
+  "stop-color": "rgb(0, 0, 0)",
+  "stop-opacity": "1",
 };
 
 /** Resolve a recorded value, filling in the initial for a property the fixture omitted. */

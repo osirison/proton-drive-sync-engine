@@ -93,14 +93,28 @@ const SHELL_FIDS = {
  */
 const HEX_PATHS = { settled: 2, syncing: 3, needsYou: 1, deletions: 1, paused: 1, unreachable: 2 };
 
-/** The mark's own nodes, under whichever block holds it. */
+/**
+ * The mark's own nodes, under whichever block holds it.
+ *
+ * The `defs` subtree is only worth mapping on the syncing mark — it is the only state with a
+ * gradient — and only became worth mapping at all with #204, which put `stop-color`, `offset` and
+ * `x1`/`y1`/`x2`/`y2` into the property lists. Note the prototype's tag is lower-cased in the key
+ * (`lineargradient`), because `keyOf` writes `tagName.toLowerCase()`.
+ */
 function hexFids(under, state) {
   const idx = HEX_PATHS[state] > 1 ? (i) => `[${i}]` : () => "";
-  return {
+  const base = {
     hexagon: `${under}/svg`,
     hexPath: (i) => `${under}/svg/path${idx(i)}`,
     hexRect: (i) => `${under}/svg/rect[${i}]`,
     hexNumeral: `${under}/svg/text`,
+  };
+  if (state !== "syncing") return base;
+  return {
+    ...base,
+    hexDefs: `${under}/svg/defs`,
+    hexGradient: (i) => `${under}/svg/defs/lineargradient[${i}]`,
+    hexStop: (i, j) => `${under}/svg/defs/lineargradient[${i}]/stop[${j}]`,
   };
 }
 

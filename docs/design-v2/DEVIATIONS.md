@@ -1330,10 +1330,10 @@ S1 through S10 identically:
   `10a Glyph states` puts ten marks on one page — so the id is not design. `frames/*.json` is
   untouched.
 
-  **The gradient that reference points at is design, and is still not compared.** `stop-color`,
-  `offset` and `x1`/`y1`/`x2`/`y2` are in neither property list, so a syncing mark with its up and
-  down gradients swapped — leaving files reading cool, arriving files warm — passes every gate.
-  Adding them regenerates all 51 fixtures, so it is **issue #204** rather than part of F6.
+  **The gradient that reference points at was not compared, for one commit.** `stop-color`, `offset`
+  and `x1`/`y1`/`x2`/`y2` were in neither property list, so a syncing mark with its up and down
+  gradients swapped — leaving files reading cool, arriving files warm — passed every gate. Closed by
+  **#204**: all six are asserted now, and the swap fails with sixteen assertions. See §59.
 
 ### 58d. The tray panel's border is `#23262D`, not the translucent white the doc gives it
 
@@ -1348,6 +1348,43 @@ Recorded because S8 is the task that will feel the gap: it builds the borderless
 this panel lives in, and if the edge really does disappear against a light wallpaper, the doc's value
 is the intended answer and this is where the disagreement is written down. The `is-tray` class exists
 already so there is a hook and no one has to reach for a `[data-state]` guess.
+
+---
+
+## 59. The gradient a syncing mark points at is now compared (#204)
+
+The direction rule is one the design states outright — `01-foundations.md` §5, *warm = leaving this
+computer, cool = arriving from Proton* — and it was the one rule with nothing checking it. §58c
+closed half the hole by comparing `fill`/`stroke` as computed values; the other half was that a
+`url(#id)` reference is matched loosely, and the gradient it named carried no asserted property.
+
+**Six properties close it**, split by which side each is written on:
+
+| property | prototype | app | so it goes in |
+| --- | --- | --- | --- |
+| `stop-color` | `stop-color="#E55B2B"` (presentation attribute) | `style="stop-color:var(--up-from)"` | `STYLE_PROPS` — both compute to `rgb(229, 91, 43)` |
+| `offset` | attribute | attribute | `SVG_ATTRS` |
+| `x1` `y1` `x2` `y2` | attribute | attribute | `SVG_ATTRS` |
+
+`stop-color` being a *style* property and not an attribute is the whole trick, and it is the same one
+§58c used one layer up: the two sides write a colour in different syntaxes and an engine resolves
+both. Listing it as an attribute would have failed on every stop — the app sets no such attribute.
+
+`stop-opacity` is asserted too and records **nothing anywhere**: no stop in the design is
+translucent, every element computes it to the initial `1`, so it costs the fixtures zero bytes and
+closes the hole for the first stop that needs it.
+
+**The regeneration is small and readable** — 252 lines across the 10 frames that draw a gradient, and
+`stop-color` appears only on real stops because `INITIAL` carries its `rgb(0, 0, 0)` default (checked
+against `div`, `svg`, `defs` and `linearGradient` before it was added). Assertions 11,199 → 12,441.
+
+**Proved by breaking it**, the way F8 proved the style gate with a deliberately-wrong hex: swapping
+`gradient(upId, "up")` for `gradient(upId, "down")` in `hexagon.js` fails 16 assertions across the
+two syncing frames — `y1`/`y2` inverted on both gradients and all four stop colours warm↔cool — where
+before the change it passed silently.
+
+What is still not compared, and now genuinely is not: the gradient's `id`, deliberately, because the
+app must make it unique per instance (`10a Glyph states` draws ten marks on one page).
 
 ---
 
