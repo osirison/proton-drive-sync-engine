@@ -287,9 +287,24 @@ export function toggle({ on = false, onChange = null, label = null } = {}) {
   return node;
 }
 
-/** The 17px checkbox. `9a Consent`'s "I understand deletions travel both ways." is the drawn one. */
+/**
+ * The 17px checkbox. `9a Consent`'s "I understand deletions travel both ways." is the drawn one.
+ *
+ * NO STATE CLASS ON THE BOX, and this is the one control in the module where that is right. The
+ * visual state comes from `.checkbox-input:checked + .checkbox-box` in controls.css — the real
+ * `<input>` is the source of truth, and the browser updates it on every interaction for free.
+ *
+ * An `is-checked` class alongside it was a SECOND source of truth that only ever recorded the value
+ * of the `checked` argument at build time: tick the box and the class stayed as it was. Nothing
+ * consumed it, so nothing was visibly wrong — it was a trap for whoever styled it next.
+ *
+ * `toggle`'s `is-on` and `radioCard`'s `is-selected` are NOT the same thing and must stay. Neither
+ * has an `<input>` under it — a toggle is a `<button role="switch">`, a radio card a
+ * `<div role="radio">` — so there the class IS the state, and the caller re-renders to change it.
+ * The difference is whether the DOM already knows.
+ */
 export function checkbox({ checked = false, label, onChange = null } = {}) {
-  const box = el("span", { class: "checkbox-box" + (checked ? " is-checked" : "") });
+  const box = el("span", { class: "checkbox-box" });
   return el(
     "label",
     { class: "checkbox" },

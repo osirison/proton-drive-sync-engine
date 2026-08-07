@@ -1073,6 +1073,19 @@ consent panel's crimson tint and a `--panel-alt` fill punches a dark hole in it.
 checkbox you have not ticked is drawn brighter than an unselected radio, because it is the thing
 standing between you and continuing.
 
+The same control also carried a **second, stale source of truth**: an `is-checked` class stamped on
+the box from the `checked` argument at build time. Nothing consumed it — the visual state comes from
+`.checkbox-input:checked + .checkbox-box`, which the browser keeps current for free — so nothing was
+visibly wrong. It was a trap for whoever styled it next: a class that reads like state and freezes at
+its initial value the moment anyone ticks the box. Removed.
+
+**`toggle`'s `is-on` and `radioCard`'s `is-selected` are not the same thing and must stay.** Neither
+has an `<input>` beneath it — a toggle is a `<button role="switch">`, a radio card a
+`<div role="radio">` — so there the class *is* the state and the caller re-renders to change it. The
+distinction is whether the DOM already knows; the checkbox is the only one of the three where it
+does. Written into the builder's own docstring, because "consistency" is exactly the argument that
+would put `is-checked` back.
+
 The `line-height` is what the missing 2.5px was: `normal` closes the leading on a sentence that
 wraps. Recorded because a 2.5px height error is invisible by eye, sits inside the style gate's
 tolerance for nothing else, and would have been attributed to S7 when it landed.
