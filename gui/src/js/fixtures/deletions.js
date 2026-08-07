@@ -118,7 +118,10 @@ const PATH_STATUS = {
 const idleWith = (pendingDeletions) => ({
   state: "idle",
   response: {
-    status: "idle",
+    // `running`, not `idle`. The daemon's own word is only ever `syncing` / `paused` /
+    // `running` (src/daemon.rs:389-393,426); `idle` is the DERIVED state, and it is
+    // already on `state` above. Copied from main.js's shape, `idle` and all.
+    status: "running",
     paused: false,
     syncing: false,
     pending_changes: 0,

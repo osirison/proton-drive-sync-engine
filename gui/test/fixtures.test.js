@@ -85,6 +85,47 @@ test("summaryOf throws on an action name the daemon does not have", () => {
   assert.throws(() => summaryOf([action("x", "delete_everything")]), /no PlanSummary counter/);
 });
 
+test("every fixture's wire status is a word the daemon actually sends", () => {
+  // `ControlResponse.status` is the DAEMON's own word and it is only ever these three
+  // (src/daemon.rs). `idle` is the derived `DaemonState` and belongs on the payload's `state`. Three
+  // fixtures put `idle` on the wire — inert today, because `derive_state` never reads the string,
+  // and a trap for the first screen or test that does.
+  const SENT = new Set(["running", "paused", "syncing"]);
+  for (const label of Object.keys(FIXTURES)) {
+    const status = resolveFixture(label)?.status?.response?.status;
+    if (status === undefined) continue;
+    assert.ok(SENT.has(status), `${label}: response.status "${status}" is not one the daemon sends`);
+  }
+});
+
+test("a broken sameAs chain resolves to null rather than a half-built fixture", () => {
+  // Fail closed. Returning the partially-resolved entry gives a frame with a dangling `sameAs` and
+  // none of its twin's data — quietly wrong rather than absent — and makes check-fixtures.mjs's
+  // "chain does not resolve" branch unreachable while it claims to check exactly this.
+  const cyclic = { A: { sameAs: "B" }, B: { sameAs: "A" } };
+  const missing = { A: { sameAs: "nope" } };
+  // Re-implemented against a local table, because `resolveFixture` closes over the real registry —
+  // which is the point of the assertion below: the real one has no broken chain to test with.
+  const resolve = (table, label, seen = new Set()) => {
+    const entry = table[label];
+    if (!entry) return null;
+    if (!entry.sameAs) return entry;
+    if (seen.has(label)) return null;
+    seen.add(label);
+    const twin = resolve(table, entry.sameAs, seen);
+    if (!twin) return null;
+    const { sameAs: _drop, ...own } = entry;
+    return { ...twin, ...own, fids: entry.fids };
+  };
+  assert.equal(resolve(cyclic, "A"), null, "a cycle must not resolve");
+  assert.equal(resolve(missing, "A"), null, "a missing twin must not resolve");
+
+  // And the real registry has none: every `sameAs` resolves to something.
+  for (const label of Object.keys(FIXTURES)) {
+    assert.notEqual(resolveFixture(label), null, `${label}: does not resolve`);
+  }
+});
+
 test("bulk generates deterministic rows, because a fixture may not vary between runs", () => {
   assert.deepEqual(bulk("p", "upload", 3), bulk("p", "upload", 3));
   assert.equal(bulk("p", "upload", 3).length, 3);

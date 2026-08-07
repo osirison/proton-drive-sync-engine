@@ -37,7 +37,11 @@ export const MAIN_FIXTURES = {
     status: {
       state: "idle",
       response: {
-        status: "idle",
+        // `running`, not `idle`. The daemon's own word is only ever `syncing` / `paused` /
+        // `running` (src/daemon.rs:389-393,426); `idle` is the DERIVED state and lives on
+        // `state` above. This shape came from F4 carrying an `idle` here, which the two
+        // modules that copied it inherited before plan.js wrote the rule down.
+        status: "running",
         paused: false,
         syncing: false,
         pending_changes: 0,

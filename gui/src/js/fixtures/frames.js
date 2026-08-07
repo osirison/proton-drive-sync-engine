@@ -74,10 +74,18 @@ export function activeFrame() {
  */
 export function resolveFixture(label, seen = new Set()) {
   const entry = FIXTURES[label];
-  if (!entry?.sameAs || seen.has(label)) return entry ?? null;
+  if (!entry) return null;
+  if (!entry.sameAs) return entry;
+  // FAIL CLOSED on a broken chain, both here and one line down. The first version returned the
+  // partially-resolved entry instead — so a cycle or a missing link produced a fixture with a
+  // dangling `sameAs` and none of the twin's data, which renders as a frame that is quietly wrong
+  // rather than absent, and made `check-fixtures.mjs`'s "sameAs chain does not resolve" branch
+  // unreachable while it claimed to be checking exactly this. `null` is what both callers already
+  // handle: the gate fails the build, and the preview draws its no-fixture diagnostic.
+  if (seen.has(label)) return null;
   seen.add(label);
   const twin = resolveFixture(entry.sameAs, seen);
-  if (!twin) return entry;
+  if (!twin) return null;
   const { sameAs: _twinLabel, ...own } = entry;
   return { ...twin, ...own, fids: entry.fids };
 }
