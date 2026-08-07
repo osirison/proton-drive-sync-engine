@@ -1222,6 +1222,25 @@ Two smaller things from the same review, both real:
   `aria-labelledby` precedence, so passing both is not an error that surfaces — it is a `label` that
   silently does nothing while its author believes the dialog is named. Both cases now throw.
 
+### 57c. The onboarding takeover hid the layers instead of discarding them
+
+The first version forced `dialogRoute` to `null` and `active` to `"onboarding"` while the latch was
+set, which is correct for what is *shown* and wrong about what is *kept*. The latch releases when the
+daemon comes up (`nextOnboardingLatch`), and anything still held came back on the way out.
+
+Reproduced by driving the app rather than by reading it: open the Conflicts screen with a Details
+dialog over it, wipe the daemon back to `firstRun`, let the takeover engage, then bring the daemon
+back. **You finish first-run setup and land on the Conflicts screen with a Details dialog floating
+over it** — both from before the wipe, both about a state that no longer exists.
+
+Reachable rather than likely: it needs the daemon reset to first-run, or made unreachable *and* its
+folder pair removed, while the window is open with a layer showing. The cost of getting there is low
+and the landing is wrong in a way the user cannot explain, which is the combination worth fixing.
+
+Entering the takeover now discards both layers. **Edge-triggered on entry**, not asserted on every
+render while the latch is set: the two are equivalent today, but the second would quietly forbid
+onboarding from ever opening a layer of its own, and that is S7's call rather than this line's.
+
 ---
 
 ## Phase-1 capability deviations

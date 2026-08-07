@@ -296,6 +296,7 @@ function render() {
   const remoteRoot = live?.remote_root ?? configInfo?.remote_root ?? null;
 
   // Latched, not a raw read of the daemon state — see routes.js for the whole reason.
+  const wasOnboarding = onboardingLatch;
   onboardingLatch = nextOnboardingLatch(
     onboardingLatch,
     st,
@@ -303,6 +304,19 @@ function render() {
     configLoaded,
     statusPolled,
   );
+  // ENTERING the takeover discards both layers. Hiding them is not enough: the latch releases when
+  // the daemon comes up, and anything still held would be restored on the way out — so finishing a
+  // first-run setup would land you on the Conflicts screen with a Details dialog over it, from
+  // before the daemon was wiped. Reproduced, not theorised; DEVIATIONS §57c.
+  //
+  // Edge-triggered on purpose. Clearing on every render while the latch is true would be the same
+  // thing here, but it would also quietly forbid onboarding from ever opening a layer of its own,
+  // which is S7's call to make and not this line's.
+  if (onboardingLatch && !wasOnboarding) {
+    screenStack = [];
+    dialogOverlay = null;
+    dialogReturn = null;
+  }
 
   // The two layers, read back out. A dialog floats over whatever body is showing — which may be a
   // screen overlay and not `route`, and getting that wrong is what loses the user's place. See
