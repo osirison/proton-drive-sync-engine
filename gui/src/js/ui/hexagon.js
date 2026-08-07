@@ -214,9 +214,17 @@ function body(strokeWidth, stroke, fill) {
  * unconditionally on the strength of "a bare <svg> in a flex row shrinks, and every frame that sits
  * in one declares it". Censused across the 53 in-scope marks, TEN declare it and forty-three do not,
  * and `flex-shrink` is an asserted property — so the unconditional form failed every compact frame
- * and would have failed every dialog and panel after them. The ten are the marks sharing a flex ROW
- * with text: `11a Grouped`, `11a Outage`, the three `11a In situ` banners, `3a Conflict diff`,
- * `5a Plan`, `8a Save refused`, `9a CLI missing`, `9a Review`. Those sites pass `flexNone: true`.
+ * and would have failed every dialog and panel after them.
+ *
+ * The ten are the marks sharing a flex ROW with text, and NONE OF THEM IS BUILT YET — they belong to
+ * screens that do not exist, so there is no caller passing `flexNone: true` today and this list is a
+ * standing instruction rather than a description of the code:
+ *
+ *   `3a Conflict diff` (S2) · `5a Plan` (S4) · `8a Save refused` (S6) · `9a CLI missing`,
+ *   `9a Review` (S7) · `11a Grouped`, `11a Outage`, the three `11a In situ` banners (S9).
+ *
+ * Each of those must pass `flexNone: true` when its screen lands; every other mark must not, and the
+ * fidelity gate says which is which the moment a frame is mapped.
  */
 export function renderHexagon(opts = {}) {
   // Before the destructuring, not after: several defaults below call strokeForSize(size) or key

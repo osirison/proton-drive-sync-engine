@@ -1335,6 +1335,20 @@ S1 through S10 identically:
   down gradients swapped — leaving files reading cool, arriving files warm — passes every gate.
   Adding them regenerates all 51 fixtures, so it is **issue #204** rather than part of F6.
 
+### 58d. The tray panel's border is `#23262D`, not the translucent white the doc gives it
+
+`10-tray.md` §"The panel" asks the tray form for `border:1px solid rgba(255,255,255,.1)`, with a
+reason that is sound — it floats over the desktop rather than over the app surface, so an edge tuned
+against `#0A0B0D` has nothing to sit against.
+
+All four drawn tray panels use **`#23262D`**, the same `--border-chrome` every other compact panel
+uses. Frame wins (rule 2), so `ui/compact.js` applies nothing extra for the tray form.
+
+Recorded because S8 is the task that will feel the gap: it builds the borderless always-on-top window
+this panel lives in, and if the edge really does disappear against a light wallpaper, the doc's value
+is the intended answer and this is where the disagreement is written down. The `is-tray` class exists
+already so there is a hook and no one has to reach for a `[data-state]` guess.
+
 ---
 
 ## Phase-1 capability deviations

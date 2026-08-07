@@ -327,6 +327,15 @@ export function renderCompactPanel(opts = {}) {
     throw new Error(`compact: family must be "panel" or "tray", got "${family}"`);
   }
   if (headlineText == null) throw new Error("compact: a headline is required — every drawn panel has one");
+  // Two pairs where passing both means the caller believes something this panel cannot do. Each has
+  // a silent form — one list wins and the other vanishes — and a panel that quietly drops the
+  // deletions it was handed is the worst thing in this component to get wrong.
+  if (transfers.length && deletions.length) {
+    throw new Error("compact: a panel shows transfers or deletions, never both — no frame draws that");
+  }
+  if (menu && footer) {
+    throw new Error("compact: the tray menu REPLACES the two footer buttons (10-tray.md) — pass one");
+  }
 
   const pad = HERO_PAD[state];
   const seamed = state === "syncing";
@@ -368,7 +377,15 @@ export function renderCompactPanel(opts = {}) {
           // come later and are positioned paint over the line, which is how the headline hides it.
           fid(renderSeam({ site: family === "tray" ? "trayPanel" : "compactPanel" }), "seam"),
           seamLabels(),
-          fid(el("div", { class: "compact-hero-body" }, mark, title), "heroBody"),
+          // The sub-line, the meta line and the action go INSIDE the body, not beside it. No syncing
+          // frame draws any of the three, so this path is unmeasured — but the alternative is a
+          // caller passing `sub` to a syncing panel and watching it vanish, and an unmeasured node
+          // is something the fidelity gate catches (it moves the panel's own height) while a
+          // silently dropped one is not.
+          fid(
+            el("div", { class: "compact-hero-body" }, mark, title, subNode, metaNode, actionNode),
+            "heroBody",
+          ),
         ),
         "hero",
       )
@@ -430,6 +447,12 @@ export function renderCompactPanel(opts = {}) {
     {
       class:
         "compact-panel" +
+        // `is-tray` styles nothing today, and is here rather than in S8 because it is the panel's
+        // own class to give. 10-tray.md asks the tray form for `border:1px solid rgba(255,255,255,.1)`
+        // — it floats over the desktop, not over the app surface — and all four drawn `10a` panels
+        // use `#23262D` like every other compact panel, so the frame wins and there is nothing to
+        // apply (DEVIATIONS.md §58d). S8 owns a borderless always-on-top window and will want the
+        // hook; giving it now means the tray form is never selected by a `[data-state]` guess.
         (family === "tray" ? " is-tray" : "") +
         // The panel's own edge goes crimson when something is waiting on you — measured on
         // `2a Compact needs you`, `4a Compact` and `12a Compact needs light`, all three at .3 alpha.
