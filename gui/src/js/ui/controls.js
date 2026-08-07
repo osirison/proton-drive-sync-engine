@@ -53,6 +53,41 @@ const KIND = {
     bgActive: "var(--border)",
     borderHover: "var(--border-strong)",
   },
+  /**
+   * `Pause` and `Later` in the 360px compact panel: transparent with a hairline.
+   *
+   * It cannot borrow `secondary`, which is the same button in dark and a different one in light —
+   * the panel's quiet border measures `#E0DCD5` where `--border` is `#E6E3DE` (DEVIATIONS.md §15's
+   * role-token split). F1 tokenised this role as `--btn-quiet-*` from `01-foundations.md` §1 and
+   * nothing had claimed it until F6; the values were there before the kind was.
+   */
+  quietOutlined: {
+    bg: null,
+    border: "var(--btn-quiet-border)",
+    color: "var(--btn-quiet-text)",
+    weight: 400,
+    bgHover: "var(--panel-raised)",
+    bgActive: "var(--border)",
+    borderHover: "var(--border-strong)",
+  },
+  /**
+   * `Open` beside it — the second secondary fill `01-foundations.md` §1 allows, with a brighter
+   * label than `secondaryFilled`'s. `--btn-secondary-bg-alt` is F1's, and its comment already says
+   * where it goes: "the compact panel uses this one".
+   *
+   * Its fill sits ABOVE `--panel-raised` on the surface ladder (`#16181D` against `#101216`), so
+   * hover and press step up from `--border` rather than to it — the one-level rule of
+   * 14-behaviour-and-state.md applied from where this kind actually starts.
+   */
+  secondaryAlt: {
+    bg: "var(--btn-secondary-bg-alt)",
+    border: "var(--btn-secondary-border)",
+    color: "var(--text-bright)",
+    weight: 400,
+    bgHover: "var(--border)",
+    bgActive: "var(--border-strong)",
+    borderHover: "var(--border-strong)",
+  },
   /** The `⋯` and the segmented control's unselected segments: no border at all. */
   quiet: {
     bg: null,

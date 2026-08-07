@@ -196,6 +196,30 @@
   --destructive-input-border: rgba(255, 59, 59, 0.35); /* the typed-DELETE field */
   --destructive-input-bg: #0a0b0d;
 
+  /* ---- the 360px compact panel (F6): three tints the 1040 screens do not carry ----
+     DEVIATIONS.md §52a's finding, tokenised. THE PANEL STEPS EVERY CRIMSON ALPHA ONE NOTCH DOWN
+     from the window's: the deletion queue's permanent row is .05/.32 against `4a Deletions`'
+     .06/.38, and its recoverable row .035/.26 against the card's .04/.30. Tone and density are
+     independent axes — the same shape controls.js found for kind and size — so these are their own
+     tokens rather than a reuse of the card pair at a smaller radius.
+
+     --compact-attention-border is the panel's own edge when something is waiting on you, and it is
+     the one value here measured in BOTH themes: `2a Compact needs you`, `4a Compact` and
+     `12a Compact needs light` all draw .3. It is NOT --decision-card-border, which is .3 in dark and
+     .28 in light — they coincide in one theme and part in the other, which is the failure mode this
+     file's header warns about.
+
+     The four row tints have no light frame at all: `4a Compact` has no `12a` twin. Their light
+     values are DERIVED the way §52 derived the attention band's — by the delta each family shows
+     between a drawn dark card and its drawn light twin. Destructive moves .06→.04 and .38→.40,
+     decision .04→.03 and .30→.28; applied here that gives .05→.03 / .32→.34 and .035→.025 / .26→.24.
+     S10 owns confirming them when the light mapping is propagated. DEVIATIONS.md §58a. */
+  --compact-attention-border: rgba(255, 107, 107, 0.3);
+  --compact-permanent-bg: rgba(255, 59, 59, 0.05);
+  --compact-permanent-border: rgba(255, 59, 59, 0.32);
+  --compact-recoverable-bg: rgba(255, 107, 107, 0.035);
+  --compact-recoverable-border: rgba(255, 107, 107, 0.26);
+
   /* ---- buttons. Maximum contrast is the primary action, in both themes. ---- */
   --btn-primary-bg: #f2f4f7;
   --btn-primary-text: #0a0b0d;
@@ -320,6 +344,12 @@
     --destructive-input-border: rgba(220, 38, 38, 0.35);
     --destructive-input-bg: #ffffff;
 
+    --compact-attention-border: rgba(190, 18, 60, 0.3);
+    --compact-permanent-bg: rgba(220, 38, 38, 0.03);
+    --compact-permanent-border: rgba(220, 38, 38, 0.34);
+    --compact-recoverable-bg: rgba(190, 18, 60, 0.025);
+    --compact-recoverable-border: rgba(190, 18, 60, 0.24);
+
     --btn-primary-bg: #14161a;
     --btn-primary-text: #faf8f5;
     --btn-primary-quiet-text: #b9bec6;
@@ -427,6 +457,12 @@
   --destructive-btn-bg: rgba(220, 38, 38, 0.07);
   --destructive-input-border: rgba(220, 38, 38, 0.35);
   --destructive-input-bg: #ffffff;
+
+  --compact-attention-border: rgba(190, 18, 60, 0.3);
+  --compact-permanent-bg: rgba(220, 38, 38, 0.03);
+  --compact-permanent-border: rgba(220, 38, 38, 0.34);
+  --compact-recoverable-bg: rgba(190, 18, 60, 0.025);
+  --compact-recoverable-border: rgba(190, 18, 60, 0.24);
 
   --btn-primary-bg: #14161a;
   --btn-primary-text: #faf8f5;

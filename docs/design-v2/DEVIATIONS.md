@@ -1243,6 +1243,114 @@ onboarding from ever opening a layer of its own, and that is S7's call rather th
 
 ---
 
+## The compact panel (F6)
+
+Measured across the eight in-scope dark frames — `2a Compact settled/syncing/needs you`,
+`4a Compact`, `10a Settled/Syncing/Offline/Paused` — and the three `12a` light twins.
+
+## 58. No compact panel draws an attention band
+
+`02-shell.md` §"The 360px compact panel" gives the panel four blocks, the third of which is an
+**attention band**: `margin:12px 14px`, `border-radius:11px`, `padding:11px 13px`, a ring dot, 12.5px
+/500 text and a `›`. Issue #170 repeats it. **Nothing draws it.**
+
+The two frames that would carry one — `2a Compact needs you` and `4a Compact` — instead put a
+full-width button where the band would go:
+
+| frame | what the band's slot actually holds |
+| --- | --- |
+| `2a Compact needs you` | `316×38` button, `padding:10px`, radius `9`, 13px/500, `rgba(255,107,107,.1)` on `.4` |
+| `4a Compact` | two `332×61` deletion rows, then a `332×37` `Review them` at 12.5px/600 |
+
+Frame wins (rule 2). The band is a 1040-screen component (`2a Needs you` draws one at 976×127) and
+`bands.js` already has it; the panel says the same thing in a button, which is also the only thing
+360px has room for. `ui/compact.js` therefore has no band, and the `›` glyph appears nowhere in it.
+
+Worth stating plainly rather than leaving as an absence, because a reader of `02-shell.md` will look
+for it and find a button.
+
+### 58a. The panel's two deletion tints, and the light values nothing draws
+
+§52a listed them and left them for whoever wrote the rows. F6 wrote them, as four tokens:
+
+| token | dark (measured) | light (derived) |
+| --- | --- | --- |
+| `--compact-permanent-bg` / `-border` | `rgba(255,59,59,.05)` / `.32` | `rgba(220,38,38,.03)` / `.34` |
+| `--compact-recoverable-bg` / `-border` | `rgba(255,107,107,.035)` / `.26` | `rgba(190,18,60,.025)` / `.24` |
+
+`4a Compact` has no `12a` twin, so the light column is derived the way §52 derived the attention
+band's: by the delta each family shows between a card that IS drawn in both themes. Destructive moves
+`.06`→`.04` and `.38`→`.40`; decision moves `.04`→`.03` and `.30`→`.28`. **S10 owns confirming them.**
+
+The fifth token is not derived. `--compact-attention-border` — the panel's own edge when something
+is waiting — is measured at `.3` in *both* themes (`2a Compact needs you`, `4a Compact`,
+`12a Compact needs light`). It is deliberately not `--decision-card-border`, which is `.3` dark and
+`.28` light: the two coincide in one theme and part in the other, which is the exact failure mode
+§52 records for the pair it had to split.
+
+### 58b. The `12a` frames inherit a dark `color`, so the light twins are not mapped yet
+
+The three light compacts were mapped, run against the gate, and taken back out. The panel needs no
+new code in light: it reproduces `12a Compact settled/syncing/needs light` at every colour those
+frames **declare**. What it cannot reproduce is the colour they **inherit**.
+
+The prototype draws all sixty frames on one dark page, so every node in a `12a` frame that does not
+set a colour of its own inherits `#F2F4F7` — the dark text tier — and the extractor records that as
+ground truth. The app in light mode inherits `#14161A`, correctly, and fails on every one:
+**142 failures across the three frames, all of them `color` or `border-*-color` reading
+`rgb(242, 244, 247)` against `rgb(20, 22, 26)`, and not one of them a real difference.**
+
+Fixing it means recording, per node, whether the prototype **set** a property or inherited it, and
+treating an inherited colour on a light frame as a wildcard — which means regenerating all 51
+fixtures. That is a change to the ground truth itself and it belongs with **S10**, which owns light
+and needs the same answer for the seven screens that have no drawn light frame at all.
+
+The measurement above is the useful part: it says the light mapping of this panel is already right,
+and it names the one thing standing between S10 and proving it.
+
+### 58c. Three defects F6 found in modules that were already merged
+
+The compact panel was the first task to put a hexagon, a transfer row or an SVG colour in front of
+the style gate — F4 mapped the shell's chrome and nothing else. All three of these would have failed
+S1 through S10 identically:
+
+- **`renderHexagon` emitted `flex:none` on every mark.** F2 wrote it on the strength of "a bare
+  `<svg>` in a flex row shrinks, and every frame that sits in one declares it". Censused across the
+  53 in-scope marks, **ten declare it and forty-three do not** — and `flex-shrink` is asserted. It is
+  now the `flexNone` option, default off, and the ten sites are named in the source.
+- **`.transfer-arrow` and `.transfer-detail` carried `flex:none`.** Neither declares `flex-shrink` in
+  any frame that draws one (`2a Syncing`, `2a Compact syncing`, both light twins). Also inert:
+  `.transfer-name` is `flex:1` on a `0%` basis, so neither ever enters the shrink calculation.
+- **The gate compared SVG colour attributes as strings, which no themed mark can ever pass.** The
+  prototype writes `stroke="#2E323A"`; the app writes `stroke="var(--hex-settled-track)"` and must —
+  `tokens.css` is the only file allowed a raw colour, and light is a token swap. `assert.mjs` now
+  compares `fill` and `stroke` as the **engine computes them** (`var()` resolves in a presentation
+  attribute; both sides come out `rgb(46, 50, 58)`), which is what it already does for every style
+  property. `url(#id)` matches any other `url(#id)`: the id must be unique per instance —
+  `10a Glyph states` puts ten marks on one page — so the id is not design. `frames/*.json` is
+  untouched.
+
+  **The gradient that reference points at is design, and is still not compared.** `stop-color`,
+  `offset` and `x1`/`y1`/`x2`/`y2` are in neither property list, so a syncing mark with its up and
+  down gradients swapped — leaving files reading cool, arriving files warm — passes every gate.
+  Adding them regenerates all 51 fixtures, so it is **issue #204** rather than part of F6.
+
+### 58d. The tray panel's border is `#23262D`, not the translucent white the doc gives it
+
+`10-tray.md` §"The panel" asks the tray form for `border:1px solid rgba(255,255,255,.1)`, with a
+reason that is sound — it floats over the desktop rather than over the app surface, so an edge tuned
+against `#0A0B0D` has nothing to sit against.
+
+All four drawn tray panels use **`#23262D`**, the same `--border-chrome` every other compact panel
+uses. Frame wins (rule 2), so `ui/compact.js` applies nothing extra for the tray form.
+
+Recorded because S8 is the task that will feel the gap: it builds the borderless always-on-top window
+this panel lives in, and if the edge really does disappear against a light wallpaper, the doc's value
+is the intended answer and this is where the disagreement is written down. The `is-tray` class exists
+already so there is a hook and no one has to reach for a `[data-state]` guess.
+
+---
+
 ## Phase-1 capability deviations
 
 `IMPLEMENTATION-PLAN.md` §4 lists the ten daemon capabilities the design assumes and which four are

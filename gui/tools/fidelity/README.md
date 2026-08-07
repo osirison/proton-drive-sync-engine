@@ -136,6 +136,9 @@ that admits its edges:
   mapping table, which is prose, not a drawn artefact.
 - **Whether an animation looks right.** Only the declaration is comparable — name, duration, delay,
   timing function. A wrong easing that parses is invisible here.
+- **What is inside a gradient.** The `url(#id)` reference is matched loosely (the id is the app's to
+  choose) and the `stop`s it names carry no asserted property, so a syncing hexagon drawn with its
+  up and down gradients swapped passes every gate. Issue #204 — closing it regenerates the fixtures.
 - **Native tray rendering.** Not a webview; it has no DOM. The tray strings are exempted in
   `copy-gate.mjs` with that reason.
 - **The desktop's own notification chrome.** Only the banner's content is ours.
@@ -145,7 +148,23 @@ that admits its edges:
 
 `assert.mjs` reports how many frames carry a `data-fid` and lists the rest every run, so "the gate is
 green" can never be confused with "the gate looked at anything". Today the shell's own chrome is
-mapped for three frames — 2,109 assertions — and 48 frames are waiting for their screens.
+mapped for three frames and F6's compact panel for eight more — **11 of 51, 11,199 assertions** — and
+40 frames are waiting for their screens.
+
+F6 was the first task to put a hexagon, a transfer row and an SVG colour in front of the gate, and it
+found three things wrong with them rather than with itself; `DEVIATIONS.md` §58c has all three. The
+one that changed this harness: **`fill` and `stroke` are compared as the engine computes them, not as
+attribute strings.** The prototype writes `#2E323A` and the app writes `var(--hex-settled-track)`,
+because `tokens.css` is the only file allowed a raw colour and light is a token swap — compared
+literally, no themed mark could ever pass. `var()` resolves inside a presentation attribute, so both
+sides come out `rgb(46, 50, 58)`, which is the same footing every style property is already on. A
+`url(#id)` reference matches any other: the id must be unique per instance (`10a Glyph states` draws
+ten marks on one page), so it is not design.
+
+The gradient it points at **is** design and is not compared either — `stop-color`, `offset` and
+`x1`/`y1`/`x2`/`y2` are in neither property list, so a syncing mark with its two directions swapped
+passes. It belongs in the list below rather than in this paragraph; adding it regenerates all 51
+fixtures, which is issue #204.
 
 Building the harness before the screens is deliberate: each S-task's definition of done is "my
 frames pass", and eleven screens written against no gate at all would be eleven screens to re-check

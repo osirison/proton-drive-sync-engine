@@ -108,15 +108,20 @@
   color: var(--text-2);
 }
 
+/* NO `flex:none` on either of these, though both look like they want it. Neither the size chip nor
+   the arrow declares `flex-shrink` in any frame that draws one — `2a Syncing`, `2a Compact syncing`
+   and both light twins — and `flex-shrink` is an asserted property, so the declaration fails the
+   gate at every site. It is also inert: `.transfer-name` is `flex:1` on a `0%` basis, so these two
+   never enter the shrink calculation unless a 12px arrow and a size chip alone overflow the row.
+   Found by F6, which put the first transfer rows in front of the gate; same correction as the one
+   `renderHexagon`'s `flexNone` records. */
 .transfer-detail {
-  flex: none;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-5);
 }
 
 .transfer-arrow {
-  flex: none;
   font-size: 13px;
 }
 .transfer-row.is-compact .transfer-arrow {

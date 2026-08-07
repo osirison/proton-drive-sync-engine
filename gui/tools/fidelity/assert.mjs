@@ -25,7 +25,16 @@ import { readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { STYLE_PROPS, SVG_ATTRS, compare, valueOf, LENGTH_TOLERANCE_PX, boxComparability } from "./props.mjs";
+import {
+  STYLE_PROPS,
+  SVG_ATTRS,
+  COLOUR_ATTRS,
+  compare,
+  compareSvgAttr,
+  valueOf,
+  LENGTH_TOLERANCE_PX,
+  boxComparability,
+} from "./props.mjs";
 import { OWES_FIT } from "./frame-classes.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -125,7 +134,7 @@ for (const entry of index) {
   await page.waitForSelector("#app-root > *", { timeout: 5000 }).catch(() => {});
 
   const seen = await page.evaluate(
-    (label, PROPS, ATTRS) => {
+    (label, PROPS, ATTRS, COLOUR) => {
       // Frozen exactly as extract.mjs freezes the prototype, and in the same evaluation as the
       // measurement so nothing can advance in between. Seeking rather than disabling, because
       // animation-name/duration/delay/timing-function are themselves asserted.
@@ -143,9 +152,13 @@ for (const entry of index) {
         const styles = {};
         for (const p of PROPS) styles[p] = cs.getPropertyValue(p);
         const svgAttrs = {};
+        // The colour attributes are ALSO read as the engine computes them, because the app writes
+        // `var(--token)` where the prototype writes a hex — see COLOUR_ATTRS in props.mjs.
+        const svgComputed = {};
         for (const a of ATTRS) {
           const v = el.getAttribute(a);
           if (v != null) svgAttrs[a] = v;
+          if (COLOUR.includes(a)) svgComputed[a] = cs.getPropertyValue(a);
         }
         const b = el.getBoundingClientRect();
         out.push({
@@ -153,6 +166,7 @@ for (const entry of index) {
           tag: el.tagName.toLowerCase(),
           styles,
           svgAttrs,
+          svgComputed,
           box: { w: +b.width.toFixed(2), h: +b.height.toFixed(2) },
         });
       }
@@ -161,6 +175,7 @@ for (const entry of index) {
     frame.label,
     STYLE_PROPS,
     SVG_ATTRS,
+    [...COLOUR_ATTRS],
   );
 
   if (!seen.length) {
@@ -205,8 +220,8 @@ for (const entry of index) {
       const b = node.svgAttrs[attr];
       if (a === undefined && b === undefined) continue;
       asserted++;
-      if (a !== b)
-        failures.push({ frame: frame.label, key: node.key, prop: `@${attr}`, detail: `${a} vs ${b}` });
+      const reason = compareSvgAttr(attr, a, b, node.svgComputed?.[attr]);
+      if (reason) failures.push({ frame: frame.label, key: node.key, prop: `@${attr}`, detail: reason });
     }
   }
 
