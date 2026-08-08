@@ -65,6 +65,9 @@ const DRAWN = [
   ["CHROME.chips.step", [1], "9a Folders"],
   ["MAIN.syncing", [3], "2a Syncing"],
   ["MAIN.otherWaiting", [3], "2a Needs you"],
+  // Drawn on a NOTIFICATION rather than on the main screen: `11a Outage` is the only place the
+  // design writes this sentence, and S1's sign-in hero quotes it because there is no second one.
+  ["MAIN.authExpiredSub", [61], "11a Outage"],
   ["MAIN.band.conflictTitle", [1], "2a Needs you"],
   ["MAIN.band.conflictSub", ["notes/todo.txt"], "2a Needs you"],
   ["MAIN.band.deletionTitle", [2], "2a Needs you"],

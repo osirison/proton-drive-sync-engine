@@ -66,6 +66,24 @@ export const MAIN = {
   pausedSub: (n, since) =>
     `${count(n)} changes have piled up since ${since}. Nothing will move until you resume.`,
 
+  /**
+   * The sign-in-expired hero, which no `2a` frame draws — split out of the ONE sentence the deck has
+   * for this situation, `11-notifications.md`'s outage banner body:
+   *
+   *   `Proton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.`
+   *
+   * Two sentences, and the design's own division of labour puts the first in a headline and the
+   * second in a sub-line — so the split is the deck's, not an invention, and both halves are still
+   * checked verbatim against `11a Outage` (the copy gate matches a substring of a frame's text, and
+   * `authExpiredSub` is in its drawn-template table at the count the frame draws).
+   *
+   * `routes.js` is why this exists at all: the onboarding latch releases on `authExpired`
+   * specifically so the main screen can carry it, and a state that fell through to `Everything is up
+   * to date` would be a false all-clear on a daemon that cannot reach Proton at all.
+   */
+  authExpired: "Proton Drive is asking you to sign in again",
+  authExpiredSub: (n) => `${count(n)} changes are waiting — nothing is lost.`,
+
   sideLocal: "This computer",
   sideRemote: "Proton Drive",
   sideRemoteCompact: "Proton",

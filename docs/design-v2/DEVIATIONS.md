@@ -1625,6 +1625,45 @@ and drawn in no `2a` frame — `unreachable` borrows `TRAY.unreachableTitle`/`un
 deck's own outage sentences, and `paused` renders `pausedSub` against `last_sync_epoch_secs` because
 nothing records _when you paused_.
 
+### 67a. The fourth undrawn state was a false all-clear, not a blank
+
+`authExpired` had no branch at all, so it fell through to `settled` and drew **`Everything is up to
+date`** on a daemon that cannot reach Proton — the one failure on this screen that is worse than
+drawing nothing, because the screen's entire job is answering "is everything safe?" in under a
+second. Found in review, not by any gate: the three drawn frames each exercise one branch, and no
+frame draws this state.
+
+It is not merely an undrawn state either. `routes.js`'s onboarding latch releases on `authExpired`
+**specifically** so the main screen can carry it — _"onboarding can't fix expired auth… we must
+actually hand off to the main screen's Re-authenticate action rather than trap the user in the
+wizard"_ — so the fall-through broke a hand-off another module was written against.
+
+Built from the one sentence the design has for it, `11-notifications.md`'s outage banner body:
+`Proton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.` Split
+headline/sub-line, which is the division of labour every other hero uses, and both halves are still
+checked verbatim against `11a Outage`. The mark is the struck one it shares with `unreachable` —
+that grouping is the design's own: _"an outage, expired session, or full disk"_ is one struck
+`#FF3B3B` icon.
+
+**`11a Outage`'s `Sign in` action is not built, and the button says `Try again now` instead.**
+Nothing in the command surface signs in: the daemon reuses the `proton-drive` CLI's keyring session,
+so re-authenticating is `proton-drive login` in a terminal. A `Sign in` button with no action behind
+it is worse than the honest one, and `Try again now` is exactly right once the user has signed in
+elsewhere. Related to E6 (#103), which would classify the state daemon-side; a GUI sign-in path is
+its own product decision and does not exist.
+
+### 67b. A seam site is a property of a transition, not of a mount
+
+`updateMain` re-attached the seam node built at mount when the hero entered `syncing`. Entering it
+from `decision` — a pass starting while something is already waiting — therefore attached the
+`mainHero` seam, whose 150px overhang runs straight into the attention band: the rule-2 violation
+`auditSeams` exists to report.
+
+Recorded because of the class rather than the line. **A frame is one rendering, and this screen has
+twenty transitions between six states.** Every gate here compares a rendering, so nothing in the
+harness can see a wrong node re-attached on the way from one to another; the seam is rebuilt from
+`seamSiteOf(next)` on every path that attaches it.
+
 ---
 
 ## Phase-1 capability deviations

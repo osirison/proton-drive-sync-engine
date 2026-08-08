@@ -44,6 +44,25 @@ test("unreachable and paused outrank everything below them", () => {
   assert.equal(heroStateOf(state({ daemonState: "paused", waiting: 2 })), "paused");
 });
 
+test("an expired sign-in never falls through to `Everything is up to date`", () => {
+  // The bug this test exists for, found in review: with no `authExpired` arm, a reachable daemon
+  // that cannot talk to Proton reports nothing in flight and nothing waiting, and the fall-through
+  // draws a false all-clear over a sync that cannot happen. `routes.js` releases the onboarding
+  // latch on exactly this state so the main screen can carry it.
+  assert.equal(heroStateOf(state({ daemonState: "authExpired" })), "authExpired");
+  assert.notEqual(heroStateOf(state({ daemonState: "authExpired" })), "settled");
+  // Still below unreachable, and it does not become the syncing hero if a pass is somehow in flight.
+  assert.equal(heroStateOf(state({ daemonState: "authExpired", syncing: true })), "authExpired");
+});
+
+test("the sign-in hero quotes the deck's one sentence, split in two", () => {
+  // Both halves are checked verbatim against `11a Outage` by the copy gate; this pins the split.
+  assert.equal(
+    `${MAIN.authExpired}. ${MAIN.authExpiredSub(61)}`,
+    "Proton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.",
+  );
+});
+
 test("the band's titles reproduce the drawn sentences at the drawn counts", () => {
   assert.equal(MAIN.band.conflictTitle(1), "One file changed on both sides");
   assert.equal(MAIN.band.deletionTitle(2), "Two deletions are waiting on you");

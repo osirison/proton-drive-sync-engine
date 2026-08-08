@@ -61,6 +61,13 @@ const MAX_ROWS = 6;
  */
 export function heroStateOf({ daemonState, syncing, waiting }) {
   if (daemonState === "unreachable") return "unreachable";
+  // BEFORE `syncing`, and before the settled fall-through, which is where it landed first and is a
+  // false all-clear: a daemon whose Proton session has lapsed is reachable, reports nothing in
+  // flight, and would otherwise draw `Everything is up to date` over a sync that cannot happen.
+  // `routes.js` releases the onboarding latch on this state specifically so the main screen can
+  // carry it — "we must actually hand off to the main screen's Re-authenticate action rather than
+  // trap the user in the wizard" — so a fall-through is a broken hand-off, not just a missing state.
+  if (daemonState === "authExpired") return "authExpired";
   if (daemonState === "paused") return "paused";
   if (syncing) return "syncing";
   // `14-behaviour-and-state.md`: "Only when nothing is transferring does the hexagon itself take the
@@ -150,6 +157,8 @@ function headlineOf(v) {
       // Reaching into `TRAY` for it is the copy module working: a second constant saying the same
       // thing here is exactly the drift `ui/copy.js` exists to prevent.
       return TRAY.unreachableTitle;
+    case "authExpired":
+      return MAIN.authExpired;
     case "decision":
       return MAIN.compact.needYou(v.waiting);
     default:
@@ -177,6 +186,8 @@ function subOf(v) {
       return MAIN.pausedSub(v.pending ?? 0, clock(v.lastSync));
     case "unreachable":
       return TRAY.unreachableBody(v.pending ?? 0);
+    case "authExpired":
+      return MAIN.authExpiredSub(v.pending ?? 0);
     default:
       return MAIN.settledSubTime(since(v.lastSync));
   }
@@ -193,17 +204,26 @@ function subTextOf(v) {
 
 // ------------------------------------------------------------------------------ the pieces ----
 
+/**
+ * Which of the five forms the mark takes. `10-tray.md`: **only five forms exist** — a solid filled
+ * hexagon is not a state and must not be reintroduced.
+ *
+ * `authExpired` shares the struck mark with `unreachable`, which is the design's own grouping:
+ * `11-notifications.md` puts "an outage, expired session, or full disk" behind one struck `#FF3B3B`
+ * icon. Both mean *Proton is out of reach*; only the sentence underneath differs.
+ */
+const MARK_STATE = {
+  syncing: "syncing",
+  decision: "needsNumeral",
+  paused: "paused",
+  unreachable: "unreachable",
+  authExpired: "unreachable",
+  settled: "settled",
+};
+
 function heroMark(v) {
-  const state =
-    v.hero === "syncing"
-      ? "syncing"
-      : v.hero === "decision"
-        ? "needsNumeral"
-        : v.hero === "paused"
-          ? "paused"
-          : v.hero === "unreachable"
-            ? "unreachable"
-            : "settled";
+  const state = MARK_STATE[v.hero];
+  if (!state) throw new Error(`main: no mark measured for hero state "${v.hero}"`);
   return renderHexagon({
     size: HERO_SIZE,
     state,
@@ -242,7 +262,12 @@ function heroActions(v, handlers) {
   const buttons = [];
   if (v.hero === "paused") {
     buttons.push(action(MAIN.resume, "secondaryOutlined", handlers.onResume));
-  } else if (v.hero === "unreachable") {
+  } else if (v.hero === "unreachable" || v.hero === "authExpired") {
+    // `Try again now` and not `11a Outage`'s `Sign in`: NOTHING IN THE COMMAND SURFACE SIGNS IN.
+    // Re-authentication is `proton-drive login` in a terminal — the daemon reuses that CLI's keyring
+    // session — so a `Sign in` button here would be a control with no action behind it, which is
+    // worse than the honest one. Retrying is exactly right once the user has signed in elsewhere.
+    // DEVIATIONS §67.
     buttons.push(action(TRAY.tryAgain, "secondaryOutlined", handlers.onSyncNow));
   } else {
     if (v.hero !== "syncing") buttons.push(action(MAIN.syncNow, "secondaryOutlined", handlers.onSyncNow));
@@ -355,6 +380,12 @@ export function updateMain(props = {}) {
     // headline and the sub-line are never re-parented — a moved node restarts its own animations,
     // which is the failure this whole update path exists to avoid.
     if (next.hero === "syncing") {
+      // REBUILT, never re-attached. The seam held here was built for the site the screen mounted in,
+      // and entering syncing while a decision is already waiting needs the SHORT one — re-attaching
+      // the mount-time `mainHero` runs a 150px overhang straight into the attention band, which is
+      // the rule-2 violation `auditSeams` exists to catch and which no frame exercises, because a
+      // frame is one rendering and this is a transition between two.
+      view.seam = renderSeam({ site: seamSiteOf(next) });
       view.hero.prepend(view.seam, ...view.sides);
     } else {
       view.seam.remove();
