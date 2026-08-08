@@ -1664,6 +1664,31 @@ twenty transitions between six states.** Every gate here compares a rendering, s
 harness can see a wrong node re-attached on the way from one to another; the seam is rebuilt from
 `seamSiteOf(next)` on every path that attaches it.
 
+### 67c. §45a, one layer in: the band rebuilt itself on the poll
+
+`fillBand` and `fillColumns` called `replaceChildren` on every status reply, so tabbing to `Compare`
+and waiting dropped focus to `<body>` inside two ticks. Measured, not theorised — the same way §45a
+measured it on the shell, with the same 1.2-second answer:
+
+```
+focused before: "Compare"
+after 7s:       BODY
+```
+
+Which is the failure §45a exists to prevent, arriving in the first module written after it. The
+shell's cache guards the shell's own nodes; a screen's list is the screen's problem. The band is
+where it matters most: it holds `Compare` and `Review`, the two controls this screen exists to
+offer, and `14-behaviour-and-state.md` requires every control to be keyboard-reachable "because this
+is a desktop app".
+
+Both lists now rebuild on a **signature** of their content — a row's file/direction/size/fraction, a
+band item's title and note — and a poll that changes nothing changes nothing. Verified the same way:
+focus survives on `Compare` across three polls.
+
+**The general form, for S2–S10:** the shell patches rather than rebuilds, and every screen has to do
+the same for its own lists. There is no gate for it — the harness reads a static tree, so a screen
+that rebuilds itself twice a second passes every assertion in this repo.
+
 ---
 
 ## Phase-1 capability deviations

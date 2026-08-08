@@ -527,10 +527,30 @@ function crossfadeMark(next) {
 }
 
 /**
- * The two columns and their rows. Rebuilt rather than patched: a row's identity is its file, the set
- * changes wholesale as a pass moves through the plan, and there is no animation in one to lose.
+ * What a list is made of, as a string — so a poll that changes nothing rebuilds nothing.
+ *
+ * THIS IS NOT AN OPTIMISATION AND THE COMMENT ON `app.js`'s `dom` cache says why. The shell
+ * re-renders every ~2 seconds; `replaceChildren` on a block a user has tabbed into drops focus to
+ * `<body>` inside two ticks. The band holds `Compare` and `Review` — the two controls this screen
+ * exists to offer — so rebuilding it on a timer makes them unreachable from the keyboard, which
+ * `14-behaviour-and-state.md` requires "because this is a desktop app". Same hazard the shell hit,
+ * one layer in, and the same answer: rebuild on a change, never on a tick.
+ */
+const signature = (parts) => parts.join("");
+
+/**
+ * The two columns and their rows. Rebuilt when the set of rows changes, which is a row's whole
+ * identity here — a file name, a direction, a size and a fraction. There is no per-row animation to
+ * preserve, so nothing finer than "did the list change" is needed.
  */
 function fillColumns(v) {
+  const sig =
+    v.hero !== "syncing"
+      ? ""
+      : signature(v.transfers.map((t) => `${t.direction}|${t.name}|${t.detail}|${t.progress}`));
+  if (view.columnsSig === sig) return;
+  view.columnsSig = sig;
+
   if (v.hero !== "syncing") {
     view.columns.replaceChildren();
     return;
@@ -558,6 +578,10 @@ function fillColumns(v) {
  */
 function fillBand(v, handlers, arriving = false) {
   const items = bandItems(v, handlers);
+  const sig = signature(items.map((i) => `${i.title}|${i.note}`));
+  if (view.bandSig === sig) return;
+  view.bandSig = sig;
+
   if (!items.length) {
     view.bandWrap.replaceChildren();
     view.bandWrap.classList.remove("is-entering");
@@ -565,6 +589,12 @@ function fillBand(v, handlers, arriving = false) {
   }
   view.bandWrap.replaceChildren(attentionBand({ items }));
   if (!arriving) return;
+  // Removed and re-added around a forced reflow, not simply added: adding a class an element already
+  // carries does not restart its animation, so a SECOND decision arriving after a first would appear
+  // without sliding. It can already be there — under `prefers-reduced-motion` the animation is `none`
+  // and `animationend` never fires to take it off.
+  view.bandWrap.classList.remove("is-entering");
+  void view.bandWrap.offsetWidth;
   view.bandWrap.classList.add("is-entering");
   view.bandWrap.addEventListener("animationend", () => view.bandWrap.classList.remove("is-entering"), {
     once: true,
