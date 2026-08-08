@@ -33,6 +33,20 @@ const CARDINALS = ["zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven"
  * `5 files changed on both sides` for the grouped banner, so the design itself stops spelling
  * somewhere; eleven is where English style guides put the line and no frame tests it.
  */
+/**
+ * Pick the singular or the plural wording for a count.
+ *
+ * Every drawn instance of every counted sentence in the deck happens to be plural — `Syncing 3
+ * changes`, `7 changes have piled up`, `3 things need you`, `4 changes are waiting` — so the
+ * templates were written with the plural baked in and rendered `1 other changes are waiting on you`
+ * the first time a screen fed them a live count. Six sentences, all reachable: one conflict, one
+ * queued change, one thing needing you.
+ *
+ * A whole wording rather than a suffix, because English agreement is not a trailing `s`: `1 change
+ * IS waiting` against `3 changes ARE waiting`, `1 thing NEEDS you` against `3 things NEED you`.
+ */
+export const plural = (n, one, many) => (Number(n) === 1 ? one : many);
+
 export function cardinal(n) {
   if (n == null) return EM_DASH;
   const value = Number(n);

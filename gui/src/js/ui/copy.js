@@ -21,7 +21,7 @@
 //   6. "this computer", never a brand or OS name. "Proton Drive" in full, never "the cloud".
 //   7. "kept" not "preserved", "waiting" not "pending", "brought here" not "downloaded" in prose.
 
-import { count, cardinal, bytes } from "./format.js";
+import { count, cardinal, plural, bytes } from "./format.js";
 
 // ------------------------------------------------------------------ product and chrome ----
 
@@ -58,7 +58,7 @@ export const MAIN = {
   settledSubTime: (ago) => `last synced ${ago}`,
   /** `03-main-screen.md`: rows "cap at ~6 visible with `+n more` in mono if exceeded". */
   andMore: (n) => `+${count(n)} more`,
-  syncing: (n) => `Syncing ${count(n)} changes`,
+  syncing: (n) => `Syncing ${count(n)} ${plural(n, "change", "changes")}`,
   /**
    * `leaving == null` DROPS THE DIRECTION CLAUSE, for the same reason `unreachableBody` drops its
    * count: `last_plan_summary` is null until the plan exists, and on a first run against a large
@@ -70,10 +70,11 @@ export const MAIN = {
     leaving == null
       ? `started ${ago}`
       : `started ${ago} · ${count(leaving)} leaving, ${count(arriving)} arriving`,
-  otherWaiting: (n) => `${count(n)} other changes are waiting on you`,
+  otherWaiting: (n) => `${count(n)} other ${plural(n, "change is", "changes are")} waiting on you`,
   paused: "Paused",
   pausedSub: (n, since) =>
-    `${count(n)} changes have piled up since ${since}. Nothing will move until you resume.`,
+    `${count(n)} ${plural(n, "change has", "changes have")} piled up since ${since}. ` +
+    "Nothing will move until you resume.",
 
   /**
    * The sign-in-expired hero, which no `2a` frame draws — split out of the ONE sentence the deck has
@@ -91,7 +92,7 @@ export const MAIN = {
    * to date` would be a false all-clear on a daemon that cannot reach Proton at all.
    */
   authExpired: "Proton Drive is asking you to sign in again",
-  authExpiredSub: (n) => `${count(n)} changes are waiting — nothing is lost.`,
+  authExpiredSub: (n) => `${count(n)} ${plural(n, "change is", "changes are")} waiting — nothing is lost.`,
 
   sideLocal: "This computer",
   sideRemote: "Proton Drive",
@@ -143,7 +144,7 @@ export const MAIN = {
 
   compact: {
     upToDate: "Up to date",
-    needYou: (n) => `${count(n)} things need you`,
+    needYou: (n) => `${count(n)} ${plural(n, "thing needs", "things need")} you`,
     conflictLine: "One file changed on both sides.",
     deletionLine: "Two deletions are waiting.",
     review: "Review them",
@@ -528,6 +529,6 @@ export const TRAY = {
   unreachableBody: (n) =>
     n == null
       ? "Nothing is lost."
-      : `Nothing is lost. ${count(n)} changes are waiting and will go as soon as it's back.`,
+      : `Nothing is lost. ${count(n)} ${plural(n, "change is", "changes are")} waiting and will go as soon as it's back.`,
   retrying: (inTime, lastAt) => `retrying in ${inTime} · last reached ${lastAt}`,
 };

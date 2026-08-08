@@ -120,6 +120,30 @@ test("`0 leaving, 0 arriving` is never printed for a plan that does not exist ye
   assert.equal(MAIN.syncingSub("1 minute ago", 0, 9), "started 1 minute ago · 0 leaving, 9 arriving");
 });
 
+test("every counted sentence agrees in number at one", () => {
+  // Every drawn instance in the deck is plural — `Syncing 3 changes`, `7 changes have piled up`,
+  // `4 changes are waiting`, `3 things need you` — so the plural was baked into the template and the
+  // first live count of 1 rendered `1 other changes are waiting on you`. Found by looking at the
+  // running app, not by any gate: the gate compares the frames, and no frame draws a one.
+  assert.equal(MAIN.syncing(1), "Syncing 1 change");
+  assert.equal(MAIN.otherWaiting(1), "1 other change is waiting on you");
+  assert.match(MAIN.pausedSub(1, "13:20"), /^1 change has piled up/);
+  assert.equal(MAIN.authExpiredSub(1), "1 change is waiting — nothing is lost.");
+  assert.equal(MAIN.compact.needYou(1), "1 thing needs you");
+  assert.match(TRAY.unreachableBody(1), /1 change is waiting and will go/);
+
+  // And every drawn instance is byte-identical, which is what the copy gate re-checks.
+  assert.equal(MAIN.syncing(3), "Syncing 3 changes");
+  assert.equal(MAIN.otherWaiting(3), "3 other changes are waiting on you");
+  assert.equal(MAIN.compact.needYou(3), "3 things need you");
+  assert.equal(
+    TRAY.unreachableBody(4),
+    "Nothing is lost. 4 changes are waiting and will go as soon as it's back.",
+  );
+  // Zero takes the plural, which is what English does: "0 changes are waiting".
+  assert.equal(MAIN.syncing(0), "Syncing 0 changes");
+});
+
 test("an unknown pending count never renders as zero", () => {
   // 14-behaviour-and-state.md, `gui-core`'s `DaemonState::Unreachable` doc and
   // `store.select.countersUnknown()` all say the same thing: a missing number is UNKNOWN, never
