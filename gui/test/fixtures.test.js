@@ -18,6 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FIXTURES, resolveFixture } from "../src/js/fixtures/frames.js";
 import { action, bulk, summaryOf } from "../src/js/fixtures/dryrun.js";
+import { EMPTY_CONFIG } from "../src/js/api.js";
 
 /** Every counter except the total and the one derived from three others. */
 const CONTRIBUTORS = (summary) =>
@@ -124,6 +125,26 @@ test("a broken sameAs chain resolves to null rather than a half-built fixture", 
   for (const label of Object.keys(FIXTURES)) {
     assert.notEqual(resolveFixture(label), null, `${label}: does not resolve`);
   }
+});
+
+test("the mock's no-config reply has the same shape as a real one", () => {
+  // `read_config` cannot fail to send a full `ConfigPayload`: an absent file loads as an empty doc,
+  // not an error, so every field is still filled in. The mock returned `{}` for a frame describing
+  // no config file, which left `config.exclude` undefined — a `.map` over it throws in browser
+  // preview and nowhere else, which is the worst place for a difference to live.
+  //
+  // Pinned against a fixture that carries a REAL config rather than a hand-copied key list, so the
+  // day `ConfigPayload` grows a field, whichever of the two is updated first drags the other along.
+  const real = resolveFixture("8a Settings").config;
+  assert.deepEqual(
+    Object.keys(EMPTY_CONFIG).sort(),
+    Object.keys(real).sort(),
+    "the empty reply must carry every field a populated one does",
+  );
+  for (const key of ["include", "exclude"]) {
+    assert.ok(Array.isArray(EMPTY_CONFIG[key]), `${key} is a Vec<String> on the wire — never null`);
+  }
+  assert.equal(EMPTY_CONFIG.exists, false, "a missing file reports exists:false, not a missing reply");
 });
 
 test("bulk generates deterministic rows, because a fixture may not vary between runs", () => {

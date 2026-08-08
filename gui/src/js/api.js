@@ -55,6 +55,31 @@ export const api = {
   isMock: () => !inTauri(),
 };
 
+/**
+ * What `read_config` returns when the config file is not there — every field, as `commands.rs` fills
+ * them in (`ConfigPayload`, lines 200-215): `exists: false`, an empty `toml` from an empty doc, and
+ * `ConfigDoc`'s getters answering `None` for each scalar and an empty `Vec` for each array.
+ *
+ * Written out rather than abbreviated because the whole point is the shape. A missing file is not a
+ * missing reply, and the mock must not be the only place that thinks otherwise.
+ */
+export const EMPTY_CONFIG = {
+  path: "~/.config/proton-sync/proton-sync.toml",
+  exists: false,
+  toml: "",
+  local_root: null,
+  remote_root: null,
+  scan_interval_secs: null,
+  events_driven: null,
+  include: [],
+  exclude: [],
+  proton_cli: null,
+  proton_timeout_secs: null,
+  proton_list_attempts: null,
+  delete_approval_remote: null,
+  delete_approval_local: null,
+};
+
 // ---- browser-preview mock (never runs inside Tauri) ----
 // `?frame=<label>` swaps the generic mock for that frame's fixture (F9), so the same dataset drives
 // the fidelity harness and the design preview. Without a frame the generic mock below still runs,
@@ -91,13 +116,18 @@ function mockInvoke(cmd, args) {
         // daemon's, which reads correctly on the two shared keys and is missing every other one —
         // so Settings would have drawn an empty skip list rather than an unanswered one.
         //
-        // An empty doc is the honest answer for a frame that describes no config file, and it is a
-        // real state the app already handles: `refreshConfig` treats a missing file as `{}` rather
-        // than an error. The 38 frames without one lose nothing — the footer's folder pair reads the
-        // STATUS first (`app.js`'s `live?.local_root ?? configInfo?.local_root`), which is the
-        // correct precedence anyway: a running daemon's roots are ground truth and the file is the
-        // fallback.
-        return Promise.resolve(fixture.config ?? {});
+        // A frame that describes no config file still gets a WELL-FORMED reply, because
+        // `read_config` cannot fail to send one: it stats the path, loads the doc (an absent file
+        // loads as an empty doc, not an error) and fills in every field — `exists: false`, an empty
+        // `toml`, `null` for each optional and `[]` for the two arrays. `{}` would leave
+        // `config.exclude` undefined, so a screen doing `.map` over it would throw in browser
+        // preview and nowhere else, which is the worst place for a difference to live.
+        //
+        // The 38 frames without an explicit config lose nothing either way: the footer's folder pair
+        // reads the STATUS first (`app.js`'s `live?.local_root ?? configInfo?.local_root`), which is
+        // the correct precedence anyway — a running daemon's roots are ground truth and the file is
+        // the fallback.
+        return Promise.resolve(fixture.config ?? EMPTY_CONFIG);
       case "read_conflict_pair":
         if (fixture.conflictPair) return Promise.resolve(fixture.conflictPair);
         break;
