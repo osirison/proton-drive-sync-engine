@@ -10,7 +10,10 @@ the precedence rule in `IMPLEMENTATION-PLAN.md` §1.3:
 
 **Status: partial.** Sections are numbered in the order they were resolved and grouped by the task
 that resolved them: **§8–§19 F1** (#165, `tokens.css`), **§20–§31 F2** (#166, the hexagon),
-**§32–§39 F3** (#167, the seam), **§40–§46 F4** (#168, the shell), **§47–§51 F7/F8** (#171/#172, the copy deck and the fidelity harness). Of conflicts 1–7 in `IMPLEMENTATION-PLAN.md` §1.3, **1** reaches a
+**§32–§39 F3** (#167, the seam), **§40–§46 F4** (#168, the shell), **§47–§51 F7/F8** (#171/#172, the
+copy deck and the fidelity harness), **§52–§57 F5** (#169, controls/rows/bands/dialog),
+**§58–§59 F6** (#170, the compact panel), **§60–§62 F9** (#173, the per-frame fixtures),
+**§63–§67 S1** (#180, the main screen). Of conflicts 1–7 in `IMPLEMENTATION-PLAN.md` §1.3, **1** reaches a
 token (§18) and **2, 3, 5 and 6** are per-component colour or geometry that F2 and F3 have now
 measured; 4 and 7 belong to their screens. The full sweep is **P0.2** (#163).
 
@@ -1491,7 +1494,255 @@ reintroduce all 142 failures.
 
 ---
 
+## The main screen (S1)
+
+---
+
+## 63. What the main screen cannot draw, and why none of it is a bug
+
+The first screen to be built is also the first to meet the daemon's reply shape with a drawing in
+hand. Four things `2a Syncing` and `2a Settled` draw have no data behind them, and the fallback in
+every case is `14-behaviour-and-state.md`'s: **omit the clause, never fake it.**
+
+| drawn                                                    | frame        | what exists                                                    | issue                                                                       |
+| -------------------------------------------------------- | ------------ | -------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `· 12,480 files · 41.2 GB` on the settled sub-line       | `2a Settled` | `last_sync_epoch_secs` and nothing else — no index-wide totals | G7 [#207](https://github.com/osirison/proton-drive-sync-engine/issues/207)  |
+| three transfer rows, two directions, a `queued` one      | `2a Syncing` | `activity.transfer`, a single `Option<TransferActivity>`       | G10 [#211](https://github.com/osirison/proton-drive-sync-engine/issues/211) |
+| a 2px progress bar at the real percentage                | `2a Syncing` | see below — no percentage is computable at all                 | E1 [#98](https://github.com/osirison/proton-drive-sync-engine/issues/98)    |
+| `386 MB sent · 1.1 GB received today` in the footer line | `2a Syncing` | nothing; the shell draws the folder pair instead               | G2 [#191](https://github.com/osirison/proton-drive-sync-engine/issues/191)  |
+
+**The progress bar is unreachable by construction, not merely unimplemented**, and that is sharper
+than #98 states it. `TransferActivity` carries `bytes_total` and `bytes_done` and **never both on the
+same transfer**: an upload gets `bytes_total` from the local file's size and no `bytes_done` (the CLI
+reports none), a download gets `bytes_done` sampled live from the staging directory and no
+`bytes_total` (a remote listing carries no size). Neither direction can produce a fraction. So
+`transferRow` takes `progress: null` meaning _no track_, distinct from `0`, which would read as
+stalled — `rows.js` already carried that distinction for queued rows and it now has a second caller.
+
+**The size chip is drawn on uploads and omitted on downloads** for the same reason, rather than
+em-dashed: an em-dash means UNKNOWN in this design, and the daemon was never asked.
+
+### 63a. The style gate had no way to hold a recorded deviation
+
+`2a Settled`'s sub-line renders `last synced 2 minutes ago` where the frame draws a 390px line, so
+the node measures 195px and `box.w` fails — a **documented, planned** difference arriving as a red
+build. Three ways out and only one is honest: filling the clause with plausible numbers is what §60
+forbids outright; leaving the gate red makes it a gate nobody reads; so the assertion is recorded, by
+frame, node and property, in `gui/tools/fidelity/known-deviations.mjs` with the issue that closes it.
+
+The clause that keeps that from becoming a mute list: **an entry that no longer fails is itself a
+failure.** The day #207 lands and the line grows its two clauses, the build fails until the row is
+deleted. An allow-list that can only grow is a list of things nobody will remove.
+
+---
+
+## 64. The chip's count is a SUM, and the ring outranks the fill (§44 half-reopened)
+
+§44 recorded two chip priorities as _chosen_ rather than measured, on the grounds that "nothing draws
+decisions and deletions at once". `2a Needs you` draws exactly that, and the reason it did not look
+like it is that the fixture said otherwise.
+
+Read off the frame: the band's first row is `One file changed on both sides`, its second is
+`Two deletions are waiting on you` / `1 removes from this computer permanently · 1 goes to Proton's
+Trash`, the sub-line is `3 other changes are waiting on you`, and the chip is `3 waiting` with a
+**1px ring** dot. So the frame's state is **one conflict and two deletions**, the chip's number is
+their **sum**, and in their company the decision ring wins over the deletions fill.
+
+The fixture had pinned three conflicts and an empty deletion queue — which makes every drawn _string_
+correct and the band unrenderable, since no conflict can produce that second sentence. F9 wrote the
+dataset from the frame's text and the text alone was consistent with both readings; it took building
+the band to find out which.
+
+**What survives from §44:** deletions still take the filled dot when they are alone, which is what
+`4a Deletions` draws. What changes: the count is `conflicts + deletions`, and the ring is used
+whenever a conflict is among them.
+
+---
+
+## 65. One transfer row, three tree shapes
+
+`rows.js` builds one `transferRow`, and the prototype draws it three ways:
+
+| site                            | row                                                     | its spans                              |
+| ------------------------------- | ------------------------------------------------------- | -------------------------------------- |
+| `2a Syncing`, in flight         | `display:block`, `position:relative`, `overflow:hidden` | inside a flex body, beside a 2px track |
+| `2a Syncing`, queued            | `display:flex`, `gap:10`, `align-items:center`          | direct children, no track              |
+| `2a Compact syncing`, in flight | `display:flex`, `gap:9`, `align-items:center`           | direct children, **with** a track      |
+
+So the wrapper is not "the row that has a track" and not "the row on the main screen" — it is the
+main screen's ACTIVE row and nothing else. Modelled as a `has-body` modifier that _resets_
+`align-items` and `gap` to `normal`, because both are asserted properties and the frame records
+neither on that row: inheriting the flex above would fail three assertions on a row that looks
+identical on screen.
+
+---
+
+## 66. Two button colour roles the frames disagreed with, both invisible in dark
+
+S1 mapped the first buttons the style gate has ever compared, and found `.btn` wrong at every site in
+the app plus two kinds wrong in light only.
+
+**`.btn` was `inline-flex`; all 175 drawn buttons are `block` (165) or `inline-block` (10).** The
+split is just whether the parent is a flex container, which blockifies a `<button>`'s UA
+`inline-block` — so saying nothing at all reproduces both groups, and the four properties F5
+declared (`display`, `align-items`, `justify-content`, `gap`) each fail once per mapped button.
+`line-height:1.2` goes with them: the frames leave it `normal`, and although the gate treats a
+prototype-side `normal` as a wildcard, the box it produces is compared. F6 found this first and
+fixed it inside `.compact-panel .btn` — right about the values, one scope too narrow. That override
+is deleted and the finding lives in `.btn`.
+
+**`secondaryFilled` reached for the surface tiers rather than the button role.** `--panel-raised` /
+`--border` / `--text-2` measures correct on every dark frame and wrong on two of three in light:
+`12a Syncing light` draws `Pause` at `#FFFFFF` / `#D6D2CB` / `#14161A`, where `--border` is `#E6E3DE`
+and `--text-2` is `#374151`. Now `--btn-secondary-bg` / `--btn-secondary-border` /
+`--btn-secondary-text`, which are identical in dark and correct in light. Nothing could have caught
+it: S10 owns light and no light frame is mapped.
+
+**`2a Settled`'s `Sync now` is a twelfth kind.** Four drawn instances — also `3a Conflicts cleared`'s
+`Back to sync` and both of `9a Folders`' browse buttons — transparent over `#0A0B0D` in dark
+(§1.3 conflict 4 already resolved that against the doc's `#101216`) and `#FFFFFF` over `#FAF8F5` in
+light. No existing token is transparent in one theme and a surface in the other, so `secondaryOutlined`
+gets `--btn-secondary-outline-bg`. Light is a lighter surface: a card that reads as depth there reads
+as noise here, and the theme pair is the design saying so.
+
+---
+
+## 67. There is no 168px decision hero, and one state needs one
+
+`14-behaviour-and-state.md` is explicit that needs-decision is additive — the hexagon carries the
+transfer state and the band carries the decisions — and then: _"Only when nothing is transferring
+does the hexagon itself take the decision form."_
+
+§24 measured that the crimson mark **exists only at ≤72px**. Both are true and they only meet on a
+screen nobody drew: idle, nothing in flight, three things waiting. S1 builds it from the rule — the
+`needsNumeral` mark at 168 with the waiting count, `MAIN.compact.needYou(n)` as the headline (the
+only sentence the deck has for this situation, quoted across surfaces the way `copy.js` exists for),
+and the settled sub-line and buttons underneath.
+
+**Prose-normative and unverified.** Same footing as the seam's 320ms transition (§38) and the ⋯ menu
+(§45). Flagged for the designer with `paused` and `unreachable`, which are also specified in words
+and drawn in no `2a` frame — `unreachable` borrows `TRAY.unreachableTitle`/`unreachableBody`, the
+deck's own outage sentences, and `paused` renders `pausedSub` against `last_sync_epoch_secs` because
+nothing records _when you paused_.
+
+### 67a. The fourth undrawn state was a false all-clear, not a blank
+
+`authExpired` had no branch at all, so it fell through to `settled` and drew **`Everything is up to
+date`** on a daemon that cannot reach Proton — the one failure on this screen that is worse than
+drawing nothing, because the screen's entire job is answering "is everything safe?" in under a
+second. Found in review, not by any gate: the three drawn frames each exercise one branch, and no
+frame draws this state.
+
+It is not merely an undrawn state either. `routes.js`'s onboarding latch releases on `authExpired`
+**specifically** so the main screen can carry it — _"onboarding can't fix expired auth… we must
+actually hand off to the main screen's Re-authenticate action rather than trap the user in the
+wizard"_ — so the fall-through broke a hand-off another module was written against.
+
+Built from the one sentence the design has for it, `11-notifications.md`'s outage banner body:
+`Proton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.` Split
+headline/sub-line, which is the division of labour every other hero uses, and both halves are still
+checked verbatim against `11a Outage`. The mark is the struck one it shares with `unreachable` —
+that grouping is the design's own: _"an outage, expired session, or full disk"_ is one struck
+`#FF3B3B` icon.
+
+**`11a Outage`'s `Sign in` action is not built, and the button says `Try again now` instead.**
+Nothing in the command surface signs in: the daemon reuses the `proton-drive` CLI's keyring session,
+so re-authenticating is `proton-drive login` in a terminal. A `Sign in` button with no action behind
+it is worse than the honest one, and `Try again now` is exactly right once the user has signed in
+elsewhere. Related to E6 (#103), which would classify the state daemon-side; a GUI sign-in path is
+its own product decision and does not exist.
+
+### 67b. A seam site is a property of a transition, not of a mount
+
+`updateMain` re-attached the seam node built at mount when the hero entered `syncing`. Entering it
+from `decision` — a pass starting while something is already waiting — therefore attached the
+`mainHero` seam, whose 150px overhang runs straight into the attention band: the rule-2 violation
+`auditSeams` exists to report.
+
+Recorded because of the class rather than the line. **A frame is one rendering, and this screen has
+twenty transitions between six states.** Every gate here compares a rendering, so nothing in the
+harness can see a wrong node re-attached on the way from one to another; the seam is rebuilt from
+`seamSiteOf(next)` on every path that attaches it.
+
+### 67c. §45a, one layer in: the band rebuilt itself on the poll
+
+`fillBand` and `fillColumns` called `replaceChildren` on every status reply, so tabbing to `Compare`
+and waiting dropped focus to `<body>` inside two ticks. Measured, not theorised — the same way §45a
+measured it on the shell, with the same 1.2-second answer:
+
+```
+focused before: "Compare"
+after 7s:       BODY
+```
+
+Which is the failure §45a exists to prevent, arriving in the first module written after it. The
+shell's cache guards the shell's own nodes; a screen's list is the screen's problem. The band is
+where it matters most: it holds `Compare` and `Review`, the two controls this screen exists to
+offer, and `14-behaviour-and-state.md` requires every control to be keyboard-reachable "because this
+is a desktop app".
+
+Both lists now rebuild on a **signature** of their content — a row's file/direction/size/fraction, a
+band item's title and note — and a poll that changes nothing changes nothing. Verified the same way:
+focus survives on `Compare` across three polls.
+
+**The general form, for S2–S10:** the shell patches rather than rebuilds, and every screen has to do
+the same for its own lists. There is no gate for it — the harness reads a static tree, so a screen
+that rebuilds itself twice a second passes every assertion in this repo.
+
+### 67d. Two contradictory sentences in one window
+
+`heroStateOf` split settled from syncing on `response.syncing` alone. A filesystem-watch event only
+_accumulates_ `pending_changes` — `daemon.rs` says so in those words: _"filesystem-watch events only
+accumulate `pending_changes` (they never trigger a reconcile)"_ — so for up to a scan interval after
+an edit the daemon reports `syncing: false` with a non-empty queue.
+
+`gui-core`'s `derive_state` already calls that `Running`, and the header chip reads off it. So the
+chip said **`syncing`** while the hero underneath said **`Everything is up to date`**, about the same
+file, at the same moment, six inches apart. Queued work is not settled; the hero now says so.
+
+### 67e. Neither number in the syncing sub-line describes the pass
+
+`started 14 seconds ago · 2 leaving, 1 arriving` needs the pass as a unit, and nothing in the reply
+is one. Filed as **G11 ([#213](https://github.com/osirison/proton-drive-sync-engine/issues/213))**.
+
+- **`SyncActivity.since_epoch_secs` is the PHASE's start**, reset by `begin_activity` on every phase
+  change. A pass walking scanning → listing → executing → committing therefore counts up and jumps
+  back to zero three times. `last_sync_epoch_secs` is the previous pass's _end_, so it is not the
+  fallback either. Phase 1 renders the phase's elapsed time — visibly wrong on a long pass, and the
+  closest honest number there is.
+- **`pending_changes` is the local watch queue and nothing else**, cleared after each successful
+  reconcile. A pass driven entirely by Proton — a second device uploading, the first reconcile after
+  a restart — has an empty queue while downloading, so the headline read `Syncing 0 changes` with a
+  literal `0` inside the mark. Phase 1 takes `last_plan_summary.uploads + downloads` while syncing
+  and falls back to the queue: both are the daemon's own numbers, deletions are excluded because
+  "the count in the hexagon is transfers, not decisions", and on both drawn frames they agree at 3.
+- **`last_plan_summary` is null until `execute_plan_and_commit` runs** — the whole scan-and-walk
+  stretch, during which `syncing` is already true. `0 leaving, 0 arriving` is a summary the daemon
+  never published, so the clause drops instead. Same rule as §63's omissions and `unreachableBody`'s.
+
+### 67f. `0 changes are waiting` at the moment the app can see nothing
+
+`unreachable` is the one state reached with **no reply at all** (`derive_state` returns it only from
+the `Err` arm), so the pending count is not low — it is unknown. Coercing it with `?? 0` printed
+`Nothing is lost. 0 changes are waiting and will go as soon as it's back.` on a machine that might
+have sixty-one queued.
+
+`14-behaviour-and-state.md`, `gui-core`'s `DaemonState::Unreachable` doc and
+`store.select.countersUnknown()` all forbid it in the same words: **unknown renders as an em-dash,
+never as zero**. An em-dash mid-sentence is not English, so the clause goes and the reassurance
+stays — the same shape as `MAIN.band.deletionSub` dropping a zero clause. Every `?? 0` on this
+screen is gone; `count()` and the copy handle null.
+
+---
+
 ## Phase-1 capability deviations
 
 `IMPLEMENTATION-PLAN.md` §4 lists the ten daemon capabilities the design assumes and which four are
 Phase 2. Each Phase-1 fallback gets a row here as its screen lands — G1–G5 close them.
+
+| screen | frame        | drawn                                 | Phase 1 draws                      | closed by |
+| ------ | ------------ | ------------------------------------- | ---------------------------------- | --------- |
+| S1     | `2a Settled` | `· 12,480 files · 41.2 GB`            | the timestamp alone                | G7 #207   |
+| S1     | `2a Syncing` | three transfer rows, one queued       | the one in-flight transfer         | G10 #211  |
+| S1     | `2a Syncing` | a progress bar at the real percentage | no track at all                    | E1 #98    |
+| S1     | `2a Syncing` | `386 MB sent · 1.1 GB received today` | the folder pair (the shell's line) | G2 #191   |

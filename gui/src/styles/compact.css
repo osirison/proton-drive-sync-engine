@@ -127,24 +127,10 @@
   margin-top: 16px;
 }
 
-/* controls.js builds every button as a centred `inline-flex` box, because two of its kinds hold a
-   second line. The panel's eleven buttons hold one label each, and the frames draw them as plain
-   `<button>`s — so inside this panel the shared builder's flex box is undone.
-
-   `inline-block` covers both sites at once: as a flex item (the hero, the footer) it blockifies to
-   `block`, and in the deletion queue's action block it stays `inline-block`, which is exactly what
-   the two frames record. The other four are the flex properties that keep computing after the
-   display changes, and `line-height`, which the frames leave at `normal` — at 1.2 the needs-you
-   button is 0.4px shorter than drawn, and that lands on the panel's own height.
-
-   Invisible on screen either way, which is why only a gate would ever notice. */
-.compact-panel .btn {
-  display: inline-block;
-  align-items: normal;
-  justify-content: normal;
-  gap: normal;
-  line-height: normal;
-}
+/* The five-property `.compact-panel .btn` reset that used to sit here is gone, and its finding moved
+   INTO `.btn` (controls.css) rather than being deleted: F6 measured that the panel's buttons are
+   plain `<button>`s and not the shared builder's flex box, and S1's census found the same of all 175
+   drawn buttons. It was never a property of this panel. */
 
 /* -------------------------------------------------------------------------------- the lists -- */
 

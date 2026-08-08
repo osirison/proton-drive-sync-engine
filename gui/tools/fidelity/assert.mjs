@@ -36,10 +36,47 @@ import {
   boxComparability,
 } from "./props.mjs";
 import { OWES_FIT } from "./frame-classes.mjs";
+import { isKnown, unmetDeviations, KNOWN_DEVIATIONS } from "./known-deviations.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = resolve(HERE, "..", "..", "src");
 const FRAMES = join(HERE, "frames");
+
+/**
+ * The frames that must contain no hue — every surface whose whole message is "nothing to report".
+ *
+ * Not derived from the label: `10a Settled` is a tray panel and `2a Compact settled` a 360px one,
+ * and both are the rule as much as the 1040 window is. A settled surface is a judgement about what
+ * the frame SAYS, which is what makes it a list.
+ */
+const SETTLED_FRAMES = new Set([
+  "2a Settled",
+  "12a Settled light",
+  "2a Compact settled",
+  "12a Compact settled light",
+  "10a Settled",
+]);
+
+/**
+ * Saturation above which a colour counts as a hue — **HSV**, `(max − min) / max`.
+ *
+ * TWO MEASUREMENTS SHAPE THIS, and the second one is why it is HSV and not HSL.
+ *
+ * First: "no colour" cannot be tested as "grey". This design's neutral ramp is deliberately COOL and
+ * not one tier of it is achromatic — `#828B98` and `#6D7783` both spread 22 channel values, so a
+ * plain `max − min` test flags the entire palette. It has to be a saturation.
+ *
+ * Second: the obvious saturation is the wrong one. Under HSL, lightness divides out the chroma, so a
+ * near-white or near-black neutral reads as vividly coloured — light's own `--surface` is `#FAF8F5`,
+ * a five-value warm tint, and HSL calls it **0.33 saturated**, more than any threshold that catches
+ * `#22D3EE` could allow. It failed `12a Compact settled light` on the surface the whole light theme
+ * is painted on. HSV divides by `max` instead, which is stable at both ends: `#FAF8F5` is 0.02,
+ * `#C9D0DA` 0.08, and the darkest neutrals — `#23262D`, `#2E323A` — top out at 0.22.
+ *
+ * Every accent in either palette is at least 0.85: `#22D3EE` 0.86, `#B23F14` 0.89, `#FF9F1C` 0.89,
+ * `#0E7490` 0.90, `#BE123C` 0.94. A gap from 0.22 to 0.85 is not a knob to tune.
+ */
+const HUE_LIMIT = 0.5;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -86,7 +123,24 @@ const page = await browser.newPage();
 await page.setViewport({ width: 1040, height: 764, deviceScaleFactor: 1 });
 
 const index = JSON.parse(readFileSync(join(FRAMES, "index.json"), "utf8"));
+
+// A hardcoded label list that nothing cross-checks is a gate that can switch itself off: re-extract
+// the prototype under a renamed frame and `SETTLED_FRAMES.has(label)` quietly goes false, with the
+// run printing exactly what it printed before. The same argument as the stale-deviation check, one
+// gate over.
+const unknownSettled = [...SETTLED_FRAMES].filter((label) => !index.some((e) => e.label === label));
+if (unknownSettled.length) {
+  console.error(
+    `fidelity:assert: SETTLED_FRAMES names ${unknownSettled.length} frame(s) that are not in scope — ` +
+      `the hue gate would skip them silently: ${unknownSettled.join(", ")}`,
+  );
+  process.exit(1);
+}
+
 const failures = [];
+const deviations = [];
+/** Route a mismatch to the failure list, or to the recorded-deviation list if one names it. */
+const record = (row) => (isKnown(row.frame, row.key, row.prop, row.detail) ? deviations : failures).push(row);
 let asserted = 0;
 let mapped = 0;
 const unmappedFrames = [];
@@ -132,6 +186,66 @@ for (const entry of index) {
   if (hadTheme) await page.reload({ waitUntil: "networkidle0" });
   // The shell renders on its first status poll; wait for it rather than racing it.
   await page.waitForSelector("#app-root > *", { timeout: 5000 }).catch(() => {});
+
+  // --- the hue gate. `03-main-screen.md`: "No seam. No colour anywhere. This is the rule made
+  // visible — if a screen has nothing to report it must contain no hue at all." It is a line item on
+  // the design's own acceptance checklist, assigned to this harness, and nothing implemented it
+  // until a settled screen existed to point it at.
+  if (SETTLED_FRAMES.has(frame.label)) {
+    const hues = await page.evaluate((limit) => {
+      // Only what actually PAINTS. `outline-color`, `caret-color`, `text-decoration-color` and
+      // `column-rule-color` all default to `currentColor`, so including them reports one text colour
+      // five times and buries the finding; a border colour paints only if the border has width.
+      const parse = (v) => {
+        const m = /rgba?\(([^)]+)\)/.exec(v);
+        if (!m) return null;
+        const p = m[1]
+          .split(/[\s,/]+/)
+          .filter(Boolean)
+          .map(Number);
+        return p.length < 3 ? null : { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+      };
+      // HSV saturation — chroma over the brightest channel. See HUE_LIMIT for why not HSL, which
+      // reads light's own near-white surface as a third saturated.
+      const saturation = ({ r, g, b }) => {
+        const max = Math.max(r, g, b);
+        return max === 0 ? 0 : (max - Math.min(r, g, b)) / max;
+      };
+      const out = [];
+      const check = (el, prop, value) => {
+        for (const raw of value.match(/rgba?\([^)]+\)/g) ?? []) {
+          const c = parse(raw);
+          if (!c || c.a === 0) continue;
+          const s = saturation(c);
+          if (s > limit) {
+            out.push(
+              `${el.tagName.toLowerCase()}${el.getAttribute("class") ? `.${el.getAttribute("class").split(" ")[0]}` : ""} ${prop} ${raw} (saturation ${s.toFixed(2)})`,
+            );
+          }
+        }
+      };
+      for (const el of document.querySelectorAll("#app-root, #app-root *")) {
+        const cs = getComputedStyle(el);
+        check(el, "color", cs.color);
+        check(el, "background-color", cs.backgroundColor);
+        if (cs.backgroundImage !== "none") check(el, "background-image", cs.backgroundImage);
+        for (const side of ["top", "right", "bottom", "left"]) {
+          if (parseFloat(cs.getPropertyValue(`border-${side}-width`)) > 0) {
+            check(el, `border-${side}-color`, cs.getPropertyValue(`border-${side}-color`));
+          }
+        }
+        for (const p of ["fill", "stroke", "stop-color"]) {
+          const v = cs.getPropertyValue(p);
+          if (v && v !== "none") check(el, p, v);
+        }
+      }
+      return [...new Set(out)];
+    }, HUE_LIMIT);
+    for (const detail of hues) {
+      record({ frame: frame.label, key: "(hue)", prop: "saturation", detail });
+    }
+    asserted++;
+  }
 
   const seen = await page.evaluate(
     (label, PROPS, ATTRS, COLOUR) => {
@@ -200,14 +314,14 @@ for (const entry of index) {
     for (const prop of STYLE_PROPS) {
       const reason = compare(prop, valueOf(want.styles, prop), node.styles[prop]);
       asserted++;
-      if (reason) failures.push({ frame: frame.label, key: node.key, prop, detail: reason });
+      if (reason) record({ frame: frame.label, key: node.key, prop, detail: reason });
     }
     // Size, as a border box in both documents — see the note on `width` in props.mjs. Skipped where
     // the node's text needs a glyph no bundled font provides; that width measures the machine.
     for (const side of boxComparable(want) ? ["w", "h"] : []) {
       asserted++;
       if (Math.abs(want.box[side] - node.box[side]) > LENGTH_TOLERANCE_PX) {
-        failures.push({
+        record({
           frame: frame.label,
           key: node.key,
           prop: `box.${side}`,
@@ -221,7 +335,7 @@ for (const entry of index) {
       if (a === undefined && b === undefined) continue;
       asserted++;
       const reason = compareSvgAttr(attr, a, b, node.svgComputed?.[attr]);
-      if (reason) failures.push({ frame: frame.label, key: node.key, prop: `@${attr}`, detail: reason });
+      if (reason) record({ frame: frame.label, key: node.key, prop: `@${attr}`, detail: reason });
     }
   }
 
@@ -245,7 +359,7 @@ for (const entry of index) {
       return { w: root.scrollWidth, h: root.scrollHeight, overlap: [...new Set(overlap)].slice(0, 5) };
     });
     if (fit.w > 1040 || fit.h > 764) {
-      failures.push({
+      record({
         frame: frame.label,
         key: "(fit)",
         prop: "scroll",
@@ -253,7 +367,7 @@ for (const entry of index) {
       });
     }
     if (fit.overlap.length) {
-      failures.push({
+      record({
         frame: frame.label,
         key: "(fit)",
         prop: "footer",
@@ -278,6 +392,29 @@ if (unmappedFrames.length) {
   );
 }
 
+// Printed every run, in full, and never folded into the pass count. A recorded deviation is a
+// difference the build KNOWS about — the reader has to be able to see how many, and which.
+if (deviations.length) {
+  console.log(`  ${deviations.length} recorded Phase-1 deviation(s), each waiting on an open issue:`);
+  for (const d of deviations) {
+    const row = KNOWN_DEVIATIONS.find((k) => k.frame === d.frame && k.key === d.key);
+    console.log(`    ${d.frame} · ${d.key} · ${d.prop} (${d.detail}) — ${row?.issue}`);
+  }
+}
+
+// An entry that stopped failing is a lie about the build, so it fails it. This is the clause that
+// keeps the list above from turning into somewhere failures go to be forgotten.
+// REPORTED, NOT EXITED ON, so the failure list below still prints. The two arrive together on
+// exactly the run that matters: the commit that closes #207 both settles the deviation AND is the
+// most likely to break the nodes it touches, and exiting here would print "delete this row" and
+// swallow every real failure underneath it.
+const unmet = unmetDeviations();
+if (unmet.length) {
+  console.error("\nRecorded deviations that no longer fail — delete them, or re-pin their measurement:\n");
+  for (const d of unmet) console.error(`  ${d.frame} · ${d.key} · ${d.prop} — ${d.issue}\n      ${d.why}`);
+  console.error(`\nfidelity:assert: ${unmet.length} stale deviation(s) in known-deviations.mjs.`);
+}
+
 if (failures.length) {
   console.error("");
   for (const f of failures.slice(0, 40)) {
@@ -285,5 +422,6 @@ if (failures.length) {
   }
   if (failures.length > 40) console.error(`  … and ${failures.length - 40} more`);
   console.error(`\nfidelity:assert: ${failures.length} failure(s).`);
-  process.exit(1);
 }
+
+if (failures.length || unmet.length) process.exit(1);

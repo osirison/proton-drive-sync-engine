@@ -43,11 +43,40 @@ const KIND = {
     bgActive: "var(--border)",
     borderHover: "var(--border-strong)",
   },
-  /** `Pause`, `Open` — a secondary that sits on a panel and needs to lift off it. */
+  /**
+   * `Pause` on `2a Syncing`, `Show them`, `Done`, the `›` stepper — a secondary that sits on a panel
+   * and needs to lift off it. Twelve drawn.
+   *
+   * ITS THREE TOKENS ARE THE `--btn-secondary-*` ROLE, not the surface/border/text tiers that happen
+   * to coincide with them in dark. F5 wrote `--panel-raised`/`--border`/`--text-2`, which measures
+   * correct on every dark frame and wrong on two of three values in light: `12a Syncing light` draws
+   * this button `#FFFFFF` / `#D6D2CB` / `#14161A`, where `--border` is `#E6E3DE` and `--text-2` is
+   * `#374151`. Nothing caught it because S10 owns light and no light frame is mapped yet — the pair
+   * is only comparable because `2a Syncing`'s twin exists and F9's `sameAs` names it. §66.
+   */
   secondaryFilled: {
-    bg: "var(--panel-raised)",
-    border: "var(--border)",
-    color: "var(--text-2)",
+    bg: "var(--btn-secondary-bg)",
+    border: "var(--btn-secondary-border)",
+    color: "var(--btn-secondary-text)",
+    weight: 400,
+    bgHover: "var(--panel-raised)",
+    bgActive: "var(--border)",
+    borderHover: "var(--border-strong)",
+  },
+  /**
+   * `Sync now` on `2a Settled`, `Back to sync`, both of `9a Folders`' browse buttons. Four drawn.
+   *
+   * The same role as `secondaryFilled` with NO FILL IN DARK — and a fill in light, which is why it
+   * is a kind and not a caller passing `bg: null`. `2a Settled` draws it transparent over `#0A0B0D`
+   * (IMPLEMENTATION-PLAN §1.3 conflict 4 resolved it against `03-main-screen.md`'s `#101216`) while
+   * `12a Settled light` draws it `#FFFFFF` over `#FAF8F5`: light is a lighter surface, so a card that
+   * reads as depth there reads as noise here. No existing token is transparent in one theme and a
+   * surface in the other, hence `--btn-secondary-outline-bg`.
+   */
+  secondaryOutlined: {
+    bg: "var(--btn-secondary-outline-bg)",
+    border: "var(--btn-secondary-border)",
+    color: "var(--btn-secondary-text)",
     weight: 400,
     bgHover: "var(--panel-raised)",
     bgActive: "var(--border)",

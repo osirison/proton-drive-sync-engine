@@ -43,6 +43,38 @@ const NOT_DRAWN = new Map([
   ["ACTIVITY.nothingRecent", "only drawn in `6a Quiet`, which is out of scope"],
 ]);
 
+/**
+ * Templates, WITH the arguments the frame draws them at.
+ *
+ * The header's rule — "a template cannot be compared verbatim without inventing the number" — is
+ * right about inventing and wrong about the number, and S1 is where the difference started to cost
+ * something. `2a Needs you`'s band renders from live counts, so `One file changed on both sides` had
+ * to become `conflictTitle(n)`; as a constant it was gated, and as a template it silently left the
+ * gate. Three of the deck's sentences would have gone quiet in the commit that first drew them.
+ *
+ * The argument is not invented here — it is READ OFF the frame, exactly as every fixture value is:
+ * `2a Needs you` draws one conflict and two deletions, `2a Syncing` draws three changes. So the
+ * rendered string is ground truth on both sides and the comparison is the same one every constant
+ * gets. What stays out is a template no frame draws (`MAIN.settledSub` needs a relative time, and
+ * `since()` against a real clock is exactly the input a gate may not depend on).
+ *
+ * A path here that is not a function, or that renders a string no frame contains, fails the build.
+ */
+const DRAWN = [
+  ["CHROME.chips.waiting", [3], "2a Needs you"],
+  ["CHROME.chips.step", [1], "9a Folders"],
+  ["MAIN.syncing", [3], "2a Syncing"],
+  ["MAIN.otherWaiting", [3], "2a Needs you"],
+  // Drawn on a NOTIFICATION rather than on the main screen: `11a Outage` is the only place the
+  // design writes this sentence, and S1's sign-in hero quotes it because there is no second one.
+  ["MAIN.authExpiredSub", [61], "11a Outage"],
+  ["MAIN.band.conflictTitle", [1], "2a Needs you"],
+  ["MAIN.band.conflictSub", ["notes/todo.txt"], "2a Needs you"],
+  ["MAIN.band.deletionTitle", [2], "2a Needs you"],
+  ["MAIN.band.deletionSub", [1, 1], "2a Needs you"],
+  ["MAIN.compact.needYou", [3], "2a Compact needs you"],
+];
+
 /** Every own-text string in every frame, and which frames said it. */
 const saidBy = new Map();
 for (const file of readdirSync(FRAMES)) {
@@ -88,6 +120,35 @@ const walk = (value, path) => {
 };
 for (const [group, value] of Object.entries(COPY)) walk(value, group);
 
+/** Resolve a dotted path into the deck. Returns undefined rather than throwing on a bad segment. */
+const at = (path) => path.split(".").reduce((node, key) => (node == null ? node : node[key]), COPY);
+
+// Render each drawn template and require its result IN THE FRAME THE TABLE NAMES — not merely
+// somewhere in scope, which is what the first version did by ignoring the third tuple element
+// (Copilot caught it). The label is the table's whole claim: these arguments were read off THAT
+// frame, and a check that accepts any frame lets the claim rot while staying green. Verified by
+// pointing one entry at the wrong frame and watching the build fail.
+//
+// A path that no longer names a function, or a label that is not an in-scope frame, is a build
+// failure and not a skip: the point is that this table cannot become a list of things nobody checks.
+const templateErrors = [];
+const drawnChecks = [];
+for (const [path, args, label] of DRAWN) {
+  const fn = at(path);
+  const shown = `${path}(${args.map((a) => JSON.stringify(a)).join(", ")})`;
+  if (typeof fn !== "function") {
+    templateErrors.push(
+      `${shown} is ${fn === undefined ? "not in the deck" : `a ${typeof fn}`}, not a template`,
+    );
+    continue;
+  }
+  if (!frameText.has(label)) {
+    templateErrors.push(`${shown} names frame "${label}", which is not an in-scope frame`);
+    continue;
+  }
+  drawnChecks.push([shown, fn(...args), label]);
+}
+
 const missing = [];
 const found = [];
 for (const [path, text] of strings) {
@@ -104,10 +165,22 @@ for (const [path, text] of strings) {
   missing.push([path, text]);
 }
 
+// The templates, each against ITS OWN frame rather than against all of them.
+for (const [shown, text, label] of drawnChecks) {
+  if (frameText.get(label).includes(text)) found.push(shown);
+  else missing.push([`${shown} — expected in ${label}`, text]);
+}
+
 console.log(
-  `fidelity:copy — ${found.length}/${strings.length - NOT_DRAWN.size} drawn strings matched, ` +
+  `fidelity:copy — ${found.length}/${strings.length - NOT_DRAWN.size + drawnChecks.length} drawn strings matched ` +
+    `(${drawnChecks.length} of them templates rendered at the arguments their own frame draws), ` +
     `${NOT_DRAWN.size} exempt (native tray), ${missing.length} missing`,
 );
+
+if (templateErrors.length) {
+  console.error("\nEntries in the drawn-template table that are no longer templates:\n");
+  for (const problem of templateErrors) console.error(`  ${problem}`);
+}
 
 if (missing.length) {
   console.error("\nStrings in ui/copy.js that no in-scope frame contains:\n");
@@ -124,5 +197,6 @@ if (missing.length) {
     }
   }
   console.error(`\nfidelity:copy: ${missing.length} string(s) do not match the frames.`);
-  process.exit(1);
 }
+
+if (missing.length || templateErrors.length) process.exit(1);

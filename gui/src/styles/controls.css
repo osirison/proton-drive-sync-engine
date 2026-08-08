@@ -13,15 +13,25 @@
  */
 
 /* The kind's colours arrive as custom properties from ui/controls.js — see the note there for why
-   they cannot be plain inline `background`/`color`. */
+   they cannot be plain inline `background`/`color`.
+ *
+ * NO `display`, AND THAT IS THE MEASUREMENT RATHER THAN AN OMISSION. Censused across the 51 frames,
+ * all 175 drawn buttons are `block` (165) or `inline-block` (10) and not one is flex — the split is
+ * simply whether the button's parent is a flex container, which blockifies it. A `<button>`'s UA
+ * default is `inline-block`, so saying nothing here reproduces both groups exactly, while the
+ * `inline-flex` this rule used to carry fails every button the gate is ever pointed at.
+ *
+ * F6 found it first and fixed it inside `.compact-panel .btn`, which was right about the values and
+ * one scope too narrow: the panel is not special, it was just the only place with a mapped button.
+ * S1 mapped three more and got the identical four failures. That override is now gone.
+ *
+ * `line-height` goes with them for the same reason: the frames leave it `normal`, and although the
+ * gate treats a prototype-side `normal` as a wildcard, the BOX it produces is compared — 1.2 draws
+ * the compact panel's buttons 0.4px short, which lands on the panel's own height. Two-line buttons
+ * are unaffected: `.btn-sub` is its own block. */
 .btn {
   font-family: inherit;
-  line-height: 1.2;
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
   white-space: nowrap;
   color: var(--btn-fg);
   background: var(--btn-bg);

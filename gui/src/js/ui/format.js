@@ -17,6 +17,44 @@ export const count = (n) => (n == null ? EM_DASH : Number(n).toLocaleString("en-
 
 export const EM_DASH = "—";
 
+const CARDINALS = ["zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+
+/**
+ * A small count spelled out for the START OF A SENTENCE — and nowhere else. Capitalised from `One`
+ * up; `zero` is the deliberate exception, and the paragraph below says why.
+ *
+ * The attention band's two drawn rows are `One file changed on both sides` and `Two deletions are
+ * waiting on you`. Both open with a word, both are 13.5px sans prose, and both are the only place
+ * in the deck that spells a number. Everything else — the chip's `3 waiting`, the headline's
+ * `Syncing 3 changes`, every mono sub-line — uses `count()`, which is why this does not replace it.
+ *
+ * `zero` is lower-cased on purpose: nothing draws it (a band row exists only when its category has
+ * something waiting), and a capital `Zero` at the front of a sentence nobody can reach would read
+ * as a supported form. Above ten it hands back to `count()` — `11-notifications.md` writes
+ * `5 files changed on both sides` for the grouped banner, so the design itself stops spelling
+ * somewhere; eleven is where English style guides put the line and no frame tests it.
+ */
+/**
+ * Pick the singular or the plural wording for a count.
+ *
+ * Every drawn instance of every counted sentence in the deck happens to be plural — `Syncing 3
+ * changes`, `7 changes have piled up`, `3 things need you`, `4 changes are waiting` — so the
+ * templates were written with the plural baked in and rendered `1 other changes are waiting on you`
+ * the first time a screen fed them a live count. Six sentences, all reachable: one conflict, one
+ * queued change, one thing needing you.
+ *
+ * A whole wording rather than a suffix, because English agreement is not a trailing `s`: `1 change
+ * IS waiting` against `3 changes ARE waiting`, `1 thing NEEDS you` against `3 things NEED you`.
+ */
+export const plural = (n, one, many) => (Number(n) === 1 ? one : many);
+
+export function cardinal(n) {
+  if (n == null) return EM_DASH;
+  const value = Number(n);
+  if (!Number.isInteger(value) || value < 0 || value >= CARDINALS.length) return count(n);
+  return CARDINALS[value];
+}
+
 /**
  * An em-dash means UNKNOWN and only that. The three plan counts live inside a nullable
  * `last_plan_summary`, so a null summary means "not measured", never zero — rendering `0` there
@@ -72,6 +110,26 @@ export function since(epochSecs, register = "long") {
     }
   }
   return EM_DASH;
+}
+
+/**
+ * A wall-clock time, `13:20` — the deck's own form in `Paused` / `7 changes have piled up since
+ * 13:20.` and in `retrying in 40s · last reached 13:58`.
+ *
+ * 24-hour and zero-padded, which is what both drawn instances are, and the machine's own timezone,
+ * because "since 13:20" is a claim about the user's afternoon. That makes it the one formatter whose
+ * output a fixture may not derive — an epoch rendered as a clock time moves across a timezone and
+ * across midnight, so `clock.js` requires absolute times to be written literally instead.
+ */
+export function clock(epochSecs) {
+  if (epochSecs == null) return EM_DASH;
+  const value = Number(epochSecs);
+  if (!Number.isFinite(value)) return EM_DASH;
+  return new Date(value * 1000).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 /** `about 17 minutes left` · `about 25 minutes to finish` — deliberately vague, never a countdown. */

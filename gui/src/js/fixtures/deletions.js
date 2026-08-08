@@ -23,8 +23,9 @@
 // side; they are just named from different ends.
 //
 // The chip reads `2 waiting` in the deletions variant — filled destructive dot, not the decision
-// ring (DEVIATIONS §43) — which is only correct while `conflicts` is empty, since deletions outrank
-// decisions and nothing draws both at once (§44). `conflicts.js` holds the mirror image.
+// ring (DEVIATIONS §43) — which is only correct while `conflicts` is empty: the ring wins whenever a
+// conflict is among what is waiting, and the count is the sum of both queues (§44, as S1 corrected it
+// in §64). `conflicts.js` holds the mirror image.
 
 // `MAIN`/`DELETIONS` and `compactFids` are needed by the `4a Compact` panel below; `ago` by the
 // three window frames above it.

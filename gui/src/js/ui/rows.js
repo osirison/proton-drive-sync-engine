@@ -83,6 +83,18 @@ export function eyebrow({ tone = "neutral", text, align = "start" } = {}) {
  *
  * Placement follows DIRECTION, not column. The compact panel is a single 360px column with no seam
  * and no second side, and its arriving row still leads with the arrow.
+ *
+ * THE ACTIVE MAIN-SCREEN ROW WRAPS ITS SPANS AND NOTHING ELSE DOES. `2a Syncing`'s in-flight row is
+ * a block holding a flex body and a 2px track; its queued row is flat flex with the spans as direct
+ * children, and so is every row in `2a Compact syncing` — track and all. Three shapes for one
+ * component, measured node-for-node rather than generalised, because `display`, `gap` and
+ * `align-items` are all asserted and the wrapped form must compute `normal` for the last two on the
+ * row itself. DEVIATIONS §65.
+ *
+ * `progress: null` draws NO TRACK on an active row, and it is the Phase-1 default rather than an
+ * edge case: `TransferActivity` carries `bytes_total` on uploads and `bytes_done` on downloads and
+ * never both, so no percentage exists to draw (issue #98, DEVIATIONS §63). A bar at 0% would say
+ * "stalled" and a bar at a made-up fraction would say something worse.
  */
 export function transferRow({
   direction = "up",
@@ -100,16 +112,23 @@ export function transferRow({
     // filename is the thing you are looking for.
     detail: detail && !compact ? el("span", { class: "transfer-detail" }, detail) : null,
   };
-  const parts = transferSlotOrder(direction).map((slot) => slots[slot]);
+  const parts = transferSlotOrder(direction)
+    .map((slot) => slots[slot])
+    .filter(Boolean);
+  const wrapped = !compact && state === "active";
 
-  const row = el(
+  return el(
     "div",
-    { class: `transfer-row transfer-${state} transfer-${direction}` + (compact ? " is-compact" : "") },
-    parts.filter(Boolean),
+    {
+      class:
+        `transfer-row transfer-${state} transfer-${direction}` +
+        (compact ? " is-compact" : "") +
+        (wrapped ? " has-body" : ""),
+    },
+    wrapped ? el("div", { class: "transfer-body" }, parts) : parts,
     // A queued row has no bar at all rather than a bar at 0% — an empty track reads as stalled.
-    state === "active" ? progressBar(progress) : null,
+    state === "active" && progress != null ? progressBar(progress) : null,
   );
-  return row;
 }
 
 /**

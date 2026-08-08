@@ -118,6 +118,115 @@ function hexFids(under, state) {
 }
 
 /**
+ * The main screen's node keys (S1), for the three in-scope `2a` windows.
+ *
+ * A factory for the same reason `compactFids` is: three frames, two tree shapes, and the differences
+ * between them are a handful of parameters rather than three tables that happen to look alike. The
+ * shell's own slots are NOT here — `SHELL_FIDS` already carries the header and footer per frame, and
+ * `fixtures/main.js` spreads the two together, because which block the footer is depends on how many
+ * blocks the screen put above it and only the frame knows that.
+ *
+ * The prototype's index-only-when-a-tag-has-siblings rule bites three times on this screen, and each
+ * one is a silently-wrong map if missed:
+ *
+ *   · `2a Settled` draws two hero buttons (`button[0]`/`button[1]`); `2a Syncing` draws one, keyed
+ *     `button` with no index at all. Hence `buttons`.
+ *   · `2a Syncing`'s LEFT column holds an active row and a queued one (`div[0]`/`div[1]`); its right
+ *     column and both of `2a Needs you`'s hold exactly one, keyed `div`. Hence `rowsInColumn`.
+ *   · The settled mark has two paths and the syncing mark three, which `hexFids` already handles.
+ *
+ * @param state        "settled" | "syncing" — which mark and which hero arrangement
+ * @param tail         "spacer" | "columns" — the empty flex:1 block, or the transfer grid
+ * @param buttons      how many buttons in the hero's action row
+ * @param column       "left" | "right" — which column the mapped transfer row is in
+ * @param rowIndex     its position among that column's rows
+ * @param rowsInColumn how many rows that column holds (1 means the key carries no index)
+ * @param band         how many attention-band rows, or 0 for no band
+ */
+export function mainFids({
+  state = "settled",
+  tail = "spacer",
+  buttons = 1,
+  column = "left",
+  rowIndex = 0,
+  rowsInColumn = 1,
+  band = 0,
+} = {}) {
+  const hero = "div[0]";
+  const syncing = state === "syncing";
+  // What sits ABOVE the headline inside the hero, and it is never nothing: settled has the glow at
+  // `div[0]`, syncing has the seam and the two side-label blocks at `div[0..2]`. So the headline is
+  // `div[1]` on `2a Settled` and `div[3]` on `2a Syncing`, and the sub-line and the action row
+  // follow it. Getting this off by one is not loud — `div[0]/div[1]` exists in BOTH frames — so the
+  // first version silently mapped the headline onto the glow and was caught two slots later, by
+  // `check-fixtures.mjs`, on the only key that fell off the end of the tree.
+  const above = syncing ? 3 : 1;
+  const at = (i) => `${hero}/div[${i + above}]`;
+  const actions = at(2);
+
+  const map = {
+    hero,
+    ...hexFids(hero, state),
+    headline: at(0),
+    sub: at(1),
+    actions,
+    action: buttons > 1 ? (i) => `${actions}/button[${i}]` : () => `${actions}/button`,
+    ...(syncing
+      ? {
+          seam: `${hero}/div[0]`,
+          sideLocal: `${hero}/div[1]`,
+          sideLocalLabel: `${hero}/div[1]/div[0]`,
+          sideLocalPath: `${hero}/div[1]/div[1]`,
+          sideRemote: `${hero}/div[2]`,
+          sideRemoteLabel: `${hero}/div[2]/div[0]`,
+          sideRemotePath: `${hero}/div[2]/div[1]`,
+        }
+      : { glow: `${hero}/div[0]` }),
+  };
+
+  if (tail === "columns") {
+    const col = `div[1]/div[${column === "right" ? 1 : 0}]`;
+    const row = rowsInColumn > 1 ? `${col}/div[${rowIndex}]` : `${col}/div`;
+    Object.assign(map, {
+      columns: "div[1]",
+      columnLeft: "div[1]/div[0]",
+      columnRight: "div[1]/div[1]",
+      transferRow: row,
+      // The main screen's ACTIVE row wraps its three spans in a flex body and hangs the 2px track
+      // beside it; its queued row is flat, and so is every row in the compact panel. Measured, not
+      // generalised — DEVIATIONS §65.
+      transferBody: `${row}/div[0]`,
+      transferName: `${row}/div[0]/span[0]`,
+      transferDetail: `${row}/div[0]/span[1]`,
+      transferArrow: `${row}/div[0]/span[2]`,
+      transferTrack: `${row}/div[1]`,
+      transferFill: `${row}/div[1]/div`,
+    });
+  } else {
+    map.spacer = "div[1]";
+  }
+
+  if (band > 0) {
+    const wrap = tail === "columns" ? "div[2]" : "div[1]";
+    // One row is `div`; two or more are `div[0]`, `div[1]`. The same rule as everywhere else here,
+    // and the reason `band` is a count rather than a boolean.
+    const item = band > 1 ? (i) => `${wrap}/div/div[${i}]` : () => `${wrap}/div/div`;
+    Object.assign(map, {
+      bandWrap: wrap,
+      band: `${wrap}/div`,
+      bandItem: item,
+      bandDot: (i) => `${item(i)}/span`,
+      bandBody: (i) => `${item(i)}/div`,
+      bandTitle: (i) => `${item(i)}/div/div[0]`,
+      bandNote: (i) => `${item(i)}/div/div[1]`,
+      bandAction: (i) => `${item(i)}/button`,
+    });
+  }
+
+  return map;
+}
+
+/**
  * @param state    which of the six arrangements
  * @param tail     "footer" | "menu" — the block at the bottom, and its index in the panel
  * @param tailAt   how many blocks sit above the tail

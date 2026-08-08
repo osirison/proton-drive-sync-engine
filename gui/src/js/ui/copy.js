@@ -21,7 +21,7 @@
 //   6. "this computer", never a brand or OS name. "Proton Drive" in full, never "the cloud".
 //   7. "kept" not "preserved", "waiting" not "pending", "brought here" not "downloaded" in prose.
 
-import { count, bytes } from "./format.js";
+import { count, cardinal, plural, bytes } from "./format.js";
 
 // ------------------------------------------------------------------ product and chrome ----
 
@@ -47,13 +47,52 @@ export const CHROME = {
 export const MAIN = {
   settled: "Everything is up to date",
   settledSub: (ago, files, size) => `last synced ${ago} · ${count(files)} files · ${bytes(size)}`,
-  syncing: (n) => `Syncing ${count(n)} changes`,
+  /**
+   * The Phase-1 form of the line above: the timestamp alone.
+   *
+   * No command reports an index-wide file count or byte total (G7, #207), and
+   * `14-behaviour-and-state.md`'s rule for a missing capability is to omit the clause rather than
+   * fill it — an em-dash where `12,480 files` goes would claim the daemon said "unknown" about
+   * something nobody asked it. Deleted the day #207 lands, at which point `settledSub` is the line.
+   */
+  settledSubTime: (ago) => `last synced ${ago}`,
+  /** `03-main-screen.md`: rows "cap at ~6 visible with `+n more` in mono if exceeded". */
+  andMore: (n) => `+${count(n)} more`,
+  syncing: (n) => `Syncing ${count(n)} ${plural(n, "change", "changes")}`,
+  /**
+   * `leaving == null` DROPS THE DIRECTION CLAUSE, for the same reason `unreachableBody` drops its
+   * count: `last_plan_summary` is null until the plan exists, and on a first run against a large
+   * tree that is the whole multi-minute scan-and-walk stretch — during which `syncing` is already
+   * true. `0 leaving, 0 arriving` is a summary the daemon never published, and
+   * `14-behaviour-and-state.md` is explicit that a null summary means unknown, never zero.
+   */
   syncingSub: (ago, leaving, arriving) =>
-    `started ${ago} · ${count(leaving)} leaving, ${count(arriving)} arriving`,
-  otherWaiting: (n) => `${count(n)} other changes are waiting on you`,
+    leaving == null
+      ? `started ${ago}`
+      : `started ${ago} · ${count(leaving)} leaving, ${count(arriving)} arriving`,
+  otherWaiting: (n) => `${count(n)} other ${plural(n, "change is", "changes are")} waiting on you`,
   paused: "Paused",
   pausedSub: (n, since) =>
-    `${count(n)} changes have piled up since ${since}. Nothing will move until you resume.`,
+    `${count(n)} ${plural(n, "change has", "changes have")} piled up since ${since}. ` +
+    "Nothing will move until you resume.",
+
+  /**
+   * The sign-in-expired hero, which no `2a` frame draws — split out of the ONE sentence the deck has
+   * for this situation, `11-notifications.md`'s outage banner body:
+   *
+   *   `Proton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.`
+   *
+   * Two sentences, and the design's own division of labour puts the first in a headline and the
+   * second in a sub-line — so the split is the deck's, not an invention, and both halves are still
+   * checked verbatim against `11a Outage` (the copy gate matches a substring of a frame's text, and
+   * `authExpiredSub` is in its drawn-template table at the count the frame draws).
+   *
+   * `routes.js` is why this exists at all: the onboarding latch releases on `authExpired`
+   * specifically so the main screen can carry it, and a state that fell through to `Everything is up
+   * to date` would be a false all-clear on a daemon that cannot reach Proton at all.
+   */
+  authExpired: "Proton Drive is asking you to sign in again",
+  authExpiredSub: (n) => `${count(n)} ${plural(n, "change is", "changes are")} waiting — nothing is lost.`,
 
   sideLocal: "This computer",
   sideRemote: "Proton Drive",
@@ -67,18 +106,45 @@ export const MAIN = {
   footerPair: (local, remote) => `${local} ⇄ ${remote}`,
   footerTotals: (sent, received) => `${bytes(sent)} sent · ${bytes(received)} received today`,
 
+  /**
+   * The attention band's two rows. `2a Needs you` draws them at one conflict and two deletions, and
+   * S1 renders them from the live counts — so the three strings that carry a number are functions
+   * here, where the deck writes the drawn instance.
+   *
+   * THAT COSTS COPY-GATE COVERAGE AND BUYS IT BACK, deliberately. `copy-gate.mjs` compares string
+   * constants only — a template cannot be checked without inventing its arguments — so turning these
+   * into templates would quietly drop three of the deck's sentences from the gate. F7's own note says
+   * as much. The gate now carries a `DRAWN` table of templates WITH the arguments the frame draws,
+   * and these three are in it: `conflictTitle(1)`, `deletionTitle(2)` and `deletionSub(1, 1)` are
+   * still asserted verbatim against `2a Needs you`, and now so are six templates that were never
+   * checked at all.
+   *
+   * `deletionSub` DROPS A ZERO CLAUSE rather than printing it. A queue of two permanent deletions
+   * saying `2 remove from this computer permanently · 0 go to Proton's Trash` names a thing that is
+   * not happening, in the sentence whose whole job is telling you what you are about to lose.
+   */
   band: {
-    conflictTitle: "One file changed on both sides",
+    conflictTitle: (n) =>
+      n === 1 ? "One file changed on both sides" : `${cardinal(n)} files changed on both sides`,
     conflictSub: (path) => `${path} · both copies kept, nothing lost`,
     conflictAction: "Compare",
-    deletionTitle: "Two deletions are waiting on you",
-    deletionSub: "1 removes from this computer permanently · 1 goes to Proton's Trash",
+    deletionTitle: (n) =>
+      n === 1 ? "One deletion is waiting on you" : `${cardinal(n)} deletions are waiting on you`,
+    deletionSub: (permanent, trash) =>
+      [
+        permanent > 0
+          ? `${count(permanent)} ${permanent === 1 ? "removes" : "remove"} from this computer permanently`
+          : null,
+        trash > 0 ? `${count(trash)} ${trash === 1 ? "goes" : "go"} to Proton's Trash` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
     deletionAction: "Review",
   },
 
   compact: {
     upToDate: "Up to date",
-    needYou: (n) => `${count(n)} things need you`,
+    needYou: (n) => `${count(n)} ${plural(n, "thing needs", "things need")} you`,
     conflictLine: "One file changed on both sides.",
     deletionLine: "Two deletions are waiting.",
     review: "Review them",
@@ -445,7 +511,24 @@ export const TRAY = {
   quitSub: "stops syncing",
 
   unreachableTitle: "Can't reach Proton Drive",
+  /**
+   * `n == null` DROPS THE SECOND SENTENCE rather than rendering the count, and this is the one place
+   * in the deck where that matters most.
+   *
+   * When the daemon is unreachable there IS no reply, so the pending count is genuinely unknown —
+   * and `14-behaviour-and-state.md`'s rule for that is absolute: *"a null summary means unknown, not
+   * zero (render em-dashes, never `0`)"*, which `gui-core`'s `DaemonState::Unreachable` doc,
+   * `store.select.countersUnknown()` and `format.dash()` all restate. `0 changes are waiting` is a
+   * false all-clear at the exact moment the app cannot see anything, and an em-dash mid-sentence
+   * (`— changes are waiting`) is not English.
+   *
+   * So the clause goes, and the sentence that carries the reassurance stays. Same shape as
+   * `MAIN.band.deletionSub` dropping a zero clause, and the same rule as every Phase-1 omission on
+   * the main screen: omit what is not known, never fill it.
+   */
   unreachableBody: (n) =>
-    `Nothing is lost. ${count(n)} changes are waiting and will go as soon as it's back.`,
+    n == null
+      ? "Nothing is lost."
+      : `Nothing is lost. ${count(n)} ${plural(n, "change is", "changes are")} waiting and will go as soon as it's back.`,
   retrying: (inTime, lastAt) => `retrying in ${inTime} · last reached ${lastAt}`,
 };
