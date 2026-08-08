@@ -20,7 +20,8 @@ export const EM_DASH = "—";
 const CARDINALS = ["zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 
 /**
- * A small count spelled out, capitalised, for the START OF A SENTENCE — and nowhere else.
+ * A small count spelled out for the START OF A SENTENCE — and nowhere else. Capitalised from `One`
+ * up; `zero` is the deliberate exception, and the paragraph below says why.
  *
  * The attention band's two drawn rows are `One file changed on both sides` and `Two deletions are
  * waiting on you`. Both open with a word, both are 13.5px sans prose, and both are the only place

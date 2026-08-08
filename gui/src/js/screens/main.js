@@ -573,8 +573,15 @@ function crossfadeMark(next) {
  * exists to offer — so rebuilding it on a timer makes them unreachable from the keyboard, which
  * `14-behaviour-and-state.md` requires "because this is a desktop app". Same hazard the shell hit,
  * one layer in, and the same answer: rebuild on a change, never on a tick.
+ *
+ * `JSON.stringify` RATHER THAN A JOIN, because every separator is a wrong answer here. The parts are
+ * filenames and copy: any printable character can occur inside one, so `["ab", "c"]` and
+ * `["a", "bc"]` collide and the list silently keeps a stale row. Picking a character no filename can
+ * contain lands on a non-printable one — this line held a literal U+0001 for exactly that reason,
+ * which Copilot caught, and a control character in source is what an editor or a diff quietly eats.
+ * The encoding is unambiguous by construction, needs no magic value, and is legible.
  */
-const signature = (parts) => parts.join("");
+const signature = (parts) => JSON.stringify(parts);
 
 /**
  * The two columns and their rows. Rebuilt when the set of rows changes, which is a row's whole
