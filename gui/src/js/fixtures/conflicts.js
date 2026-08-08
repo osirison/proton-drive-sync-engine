@@ -8,11 +8,15 @@
 // which is exactly what the frames draw.
 //
 // THE CHIP IS WHAT TIES THE TWO HALVES TOGETHER. `3a Conflict` and `3a Conflict diff` draw
-// `3 waiting`, and DEVIATIONS §44 settles the priority behind it: a decision outranks a transfer,
-// deletions outrank decisions, and nothing draws both at once. Three conflicts with
-// `pending_deletions: []` is therefore the only combination that makes the drawn chip the *decision*
-// variant (1px ring dot, §43) rather than the deletions one (filled). `deletions.js` holds the exact
-// mirror image, and the two files are only consistent if both keep their opposite side empty.
+// `3 waiting`, and DEVIATIONS §43/§44 settle the priority behind it: a decision outranks a transfer,
+// the chip's number is the SUM of the two queues, and the decision RING wins whenever a conflict is
+// among them — deletions take the filled dot only when they are alone, which is what `4a Deletions`
+// draws. (§44 originally recorded "nothing draws decisions and deletions at once" and chose the
+// order from that; `2a Needs you` draws both, and S1 reopened it — §64.)
+//
+// Three conflicts with `pending_deletions: []` is still the right dataset here, and now for a
+// narrower reason: it is what these two frames are IN, not what the chip variant requires.
+// `deletions.js` holds the exact mirror image.
 //
 // THIS MODULE IMPORTS NO COPY, and that is not an oversight of rule 1. It carries no strings that the
 // user reads: every fixed string on the three screens is already a constant in `ui/copy.js`

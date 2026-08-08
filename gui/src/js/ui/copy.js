@@ -21,7 +21,7 @@
 //   6. "this computer", never a brand or OS name. "Proton Drive" in full, never "the cloud".
 //   7. "kept" not "preserved", "waiting" not "pending", "brought here" not "downloaded" in prose.
 
-import { count, bytes } from "./format.js";
+import { count, cardinal, bytes } from "./format.js";
 
 // ------------------------------------------------------------------ product and chrome ----
 
@@ -47,6 +47,17 @@ export const CHROME = {
 export const MAIN = {
   settled: "Everything is up to date",
   settledSub: (ago, files, size) => `last synced ${ago} · ${count(files)} files · ${bytes(size)}`,
+  /**
+   * The Phase-1 form of the line above: the timestamp alone.
+   *
+   * No command reports an index-wide file count or byte total (G7, #207), and
+   * `14-behaviour-and-state.md`'s rule for a missing capability is to omit the clause rather than
+   * fill it — an em-dash where `12,480 files` goes would claim the daemon said "unknown" about
+   * something nobody asked it. Deleted the day #207 lands, at which point `settledSub` is the line.
+   */
+  settledSubTime: (ago) => `last synced ${ago}`,
+  /** `03-main-screen.md`: rows "cap at ~6 visible with `+n more` in mono if exceeded". */
+  andMore: (n) => `+${count(n)} more`,
   syncing: (n) => `Syncing ${count(n)} changes`,
   syncingSub: (ago, leaving, arriving) =>
     `started ${ago} · ${count(leaving)} leaving, ${count(arriving)} arriving`,
@@ -67,12 +78,39 @@ export const MAIN = {
   footerPair: (local, remote) => `${local} ⇄ ${remote}`,
   footerTotals: (sent, received) => `${bytes(sent)} sent · ${bytes(received)} received today`,
 
+  /**
+   * The attention band's two rows. `2a Needs you` draws them at one conflict and two deletions, and
+   * S1 renders them from the live counts — so the three strings that carry a number are functions
+   * here, where the deck writes the drawn instance.
+   *
+   * THAT COSTS COPY-GATE COVERAGE AND BUYS IT BACK, deliberately. `copy-gate.mjs` compares string
+   * constants only — a template cannot be checked without inventing its arguments — so turning these
+   * into templates would quietly drop three of the deck's sentences from the gate. F7's own note says
+   * as much. The gate now carries a `DRAWN` table of templates WITH the arguments the frame draws,
+   * and these three are in it: `conflictTitle(1)`, `deletionTitle(2)` and `deletionSub(1, 1)` are
+   * still asserted verbatim against `2a Needs you`, and now so are six templates that were never
+   * checked at all.
+   *
+   * `deletionSub` DROPS A ZERO CLAUSE rather than printing it. A queue of two permanent deletions
+   * saying `2 remove from this computer permanently · 0 go to Proton's Trash` names a thing that is
+   * not happening, in the sentence whose whole job is telling you what you are about to lose.
+   */
   band: {
-    conflictTitle: "One file changed on both sides",
+    conflictTitle: (n) =>
+      n === 1 ? "One file changed on both sides" : `${cardinal(n)} files changed on both sides`,
     conflictSub: (path) => `${path} · both copies kept, nothing lost`,
     conflictAction: "Compare",
-    deletionTitle: "Two deletions are waiting on you",
-    deletionSub: "1 removes from this computer permanently · 1 goes to Proton's Trash",
+    deletionTitle: (n) =>
+      n === 1 ? "One deletion is waiting on you" : `${cardinal(n)} deletions are waiting on you`,
+    deletionSub: (permanent, trash) =>
+      [
+        permanent > 0
+          ? `${count(permanent)} ${permanent === 1 ? "removes" : "remove"} from this computer permanently`
+          : null,
+        trash > 0 ? `${count(trash)} ${trash === 1 ? "goes" : "go"} to Proton's Trash` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
     deletionAction: "Review",
   },
 

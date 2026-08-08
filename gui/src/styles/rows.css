@@ -36,8 +36,11 @@
   letter-spacing: 0.16em;
   text-transform: uppercase;
 }
+/* `start`, not `left`. They render identically in this app and they are DIFFERENT computed values —
+   the frames record `start` (it is the initial value, inherited from the prototype's page wrapper)
+   and the gate compares the string. Found the first time an eyebrow was mapped, on `2a Syncing`. */
 .eyebrow-start {
-  text-align: left;
+  text-align: start;
 }
 .eyebrow-end {
   text-align: right;
@@ -69,6 +72,23 @@
      tall at the very bottom edge inside an 11px radius — without the clip its corners overhang. */
   position: relative;
   overflow: hidden;
+}
+
+/* The main screen's in-flight row: a BLOCK holding a flex body, which is how `2a Syncing` draws it
+   and not how it draws the queued row beside it or any row in the compact panel. The two resets are
+   not tidiness — `display`, `gap` and `align-items` are all asserted by the fidelity gate, and the
+   frame's row records none of the last two, i.e. their initial `normal`. Inheriting the flex above
+   would fail three assertions on a row that looks identical. */
+.transfer-row.has-body {
+  display: block;
+  align-items: normal;
+  gap: normal;
+}
+
+.transfer-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .transfer-queued {

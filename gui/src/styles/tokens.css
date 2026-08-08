@@ -228,6 +228,10 @@
   --btn-primary-disabled-text: #6d7783;
   --btn-secondary-bg: #101216;
   --btn-secondary-bg-alt: #16181d; /* §1 allows either fill; the compact panel uses this one */
+  /* The outlined secondary (`2a Settled`'s `Sync now`): NO fill in dark, a card fill in light. The
+     only token whose two themes disagree about whether there is a surface at all — light's own
+     surface is #FAF8F5, so a white card reads as depth there and as noise on #0A0B0D. S1, §66. */
+  --btn-secondary-outline-bg: transparent;
   --btn-secondary-border: #23262d;
   --btn-secondary-text: #c9d0da;
   --btn-quiet-bg: transparent;
@@ -357,6 +361,7 @@
     --btn-primary-disabled-text: #9ca3af;
     --btn-secondary-bg: #ffffff;
     --btn-secondary-bg-alt: #ffffff;
+    --btn-secondary-outline-bg: #ffffff;
     --btn-secondary-border: #d6d2cb;
     --btn-secondary-text: #14161a;
     --btn-quiet-bg: transparent;
@@ -471,6 +476,7 @@
   --btn-primary-disabled-text: #9ca3af;
   --btn-secondary-bg: #ffffff;
   --btn-secondary-bg-alt: #ffffff;
+  --btn-secondary-outline-bg: #ffffff;
   --btn-secondary-border: #d6d2cb;
   --btn-secondary-text: #14161a;
   --btn-quiet-bg: transparent;

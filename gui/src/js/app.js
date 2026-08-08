@@ -25,6 +25,8 @@ import {
 } from "./ui/chrome.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
+import { CHROME } from "./ui/copy.js";
+import { renderMain, updateMain, unmountMain } from "./screens/main.js";
 import { activeFixture } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
 
@@ -77,24 +79,34 @@ function toggleTheme() {
 /**
  * Which of the six chip variants this moment is in, and the mono string beside it.
  *
- * Priority is measured where the frames settle it and chosen where they do not. `2a Needs you` is
- * syncing AND has three decisions waiting, and its chip reads `3 waiting` — so a decision outranks
- * transfer. Nothing draws decisions and deletions at once; deletions win here because the deletion
- * is the one that ends with a file gone. Recorded in DEVIATIONS.md §43.
+ * `2a Needs you` settles both halves of this, and S1 is what made the second half visible. Its chip
+ * reads `3 waiting` with the 1px decision RING while a transfer is also in flight — so a decision
+ * outranks transfer — and its band draws ONE conflict and TWO deletions, so the 3 is the SUM of the
+ * two queues and the ring wins over the filled dot in their company.
+ *
+ * That falsifies half of DEVIATIONS §44, which recorded "nothing draws decisions and deletions at
+ * once" and chose the deletions-first order from it. The frame does draw both at once; the earlier
+ * reading came from the fixture, which pinned three conflicts and an empty deletion queue against a
+ * band whose second row says `Two deletions are waiting on you`. Deletions still win when they are
+ * ALONE, which is what `4a Deletions` draws. §64.
  *
  * `paused`, `unreachable` and `authExpired` have NO drawn chip anywhere in the prototype. They take
  * the quiet form with their own text rather than an invented colour — the hexagon and the main
  * screen carry those states, which is where the design puts them.
  */
 function chipFor() {
-  if (onboardingLatch) return { variant: "step", text: "step 1 of 2" };
+  if (onboardingLatch) return { variant: "step", text: CHROME.chips.step(1) };
 
   const state = store.select.daemonState();
   const decisions = store.select.unresolvedConflictCount();
   const deletions = store.select.pendingDeletions().length;
 
-  if (deletions > 0) return { variant: "deletions", text: `${deletions} waiting` };
-  if (decisions > 0) return { variant: "decisions", text: `${decisions} waiting` };
+  if (decisions + deletions > 0) {
+    return {
+      variant: decisions > 0 ? "decisions" : "deletions",
+      text: CHROME.chips.waiting(decisions + deletions),
+    };
+  }
   if (state === "running") return { variant: "syncing", text: "syncing" };
   if (state === "paused") return { variant: "idle", text: "paused" };
   if (state === "unreachable") return { variant: "idle", text: "unreachable" };
@@ -279,7 +291,12 @@ function renderMenu() {
 // hexagon S1 puts on the main screen will be too.
 const dom = {
   header: null,
-  body: null,
+  // A SCREEN IS SEVERAL SIBLINGS, not one node. `shell.css` says why: the frames put the header, the
+  // screen's own blocks and the footer as direct children of the 1040×764 root, "so a screen's
+  // flex:1 block is a direct flex child exactly as drawn". S1 is the first screen with more than one
+  // — a 394px hero, a flex:1 tail and, when something is waiting, a band — and wrapping the three in
+  // a container would put a flex context between them and the window that the design does not have.
+  bodyNodes: [],
   footer: null,
   footerKind: null,
   bodyRoute: null,
@@ -435,18 +452,26 @@ function render() {
     dom.header = built;
   }
 
-  // --- body: replaced only when the route changes, so a screen can hold its own nodes across polls
+  // --- body: mounted when the route changes, PATCHED on every poll in between, so a screen holds
+  // its own nodes — and its own running animations — across a status reply.
   if (dom.bodyRoute !== active) {
-    // The main screen has no S-task of its own in the route table, so it gets no issue chip rather
-    // than an "F4 · issue" with nothing after it.
-    const built = screenPlaceholder(
-      spec.label ?? titleFor(active),
-      spec.task && spec.issue ? `${spec.task} · issue ${spec.issue}` : null,
+    unmountMain();
+    setBody(
+      active === "main"
+        ? renderMain(mainProps(localRoot, remoteRoot))
+        : // A screen with no S-task in the route table gets no issue chip rather than an
+          // "F4 · issue" with nothing after it. The main screen used to be that case.
+          [
+            screenPlaceholder(
+              spec.label ?? titleFor(active),
+              spec.task && spec.issue ? `${spec.task} · issue ${spec.issue}` : null,
+            ),
+          ],
     );
-    if (dom.body) dom.body.replaceWith(built);
-    else root.append(built);
-    dom.body = built;
     dom.bodyRoute = active;
+  } else if (active === "main") {
+    const nodes = updateMain(mainProps(localRoot, remoteRoot));
+    if (nodes) setBody(nodes);
   }
 
   // --- footer: either the four doors or an action bar — never both, never neither. The 13-to-6
@@ -527,6 +552,61 @@ function render() {
 
 function titleFor(id) {
   return id.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
+}
+
+/**
+ * Put this list of blocks between the header and the footer, moving as little as possible.
+ *
+ * The `nextSibling` guard is the whole function: a node that is already in the right place is left
+ * alone, because re-inserting one restarts every CSS animation inside it — the hexagon's two
+ * travelling segments, the glow's `breathe`, the chip's `blip`. So a poll that changes nothing moves
+ * nothing, and a decision arriving appends one block and touches neither of the other two.
+ */
+function setBody(nodes) {
+  for (const node of dom.bodyNodes) if (!nodes.includes(node)) node.remove();
+  let anchor = dom.header;
+  for (const node of nodes) {
+    if (anchor.nextSibling !== node) anchor.after(node);
+    anchor = node;
+  }
+  dom.bodyNodes = nodes;
+}
+
+/** Everything the main screen reads, plus the actions it can take. */
+function mainProps(localRoot, remoteRoot) {
+  return {
+    daemonState: store.select.daemonState(),
+    response: store.select.response(),
+    conflicts: store.select.conflicts(),
+    deletions: store.select.pendingDeletions(),
+    localRoot,
+    remoteRoot,
+    handlers: {
+      onSyncNow: () => command(api.syncNow),
+      onPause: () => command(api.pause),
+      onResume: () => command(api.resume),
+      onConflicts: () => navigate("conflicts"),
+      onDeletions: () => navigate("deletions"),
+    },
+  };
+}
+
+/**
+ * Run a control command and re-poll immediately rather than waiting out the ~2s tick.
+ *
+ * `Sync now` reaching state B "within ~1s" (`03-main-screen.md`) is not something the daemon can
+ * deliver on its own: `Syncnow` is an immediate ack and the pass runs on the daemon's main loop, so
+ * the state the button promises only becomes visible on the next status reply. Asking for one now is
+ * the difference between a button that responds and a button that appears not to have worked.
+ */
+async function command(run) {
+  try {
+    await run();
+  } catch (error) {
+    console.error("control command failed:", error);
+  }
+  clearTimeout(pollTimer);
+  poll();
 }
 
 // ---- data ----

@@ -1,25 +1,60 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Four gates over the 51 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Five gates over the 51 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
 npm run fidelity:extract    # regenerate frames/*.json from the prototype
-npm run fidelity            # style + fit gates, then the copy gate      (needs Chromium)
-npm run fidelity:fixtures   # the fixture registry gate                  (Node only)
+npm run fidelity            # style, fit and hue gates, then the copy gate   (needs Chromium)
+npm run fidelity:fixtures   # the fixture registry gate                      (Node only)
 ```
 
-## The four gates
+## The five gates
 
 | Gate                              | Compares                                                                        | Runs today?                      |
 | --------------------------------- | ------------------------------------------------------------------------------- | -------------------------------- |
 | **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid` |
 | **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                              |
-| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 224                     |
+| **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames        |
+| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 221 + 9 templates       |
 | **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                      |
 
-The first three need a browser and run in the `fidelity` CI job. The fourth does not, and runs in
+The first four need a browser and run in the `fidelity` CI job. The last does not, and runs in
 `frontend` alongside the linters — a gate that can run in the fifteen-second job should.
+
+## The hue gate, and the threshold that had to be measured twice (S1)
+
+`03-main-screen.md`: _"No seam. No colour anywhere. This is the rule made visible — if a screen has
+nothing to report it must contain no hue at all."_ It is a line item on the design's own acceptance
+checklist, assigned to this harness, and nothing implemented it until there was a settled screen to
+point it at.
+
+It cannot be tested as "is it grey". **This design's neutral ramp is deliberately cool and not one
+tier of it is achromatic** — `#828B98` and `#6D7783` each spread 22 channel values — so a plain
+`max − min` test flags the entire palette. It has to be a saturation.
+
+And it cannot be the obvious saturation. **HSL divides the chroma by lightness, so a near-white
+neutral reads as vividly coloured**: light's own `--surface` is `#FAF8F5`, a five-value warm tint,
+and HSL calls it 0.33 saturated — more than any threshold that still catches `#22D3EE`. The first
+version failed `12a Compact settled light` on the surface the whole light theme is painted on. HSV
+divides by `max` and is stable at both ends: `#FAF8F5` 0.02, `#C9D0DA` 0.08, and the darkest
+neutrals top out at 0.22, against 0.85–0.94 for every accent in either palette.
+
+It reads computed colour PROPERTIES, so it cannot see an image: the app mark is a warm SVG in an
+`<img>`, and the frames draw the same one.
+
+## Recorded deviations (S1)
+
+`known-deviations.mjs` holds the assertions a screen cannot pass yet, each with the issue that closes
+it, because Phase 1's answer to a missing capability is to **omit the clause, never fake it** — and
+an omitted clause arrives here as a node 195px wide where the frame has one 390px wide. Filling it
+with plausible numbers is what DEVIATIONS §60 forbids; leaving the gate red makes it a gate nobody
+reads. So the exact `frame · node · property` is recorded, never a wildcard, and printed in full on
+every run rather than folded into the pass count.
+
+**An entry that no longer fails is itself a failure.** That is the clause that stops the list turning
+into somewhere failures go to be forgotten: the day the capability lands, the build fails until the
+row is deleted.
 
 ## The node key, and why it is a path
 
@@ -150,8 +185,13 @@ that admits its edges:
 
 `assert.mjs` reports how many frames carry a `data-fid` and lists the rest every run, so "the gate is
 green" can never be confused with "the gate looked at anything". Today the shell's own chrome is
-mapped for three frames and F6's compact panel for eight more — **11 of 51, 12,441 assertions** — and
-40 frames are waiting for their screens.
+mapped for three frames, F6's compact panel for eight more, and S1's main screen for the same three
+the shell already had — **11 of 51, 17,737 assertions** — and 40 frames are waiting for their screens.
+
+**S1 moved the assertion count by 5,296 and the frame count by zero**, which is the honest shape of
+what it did: `2a Settled`, `2a Syncing` and `2a Needs you` were already "mapped" on the strength of a
+header and a footer, and now have a hero, a seam, two side labels, a transfer row and an attention
+band mapped as well. A frame counter cannot tell the difference between a screen and a title bar.
 
 **All 51 have a dataset** (F9), which is a different claim and deliberately kept separate: a fixture
 is what the app is fed, a `data-fid` is what gets compared. `check-fixtures.mjs` proves the first,
