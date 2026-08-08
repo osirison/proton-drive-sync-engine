@@ -59,8 +59,17 @@ export const MAIN = {
   /** `03-main-screen.md`: rows "cap at ~6 visible with `+n more` in mono if exceeded". */
   andMore: (n) => `+${count(n)} more`,
   syncing: (n) => `Syncing ${count(n)} changes`,
+  /**
+   * `leaving == null` DROPS THE DIRECTION CLAUSE, for the same reason `unreachableBody` drops its
+   * count: `last_plan_summary` is null until the plan exists, and on a first run against a large
+   * tree that is the whole multi-minute scan-and-walk stretch — during which `syncing` is already
+   * true. `0 leaving, 0 arriving` is a summary the daemon never published, and
+   * `14-behaviour-and-state.md` is explicit that a null summary means unknown, never zero.
+   */
   syncingSub: (ago, leaving, arriving) =>
-    `started ${ago} · ${count(leaving)} leaving, ${count(arriving)} arriving`,
+    leaving == null
+      ? `started ${ago}`
+      : `started ${ago} · ${count(leaving)} leaving, ${count(arriving)} arriving`,
   otherWaiting: (n) => `${count(n)} other changes are waiting on you`,
   paused: "Paused",
   pausedSub: (n, since) =>

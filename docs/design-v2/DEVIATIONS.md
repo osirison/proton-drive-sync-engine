@@ -1689,6 +1689,50 @@ focus survives on `Compare` across three polls.
 the same for its own lists. There is no gate for it — the harness reads a static tree, so a screen
 that rebuilds itself twice a second passes every assertion in this repo.
 
+### 67d. Two contradictory sentences in one window
+
+`heroStateOf` split settled from syncing on `response.syncing` alone. A filesystem-watch event only
+_accumulates_ `pending_changes` — `daemon.rs` says so in those words: _"filesystem-watch events only
+accumulate `pending_changes` (they never trigger a reconcile)"_ — so for up to a scan interval after
+an edit the daemon reports `syncing: false` with a non-empty queue.
+
+`gui-core`'s `derive_state` already calls that `Running`, and the header chip reads off it. So the
+chip said **`syncing`** while the hero underneath said **`Everything is up to date`**, about the same
+file, at the same moment, six inches apart. Queued work is not settled; the hero now says so.
+
+### 67e. Neither number in the syncing sub-line describes the pass
+
+`started 14 seconds ago · 2 leaving, 1 arriving` needs the pass as a unit, and nothing in the reply
+is one. Filed as **G11 ([#213](https://github.com/osirison/proton-drive-sync-engine/issues/213))**.
+
+- **`SyncActivity.since_epoch_secs` is the PHASE's start**, reset by `begin_activity` on every phase
+  change. A pass walking scanning → listing → executing → committing therefore counts up and jumps
+  back to zero three times. `last_sync_epoch_secs` is the previous pass's _end_, so it is not the
+  fallback either. Phase 1 renders the phase's elapsed time — visibly wrong on a long pass, and the
+  closest honest number there is.
+- **`pending_changes` is the local watch queue and nothing else**, cleared after each successful
+  reconcile. A pass driven entirely by Proton — a second device uploading, the first reconcile after
+  a restart — has an empty queue while downloading, so the headline read `Syncing 0 changes` with a
+  literal `0` inside the mark. Phase 1 takes `last_plan_summary.uploads + downloads` while syncing
+  and falls back to the queue: both are the daemon's own numbers, deletions are excluded because
+  "the count in the hexagon is transfers, not decisions", and on both drawn frames they agree at 3.
+- **`last_plan_summary` is null until `execute_plan_and_commit` runs** — the whole scan-and-walk
+  stretch, during which `syncing` is already true. `0 leaving, 0 arriving` is a summary the daemon
+  never published, so the clause drops instead. Same rule as §63's omissions and `unreachableBody`'s.
+
+### 67f. `0 changes are waiting` at the moment the app can see nothing
+
+`unreachable` is the one state reached with **no reply at all** (`derive_state` returns it only from
+the `Err` arm), so the pending count is not low — it is unknown. Coercing it with `?? 0` printed
+`Nothing is lost. 0 changes are waiting and will go as soon as it's back.` on a machine that might
+have sixty-one queued.
+
+`14-behaviour-and-state.md`, `gui-core`'s `DaemonState::Unreachable` doc and
+`store.select.countersUnknown()` all forbid it in the same words: **unknown renders as an em-dash,
+never as zero**. An em-dash mid-sentence is not English, so the clause goes and the reassurance
+stays — the same shape as `MAIN.band.deletionSub` dropping a zero clause. Every `?? 0` on this
+screen is gone; `count()` and the copy handle null.
+
 ---
 
 ## Phase-1 capability deviations

@@ -123,6 +123,20 @@ const page = await browser.newPage();
 await page.setViewport({ width: 1040, height: 764, deviceScaleFactor: 1 });
 
 const index = JSON.parse(readFileSync(join(FRAMES, "index.json"), "utf8"));
+
+// A hardcoded label list that nothing cross-checks is a gate that can switch itself off: re-extract
+// the prototype under a renamed frame and `SETTLED_FRAMES.has(label)` quietly goes false, with the
+// run printing exactly what it printed before. The same argument as the stale-deviation check, one
+// gate over.
+const unknownSettled = [...SETTLED_FRAMES].filter((label) => !index.some((e) => e.label === label));
+if (unknownSettled.length) {
+  console.error(
+    `fidelity:assert: SETTLED_FRAMES names ${unknownSettled.length} frame(s) that are not in scope — ` +
+      `the hue gate would skip them silently: ${unknownSettled.join(", ")}`,
+  );
+  process.exit(1);
+}
+
 const failures = [];
 const deviations = [];
 /** Route a mismatch to the failure list, or to the recorded-deviation list if one names it. */
@@ -390,12 +404,15 @@ if (deviations.length) {
 
 // An entry that stopped failing is a lie about the build, so it fails it. This is the clause that
 // keeps the list above from turning into somewhere failures go to be forgotten.
+// REPORTED, NOT EXITED ON, so the failure list below still prints. The two arrive together on
+// exactly the run that matters: the commit that closes #207 both settles the deviation AND is the
+// most likely to break the nodes it touches, and exiting here would print "delete this row" and
+// swallow every real failure underneath it.
 const unmet = unmetDeviations();
 if (unmet.length) {
-  console.error("\nRecorded deviations that no longer fail — delete them:\n");
+  console.error("\nRecorded deviations that no longer fail — delete them, or re-pin their measurement:\n");
   for (const d of unmet) console.error(`  ${d.frame} · ${d.key} · ${d.prop} — ${d.issue}\n      ${d.why}`);
   console.error(`\nfidelity:assert: ${unmet.length} stale deviation(s) in known-deviations.mjs.`);
-  process.exit(1);
 }
 
 if (failures.length) {
@@ -405,5 +422,6 @@ if (failures.length) {
   }
   if (failures.length > 40) console.error(`  … and ${failures.length - 40} more`);
   console.error(`\nfidelity:assert: ${failures.length} failure(s).`);
-  process.exit(1);
 }
+
+if (failures.length || unmet.length) process.exit(1);

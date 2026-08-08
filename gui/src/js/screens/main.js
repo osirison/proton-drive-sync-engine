@@ -59,7 +59,7 @@ const MAX_ROWS = 6;
  * state where nothing else on the screen can be trusted to be current; paused outranks a decision
  * because the sentence "nothing will move until you resume" is true of the decisions too.
  */
-export function heroStateOf({ daemonState, syncing, waiting }) {
+export function heroStateOf({ daemonState, syncing, waiting, pending = 0 }) {
   if (daemonState === "unreachable") return "unreachable";
   // BEFORE `syncing`, and before the settled fall-through, which is where it landed first and is a
   // false all-clear: a daemon whose Proton session has lapsed is reachable, reports nothing in
@@ -69,7 +69,13 @@ export function heroStateOf({ daemonState, syncing, waiting }) {
   // trap the user in the wizard" — so a fall-through is a broken hand-off, not just a missing state.
   if (daemonState === "authExpired") return "authExpired";
   if (daemonState === "paused") return "paused";
-  if (syncing) return "syncing";
+  // `pending` AS WELL AS `syncing`, and leaving it out put two contradictory sentences in one
+  // window. A filesystem-watch event only accumulates `pending_changes`; it never starts a reconcile
+  // (`daemon.rs`), so for up to a scan interval after an edit the daemon reports `syncing: false`
+  // with a non-empty queue. `gui-core`'s `derive_state` already calls that `Running`, so the header
+  // chip read `syncing` while the hero underneath said `Everything is up to date` — about the same
+  // file, at the same moment. Queued work is not settled. §67d.
+  if (syncing || pending > 0) return "syncing";
   // `14-behaviour-and-state.md`: "Only when nothing is transferring does the hexagon itself take the
   // decision form." No frame draws it at 168px — DEVIATIONS §24 measured the crimson mark as
   // existing only at ≤72px — so this is prose-normative and unverified by the gate. §67.
@@ -96,9 +102,34 @@ export function mainView(props = {}) {
 
   const activity = response?.activity ?? null;
   const summary = response?.last_plan_summary ?? null;
-  const pending = response?.pending_changes ?? null;
+  const queued = response?.pending_changes ?? null;
   const waiting = conflicts.length + deletions.length;
-  const hero = heroStateOf({ daemonState, syncing: Boolean(response?.syncing), waiting });
+  const hero = heroStateOf({
+    daemonState,
+    syncing: Boolean(response?.syncing),
+    waiting,
+    pending: queued ?? 0,
+  });
+
+  /**
+   * HOW MANY CHANGES THIS PASS IS MOVING — and it is not `pending_changes` alone.
+   *
+   * `pending_changes` is the filesystem-watch queue: paths a local `notify` event dirtied, cleared
+   * after each successful reconcile (`daemon.rs`). It says nothing about the remote side, so a pass
+   * driven entirely by Proton — a second device uploading, the first reconcile after a restart —
+   * carries an EMPTY queue while downloading, and the headline read `Syncing 0 changes` with a
+   * literal `0` inside the mark.
+   *
+   * The plan knows: `uploads + downloads` is what the pass will actually move, in both directions,
+   * and the daemon publishes it before the transfers start. Deletions are excluded on purpose —
+   * a withheld one is a decision, and "the count in the hexagon is transfers, not decisions".
+   *
+   * Both numbers are the daemon's; neither is derived from the other. The queue is the answer while
+   * work is waiting and no plan exists yet, and the plan is the answer once there is one. On both
+   * drawn frames they agree at 3, which is why nothing in the gate moves.
+   */
+  const moving = summary ? summary.uploads + summary.downloads : null;
+  const changes = response?.syncing ? (moving ?? queued) : queued;
 
   return {
     hero,
@@ -107,12 +138,14 @@ export function mainView(props = {}) {
     deletions,
     localRoot,
     remoteRoot,
-    pending,
+    pending: changes,
+    queued,
     summary,
     activity,
     lastSync: response?.last_sync_epoch_secs ?? null,
-    // The numeral is the pending count — "the count in the hexagon is transfers, not decisions".
-    numeral: hero === "syncing" ? pending : hero === "decision" ? waiting : null,
+    // "The count in the hexagon is transfers, not decisions" — the decisions are in the chip and the
+    // band. `null` renders no numeral at all rather than a zero.
+    numeral: hero === "syncing" ? changes : hero === "decision" ? waiting : null,
     transfers: transfersOf(activity),
   };
 }
@@ -177,10 +210,15 @@ function headlineOf(v) {
 function subOf(v) {
   switch (v.hero) {
     case "syncing":
+      // `?? null`, never `?? 0` — see `syncingSub`. And `since_epoch_secs` is the PHASE's start, not
+      // the pass's: `begin_activity` resets it on every phase change, so a long pass walking
+      // scanning-local → listing-remote → executing makes `started N ago` count up and then jump
+      // back to zero three times. Nothing in the reply records when the pass itself began (#213), so
+      // Phase 1 shows the phase's elapsed time — which is at least honest about a number that moves.
       return MAIN.syncingSub(
         since(v.activity?.since_epoch_secs ?? v.lastSync),
-        v.summary?.uploads ?? 0,
-        v.summary?.downloads ?? 0,
+        v.summary?.uploads ?? null,
+        v.summary?.downloads ?? null,
       );
     case "paused":
       return MAIN.pausedSub(v.pending, clock(v.lastSync));

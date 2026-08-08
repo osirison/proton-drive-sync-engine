@@ -19,11 +19,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { heroStateOf } from "../src/js/screens/main.js";
+import { heroStateOf, mainView } from "../src/js/screens/main.js";
 import { MAIN, TRAY } from "../src/js/ui/copy.js";
 import { cardinal } from "../src/js/ui/format.js";
 
-const state = (over = {}) => ({ daemonState: "idle", syncing: false, waiting: 0, ...over });
+const state = (over = {}) => ({ daemonState: "idle", syncing: false, waiting: 0, pending: 0, ...over });
 
 test("a decision does not replace the syncing hero — it is additive", () => {
   // `2a Needs you`: three things waiting AND a pass in flight. The mark stays the syncing one and
@@ -80,6 +80,44 @@ test("a category with nothing in it gets no clause, and both halves agree on num
   assert.equal(MAIN.band.deletionSub(0, 0), "");
   assert.equal(MAIN.band.deletionTitle(1), "One deletion is waiting on you");
   assert.equal(MAIN.band.conflictTitle(4), "Four files changed on both sides");
+});
+
+test("queued-but-not-started work is not settled", () => {
+  // A filesystem-watch event only accumulates `pending_changes`; it never starts a reconcile. So the
+  // daemon reports `syncing: false` with a non-empty queue for up to a scan interval — and
+  // gui-core's `derive_state` already calls that `Running`, so the header chip said `syncing` while
+  // the hero underneath said `Everything is up to date`, about the same file at the same moment.
+  assert.equal(heroStateOf(state({ syncing: false, pending: 5 })), "syncing");
+  assert.equal(heroStateOf(state({ syncing: false, pending: 0 })), "settled");
+});
+
+test("the change count is the plan's transfers while syncing, not the local watch queue", () => {
+  // `pending_changes` is local-only, so a pass driven entirely by Proton carries an empty queue
+  // while downloading — and the headline read `Syncing 0 changes` with a literal 0 in the mark.
+  const remoteDriven = mainView({
+    daemonState: "running",
+    response: {
+      syncing: true,
+      pending_changes: 0,
+      last_plan_summary: { uploads: 0, downloads: 7, remote_deletes: 2 },
+    },
+  });
+  assert.equal(remoteDriven.pending, 7, "downloads count, deletions do not");
+  assert.equal(remoteDriven.numeral, 7);
+
+  // Before the plan exists there is no transfer count, so the queue answers instead.
+  const stillScanning = mainView({
+    daemonState: "running",
+    response: { syncing: true, pending_changes: 4, last_plan_summary: null },
+  });
+  assert.equal(stillScanning.pending, 4);
+});
+
+test("`0 leaving, 0 arriving` is never printed for a plan that does not exist yet", () => {
+  assert.equal(MAIN.syncingSub("14 seconds ago", null, null), "started 14 seconds ago");
+  assert.equal(MAIN.syncingSub("14 seconds ago", 2, 1), "started 14 seconds ago · 2 leaving, 1 arriving");
+  // A plan that genuinely moves nothing in one direction is a real answer, and keeps its clause.
+  assert.equal(MAIN.syncingSub("1 minute ago", 0, 9), "started 1 minute ago · 0 leaving, 9 arriving");
 });
 
 test("an unknown pending count never renders as zero", () => {
