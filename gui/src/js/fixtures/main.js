@@ -91,11 +91,21 @@ const ROOTS = { local_root: "~/ProtonDrive", remote_root: "/Drive/RemoteFolder" 
  */
 const PASS = {
   summary: plan({ uploads: 2, downloads: 1 }),
-  activity: {
+  /**
+   * `action_total` IS THE SUMMARY'S TOTAL, derived and never written beside it.
+   *
+   * `daemon.rs` sets `let action_total = plan.len()` from the same plan `PlanSummary::from_plan`
+   * counts, and it is the WHOLE plan — the delete gate withholds actions inside the execution loop
+   * rather than filtering the list, so a withheld deletion is still counted. Reusing one activity
+   * across both frames therefore reported `3` beside a five-action summary on `2a Needs you`: a
+   * reply the daemon cannot emit, and exactly the shape §61 records the `9a Review` fixture getting
+   * wrong in the other direction. Copilot caught it; passing the summary makes it unrepresentable.
+   */
+  activityFor: (summary) => ({
     phase: "executing",
     detail: "docs/spec.md",
     action_index: 1,
-    action_total: 3,
+    action_total: summary.total,
     since_epoch_secs: ago(14),
     transfer: {
       direction: "upload",
@@ -105,8 +115,11 @@ const PASS = {
       bytes_done: null,
       started_epoch_secs: ago(14),
     },
-  },
+  }),
 };
+
+/** `2a Needs you`'s plan: the same three transfers, plus the two deletions its band is about. */
+const NEEDS_YOU_PLAN = plan({ uploads: 2, downloads: 1, remote_deletes: 1, local_deletes: 1 });
 
 export const MAIN_FIXTURES = {
   "2a Settled": {
@@ -145,7 +158,7 @@ export const MAIN_FIXTURES = {
         last_plan_summary: PASS.summary,
         pending_deletions: [],
         config: ROOTS,
-        activity: PASS.activity,
+        activity: PASS.activityFor(PASS.summary),
       },
     },
     conflicts: [],
@@ -170,9 +183,11 @@ export const MAIN_FIXTURES = {
         syncing: true,
         pending_changes: 3,
         last_sync_epoch_secs: ago(14),
-        // The two withheld deletions are plan rows like any other, so they are in the summary the
-        // daemon publishes before the transfers start (daemon.rs `execute_plan_and_commit`).
-        last_plan_summary: plan({ uploads: 2, downloads: 1, remote_deletes: 1, local_deletes: 1 }),
+        // The two withheld deletions are plan rows like any other — the delete gate withholds them
+        // INSIDE the execution loop rather than filtering the list — so they are in the summary the
+        // daemon publishes before the transfers start (daemon.rs `execute_plan_and_commit`), and in
+        // the `action_total` derived from it below.
+        last_plan_summary: NEEDS_YOU_PLAN,
         /**
          * ONE CONFLICT AND TWO DELETIONS, not three conflicts — read off the band the frame draws.
          *
@@ -204,7 +219,7 @@ export const MAIN_FIXTURES = {
           },
         ],
         config: ROOTS,
-        activity: PASS.activity,
+        activity: PASS.activityFor(NEEDS_YOU_PLAN),
       },
     },
     // `scan_conflicts` returns `{ original, sidecar }` pairs (gui-core/src/conflicts.rs) — NOT a

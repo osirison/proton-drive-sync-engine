@@ -123,19 +123,30 @@ for (const [group, value] of Object.entries(COPY)) walk(value, group);
 /** Resolve a dotted path into the deck. Returns undefined rather than throwing on a bad segment. */
 const at = (path) => path.split(".").reduce((node, key) => (node == null ? node : node[key]), COPY);
 
-// Render each drawn template and hand it to the same comparison the constants get. A path that no
-// longer names a function is a build failure and not a skip: the whole point is that this table
-// cannot rot into a list of things nobody checks.
+// Render each drawn template and require its result IN THE FRAME THE TABLE NAMES — not merely
+// somewhere in scope, which is what the first version did by ignoring the third tuple element
+// (Copilot caught it). The label is the table's whole claim: these arguments were read off THAT
+// frame, and a check that accepts any frame lets the claim rot while staying green. Verified by
+// pointing one entry at the wrong frame and watching the build fail.
+//
+// A path that no longer names a function, or a label that is not an in-scope frame, is a build
+// failure and not a skip: the point is that this table cannot become a list of things nobody checks.
 const templateErrors = [];
-for (const [path, args] of DRAWN) {
+const drawnChecks = [];
+for (const [path, args, label] of DRAWN) {
   const fn = at(path);
+  const shown = `${path}(${args.map((a) => JSON.stringify(a)).join(", ")})`;
   if (typeof fn !== "function") {
     templateErrors.push(
-      `${path} is ${fn === undefined ? "not in the deck" : `a ${typeof fn}`}, not a template`,
+      `${shown} is ${fn === undefined ? "not in the deck" : `a ${typeof fn}`}, not a template`,
     );
     continue;
   }
-  strings.push([`${path}(${args.map((a) => JSON.stringify(a)).join(", ")})`, fn(...args)]);
+  if (!frameText.has(label)) {
+    templateErrors.push(`${shown} names frame "${label}", which is not an in-scope frame`);
+    continue;
+  }
+  drawnChecks.push([shown, fn(...args), label]);
 }
 
 const missing = [];
@@ -154,9 +165,15 @@ for (const [path, text] of strings) {
   missing.push([path, text]);
 }
 
+// The templates, each against ITS OWN frame rather than against all of them.
+for (const [shown, text, label] of drawnChecks) {
+  if (frameText.get(label).includes(text)) found.push(shown);
+  else missing.push([`${shown} — expected in ${label}`, text]);
+}
+
 console.log(
-  `fidelity:copy — ${found.length}/${strings.length - NOT_DRAWN.size} drawn strings matched ` +
-    `(${DRAWN.length} of them templates rendered at the arguments the frame draws), ` +
+  `fidelity:copy — ${found.length}/${strings.length - NOT_DRAWN.size + drawnChecks.length} drawn strings matched ` +
+    `(${drawnChecks.length} of them templates rendered at the arguments their own frame draws), ` +
     `${NOT_DRAWN.size} exempt (native tray), ${missing.length} missing`,
 );
 
