@@ -31,6 +31,8 @@
  * @property key    the node key, or `(fit)` for a fit-gate row
  * @property props  which assertions on that node are expected to fail — never a wildcard, so a
  *                  SECOND thing going wrong on the same node is still caught
+ * @property detail the EXACT mismatch, verbatim as `assert.mjs` formats it. Absorbs that one
+ *                  difference and nothing else; see the note below.
  * @property issue  the issue that closes it
  * @property why    one line, in the same voice as DEVIATIONS.md
  */
@@ -39,6 +41,7 @@ export const KNOWN_DEVIATIONS = [
     frame: "2a Settled",
     key: "div[0]/div[2]",
     props: ["box.w"],
+    detail: "390.02 vs 195.02",
     issue: "#207",
     why: "the settled sub-line's `· 12,480 files · 41.2 GB` is G7 — no command reports index-wide totals, so Phase 1 draws `last synced 2 minutes ago` alone and the line measures 195px against the drawn 390px",
   },
@@ -49,12 +52,29 @@ const INDEX = new Map(
   KNOWN_DEVIATIONS.flatMap((d) => d.props.map((prop) => [`${d.frame}|${d.key}|${prop}`, d])),
 );
 
-/** Was this exact assertion expected to fail? Records the hit so `unmet()` can report the rest. */
+/**
+ * Was this exact assertion expected to fail, WITH this exact difference?
+ *
+ * `detail` is what keeps a row from swallowing more than it names, and the hole it closes is not
+ * hypothetical. `box.w` is the ONLY assertion on the settled sub-line that is sensitive to its text —
+ * `width`/`height` are deliberately absent from `STYLE_PROPS` and no gate compares DOM text — so a
+ * row that absorbed *any* `box.w` mismatch would leave that sentence entirely unchecked. Reword it,
+ * drop a word from it, render the wrong timestamp: all silent.
+ *
+ * Pinning the measurement means the deviation absorbs the 195px Phase 1 actually draws and nothing
+ * else. It has already earned it: a review agent editing this tree dropped `last ` from the sub-line,
+ * which is a real divergence from `03-main-screen.md` and would have passed under the wildcard form.
+ *
+ * A row with no `detail` still matches on the property alone — deliberately, since a fit-gate row's
+ * message carries a size nobody wants to re-type — but every style row should pin one.
+ */
 const hit = new Set();
-export function isKnown(frame, key, prop) {
+export function isKnown(frame, key, prop, detail) {
   const found = INDEX.get(`${frame}|${key}|${prop}`);
-  if (found) hit.add(`${frame}|${key}|${prop}`);
-  return Boolean(found);
+  if (!found) return false;
+  if (found.detail != null && found.detail !== detail) return false;
+  hit.add(`${frame}|${key}|${prop}`);
+  return true;
 }
 
 /**

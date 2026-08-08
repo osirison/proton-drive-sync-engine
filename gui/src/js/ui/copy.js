@@ -501,7 +501,24 @@ export const TRAY = {
   quitSub: "stops syncing",
 
   unreachableTitle: "Can't reach Proton Drive",
+  /**
+   * `n == null` DROPS THE SECOND SENTENCE rather than rendering the count, and this is the one place
+   * in the deck where that matters most.
+   *
+   * When the daemon is unreachable there IS no reply, so the pending count is genuinely unknown —
+   * and `14-behaviour-and-state.md`'s rule for that is absolute: *"a null summary means unknown, not
+   * zero (render em-dashes, never `0`)"*, which `gui-core`'s `DaemonState::Unreachable` doc,
+   * `store.select.countersUnknown()` and `format.dash()` all restate. `0 changes are waiting` is a
+   * false all-clear at the exact moment the app cannot see anything, and an em-dash mid-sentence
+   * (`— changes are waiting`) is not English.
+   *
+   * So the clause goes, and the sentence that carries the reassurance stays. Same shape as
+   * `MAIN.band.deletionSub` dropping a zero clause, and the same rule as every Phase-1 omission on
+   * the main screen: omit what is not known, never fill it.
+   */
   unreachableBody: (n) =>
-    `Nothing is lost. ${count(n)} changes are waiting and will go as soon as it's back.`,
+    n == null
+      ? "Nothing is lost."
+      : `Nothing is lost. ${count(n)} changes are waiting and will go as soon as it's back.`,
   retrying: (inTime, lastAt) => `retrying in ${inTime} · last reached ${lastAt}`,
 };

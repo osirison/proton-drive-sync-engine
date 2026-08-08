@@ -126,7 +126,7 @@ const index = JSON.parse(readFileSync(join(FRAMES, "index.json"), "utf8"));
 const failures = [];
 const deviations = [];
 /** Route a mismatch to the failure list, or to the recorded-deviation list if one names it. */
-const record = (row) => (isKnown(row.frame, row.key, row.prop) ? deviations : failures).push(row);
+const record = (row) => (isKnown(row.frame, row.key, row.prop, row.detail) ? deviations : failures).push(row);
 let asserted = 0;
 let mapped = 0;
 const unmappedFrames = [];

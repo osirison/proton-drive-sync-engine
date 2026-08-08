@@ -359,6 +359,10 @@ function render() {
     return;
   }
   if (mountFramePanel(root)) return;
+  // The ⋯ menu comes down FIRST, so that for the rest of this pass the only things between the
+  // header and the footer are the screen's own blocks — which is the invariant `setBody` is written
+  // against. It goes back up at the end. See the note there.
+  root.querySelector(".menu-popover")?.remove();
   const st = store.select.daemonState();
 
   // The folder pair: the running daemon's reported roots are ground truth; the GUI config file is
@@ -541,7 +545,14 @@ function render() {
 
   // --- the ⋯ menu, the one part that is genuinely torn down and rebuilt. It has no animation and
   // no focus to lose that closing it would not have taken anyway.
-  root.querySelector(".menu-popover")?.remove();
+  //
+  // REBUILT HERE, TORN DOWN AT THE TOP. The removal used to sit on the line above this one, which
+  // put a stale popover between the header and the body for the whole of `setBody` — and `setBody`
+  // decides whether a block has moved by asking whether it is its anchor's `nextSibling`. With the
+  // menu open, every poll therefore answered "no" for every block and re-inserted the entire screen,
+  // restarting the hexagon's two travelling segments and the glow. Exactly the failure the patching
+  // discipline exists to prevent, reintroduced by a node that is not part of the screen at all.
+  //
   // Appended, never passed to replaceChildren: `replaceChildren(null)` appends the literal string
   // "null" as a TEXT NODE. The v1 app.js carried that guard and a comment saying so; dropping it in
   // the rewrite printed "null" in the corner of the window, and every class-based assertion still

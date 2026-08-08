@@ -20,7 +20,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { heroStateOf } from "../src/js/screens/main.js";
-import { MAIN } from "../src/js/ui/copy.js";
+import { MAIN, TRAY } from "../src/js/ui/copy.js";
 import { cardinal } from "../src/js/ui/format.js";
 
 const state = (over = {}) => ({ daemonState: "idle", syncing: false, waiting: 0, ...over });
@@ -80,6 +80,22 @@ test("a category with nothing in it gets no clause, and both halves agree on num
   assert.equal(MAIN.band.deletionSub(0, 0), "");
   assert.equal(MAIN.band.deletionTitle(1), "One deletion is waiting on you");
   assert.equal(MAIN.band.conflictTitle(4), "Four files changed on both sides");
+});
+
+test("an unknown pending count never renders as zero", () => {
+  // 14-behaviour-and-state.md, `gui-core`'s `DaemonState::Unreachable` doc and
+  // `store.select.countersUnknown()` all say the same thing: a missing number is UNKNOWN, never
+  // zero. When the daemon is unreachable there is no reply at all, so `0 changes are waiting` would
+  // be a false all-clear at the exact moment the app cannot see anything — and an em-dash mid
+  // sentence is not English, so the clause goes instead.
+  assert.equal(TRAY.unreachableBody(null), "Nothing is lost.");
+  assert.equal(TRAY.unreachableBody(undefined), "Nothing is lost.");
+  assert.equal(
+    TRAY.unreachableBody(4),
+    "Nothing is lost. 4 changes are waiting and will go as soon as it's back.",
+  );
+  // Zero is a real answer the daemon can give, and it is not the same as no answer.
+  assert.match(TRAY.unreachableBody(0), /^Nothing is lost\. 0 changes/);
 });
 
 test("cardinal spells the small counts a sentence opens with and hands the rest back", () => {

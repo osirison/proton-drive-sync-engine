@@ -149,7 +149,7 @@ function transfersOf(activity) {
 function headlineOf(v) {
   switch (v.hero) {
     case "syncing":
-      return MAIN.syncing(v.pending ?? 0);
+      return MAIN.syncing(v.pending);
     case "paused":
       return MAIN.paused;
     case "unreachable":
@@ -183,11 +183,11 @@ function subOf(v) {
         v.summary?.downloads ?? 0,
       );
     case "paused":
-      return MAIN.pausedSub(v.pending ?? 0, clock(v.lastSync));
+      return MAIN.pausedSub(v.pending, clock(v.lastSync));
     case "unreachable":
-      return TRAY.unreachableBody(v.pending ?? 0);
+      return TRAY.unreachableBody(v.pending);
     case "authExpired":
-      return MAIN.authExpiredSub(v.pending ?? 0);
+      return MAIN.authExpiredSub(v.pending);
     default:
       return MAIN.settledSubTime(since(v.lastSync));
   }
