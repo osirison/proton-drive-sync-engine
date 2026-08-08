@@ -93,17 +93,37 @@ export function roughly(seconds, tail = "left") {
  * An unknown action returns null rather than a guess. A sync tool inventing a description of what it
  * did to a file is the one place a plausible-sounding fallback is worse than a blank.
  */
+// KEYED ON WHAT THE ENGINE ACTUALLY EMITS. `SyncAction` is `#[serde(rename_all = "snake_case")]`
+// over the variant names (src/sync.rs), so a planned action's `action` field is
+// `create_remote_directory`, not `remote_mkdir`; `move_local`, not `local_move`; `skip_unsupported`,
+// not `skip`. Five of the nine keys here were the shorter names nobody emits, and because an unknown
+// action deliberately returns null rather than guessing, they failed by drawing a BLANK outcome —
+// no error, no warning, just a row that says nothing about what happened to your file.
+//
+// Nothing caught it because nothing had yet put an engine-shaped plan in front of this function: F7
+// wrote the table and the screens that feed it are S4 and S5. F9's `5a Plan` fixture did, and two of
+// its nine rows came back empty.
 const OUTCOMES = {
   upload: { plan: "sent to Proton", row: "sent to Proton" },
   download: { plan: "brought to this computer", row: "brought here" },
-  remote_mkdir: { plan: "folder created on Proton", row: "folder created on Proton" },
-  local_mkdir: { plan: "folder created here", row: "folder created here" },
-  remote_move: { plan: "moved to match Proton", row: "moved to match" },
-  local_move: { plan: "moved to match Proton", row: "moved to match" },
+  create_remote_directory: { plan: "folder created on Proton", row: "folder created on Proton" },
+  create_local_directory: { plan: "folder created here", row: "folder created here" },
+  move_remote: { plan: "moved to match Proton", row: "moved to match" },
+  move_local: { plan: "moved to match Proton", row: "moved to match" },
   conflict: { plan: "both copies kept, nothing lost", row: "both copies kept" },
   remote_delete: { plan: "deleted for good on Proton", row: "deleted for good on Proton" },
-  skip: { plan: "skipped, can't be synced", row: "skipped, can't be synced" },
+  skip_unsupported: { plan: "skipped, can't be synced", row: "skipped, can't be synced" },
 };
+
+// FOUR VARIANTS THE ENGINE EMITS AND THIS TABLE HAS NO WORDING FOR: `local_delete`, `purge`,
+// `auto_link`, `type_conflict`. No frame draws an outcome label for any of them, and `13-copy-deck.md`
+// carries none — so the words do not exist yet, and inventing them here would be this module doing
+// design. `outcomeOf` returns null, which is the documented safe answer and renders as no label.
+//
+// Three of the four matter to a screen that is not built yet, and each needs a decision rather than
+// a translation: `local_delete` is the mirror of `remote_delete` (S3/S5), `type_conflict` is the
+// "a folder here, a file there" case S2 already draws its own copy for, and `purge` is index-only
+// cleanup that touches no user data — arguably it should never reach a row at all.
 
 export function outcomeOf(action, register = "row") {
   const entry = OUTCOMES[action];

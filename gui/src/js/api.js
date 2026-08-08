@@ -55,18 +55,95 @@ export const api = {
   isMock: () => !inTauri(),
 };
 
+/**
+ * What `read_config` returns when the config file is not there — every field, as `commands.rs` fills
+ * them in (`ConfigPayload`, lines 200-215): `exists: false`, an empty `toml` from an empty doc, and
+ * `ConfigDoc`'s getters answering `None` for each scalar and an empty `Vec` for each array.
+ *
+ * Written out rather than abbreviated because the whole point is the shape. A missing file is not a
+ * missing reply, and the mock must not be the only place that thinks otherwise.
+ */
+export const EMPTY_CONFIG = {
+  path: "~/.config/proton-sync/proton-sync.toml",
+  exists: false,
+  toml: "",
+  local_root: null,
+  remote_root: null,
+  scan_interval_secs: null,
+  events_driven: null,
+  include: [],
+  exclude: [],
+  proton_cli: null,
+  proton_timeout_secs: null,
+  proton_list_attempts: null,
+  delete_approval_remote: null,
+  delete_approval_local: null,
+};
+
 // ---- browser-preview mock (never runs inside Tauri) ----
 // `?frame=<label>` swaps the generic mock for that frame's fixture (F9), so the same dataset drives
 // the fidelity harness and the design preview. Without a frame the generic mock below still runs,
 // which is what keeps the browser preview useful before every frame has a fixture.
-function mockInvoke(cmd, _args) {
+function mockInvoke(cmd, args) {
   const fixture = activeFixture();
   if (fixture) {
-    if (cmd === "get_status") return Promise.resolve(fixture.status);
-    if (cmd === "scan_conflicts") return Promise.resolve(fixture.conflicts ?? []);
-    if (cmd === "list_pending_deletions")
-      return Promise.resolve(fixture.status?.response?.pending_deletions ?? []);
-    if (cmd === "read_config") return Promise.resolve(fixture.status?.response?.config ?? {});
+    // ONE COMMAND PER LINE, and a fixture key ONLY where the reply is not already inside the status.
+    // A command a fixture says nothing about falls through to the generic mock below, which is what
+    // keeps a partly-described frame useful rather than blank.
+    switch (cmd) {
+      case "get_status":
+        return Promise.resolve(fixture.status);
+      case "scan_conflicts":
+        return Promise.resolve(fixture.conflicts ?? []);
+      case "list_pending_deletions":
+        // NOT A REPLY OF ITS OWN. `commands.rs` sends a plain `Status` and returns
+        // `response.pending_deletions` from it, so on a real daemon these two are the same bytes by
+        // construction. There is therefore no fixture key for it: reading through is the only thing
+        // that cannot drift, and a top-level `deletions` would be a second source of truth for one
+        // list — which is exactly the thing it would eventually disagree with.
+        //
+        // The first version accepted a `deletions` key and preferred it, under a comment claiming
+        // the two "cannot be made to disagree". They could; the comment described the daemon and the
+        // code described the fixture.
+        return Promise.resolve(fixture.status?.response?.pending_deletions ?? []);
+      case "read_config":
+        // NO FALLBACK TO `status.response.config`, and the near-miss is the point: both are called
+        // `config` and both carry `local_root`/`remote_root`, but they are different types answering
+        // different questions. `read_config` returns `ConfigPayload` — what the TOML file says, with
+        // `toml`, `exists`, `include`/`exclude`, `scan_interval_secs` and the rest. A status reply's
+        // `config` is `RunningConfigInfo`: three paths describing the process that is actually
+        // running. The old fallback handed the file's shape to a screen and filled it with the
+        // daemon's, which reads correctly on the two shared keys and is missing every other one —
+        // so Settings would have drawn an empty skip list rather than an unanswered one.
+        //
+        // A frame that describes no config file still gets a WELL-FORMED reply, because
+        // `read_config` cannot fail to send one: it stats the path, loads the doc (an absent file
+        // loads as an empty doc, not an error) and fills in every field — `exists: false`, an empty
+        // `toml`, `null` for each optional and `[]` for the two arrays. `{}` would leave
+        // `config.exclude` undefined, so a screen doing `.map` over it would throw in browser
+        // preview and nowhere else, which is the worst place for a difference to live.
+        //
+        // The 38 frames without an explicit config lose nothing either way: the footer's folder pair
+        // reads the STATUS first (`app.js`'s `live?.local_root ?? configInfo?.local_root`), which is
+        // the correct precedence anyway — a running daemon's roots are ground truth and the file is
+        // the fallback.
+        return Promise.resolve(fixture.config ?? EMPTY_CONFIG);
+      case "read_conflict_pair":
+        if (fixture.conflictPair) return Promise.resolve(fixture.conflictPair);
+        break;
+      case "run_dry_run":
+        if (fixture.dryRun) return Promise.resolve(fixture.dryRun);
+        break;
+      case "path_sync_status":
+        // Keyed by the path asked for. An unlisted path answers `tracked: false` rather than falling
+        // through to the generic mock: "this frame does not describe that file" is a real answer, and
+        // it is the one a never-synced file gets from the real command.
+        if (fixture.pathStatus)
+          return Promise.resolve(fixture.pathStatus[args?.relativePath] ?? { tracked: false });
+        break;
+      default:
+        break;
+    }
   }
   switch (cmd) {
     case "get_status":

@@ -26,6 +26,7 @@ import {
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
 import { activeFixture } from "./fixtures/frames.js";
+import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
 
 // ---- shell state ----
 let route = "main"; // the root or door currently showing
@@ -53,6 +54,10 @@ let lastConflictScan = 0;
 function initTheme() {
   const saved = localStorage.getItem("theme");
   if (saved === "light" || saved === "dark") document.documentElement.setAttribute("data-theme", saved);
+  // `?theme=` beats the stored choice, and writes nothing back — it is a preview override for
+  // looking at a light frame on a dark machine, not a decision the user made. Applied last so it
+  // wins; see fixtures/preview.js for why it is never inferred from a `12a` label.
+  applyPreviewTheme();
 }
 function currentTheme() {
   return (
@@ -286,6 +291,12 @@ const dom = {
   dialogRoute: null,
   dialogDetach: null,
   panel: null,
+  // The preview's own pages (F9). Latched for the same reason `panel` is, and it is not hypothetical:
+  // `render()` returning early does not stop the poll — `main()` starts it unconditionally and
+  // `store.subscribe(render)` re-enters here on every reply — so without this the frame index rebuilt
+  // its whole list every ~2 s and a tabbed-to link lost focus, which is the failure this cache exists
+  // for. Its content cannot change either: it is derived from the registry, which is a constant.
+  preview: false,
 };
 
 /**
@@ -320,6 +331,16 @@ function mountFramePanel(root) {
 
 function render() {
   const root = document.getElementById("app-root");
+  // The preview's own pages — the frame index, and the diagnostic for a `?frame=` label that has no
+  // fixture. Both take the window: the shell never renders behind them. (The poll still runs — this
+  // is a `render()` early return, not a boot switch — which is exactly why `dom.preview` latches.)
+  // First, ahead of the panel mount, because an unknown label must not fall through to the generic
+  // mock and draw a plausible screen that is not the frame you asked for.
+  if (dom.preview) return;
+  if (mountPreview(root)) {
+    dom.preview = true;
+    return;
+  }
   if (mountFramePanel(root)) return;
   const st = store.select.daemonState();
 
