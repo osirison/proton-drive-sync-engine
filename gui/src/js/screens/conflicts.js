@@ -233,7 +233,7 @@ function cardBody({ conflict, pair, comparison, onOpenDiff }) {
   // carries the stacking, so masking must not turn them into positioned elements.
   seamMask(path, { pad: 14, position: false });
   const meta = fid(
-    el("div", { class: "cf-onseam-meta" }, CONFLICTS.meta(fileKindOf(conflict, pair))),
+    el("div", { class: "cf-onseam-meta" }, CONFLICTS.meta(fileKindOf(conflict, pair, comparison))),
     "onSeamMeta",
   );
   seamMask(meta, { pad: 14, padY: 2, position: false });
@@ -378,10 +378,25 @@ function sidecarName(conflict) {
  * it is a folder; nothing distinguishes an SVG from a note, because an SVG is valid UTF-8 and reads
  * exactly the same way. Naming a type we cannot tell apart would be worse than naming a category.
  */
-function fileKindOf(conflict, pair) {
+export function fileKindOf(conflict, pair, comparison) {
   if (conflict.kind === "type") return CONFLICTS.kindFolder;
-  if (pair?.original?.binary_or_large) return CONFLICTS.kindBinary;
-  return CONFLICTS.kindText;
+  // NOT YET KNOWN. The pair lands a render after the screen does, and `a plain text file` drawn in
+  // that gap is a guess about a file nobody has opened — the same claim-without-a-fact as the
+  // `0 bytes` the size row used to draw. The clause is dropped instead; `.cf-onseam-meta` holds its
+  // height so the cards below do not jump when the answer arrives.
+  if (!pair) return null;
+  // ASKED OF THE COMPARISON, not of `original.binary_or_large`. Checking only the local side said
+  // `a plain text file` whenever the SIDECAR was the unreadable one — while the disclosure beneath
+  // it was hidden, because `compare()` needs both texts to be strings. The line claimed plain text
+  // and the screen refused to show any: a contradiction a reader can see, on the screen where the
+  // whole question is which version to keep.
+  //
+  // `comparison` is the right thing to ask because it is the same predicate the disclosure uses, so
+  // the two cannot disagree by construction. It also covers the case `binary_or_large` cannot see —
+  // a side that is missing, which `read_conflict_pair` reports as `text: null` with the flag FALSE
+  // (DEVIATIONS §70b) — and the too-large-to-diff case, which `kindBinary` is already worded for:
+  // "binary, too large, or vanished, which `ConflictSide` cannot tell apart".
+  return comparison ? CONFLICTS.kindText : CONFLICTS.kindBinary;
 }
 
 // -------------------------------------------------------------------------- the diff view ----

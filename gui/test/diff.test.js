@@ -11,6 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alignedRows, compare, lines, quote, summariseSide, MAX_QUOTE_CHARS } from "../src/js/ui/diff.js";
 import { fileSize, EM_DASH } from "../src/js/ui/format.js";
+import { fileKindOf } from "../src/js/screens/conflicts.js";
 import { CONFLICTS } from "../src/js/ui/copy.js";
 
 // The two versions `3a Conflict` is drawn from: yours has `buy milk`, Proton's has `buy oat milk`
@@ -412,4 +413,35 @@ test("`both versions` never agrees with the file count", () => {
   );
   // A mix the deck has no wording for drops the clause rather than inventing grammar.
   assert.equal(CONFLICTS.clearedSub({ total: 3, keptBoth: 1, tookProton: 0 }), "You settled 3 files.");
+});
+
+// ---- the meta line and the disclosure must never contradict each other ----
+
+test("the meta line asks the comparison, not just the local side", () => {
+  const content = { original: "notes/todo.txt", sidecar: "notes/todo.proton-cloud.txt", kind: "content" };
+  const type = { original: "photos/trip", sidecar: "photos/trip.proton-cloud", kind: "type" };
+  const pair = { original: { text: "a\n" }, sidecar: { text: "b\n" } };
+
+  // A type conflict is answerable with no pair at all — `scan_conflicts` settled it.
+  assert.equal(fileKindOf(type, null, null), CONFLICTS.kindFolder);
+
+  // Not read yet: no claim. `a plain text file` here would be a guess about a file nobody opened.
+  assert.equal(fileKindOf(content, null, null), null);
+
+  const both = compare(pair.original.text, pair.sidecar.text);
+  assert.equal(fileKindOf(content, pair, both), CONFLICTS.kindText);
+
+  // THE BUG: only the SIDECAR is unreadable. Checking `original.binary_or_large` alone said
+  // `a plain text file` while the disclosure was hidden, because `compare()` needs both texts.
+  const sidecarBinary = { original: { text: "a\n" }, sidecar: { text: null, binary_or_large: true } };
+  assert.equal(compare(sidecarBinary.original.text, sidecarBinary.sidecar.text), null);
+  assert.equal(fileKindOf(content, sidecarBinary, null), CONFLICTS.kindBinary);
+
+  // A VANISHED side reports `text: null` with the flag FALSE (§70b), so the flag could not see it.
+  const sidecarGone = {
+    original: { text: "a\n" },
+    sidecar: { exists: false, text: null, binary_or_large: false },
+  };
+  assert.equal(compare(sidecarGone.original.text, sidecarGone.sidecar.text), null);
+  assert.equal(fileKindOf(content, sidecarGone, null), CONFLICTS.kindBinary);
 });

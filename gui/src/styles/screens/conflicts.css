@@ -124,7 +124,11 @@
   color: var(--text);
 }
 
+/* `min-height` holds the line's own 19px while the pair is still being read, so dropping the clause
+   for that one render does not lift the two cards 19px and drop them back. The frames measure the
+   line at exactly 19 with its text in, so this changes nothing when there is something to say. */
 .cf-onseam-meta {
+  min-height: 19px;
   margin-top: 5px;
   padding: 2px 14px;
   background: var(--surface);
