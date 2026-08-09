@@ -159,11 +159,41 @@ const KIND = {
     color: "var(--decision-text)",
     weight: 500,
   },
-  /** `3a Conflict`'s two choice buttons — a second decision tint, DEVIATIONS §8b. */
+  /**
+   * `3a Conflict`'s two losing choices — a second decision tint, DEVIATIONS §8b.
+   *
+   * THE ELEMENT PAINTS NOTHING. Every string inside a choice button is a span carrying its own
+   * colour, so the button keeps the UA's unpainted black in both themes — `--btn-unpainted`, and
+   * see the token for why that is measured rather than invented. The colour a reader actually sees
+   * on the label is `labelColor`; the consequence sentence beneath it is `subColor`.
+   *
+   * F5 wrote this kind with `color: var(--text)` and weight 400 off the frame's *label*, which is
+   * neither — the label is #FF9C9C at 600, on a span. Nothing caught it because nothing rendered a
+   * decisionChoice until S2: the same undrawn-code class as the nine S1 bugs and the fourteen in
+   * C1–C5, and the third time the gate could not have been the thing that found it.
+   */
   decisionChoice: {
     bg: "var(--decision-choice-bg)",
     border: "var(--decision-choice-border)",
-    color: "var(--text)",
+    color: "var(--btn-unpainted)",
+    labelColor: "var(--decision-text)",
+    subColor: "var(--text-3)",
+    weight: 400,
+  },
+  /**
+   * `Keep both` — the safe choice, sitting between the two that lose something.
+   *
+   * NOT `primary` at a different size. Its border is the one token whose themes disagree about
+   * whether a border exists at all (`--btn-primary-choice-border-style`), and like its two
+   * neighbours it paints no text of its own.
+   */
+  primaryChoice: {
+    bg: "var(--btn-primary-bg)",
+    border: "var(--btn-primary-choice-border)",
+    borderStyle: "var(--btn-primary-choice-border-style)",
+    color: "var(--btn-unpainted)",
+    labelColor: "var(--btn-primary-text)",
+    subColor: "var(--btn-primary-quiet-text)",
     weight: 400,
   },
 
@@ -198,6 +228,23 @@ const SIZE = {
   compact: { radius: "var(--r-7)", padding: "5px 11px", fontSize: "11.5px" },
   pill: { radius: "var(--r-pill)", padding: "7px 15px", fontSize: "12.5px" },
   icon: { radius: "var(--r-8)", padding: "1px 6px", fontSize: "15px" },
+  /**
+   * The `3a Conflict` choice buttons, and the one rung that sets NO font-size.
+   *
+   * `null` is not "unmeasured" — it is the measurement. The frames record 13.3333px on all three
+   * elements, which is the UA's own button default and not a design decision: the label span sets
+   * 13.5px and the consequence sentence 12px, so nothing inherits the element's size. base.css
+   * resets a button's font-FAMILY but not its size, so saying nothing here reproduces it exactly,
+   * the same reasoning that keeps `display` and `line-height` out of `.btn`.
+   */
+  choice: { radius: "var(--r-13)", padding: "15px 17px", fontSize: null },
+};
+
+/** The glyph's colour is per-instance, not per-kind: `→` is warm, `←` is cool, on the same tint. */
+const GLYPH_TONE = {
+  up: "var(--up-label)",
+  down: "var(--down-label)",
+  onPrimary: "var(--btn-primary-text)",
 };
 
 /**
@@ -215,6 +262,8 @@ export function button({
   size = "standard",
   label,
   sublabel = null,
+  glyph = null,
+  glyphTone = null,
   onClick = null,
   disabled = false,
   padding = null,
@@ -229,26 +278,55 @@ export function button({
   const rung = SIZE[size];
   if (!rung)
     throw new Error(`controls: unknown button size "${size}". Known: ${Object.keys(SIZE).join(", ")}`);
+  if (glyphTone && !GLYPH_TONE[glyphTone])
+    throw new Error(
+      `controls: unknown glyph tone "${glyphTone}". Known: ${Object.keys(GLYPH_TONE).join(", ")}`,
+    );
+
+  // TWO SHAPES, and the glyph is what picks between them.
+  //
+  // Every button in the app is a label and maybe a quieter second line. A CHOICE button is a
+  // glyphed row over a consequence sentence, and the frames build it out of two blocks whose spans
+  // each carry their own colour — which is why the element itself ends up unpainted. Reproducing
+  // that structure is not cosmetic: `data-fid` keys are element paths, so a `span` where the design
+  // draws a `div` is a key that does not exist and a gate that cannot check the node at all.
+  const body = glyph
+    ? [
+        el(
+          "div",
+          { class: "btn-choice-row" },
+          el("span", { class: "btn-glyph" }, glyph),
+          el("span", { class: "btn-choice-name" }, label),
+        ),
+        sublabel ? el("div", { class: "btn-sub btn-choice-sub" }, sublabel) : null,
+      ]
+    : [
+        label,
+        // `Keep both` carries its consequence inside the button, in a quieter tier. It is the one
+        // place the design puts two lines in a control, and it is deliberate: the sentence is the
+        // reason the loud button is the safe one.
+        sublabel ? el("span", { class: "btn-sub" }, sublabel) : null,
+      ];
 
   const node = el(
     "button",
     {
-      class: ["btn", `btn-${kind}`, cls].filter(Boolean).join(" "),
+      class: ["btn", `btn-${kind}`, glyph ? "btn-choice" : null, cls].filter(Boolean).join(" "),
       type: "button",
       disabled: disabled || role.disabled || null,
       onClick: disabled || role.disabled ? null : onClick,
       ...rest,
     },
-    label,
-    // `Keep both` carries its consequence inside the button, in a quieter tier. It is the one place
-    // the design puts two lines in a control, and it is deliberate: the sentence is the reason the
-    // loud button is the safe one.
-    sublabel ? el("span", { class: "btn-sub" }, sublabel) : null,
+    ...body,
   );
 
   node.style.borderRadius = radius ?? rung.radius;
   node.style.padding = padding ?? rung.padding;
-  node.style.fontSize = fontSize ?? rung.fontSize;
+  // A rung may decline to set a size (`choice`), in which case the element keeps the UA default —
+  // see SIZE.choice. Assigning null here would serialise as `""` and remove the declaration, which
+  // happens to work; the explicit guard says it is intended rather than tolerated.
+  const resolvedSize = fontSize ?? rung.fontSize;
+  if (resolvedSize != null) node.style.fontSize = resolvedSize;
   node.style.fontWeight = String(role.weight);
 
   // Colour goes through CUSTOM PROPERTIES rather than straight onto `background`/`color`, so
@@ -267,6 +345,12 @@ export function button({
   // a kind already sitting there presses to `--border` — the next thing up, and still not a
   // brightness change to the label.
   node.style.setProperty("--btn-bg-active", role.bgActive ?? role.bgHover ?? role.bg ?? "transparent");
+  // The three colours a choice button needs beyond `--btn-fg`, which on those kinds paints nothing.
+  // Set only when the kind declares them, so every other button's inline style is untouched.
+  if (role.labelColor) node.style.setProperty("--btn-label-fg", role.labelColor);
+  if (role.subColor) node.style.setProperty("--btn-sub-fg", role.subColor);
+  if (role.borderStyle) node.style.setProperty("--btn-border-style", role.borderStyle);
+  if (glyphTone) node.style.setProperty("--btn-glyph-fg", GLYPH_TONE[glyphTone]);
   return node;
 }
 

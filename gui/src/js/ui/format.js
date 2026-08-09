@@ -86,6 +86,24 @@ export function bytes(n) {
 }
 
 /**
+ * A file's own size, spelled out under 1 KB: `41 bytes`, then `96 KB`, `8.4 GB`.
+ *
+ * The conflict cards' metadata row is the only place the design writes the word — `41 bytes` and
+ * `44 bytes` on the two version cards, and nowhere else in all 51 frames. `bytes()` says `41 B`
+ * there, which is right for a transfer row and wrong beside `4 lines · edited 14:38`, where the
+ * row is reading out a small text file's facts in words.
+ *
+ * It hands over to `bytes()` at 1 KB rather than spelling all the way up, because voice rule 2 is
+ * "consequences in things you'd miss" and `1,200,000 bytes` is not one of them.
+ */
+export function fileSize(n) {
+  if (n == null) return EM_DASH;
+  const size = Number(n);
+  if (!Number.isFinite(size)) return EM_DASH;
+  return size < 1000 ? `${count(Math.round(size))} bytes` : bytes(size);
+}
+
+/**
  * Relative time in the deck's own vocabulary: `2 minutes ago`, `14 seconds ago`, `22m ago`.
  *
  * Two registers, because the design uses both. `long` is prose ("last synced 2 minutes ago") and

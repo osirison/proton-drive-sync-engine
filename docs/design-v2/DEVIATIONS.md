@@ -1881,8 +1881,15 @@ Two readings had to be settled from the frames rather than the prose:
 **and** a missing one — and for the missing case `binary_or_large` is `false`, so a guard on that
 flag alone reads a vanished file as an empty text file. `compare()` requires both texts to be
 strings, which is the only guard that holds. A **directory** is indistinguishable from a JPEG
-(`metadata()` succeeds, `read()` returns `EISDIR`, `size` is the inode size), so the type conflicts
-`04-conflicts.md` requires to hide the disclosure cannot be detected today.
+(`metadata()` succeeds, `read()` returns `EISDIR`, `size` is the inode size).
+
+> **Amended by S2.** This used to close "so the type conflicts `04-conflicts.md` requires to hide
+> the disclosure cannot be detected today", which was true of the pair READER and false of the
+> engine. `read_conflict_pair` genuinely cannot tell a folder from a JPEG — but it is the wrong
+> place to ask. `scan_conflicts` is already standing at the original with a path in hand, and one
+> `symlink_metadata` settles it before any content is read. `Conflict.kind` now carries the answer
+> (`content` / `type`), which is what makes the disclosure hideable and the queue's `a folder here,
+> a file there` renderable rather than hard-coded. The rest of this section stands.
 
 Line endings are normalised before splitting. A sidecar written on another platform would otherwise
 differ on **every** line, and `400 lines differ` is the worst possible wrong answer on a screen where
@@ -2041,3 +2048,79 @@ Phase 2. Each Phase-1 fallback gets a row here as its screen lands — G1–G5 c
 | S7     | `9a Review`  | `Needs 38.4 GB free. You have 214 GB.` | the free-space half only (§71)     | G6 #206   |
 | S2     | `3a Conflict`| `You added a line, 5 minutes ago`     | the relative time (§70)            | G12 #217  |
 | S7     | `9a CLI missing` | `sudo apt install proton-drive`   | the tarball path for everyone (§72)| #218      |
+
+### 74. S2 · the conflicts screen
+
+**A choice button paints nothing itself.** All three buttons on `3a Conflict` put every string in a
+span with its own colour, so the element keeps the UA's own button colour — measured `rgb(0, 0, 0)`
+on `3a Conflict` and again on `12a Conflict light`, theme-invariant because it is never seen. It is
+`--btn-unpainted` rather than the literal it looks like: `check-tokens.mjs` allows no raw colour
+outside `tokens.css`, and `revert` would not reach it either, because the app declares
+`color-scheme: dark` and the prototype declares none, so the UA's `buttontext` is a different black.
+
+That also made F5's `decisionChoice` wrong in a way no gate could have caught: it carried
+`color: var(--text)` at weight 400, read off the frame's _label_, which is `#FF9C9C` at 600 on a
+span. Nothing rendered the kind until S2 — the same undrawn-code class as §63's nine and C1–C5's
+fourteen, and the third time review rather than a gate was what found it.
+
+**`Keep both`'s two themes disagree about whether a border exists.** Dark draws 1px
+`--border-strong`; light draws none. Not a rounding artefact — the inner label row measures 281.33px
+dark against 283.33px light, exactly the 2px a border takes out of a border-box. Hence
+`--btn-primary-choice-border-style`, the second token after `--btn-secondary-outline-bg` whose two
+themes disagree about whether a surface is there at all.
+
+**Both diff tints are CHOSEN in light.** `12a Conflict light` mirrors the CARD view, so no frame
+draws the diff panel in light. Derived by §54's method: the nearest same-family drawn pair is the
+warn band (`--warn` `#FF9F1C` darkening to `#B23F14`, `.04 → .03`, ×0.75) and the background column
+as a whole centres on ×0.7, so the drawn `.14` maps to `.105` and `.098` — which agree at `.10`.
+S10 confirms. The panel's three greys are role twins of `--seam` / `--text-disabled` /
+`--border-strong` and take their light values from them.
+
+**The crossfade is a fade-in.** `04-conflicts.md` asks for a 220ms crossfade on advancing between
+conflicts. A true one needs both bodies alive and stacked, which needs a positioned wrapper — and
+`renderConflicts` returns window-root SIBLINGS precisely so the seam's `left: 50%` resolves against
+the 1040px window. So the new body fades in over 220ms and the old one is simply gone. Applied only
+on an advance, never on the first mount and never on a poll, so the gate reads
+`animation-name: none` the way the frames do.
+
+**A quoted line loses its list marker.** `3a Conflict` quotes `buy milk` out of a line that reads
+`- buy milk`. Stripped for `-`, `*` and `+`, and deliberately not for `1.`: a numbered item's number
+is content the reader may be pointing at, and dropping it could quote two different lines
+identically.
+
+**`Open both in an editor` is drawn and inert.** No command opens a path, and `commands.rs` is
+explicit that a screen task never adds one — a screen that needs something the surface lacks files a
+C-item, which adds the command _before_ the screen is built. S2 found the gap while wiring the
+screen, too late for that. #220.
+
+**`CONFLICTS.kindBinary` is written, not measured.** No frame opens a conflict whose pair has no
+readable text, and the deck carries no wording for one. `kindFolder` sits beside it for the same
+reason and survived a near-miss worth recording: `3a Conflict diff`'s queue list draws
+`photos/trip · a folder here, a file there`, which looks like the drawn instance the exemption
+denies. It is not — that string is `typeConflict`, the LIST wording, while `kindFolder` is the meta
+line under a filename on a card, and no frame opens a type conflict card. Rewriting one to match the
+other made the copy gate green by pointing two deck entries at one drawn node, which is the exact
+failure a verbatim gate exists to prevent.
+
+**The cleared state is a 522px window and the shell has one fixed size.** 15 assertions, #221 — the
+issue carries the table. The body renders as a centred 520px column, which is the closest the shell
+can get; the footer is a child of the window rather than of the body, so it stays 1040 wide.
+
+**A fixture may now name its own route.** Until S2 nothing needed to: every mapped frame was either
+the main screen (the default) or a compact panel (intercepted earlier). So `?frame=3a Conflict` drew
+the MAIN screen against the conflicts fixture — worse than a blank screen, because `fid()` keys by
+slot NAME, `main.js` stamps `fid(view.mark, "hexagon")`, and the conflicts table also has a
+`hexagon`. The gate compared the 168px main hero against a 44px on-seam mark and called it a size
+failure on a screen nobody had rendered.
+
+**The app mark's wrapper repainted the mark.** F4 wraps the bare `<img>` in a `<button>` so it can
+be a home affordance, and three UA button defaults then landed on the image: `font-size: 13.3333px`,
+`text-align: center`, and a `color` of `buttontext` — which under `color-scheme: dark` is WHITE
+where the frame inherits `#F2F4F7`. None is visible on an image and all three are compared. Present
+on every overlay screen since F4; S2 is simply the first mapped one.
+
+| screen | frame                  | drawn                              | Phase 1                           | gap      |
+| ------ | ---------------------- | ---------------------------------- | --------------------------------- | -------- |
+| S2     | `3a Conflict`          | `· last agreed 3 hours ago`        | the file kind alone               | G12 #217 |
+| S2     | `3a Conflict diff`     | `Open both in an editor` opens it  | a button that does nothing        | #220     |
+| S2     | `3a Conflicts cleared` | a 522px window                     | a 520px column in a 1040 window   | #221     |

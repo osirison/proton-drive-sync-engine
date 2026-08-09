@@ -77,7 +77,13 @@ export function lines(text) {
  * hits it.
  */
 export function quote(line) {
-  const trimmed = line.trim();
+  // THE LIST MARKER IS NOT PART OF THE QUOTE. `3a Conflict` quotes `buy milk` out of a line that
+  // reads `- buy milk`, and the sentence around it is why: "Yours has - buy milk where Proton's has
+  // something else" reads as a typo rather than as a quotation. Stripped for the three markers a
+  // plain-text list actually uses, and deliberately not for `1.` — a numbered item's number is
+  // content the reader may be pointing at, and dropping it could quote two different lines
+  // identically.
+  const trimmed = line.trim().replace(/^[-*+]\s+/, "");
   const points = Array.from(trimmed);
   if (points.length <= MAX_QUOTE_CHARS) return trimmed;
   return `${points.slice(0, MAX_QUOTE_CHARS).join("").trimEnd()}⋯`;
@@ -119,41 +125,7 @@ export function compare(mineText, theirsText) {
   if ((midMine.length + 1) * (midTheirs.length + 1) > MAX_DIFF_CELLS) return null;
 
   const ops = lcsOps(midMine, midTheirs);
-
-  // Pair removals with insertions BLOCK BY BLOCK, not one op at a time. Without the pairing every
-  // edit reads as "removed a line and added a line", which is true and useless — the sentence the
-  // design wants is about a line that *changed*.
-  //
-  // The block is the load-bearing part. `lcsOps` emits a contiguous edited region as k consecutive
-  // removals followed by k consecutive insertions, so a look-one-ahead pairing matches only the
-  // LAST removal with the FIRST insertion and orphans the rest: two lines edited in place came back
-  // as one changed line plus one line each side supposedly gained. That not only invents content —
-  // it slips under the `changed.length > 1` refusal, so the card confidently described a file it
-  // had misread. Consuming a maximal run and pairing `min(removals, insertions)` keeps the count
-  // honest, which is what the refusal is defending.
-  const changed = [];
-  const onlyMineOps = [];
-  const onlyTheirsOps = [];
-  for (let i = 0; i < ops.length;) {
-    if (ops[i].kind === "keep") {
-      i += 1;
-      continue;
-    }
-    const removals = [];
-    const insertions = [];
-    let end = i;
-    while (end < ops.length && ops[end].kind !== "keep") {
-      (ops[end].kind === "remove" ? removals : insertions).push({ line: ops[end].line, at: end });
-      end += 1;
-    }
-    const pairs = Math.min(removals.length, insertions.length);
-    for (let k = 0; k < pairs; k += 1) {
-      changed.push({ mine: removals[k].line, theirs: insertions[k].line });
-    }
-    onlyMineOps.push(...removals.slice(pairs));
-    onlyTheirsOps.push(...insertions.slice(pairs));
-    i = end;
-  }
+  const { changed, onlyMineOps, onlyTheirsOps } = pairBlocks(ops);
 
   // "At the end" means **nothing else comes after it** — the trimmed tail is empty, and every op
   // following this one is another extra on the same side. Keying on the last `keep` instead called
@@ -199,6 +171,54 @@ export function compare(mineText, theirsText) {
      */
     invisibleDifference: differing === 0 && mineText !== theirsText,
   };
+}
+
+/**
+ * Pair removals with insertions BLOCK BY BLOCK, not one op at a time.
+ *
+ * Without the pairing every edit reads as "removed a line and added a line", which is true and
+ * useless — the sentence the design wants is about a line that *changed*.
+ *
+ * The block is the load-bearing part. `lcsOps` emits a contiguous edited region as k consecutive
+ * removals followed by k consecutive insertions, so a look-one-ahead pairing matches only the LAST
+ * removal with the FIRST insertion and orphans the rest: two lines edited in place came back as one
+ * changed line plus one line each side supposedly gained. That not only invents content — it slips
+ * under the `changed.length > 1` refusal, so the card confidently described a file it had misread.
+ * Consuming a maximal run and pairing `min(removals, insertions)` keeps the count honest, which is
+ * what the refusal is defending.
+ *
+ * ONE FUNCTION, because the prose summary and the diff panel must never disagree about what
+ * changed: the cards saying "one line differs" over a panel highlighting four rows is a worse bug
+ * than either alone, and a second implementation of this loop is a second chance at the block bug
+ * above. `changedAt` carries the op index so a caller can rebuild positions.
+ */
+function pairBlocks(ops) {
+  const changed = [];
+  const changedAt = [];
+  const onlyMineOps = [];
+  const onlyTheirsOps = [];
+  for (let i = 0; i < ops.length;) {
+    if (ops[i].kind === "keep") {
+      i += 1;
+      continue;
+    }
+    const removals = [];
+    const insertions = [];
+    let end = i;
+    while (end < ops.length && ops[end].kind !== "keep") {
+      (ops[end].kind === "remove" ? removals : insertions).push({ line: ops[end].line, at: end });
+      end += 1;
+    }
+    const pairs = Math.min(removals.length, insertions.length);
+    for (let k = 0; k < pairs; k += 1) {
+      changed.push({ mine: removals[k].line, theirs: insertions[k].line });
+      changedAt.push({ mine: removals[k].at, theirs: insertions[k].at });
+    }
+    onlyMineOps.push(...removals.slice(pairs));
+    onlyTheirsOps.push(...insertions.slice(pairs));
+    i = end;
+  }
+  return { changed, changedAt, onlyMineOps, onlyTheirsOps };
 }
 
 /** Longest-common-subsequence ops over two small line arrays: keep / remove (mine) / insert (theirs). */
@@ -312,4 +332,99 @@ export function summariseSide(comparison, side) {
     /** True when the quoted line is the only difference in the file. */
     otherwiseSame: changed.length === 1 && ours.length === 0,
   };
+}
+
+/**
+ * The diff panel's rows, row-aligned across the seam (S2).
+ *
+ * `04-conflicts.md` turns the seam into the diff's gutter — `1fr 1px 1fr` — and the two sides must
+ * stay **level**: a line one side does not have draws `·` in the number column and
+ * `not in your version` as its text, rather than letting the columns slide past each other. So the
+ * unit is a ROW spanning both sides, not two independent lists, and `compare()`'s
+ * `changed`/`onlyMine`/`onlyTheirs` cannot produce it — they lose the interleaving that says where
+ * each difference sits.
+ *
+ * Built from the same `pairBlocks` the prose summary uses, so the panel and the cards can never
+ * disagree about what changed.
+ *
+ * Returns `null` on exactly the inputs `compare()` refuses (a missing or oversized side), because
+ * the disclosure has nothing to open onto in those cases either.
+ *
+ * Each row is `{ kind, mine, theirs }` where a side is `{ n, text }` or `null`:
+ *   · `unchanged` — both sides, same text
+ *   · `changed`   — both sides, different text
+ *   · `absent`    — one side only; the other is `null` and the panel draws the placeholder
+ *
+ * `n` is the **line number within that side's own file**, which is why it is tracked per side and
+ * skips on an absent row: the left column of a five-row panel over a four-line file reads
+ * 1, 2, 3, 4 with a gap, not 1, 2, 3, 4, 5.
+ */
+export function alignedRows(mineText, theirsText) {
+  if (typeof mineText !== "string" || typeof theirsText !== "string") return null;
+  const mine = lines(mineText);
+  const theirs = lines(theirsText);
+
+  let head = 0;
+  while (head < mine.length && head < theirs.length && mine[head] === theirs[head]) head += 1;
+  let tail = 0;
+  while (
+    tail < mine.length - head &&
+    tail < theirs.length - head &&
+    mine[mine.length - 1 - tail] === theirs[theirs.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+
+  const midMine = mine.slice(head, mine.length - tail);
+  const midTheirs = theirs.slice(head, theirs.length - tail);
+  if ((midMine.length + 1) * (midTheirs.length + 1) > MAX_DIFF_CELLS) return null;
+
+  const ops = lcsOps(midMine, midTheirs);
+  const { changedAt } = pairBlocks(ops);
+  // The op index of each paired removal, mapped to its partner's index — so the walk below can
+  // collapse a pair into one row without re-deriving which removal goes with which insertion.
+  const partnerOf = new Map(changedAt.map(({ mine: m, theirs: t }) => [m, t]));
+  const pairedInsertions = new Set(changedAt.map(({ theirs: t }) => t));
+  const lineAt = new Map(ops.map((op, i) => [i, op.line]));
+
+  const rows = [];
+  let mineNo = 0;
+  let theirsNo = 0;
+  const unchanged = (text) => {
+    mineNo += 1;
+    theirsNo += 1;
+    rows.push({
+      kind: "unchanged",
+      mine: { n: mineNo, text },
+      theirs: { n: theirsNo, text },
+    });
+  };
+
+  for (let i = 0; i < head; i += 1) unchanged(mine[i]);
+
+  for (let i = 0; i < ops.length; i += 1) {
+    const op = ops[i];
+    if (op.kind === "keep") {
+      unchanged(op.line);
+    } else if (op.kind === "remove" && partnerOf.has(i)) {
+      mineNo += 1;
+      theirsNo += 1;
+      rows.push({
+        kind: "changed",
+        mine: { n: mineNo, text: op.line },
+        theirs: { n: theirsNo, text: lineAt.get(partnerOf.get(i)) },
+      });
+    } else if (op.kind === "remove") {
+      mineNo += 1;
+      rows.push({ kind: "absent", mine: { n: mineNo, text: op.line }, theirs: null });
+    } else if (op.kind === "insert" && !pairedInsertions.has(i)) {
+      theirsNo += 1;
+      rows.push({ kind: "absent", mine: null, theirs: { n: theirsNo, text: op.line } });
+    }
+    // A paired insertion is skipped: its row was emitted with its removal partner above.
+  }
+
+  for (let i = mine.length - tail; i < mine.length; i += 1) unchanged(mine[i]);
+
+  return rows;
 }

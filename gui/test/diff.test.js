@@ -9,7 +9,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compare, lines, quote, summariseSide, MAX_QUOTE_CHARS } from "../src/js/ui/diff.js";
+import { alignedRows, compare, lines, quote, summariseSide, MAX_QUOTE_CHARS } from "../src/js/ui/diff.js";
+import { fileSize, EM_DASH } from "../src/js/ui/format.js";
+import { fileKindOf } from "../src/js/screens/conflicts.js";
 import { CONFLICTS } from "../src/js/ui/copy.js";
 
 // The two versions `3a Conflict` is drawn from: yours has `buy milk`, Proton's has `buy oat milk`
@@ -277,4 +279,169 @@ test("the template answers null for the case that falls back, rather than throwi
 test("an unknown side is a programming error, not a silent default", () => {
   const comparison = compare(MINE, THEIRS);
   assert.throws(() => summariseSide(comparison, "left"), /must be "mine" or "theirs"/);
+});
+
+// ---- the diff panel's rows (S2) ----
+
+test("the drawn panel is five rows over a four-line and a five-line file", () => {
+  // `04-conflicts.md` makes the seam the diff's gutter, so the two sides must stay LEVEL: the row
+  // is the unit, not the line. The frame draws four rows on the left against five on the right,
+  // row 2 highlighted as a changed pair and row 5 absent on the left.
+  const rows = alignedRows(MINE, THEIRS);
+  assert.deepEqual(
+    rows.map((r) => r.kind),
+    ["unchanged", "changed", "unchanged", "unchanged", "absent"],
+  );
+  assert.deepEqual(rows[1], {
+    kind: "changed",
+    mine: { n: 2, text: "buy milk" },
+    theirs: { n: 2, text: "buy oat milk" },
+  });
+  assert.equal(rows[4].mine, null, "nothing on the left — the panel draws the placeholder");
+  assert.deepEqual(rows[4].theirs, { n: 5, text: "coffee" });
+});
+
+test("line numbers count each side's OWN file and skip on an absent row", () => {
+  // The left column of a five-row panel over a four-line file reads 1,2,3,4 with a gap — not 1..5.
+  const rows = alignedRows(MINE, THEIRS);
+  assert.deepEqual(
+    rows.map((r) => r.mine?.n ?? null),
+    [1, 2, 3, 4, null],
+  );
+  assert.deepEqual(
+    rows.map((r) => r.theirs?.n ?? null),
+    [1, 2, 3, 4, 5],
+  );
+});
+
+test("the rows agree with the counts drawn beneath them", () => {
+  const rows = alignedRows(MINE, THEIRS);
+  const comparison = compare(MINE, THEIRS);
+  assert.equal(rows.filter((r) => r.kind === "unchanged").length, comparison.identical);
+  assert.equal(rows.filter((r) => r.kind !== "unchanged").length, comparison.differing);
+  assert.equal(
+    CONFLICTS.diffCounts(comparison.differing, comparison.identical),
+    "2 lines differ · 3 lines identical",
+  );
+});
+
+test("the panel and the cards cannot disagree about what changed", () => {
+  // Both go through the same block pairing. Two lines edited in place is two CHANGED rows — not one
+  // change plus two absents, which is what a second implementation of that loop produced.
+  const rows = alignedRows("eggs\ncoffee\ntea\n", "eggs\nmilk\nbread\n");
+  assert.deepEqual(
+    rows.map((r) => r.kind),
+    ["unchanged", "changed", "changed"],
+  );
+  assert.equal(compare("eggs\ncoffee\ntea\n", "eggs\nmilk\nbread\n").changed.length, 2);
+});
+
+test("a line each side lacks produces two absent rows, not one merged row", () => {
+  const rows = alignedRows("alpha\nbeta\ngamma\n", "beta\ngamma\ndelta\n");
+  assert.deepEqual(
+    rows.map((r) => [r.kind, r.mine?.text ?? null, r.theirs?.text ?? null]),
+    [
+      ["absent", "alpha", null],
+      ["unchanged", "beta", "beta"],
+      ["unchanged", "gamma", "gamma"],
+      ["absent", null, "delta"],
+    ],
+  );
+});
+
+test("the panel refuses exactly what the cards refuse", () => {
+  // The disclosure has nothing to open onto when a side has no text at all.
+  assert.equal(alignedRows(MINE, null), null);
+  assert.equal(alignedRows(null, THEIRS), null);
+  const wide = Array.from({ length: 800 }, (_, i) => `mine ${i}`).join("\n");
+  const other = Array.from({ length: 800 }, (_, i) => `theirs ${i}`).join("\n");
+  assert.equal(alignedRows(wide, other), null);
+  assert.equal(compare(wide, other), null);
+});
+
+test("identical files are all unchanged rows", () => {
+  const rows = alignedRows(MINE, MINE);
+  assert.equal(rows.length, 4);
+  assert.ok(rows.every((r) => r.kind === "unchanged"));
+});
+
+// ---- what the review found: two ways the card could state a fact it does not have ----
+
+test("an empty-but-readable file has no lines, and the card counts them the panel's way", () => {
+  // The card's own `split` said 1 — `"".split("\n")` is `[""]` — while the panel beneath it drew
+  // none. `versionCard` now asks `lines()` instead of reimplementing it, so there is one answer.
+  assert.equal(lines("").length, 0);
+  assert.equal(lines(null).length, 0);
+  // And the two drawn files still count the way the metadata row draws them.
+  assert.equal(lines("# Todo\n- buy milk\n- call Alice\n- ship v1\n").length, 4);
+  assert.equal(lines("# Todo\n- buy oat milk\n- call Alice\n- ship v1\n- relax\n").length, 5);
+});
+
+test("an unread size is an em-dash, not `0 bytes`", () => {
+  // The pair arrives a render after the screen does. `fileSize(source?.size ?? 0)` drew `0 bytes`
+  // in the gap — indistinguishable from a real empty file, on a card whose job is telling two
+  // versions apart by their facts.
+  assert.equal(fileSize(undefined), EM_DASH);
+  assert.equal(fileSize(null), EM_DASH);
+  assert.equal(fileSize(0), "0 bytes");
+  assert.equal(fileSize(41), "41 bytes");
+});
+
+test("a quoted line loses its list marker but keeps a numbered item's number", () => {
+  // `3a Conflict` quotes `buy milk` out of a line reading `- buy milk`.
+  assert.equal(quote("- buy milk"), "buy milk");
+  assert.equal(quote("* buy milk"), "buy milk");
+  assert.equal(quote("+ buy milk"), "buy milk");
+  // Not `1.` — the number is content the reader may be pointing at, and dropping it would quote
+  // `1. call Alice` and `2. call Alice` identically.
+  assert.equal(quote("1. call Alice"), "1. call Alice");
+  // A bare hyphen with no space is a word, not a marker.
+  assert.equal(quote("-buy milk"), "-buy milk");
+});
+
+test("`both versions` never agrees with the file count", () => {
+  // `both` is inherently two — the two versions of ONE file — while the number in front of it
+  // counts files. Agreeing the noun with that number gave `one kept both version`.
+  assert.equal(
+    CONFLICTS.clearedSub({ total: 1, keptBoth: 1, tookProton: 0 }),
+    "You settled 1 file. One kept both versions.",
+  );
+  // The drawn sentence, unchanged.
+  assert.equal(
+    CONFLICTS.clearedSub({ total: 3, keptBoth: 2, tookProton: 1 }),
+    "You settled 3 files. Two kept both versions, one took Proton's copy.",
+  );
+  // A mix the deck has no wording for drops the clause rather than inventing grammar.
+  assert.equal(CONFLICTS.clearedSub({ total: 3, keptBoth: 1, tookProton: 0 }), "You settled 3 files.");
+});
+
+// ---- the meta line and the disclosure must never contradict each other ----
+
+test("the meta line asks the comparison, not just the local side", () => {
+  const content = { original: "notes/todo.txt", sidecar: "notes/todo.proton-cloud.txt", kind: "content" };
+  const type = { original: "photos/trip", sidecar: "photos/trip.proton-cloud", kind: "type" };
+  const pair = { original: { text: "a\n" }, sidecar: { text: "b\n" } };
+
+  // A type conflict is answerable with no pair at all — `scan_conflicts` settled it.
+  assert.equal(fileKindOf(type, null, null), CONFLICTS.kindFolder);
+
+  // Not read yet: no claim. `a plain text file` here would be a guess about a file nobody opened.
+  assert.equal(fileKindOf(content, null, null), null);
+
+  const both = compare(pair.original.text, pair.sidecar.text);
+  assert.equal(fileKindOf(content, pair, both), CONFLICTS.kindText);
+
+  // THE BUG: only the SIDECAR is unreadable. Checking `original.binary_or_large` alone said
+  // `a plain text file` while the disclosure was hidden, because `compare()` needs both texts.
+  const sidecarBinary = { original: { text: "a\n" }, sidecar: { text: null, binary_or_large: true } };
+  assert.equal(compare(sidecarBinary.original.text, sidecarBinary.sidecar.text), null);
+  assert.equal(fileKindOf(content, sidecarBinary, null), CONFLICTS.kindBinary);
+
+  // A VANISHED side reports `text: null` with the flag FALSE (§70b), so the flag could not see it.
+  const sidecarGone = {
+    original: { text: "a\n" },
+    sidecar: { exists: false, text: null, binary_or_large: false },
+  };
+  assert.equal(compare(sidecarGone.original.text, sidecarGone.sidecar.text), null);
+  assert.equal(fileKindOf(content, sidecarGone, null), CONFLICTS.kindBinary);
 });

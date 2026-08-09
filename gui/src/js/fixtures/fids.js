@@ -298,3 +298,147 @@ export function compactFids({ state, tail, tailAt, buttons = 0, rows = [] }) {
   }
   return map;
 }
+
+// ------------------------------------------------------------------------- S2 · conflicts ----
+
+/**
+ * The shell slots on the three `3a` frames.
+ *
+ * SIMPLER THAN `2a`'s, in the one way that matters: there is no `footerLine`. The 2a frames draw the
+ * footer's hairline as a SIBLING of the door bar (`div[2]/div[1]`); here the same rule is a
+ * `border-top` on the bar itself, so declaring the slot would name a node that does not exist —
+ * which `check-fixtures.mjs` fails the build over, and rightly.
+ *
+ * The cleared frame's header carries no chip and its name is the QUIET tier (#99A2AE against
+ * #F2F4F7): nothing is waiting, so the header says so before the body does.
+ */
+const conflictShell = (tailAt, chip) => ({
+  header: "header",
+  mark: "header/img",
+  name: "header/span[0]",
+  spacer: "header/span[1]",
+  ...(chip ? { chip: "header/span[2]", chipDot: "header/span[2]/span" } : {}),
+  menu: "header/button",
+  footerNav: `div[${tailAt}]`,
+  footerBar: `div[${tailAt}]/div`,
+  door: (i) => `div[${tailAt}]/div/span[${i}]`,
+});
+
+/**
+ * The card view (`3a Conflict`) — one conflict filling the window.
+ *
+ * `card(i)` and friends take the SIDE as an index (0 = yours, 1 = Proton's) because the two columns
+ * are the same shape drawn twice, and a table with `mineCard`/`theirsCard` pairs would let the two
+ * drift. The screen passes 0 and 1 in the order it renders them, which is the order the grid puts
+ * them in, which is the order the keys are numbered.
+ */
+const CONFLICT_CARD_FIDS = {
+  titleRow: "div[0]",
+  titleText: "div[0]/div[0]",
+  title: "div[0]/div[0]/div[0]",
+  sub: "div[0]/div[0]/div[1]",
+  pager: "div[0]/div[1]",
+  position: "div[0]/div[1]/span",
+  pagerPrev: "div[0]/div[1]/button[0]",
+  pagerNext: "div[0]/div[1]/button[1]",
+
+  body: "div[1]",
+  seam: "div[1]/div[0]",
+  onSeam: "div[1]/div[1]",
+  hexagon: "div[1]/div[1]/svg",
+  path: "div[1]/div[1]/div[0]",
+  onSeamMeta: "div[1]/div[1]/div[1]",
+
+  cards: "div[1]/div[2]",
+  cardCol: (i) => `div[1]/div[2]/div[${i}]`,
+  cardEyebrow: (i) => `div[1]/div[2]/div[${i}]/div[0]`,
+  card: (i) => `div[1]/div[2]/div[${i}]/div[1]`,
+  cardHappened: (i) => `div[1]/div[2]/div[${i}]/div[1]/div[0]`,
+  cardProse: (i) => `div[1]/div[2]/div[${i}]/div[1]/div[1]`,
+  cardQuote: (i) => `div[1]/div[2]/div[${i}]/div[1]/div[1]/span`,
+  cardMeta: (i) => `div[1]/div[2]/div[${i}]/div[1]/div[2]`,
+  cardMetaItem: (i, j) => `div[1]/div[2]/div[${i}]/div[1]/div[2]/span[${j}]`,
+
+  disclose: "div[1]/div[3]",
+  discloseBtn: "div[1]/div[3]/button",
+
+  choicesBlock: "div[2]",
+  choices: "div[2]/div[0]",
+  choice: (i) => `div[2]/div[0]/button[${i}]`,
+  choiceRow: (i) => `div[2]/div[0]/button[${i}]/div[0]`,
+  choiceGlyph: (i) => `div[2]/div[0]/button[${i}]/div[0]/span[0]`,
+  choiceName: (i) => `div[2]/div[0]/button[${i}]/div[0]/span[1]`,
+  choiceSub: (i) => `div[2]/div[0]/button[${i}]/div[1]`,
+  choiceSubMono: (i) => `div[2]/div[0]/button[${i}]/div[1]/span`,
+
+  note: "div[2]/div[1]",
+  noteText: "div[2]/div[1]/span[0]",
+  noteSpacer: "div[2]/div[1]/span[1]",
+  later: "div[2]/div[1]/button",
+};
+
+/**
+ * The diff view (`3a Conflict diff`).
+ *
+ * `diffCol` SKIPS A CHILD — 0 and 2, never 1 — because the panel's middle grid cell is the 1px
+ * divider between the halves. Written as `i * 2` rather than as two named slots so the row keys
+ * below can be built from the same index without a lookup.
+ */
+const CONFLICT_DIFF_FIDS = {
+  diffHead: "div[0]",
+  hexagon: "div[0]/svg",
+  diffHeadText: "div[0]/div[0]",
+  pathPlain: "div[0]/div[0]/div[0]",
+  diffSummary: "div[0]/div[0]/div[1]",
+  pager: "div[0]/div[1]",
+  position: "div[0]/div[1]/span",
+  pagerPrev: "div[0]/div[1]/button[0]",
+  pagerNext: "div[0]/div[1]/button[1]",
+
+  body: "div[1]",
+  diffLabels: "div[1]/div[0]",
+  diffLabel: (i) => `div[1]/div[0]/div[${i}]`,
+  diffPanel: "div[1]/div[1]",
+  diffCol: (i) => `div[1]/div[1]/div[${i * 2}]`,
+  diffSplit: "div[1]/div[1]/div[1]",
+  diffLine: (i, row) => `div[1]/div[1]/div[${i * 2}]/div[${row}]`,
+  diffN: (i, row) => `div[1]/div[1]/div[${i * 2}]/div[${row}]/span[0]`,
+  diffText: (i, row) => `div[1]/div[1]/div[${i * 2}]/div[${row}]/span[1]`,
+
+  diffCounts: "div[1]/div[2]",
+  diffCountsText: "div[1]/div[2]/span[0]",
+  diffCountsSpacer: "div[1]/div[2]/span[1]",
+  openBoth: "div[1]/div[2]/button[0]",
+  hideDiff: "div[1]/div[2]/button[1]",
+
+  queue: "div[1]/div[3]",
+  queueEyebrow: "div[1]/div[3]/div[0]",
+  queueRows: "div[1]/div[3]/div[1]",
+  queueRow: (i) => `div[1]/div[3]/div[1]/div[${i}]`,
+  queueDot: (i) => `div[1]/div[3]/div[1]/div[${i}]/span[0]`,
+  queuePath: (i) => `div[1]/div[3]/div[1]/div[${i}]/span[1]`,
+  queueReason: (i) => `div[1]/div[3]/div[1]/div[${i}]/span[2]`,
+  queuePos: (i) => `div[1]/div[3]/div[1]/div[${i}]/span[3]`,
+};
+
+/** `3a Conflicts cleared` — one flat block, which is why the screen builds it flat. */
+const CONFLICT_CLEARED_FIDS = {
+  cleared: "div[0]",
+  hexagon: "div[0]/svg",
+  hexPath: (i) => `div[0]/svg/path[${i}]`,
+  clearedTitle: "div[0]/div[0]",
+  clearedSub: "div[0]/div[1]",
+  clearedBack: "div[0]/button",
+};
+
+/** The three maps a `3a` fixture asks for by view. */
+export function conflictFids(view) {
+  const body = {
+    card: CONFLICT_CARD_FIDS,
+    diff: CONFLICT_DIFF_FIDS,
+    cleared: CONFLICT_CLEARED_FIDS,
+  }[view];
+  if (!body) throw new Error(`fids: no conflict view "${view}"`);
+  const tailAt = { card: 3, diff: 2, cleared: 1 }[view];
+  return { ...conflictShell(tailAt, view !== "cleared"), ...body };
+}

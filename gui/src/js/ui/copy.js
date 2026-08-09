@@ -21,7 +21,7 @@
 //   6. "this computer", never a brand or OS name. "Proton Drive" in full, never "the cloud".
 //   7. "kept" not "preserved", "waiting" not "pending", "brought here" not "downloaded" in prose.
 
-import { count, cardinal, plural, bytes } from "./format.js";
+import { count, cardinal, plural, bytes, clock } from "./format.js";
 
 // ------------------------------------------------------------------ product and chrome ----
 
@@ -160,10 +160,44 @@ export const CONFLICTS = {
   title: "You both changed this file",
   sub: "Nothing has been lost — both versions are still here, and syncing carries on around this.",
   position: (i, of) => `${i} of ${of}`,
-  meta: "a plain text file · last agreed 3 hours ago",
+
+  /**
+   * The line under the filename. Drawn `a plain text file · last agreed 3 hours ago`; Phase 1 can
+   * only write the first half.
+   *
+   * `last agreed` is the baseline's timestamp, and there isn't one: `FileRecord` has no
+   * last-synced field, and the daemon's conflict arm overwrites the original's record with the
+   * CURRENT local state, so even the mtime proxy is gone by the time the GUI could read it. Same
+   * missing capability as the cards' first line — #217. The clause is dropped rather than
+   * em-dashed, per `14-behaviour-and-state.md`'s rule for a missing value inside a sentence.
+   */
+  meta: (kind) => kind,
+  /**
+   * The three answers to "what sort of file is this", and deliberately only three.
+   *
+   * Nothing distinguishes an SVG from a note — an SVG is valid UTF-8 and reads exactly the same
+   * way — so naming a type we cannot tell apart would be worse than naming a category.
+   */
+  kindText: "a plain text file",
+  kindBinary: "a file this app can't read",
+  // NOT the queue row's wording, which is `typeConflict` below and reads `a folder here, a file
+  // there`. This is the META LINE — the slot that says `a plain text file` on `3a Conflict`, where
+  // the sentence stands alone under a filename rather than beside a path in a list, and can afford
+  // to name the far side. Two strings for one situation, drawn in two places, and only one of the
+  // two places is drawn: no frame opens a type conflict, so this one stays in the gate's NOT_DRAWN
+  // table while `typeConflict` is measured off `3a Conflict diff`.
+  kindFolder: "a folder here, a file on Proton Drive",
+
+  /** The metadata row's other two items. Both are counted off the pair, so both take their number. */
+  lineCount: (n) => `${count(n)} ${plural(n, "line", "lines")}`,
+  edited: (epochSecs) => `edited ${clock(epochSecs)}`,
 
   mine: "Your version · this computer",
   theirs: "Proton's version · from another device",
+  // The diff view's column labels — the same two words without the device clause, because the
+  // panel below them already says which side is which by colour and position.
+  mineShort: "Your version",
+  theirsShort: "Proton's version",
 
   /**
    * The card's second line — "what differs, in words" — from the facts `ui/diff.js` extracts.
@@ -216,7 +250,12 @@ export const CONFLICTS = {
   keepMine: "Keep mine",
   keepMineSub: "Your version goes to Proton Drive. Proton's version is discarded.",
   keepBoth: "Keep both",
-  keepBothSub: "Nothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.",
+  /**
+   * The sidecar's real name, quoted back. `.proton-cloud` is a suffix users see on disk and search
+   * for, so the sentence naming the actual file is the point of it — a generic
+   * "as a .proton-cloud file" would be the one version of this sentence that does not help.
+   */
+  keepBothSub: (sidecar) => `Nothing is lost. Proton's copy lands beside yours as ${sidecar}.`,
   useTheirs: "Use Proton's",
   useTheirsSub: "Proton's version replaces the file on this computer. Yours is discarded.",
 
@@ -242,14 +281,50 @@ export const CONFLICTS = {
       ? `${count(differing)} ${plural(differing, "line differs", "lines differ")} · ` +
         `${count(identical)} ${plural(identical, "line identical", "lines identical")}`
       : null,
-  absentLine: "not in your version",
+  /**
+   * The placeholder on the side that does not have the line.
+   *
+   * TAKES A SIDE, because the drawn string is only half the pair. `3a Conflict diff` puts an extra
+   * line on Proton's side, so the placeholder lands on the LEFT and reads `not in your version` —
+   * but `alignedRows` emits the mirror shape for any line yours has and Proton's does not, and
+   * there the same sentence is false. The deck has no drawn twin (`copy-gate.mjs` carries the
+   * reason), so this is the one sentence here written rather than measured.
+   */
+  absentLine: (side) => (side === "mine" ? "not in your version" : "not in Proton's version"),
 
   stillWaiting: "Still waiting after this one",
   bothChanged: "both changed it",
   typeConflict: "a folder here, a file there",
 
   clearedTitle: "Nothing left to decide",
-  clearedSub: "You settled 3 files. Two kept both versions, one took Proton's copy.",
+  /**
+   * What you just did, counted off the choices this screen actually made.
+   *
+   * A CONSTANT HERE WOULD BE A LIE THE MOMENT ANYONE SETTLED A DIFFERENT NUMBER. The frame draws
+   * `You settled 3 files. Two kept both versions, one took Proton's copy.` — three specific counts
+   * of three specific resolutions — and an empty scan carries no memory of any of it, so the
+   * screen tracks its own session and renders from that.
+   *
+   * The breakdown clause is DROPPED rather than approximated when the deck has no wording for the
+   * mix: `Keep mine` and `Decide later` appear in no drawn sentence, and inventing grammar for
+   * them here would put copy in the module whose whole job is not to. The first sentence is always
+   * true, which is the half worth keeping.
+   */
+  clearedSub: ({ total = 0, keptBoth = 0, tookProton = 0 } = {}) => {
+    const opening = `You settled ${count(total)} ${plural(total, "file", "files")}.`;
+    const parts = [];
+    // `versions` ALWAYS, and never `plural(keptBoth, …)`. The noun agrees with `both`, which is
+    // inherently two — the two versions of one file — while `keptBoth` counts FILES. Agreeing it
+    // with the file count gave `one kept both version` for a single file, which is the reading
+    // where `both` has silently become a count of files rather than of versions.
+    if (keptBoth > 0) parts.push(`${cardinal(keptBoth).toLowerCase()} kept both versions`);
+    if (tookProton > 0) parts.push(`${cardinal(tookProton).toLowerCase()} took Proton's copy`);
+    if (!parts.length || keptBoth + tookProton !== total) return opening;
+    // The frame capitalises the first breakdown clause and lower-cases the second.
+    const [first, ...rest] = parts;
+    const sentence = [first.charAt(0).toUpperCase() + first.slice(1), ...rest].join(", ");
+    return `${opening} ${sentence}.`;
+  },
   back: "Back to sync",
 };
 

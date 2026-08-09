@@ -25,6 +25,7 @@
 // a number pinned below. The only strings here are data — paths, and the two files' actual bytes.
 
 import { ago } from "./clock.js";
+import { conflictFids } from "./fids.js";
 
 /**
  * The three conflicts the chip counts, in the order the frames draw them: `notes/todo.txt` fills the
@@ -37,23 +38,27 @@ import { ago } from "./clock.js";
  * write a sidecar for those too (daemon.rs downloads the remote file beside the local directory), so
  * a real scan does return all three.
  *
- * TWO THINGS THE FRAME ASKS FOR THAT THIS REPLY CANNOT SAY, both left to S2:
+ * ONE OF THE TWO THINGS THIS FIXTURE LEFT TO S2 IS NOW IN THE REPLY. It recorded that "which row is
+ * a type conflict is not derivable" — nothing in `Conflict` said which, and `read_conflict_pair`
+ * could not tell either, since reading a directory fails with EISDIR and lands in the same
+ * `binary_or_large: true` arm as a JPEG. S2 needs the distinction (`04-conflicts.md` hides the
+ * disclosure for a type conflict and gives it different card copy), so `scan_conflicts` now answers
+ * it: it is standing at the original with a path in hand, and one `symlink_metadata` settles it.
+ * Hence `kind` below — `type` on `photos/trip`, which is what makes the queue's
+ * `a folder here, a file there` renderable rather than hard-coded.
  *
- *   · THE ORDER IS NOT THE REPLY'S ORDER. `scan_conflicts` ends with `out.sort()`, so a real reply
- *     is `design`, `notes`, `photos` — while the frame puts `notes/todo.txt` first with `‹`
- *     disabled, i.e. genuinely at position 1. Written in the drawn order, because reproducing the
- *     frame is what a fixture is for; the divergence is real and belongs in the screen's own
- *     decision about queue order, not hidden here by silently sorting.
- *   · WHICH ROW IS A TYPE CONFLICT IS NOT DERIVABLE. The queue draws `both changed it` against
- *     `design/logo.svg` and `a folder here, a file there` against `photos/trip`
- *     (`CONFLICTS.bothChanged` / `CONFLICTS.typeConflict`). Nothing in `Conflict` says which, and
- *     `read_conflict_pair` cannot tell either: reading a directory fails with EISDIR, which lands in
- *     the same `binary_or_large: true` arm as a JPEG.
+ * THE OTHER ONE STANDS. The order is not the reply's order: `scan_conflicts` ends with `out.sort()`,
+ * so a real reply is `design`, `notes`, `photos` — while the frame puts `notes/todo.txt` first with
+ * `‹` disabled, i.e. genuinely at position 1. Written in the drawn order, because reproducing the
+ * frame is what a fixture is for; the divergence is real and belongs in the screen's own decision
+ * about queue order, not hidden here by silently sorting.
  */
 const QUEUE = [
-  { original: "notes/todo.txt", sidecar: "notes/todo.proton-cloud.txt" },
-  { original: "design/logo.svg", sidecar: "design/logo.proton-cloud.svg" },
-  { original: "photos/trip", sidecar: "photos/trip.proton-cloud" },
+  { original: "notes/todo.txt", sidecar: "notes/todo.proton-cloud.txt", kind: "content" },
+  { original: "design/logo.svg", sidecar: "design/logo.proton-cloud.svg", kind: "content" },
+  // `a folder here, a file there` — a folder locally, a file on Proton. The engine downloads the
+  // remote file beside the local directory, so a sidecar exists and a real scan returns all three.
+  { original: "photos/trip", sidecar: "photos/trip.proton-cloud", kind: "type" },
 ];
 
 /**
@@ -128,6 +133,8 @@ export const CONFLICT_FIXTURES = {
     status: IDLE,
     conflicts: QUEUE,
     conflictPair: TODO_PAIR,
+    route: "conflicts",
+    fids: conflictFids("card"),
   },
 
   // The disclosure, not a different screen: same daemon, same queue, same pair — one thing is open.
@@ -138,6 +145,8 @@ export const CONFLICT_FIXTURES = {
     conflicts: QUEUE,
     conflictPair: TODO_PAIR,
     ui: { diff: true },
+    route: "conflicts",
+    fids: conflictFids("diff"),
   },
 
   // Nothing left to decide — an empty scan, and that alone. The frame's own sub, `You settled 3
@@ -148,8 +157,18 @@ export const CONFLICT_FIXTURES = {
   // also idle, also chipped in the same header — draws `idle`. Same data, two drawings. Nothing a
   // fixture can express either way; the narrow 522px window is still the product window, header and
   // doors included (DEVIATIONS §48).
+  //
+  // `settled` IS NOT MEMORY OF WHAT WAS CHOSEN — it is what the SCREEN counted while you were on it,
+  // and the sentence is a template rather than the constant this comment first called it. Nothing on
+  // disk can supply it (a resolved conflict leaves a sidecar or nothing, and neither says which
+  // button was pressed), so app.js counts as the choices are made and this pins the count the frame
+  // draws. Reaching the frame's own wording needs 3 · 2 · 1; an unpinned fixture renders the
+  // zero-form of the same sentence, which is a different string and a red gate.
   "3a Conflicts cleared": {
     status: IDLE,
     conflicts: [],
+    ui: { settled: { total: 3, keptBoth: 2, tookProton: 1 } },
+    route: "conflicts",
+    fids: conflictFids("cleared"),
   },
 };

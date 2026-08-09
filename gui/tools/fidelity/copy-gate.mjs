@@ -41,6 +41,22 @@ const NOT_DRAWN = new Map([
   // empty-state table still specifies it ("Activity › files: `Nothing has moved in the last hour.`
   // + flat line"), and S5 will need it. DEVIATIONS.md §49.
   ["ACTIVITY.nothingRecent", "only drawn in `6a Quiet`, which is out of scope"],
+  // S2's meta line names what sort of file this is, and only ONE of the three answers is drawn.
+  // `3a Conflict` is a text conflict, so `a plain text file` is in a frame; the other two describe
+  // states no `3a` frame draws — a type conflict (the frames put `photos/trip` in the queue list,
+  // never open) and a file the pair could not read as text (binary, too large, or vanished, which
+  // `ConflictSide` cannot tell apart). The deck has no wording for either, so these are the two
+  // sentences S2 wrote rather than measured. DEVIATIONS §74.
+  //
+  // `kindFolder` NEARLY MOVED OUT OF THIS TABLE, and the near-miss is worth the four lines. The
+  // queue list on `3a Conflict diff` does draw `photos/trip · a folder here, a file there`, which
+  // looks like the drawn instance this row denies — it is not. That string is `typeConflict`, the
+  // list wording. `kindFolder` is the META LINE, the slot that says `a plain text file` under the
+  // filename on the card, and no frame opens a type conflict card. Rewriting this one to match the
+  // queue's text would have made the gate green by pointing two deck entries at one drawn node,
+  // which is the exact failure a verbatim copy gate exists to prevent.
+  ["CONFLICTS.kindFolder", "no frame opens a type conflict — the deck has no card copy for one"],
+  ["CONFLICTS.kindBinary", "no frame opens a conflict whose pair has no text"],
 ]);
 
 /**
@@ -92,6 +108,19 @@ const DRAWN = [
   ],
   ["CONFLICTS.diffSummary", [2], "3a Conflict diff"],
   ["CONFLICTS.diffCounts", [2, 3], "3a Conflict diff"],
+  // S2. The metadata row and the meta line are counted off the pair, so their numbers are the
+  // frame's own: `41 bytes` / `4 lines` on the left card, `a plain text file` under the filename.
+  // `edited 14:38` is deliberately absent — it renders from an mtime through a local clock, so it
+  // moves with the timezone and the hour of the run, which is the one input a gate may not depend
+  // on (`fixtures/conflicts.js` names it; DEVIATIONS §74).
+  ["CONFLICTS.meta", ["a plain text file"], "3a Conflict"],
+  ["CONFLICTS.lineCount", [4], "3a Conflict"],
+  ["CONFLICTS.keepBothSub", ["todo.proton-cloud.txt"], "3a Conflict"],
+  // The placeholder is drawn on the LEFT only, because the drawn pair puts the extra line on
+  // Proton's side. The mirror — `not in Proton's version` — is reachable the moment yours has a
+  // line Proton's does not, and no frame draws it; it is checked by `diff.test.js` instead.
+  ["CONFLICTS.absentLine", ["mine"], "3a Conflict diff"],
+  ["CONFLICTS.clearedSub", [{ total: 3, keptBoth: 2, tookProton: 1 }], "3a Conflicts cleared"],
   ["ONBOARDING.cliMissingBody", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
   ["ONBOARDING.cliInstallCommand", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
 ];
