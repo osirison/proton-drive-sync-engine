@@ -1,6 +1,8 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { satteri } from '@astrojs/markdown-satteri';
+import { defineHastPlugin } from 'satteri';
 
 // Deployed to GitHub Pages as a project site:
 //   https://osirison.github.io/proton-drive-sync-engine/
@@ -12,38 +14,56 @@ const base = process.env.BASE_PATH ?? '/proton-drive-sync-engine';
 /**
  * Astro does not prepend the site `base` to root-relative links written in
  * Markdown/MDX bodies (`[text](/safety/deletions/)`) — only Starlight's own
- * components (sidebar, cards, hero) are base-aware. This rehype plugin rewrites
+ * components (sidebar, cards, hero) are base-aware. This plugin rewrites
  * in-body `<a href="/…">` links to include the base, so a project-pages deploy
  * under `/proton-drive-sync-engine/` doesn't 404 on every internal link.
  * With `BASE_PATH=/` (a root preview) the prefix is empty and it's a no-op.
+ *
+ * A SÄTTERI HAST PLUGIN, NOT A REHYPE ONE. Astro made Sätteri the default
+ * Markdown processor and stopped installing `@astrojs/markdown-remark`, so
+ * `markdown.rehypePlugins` now throws at config time asking for that package.
+ * Installing it would have "fixed" the build by dragging the whole site back
+ * onto the unified processor — and Starlight has moved to Sätteri too
+ * (`@astrojs/markdown-satteri`), so the two would then be rendering the same
+ * pages through different pipelines.
+ *
+ * The port is close to a rename. `filter: ['a']` replaces walking the tree
+ * looking for anchors — Sätteri filters on the Rust side, so only matched nodes
+ * cross the boundary — and `ctx.setProperty` replaces assigning to
+ * `node.properties`, because the node arrives `Readonly` and every mutation goes
+ * through the context instead of the tree.
  */
-function rehypeBaseLinks(basePath) {
+function baseLinksPlugin(basePath) {
   const prefix = basePath === '/' ? '' : basePath.replace(/\/$/, '');
-  if (!prefix) return () => () => {};
-  const walk = (node) => {
-    if (node.type === 'element' && node.tagName === 'a') {
-      const href = node.properties && node.properties.href;
-      if (
-        typeof href === 'string' &&
-        href.startsWith('/') &&
-        !href.startsWith('//') &&
-        href !== prefix &&
-        !href.startsWith(prefix + '/')
-      ) {
-        node.properties.href = prefix + href;
-      }
-    }
-    if (node.children) node.children.forEach(walk);
-  };
-  return () => (tree) => walk(tree);
+  if (!prefix) return null;
+  return defineHastPlugin({
+    name: 'base-links',
+    element: {
+      filter: ['a'],
+      visit(node, ctx) {
+        const href = node.properties && node.properties.href;
+        if (
+          typeof href === 'string' &&
+          href.startsWith('/') &&
+          !href.startsWith('//') &&
+          href !== prefix &&
+          !href.startsWith(prefix + '/')
+        ) {
+          ctx.setProperty(node, 'href', prefix + href);
+        }
+      },
+    },
+  });
 }
+
+const baseLinks = baseLinksPlugin(base);
 
 export default defineConfig({
   site,
   base,
   trailingSlash: 'ignore',
   markdown: {
-    rehypePlugins: [rehypeBaseLinks(base)],
+    processor: satteri({ hastPlugins: baseLinks ? [baseLinks] : [] }),
   },
   integrations: [
     starlight({
