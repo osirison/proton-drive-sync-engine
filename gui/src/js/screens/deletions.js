@@ -353,7 +353,9 @@ function armGate({ item, isBusy, handlers, gates }) {
       gateSatisfied(field.value) && !isBusy() ? "destructiveArmable" : "destructiveDisabled",
     );
   const field = deleteGate({ word: GATE_WORD, onChange: repaint });
-  gates.push({ key: itemKey(item), field });
+  // PINNED TO THE FINGERPRINT, like the armed flag and for the same reason one level down: a typed
+  // word restored onto a card whose deletion has been replaced would arm something nobody looked at.
+  gates.push({ key: itemKey(item), fingerprint: item.fingerprint, field });
   confirm.addEventListener("click", () => {
     // Asked of the FIELD, not of a value remembered when the word matched: `deletionGate` clears the
     // field the moment focus leaves the pair, and the field is the only thing that knows.
@@ -621,10 +623,17 @@ export function renderDeletions(state = {}) {
  * finds rather than a list.
  */
 function capturedGate() {
-  for (const { key, field } of view?.gates ?? []) {
+  for (const { key, fingerprint, field } of view?.gates ?? []) {
     const focused = field.ownerDocument?.activeElement === field;
     if (!focused && field.value === "") continue;
-    return { key, value: field.value, focused, start: field.selectionStart, end: field.selectionEnd };
+    return {
+      key,
+      fingerprint,
+      value: field.value,
+      focused,
+      start: field.selectionStart,
+      end: field.selectionEnd,
+    };
   }
   return null;
 }
@@ -632,8 +641,10 @@ function capturedGate() {
 /**
  * Put it back on the card it belongs to, if that card is still there.
  *
- * KEYED, not positional: the rebuild may have been caused by the queue changing, and restoring a
- * typed `DELETE` onto whichever card happens to be first would arm a deletion nobody looked at.
+ * KEYED AND FINGERPRINTED, not positional: the rebuild may have been caused by the queue changing.
+ * Restoring a typed `DELETE` onto whichever card happens to be first — or onto the same path after
+ * that deletion resolved and a different one took its place — would arm something nobody looked at,
+ * which is the `armedItem` hazard one level down.
  *
  * The value goes back through a dispatched `input` event rather than by calling the repaint
  * directly, so there is one path from "what the field holds" to "what the button looks like" and no
@@ -643,7 +654,7 @@ function capturedGate() {
  */
 function restoreGate(typed, gates) {
   if (!typed) return;
-  const gate = gates.find((entry) => entry.key === typed.key);
+  const gate = gates.find((entry) => entry.key === typed.key && entry.fingerprint === typed.fingerprint);
   if (!gate) return;
   gate.field.value = typed.value;
   gate.field.dispatchEvent(new Event("input", { bubbles: true }));
