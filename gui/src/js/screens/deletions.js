@@ -565,7 +565,15 @@ let view = null;
  */
 function signatureOf({ items, armed, statuses, body }) {
   if (body === "empty") return "empty";
-  if (body === "armed") return JSON.stringify(["armed", armedItem(items, armed).path]);
+  if (body === "armed") {
+    // The fingerprint as well as the path, so this says the same thing the queue branch below says
+    // and `armedItem` says: an item is its path AND its content. No live difference today — a
+    // changed fingerprint makes `armedItem` return null and `bodyOf` leave this branch entirely, so
+    // the signature changes anyway — but the next thing the takeover draws off the item would
+    // inherit a key that had quietly stopped meaning identity.
+    const item = armedItem(items, armed);
+    return JSON.stringify(["armed", item.path, item.fingerprint]);
+  }
   return JSON.stringify([
     "queue",
     items.map((item) => {
