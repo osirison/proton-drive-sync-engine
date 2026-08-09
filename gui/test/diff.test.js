@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compare, lines, quote, summariseSide, MAX_QUOTE_CHARS } from "../src/js/ui/diff.js";
+import { alignedRows, compare, lines, quote, summariseSide, MAX_QUOTE_CHARS } from "../src/js/ui/diff.js";
 import { CONFLICTS } from "../src/js/ui/copy.js";
 
 // The two versions `3a Conflict` is drawn from: yours has `buy milk`, Proton's has `buy oat milk`
@@ -277,4 +277,88 @@ test("the template answers null for the case that falls back, rather than throwi
 test("an unknown side is a programming error, not a silent default", () => {
   const comparison = compare(MINE, THEIRS);
   assert.throws(() => summariseSide(comparison, "left"), /must be "mine" or "theirs"/);
+});
+
+// ---- the diff panel's rows (S2) ----
+
+test("the drawn panel is five rows over a four-line and a five-line file", () => {
+  // `04-conflicts.md` makes the seam the diff's gutter, so the two sides must stay LEVEL: the row
+  // is the unit, not the line. The frame draws four rows on the left against five on the right,
+  // row 2 highlighted as a changed pair and row 5 absent on the left.
+  const rows = alignedRows(MINE, THEIRS);
+  assert.deepEqual(
+    rows.map((r) => r.kind),
+    ["unchanged", "changed", "unchanged", "unchanged", "absent"],
+  );
+  assert.deepEqual(rows[1], {
+    kind: "changed",
+    mine: { n: 2, text: "buy milk" },
+    theirs: { n: 2, text: "buy oat milk" },
+  });
+  assert.equal(rows[4].mine, null, "nothing on the left — the panel draws the placeholder");
+  assert.deepEqual(rows[4].theirs, { n: 5, text: "coffee" });
+});
+
+test("line numbers count each side's OWN file and skip on an absent row", () => {
+  // The left column of a five-row panel over a four-line file reads 1,2,3,4 with a gap — not 1..5.
+  const rows = alignedRows(MINE, THEIRS);
+  assert.deepEqual(
+    rows.map((r) => r.mine?.n ?? null),
+    [1, 2, 3, 4, null],
+  );
+  assert.deepEqual(
+    rows.map((r) => r.theirs?.n ?? null),
+    [1, 2, 3, 4, 5],
+  );
+});
+
+test("the rows agree with the counts drawn beneath them", () => {
+  const rows = alignedRows(MINE, THEIRS);
+  const comparison = compare(MINE, THEIRS);
+  assert.equal(rows.filter((r) => r.kind === "unchanged").length, comparison.identical);
+  assert.equal(rows.filter((r) => r.kind !== "unchanged").length, comparison.differing);
+  assert.equal(
+    CONFLICTS.diffCounts(comparison.differing, comparison.identical),
+    "2 lines differ · 3 lines identical",
+  );
+});
+
+test("the panel and the cards cannot disagree about what changed", () => {
+  // Both go through the same block pairing. Two lines edited in place is two CHANGED rows — not one
+  // change plus two absents, which is what a second implementation of that loop produced.
+  const rows = alignedRows("eggs\ncoffee\ntea\n", "eggs\nmilk\nbread\n");
+  assert.deepEqual(
+    rows.map((r) => r.kind),
+    ["unchanged", "changed", "changed"],
+  );
+  assert.equal(compare("eggs\ncoffee\ntea\n", "eggs\nmilk\nbread\n").changed.length, 2);
+});
+
+test("a line each side lacks produces two absent rows, not one merged row", () => {
+  const rows = alignedRows("alpha\nbeta\ngamma\n", "beta\ngamma\ndelta\n");
+  assert.deepEqual(
+    rows.map((r) => [r.kind, r.mine?.text ?? null, r.theirs?.text ?? null]),
+    [
+      ["absent", "alpha", null],
+      ["unchanged", "beta", "beta"],
+      ["unchanged", "gamma", "gamma"],
+      ["absent", null, "delta"],
+    ],
+  );
+});
+
+test("the panel refuses exactly what the cards refuse", () => {
+  // The disclosure has nothing to open onto when a side has no text at all.
+  assert.equal(alignedRows(MINE, null), null);
+  assert.equal(alignedRows(null, THEIRS), null);
+  const wide = Array.from({ length: 800 }, (_, i) => `mine ${i}`).join("\n");
+  const other = Array.from({ length: 800 }, (_, i) => `theirs ${i}`).join("\n");
+  assert.equal(alignedRows(wide, other), null);
+  assert.equal(compare(wide, other), null);
+});
+
+test("identical files are all unchanged rows", () => {
+  const rows = alignedRows(MINE, MINE);
+  assert.equal(rows.length, 4);
+  assert.ok(rows.every((r) => r.kind === "unchanged"));
 });
