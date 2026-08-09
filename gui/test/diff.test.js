@@ -10,6 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alignedRows, compare, lines, quote, summariseSide, MAX_QUOTE_CHARS } from "../src/js/ui/diff.js";
+import { fileSize, EM_DASH } from "../src/js/ui/format.js";
 import { CONFLICTS } from "../src/js/ui/copy.js";
 
 // The two versions `3a Conflict` is drawn from: yours has `buy milk`, Proton's has `buy oat milk`
@@ -361,4 +362,38 @@ test("identical files are all unchanged rows", () => {
   const rows = alignedRows(MINE, MINE);
   assert.equal(rows.length, 4);
   assert.ok(rows.every((r) => r.kind === "unchanged"));
+});
+
+// ---- what the review found: two ways the card could state a fact it does not have ----
+
+test("an empty-but-readable file has no lines, and the card counts them the panel's way", () => {
+  // The card's own `split` said 1 — `"".split("\n")` is `[""]` — while the panel beneath it drew
+  // none. `versionCard` now asks `lines()` instead of reimplementing it, so there is one answer.
+  assert.equal(lines("").length, 0);
+  assert.equal(lines(null).length, 0);
+  // And the two drawn files still count the way the metadata row draws them.
+  assert.equal(lines("# Todo\n- buy milk\n- call Alice\n- ship v1\n").length, 4);
+  assert.equal(lines("# Todo\n- buy oat milk\n- call Alice\n- ship v1\n- relax\n").length, 5);
+});
+
+test("an unread size is an em-dash, not `0 bytes`", () => {
+  // The pair arrives a render after the screen does. `fileSize(source?.size ?? 0)` drew `0 bytes`
+  // in the gap — indistinguishable from a real empty file, on a card whose job is telling two
+  // versions apart by their facts.
+  assert.equal(fileSize(undefined), EM_DASH);
+  assert.equal(fileSize(null), EM_DASH);
+  assert.equal(fileSize(0), "0 bytes");
+  assert.equal(fileSize(41), "41 bytes");
+});
+
+test("a quoted line loses its list marker but keeps a numbered item's number", () => {
+  // `3a Conflict` quotes `buy milk` out of a line reading `- buy milk`.
+  assert.equal(quote("- buy milk"), "buy milk");
+  assert.equal(quote("* buy milk"), "buy milk");
+  assert.equal(quote("+ buy milk"), "buy milk");
+  // Not `1.` — the number is content the reader may be pointing at, and dropping it would quote
+  // `1. call Alice` and `2. call Alice` identically.
+  assert.equal(quote("1. call Alice"), "1. call Alice");
+  // A bare hyphen with no space is a word, not a marker.
+  assert.equal(quote("-buy milk"), "-buy milk");
 });

@@ -35,7 +35,7 @@ import { renderHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button } from "../ui/controls.js";
 import { dot, eyebrow } from "../ui/rows.js";
-import { alignedRows, compare, summariseSide } from "../ui/diff.js";
+import { alignedRows, compare, lines, summariseSide } from "../ui/diff.js";
 import { fid } from "../fixtures/frames.js";
 
 /** The on-seam mark in the card view, and the compressed one in the diff view. */
@@ -135,7 +135,12 @@ function pager({ index, total, onPrev, onNext, padBottom = false }) {
 function versionCard({ side, pair, facts }) {
   const source = side === "mine" ? pair?.original : pair?.sidecar;
   const text = source?.text ?? null;
-  const lineCount = text == null ? null : text.replace(/\r\n?/g, "\n").replace(/\n$/, "").split("\n").length;
+  // COUNTED BY `lines()`, not by a second copy of its rules. This was its own `split` — the same
+  // CRLF normalisation and trailing-newline drop, written out again — and the two had already
+  // drifted: `"".split("\n")` is `[""]`, so an empty-but-readable file drew `1 line` on the card
+  // while the diff panel beneath it drew none. Whatever the panel counts as a line IS the number the
+  // card should say, so the card asks it rather than agreeing with it.
+  const lineCount = text == null ? null : lines(text).length;
   // The two columns are one shape drawn twice, so the fid tables index them rather than naming
   // them — 0 is yours, 1 is Proton's, in the order the grid puts them.
   const at = side === "mine" ? 0 : 1;
@@ -165,7 +170,11 @@ function versionCard({ side, pair, facts }) {
   }
 
   const meta = fid(el("div", { class: "cf-card-meta" }), "cardMeta", at);
-  meta.append(el("span", {}, fileSize(source?.size ?? 0)));
+  // NOT `?? 0`. The pair arrives one render after the screen does, and a `0 bytes` drawn while it is
+  // still loading is a claim rather than a gap — indistinguishable from a real empty file, on a card
+  // whose whole purpose is telling two versions apart by their facts. `fileSize(null)` is the
+  // em-dash, which format.js reserves for exactly this and nothing else.
+  meta.append(el("span", {}, fileSize(source?.size)));
   if (lineCount != null) meta.append(el("span", {}, CONFLICTS.lineCount(lineCount)));
   if (source?.mtime_epoch_secs != null) {
     meta.append(el("span", {}, CONFLICTS.edited(source.mtime_epoch_secs)));
@@ -481,8 +490,13 @@ function queueList(queue, index) {
   // `i` is the position IN THIS LIST (what the fid tables index) and `at` the position in the whole
   // queue (what `2 of 3` counts). They differ by one from the open conflict onward, and swapping
   // them maps every row after the current one onto its neighbour's node.
+  //
+  // Derived rather than looked up. `queue.indexOf(item)` says the same thing and says it in O(n) per
+  // row, but the arithmetic is also the more honest form: it states the relationship this comment
+  // describes instead of re-deriving it from object identity, which only holds while `rest` is a
+  // filter of `queue` and would go quietly wrong the day it is rebuilt from a rescan.
   for (const [i, item] of rest.entries()) {
-    const at = queue.indexOf(item);
+    const at = i < index ? i : i + 1;
     rows.append(
       fid(
         el(

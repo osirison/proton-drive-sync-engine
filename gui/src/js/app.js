@@ -628,8 +628,8 @@ function setBody(nodes) {
 
 let conflictIndex = 0;
 let conflictDiffOpen = false;
-let conflictPair = null; // the two versions' bytes
-let conflictPairKey = null; // which conflict they belong to — null while a fetch is in flight
+let conflictPair = null; // the two versions' bytes, or null when they could not be read
+let conflictPairKey = null; // which conflict was last REQUESTED — set before the read, not after
 /**
  * WHAT YOU DECIDED WHILE YOU WERE HERE, and only while you were here.
  *
@@ -659,19 +659,31 @@ function resetConflictScreen() {
  * Guarded on the conflict's own path rather than on `conflictPair == null`, because a pair that
  * legitimately reads as two empty files is indistinguishable from one not yet fetched — and the
  * unguarded version re-reads both files off disk on every poll.
+ *
+ * A LATE REPLY MUST NOT LAND ON A DIFFERENT FILE, and on this screen that is a safety property
+ * rather than tidiness. Hold `›` and two reads are in flight at once; the first conflict's reply can
+ * arrive after the second's, and without the `requested` check it overwrites `conflictPair` while
+ * `conflictPairKey` still names the conflict on screen. `conflictsProps` compares those two and
+ * would find them agreeing — so the cards, the diff and the line counts would all be the PREVIOUS
+ * file's, under the current file's name, on the one screen whose job is choosing which version to
+ * destroy. Comparing against the module state rather than a local sequence number because the state
+ * is already the thing that has to be true: whoever wrote `conflictPairKey` last owns the slot.
  */
 async function ensureConflictPair(conflict) {
   if (!conflict || conflictPairKey === conflict.original) return;
-  conflictPairKey = conflict.original;
+  const requested = conflict.original;
+  conflictPairKey = requested;
+  let pair = null;
   try {
-    conflictPair = await api.readConflictPair(conflict);
+    pair = await api.readConflictPair(conflict);
   } catch (error) {
     // Not fatal and not a placeholder: the cards fall back to the metadata row alone, which is what
     // `04-conflicts.md` asks for when the content cannot be read. A pair invented here would be a
     // diff of files nobody has seen.
     console.error("read_conflict_pair failed:", error);
-    conflictPair = null;
   }
+  if (conflictPairKey !== requested) return;
+  conflictPair = pair;
   render();
 }
 
