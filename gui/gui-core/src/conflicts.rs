@@ -12,6 +12,29 @@
 use proton_drive_sync_engine::sync::{is_conflict_copy, original_from_conflict_copy};
 use std::path::{Path, PathBuf};
 
+/// What kind of disagreement a sidecar records.
+///
+/// The conflicts screen has to tell these apart and **nothing downstream can work it out**. A type
+/// conflict has no diff to show — `04-conflicts.md` requires the disclosure hidden and different
+/// card copy — but by the time the UI holds a [`Conflict`] the distinction is gone:
+/// [`read_conflict_pair`] reads the original with `fs::read`, a directory answers `EISDIR`, and that
+/// lands in the same `binary_or_large: true` arm as a JPEG. The screen would have had to choose
+/// between showing a diff disclosure over a folder and hiding it from every binary file.
+///
+/// The scanner is the one place that knows, because it is already standing at the path with an
+/// `original_abs` in hand — so this costs one `symlink_metadata` per conflict, not a command.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictKind {
+    /// Both sides are files: the ordinary case, and the only one with a diff to disclose.
+    Content,
+    /// A **folder** here and a **file** on Proton Drive — `photos/trip` in the frames. The engine
+    /// downloads the remote file beside the local directory, so a sidecar exists for these too.
+    Type,
+}
+
 /// One detected, unresolved conflict. Both paths are **relative to the local root**.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Conflict {
@@ -19,6 +42,17 @@ pub struct Conflict {
     pub original: PathBuf,
     /// The `*.proton-cloud[.ext]` sidecar the engine wrote (relative to the local root).
     pub sidecar: PathBuf,
+    /// Whether this is a content disagreement or a type one. See [`ConflictKind`].
+    ///
+    /// `#[serde(default)]` so a reply written before this field existed still decodes — and the
+    /// default is [`ConflictKind::Content`], which is both the common case and the safe one: it
+    /// shows a disclosure that may be empty rather than hiding one that had something to say.
+    #[serde(default = "content_kind")]
+    pub kind: ConflictKind,
+}
+
+fn content_kind() -> ConflictKind {
+    ConflictKind::Content
 }
 
 /// The four resolution choices. All are staged in the UI and applied together; nothing touches
@@ -71,9 +105,19 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<Conflict>) -> std::io::Result<()>
         } else if file_type.is_file() && is_conflict_copy(&path) {
             let sidecar = relative(root, &path);
             if let Some(original_abs) = original_from_conflict_copy(&path) {
+                // The one moment the kind is knowable. `symlink_metadata` rather than `metadata`
+                // for the same reason the walk above uses `file_type()`: a symlink is classified as
+                // itself, never as whatever it points at. An unreadable original falls back to
+                // `Content` — the safe default, since it shows a disclosure that may be empty
+                // rather than hiding one that had something to say.
+                let kind = match std::fs::symlink_metadata(&original_abs) {
+                    Ok(meta) if meta.is_dir() => ConflictKind::Type,
+                    _ => ConflictKind::Content,
+                };
                 out.push(Conflict {
                     original: relative(root, &original_abs),
                     sidecar,
+                    kind,
                 });
             }
         }
@@ -299,6 +343,73 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_here_and_a_file_on_proton_is_a_type_conflict() {
+        // `04-conflicts.md` hides the diff disclosure for these and uses different card copy, and
+        // this is the only moment the distinction is visible: `read_conflict_pair` reads the
+        // original with `fs::read`, a directory answers EISDIR, and that lands in the same
+        // `binary_or_large: true` arm as a JPEG. Without a kind, S2 must either draw a diff
+        // disclosure over a folder or hide it from every binary file.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::create_dir_all(root.join("photos/trip")).unwrap();
+        write(&root.join("photos/trip.proton-cloud"), "the remote file");
+        write(&root.join("notes.txt"), "mine");
+        write(&root.join("notes.proton-cloud.txt"), "theirs");
+
+        let conflicts = scan_conflicts(root).unwrap();
+        let kind_of = |p: &str| {
+            conflicts
+                .iter()
+                .find(|c| c.original == Path::new(p))
+                .unwrap_or_else(|| panic!("{p} not found in {conflicts:?}"))
+                .kind
+        };
+        assert_eq!(kind_of("photos/trip"), ConflictKind::Type);
+        assert_eq!(kind_of("notes.txt"), ConflictKind::Content);
+    }
+
+    #[test]
+    fn a_sidecar_whose_original_has_vanished_reads_as_a_content_conflict() {
+        // The safe default: a disclosure that may be empty beats one hidden from a file that had
+        // something to say. (Reachable — the original can be removed between the write and the
+        // scan.)
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("gone.proton-cloud.txt"), "theirs");
+
+        let conflicts = scan_conflicts(root).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].kind, ConflictKind::Content);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_to_a_directory_is_not_a_type_conflict() {
+        // `symlink_metadata`, so the link is classified as itself — the same rule the walk uses for
+        // `file_type()`. Following it would call a link to a folder a folder.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+        write(&root.join("link.proton-cloud"), "theirs");
+
+        let conflicts = scan_conflicts(root).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].kind, ConflictKind::Content);
+    }
+
+    #[test]
+    fn a_reply_written_before_kind_existed_still_decodes() {
+        // `scan_conflicts` is a Tauri command reply, and the frontend and backend are versioned
+        // together — but the fixtures are hand-written JSON and the mock is hand-written JS, so a
+        // missing field must mean the common case rather than a decode failure.
+        let decoded: Conflict =
+            serde_json::from_str(r#"{"original":"a.txt","sidecar":"a.proton-cloud.txt"}"#).unwrap();
+        assert_eq!(decoded.kind, ConflictKind::Content);
+    }
+
+    #[test]
     fn keep_mine_deletes_only_the_sidecar() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -307,6 +418,7 @@ mod tests {
         let conflict = Conflict {
             original: "notes.txt".into(),
             sidecar: "notes.proton-cloud.txt".into(),
+            kind: ConflictKind::Content,
         };
         apply_resolution(root, &conflict, Resolution::KeepMine).unwrap();
         assert_eq!(
@@ -325,6 +437,7 @@ mod tests {
         let conflict = Conflict {
             original: "notes.txt".into(),
             sidecar: "notes.proton-cloud.txt".into(),
+            kind: ConflictKind::Content,
         };
         apply_resolution(root, &conflict, Resolution::UseProton).unwrap();
         assert_eq!(
@@ -343,6 +456,7 @@ mod tests {
         let conflict = Conflict {
             original: "notes.txt".into(),
             sidecar: "notes.proton-cloud.txt".into(),
+            kind: ConflictKind::Content,
         };
         apply_resolution(root, &conflict, Resolution::KeepBoth).unwrap();
         assert_eq!(
@@ -385,6 +499,7 @@ mod tests {
         let conflict = Conflict {
             original: "notes.txt".into(),
             sidecar: "notes.proton-cloud.txt".into(),
+            kind: ConflictKind::Content,
         };
         apply_resolution(root, &conflict, Resolution::DecideLater).unwrap();
         assert!(root.join("notes.txt").exists());
@@ -400,6 +515,7 @@ mod pair_tests {
         Conflict {
             original: "notes.txt".into(),
             sidecar: "notes.proton-cloud.txt".into(),
+            kind: ConflictKind::Content,
         }
     }
 
@@ -457,6 +573,7 @@ mod pair_tests {
         let evil = Conflict {
             original: "../../etc/passwd".into(),
             sidecar: "notes.proton-cloud.txt".into(),
+            kind: ConflictKind::Content,
         };
         assert!(read_conflict_pair(dir.path(), &evil).is_err());
     }

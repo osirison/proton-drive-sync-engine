@@ -283,7 +283,9 @@ function mockInvoke(cmd, args) {
         },
       });
     case "scan_conflicts":
-      return Promise.resolve([{ original: "notes/todo.txt", sidecar: "notes/todo.proton-cloud.txt" }]);
+      return Promise.resolve([
+        { original: "notes/todo.txt", sidecar: "notes/todo.proton-cloud.txt", kind: "content" },
+      ]);
     case "read_conflict_pair":
       return Promise.resolve({
         original: {
