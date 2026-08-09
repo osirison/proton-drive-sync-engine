@@ -313,8 +313,11 @@ export const CONFLICTS = {
   clearedSub: ({ total = 0, keptBoth = 0, tookProton = 0 } = {}) => {
     const opening = `You settled ${count(total)} ${plural(total, "file", "files")}.`;
     const parts = [];
-    if (keptBoth > 0)
-      parts.push(`${cardinal(keptBoth).toLowerCase()} kept both ${plural(keptBoth, "version", "versions")}`);
+    // `versions` ALWAYS, and never `plural(keptBoth, …)`. The noun agrees with `both`, which is
+    // inherently two — the two versions of one file — while `keptBoth` counts FILES. Agreeing it
+    // with the file count gave `one kept both version` for a single file, which is the reading
+    // where `both` has silently become a count of files rather than of versions.
+    if (keptBoth > 0) parts.push(`${cardinal(keptBoth).toLowerCase()} kept both versions`);
     if (tookProton > 0) parts.push(`${cardinal(tookProton).toLowerCase()} took Proton's copy`);
     if (!parts.length || keptBoth + tookProton !== total) return opening;
     // The frame capitalises the first breakdown clause and lower-cases the second.

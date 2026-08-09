@@ -397,3 +397,19 @@ test("a quoted line loses its list marker but keeps a numbered item's number", (
   // A bare hyphen with no space is a word, not a marker.
   assert.equal(quote("-buy milk"), "-buy milk");
 });
+
+test("`both versions` never agrees with the file count", () => {
+  // `both` is inherently two — the two versions of ONE file — while the number in front of it
+  // counts files. Agreeing the noun with that number gave `one kept both version`.
+  assert.equal(
+    CONFLICTS.clearedSub({ total: 1, keptBoth: 1, tookProton: 0 }),
+    "You settled 1 file. One kept both versions.",
+  );
+  // The drawn sentence, unchanged.
+  assert.equal(
+    CONFLICTS.clearedSub({ total: 3, keptBoth: 2, tookProton: 1 }),
+    "You settled 3 files. Two kept both versions, one took Proton's copy.",
+  );
+  // A mix the deck has no wording for drops the clause rather than inventing grammar.
+  assert.equal(CONFLICTS.clearedSub({ total: 3, keptBoth: 1, tookProton: 0 }), "You settled 3 files.");
+});

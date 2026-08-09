@@ -629,7 +629,8 @@ function setBody(nodes) {
 let conflictIndex = 0;
 let conflictDiffOpen = false;
 let conflictPair = null; // the two versions' bytes, or null when they could not be read
-let conflictPairKey = null; // which conflict was last REQUESTED — set before the read, not after
+let conflictPairKey = null; // which conflict `conflictPair` HOLDS — moves with it, never ahead of it
+let conflictPairInFlight = null; // which conflict is being read right now, if any
 /**
  * WHAT YOU DECIDED WHILE YOU WERE HERE, and only while you were here.
  *
@@ -649,6 +650,7 @@ function resetConflictScreen() {
   conflictDiffOpen = false;
   conflictPair = null;
   conflictPairKey = null;
+  conflictPairInFlight = null;
   conflictsSettled = { total: 0, keptBoth: 0, tookProton: 0 };
   conflictShowing = null;
 }
@@ -660,19 +662,31 @@ function resetConflictScreen() {
  * legitimately reads as two empty files is indistinguishable from one not yet fetched — and the
  * unguarded version re-reads both files off disk on every poll.
  *
- * A LATE REPLY MUST NOT LAND ON A DIFFERENT FILE, and on this screen that is a safety property
- * rather than tidiness. Hold `›` and two reads are in flight at once; the first conflict's reply can
- * arrive after the second's, and without the `requested` check it overwrites `conflictPair` while
- * `conflictPairKey` still names the conflict on screen. `conflictsProps` compares those two and
- * would find them agreeing — so the cards, the diff and the line counts would all be the PREVIOUS
- * file's, under the current file's name, on the one screen whose job is choosing which version to
- * destroy. Comparing against the module state rather than a local sequence number because the state
- * is already the thing that has to be true: whoever wrote `conflictPairKey` last owns the slot.
+ * `conflictPairKey` NAMES WHAT `conflictPair` HOLDS, and never what was asked for. That is the whole
+ * design, and it is a safety property rather than tidiness: `conflictsProps` decides whether the
+ * bytes belong to the conflict on screen by comparing exactly those two, so any moment where the key
+ * runs ahead of the value is a moment the cards, the diff and the line counts are drawn from the
+ * PREVIOUS file under the current file's name — on the one screen whose job is choosing which
+ * version to destroy.
+ *
+ * There are two such moments and they need different answers, which is why there are two variables:
+ *
+ *   · BEFORE the read. This function is called from inside `conflictsProps` and deliberately not
+ *     awaited, so setting the key here yields at the `await` and hands the caller a key that already
+ *     matches while `conflictPair` still holds the old bytes. `conflictPairInFlight` takes that role
+ *     instead, so the key stays behind and the gap renders as "no pair yet" — which the cards
+ *     already handle by falling back to the metadata row, per `04-conflicts.md`.
+ *   · AFTER it. Hold `›` and two reads overlap; the first conflict's reply can arrive second. The
+ *     `requested` check drops a reply that a later request has superseded.
+ *
+ * A failed read still claims the slot — `conflictPair` null, key set — so a file that cannot be read
+ * is asked for once rather than on every poll.
  */
 async function ensureConflictPair(conflict) {
-  if (!conflict || conflictPairKey === conflict.original) return;
+  if (!conflict) return;
   const requested = conflict.original;
-  conflictPairKey = requested;
+  if (conflictPairKey === requested || conflictPairInFlight === requested) return;
+  conflictPairInFlight = requested;
   let pair = null;
   try {
     pair = await api.readConflictPair(conflict);
@@ -682,8 +696,10 @@ async function ensureConflictPair(conflict) {
     // diff of files nobody has seen.
     console.error("read_conflict_pair failed:", error);
   }
-  if (conflictPairKey !== requested) return;
+  if (conflictPairInFlight !== requested) return;
+  conflictPairInFlight = null;
   conflictPair = pair;
+  conflictPairKey = requested;
   render();
 }
 
@@ -710,7 +726,10 @@ async function chooseConflict(conflict, choice) {
   }
   conflictIndex = advanceAfter(conflictIndex, next);
   conflictDiffOpen = false;
+  // The settled file's bytes are gone in both senses — dropped together, so nothing can name them.
+  conflictPair = null;
   conflictPairKey = null;
+  conflictPairInFlight = null;
   render();
 }
 
