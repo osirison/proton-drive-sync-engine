@@ -787,6 +787,12 @@ fn probe_cli(proton_cli: &str) -> bool {
 /// `patterns` is the rule set **currently on screen**, not the saved config: `8a Skip rules` is
 /// drawn mid-edit with a pending removal, and the Add row prices a pattern before it is saved.
 ///
+/// **Pass `include` whenever the config has any**, from the same `read_config` reply the tab is
+/// already showing. Omitting it does not fail — it silently widens every count to files the include
+/// list already keeps out of the sync, so a rule is credited with hiding something it is not, and
+/// `will start syncing` promises files that would not. The Advanced tab owns those globs; this
+/// command only needs to know they exist.
+///
 /// Async and unbounded — this walks the whole local tree (metadata only, no hashing). Running it on
 /// the GTK main loop would freeze the window for the length of the walk.
 #[tauri::command]
@@ -837,15 +843,14 @@ fn daemon_ignored_paths(db_path: Option<&std::path::PathBuf>) -> Vec<std::path::
     let Some(db_path) = db_path else {
         return Vec::new();
     };
-    let sidecar = |suffix: &str| {
-        let mut name = db_path.as_os_str().to_os_string();
-        name.push(suffix);
-        std::path::PathBuf::from(name)
-    };
+    // `with_extension`, exactly as `status_history_path`/`metrics_path` in the daemon do it — so the
+    // sidecars REPLACE the `.db` (`sync_index.status.json`) rather than extending it. Appending
+    // would name two files that never exist, leaving the two that do inside the walk, where they
+    // would be counted as user data some rule is hiding.
     vec![
         db_path.clone(),
-        sidecar(".status.json"),
-        sidecar(".metrics.json"),
+        db_path.with_extension("status.json"),
+        db_path.with_extension("metrics.json"),
     ]
 }
 
@@ -881,7 +886,43 @@ pub fn quit_app(app: tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_ansi;
+    use super::{daemon_ignored_paths, probe_cli, strip_ansi};
+
+    #[test]
+    fn a_missing_binary_is_the_only_thing_that_reads_as_not_installed() {
+        assert!(
+            !probe_cli("proton-drive-that-is-definitely-not-installed-xyzzy"),
+            "a failed spawn is the real 'isn't installed'"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_present_binary_that_exits_non_zero_is_still_present() {
+        // `installed` is presence, not health. A wrapper script, a missing shared library, or a
+        // `--version` this tool does not implement all exit non-zero — and routing that user to an
+        // install screen answers a question they do not have. `/bin/false` stands in for all three.
+        assert!(probe_cli("/bin/false"));
+        assert!(probe_cli("/bin/true"));
+    }
+
+    #[test]
+    fn the_ignored_set_matches_the_daemons_when_there_is_an_index_and_is_empty_when_there_is_not() {
+        assert!(daemon_ignored_paths(None).is_empty());
+        let db = std::path::PathBuf::from("/x/.sync/sync_index.db");
+        let ignored = daemon_ignored_paths(Some(&db));
+        // The sidecars REPLACE the `.db`, because `status_history_path`/`metrics_path` in the
+        // daemon are `with_extension`. Appending would name two files that never exist and leave
+        // the two that do inside the walk, counted as user data some rule is hiding.
+        assert_eq!(
+            ignored,
+            vec![
+                db.clone(),
+                std::path::PathBuf::from("/x/.sync/sync_index.status.json"),
+                std::path::PathBuf::from("/x/.sync/sync_index.metrics.json"),
+            ]
+        );
+    }
 
     #[test]
     fn strip_ansi_removes_color_sequences_and_keeps_text() {
