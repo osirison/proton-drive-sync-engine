@@ -1,6 +1,19 @@
-//! The **fixed** Tauri command surface. Every command is a thin wrapper over `gui-core`; screens
-//! are frontend-only and never add to this list, `generate_handler!`, or `Cargo.toml`. That is what
+//! The Tauri command surface. Every command is a thin wrapper over `gui-core`; **screens** are
+//! frontend-only and never add to this list, `generate_handler!`, or `Cargo.toml`. That is what
 //! keeps the parallel screen tasks (S1–S11) collision-free.
+//!
+//! The **capability** tasks (C1–C6) are the sanctioned exception, and are how the list grows: a
+//! screen that needs something the daemon does not expose files a C-item, and the C-item adds the
+//! command before the screen is built. `free_space`, `check_cli` and `skip_rule_usage` arrived that
+//! way. The rule that matters is the one about parallel screen work, not a freeze.
+//!
+//! **A command that touches the filesystem, a subprocess or a socket must be `async` and do its
+//! work in `spawn_blocking`.** A synchronous one runs on the GTK main loop, and WebKitGTK aborts
+//! the whole process when that loop stalls (#142/#143). `read_config`, `write_config`,
+//! `resolve_conflict`, `read_conflict_pair` and `path_sync_status` predate the rule and are still
+//! synchronous — `path_sync_status` in particular can hold the loop for its full 3s index busy
+//! timeout. They are bounded enough to have survived; anything unbounded is not, and none of the
+//! commands added since is synchronous.
 
 use crate::config_path::RuntimePaths;
 use gui_core::conflicts::{self, Conflict, Resolution};
@@ -190,6 +203,14 @@ pub struct ConfigPayload {
     proton_list_attempts: Option<i64>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
+    /// The same two booleans as the Settings → Deletions radio (C1, #174).
+    ///
+    /// Carried **alongside** them, not instead of them: the raw pair is what the Advanced view and
+    /// the config text show, while the policy is what a radio group can bind to. Deriving it in the
+    /// frontend instead would be a second place that has to know an absent key means `true` — and
+    /// that defaulting is precisely what stops an empty config drawing as `Never ask` on a machine
+    /// that is in fact asking about everything.
+    deletion_policy: config_io::DeletionPolicy,
 }
 
 #[tauri::command]
@@ -212,6 +233,7 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
         proton_list_attempts: doc.get_int("proton_list_attempts"),
         delete_approval_remote: doc.get_delete_approval("remote"),
         delete_approval_local: doc.get_delete_approval("local"),
+        deletion_policy: doc.get_deletion_policy(),
     })
 }
 
@@ -230,6 +252,9 @@ pub struct ConfigUpdate {
     proton_list_attempts: Option<i64>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
+    /// Applied AFTER the two raw booleans, so a screen that sends both cannot end up half-written:
+    /// the policy always sets both directions, which is what makes a radio selection unambiguous.
+    deletion_policy: Option<config_io::DeletionPolicy>,
 }
 
 #[tauri::command]
@@ -268,6 +293,9 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     }
     if let Some(v) = update.delete_approval_local {
         doc.set_delete_approval("local", v);
+    }
+    if let Some(v) = update.deletion_policy {
+        doc.set_deletion_policy(v);
     }
     doc.save(&path).map_err(|e| e.to_string())?;
     // Re-resolve in case local_root / socket / db changed, but keep the daemon-reported live
@@ -623,6 +651,209 @@ pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), 
         .map_err(|e| e.to_string())
 }
 
+// ------------------------------------------------------- the Phase-1 capability commands ----
+
+/// Room on the filesystem the sync folder lives on (C4, #177).
+///
+/// `path` prices a folder the config has not been written for yet — onboarding step 1 offers a pair
+/// before anything is saved, so the screen must be able to ask about a proposal. Omitted, it uses
+/// the configured local root.
+///
+/// **Only half of `9a Review`'s sentence.** `Needs 38.4 GB free` cannot be computed: no level of
+/// the dry-run surface carries a file size (G6, #206). See `gui_core::free_space` and DEVIATIONS.
+///
+/// Async because a hung network or FUSE mount makes `statvfs` block indefinitely, and the sync
+/// folder being on such a mount is exactly the case where the number matters.
+#[tauri::command]
+pub async fn free_space(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<gui_core::free_space::FreeSpace, String> {
+    let target = match path {
+        // A path typed into the folder picker gets the same `~` expansion the config values get —
+        // the picker is a text field, and `~/ProtonDrive` is what someone types.
+        Some(path) => config_io::expand_config_path(path, "path"),
+        None => app
+            .state::<Mutex<RuntimePaths>>()
+            .lock()
+            .unwrap()
+            .effective_local_root()
+            .ok_or_else(|| "local_root is not configured".to_string())?,
+    };
+    tauri::async_runtime::spawn_blocking(move || gui_core::free_space::for_path(&target))
+        .await
+        .map_err(|error| format!("free-space task failed: {error}"))?
+}
+
+/// Whether the `proton-drive` CLI is installed, and which distribution this is (C5, #178).
+///
+/// Two facts in one reply because they are drawn on one dialog and answered at one moment. The
+/// screen only ever appears when `installed` is false — the CLI check is otherwise a silent
+/// precondition, which is what let onboarding drop from four steps to two.
+///
+/// **Never cached.** This backs both the silent precondition and the `Check again` button, and the
+/// user is expected to install the tool between two calls.
+///
+/// `installed` is *presence*, not health: a CLI that is installed but logged out is `true`. Sending
+/// an authenticated-but-failing user to an install screen would answer a question they do not have.
+/// The probe uses the **configured** `proton_cli`, which may be an absolute path (#158's boot-PATH
+/// fix), so a tool that is installed and merely off the launcher's PATH is not reported missing.
+#[derive(serde::Serialize)]
+pub struct CliPresence {
+    installed: bool,
+    distro: Option<gui_core::distro::Distro>,
+}
+
+/// How long the CLI probe waits before giving up on it. Generous for a `--version`, short enough
+/// that onboarding does not appear to have died.
+const CLI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[tauri::command]
+pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
+    let proton_cli = app
+        .state::<Mutex<RuntimePaths>>()
+        .lock()
+        .unwrap()
+        .proton_cli
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || CliPresence {
+        installed: probe_cli(&proton_cli),
+        distro: gui_core::distro::detect_here(),
+    })
+    .await
+    // A failed join is not "no CLI and no distribution" — but this command cannot reject (the
+    // screen must render), so it degrades to the state that shows the install dialog, which is the
+    // safe direction: it tells the user to check something rather than assuming it is fine.
+    .unwrap_or(CliPresence {
+        installed: false,
+        distro: None,
+    })
+}
+
+/// Is the CLI there? Bounded by [`CLI_PROBE_TIMEOUT`], because nothing else in this command is.
+///
+/// **A probe that never returns is the failure mode this screen cannot have.** `check_cli` is the
+/// silent precondition *and* the `Check again` button, so a `proton_cli` that hangs — a stale
+/// keyring prompt, a wedged network mount holding the binary, an absolute path pointing at a FIFO —
+/// would park a `spawn_blocking` thread forever, leave the JS promise unresolved, and let every
+/// press of `Check again` park another. `Command::status()` on its own has no timeout, which is why
+/// this polls instead.
+///
+/// **A successful spawn IS the answer**, and the exit status is deliberately ignored. `installed`
+/// means the executable is there, and a `proton-drive` that exits non-zero on `--version` — a
+/// wrapper script, a missing shared library, a broken install — is present and broken, not absent.
+/// Routing that user to an install screen would answer a question they do not have, which is the
+/// same mistake as doing it for a CLI that is merely logged out. Only a failed spawn (`ENOENT`, not
+/// executable) is "isn't installed".
+///
+/// So the wait exists purely to **reap**: an unwaited child stays a zombie for the life of the GUI,
+/// and `Check again` can be pressed repeatedly.
+fn probe_cli(proton_cli: &str) -> bool {
+    let mut child = match Command::new(proton_cli)
+        .arg("--version")
+        // **stdin is nulled, not inherited.** `Command::status()`/`spawn()` inherit stdin by
+        // default, while every other subprocess here uses `.output()` (which pipes it) — so this
+        // was the one place a CLI that reads stdin before exiting could block on the GUI's own
+        // terminal, forever, with no keyboard attached to answer it. Null makes that an immediate
+        // EOF.
+        .stdin(std::process::Stdio::null())
+        // Null rather than inherited, so a chatty CLI can neither fill a pipe nobody drains nor
+        // print into the GUI's own stdout.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+
+    let deadline = std::time::Instant::now() + CLI_PROBE_TIMEOUT;
+    loop {
+        // `Err` here means the child is unwaitable — still not a statement about presence.
+        if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// What each skip rule is hiding right now (C2, #175).
+///
+/// `patterns` is the rule set **currently on screen**, not the saved config: `8a Skip rules` is
+/// drawn mid-edit with a pending removal, and the Add row prices a pattern before it is saved.
+///
+/// **Pass `include` whenever the config has any**, from the same `read_config` reply the tab is
+/// already showing. Omitting it does not fail — it silently widens every count to files the include
+/// list already keeps out of the sync, so a rule is credited with hiding something it is not, and
+/// `will start syncing` promises files that would not. The Advanced tab owns those globs; this
+/// command only needs to know they exist.
+///
+/// Async and unbounded — this walks the whole local tree (metadata only, no hashing). Running it on
+/// the GTK main loop would freeze the window for the length of the walk.
+#[tauri::command]
+pub async fn skip_rule_usage(
+    app: tauri::AppHandle,
+    patterns: Vec<String>,
+    include: Option<Vec<String>>,
+) -> Result<gui_core::skip_rules::SkipRuleReport, String> {
+    let (local_root, db_path) = {
+        let paths = app.state::<Mutex<RuntimePaths>>();
+        let paths = paths.lock().unwrap();
+        (paths.effective_local_root(), paths.effective_db_path())
+    };
+    // Two different "no" answers, and only one of them makes a rule safe to remove.
+    //
+    // `is not configured` is the easy one. The dangerous one is a root that IS configured and is
+    // not there — an unmounted external drive, a literal `~/ProtonDrive` because `HOME` was unset,
+    // a folder the user moved. `measure` would happily walk nothing, and every rule would come back
+    // `files: 0` with `folder_exists: Some(false)`, which the tab draws as **`Matching nothing · no
+    // such folder here any more — safe to remove`** on every rule at once. Removing them would then
+    // start syncing everything they were hiding, the moment the drive came back.
+    let local_root = local_root.ok_or_else(|| "local_root is not configured".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if !local_root.is_dir() {
+            return Err(format!(
+                "the sync folder {} is not there right now",
+                local_root.display()
+            ));
+        }
+        gui_core::skip_rules::measure(
+            &local_root,
+            &patterns,
+            &include.unwrap_or_default(),
+            &daemon_ignored_paths(db_path.as_ref()),
+        )
+    })
+    .await
+    .map_err(|error| format!("skip-rule scan failed: {error}"))?
+}
+
+/// The state files the daemon keeps out of its own scan, so a relocated index inside the sync root
+/// is not reported as user data some rule is hiding.
+///
+/// Mirrors `scan_options_from_config`: the index plus its two JSON sidecars. (`ScanOptions::new`
+/// expands SQLite's own `-journal`/`-wal`/`-shm` siblings, and a top-level `.sync/` and the download
+/// scratch directory are handled by `should_ignore_path`, so this is the remainder.)
+fn daemon_ignored_paths(db_path: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let Some(db_path) = db_path else {
+        return Vec::new();
+    };
+    // `with_extension`, exactly as `status_history_path`/`metrics_path` in the daemon do it — so the
+    // sidecars REPLACE the `.db` (`sync_index.status.json`) rather than extending it. Appending
+    // would name two files that never exist, leaving the two that do inside the walk, where they
+    // would be counted as user data some rule is hiding.
+    vec![
+        db_path.clone(),
+        db_path.with_extension("status.json"),
+        db_path.with_extension("metrics.json"),
+    ]
+}
+
 /// `Ctrl W` — hide the window to the tray. Deliberately the SAME path as the tray's
 /// `Close window (keeps syncing in the tray)` item and as the window-manager close button
 /// (`on_window_event` in lib.rs prevents the close and hides): three ways to do one thing, and a
@@ -655,7 +886,43 @@ pub fn quit_app(app: tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_ansi;
+    use super::{daemon_ignored_paths, probe_cli, strip_ansi};
+
+    #[test]
+    fn a_missing_binary_is_the_only_thing_that_reads_as_not_installed() {
+        assert!(
+            !probe_cli("proton-drive-that-is-definitely-not-installed-xyzzy"),
+            "a failed spawn is the real 'isn't installed'"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_present_binary_that_exits_non_zero_is_still_present() {
+        // `installed` is presence, not health. A wrapper script, a missing shared library, or a
+        // `--version` this tool does not implement all exit non-zero — and routing that user to an
+        // install screen answers a question they do not have. `/bin/false` stands in for all three.
+        assert!(probe_cli("/bin/false"));
+        assert!(probe_cli("/bin/true"));
+    }
+
+    #[test]
+    fn the_ignored_set_matches_the_daemons_when_there_is_an_index_and_is_empty_when_there_is_not() {
+        assert!(daemon_ignored_paths(None).is_empty());
+        let db = std::path::PathBuf::from("/x/.sync/sync_index.db");
+        let ignored = daemon_ignored_paths(Some(&db));
+        // The sidecars REPLACE the `.db`, because `status_history_path`/`metrics_path` in the
+        // daemon are `with_extension`. Appending would name two files that never exist and leave
+        // the two that do inside the walk, counted as user data some rule is hiding.
+        assert_eq!(
+            ignored,
+            vec![
+                db.clone(),
+                std::path::PathBuf::from("/x/.sync/sync_index.status.json"),
+                std::path::PathBuf::from("/x/.sync/sync_index.metrics.json"),
+            ]
+        );
+    }
 
     #[test]
     fn strip_ansi_removes_color_sequences_and_keeps_text() {

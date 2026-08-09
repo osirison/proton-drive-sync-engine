@@ -31,6 +31,11 @@ pub fn run() {
             commands::start_service,
             commands::restart_service,
             commands::notify,
+            // The Phase-1 capability commands (C2/C4/C5) — data the design assumes and the daemon
+            // does not expose. Added by the C-tasks, not by the screens that consume them.
+            commands::free_space,
+            commands::check_cli,
+            commands::skip_rule_usage,
             // F4's keyboard map: Ctrl W and Ctrl Q. Same two paths the tray menu already offers.
             commands::close_window,
             commands::quit_app,

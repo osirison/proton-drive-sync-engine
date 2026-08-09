@@ -38,6 +38,8 @@ pub fn gui_config_path() -> PathBuf {
     base.join("proton-sync").join("proton-sync.toml")
 }
 
+use gui_core::config_io::expand_config_path as expand;
+
 fn default_socket_path() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -53,17 +55,32 @@ impl RuntimePaths {
         let doc = gui_core::config_io::ConfigDoc::load(&config_path).ok();
         let get = |key: &str| doc.as_ref().and_then(|d| d.get_str(key));
 
-        let local_root = get("local_root").map(PathBuf::from);
-        let remote_root = get("remote_root").map(PathBuf::from);
+        // `~` is expanded HERE, once, for the same reason the daemon expands it once at config
+        // resolution (#135). Onboarding writes `local_root = "~/ProtonDrive"` — a literal the shell
+        // never touched — and every GUI feature that joins that value onto the filesystem then
+        // operates on a directory named `~` under the process's working directory: the conflict
+        // scan finds nothing, the emblem lookup opens no index, and the free-space check reports
+        // ENOENT on the one screen whose whole job is to say whether there is room. Expanding at
+        // the funnel fixes every consumer at once, including the ones not written yet; expanding
+        // per command is how the two halves drift apart again.
+        //
+        // `local_root` is expanded BEFORE `db_path` derives from it, or the derived index path
+        // inherits the unexpanded root.
+        let local_root = get("local_root").map(|value| expand(value, "local_root"));
+        let remote_root = get("remote_root").map(PathBuf::from); // a Proton Drive path, not local
         let socket_path = get("socket_path")
-            .map(PathBuf::from)
+            .map(|value| expand(value, "socket_path"))
             .unwrap_or_else(default_socket_path);
-        let db_path = get("db_path").map(PathBuf::from).or_else(|| {
-            local_root
-                .as_ref()
-                .map(|root| root.join(".sync").join("sync_index.db"))
-        });
-        let proton_cli = get("proton_cli").unwrap_or_else(|| "proton-drive".to_string());
+        let db_path = get("db_path")
+            .map(|value| expand(value, "db_path"))
+            .or_else(|| {
+                local_root
+                    .as_ref()
+                    .map(|root| root.join(".sync").join("sync_index.db"))
+            });
+        let proton_cli = get("proton_cli")
+            .map(|value| expand(value, "proton_cli").to_string_lossy().into_owned())
+            .unwrap_or_else(|| "proton-drive".to_string());
 
         Self {
             config_path,
