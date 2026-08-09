@@ -180,12 +180,13 @@ export const CONFLICTS = {
    */
   kindText: "a plain text file",
   kindBinary: "a file this app can't read",
-  // `a folder here, a file on Proton Drive` until the queue list was measured — a sentence I wrote
-  // from the prose in `04-conflicts.md` rather than off a frame, which is exactly what the copy
-  // gate suspected when it refused it as undrawn. It IS drawn: `3a Conflict diff`'s third queue row
-  // reads `photos/trip · a folder here, a file there · 3 of 3`. The short form is also the better
-  // one — the row already says which side is which by sitting in this app.
-  kindFolder: "a folder here, a file there",
+  // NOT the queue row's wording, which is `typeConflict` below and reads `a folder here, a file
+  // there`. This is the META LINE — the slot that says `a plain text file` on `3a Conflict`, where
+  // the sentence stands alone under a filename rather than beside a path in a list, and can afford
+  // to name the far side. Two strings for one situation, drawn in two places, and only one of the
+  // two places is drawn: no frame opens a type conflict, so this one stays in the gate's NOT_DRAWN
+  // table while `typeConflict` is measured off `3a Conflict diff`.
+  kindFolder: "a folder here, a file on Proton Drive",
 
   /** The metadata row's other two items. Both are counted off the pair, so both take their number. */
   lineCount: (n) => `${count(n)} ${plural(n, "line", "lines")}`,

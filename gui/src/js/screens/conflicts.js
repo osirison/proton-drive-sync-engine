@@ -105,12 +105,15 @@ function pager({ index, total, onPrev, onNext, padBottom = false }) {
     return node;
   };
 
-  const wrap = el(
-    "div",
-    { class: "cf-pager" },
-    el("span", { class: "cf-position" }, CONFLICTS.position(index + 1, total)),
-    step("‹", index === 0, onPrev),
-    step("›", index >= total - 1, onNext),
+  const wrap = fid(
+    el(
+      "div",
+      { class: "cf-pager" },
+      fid(el("span", { class: "cf-position" }, CONFLICTS.position(index + 1, total)), "position"),
+      fid(step("‹", index === 0, onPrev), "pagerPrev"),
+      fid(step("›", index >= total - 1, onNext), "pagerNext"),
+    ),
+    "pager",
   );
   if (padBottom) wrap.style.paddingBottom = "4px";
   return wrap;
@@ -133,24 +136,44 @@ function versionCard({ side, pair, facts }) {
   const source = side === "mine" ? pair?.original : pair?.sidecar;
   const text = source?.text ?? null;
   const lineCount = text == null ? null : text.replace(/\r\n?/g, "\n").replace(/\n$/, "").split("\n").length;
+  // The two columns are one shape drawn twice, so the fid tables index them rather than naming
+  // them — 0 is yours, 1 is Proton's, in the order the grid puts them.
+  const at = side === "mine" ? 0 : 1;
 
-  const card = el("div", { class: "cf-card" });
+  const card = fid(el("div", { class: "cf-card" }), "card", at);
   card.append(
-    el("div", { class: "cf-card-happened" }, side === "mine" ? CONFLICTS.mineChange : CONFLICTS.theirsChange),
+    fid(
+      el(
+        "div",
+        { class: "cf-card-happened" },
+        side === "mine" ? CONFLICTS.mineChange : CONFLICTS.theirsChange,
+      ),
+      "cardHappened",
+      at,
+    ),
   );
 
   // What differs, in words — and silence rather than a hedge when the grammar does not cover it.
   // `04-conflicts.md`: fall back to the metadata row alone, and never to the raw diff, which is
   // what the disclosure is for.
   const sentence = CONFLICTS.versionDiff(side, facts);
-  if (sentence) card.append(proseWithQuote(sentence, facts?.quoted));
+  if (sentence) {
+    const prose = proseWithQuote(sentence, facts?.quoted);
+    fid(prose, "cardProse", at);
+    fid(prose.querySelector(".cf-quote"), "cardQuote", at);
+    card.append(prose);
+  }
 
-  const meta = el("div", { class: "cf-card-meta" });
+  const meta = fid(el("div", { class: "cf-card-meta" }), "cardMeta", at);
   meta.append(el("span", {}, fileSize(source?.size ?? 0)));
   if (lineCount != null) meta.append(el("span", {}, CONFLICTS.lineCount(lineCount)));
   if (source?.mtime_epoch_secs != null) {
     meta.append(el("span", {}, CONFLICTS.edited(source.mtime_epoch_secs)));
   }
+  // Stamped by POSITION after the fact, because the row is built conditionally: a pair with no
+  // readable text has no line count, and hard-coding `span[1]` for `edited` would then map the
+  // timestamp onto the frame's line-count node.
+  for (const [j, item] of [...meta.children].entries()) fid(item, "cardMetaItem", at, j);
   card.append(meta);
   return card;
 }
@@ -179,38 +202,48 @@ function proseWithQuote(sentence, quoted) {
 
 function cardBody({ conflict, pair, comparison, onOpenDiff }) {
   const body = fid(el("div", { class: "cf-body" }), "body");
-  body.append(renderSeam({ site: "conflictBody" }));
+  body.append(fid(renderSeam({ site: "conflictBody" }), "seam"));
 
   // The file, on the seam. The mark does NOT declare `flex:none` here — 43 of the 53 drawn marks
   // do not, and this is one of them (the 34px mark in the diff view is the opposite).
-  const onSeam = el("div", { class: "cf-onseam" });
+  const onSeam = fid(el("div", { class: "cf-onseam" }), "onSeam");
   onSeam.append(
-    renderHexagon({
-      size: HERO_SIZE,
-      state: "needsNumeral",
-      tone: "decision",
-      masked: true,
-      numeral: 3,
-    }),
+    fid(
+      renderHexagon({
+        size: HERO_SIZE,
+        state: "needsNumeral",
+        tone: "decision",
+        masked: true,
+        numeral: 3,
+      }),
+      "hexagon",
+    ),
   );
-  const path = el("div", { class: "cf-path" }, conflict.original);
+  const path = fid(el("div", { class: "cf-path" }, conflict.original), "path");
   // `position: false` — unlike the main hero's headline, these two are static and their PARENT
   // carries the stacking, so masking must not turn them into positioned elements.
   seamMask(path, { pad: 14, position: false });
-  const meta = el("div", { class: "cf-onseam-meta" }, CONFLICTS.meta(fileKindOf(conflict, pair)));
+  const meta = fid(
+    el("div", { class: "cf-onseam-meta" }, CONFLICTS.meta(fileKindOf(conflict, pair))),
+    "onSeamMeta",
+  );
   seamMask(meta, { pad: 14, padY: 2, position: false });
   onSeam.append(path, meta);
   body.append(onSeam);
 
-  const cards = el("div", { class: "cf-cards" });
-  for (const side of ["mine", "theirs"]) {
-    const cell = el("div", { class: `cf-cell cf-cell-${side}` });
+  const cards = fid(el("div", { class: "cf-cards" }), "cards");
+  for (const [at, side] of ["mine", "theirs"].entries()) {
+    const cell = fid(el("div", { class: `cf-cell cf-cell-${side}` }), "cardCol", at);
     cell.append(
-      eyebrow({
-        tone: side === "mine" ? "up" : "down",
-        align: side === "mine" ? "start" : "end",
-        text: side === "mine" ? CONFLICTS.mine : CONFLICTS.theirs,
-      }),
+      fid(
+        eyebrow({
+          tone: side === "mine" ? "up" : "down",
+          align: side === "mine" ? "start" : "end",
+          text: side === "mine" ? CONFLICTS.mine : CONFLICTS.theirs,
+        }),
+        "cardEyebrow",
+        at,
+      ),
       versionCard({ side, pair, facts: summariseSide(comparison, side) }),
     );
     cards.append(cell);
@@ -221,7 +254,7 @@ function cardBody({ conflict, pair, comparison, onOpenDiff }) {
   // Nor is it drawn when a side has no text to compare (binary, too large, or vanished): the
   // disclosure would open onto nothing.
   if (conflict.kind !== "type" && comparison) {
-    const wrap = el("div", { class: "cf-disclose" });
+    const wrap = fid(el("div", { class: "cf-disclose" }), "disclose");
     const btn = button({
       kind: "quietOutlined",
       size: "standard",
@@ -232,7 +265,7 @@ function cardBody({ conflict, pair, comparison, onOpenDiff }) {
     // The button's own fill IS the seam mask. As a custom property, not an inline background —
     // an inline background beats `.btn:hover { background: var(--btn-bg-hover) }` and kills hover.
     btn.style.setProperty("--btn-bg", "var(--surface)");
-    wrap.append(btn);
+    wrap.append(fid(btn, "discloseBtn"));
     body.append(wrap);
   }
   return body;
@@ -245,22 +278,35 @@ function cardBody({ conflict, pair, comparison, onOpenDiff }) {
  * the safe option physically between the two that lose something.
  */
 function choices({ conflict, onChoose, onLater }) {
-  const grid = el("div", { class: "cf-choices" });
-  const make = (resolution, kind, title, body, glyph, tone) => {
-    const node = button({
-      kind,
-      size: "choice",
-      label: title,
-      sublabel: body,
-      glyph,
-      glyphTone: tone,
-      onClick: () => onChoose(resolution),
-    });
+  const grid = fid(el("div", { class: "cf-choices" }), "choices");
+  const make = (at, resolution, kind, title, body, glyph, tone) => {
+    const node = fid(
+      button({
+        kind,
+        size: "choice",
+        label: title,
+        sublabel: body,
+        glyph,
+        glyphTone: tone,
+        onClick: () => onChoose(resolution),
+      }),
+      "choice",
+      at,
+    );
+    // Stamped off the built button rather than threaded through `button()`: the control owns the
+    // two-tier structure and the screen owns the mapping, and handing controls.js a fid table would
+    // make every other screen's buttons its business too.
+    fid(node.querySelector(".btn-choice-row"), "choiceRow", at);
+    fid(node.querySelector(".btn-glyph"), "choiceGlyph", at);
+    fid(node.querySelector(".btn-choice-name"), "choiceName", at);
+    fid(node.querySelector(".btn-choice-sub"), "choiceSub", at);
+    fid(node.querySelector(".btn-choice-sub .mono"), "choiceSubMono", at);
     return node;
   };
   grid.append(
-    make("keep_mine", "decisionChoice", CONFLICTS.keepMine, CONFLICTS.keepMineSub, "→", "up"),
+    make(0, "keep_mine", "decisionChoice", CONFLICTS.keepMine, CONFLICTS.keepMineSub, "→", "up"),
     make(
+      1,
       "keep_both",
       "primaryChoice",
       CONFLICTS.keepBoth,
@@ -268,23 +314,29 @@ function choices({ conflict, onChoose, onLater }) {
       "⇄",
       "onPrimary",
     ),
-    make("use_proton", "decisionChoice", CONFLICTS.useTheirs, CONFLICTS.useTheirsSub, "←", "down"),
+    make(2, "use_proton", "decisionChoice", CONFLICTS.useTheirs, CONFLICTS.useTheirsSub, "←", "down"),
   );
 
-  const note = el(
-    "div",
-    { class: "cf-note" },
-    el("span", {}, CONFLICTS.cannotUndo),
-    el("span", { class: "cf-spacer" }),
-    button({
-      kind: "quietOutlined",
-      size: "standard",
-      label: CONFLICTS.later,
-      padding: "8px 15px",
-      onClick: onLater,
-    }),
+  const note = fid(
+    el(
+      "div",
+      { class: "cf-note" },
+      fid(el("span", {}, CONFLICTS.cannotUndo), "noteText"),
+      fid(el("span", { class: "cf-spacer" }), "noteSpacer"),
+      fid(
+        button({
+          kind: "quietOutlined",
+          size: "standard",
+          label: CONFLICTS.later,
+          padding: "8px 15px",
+          onClick: onLater,
+        }),
+        "later",
+      ),
+    ),
+    "note",
   );
-  return el("div", { class: "cf-choices-block" }, grid, note);
+  return fid(el("div", { class: "cf-choices-block" }, grid, note), "choicesBlock");
 }
 
 /**
@@ -338,33 +390,52 @@ function fileKindOf(conflict, pair) {
 function diffBody({ pair, comparison, queue, index, onHideDiff, onOpenBoth }) {
   const rows = alignedRows(pair?.original?.text, pair?.sidecar?.text) ?? [];
 
-  const panel = el("div", { class: "cf-diff-panel" });
-  const column = (side) => {
-    const cell = el("div", { class: "cf-diff-col" });
-    for (const row of rows) cell.append(diffLine(row, side));
+  const panel = fid(el("div", { class: "cf-diff-panel" }), "diffPanel");
+  const column = (side, at) => {
+    const cell = fid(el("div", { class: "cf-diff-col" }), "diffCol", at);
+    for (const [i, row] of rows.entries()) cell.append(diffLine(row, side, at, i));
     return cell;
   };
   // The 1px column between the halves — `split` rather than `gutter`, which in a diff means the
   // line-number channel (`.cf-diff-n`) and would name two different things one word apart.
-  panel.append(column("mine"), el("div", { class: "cf-diff-split" }), column("theirs"));
-
-  const labels = el(
-    "div",
-    { class: "cf-diff-labels" },
-    eyebrow({ tone: "up", align: "start", text: CONFLICTS.mineShort }),
-    eyebrow({ tone: "down", align: "end", text: CONFLICTS.theirsShort }),
+  panel.append(
+    column("mine", 0),
+    fid(el("div", { class: "cf-diff-split" }), "diffSplit"),
+    column("theirs", 1),
   );
 
-  const counts = el(
-    "div",
-    { class: "cf-diff-counts" },
-    el("span", {}, CONFLICTS.diffCounts(comparison?.differing ?? 0, comparison?.identical ?? 0) ?? ""),
-    el("span", { class: "cf-spacer" }),
-    button({ kind: "quietOutlined", size: "small", label: CONFLICTS.openBoth, onClick: onOpenBoth }),
-    button({ kind: "quietOutlined", size: "small", label: CONFLICTS.hideDiff, onClick: onHideDiff }),
+  const labels = fid(
+    el(
+      "div",
+      { class: "cf-diff-labels" },
+      fid(eyebrow({ tone: "up", align: "start", text: CONFLICTS.mineShort }), "diffLabel", 0),
+      fid(eyebrow({ tone: "down", align: "end", text: CONFLICTS.theirsShort }), "diffLabel", 1),
+    ),
+    "diffLabels",
   );
 
-  const content = el("div", { class: "cf-diff-content" }, labels, panel, counts);
+  const counts = fid(
+    el(
+      "div",
+      { class: "cf-diff-counts" },
+      fid(
+        el("span", {}, CONFLICTS.diffCounts(comparison?.differing ?? 0, comparison?.identical ?? 0) ?? ""),
+        "diffCountsText",
+      ),
+      fid(el("span", { class: "cf-spacer" }), "diffCountsSpacer"),
+      fid(
+        button({ kind: "quietOutlined", size: "small", label: CONFLICTS.openBoth, onClick: onOpenBoth }),
+        "openBoth",
+      ),
+      fid(
+        button({ kind: "quietOutlined", size: "small", label: CONFLICTS.hideDiff, onClick: onHideDiff }),
+        "hideDiff",
+      ),
+    ),
+    "diffCounts",
+  );
+
+  const content = fid(el("div", { class: "cf-diff-content" }, labels, panel, counts), "body");
   const remaining = queueList(queue, index);
   if (remaining) content.append(remaining);
   return content;
@@ -378,21 +449,26 @@ function diffBody({ pair, comparison, queue, index, onHideDiff, onOpenBoth }) {
  * `absent` as a third visual kind on both sides would leave the gained line looking unchanged,
  * which is the one thing the row exists to point at.
  */
-function diffLine(row, side) {
+function diffLine(row, side, at, i) {
   const cell = row[side];
-  const line = el("div", { class: "cf-diff-line" });
+  const line = fid(el("div", { class: "cf-diff-line" }), "diffLine", at, i);
   if (!cell) {
     line.append(
-      el("span", { class: "cf-diff-n cf-diff-n-absent" }, "·"),
-      el("span", { class: "cf-diff-text cf-diff-text-absent" }, CONFLICTS.absentLine(side)),
+      fid(el("span", { class: "cf-diff-n cf-diff-n-absent" }, "·"), "diffN", at, i),
+      fid(
+        el("span", { class: "cf-diff-text cf-diff-text-absent" }, CONFLICTS.absentLine(side)),
+        "diffText",
+        at,
+        i,
+      ),
     );
     return line;
   }
   const tinted = row.kind !== "unchanged";
   if (tinted) line.classList.add(side === "mine" ? "is-changed-mine" : "is-changed-theirs");
   line.append(
-    el("span", { class: "cf-diff-n" }, String(cell.n)),
-    el("span", { class: "cf-diff-text" }, cell.text),
+    fid(el("span", { class: "cf-diff-n" }, String(cell.n)), "diffN", at, i),
+    fid(el("span", { class: "cf-diff-text" }, cell.text), "diffText", at, i),
   );
   return line;
 }
@@ -401,25 +477,44 @@ function diffLine(row, side) {
 function queueList(queue, index) {
   const rest = queue.filter((_, i) => i !== index);
   if (!rest.length) return null;
-  const rows = el("div", { class: "cf-queue-rows" });
-  for (const item of rest) {
+  const rows = fid(el("div", { class: "cf-queue-rows" }), "queueRows");
+  // `i` is the position IN THIS LIST (what the fid tables index) and `at` the position in the whole
+  // queue (what `2 of 3` counts). They differ by one from the open conflict onward, and swapping
+  // them maps every row after the current one onto its neighbour's node.
+  for (const [i, item] of rest.entries()) {
     const at = queue.indexOf(item);
     rows.append(
-      el(
-        "div",
-        { class: "cf-queue-row" },
-        dot({ tone: "decision", size: 6 }),
-        el("span", { class: "cf-queue-path" }, item.original),
+      fid(
         el(
-          "span",
-          { class: "cf-queue-reason" },
-          item.kind === "type" ? CONFLICTS.typeConflict : CONFLICTS.bothChanged,
+          "div",
+          { class: "cf-queue-row" },
+          fid(dot({ tone: "decision", size: 6 }), "queueDot", i),
+          fid(el("span", { class: "cf-queue-path" }, item.original), "queuePath", i),
+          fid(
+            el(
+              "span",
+              { class: "cf-queue-reason" },
+              item.kind === "type" ? CONFLICTS.typeConflict : CONFLICTS.bothChanged,
+            ),
+            "queueReason",
+            i,
+          ),
+          fid(el("span", { class: "cf-queue-pos" }, CONFLICTS.position(at + 1, queue.length)), "queuePos", i),
         ),
-        el("span", { class: "cf-queue-pos" }, CONFLICTS.position(at + 1, queue.length)),
+        "queueRow",
+        i,
       ),
     );
   }
-  return el("div", { class: "cf-queue" }, eyebrow({ tone: "neutral", text: CONFLICTS.stillWaiting }), rows);
+  return fid(
+    el(
+      "div",
+      { class: "cf-queue" },
+      fid(eyebrow({ tone: "neutral", text: CONFLICTS.stillWaiting }), "queueEyebrow"),
+      rows,
+    ),
+    "queue",
+  );
 }
 
 // ----------------------------------------------------------------------- the cleared state ----
@@ -434,20 +529,26 @@ function queueList(queue, index) {
  * the bundled unicode ranges, which taints the root and every ancestor chain through it). §74.
  */
 function clearedBody({ settled, onBack }) {
-  const inner = el("div", { class: "cf-cleared-inner" });
-  inner.append(
-    renderHexagon({ size: CLEARED_SIZE, state: "settled" }),
-    el("div", { class: "cf-cleared-title" }, CONFLICTS.clearedTitle),
-    el("div", { class: "cf-cleared-sub" }, CONFLICTS.clearedSub(settled)),
-    button({
-      kind: "secondaryOutlined",
-      size: "bar",
-      label: CONFLICTS.back,
-      padding: "10px 20px",
-      onClick: onBack,
-    }),
+  // FLAT, with no inner wrapper: the frame's body is one block and the mapping is positional, so a
+  // centring shell around a column would be a node with no key beneath it. conflicts.css does the
+  // centring with `margin: 0 auto` for exactly that reason.
+  const body = fid(el("div", { class: "cf-cleared" }), "cleared");
+  body.append(
+    fid(renderHexagon({ size: CLEARED_SIZE, state: "settled" }), "hexagon"),
+    fid(el("div", { class: "cf-cleared-title" }, CONFLICTS.clearedTitle), "clearedTitle"),
+    fid(el("div", { class: "cf-cleared-sub" }, CONFLICTS.clearedSub(settled)), "clearedSub"),
+    fid(
+      button({
+        kind: "secondaryOutlined",
+        size: "bar",
+        label: CONFLICTS.back,
+        padding: "10px 20px",
+        onClick: onBack,
+      }),
+      "clearedBack",
+    ),
   );
-  return el("div", { class: "cf-cleared" }, inner);
+  return body;
 }
 
 // ------------------------------------------------------------------------------ the screen ----
@@ -484,38 +585,60 @@ export function renderConflicts(state) {
   const comparison = compare(pair?.original?.text, pair?.sidecar?.text);
 
   if (body === "diff") {
-    const head = el(
-      "div",
-      { class: "cf-diff-head" },
-      renderHexagon({
-        size: COMPACT_SIZE,
-        state: "needsNumeral",
-        tone: "decision",
-        masked: true,
-        numeral: conflicts.length,
-        flexNone: true,
-      }),
+    const head = fid(
       el(
         "div",
-        { class: "cf-diff-headtext" },
-        el("div", { class: "cf-path-plain" }, conflict.original),
-        el("div", { class: "cf-diff-summary" }, CONFLICTS.diffSummary(comparison?.differing ?? 0) ?? ""),
+        { class: "cf-diff-head" },
+        fid(
+          renderHexagon({
+            size: COMPACT_SIZE,
+            state: "needsNumeral",
+            tone: "decision",
+            masked: true,
+            numeral: conflicts.length,
+            flexNone: true,
+          }),
+          "hexagon",
+        ),
+        fid(
+          el(
+            "div",
+            { class: "cf-diff-headtext" },
+            fid(el("div", { class: "cf-path-plain" }, conflict.original), "pathPlain"),
+            fid(
+              el(
+                "div",
+                { class: "cf-diff-summary" },
+                CONFLICTS.diffSummary(comparison?.differing ?? 0) ?? "",
+              ),
+              "diffSummary",
+            ),
+          ),
+          "diffHeadText",
+        ),
+        pager({ index: at, total: conflicts.length, onPrev, onNext }),
       ),
-      pager({ index: at, total: conflicts.length, onPrev, onNext }),
+      "diffHead",
     );
     return [head, diffBody({ pair, comparison, queue: conflicts, index: at, onHideDiff, onOpenBoth })];
   }
 
-  const titleRow = el(
-    "div",
-    { class: "cf-title-row" },
+  const titleRow = fid(
     el(
       "div",
-      { class: "cf-title-text" },
-      el("div", { class: "cf-title" }, CONFLICTS.title),
-      el("div", { class: "cf-sub" }, CONFLICTS.sub),
+      { class: "cf-title-row" },
+      fid(
+        el(
+          "div",
+          { class: "cf-title-text" },
+          fid(el("div", { class: "cf-title" }, CONFLICTS.title), "title"),
+          fid(el("div", { class: "cf-sub" }, CONFLICTS.sub), "sub"),
+        ),
+        "titleText",
+      ),
+      pager({ index: at, total: conflicts.length, onPrev, onNext, padBottom: true }),
     ),
-    pager({ index: at, total: conflicts.length, onPrev, onNext, padBottom: true }),
+    "titleRow",
   );
 
   return [

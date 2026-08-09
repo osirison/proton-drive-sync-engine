@@ -268,9 +268,20 @@ document.addEventListener("shell:step", (e) => {
   stepConflict(e.detail?.delta ?? 0);
 });
 
-/** Which screen the body is showing — the innermost overlay, or the door you are on. */
+/**
+ * Which screen the body is showing — the innermost overlay, or the door you are on.
+ *
+ * A FIXTURE MAY NAME ITS OWN ROUTE, and until S2 nothing needed to. Every mapped frame so far was
+ * either the main screen (which is the default) or a compact panel (which `mountFramePanel`
+ * intercepts before this is reached), so selecting `?frame=3a Conflict` left the app on `main` and
+ * quietly drew the main screen against the conflicts fixture. That is not a blank screen — it is
+ * WORSE than one, because `fid()` keys by slot NAME: `main.js` stamps `fid(view.mark, "hexagon")`,
+ * the conflicts table also has a `hexagon`, and the gate ends up comparing the 168px main hero
+ * against a 44px on-seam mark and reporting it as a size failure on a screen nobody rendered.
+ */
 function activeRoute() {
-  return onboardingLatch ? "onboarding" : (screenStack[screenStack.length - 1]?.id ?? route);
+  if (onboardingLatch) return "onboarding";
+  return activeFixture()?.route ?? screenStack[screenStack.length - 1]?.id ?? route;
 }
 
 // ---- the ⋯ menu ----
@@ -696,6 +707,12 @@ function conflictsProps() {
   const conflicts = store.select.conflicts();
   const at = Math.min(conflictIndex, Math.max(0, conflicts.length - 1));
   const conflict = conflicts[at] ?? null;
+  // THE `ui` BLOCK, CONSUMED FOR THE FIRST TIME. F9 gave every fixture a slot for the screen state
+  // that no daemon reply can carry — which tab, which step, which dialog — and left it for the
+  // screens to read; S1's frames needed none, so S2 is the first. It supplies exactly two things
+  // here: whether the disclosure is open, and the tally the cleared state reads. Live, both come
+  // from the module state above and this is inert.
+  const ui = activeFixture()?.ui ?? null;
   // Fired and not awaited: the screen renders now with whatever it has, and `ensureConflictPair`
   // calls `render()` again when the bytes land. Awaiting here would block the body on two file
   // reads and show a blank window while they happen.
@@ -703,9 +720,9 @@ function conflictsProps() {
   return {
     conflicts,
     index: at,
-    diffOpen: conflictDiffOpen,
+    diffOpen: ui?.diff ?? conflictDiffOpen,
     pair: conflictPairKey === conflict?.original ? conflictPair : null,
-    settled: conflictsSettled,
+    settled: ui?.settled ?? conflictsSettled,
     onChoose: (choice) => chooseConflict(conflict, choice),
     onLater: () => {
       conflictIndex = skipTo(at, conflicts.length);

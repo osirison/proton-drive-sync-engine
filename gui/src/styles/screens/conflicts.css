@@ -398,18 +398,15 @@
 /* THE ONE BODY THAT IS NOT 1040 WIDE. `3a Conflicts cleared` is a 522px window: nothing is waiting,
    so the screen has no two columns to hold apart and shrinks to the size of its own sentence. The
    rules below therefore centre in whatever width they are given rather than assuming either. */
+/* ONE BLOCK, NOT TWO. The obvious build is a full-width centring shell around a 520px column, and
+   it draws identically — but it puts a node between the window and the body that the frame has no
+   key for, and the whole mapping is positional. `margin: 0 auto` does the centring instead, so this
+   single element IS the frame's `div[0]`: 520 wide by the 663 that `flex: 1` leaves between the
+   header and the footer. */
 .cf-cleared {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* The 520px the frame's window gives its body, held as a column inside a window that cannot be
-   520px wide. Everything below measures against THIS, not the 1040 around it, so the sentence wraps
-   where it is drawn to wrap. */
-.cf-cleared-inner {
   width: 520px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
