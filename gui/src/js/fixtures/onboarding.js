@@ -8,14 +8,15 @@
 // every one of these frames unreachable in the preview for the same reason PR #131 had to fix in the
 // app: onboarding that waits for a daemon never appears on the machine that needs it.
 //
-// WHAT THESE FRAMES DRAW THAT NOTHING RETURNS YET. Two of the gaps are Phase-1 cheap work with
-// issues already filed, and are pinned in the shape those issues describe:
+// TWO OF THE GAPS ARE NOW COMMANDS, and the fixtures carry those commands' real replies:
 //
-//   · free space — `Needs 38.4 GB free. You have 214 GB.` on `9a Review`. C4 (#177): `statvfs` on
-//     the local root, exposed as a Tauri command. Pinned as `freeSpace: { needed, available }`.
-//   · the distribution — `Detected Debian` and `sudo apt install proton-drive` on `9a CLI missing`.
-//     C5 (#178): read `/etc/os-release`, and show tarball instructions rather than guess if that
-//     fails. Pinned as `cli: { installed, distro }`.
+//   · free space — `free_space` returns `{ available, total, measured_at }` (C4, #177). It supplies
+//     `You have 214 GB` and NOT `Needs 38.4 GB free`, which has no source at all: no level of the
+//     dry-run surface carries a file size (G6, #206). That half is pinned separately, as
+//     `neededBytes`, so nothing reads it as something the command answers.
+//   · the distribution — `check_cli` returns `{ installed, distro: { id, name } | null }` (C5,
+//     #178). `null` is the tarball branch, which the docs require rather than guessing a package
+//     manager. ⚠ The drawn `sudo apt install proton-drive` works on no distribution — see #218.
 //
 // The rest has no command and no issue, and is flagged where it is pinned: the per-side folder
 // counts and sizes on `9a Folders`, the account line beside them, `9a Review`'s already-matching
@@ -168,14 +169,27 @@ export const ONBOARDING_FIXTURES = {
       requires_delete_gate: false,
       files_at_risk: [],
     },
-    // C4 (#177): `statvfs` on the local root. The download side is the only one that can fail on
-    // space, which is why it and not the upload side states it.
+    // C4 (#177), as SHIPPED: `free_space` returns `{ available, total, measured_at }`. The download
+    // side is the only one that can fail on space, which is why it and not the upload side states
+    // it, and `measured_at` is the directory actually stat'd — the nearest existing ancestor, since
+    // `~/ProtonDrive` does not exist yet at this step.
     //
     // NOTE FOR WHOEVER RENDERS THIS: `format.bytes` gives `214.0 GB`, and the frame draws `214 GB`.
     // Every whole number of GB has the same problem (`500 GB` in `9a Folders`' account line). The
     // numbers here are the true ones; the trailing `.0` is a defect in the formatter's one-decimal
     // rule, not something to dodge by writing the string.
-    freeSpace: { needed: 38_400_000_000, available: 214_000_000_000 },
+    freeSpace: {
+      available: 214_000_000_000,
+      total: 500_000_000_000,
+      measured_at: "/home/u",
+    },
+    // `Needs 38.4 GB free` HAS NO SOURCE AND C4 IS NOT IT. `PlannedAction` carries no size at any
+    // level of the dry-run surface, so nothing can total the bytes a download plan would fetch —
+    // that is G6 (#206). Kept as its own key, unattached to the command's reply, because the frame
+    // draws the number and the fixture's job is to describe the frame; folding it into `freeSpace`
+    // would claim the command returns it. `14-behaviour-and-state.md`'s fallback assumes the
+    // opposite half is the one that can go missing; DEVIATIONS §71 has the whole knot.
+    neededBytes: 38_400_000_000,
     // `11,798 files already match on both sides` — a count of files the plan does NOT act on, so it
     // is absent from `PlanSummary` by construction rather than by omission. Carried because the
     // number has nowhere else to come from and no possible field shape to pre-empt: it is a scalar,
@@ -309,11 +323,16 @@ export const ONBOARDING_FIXTURES = {
   /**
    * The precondition that only ever appears when it fails.
    *
-   * C5 (#178) supplies `distro` from `/etc/os-release`, and with it the right install command. Note
-   * what that lands on: the deck hard-codes Debian in BOTH strings it needs — `Detected Debian` sits
-   * inside `ONBOARDING.cliMissingBody`, and `ONBOARDING.cliInstallCommand` is `sudo apt install
-   * proton-drive` — so a detected distribution has nowhere to go until those two entries take the
-   * distribution as an argument. The fixture pins the detection result; the strings stay the deck's.
+   * C5 (#178) supplies `distro` from `/etc/os-release`, and with it the right install command. Both
+   * deck entries now take the detection result — they hard-coded Debian, so a detected distribution
+   * had nowhere to go — and `distro` is the object `check_cli` returns: `id` is the package family
+   * (a closed set the deck has a command for), `name` is the short brand name the `Detected …`
+   * clause writes. The fixture pins the detection result; the strings stay the deck's.
+   *
+   * ⚠ The install command in that box does not work on any distribution — `proton-drive` is in no
+   * distro repository, by this project's own documentation. See the warning on
+   * `CLI_INSTALL_COMMANDS` in `ui/copy.js`, DEVIATIONS §72, and #218. The `Detected …` sentence is
+   * the half of this screen that C5 makes true.
    *
    * There is no daemon and no config here: the CLI check runs before either exists, which is why
    * this dialog can precede step 1.
@@ -321,7 +340,7 @@ export const ONBOARDING_FIXTURES = {
   "9a CLI missing": {
     status: NO_DAEMON,
     config: NO_CONFIG,
-    cli: { installed: false, distro: "debian" },
+    cli: { installed: false, distro: { id: "debian", name: "Debian" } },
     ui: { step: "cliMissing" },
   },
 };

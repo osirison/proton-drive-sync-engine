@@ -1735,6 +1735,231 @@ screen is gone; `count()` and the copy handle null.
 
 ---
 
+## The cheap capabilities (C1–C5)
+
+## 68. `deletion_policy` is two booleans, and two booleans have a fourth state
+
+`8a Deletions tab` draws three radio cards under a mono key line reading
+`deletion_policy · applies to both directions`. **There is no such key.** The three cards map exactly
+onto `[delete_approval] remote` and `local`, which is why C1 (#174) is GUI work rather than engine
+work: `remote` gates the recoverable direction (a file leaving this computer lands in Proton's Trash)
+and `local` gates the permanent one (a file removed from disk is gone), so
+`(true, true)` / `(false, true)` / `(false, false)` are the three cards, in the order drawn.
+
+Three things follow, and all three are deviations rather than bugs.
+
+**The key line names a key that does not exist.** Shipped as drawn — it is a label over two keys, and
+G5 (#194) would mint the real alias. Note the same frame family draws `event_driven_reconcile` where
+the engine's key is `events_driven`; `14-behaviour-and-state.md` is explicit about that one. Neither
+mono key line is in `13-copy-deck.md` or `copy.js`, so **the copy gate cannot catch a wrong key
+line** — S6 is on its own there.
+
+**The fourth combination has no card.** `remote = true, local = false` — ask before sending a delete
+to Proton's Trash, but wipe local files for good without asking — is reachable by hand-editing the
+config and is a live safety policy. `DeletionPolicy::OnlyRecoverable` names it and
+`is_drawn()` returns `false`; S6 must render **no card selected** rather than the nearest one.
+Coercing it would mean the next save silently rewrote a setting nobody touched, in the one module
+built not to do that. Writes always set **both** booleans, so choosing a card can never leave a
+half-set table behind.
+
+**The tab shows the file, not the running daemon.** `--no-delete-approval` forces both directions off
+at runtime with nothing in the TOML, `.proton-sync.toml` in any directory overrides the daemon-wide
+default per subtree (`src/dirconfig.rs`) with no UI surface at all, and there is no config-reload
+path in the daemon — no SIGHUP handler, no watcher. So `Changes here take effect on the next sync`
+(`08-settings.md`, the deck, and both 1040px frames) is not true as built: a save takes effect on
+daemon **restart**, which is what `write_config`'s own comment says and what the existing restart
+prompt does. S6 keeps the prompt and this row records the copy.
+
+## 69. C2 walks the disk, because the index cannot answer the question the tab asks
+
+`IMPLEMENTATION-PLAN.md` §4 and issue #175 both specify the same source — "`index_read.rs` already
+reads the index; match each exclude glob against it" — and it cannot produce the drawn data.
+
+The engine applies selective-sync filters to the local scan, the remote listing **and** the
+base-index records *before* planning, so an excluded file is never inserted. A rule that has been in
+the config since before its files existed therefore matches **zero index records**. The frames prove
+it on their own numbers: `8a Skip rules` names `exports/draft.tmp` and `exports/render-final.tmp` as
+hidden by `*.tmp`, and `7a Never synced` says of those same two files *"They live in your folder but
+no copy exists on Proton Drive."* Never synced → never in `file_index`. An index-backed count answers
+`0` for the row the frame draws populated, and fires `Matching nothing · safe to remove` over a rule
+that is at that moment hiding a 40 GB export folder.
+
+So `skip_rule_usage` walks the local tree — `read_dir` plus one `stat` per file, **no SHA-1**, which
+is why it does not reuse `index::scan_local_files_with_options`. Consequences worth stating:
+
+- **The walk is not the daemon's walk.** The daemon's scan prunes an excluded directory, so it never
+  sees inside `video-raw/**`; this one must, or every directory rule would report zero. Traversal is
+  decided by a *baseline* `ScanOptions` with no rules, and only the files are classified. The engine
+  still owns every question about what counts (`should_ignore_path`, `.sync/`, the download scratch,
+  glob semantics, non-UTF-8 keys) — none of it is reimplemented here.
+- **An unreadable directory is skipped and counted, not fatal.** The engine's own scanner hard-fails
+  there; one root-owned directory blanking the whole tab would be worse than a floor plus
+  `unreadable_directories`.
+- **Include globs are not applied.** A file can be unsynced for failing an `include` list rather than
+  for matching a skip rule, and the tab lists only excludes.
+
+### 69a. The fixture's byte discriminator does not survive real data
+
+`8a Skip rules` draws two different sub-lines — `Skipping 2 files right now` (with paths) and
+`Skipping 2 files, 3.1 GB` — and the F9 fixture distinguishes them by giving `*.tmp` `bytes: 0`,
+which is what the frame's own arithmetic implies. **Live data has no such discriminator**: every rule
+with files has bytes above zero, so the count-and-paths form would never render and the staged-removal
+cost line for `*.tmp` would read `2 files, 0 B`. `08-settings.md`'s tab-2 table calls one second line
+sample paths and another an added-date without saying when a row gets which. C2 returns every field
+all three variants need — `files`, `bytes`, `unique_files`, `unique_bytes`, `samples`,
+`folder_exists`, `error` — and **S6 owns the choice**. (A rule's `added 14 Jul` date has no source
+anywhere: a TOML array of globs carries no per-entry timestamps.)
+
+### 69b. Two "matches nothing" claims, one boolean
+
+`Matching nothing` is about the count; `no such folder here any more — safe to remove` is about the
+folder. They come apart — an empty folder that still exists matches nothing and is **not** safe to
+remove — so the reply carries `folder_exists: Option<bool>` rather than a `stale` flag, and
+`is_stale_folder()` requires the folder to be *known gone*. A rule with no literal folder prefix
+(`*.psd`) makes no claim at all. The frame corroborates the split: `video-raw/**` matches files and
+its second line still reads `the folder still exists on this computer`.
+
+The removal-cost line reads `unique_files`/`unique_bytes` — files **only that rule** hides. A file a
+second rule also hides does not start syncing when this one goes.
+
+## 70. The conflict card's first sentence needs a version that no longer exists
+
+`04-conflicts.md` gives the version cards three parts. C3 (#176) delivers the second — *what differs,
+in words* — and **cannot deliver the first.**
+
+`You added a line, 5 minutes ago` is a claim about your version against the **last agreed** one, and
+the last agreed version's content exists nowhere on the machine: the conflict sidecar is Proton's
+copy *as it is now*, the local file is yours, and the index keeps the baseline's SHA-1 without its
+bytes. Against Proton's copy alone the very same edit reads as a removal. This is not a harder
+version of the diff problem; it is a different one, needing a capability nothing has. The relative
+time in that sentence comes from the mtimes and is fine — the verb is the gap. Filed as **#217**.
+`CONFLICTS.mineChange` / `theirsChange` stay in the deck as the drawn constants.
+
+Related, and for S2 to resolve: `3a Conflict` draws `You added a line` while `3a Conflict diff` draws
+the left side with four lines against the right's five, row 2 highlighted as a changed pair and row 5
+absent. Under the alignment the frame itself draws, yours **changed** a line and added nothing — and
+only that reading also makes `2 lines differ · 3 lines identical` true. The two cards were generated
+by two different models.
+
+### 70a. What the grammar covers, and what falls back to silence
+
+`04-conflicts.md` is explicit that a summary which cannot be generated falls back to **the metadata
+row alone**, and must *not* fall back to showing the raw diff — that is what the disclosure is for.
+`summariseSide` therefore returns `null` rather than stretching a sentence, for: more than one
+changed line (quoting one of four describes the file wrongly, not partially), an extra line that is
+not at the end (the only extra-line clause drawn is `an extra line at the end`), a blank changed line
+(nothing to put in the mono span), and a difference no line shows. Two files with nothing in common
+are refused too — 512 KB of text is ~10⁴ lines a side and an O(n·m) table over that would freeze the
+window; the common-prefix/suffix trim makes the realistic case (one line changed in a large file)
+cheap.
+
+**Most real conflicts are multi-line, so most cards will show the metadata row only.** That is the
+documented fallback rather than a hidden failure, and `comparison.changed`/`differing` are on the
+reply for an S2 that would rather count than quote.
+
+Two readings had to be settled from the frames rather than the prose:
+
+- **`and is otherwise the same` is about ONE SIDE, not about the pair.** The left card claims it on a
+  pair where Proton's has a line yours does not. Read symmetrically, the drawn sentence is unreachable
+  at its own frame's input; read as *this side introduces nothing else*, both drawn sentences fall
+  out of one grammar. Pinned by a test.
+- **The two drawn forms are not one template.** The left contrasts the sides and closes with
+  `otherwise the same`; the right, with an equally changed line, does not. Nothing explains the
+  asymmetry, so the grammar reproduces both shapes rather than unifying them.
+
+### 70b. Three things the pair reader cannot distinguish
+
+`read_conflict_pair` returns `text: null` for a binary file, a too-large file, an unreadable one
+**and** a missing one — and for the missing case `binary_or_large` is `false`, so a guard on that
+flag alone reads a vanished file as an empty text file. `compare()` requires both texts to be
+strings, which is the only guard that holds. A **directory** is indistinguishable from a JPEG
+(`metadata()` succeeds, `read()` returns `EISDIR`, `size` is the inode size), so the type conflicts
+`04-conflicts.md` requires to hide the disclosure cannot be detected today.
+
+Line endings are normalised before splitting. A sidecar written on another platform would otherwise
+differ on **every** line, and `400 lines differ` is the worst possible wrong answer on a screen where
+it argues for discarding a version. A difference that is only a trailing newline is reported as
+`invisibleDifference` and suppresses every sentence: the files do differ — the daemon wrote a sidecar
+— but no line shows it, and `Zero lines differ` would be a lie in the reassuring direction.
+
+## 71. Free space: Phase 1 has the half the fallback assumes it has
+
+`9a Review` draws `Needs 38.4 GB free. You have 214 GB.` and `14-behaviour-and-state.md`'s fallback
+table says: *Free-space check on the local root | Onboarding step 2 | Omit the "You have 214 GB"
+clause.* The fallback assumes **needs** is always known and only **have** can go missing.
+
+**It is exactly inverted.** C4 (#177) supplies `You have 214 GB` exactly and always. `Needs 38.4 GB
+free` cannot be computed at all: `PlannedAction` carries `path`, `destination_path`, `action`,
+`entity_kind`, `conflict_path` and `remote_id` — **no size, at any level of the dry-run surface** —
+so nothing can total the bytes a download plan would fetch. That is G6 (#206).
+
+So neither the full sentence nor its documented fallback is renderable, and the residual
+`You have 214 GB.` on its own is not a string in `13-copy-deck.md` or any frame. **S7 decides**
+between omitting the line until G6 lands, adding a deck string for the have-only form, or shipping
+the line only post-G6. C4 supplies the number and files the knot rather than settling it.
+
+The command walks up to the nearest existing ancestor, because onboarding asks about free space
+*before* the folder is created — a plain `statvfs` on the chosen path returns `ENOENT` on the one
+screen that needs the number. It reports `f_bavail`, not `f_bfree`: the difference is the
+root-reserved pool, which a desktop app can see and can never write into, and this is a safety claim.
+
+### 71a. #135, fixed at the funnel
+
+Onboarding writes `local_root = "~/ProtonDrive"` — a literal the shell never touched. Every GUI
+feature that joins that value onto the filesystem was operating on a directory named `~` under the
+process's working directory: the conflict scan found nothing, the emblem lookup opened no index, and
+the free-space check would have reported `ENOENT` on `9a Review`. The daemon has expanded `~` since
+#134; the GUI did not.
+
+Expanded once in `RuntimePaths::resolve` (before `db_path` derives from `local_root`, or the derived
+index path inherits the unexpanded root), using **the engine's own** `expand_tilde` — now `pub`, and
+wrapped as `gui_core::config_io::expand_config_path` so the Tauri crate keeps the facade. A second
+implementation would be a second set of `~user` semantics to keep in step, which is the bug class
+itself. A value the engine refuses comes back verbatim: that config is one the daemon will not start
+on either, and the literal is what lets the error name the string the user typed.
+
+## 72. The install command in `9a CLI missing` does not work on any distribution
+
+The frame draws a command box containing `sudo apt install proton-drive`. This project's own
+documentation contradicts it twice — *"`proton-drive` is not available in Linux distribution
+repositories, so it can't be a package dependency"* and *"The native packages deliberately do **not**
+declare `proton-drive` as a dependency (it isn't in any distro repo)"*. There is no distribution
+where a package manager installs it, so **for every user, including Debian users, the truthful
+instruction today is the tarball/manual path.**
+
+C5 (#178) ships detection, which is the half of this screen that works: `Detected Debian` tells
+someone the app knows their system, and the help carries their instructions. The deck keeps the drawn
+command verbatim, because the deck's job is to hold what the design draws and dropping it would
+quietly remove the string from the copy gate — but `CLI_INSTALL_COMMANDS` carries the warning, and
+**S7 must not ship a copyable command box from that table** until the design settles what the real
+instruction is. Filed as **#218**; it needs a product call, not a code change.
+
+Three smaller notes:
+
+- **`/usr/lib/os-release` is read too.** Issue #178 names only `/etc/os-release`; the freedesktop
+  spec's second location is what a stateless system ships, and following the issue literally reports
+  "detection failed" there.
+- **The name is a short brand name, not an os-release field.** The frame draws `Detected Debian`
+  while `NAME` is `Debian GNU/Linux` and `PRETTY_NAME` is `Debian GNU/Linux 12 (bookworm)`. A
+  recognised distribution gets its brand name from our own table; one known only through its
+  `ID_LIKE` parent uses its own `NAME`, because `Detected Debian` on a machine that is not Debian
+  would be worse than either the truth or silence.
+- **There are two detection mechanisms in this repo.** `setup.sh` detects by *package-manager
+  presence* (`command -v dnf` / `apt-get` / `pacman`); C5 detects the *distribution* via
+  `/etc/os-release`, as the issue and the plan specify. They disagree on a machine with `apt`
+  installed under a non-Debian id, and they are separately maintained tables. Not reconciled here —
+  `setup.sh` is about build dependencies, this is about a user-facing instruction — but worth knowing
+  they exist.
+
+## 73. C6 is not in this PR
+
+`IMPLEMENTATION-PLAN.md`'s suggested order reads `S1 → C1–C5 → S2 …`, omitting C6, and the omission
+is right: #179 is `notify_policy` **plus the four notification triggers**, 30-second coalescing and
+never stacking two banners. That is S9 runtime behaviour, not a capability shim, and it is built with
+the screen that owns it (#188).
+
+---
+
 ## Phase-1 capability deviations
 
 `IMPLEMENTATION-PLAN.md` §4 lists the ten daemon capabilities the design assumes and which four are
@@ -1746,3 +1971,6 @@ Phase 2. Each Phase-1 fallback gets a row here as its screen lands — G1–G5 c
 | S1     | `2a Syncing` | three transfer rows, one queued       | the one in-flight transfer         | G10 #211  |
 | S1     | `2a Syncing` | a progress bar at the real percentage | no track at all                    | E1 #98    |
 | S1     | `2a Syncing` | `386 MB sent · 1.1 GB received today` | the folder pair (the shell's line) | G2 #191   |
+| S7     | `9a Review`  | `Needs 38.4 GB free. You have 214 GB.` | the free-space half only (§71)     | G6 #206   |
+| S2     | `3a Conflict`| `You added a line, 5 minutes ago`     | the relative time (§70)            | G12 #217  |
+| S7     | `9a CLI missing` | `sudo apt install proton-drive`   | the tarball path for everyone (§72)| #218      |

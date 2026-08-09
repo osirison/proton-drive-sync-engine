@@ -73,6 +73,27 @@ const DRAWN = [
   ["MAIN.band.deletionTitle", [2], "2a Needs you"],
   ["MAIN.band.deletionSub", [1, 1], "2a Needs you"],
   ["MAIN.compact.needYou", [3], "2a Compact needs you"],
+  // The C-item templates (C3, C5). Each was a constant until the capability that varies it landed,
+  // and each is listed here in the same commit — a template that leaves this table leaves the gate
+  // silently, which is the regression the paragraph above records from S1.
+  //
+  // The arguments are read off the frames the same way every other row's are: `3a Conflict`'s two
+  // cards are a one-line change where Proton's also gained a line at the end, and `3a Conflict
+  // diff` counts two differing lines against three identical ones.
+  [
+    "CONFLICTS.versionDiff",
+    ["mine", { quoted: "buy milk", extraAtEnd: 0, otherwiseSame: true }],
+    "3a Conflict",
+  ],
+  [
+    "CONFLICTS.versionDiff",
+    ["theirs", { quoted: "buy oat milk", extraAtEnd: 1, otherwiseSame: false }],
+    "3a Conflict",
+  ],
+  ["CONFLICTS.diffSummary", [2], "3a Conflict diff"],
+  ["CONFLICTS.diffCounts", [2, 3], "3a Conflict diff"],
+  ["ONBOARDING.cliMissingBody", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
+  ["ONBOARDING.cliInstallCommand", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */

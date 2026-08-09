@@ -36,6 +36,11 @@ export const api = {
   startService: () => invoke("start_service"),
   restartService: () => invoke("restart_service"),
   notify: (title, body) => invoke("notify", { title, body }),
+  // The Phase-1 capability commands (C2/C4/C5). `path` prices a folder before the config is
+  // written; omitted, `free_space` uses the configured local root.
+  freeSpace: (path) => invoke("free_space", { path: path ?? null }),
+  checkCli: () => invoke("check_cli"),
+  skipRuleUsage: (patterns) => invoke("skip_rule_usage", { patterns }),
   // F4's Ctrl W / Ctrl Q. Both go through the same backend paths the tray menu uses, so the
   // shortcut and the menu item cannot drift apart. Note quitting does NOT stop the daemon — see
   // the comment on `quit_app` in commands.rs.
@@ -133,6 +138,15 @@ function mockInvoke(cmd, args) {
         break;
       case "run_dry_run":
         if (fixture.dryRun) return Promise.resolve(fixture.dryRun);
+        break;
+      case "free_space":
+        if (fixture.freeSpace) return Promise.resolve(fixture.freeSpace);
+        break;
+      case "check_cli":
+        if (fixture.cli) return Promise.resolve(fixture.cli);
+        break;
+      case "skip_rule_usage":
+        if (fixture.skipRules) return Promise.resolve(fixture.skipRules);
         break;
       case "path_sync_status":
         // Keyed by the path asked for. An unlisted path answers `tracked: false` rather than falling

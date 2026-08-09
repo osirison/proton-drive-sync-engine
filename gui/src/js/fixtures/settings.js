@@ -13,9 +13,11 @@
 // kinds of drawn value have no source in it:
 //
 //   · the live match counts on every skip rule — `Skipping 2 files right now`,
-//     `hiding 4 files, 3.1 GB in total`, `Matching nothing`. C2 (#175) supplies these from the index
-//     (`index_read.rs`): per rule a match count, total bytes, sample paths and a stale marker. The
-//     `skipRules` block below is shaped as those four fields and nothing more.
+//     `hiding 4 files, 3.1 GB in total`, `Matching nothing`. C2 (#175) supplies these, and NOT from
+//     the index the issue names: an active exclude rule matches zero index records by construction,
+//     because excluded files are filtered out before anything is ever written. `skip_rule_usage`
+//     walks the local tree instead (metadata only) — see `gui-core/src/skip_rules.rs` and
+//     DEVIATIONS §69. `skipRules` below is that command's reply, verbatim.
 //   · the folder totals — `12,480 files, 41.2 GB in here today`, `A full check of all 12,480 files`.
 //     No command returns them; C2 is the nearest neighbour (it walks the same index) but is scoped
 //     to per-rule counts. Filed as G7 (#207) once F9 found the same numbers on six frames across
@@ -125,8 +127,15 @@ local = true
 const LOCAL_TOTALS = { files: 12480, bytes: 41_200_000_000 };
 
 /**
- * The skip rules with their live effects — C2's (#175) four fields per rule, and only those:
- * `files`, `bytes`, `samples`, `stale`.
+ * The skip rules with their live effects — `skip_rule_usage`'s reply, as C2 (#175) shipped it.
+ *
+ * THE FIELDS CHANGED FROM WHAT THIS FIXTURE FIRST ANTICIPATED, in one place that matters. `stale`
+ * was a boolean; the command returns `folder_exists`, because the drawn copy makes two different
+ * claims and one boolean cannot hold both. `Matching nothing` is about the count, while `no such
+ * folder here any more — safe to remove` is about the FOLDER — and the frame proves they come
+ * apart: `video-raw/**` matches files and its second line still says `the folder still exists on
+ * this computer` (`SETTINGS.ruleAdded`). A rule matching nothing whose folder is still there is
+ * idle, not safe to remove.
  *
  * THE BYTES RECONCILE, AND `*.tmp` CONTRIBUTING NOTHING IS WHAT THE FRAME SAYS rather than a value
  * left blank. The total is `hiding 4 files, 3.1 GB in total` and `video-raw/**` alone is `3.1 GB`, so
@@ -137,25 +146,71 @@ const LOCAL_TOTALS = { files: 12480, bytes: 41_200_000_000 };
  * So `bytes` is the discriminator S6 renders on, and it has to stay zero here. An earlier version
  * gave `*.tmp` 2.8 MB — a number the frame draws nowhere, chosen so the parts would sum to a total
  * that still rounds to `3.1 GB`. It does round, and it also destroyed the only field that says which
- * of the two deck strings this row takes.
+ * of the two deck strings this row takes. ⚠ Live data has no such discriminator: every rule with
+ * files has bytes above zero, so S6 must decide the sub-line rule on something else. DEVIATIONS §69a.
  *
- * `added` is on `video-raw/**` alone, because it is the only row whose second line is the
- * added-date (`SETTINGS.ruleAdded`) rather than sample paths or the stale note. It is a literal
- * absolute date per the clock convention — and unlike the other three fields it has no source
- * anywhere: an `exclude = [...]` array in TOML records no per-entry timestamps.
+ * `unique_*` is what the staged-removal cost line counts — see the note on `8a Skip rules`. Here it
+ * equals `files`/`bytes` on every row, because no two of these rules overlap.
  */
-const SKIP_RULES = [
-  {
-    pattern: "*.tmp",
-    files: 2,
-    bytes: 0,
-    samples: ["exports/draft.tmp", "exports/render-final.tmp"],
-    stale: false,
-  },
-  { pattern: "video-raw/**", files: 2, bytes: 3_100_000_000, added: "14 Jul", stale: false },
-  // Matches nothing: the row the tab exists to make findable, drawn at `opacity:.62`.
-  { pattern: "old-backups/**", files: 0, bytes: 0, samples: [], stale: true },
-];
+const SKIP_RULES = {
+  rules: [
+    {
+      pattern: "*.tmp",
+      files: 2,
+      bytes: 0,
+      unique_files: 2,
+      unique_bytes: 0,
+      samples: ["exports/draft.tmp", "exports/render-final.tmp"],
+      // A bare file glob is anchored at no folder, so it makes no claim about one.
+      folder_exists: null,
+      error: null,
+    },
+    {
+      pattern: "video-raw/**",
+      files: 2,
+      bytes: 3_100_000_000,
+      unique_files: 2,
+      unique_bytes: 3_100_000_000,
+      samples: ["video-raw/a-roll.mov", "video-raw/b-roll.mov"],
+      // `the folder still exists on this computer`, in the deck's own words.
+      folder_exists: true,
+      error: null,
+    },
+    // Matches nothing AND its folder is gone: the row the tab exists to make findable, drawn at
+    // `opacity:.62` with `no such folder here any more — safe to remove`. Both halves are needed —
+    // the count alone would say the same thing about an empty folder that is still there.
+    {
+      pattern: "old-backups/**",
+      files: 0,
+      bytes: 0,
+      unique_files: 0,
+      unique_bytes: 0,
+      samples: [],
+      folder_exists: false,
+      error: null,
+    },
+  ],
+  // `hiding 4 files, 3.1 GB in total` — a count of distinct FILES, not the sum of the rows: the
+  // command counts a doubly-matched file once, and here nothing overlaps so the two agree anyway.
+  total_files: 4,
+  total_bytes: 3_100_000_000,
+  // NOT DRAWN. No frame states a denominator, so this is the only number in the family it could be
+  // (`12,480 files … in here today`, the same pair the header uses). Nothing renders it; it is here
+  // because the reply carries it and a fixture that omitted it would describe a different reply.
+  considered_files: LOCAL_TOTALS.files,
+  unreadable_directories: 0,
+};
+
+/**
+ * `added 14 Jul` on `video-raw/**` — the only row whose second line is the added-date
+ * (`SETTINGS.ruleAdded`) rather than sample paths or the stale note.
+ *
+ * ITS OWN KEY BECAUSE NO COMMAND RETURNS IT. An `exclude = [...]` array in TOML records no
+ * per-entry timestamps, so there is nowhere for this to come from — and putting it inside a
+ * `skip_rule_usage` row would claim the command answers it. Literal absolute date, per the clock
+ * convention.
+ */
+const RULE_ADDED = { "video-raw/**": "14 Jul" };
 
 export const SETTINGS_FIXTURES = {
   /**
@@ -181,6 +236,11 @@ export const SETTINGS_FIXTURES = {
    * .exclude` still lists all three patterns because nothing has been written yet, which is what
    * "Nothing is written until you save" means.
    *
+   * THE COST LINE READS `unique_files`/`unique_bytes`, NOT `files`/`bytes`. Removing a rule only
+   * starts syncing the files no *other* rule still hides, and `will start syncing` is a promise
+   * about what happens next. The two agree on this frame because these three rules do not overlap —
+   * which is exactly why the distinction has to be written down rather than discovered later.
+   *
    * THE FRAME IS INTERNALLY INCONSISTENT HERE and no dataset can fix it: it draws `video-raw/**` in
    * the list at full opacity while the footer says its rule was removed, and it counts that rule
    * inside `hiding 4 files, 3.1 GB in total`. Whether a staged removal dims its row, strikes it, or
@@ -191,6 +251,7 @@ export const SETTINGS_FIXTURES = {
     status: IDLE_STATUS,
     config: CONFIG,
     skipRules: SKIP_RULES,
+    ruleAdded: RULE_ADDED,
     // Nothing is pinned for the bottom panel: `SETTINGS.unsyncableNote` is a fixed deck string that
     // already says "Two more files", and the live count behind it is `skipped_unsupported` on a plan
     // summary — a number this frame's daemon has never produced (no pass has run with a plan).

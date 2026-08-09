@@ -1,0 +1,181 @@
+// ui/diff.js (C3) — the prose diff summary behind the conflict version cards.
+//
+// Tested rather than left to the fidelity gate for the reason S1 wrote down: the gate compares one
+// rendering of each drawn frame, and every interesting case here is a file nobody drew. `3a Conflict`
+// draws exactly two shopping lists; a CRLF sidecar, a trailing-newline-only difference and a 500 KB
+// file are all invisible to it, and two of those three make the card claim the versions agree.
+//
+// The frames' own two files are the first two tests, so the drawn sentences stay ground truth.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { compare, lines, quote, summariseSide, MAX_QUOTE_CHARS } from "../src/js/ui/diff.js";
+import { CONFLICTS } from "../src/js/ui/copy.js";
+
+// The two versions `3a Conflict` is drawn from: yours has `buy milk`, Proton's has `buy oat milk`
+// and one line more at the end.
+const MINE = "milk\nbuy milk\neggs\nbread\n";
+const THEIRS = "milk\nbuy oat milk\neggs\nbread\ncoffee\n";
+
+test("the drawn pair produces the drawn sentences", () => {
+  const comparison = compare(MINE, THEIRS);
+  assert.equal(comparison.changed.length, 1);
+  assert.deepEqual(comparison.changed[0], { mine: "buy milk", theirs: "buy oat milk" });
+  assert.equal(comparison.onlyMine.length, 0);
+  assert.equal(comparison.onlyTheirs.length, 1);
+  assert.equal(comparison.onlyTheirs[0].atEnd, true, "the extra line is at the end");
+
+  assert.equal(
+    CONFLICTS.versionDiff("mine", summariseSide(comparison, "mine")),
+    "Yours has buy milk where Proton's has something else, and is otherwise the same.",
+  );
+  assert.equal(
+    CONFLICTS.versionDiff("theirs", summariseSide(comparison, "theirs")),
+    "Proton's has buy oat milk and an extra line at the end.",
+  );
+});
+
+test("the counts under the diff are the drawn ones", () => {
+  const comparison = compare(MINE, THEIRS);
+  // `2 lines differ · 3 lines identical`: the changed pair and the extra line differ; milk, eggs
+  // and bread agree.
+  assert.equal(comparison.differing, 2);
+  assert.equal(comparison.identical, 3);
+  assert.equal(CONFLICTS.diffSummary(2), "Two lines differ. Everything else in the file matches.");
+  assert.equal(CONFLICTS.diffCounts(2, 3), "2 lines differ · 3 lines identical");
+});
+
+test("the metadata row's line counts ignore the trailing newline", () => {
+  // The frame draws `4 lines` and `5 lines`; split("\n").length would say 5 and 6.
+  assert.equal(lines(MINE).length, 4);
+  assert.equal(lines(THEIRS).length, 5);
+});
+
+test("the count sentences agree in number at one", () => {
+  assert.equal(CONFLICTS.diffSummary(1), "One line differs. Everything else in the file matches.");
+  assert.equal(CONFLICTS.diffCounts(1, 1), "1 line differs · 1 line identical");
+});
+
+test("a CRLF sidecar does not make every line differ", () => {
+  // A sidecar written on another platform. Byte-wise nothing matches; in content, one line does.
+  const crlf = THEIRS.replace(/\n/g, "\r\n");
+  const comparison = compare(MINE, crlf);
+  assert.equal(comparison.differing, 2, "the same two differences as the LF pair");
+  assert.equal(comparison.identical, 3);
+});
+
+test("a difference that is only a trailing newline is refused, not called sameness", () => {
+  // The files DO differ — the daemon wrote a sidecar — but not on any line. Saying `otherwise the
+  // same` here would argue for discarding a version over a difference the screen never showed.
+  const comparison = compare("a\nb", "a\nb\n");
+  assert.equal(comparison.differing, 0);
+  assert.equal(comparison.invisibleDifference, true);
+  assert.equal(summariseSide(comparison, "mine"), null);
+  assert.equal(summariseSide(comparison, "theirs"), null);
+});
+
+test("truly identical text is not an invisible difference", () => {
+  const comparison = compare(MINE, MINE);
+  assert.equal(comparison.differing, 0);
+  assert.equal(comparison.invisibleDifference, false);
+  assert.equal(summariseSide(comparison, "mine"), null, "nothing to say either way");
+});
+
+test("a side missing its text is the metadata row, not an empty file", () => {
+  // `ConflictSide` carries `text: null` for binary, too-large AND missing files — and for a missing
+  // file `binary_or_large` is FALSE, so a guard on that flag alone reads a vanished file as empty
+  // and renders "Proton's has nothing" out of thin air.
+  assert.equal(compare(MINE, null), null);
+  assert.equal(compare(null, THEIRS), null);
+  assert.equal(compare(undefined, undefined), null);
+});
+
+test("more than one changed line falls back rather than quoting one of them", () => {
+  const comparison = compare("a\nb\nc\n", "A\nb\nC\n");
+  assert.equal(comparison.changed.length, 2);
+  assert.equal(
+    summariseSide(comparison, "mine"),
+    null,
+    "quoting one of two changes describes the file wrongly, not partially",
+  );
+});
+
+test("each card describes its own side, so a removal is the other side's gain", () => {
+  // Yours has a line Proton's does not. That is a sentence for YOUR card — Proton's card has
+  // nothing of its own to report, and says nothing rather than describing your file for you.
+  const comparison = compare("a\nb\n", "a\n");
+  assert.deepEqual(summariseSide(comparison, "mine"), {
+    quoted: null,
+    extraAtEnd: 1,
+    otherwiseSame: false,
+  });
+  assert.equal(
+    CONFLICTS.versionDiff("mine", summariseSide(comparison, "mine")),
+    "Yours has an extra line at the end.",
+  );
+  assert.equal(summariseSide(comparison, "theirs"), null, "nothing of its own to say");
+});
+
+test("`otherwise the same` is about this side, which is what the frame draws", () => {
+  // The drawn left card claims it while Proton's has an extra line. Reading the clause as "the
+  // files are otherwise equal" makes the drawn sentence unreachable at its own frame's input.
+  const facts = summariseSide(compare(MINE, THEIRS), "mine");
+  assert.equal(facts.otherwiseSame, true);
+  assert.equal(facts.extraAtEnd, 0);
+});
+
+test("an extra line in the middle is refused — the only drawn clause says at the end", () => {
+  const comparison = compare("a\nc\n", "a\nb\nc\n");
+  assert.equal(comparison.onlyTheirs.length, 1);
+  assert.equal(comparison.onlyTheirs[0].atEnd, false);
+  assert.equal(summariseSide(comparison, "theirs"), null);
+});
+
+test("several extra lines at the end are counted", () => {
+  const comparison = compare("a\n", "a\nb\nc\n");
+  const facts = summariseSide(comparison, "theirs");
+  assert.deepEqual(facts, { quoted: null, extraAtEnd: 2, otherwiseSame: false });
+  assert.equal(CONFLICTS.versionDiff("theirs", facts), "Proton's has 2 extra lines at the end.");
+});
+
+test("a blank changed line is dropped rather than quoted as nothing", () => {
+  const comparison = compare("a\n   \nb\n", "a\nx\nb\n");
+  assert.equal(comparison.changed.length, 1);
+  assert.equal(summariseSide(comparison, "mine"), null, "nothing to put in the mono span");
+  assert.ok(summariseSide(comparison, "theirs"), "the side with content still speaks");
+});
+
+test("a very long line is quoted up to the cap and says it was cut", () => {
+  const long = "x".repeat(MAX_QUOTE_CHARS + 40);
+  assert.equal(quote(long).length, MAX_QUOTE_CHARS + 1);
+  assert.ok(quote(long).endsWith("⋯"));
+  assert.equal(quote("  padded  "), "padded", "and quotes are trimmed");
+});
+
+test("two files with nothing in common are refused instead of freezing the window", () => {
+  // 512 KB of text is ~10^4 lines a side, and an O(n·m) table over that is 10^8 cells on the
+  // WebKit main thread. The trim makes the realistic case cheap; this is the case it cannot help.
+  const mine = Array.from({ length: 800 }, (_, i) => `mine ${i}`).join("\n");
+  const theirs = Array.from({ length: 800 }, (_, i) => `theirs ${i}`).join("\n");
+  assert.equal(compare(mine, theirs), null);
+});
+
+test("a one-line change inside a large file is still summarised", () => {
+  // The trim is what makes this affordable: the middle is 1×1 however big the file is.
+  const body = Array.from({ length: 5000 }, (_, i) => `line ${i}`);
+  const mine = body.join("\n");
+  const changed = [...body];
+  changed[2500] = "line 2500 edited";
+  const comparison = compare(mine, changed.join("\n"));
+  assert.equal(comparison.changed.length, 1);
+  assert.deepEqual(summariseSide(comparison, "theirs"), {
+    quoted: "line 2500 edited",
+    extraAtEnd: 0,
+    otherwiseSame: true,
+  });
+});
+
+test("an unknown side is a programming error, not a silent default", () => {
+  const comparison = compare(MINE, THEIRS);
+  assert.throws(() => summariseSide(comparison, "left"), /must be "mine" or "theirs"/);
+});

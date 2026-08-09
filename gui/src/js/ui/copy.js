@@ -163,11 +163,44 @@ export const CONFLICTS = {
   meta: "a plain text file · last agreed 3 hours ago",
 
   mine: "Your version · this computer",
-  mineChange: "You added a line, 5 minutes ago",
-  mineDiff: "Yours has buy milk where Proton's has something else, and is otherwise the same.",
   theirs: "Proton's version · from another device",
+
+  /**
+   * The card's second line — "what differs, in words" — from the facts `ui/diff.js` extracts.
+   *
+   * Two sentences are drawn and they are not the same shape: the one with a lone changed line
+   * contrasts the sides and closes with "otherwise the same", the one that also gained a line
+   * names the gain instead. Both are this grammar at different facts, which is the only reason it
+   * is a grammar rather than two strings — a sentence nothing draws is a sentence nobody checked.
+   *
+   * `quoted` renders inline mono inside the sentence; the caller splits around it with
+   * `splitEmphasis`, the same way the attention band's bold spans work.
+   */
+  versionDiff: (side, facts) => {
+    const ours = side === "mine" ? "Yours" : "Proton's";
+    const theirs = side === "mine" ? "Proton's" : "yours";
+    const extra =
+      facts.extraAtEnd === 1
+        ? "an extra line at the end"
+        : `${count(facts.extraAtEnd)} extra lines at the end`;
+    if (facts.quoted && facts.otherwiseSame) {
+      return `${ours} has ${facts.quoted} where ${theirs} has something else, and is otherwise the same.`;
+    }
+    if (facts.quoted) return `${ours} has ${facts.quoted} and ${extra}.`;
+    return `${ours} has ${extra}.`;
+  },
+
+  /**
+   * The first line — "what happened" — which no version of this app can currently generate.
+   *
+   * `You added a line` is a claim about your version against the LAST AGREED one, and the last
+   * agreed version's content exists nowhere: the sidecar is Proton's copy as it is now, and the
+   * index keeps the baseline's SHA-1 without its bytes. Against Proton's copy alone the very same
+   * edit reads as a removal. Kept as the drawn constants, unused until something records a common
+   * ancestor; `ui/diff.js` says the same thing at more length.
+   */
+  mineChange: "You added a line, 5 minutes ago",
   theirsChange: "Changed a line and added one, 2 minutes ago",
-  theirsDiff: "Proton's has buy oat milk and an extra line at the end.",
 
   showDiff: "See the exact differences",
   hideDiff: "Hide differences",
@@ -183,8 +216,12 @@ export const CONFLICTS = {
   cannotUndo: "Discarding a version can't be undone from here.",
   later: "Decide later",
 
-  diffSummary: "Two lines differ. Everything else in the file matches.",
-  diffCounts: "2 lines differ · 3 lines identical",
+  // The disclosure's header and footer, both counted off the same comparison the cards use.
+  diffSummary: (differing) =>
+    `${cardinal(differing)} ${plural(differing, "line differs", "lines differ")}. Everything else in the file matches.`,
+  diffCounts: (differing, identical) =>
+    `${count(differing)} ${plural(differing, "line differs", "lines differ")} · ` +
+    `${count(identical)} ${plural(identical, "line identical", "lines identical")}`,
   absentLine: "not in your version",
 
   stillWaiting: "Still waiting after this one",
@@ -435,6 +472,31 @@ export const SETTINGS = {
 
 // --------------------------------------------------------------------------- onboarding ----
 
+/**
+ * One install command per package family `gui_core::distro` can return.
+ *
+ * ⚠ **THE COMMANDS DO NOT WORK, AND THAT IS NOT A BUG IN THIS TABLE.** `9a CLI missing` draws
+ * `sudo apt install proton-drive`, and this project's own documentation contradicts it twice —
+ * "`proton-drive` is not available in Linux distribution repositories, so it can't be a package
+ * dependency", and "The native packages deliberately do **not** declare `proton-drive` as a
+ * dependency (it isn't in any distro repo)". There is no distribution where a package manager
+ * installs it, so every command here is the drawn artefact rather than an instruction that
+ * succeeds.
+ *
+ * The Debian row is kept verbatim because the deck's job is to hold what the design draws, and
+ * dropping it would quietly remove the string from the copy gate. **S7 must not ship a copyable
+ * command box from this table** until the design settles what the real instruction is — the
+ * `Detected …` sentence is the part of C5 that works today, and the tarball branch is correct for
+ * everyone. DEVIATIONS.md §72 carries this, and #218 tracks it.
+ */
+const CLI_INSTALL_COMMANDS = {
+  debian: "sudo apt install proton-drive",
+  fedora: "sudo dnf install proton-drive",
+  arch: "sudo pacman -S proton-drive",
+  suse: "sudo zypper install proton-drive",
+  alpine: "sudo apk add proton-drive",
+};
+
 export const ONBOARDING = {
   foldersTitle: "Which two folders should match?",
   foldersSub: "One on this computer, one on Proton Drive. From then on they stay identical.",
@@ -487,9 +549,24 @@ export const ONBOARDING = {
   consentStart: "Start syncing",
 
   cliMissingTitle: "Proton Drive's command line tool isn't installed",
-  cliMissingBody:
-    "This app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. Detected Debian — other distributions are in the help.",
-  cliInstallCommand: "sudo apt install proton-drive",
+
+  /**
+   * The install instructions, for the distribution `gui_core::distro` detected — or for none.
+   *
+   * Both halves take the detection result because the frame hard-codes one distribution in each,
+   * and a detected distribution had nowhere to go until they did: `Detected Debian` sits inside the
+   * body sentence, and the command box says `sudo apt install proton-drive`.
+   *
+   * `null` is not a failure to handle politely — it is the documented answer. `09-onboarding.md`
+   * and `14-behaviour-and-state.md` both say to show the tarball instructions rather than guess a
+   * package manager, so an unrecognised machine gets a download and no `$` command that would fail.
+   */
+  cliMissingBody: (distro) =>
+    "This app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. " +
+    (distro
+      ? `Detected ${distro.name} — other distributions are in the help.`
+      : "We couldn't tell which distribution this is — the download and instructions are in the help."),
+  cliInstallCommand: (distro) => CLI_INSTALL_COMMANDS[distro?.id] ?? null,
   copy: "Copy",
   checkAgain: "Check again",
   installHelp: "Installation help",

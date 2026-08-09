@@ -325,7 +325,13 @@ fn resolve_path(local_root: &Path, path: PathBuf) -> PathBuf {
 ///
 /// `~user` forms are rejected with an actionable error rather than guessed at; paths that do not
 /// start with a `~` component pass through untouched.
-fn expand_tilde(path: PathBuf, field_name: &str) -> AppResult<PathBuf> {
+///
+/// Public because the daemon is not the only shell-less consumer of these values: the GUI reads the
+/// same config file and joins `local_root` onto its own filesystem work (conflict scans, emblem
+/// lookups, the free-space check). A second expansion written over there would be a second set of
+/// `~user` semantics to keep in step, and the whole bug class this function exists for is two
+/// components disagreeing about what one path means (#135).
+pub fn expand_tilde(path: PathBuf, field_name: &str) -> AppResult<PathBuf> {
     expand_tilde_with_home(path, field_name, std::env::var_os("HOME"))
 }
 

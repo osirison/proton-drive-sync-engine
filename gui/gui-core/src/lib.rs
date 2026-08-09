@@ -26,10 +26,13 @@
 
 pub mod config_io;
 pub mod conflicts;
+pub mod distro;
+pub mod free_space;
 pub mod index_read;
 pub mod ipc;
 pub mod plan;
 pub mod sidecars;
+pub mod skip_rules;
 pub mod state;
 
 /// The daemon's own wire/serialization types, re-exported so the GUI depends on this facade

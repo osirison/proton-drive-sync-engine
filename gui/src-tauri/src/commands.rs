@@ -1,6 +1,19 @@
-//! The **fixed** Tauri command surface. Every command is a thin wrapper over `gui-core`; screens
-//! are frontend-only and never add to this list, `generate_handler!`, or `Cargo.toml`. That is what
+//! The Tauri command surface. Every command is a thin wrapper over `gui-core`; **screens** are
+//! frontend-only and never add to this list, `generate_handler!`, or `Cargo.toml`. That is what
 //! keeps the parallel screen tasks (S1–S11) collision-free.
+//!
+//! The **capability** tasks (C1–C6) are the sanctioned exception, and are how the list grows: a
+//! screen that needs something the daemon does not expose files a C-item, and the C-item adds the
+//! command before the screen is built. `free_space`, `check_cli` and `skip_rule_usage` arrived that
+//! way. The rule that matters is the one about parallel screen work, not a freeze.
+//!
+//! **A command that touches the filesystem, a subprocess or a socket must be `async` and do its
+//! work in `spawn_blocking`.** A synchronous one runs on the GTK main loop, and WebKitGTK aborts
+//! the whole process when that loop stalls (#142/#143). `read_config`, `write_config`,
+//! `resolve_conflict`, `read_conflict_pair` and `path_sync_status` predate the rule and are still
+//! synchronous — `path_sync_status` in particular can hold the loop for its full 3s index busy
+//! timeout. They are bounded enough to have survived; anything unbounded is not, and none of the
+//! commands added since is synchronous.
 
 use crate::config_path::RuntimePaths;
 use gui_core::conflicts::{self, Conflict, Resolution};
@@ -621,6 +634,113 @@ pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), 
         .body(body)
         .show()
         .map_err(|e| e.to_string())
+}
+
+// ------------------------------------------------------- the Phase-1 capability commands ----
+
+/// Room on the filesystem the sync folder lives on (C4, #177).
+///
+/// `path` prices a folder the config has not been written for yet — onboarding step 1 offers a pair
+/// before anything is saved, so the screen must be able to ask about a proposal. Omitted, it uses
+/// the configured local root.
+///
+/// **Only half of `9a Review`'s sentence.** `Needs 38.4 GB free` cannot be computed: no level of
+/// the dry-run surface carries a file size (G6, #206). See `gui_core::free_space` and DEVIATIONS.
+///
+/// Async because a hung network or FUSE mount makes `statvfs` block indefinitely, and the sync
+/// folder being on such a mount is exactly the case where the number matters.
+#[tauri::command]
+pub async fn free_space(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<gui_core::free_space::FreeSpace, String> {
+    let target = match path {
+        // A path typed into the folder picker gets the same `~` expansion the config values get —
+        // the picker is a text field, and `~/ProtonDrive` is what someone types.
+        Some(path) => config_io::expand_config_path(path, "path"),
+        None => app
+            .state::<Mutex<RuntimePaths>>()
+            .lock()
+            .unwrap()
+            .effective_local_root()
+            .ok_or_else(|| "local_root is not configured".to_string())?,
+    };
+    tauri::async_runtime::spawn_blocking(move || gui_core::free_space::for_path(&target))
+        .await
+        .map_err(|error| format!("free-space task failed: {error}"))?
+}
+
+/// Whether the `proton-drive` CLI is installed, and which distribution this is (C5, #178).
+///
+/// Two facts in one reply because they are drawn on one dialog and answered at one moment. The
+/// screen only ever appears when `installed` is false — the CLI check is otherwise a silent
+/// precondition, which is what let onboarding drop from four steps to two.
+///
+/// **Never cached.** This backs both the silent precondition and the `Check again` button, and the
+/// user is expected to install the tool between two calls.
+///
+/// `installed` is *presence*, not health: a CLI that is installed but logged out is `true`. Sending
+/// an authenticated-but-failing user to an install screen would answer a question they do not have.
+/// The probe uses the **configured** `proton_cli`, which may be an absolute path (#158's boot-PATH
+/// fix), so a tool that is installed and merely off the launcher's PATH is not reported missing.
+#[derive(serde::Serialize)]
+pub struct CliPresence {
+    installed: bool,
+    distro: Option<gui_core::distro::Distro>,
+}
+
+#[tauri::command]
+pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
+    let proton_cli = app
+        .state::<Mutex<RuntimePaths>>()
+        .lock()
+        .unwrap()
+        .proton_cli
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || CliPresence {
+        installed: Command::new(&proton_cli)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success()),
+        distro: gui_core::distro::detect_here(),
+    })
+    .await
+    // A failed join is not "no CLI and no distribution" — but this command cannot reject (the
+    // screen must render), so it degrades to the state that shows the install dialog, which is the
+    // safe direction: it tells the user to check something rather than assuming it is fine.
+    .unwrap_or(CliPresence {
+        installed: false,
+        distro: None,
+    })
+}
+
+/// What each skip rule is hiding right now (C2, #175).
+///
+/// `patterns` is the rule set **currently on screen**, not the saved config: `8a Skip rules` is
+/// drawn mid-edit with a pending removal, and the Add row prices a pattern before it is saved.
+///
+/// Async and unbounded — this walks the whole local tree (metadata only, no hashing). Running it on
+/// the GTK main loop would freeze the window for the length of the walk.
+#[tauri::command]
+pub async fn skip_rule_usage(
+    app: tauri::AppHandle,
+    patterns: Vec<String>,
+) -> Result<gui_core::skip_rules::SkipRuleReport, String> {
+    let (local_root, db_path) = {
+        let paths = app.state::<Mutex<RuntimePaths>>();
+        let paths = paths.lock().unwrap();
+        (paths.effective_local_root(), paths.effective_db_path())
+    };
+    // Not zeros: "these rules hide nothing" and "there is no folder to look in" are different
+    // answers, and only one of them makes a rule safe to remove.
+    let local_root = local_root.ok_or_else(|| "local_root is not configured".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        gui_core::skip_rules::measure(&local_root, &patterns, db_path.as_slice())
+    })
+    .await
+    .map_err(|error| format!("skip-rule scan failed: {error}"))?
 }
 
 /// `Ctrl W` — hide the window to the tray. Deliberately the SAME path as the tray's

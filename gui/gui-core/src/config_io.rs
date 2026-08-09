@@ -37,6 +37,68 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// What Settings → Deletions calls `deletion_policy`, expressed over the two keys the daemon
+/// actually has (C1, #174).
+///
+/// `delete_approval.remote` gates the **recoverable** direction — a file leaving this computer goes
+/// to Proton's Trash and can be pulled back. `delete_approval.local` gates the **permanent** one —
+/// a file removed from disk is gone. So the tab's three cards are three points on those two
+/// booleans, and no new config key is needed:
+///
+/// | card                             | `remote` | `local` |
+/// | -------------------------------- | -------- | ------- |
+/// | Ask me every time *(recommended)* | `true`   | `true`  |
+/// | Only ask about permanent ones     | `false`  | `true`  |
+/// | Never ask                         | `false`  | `false` |
+///
+/// Two booleans have four states and the tab draws three, which is why
+/// [`DeletionPolicy::OnlyRecoverable`] exists. A hand-edited config can hold `remote = true,
+/// local = false` — ask about the recoverable deletions, let the permanent ones through — and the
+/// UI must be able to say so. Folding it into the nearest card would mean the next save silently
+/// rewrote a setting the user never touched, which is the one thing [`ConfigDoc`] is built not to
+/// do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionPolicy {
+    /// Every deletion waits for a person. The daemon's default, and what an empty config means.
+    AskEveryTime,
+    /// Recoverable deletions go through; permanent ones wait.
+    OnlyPermanent,
+    /// Nothing waits.
+    Never,
+    /// Permanent deletions go through; recoverable ones wait. **No radio card draws this** — it is
+    /// only reachable by hand-editing the config, and is preserved rather than coerced.
+    OnlyRecoverable,
+}
+
+impl DeletionPolicy {
+    /// The policy a `(remote, local)` pair expresses. Total: every combination has a name.
+    pub fn from_directions(remote: bool, local: bool) -> Self {
+        match (remote, local) {
+            (true, true) => Self::AskEveryTime,
+            (false, true) => Self::OnlyPermanent,
+            (false, false) => Self::Never,
+            (true, false) => Self::OnlyRecoverable,
+        }
+    }
+
+    /// The `(remote, local)` pair this policy writes. Inverse of [`Self::from_directions`].
+    pub fn directions(self) -> (bool, bool) {
+        match self {
+            Self::AskEveryTime => (true, true),
+            Self::OnlyPermanent => (false, true),
+            Self::Never => (false, false),
+            Self::OnlyRecoverable => (true, false),
+        }
+    }
+
+    /// Whether a radio card in `8a Deletions tab` represents this policy. `false` for
+    /// [`Self::OnlyRecoverable`], which the tab has no control for.
+    pub fn is_drawn(self) -> bool {
+        !matches!(self, Self::OnlyRecoverable)
+    }
+}
+
 /// An in-memory, edit-in-place view of a config file. Getters read known keys; setters mutate only
 /// the targeted key, leaving comments and every other key untouched.
 pub struct ConfigDoc {
@@ -135,6 +197,30 @@ impl ConfigDoc {
         }
     }
 
+    /// The deletion policy the config currently expresses — see [`DeletionPolicy`].
+    ///
+    /// An unset direction reads as `true`, which is the daemon's own default
+    /// (`config.rs`: `file.remote.unwrap_or(true)`), so an empty config is `AskEveryTime` rather
+    /// than an unknown.
+    pub fn get_deletion_policy(&self) -> DeletionPolicy {
+        DeletionPolicy::from_directions(
+            self.get_delete_approval("remote").unwrap_or(true),
+            self.get_delete_approval("local").unwrap_or(true),
+        )
+    }
+
+    /// Write a deletion policy as the two `[delete_approval]` booleans.
+    ///
+    /// Both directions are written **explicitly**, even when the value matches the daemon default.
+    /// The alternative — removing a key to let the default apply — leaves the same policy expressed
+    /// two different ways in two different files, and the tab's whole promise is that the radio you
+    /// can see is the rule that is running.
+    pub fn set_deletion_policy(&mut self, policy: DeletionPolicy) {
+        let (remote, local) = policy.directions();
+        self.set_delete_approval("remote", remote);
+        self.set_delete_approval("local", local);
+    }
+
     /// Validate the current document against the daemon's own `FileConfig` parser (which enforces
     /// `deny_unknown_fields` and field types). Returns `Invalid` if the daemon would reject it.
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -151,6 +237,22 @@ impl ConfigDoc {
         write_atomic_0600(path, self.to_toml_string().as_bytes())
             .map_err(|e| ConfigError::Io(e.to_string()))
     }
+}
+
+/// Expand a leading `~` in a config value, using **the engine's own** expander.
+///
+/// The GUI is the daemon's second shell-less reader of the same file, and `~` is where the two
+/// silently disagreed: the daemon expands `local_root = "~/ProtonDrive"` at config resolution while
+/// the GUI joined the literal onto the filesystem, so every GUI-side path feature operated on a
+/// directory named `~` under the process's working directory (#135). Sharing the function is the
+/// point — a second implementation is a second set of `~user` semantics to keep in step.
+///
+/// A value the engine refuses (`~user`, or `~` with no `HOME`) comes back **verbatim**. That config
+/// is one the daemon will not start on either, and keeping the literal is what lets the eventual
+/// error name the string the user typed instead of a working directory they never chose.
+pub fn expand_config_path(value: impl Into<std::path::PathBuf>, field: &str) -> std::path::PathBuf {
+    let literal = value.into();
+    proton_drive_sync_engine::config::expand_tilde(literal.clone(), field).unwrap_or(literal)
 }
 
 #[cfg(unix)]
@@ -280,6 +382,83 @@ exclude = ["*.tmp"]
         assert_eq!(doc.get_delete_approval("local"), Some(true));
         doc.validate()
             .expect("nested delete_approval must satisfy the daemon parser");
+    }
+
+    #[test]
+    fn an_empty_config_reads_as_the_daemon_default_policy() {
+        // Not "unknown": `config.rs` resolves an unset direction to `true`, so a config with no
+        // `[delete_approval]` table is already asking about every deletion.
+        let doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
+        assert_eq!(doc.get_deletion_policy(), DeletionPolicy::AskEveryTime);
+    }
+
+    #[test]
+    fn each_radio_card_round_trips_through_the_two_daemon_keys() {
+        for (policy, remote, local) in [
+            (DeletionPolicy::AskEveryTime, true, true),
+            (DeletionPolicy::OnlyPermanent, false, true),
+            (DeletionPolicy::Never, false, false),
+            (DeletionPolicy::OnlyRecoverable, true, false),
+        ] {
+            let mut doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
+            doc.set_deletion_policy(policy);
+            assert_eq!(
+                (
+                    doc.get_delete_approval("remote"),
+                    doc.get_delete_approval("local")
+                ),
+                (Some(remote), Some(local)),
+                "{policy:?} must write the documented direction pair"
+            );
+            assert_eq!(doc.get_deletion_policy(), policy);
+            doc.validate()
+                .unwrap_or_else(|e| panic!("{policy:?} must satisfy the daemon parser: {e}"));
+        }
+    }
+
+    #[test]
+    fn the_undrawn_fourth_combination_is_preserved_not_coerced() {
+        // A hand-edited `remote = true, local = false` has no radio card. Reading it must not round
+        // it to the nearest one, or the next save would rewrite a setting nobody touched.
+        let doc = ConfigDoc::from_toml_str(
+            "local_root = \"/x\"\n[delete_approval]\nremote = true\nlocal = false\n",
+        )
+        .unwrap();
+        assert_eq!(doc.get_deletion_policy(), DeletionPolicy::OnlyRecoverable);
+        assert!(!doc.get_deletion_policy().is_drawn());
+        for drawn in [
+            DeletionPolicy::AskEveryTime,
+            DeletionPolicy::OnlyPermanent,
+            DeletionPolicy::Never,
+        ] {
+            assert!(
+                drawn.is_drawn(),
+                "{drawn:?} has a card in `8a Deletions tab`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_half_written_table_still_reads_as_a_policy() {
+        // Only one direction set: the other falls back to the daemon default (`true`), so this is
+        // "never ask about the recoverable ones" — a real, nameable policy.
+        let doc =
+            ConfigDoc::from_toml_str("local_root = \"/x\"\n[delete_approval]\nremote = false\n")
+                .unwrap();
+        assert_eq!(doc.get_deletion_policy(), DeletionPolicy::OnlyPermanent);
+    }
+
+    #[test]
+    fn changing_the_policy_preserves_comments_and_daemon_only_keys() {
+        let mut doc = ConfigDoc::from_toml_str(SAMPLE).unwrap();
+        doc.set_deletion_policy(DeletionPolicy::Never);
+        let rendered = doc.to_toml_string();
+        assert!(rendered.contains("# my sync config"), "{rendered}");
+        assert!(
+            rendered.contains("events_full_scan_every = 10"),
+            "{rendered}"
+        );
+        doc.validate().expect("daemon parser");
     }
 
     #[test]
