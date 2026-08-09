@@ -150,6 +150,26 @@ export function clock(epochSecs) {
   });
 }
 
+/**
+ * A month and a year, `Jan 2026` — the register the deletion card's facts strip uses for anything
+ * older than a relative time is worth stating in (`last edited Jan 2026`, `last opened Mar 2024`).
+ *
+ * The SECOND formatter a fixture may not derive, and for `clock`'s reason one unit up: a month
+ * boundary is a timezone away for a few hours twice a year, so `4a Deletions` draws a month this
+ * cannot promise to reproduce. It is safe for the fidelity gate anyway — the strip is mono, every
+ * `Mmm YYYY` is eight characters, and the drawn node is 132px wide whichever month it names — but
+ * the string itself is not something the copy gate may assert, exactly as `CONFLICTS.edited` is not.
+ *
+ * `en-GB` with `month: "short"` is `Jan 2026`, which is the deck's form; `en-US` would give the
+ * same, and the locale is pinned for the same reason every other formatter here pins it.
+ */
+export function monthYear(epochSecs) {
+  if (epochSecs == null) return EM_DASH;
+  const value = Number(epochSecs);
+  if (!Number.isFinite(value)) return EM_DASH;
+  return new Date(value * 1000).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+}
+
 /** `about 17 minutes left` · `about 25 minutes to finish` — deliberately vague, never a countdown. */
 export function roughly(seconds, tail = "left") {
   if (seconds == null || !Number.isFinite(Number(seconds))) return EM_DASH;

@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - master
-      - 'copilot/**'
+      - "copilot/**"
   pull_request:
 
 permissions:
@@ -72,6 +72,11 @@ jobs:
         run: npm run format:check
       - name: Lint
         run: npm run lint
+      # Invisible characters — a NUL, a no-break space, a zero-width joiner. S3 shipped a literal
+      # NUL inside a template string and every gate stayed green while git reclassified the whole
+      # 600-line screen as a binary blob: no diff, no blame, no grep. See gui/tools/check-sources.mjs.
+      - name: Sources
+        run: npm run sources:check
       # Three things no linter can see, all invisible until someone opens the app in the affected
       # theme: the two copies of the light palette agreeing (plain CSS cannot share one declaration
       # list between a media query and a selector), every themed token having a value in both

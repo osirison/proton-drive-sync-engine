@@ -67,7 +67,14 @@ export function statusChip(variant, text) {
     throw new Error(
       `chrome: unknown status-chip variant "${variant}". Known: ${Object.keys(CHIP).join(", ")}`,
     );
-  const chip = el("span", { class: `chip chip-${variant}`, "data-variant": variant });
+  // STAMPED HERE AND NOT BY THE CALLER, because there are two callers and one of them is a patch.
+  // `renderHeader` used to do it, which is correct exactly once: `updateHeader` REPLACES the chip
+  // node when its variant changes, and the replacement arrived unstamped. Every frame whose chip is
+  // not `idle` reaches its variant that way — the first render happens before the first status
+  // reply — so the chip and its dot were silently unasserted on every mapped frame that has one,
+  // including S2's since it shipped. Silently: assert.mjs walks the app's stamped nodes, so a node
+  // that stops being stamped stops being compared rather than failing.
+  const chip = fid(el("span", { class: `chip chip-${variant}`, "data-variant": variant }), "chip");
   if (spec.border) chip.style.border = `1px solid ${spec.border}`;
   chip.style.color = spec.text;
   if (spec.dot) {
@@ -76,7 +83,7 @@ export function statusChip(variant, text) {
     // shapes rather than one with a colour swap, because the ring's meaning is "open this".
     if (spec.dot.ring) dot.style.border = `1px solid ${spec.dot.ring}`;
     else dot.style.background = spec.dot.fill;
-    chip.append(dot);
+    chip.append(fid(dot, "chipDot"));
   }
   chip.append(el("span", { class: "chip-text" }, text));
   return chip;
@@ -120,11 +127,11 @@ export function renderHeader({ chip = "idle", chipText = "idle", onMenu = null, 
       )
     : mark;
 
+  // `statusChip` stamps itself and its dot — see the note there; doing it from here worked for as
+  // long as this was the only place a chip was built.
   const chipNode = statusChip(chip, chipText);
   fid(mark, "mark");
   fid(name, "name");
-  fid(chipNode, "chip");
-  fid(chipNode.querySelector(".chip-dot"), "chipDot");
   const spacer = fid(el("span", { class: "shell-spacer" }), "spacer");
   const menu = onMenu
     ? fid(

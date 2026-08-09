@@ -491,10 +491,10 @@
   font-size: 12.5px;
   letter-spacing: 0.1em;
 }
-.deletion-gate-row .btn {
-  flex: none;
-  padding: 10px 17px;
-}
+/* No `flex` and no padding. The frame leaves the button at the flex default (`0 1 auto`), and
+   controls.js writes padding INLINE — so the declaration that used to be here was dead against
+   every caller and wrong against the one that mattered. The geometry is passed at the call site;
+   see `screens/deletions.js`. */
 
 .deletion-action {
   display: flex;

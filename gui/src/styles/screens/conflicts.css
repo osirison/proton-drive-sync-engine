@@ -22,9 +22,7 @@
 
 /* `04-conflicts.md`: "Choosing advances to the next conflict with a 220ms crossfade; the header
    stays put." Applied by app.js only when the conflict actually changes — never on the first mount
-   and never on a poll, so the fidelity gate reads `animation-name: none` the way the frames do.
-   base.css's `prefers-reduced-motion` block already collapses every duration in the app to 0.01ms,
-   so there is nothing to opt out of here. */
+   and never on a poll, so the fidelity gate reads `animation-name: none` the way the frames do. */
 @keyframes cf-appear {
   from {
     opacity: 0;
@@ -36,6 +34,19 @@
 
 .cf-advancing {
   animation: cf-appear var(--t-appear) var(--ease);
+}
+
+/* IT DID HAVE SOMETHING TO OPT OUT OF. This rule replaces a comment claiming base.css already
+   collapsed it: base.css collapses `transition-duration`, and this is an ANIMATION, which that
+   block does not touch — its own header says the per-keyframe work "lands with the components that
+   own those keyframes". Every other animation in the app already carries its own opt-out
+   (`.chip-dot-blip`, the hexagon, the seam); this one read the shared rule as covering it and was
+   the only keyframe in the app still running under reduced motion. Found from S3, which needed the
+   same rule for the armed caret. */
+@media (prefers-reduced-motion: reduce) {
+  .cf-advancing {
+    animation: none;
+  }
 }
 
 /* --------------------------------------------------------------------- the title block ---- */

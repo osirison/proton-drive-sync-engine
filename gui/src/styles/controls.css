@@ -157,11 +157,17 @@
 }
 
 /* The typed-DELETE gate. Mono, because the word is a literal to be reproduced exactly — the same
-   reason every daemon string in this design is mono. */
+   reason every daemon string in this design is mono, and why it takes the BRIGHTEST text tier
+   rather than `.input`'s `--text-2`: what you type here has to read as the literal it is.
+
+   NEITHER CENTRED NOR CAPPED, and it was both until S3 rendered one. `4a Deletions` draws the field
+   flexing to 330px and `5a Plan` draws it 190 wide, both left-aligned in `#F2F4F7` — so a 160px cap
+   was narrower than either drawn instance and the centring matched neither. F5 wrote them before a
+   screen existed to check them against; the width belongs to the site (rows.css gives this one
+   `flex: 1`), which is why there is no width here at all. */
 .delete-gate {
   letter-spacing: 0.08em;
-  text-align: center;
-  max-width: 160px;
+  color: var(--text);
 }
 
 /* ------------------------------------------------------------------------------ toggles ---- */

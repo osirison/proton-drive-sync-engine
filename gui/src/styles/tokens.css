@@ -195,6 +195,15 @@
   --destructive-btn-bg: rgba(255, 59, 59, 0.1);
   --destructive-input-border: rgba(255, 59, 59, 0.35); /* the typed-DELETE field */
   --destructive-input-bg: #0a0b0d;
+  /* The armed confirmation's word box (`4a Armed`) — a FOURTH crimson alpha, .5, and the strongest
+     of them. It is not an input: the card's gate is where you type, and by the time the takeover is
+     up the word is already typed, so the box restates it. A brighter edge than the field it echoes
+     (.35) is the design saying the same thing louder at the moment it becomes irreversible.
+
+     No `12a Armed light` exists. The light value is the one its nearest measured neighbour keeps —
+     --destructive-input-border is .35 in BOTH themes — rather than the .38→.4 nudge the card border
+     takes, because that pair is the one this box is a step up from. S10 confirms. */
+  --destructive-armed-border: rgba(255, 59, 59, 0.5);
 
   /* ---- the 360px compact panel (F6): three tints the 1040 screens do not carry ----
      DEVIATIONS.md §52a's finding, tokenised. THE PANEL STEPS EVERY CRIMSON ALPHA ONE NOTCH DOWN
@@ -263,6 +272,23 @@
      #E0DCD5 against a frame that says rgb(0, 0, 0), and fail on a border nobody draws. */
   --btn-primary-choice-border: #2e323a;
   --btn-primary-choice-border-style: solid;
+
+  /* `Keep it — …` and `Keep both files` on `4a Deletions`, and the same button on `4a Armed`. The
+     safe choice in both columns, and the loudest thing on the screen — which in LIGHT means it is
+     literally the primary button (#14161A on #FAF8F5, no border) and in dark a raised panel with a
+     bright edge. F5 wrote the kind as --panel-raised / --border-strong / --text-bright, which is
+     exact on every dark frame and wrong on all three values in light: #FFFFFF / #E0DCD5 / #14161A
+     against a frame that draws #14161A / (none) / #FAF8F5. The same §66 finding one screen later,
+     and again only visible because `12a Deletions light` exists to be walked beside its twin.
+
+     Its border is the second token whose themes disagree about whether a border EXISTS
+     (--btn-primary-choice-border above is the first); the 38px dark button measures 36px in light,
+     which is exactly the 2px a border takes out of a border-box. The light colour is the button's
+     own text, because with no border-style the frame records currentColor. */
+  --btn-primary-soft-bg: #101216;
+  --btn-primary-soft-border: #2e323a;
+  --btn-primary-soft-border-style: solid;
+  --btn-primary-soft-text: #e8ebf0;
 
   /* ---- the side-by-side diff (`3a Conflict diff`) ----
      The two changed-line tints are --up-from and --down-from at .14 — the gradient START stops, not
@@ -392,6 +418,7 @@
     --destructive-btn-bg: rgba(220, 38, 38, 0.07);
     --destructive-input-border: rgba(220, 38, 38, 0.35);
     --destructive-input-bg: #ffffff;
+    --destructive-armed-border: rgba(220, 38, 38, 0.5);
 
     --compact-attention-border: rgba(190, 18, 60, 0.3);
     --compact-permanent-bg: rgba(220, 38, 38, 0.03);
@@ -419,6 +446,11 @@
     --btn-unpainted: #000000;
     --btn-primary-choice-border: #000000;
     --btn-primary-choice-border-style: none;
+
+    --btn-primary-soft-bg: #14161a;
+    --btn-primary-soft-border: #faf8f5;
+    --btn-primary-soft-border-style: none;
+    --btn-primary-soft-text: #faf8f5;
 
     /* CHOSEN, not drawn — no light frame carries the diff panel. See the dark block. */
     --diff-mine-bg: rgba(178, 63, 20, 0.1);
@@ -518,6 +550,7 @@
   --destructive-btn-bg: rgba(220, 38, 38, 0.07);
   --destructive-input-border: rgba(220, 38, 38, 0.35);
   --destructive-input-bg: #ffffff;
+  --destructive-armed-border: rgba(220, 38, 38, 0.5);
 
   --compact-attention-border: rgba(190, 18, 60, 0.3);
   --compact-permanent-bg: rgba(220, 38, 38, 0.03);
@@ -545,6 +578,11 @@
   --btn-unpainted: #000000;
   --btn-primary-choice-border: #000000;
   --btn-primary-choice-border-style: none;
+
+  --btn-primary-soft-bg: #14161a;
+  --btn-primary-soft-border: #faf8f5;
+  --btn-primary-soft-border-style: none;
+  --btn-primary-soft-text: #faf8f5;
 
   /* CHOSEN, not drawn — no light frame carries the diff panel. See the dark block. */
   --diff-mine-bg: rgba(178, 63, 20, 0.1);

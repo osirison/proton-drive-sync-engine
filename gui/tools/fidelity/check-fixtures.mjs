@@ -149,10 +149,16 @@ for (const [label, entry] of Object.entries(FIXTURES)) {
     else if (typeof value === "function") {
       // A factory slot (`door: (i) => …`) covers a run of siblings, and nothing here knows how many
       // the screen draws. Probe a plausible range and treat the slot as alive if any index resolves.
+      //
+      // THREE ARGUMENTS, because S3 has a three-index slot: a deletion's fact strip is keyed by
+      // column, then card, then fact. Two was enough until it wasn't, and the failure was quiet in
+      // the wrong direction — the missing argument interpolated as `span[undefined]`, a key that
+      // exists nowhere, so a correct mapping failed the build. Extra arguments a shorter factory
+      // ignores cost nothing.
       const probes = [];
       for (let i = 0; i < 10; i++) {
         try {
-          const key = value(i, 0);
+          const key = value(i, 0, 0);
           if (typeof key === "string") probes.push(key);
         } catch {
           /* a factory wanting arguments this probe cannot guess — the other indices cover it */

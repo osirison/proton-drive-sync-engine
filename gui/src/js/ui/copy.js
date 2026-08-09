@@ -330,8 +330,22 @@ export const CONFLICTS = {
 
 // ---------------------------------------------------------------------------- deletions ----
 
+/** Shared by the two armed-confirmation sentences below; see `armedBody`. */
+const ARMED_TAIL =
+  "It does not go to your trash, and it is already gone from Proton Drive, " +
+  "so there is nothing to restore it from.";
+
 export const DELETIONS = {
-  title: "Two files are waiting to be deleted",
+  /**
+   * `Two files are waiting to be deleted` — a TEMPLATE, because the queue is live and one deletion
+   * is the commonest case there is.
+   *
+   * The count is spelled (`cardinal`), which is the deck's own form here and nowhere else on this
+   * screen: the sentence is prose and `2 files are waiting` reads as a readout. Agreement moves with
+   * it — `One file IS waiting` — the same failure `plural` was written for after `1 other changes
+   * are waiting on you` shipped once.
+   */
+  title: (n) => `${cardinal(n)} ${plural(n, "file is", "files are")} waiting to be deleted`,
   sub: "They were deleted on one side. Nothing happens to the other side until you say so — syncing carries on around them.",
 
   permanent: "Permanent · this computer",
@@ -339,10 +353,41 @@ export const DELETIONS = {
   recoverable: "Recoverable · Proton Drive",
   recoverableSub: "Moved to Proton Drive's Trash. You can restore it there until the trash is emptied.",
 
-  folderConsequence: (n, size) =>
-    `Deleting this removes ${count(n)} photos, ${bytes(size)} from this computer, including everything inside it.`,
+  /**
+   * The permanent card's consequence, in two forms — and they are two SENTENCES, not one sentence
+   * with a hole in it.
+   *
+   * `folderConsequence` is what the frame draws: the subtree aggregate, emphasised, because
+   * `1,204 photos, 8.4 GB` is voice rule 2 exactly ("consequences in things you'd miss"). No command
+   * can produce it — G8, #208 — so Phase 1 cannot render this string at all.
+   *
+   * `folderConsequenceUnknown` is what Phase 1 says instead. It is a different sentence rather than
+   * the same one with the number omitted, because "Deleting this removes from this computer" is not
+   * English and "Deleting this removes this folder" says nothing. It keeps the emphasis on the LOSS
+   * — `everything inside it`, which is true, qualitative, and the part a reader is weighing — so the
+   * card keeps its crimson span and its structure. The day #208 lands this one goes.
+   */
+  folderConsequence: (loss) =>
+    `Deleting this removes ${loss} from this computer, including everything inside it.`,
+  folderConsequenceUnknown: "Deleting this folder removes everything inside it from this computer.",
+  /** The same sentence for a single FILE, which the frame does not draw and the queue can hold. */
+  fileConsequence: "Deleting this removes it from this computer for good.",
   travelExplainer:
     "You deleted this on this computer. Deleting it on Proton moves it to Proton Drive's Trash, where you can still get it back.",
+
+  /**
+   * The facts strip, in mono, under the divider. Templates because two of the four are relative
+   * times off `detected_epoch_secs` and one is a month off the index's `mtime`; the deck writes them
+   * out (`13-copy-deck.md`, Deletions) and F7 left them out, which nothing caught because the copy
+   * gate reads copy.js and not the deck.
+   *
+   * `lastOpened` is an ATIME and the index stores mtime only (#208) — it is here because the deck
+   * has it and the screen must be able to say where it went, not because Phase 1 can draw it.
+   */
+  deletedOnProton: (ago) => `deleted on Proton ${ago}`,
+  deletedHere: (ago) => `deleted here ${ago}`,
+  lastOpened: (when) => `last opened ${when}`,
+  lastEdited: (when) => `last edited ${when}`,
 
   typeToDelete: "To delete it, type DELETE below.",
   delete: "Delete",
@@ -352,9 +397,35 @@ export const DELETIONS = {
   noExpiry: "Deletions stay here until you decide. Nothing expires.",
   keepBoth: "Keep both files",
 
-  armedTitle: (n) => `Delete ${count(n)} photos from this computer?`,
-  armedBody:
-    "Everything in photos/2019 — 8.4 GB — is removed from disk. It does not go to your trash, and it is already gone from Proton Drive, so there is nothing to restore it from.",
+  /**
+   * `Delete 1,204 photos from this computer?` — ONE grammar, and the caller names the thing.
+   *
+   * The frame's noun phrase is the subtree aggregate and Phase 1 passes the path instead
+   * (`Delete photos/2019 from this computer?`), which is the same sentence about the same deletion
+   * and invents nothing. Written this way rather than as two templates because a confirmation
+   * question is the last place two copies of one sentence should be able to drift.
+   */
+  armedTitle: (what) => `Delete ${what} from this computer?`,
+  /**
+   * The half of the armed sentence that is the same whichever kind of thing is going. Module-local,
+   * so the copy gate walks the two whole sentences below rather than a fragment neither screen ever
+   * draws on its own.
+   */
+  /**
+   * `size == null` DROPS THE SIZE CLAUSE, the shape `MAIN.syncingSub` uses for a null plan summary.
+   * The frame draws `— 8.4 GB —` from the same subtree aggregate the title needs (#208); an
+   * em-dash pair around an em-dash would be the app claiming the daemon answered "unknown" about
+   * how much is at stake, on the one screen where that is the question.
+   */
+  armedBody: (path, size) =>
+    `Everything in ${path}${size == null ? "" : ` — ${size} —`} is removed from disk. ${ARMED_TAIL}`,
+  /**
+   * The same confirmation for a single FILE, which no frame draws — both drawn permanent items are
+   * folders. `Everything in archive/old-notes.md` is folder grammar about a file, and the takeover
+   * is the last thing a person reads before something goes for good, so it gets its own sentence
+   * rather than a shared one that is wrong half the time.
+   */
+  armedBodyFile: (path) => `${path} is removed from disk. ${ARMED_TAIL}`,
   armedConfirm: "Delete permanently",
   armedCancel: "Press Esc to cancel.",
 
@@ -363,7 +434,7 @@ export const DELETIONS = {
     "When a file disappears from one side, it waits here for you instead of vanishing from the other.",
 
   compact: {
-    title: (n) => `${count(n)} files waiting to be deleted`,
+    title: (n) => `${count(n)} ${plural(n, "file", "files")} waiting to be deleted`,
     permanent: "1,204 photos gone from this computer, permanently",
     recoverable: "to Proton's Trash — recoverable",
     review: "Review them",

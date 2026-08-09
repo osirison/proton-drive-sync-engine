@@ -31,7 +31,7 @@
 // three window frames above it.
 import { MAIN, DELETIONS } from "../ui/copy.js";
 import { ago } from "./clock.js";
-import { compactFids } from "./fids.js";
+import { compactFids, deletionFids } from "./fids.js";
 
 /**
  * The two withheld deletions, verbatim `PendingDeletion` (src/ipc.rs), in the order the frame's two
@@ -133,7 +133,12 @@ const idleWith = (pendingDeletions) => ({
 });
 
 export const DELETION_FIXTURES = {
+  // `route` is what tells the shell which screen to draw — S2 added it after `?frame=3a Conflict`
+  // quietly rendered the MAIN screen against the conflicts fixture, and the gate compared a 168px
+  // hero against a 44px mark because `fid()` keys by slot NAME. Both `4a` windows say it.
   "4a Deletions": {
+    route: "deletions",
+    fids: deletionFids("queue"),
     status: idleWith(PENDING),
     pathStatus: PATH_STATUS,
     conflicts: [],
@@ -148,11 +153,22 @@ export const DELETION_FIXTURES = {
   // The count in `Delete 1,204 photos from this computer?` is deliberately NOT smuggled in beside
   // `armed`. It is data about the folder, not about what is open, and the gap it belongs to is named
   // on `PENDING` above.
+  //
+  // ROUTED TO `deletions`, NOT TO `armed`. routes.js carries an `armed` id and this does not use
+  // it: the takeover is a BODY of the deletions screen, chosen by `bodyOf` from the same state the
+  // queue is drawn from, so a fixture pointing at a second route would be describing an
+  // arrangement the screen cannot produce. What makes it armed is `ui.armed`, below.
   "4a Armed": {
+    route: "deletions",
+    fids: deletionFids("armed"),
     status: idleWith(PENDING),
     pathStatus: PATH_STATUS,
     conflicts: [],
-    ui: { armed: "photos/2019" },
+    // The IDENTITY, not the path. `armedItem` matches the fingerprint too — a path is a slot a later
+    // deletion can move into, and a confirmation is about one exact thing (see screens/deletions.js).
+    // Written off `PENDING[0]` rather than restated, so it cannot name an item this frame does not
+    // queue.
+    ui: { armed: { path: PENDING[0].path, fingerprint: PENDING[0].fingerprint } },
   },
 
   // Nothing waiting: an empty queue, and nothing else. Both of the frame's strings are fixed deck
@@ -160,7 +176,13 @@ export const DELETION_FIXTURES = {
   // when both columns have collapsed — so the absence IS the dataset. The status still carries the
   // empty array explicitly rather than omitting the field, because an absent `pending_deletions` and
   // an empty one are the same on this wire (`#[serde(default)]`) and only one of them says so.
+  //
+  // NO SHELL SLOTS IN ITS `fids`. The frame is a 522×422 standalone that draws neither the header
+  // nor the four doors, so `deletionFids("empty")` returns the body alone — declaring a `header`
+  // would name a node this frame does not have, which check-fixtures.mjs fails the build over.
   "4a Empty": {
+    route: "deletions",
+    fids: deletionFids("empty"),
     status: idleWith([]),
     conflicts: [],
   },
