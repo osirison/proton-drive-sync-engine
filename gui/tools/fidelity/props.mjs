@@ -177,7 +177,14 @@ function toRgbString(value) {
     .split(/[\s,/]+/)
     .filter(Boolean)
     .map(Number);
-  if (parts.length < 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  // THREE OR FOUR, EXACTLY. `rgba(1,2,3,4,5)` used to normalise to `rgba(1, 2, 3, 4)` — the extra
+  // parts silently dropped — so a malformed colour in the ground truth could be reshaped into one
+  // that matches what the app computed, and a comparator that quietly agrees is worse than one that
+  // fails. Four is allowed for both spellings because CSS allows both: `rgba()` is an alias of
+  // `rgb()`, so `rgba(1,2,3)` and `rgb(1 2 3 / .5)` are each legal and each mean what they look
+  // like. Anything else returns null, and the caller falls back to comparing the raw strings, which
+  // will not match — loudly, which is the direction a gate should fail in.
+  if (parts.length < 3 || parts.length > 4 || parts.some((n) => !Number.isFinite(n))) return null;
   const [r, g, b] = parts;
   return parts.length === 3 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${parts[3]})`;
 }
