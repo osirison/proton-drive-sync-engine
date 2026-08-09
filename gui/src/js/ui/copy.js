@@ -175,8 +175,15 @@ export const CONFLICTS = {
    *
    * `quoted` renders inline mono inside the sentence; the caller splits around it with
    * `splitEmphasis`, the same way the attention band's bold spans work.
+   *
+   * **`null` in, `null` out.** `summariseSide` returns null whenever the comparison is not one this
+   * grammar covers — which includes the most common real conflict, a multi-line edit — so null is
+   * the ordinary case rather than an error, and the caller's `if (sentence)` is exactly the branch
+   * `04-conflicts.md` specifies (the metadata row, alone). Throwing here would put a TypeError on
+   * the path S2 travels most, and a TypeError in a webview is a blank card.
    */
   versionDiff: (side, facts) => {
+    if (!facts) return null;
     const ours = side === "mine" ? "Yours" : "Proton's";
     const theirs = side === "mine" ? "Proton's" : "yours";
     const extra =

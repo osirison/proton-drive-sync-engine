@@ -689,6 +689,10 @@ pub struct CliPresence {
     distro: Option<gui_core::distro::Distro>,
 }
 
+/// How long the CLI probe waits before giving up on it. Generous for a `--version`, short enough
+/// that onboarding does not appear to have died.
+const CLI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[tauri::command]
 pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
     let proton_cli = app
@@ -698,12 +702,7 @@ pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
         .proton_cli
         .clone();
     tauri::async_runtime::spawn_blocking(move || CliPresence {
-        installed: Command::new(&proton_cli)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success()),
+        installed: probe_cli(&proton_cli),
         distro: gui_core::distro::detect_here(),
     })
     .await
@@ -714,6 +713,52 @@ pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
         installed: false,
         distro: None,
     })
+}
+
+/// Is the CLI there? Bounded by [`CLI_PROBE_TIMEOUT`], because nothing else in this command is.
+///
+/// **A probe that never returns is the failure mode this screen cannot have.** `check_cli` is the
+/// silent precondition *and* the `Check again` button, so a `proton_cli` that hangs — a stale
+/// keyring prompt, a wedged network mount holding the binary, an absolute path pointing at a FIFO —
+/// would park a `spawn_blocking` thread forever, leave the JS promise unresolved, and let every
+/// press of `Check again` park another. `Command::status()` on its own has no timeout, which is why
+/// this polls instead.
+///
+/// Three outcomes, and the middle one is the reason `installed` is documented as *presence*:
+/// - the spawn fails (`ENOENT`, not executable) → **false**. This is the real "isn't installed".
+/// - it starts but does not finish in time → **true**, and the child is killed. The binary is
+///   plainly there; sending someone to an install screen for a tool that is installed and stuck
+///   would be advice that cannot work.
+/// - it finishes → whether it exited `0`.
+fn probe_cli(proton_cli: &str) -> bool {
+    let mut child = match Command::new(proton_cli)
+        .arg("--version")
+        // Null rather than inherited, so a chatty CLI can neither fill a pipe nobody drains nor
+        // print into the GUI's own stdout.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+
+    let deadline = std::time::Instant::now() + CLI_PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            // An error from `try_wait` means the child is unwaitable, not that it is absent.
+            Err(_) => return true,
+            Ok(None) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            // Reap it, or the killed child stays a zombie for the life of the GUI process.
+            let _ = child.wait();
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 /// What each skip rule is hiding right now (C2, #175).

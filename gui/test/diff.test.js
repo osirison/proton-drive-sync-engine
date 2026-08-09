@@ -175,6 +175,17 @@ test("a one-line change inside a large file is still summarised", () => {
   });
 });
 
+test("the template answers null for the case that falls back, rather than throwing", () => {
+  // `summariseSide` returns null for every comparison outside the drawn grammar — including a
+  // multi-line edit, which is what most real conflicts are. S2's most-travelled path therefore feeds
+  // this template null, and a TypeError there is a blank card rather than the documented fallback.
+  const multiLine = compare("a\nb\nc\n", "A\nb\nC\n");
+  assert.equal(summariseSide(multiLine, "mine"), null);
+  assert.equal(CONFLICTS.versionDiff("mine", summariseSide(multiLine, "mine")), null);
+  assert.equal(CONFLICTS.versionDiff("theirs", null), null);
+  assert.equal(CONFLICTS.versionDiff("mine", undefined), null);
+});
+
 test("an unknown side is a programming error, not a silent default", () => {
   const comparison = compare(MINE, THEIRS);
   assert.throws(() => summariseSide(comparison, "left"), /must be "mine" or "theirs"/);
