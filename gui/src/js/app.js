@@ -28,6 +28,15 @@ import { renderCompactPanel, trayMenu } from "./ui/compact.js";
 import { CHROME } from "./ui/copy.js";
 import { renderMain, updateMain, unmountMain } from "./screens/main.js";
 import { renderConflicts, advanceAfter, skipTo } from "./screens/conflicts.js";
+import {
+  renderDeletions,
+  updateDeletions,
+  unmountDeletions,
+  armedItem,
+  itemKey,
+  BULK_KEY,
+} from "./screens/deletions.js";
+import { severityOf } from "./ui/rows.js";
 import { activeFixture } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
 
@@ -100,7 +109,13 @@ function chipFor() {
 
   const state = store.select.daemonState();
   const decisions = store.select.unresolvedConflictCount();
-  const deletions = store.select.pendingDeletions().length;
+  // `visibleDeletions()`, NOT the raw store. The chip, the main screen's attention band and the
+  // deletions screen are three renderings of one sentence — "this many things are waiting on you" —
+  // and the daemon keeps an answered deletion in `pending_deletions` until a pass consumes it
+  // (for a KEPT one, for ever: #224). Counted from the store, this chip reads `2 waiting` with the
+  // destructive dot while the screen under it says `Nothing waiting to be deleted`. One filtered
+  // view feeds all three, so they cannot disagree.
+  const deletions = visibleDeletions().length;
 
   if (decisions + deletions > 0) {
     return {
@@ -166,6 +181,11 @@ function openOverlay(id, opener = null) {
   // Conflicts is entered fresh every time: the queue starts at the top, and the "what you settled"
   // tally that the cleared state reads is a claim about THIS visit. See resetConflictScreen.
   if (id === "conflicts") resetConflictScreen();
+  // Deletions is entered on the QUEUE, always. A confirmation left armed from a previous visit
+  // would put a full-window "Delete photos/2019 from this computer?" in front of somebody who has
+  // just clicked a notification — a question they did not ask, about the most destructive thing the
+  // app can do. The decisions themselves are not reset; only what is open. See deletionsDecided.
+  if (id === "deletions") deletionArmed = null;
   render();
 }
 
@@ -216,6 +236,22 @@ function onKeydown(e) {
       e.preventDefault();
       return;
     }
+    // `Press Esc to cancel.` — and it has to be taken HERE, ahead of `closeOverlay`. The armed
+    // confirmation is a body of the deletions screen rather than a route (see routes.js), so the
+    // topmost thing on the screen stack is Deletions itself: left to the line below, Esc would
+    // dismiss the whole queue instead of the confirmation over it, which is the frame's own caption
+    // doing the opposite of what it says. Cancelling leaves the queue exactly where it was.
+    // Asked of the QUEUE, not of the flag. The takeover can stop showing without anything clearing
+    // `deletionArmed` — the pass applies the deletion, another client approves it, the daemon
+    // restarts and publishes an empty snapshot — and a stale flag would swallow the Esc that was
+    // meant to leave the screen, so the first press would do nothing visible and a second would be
+    // needed. `armedItem` is the same question `bodyOf` asks to decide what is drawn.
+    if (activeRoute() === "deletions" && armedItem(visibleDeletions(), deletionArmed)) {
+      deletionArmed = null;
+      render();
+      e.preventDefault();
+      return;
+    }
     // Esc also cancels a confirmation, which is a screen's business — it gets the event only if no
     // overlay took it.
     if (closeOverlay()) e.preventDefault();
@@ -262,7 +298,10 @@ function onKeydown(e) {
 }
 
 // The event F4 defined and nothing consumed until S2. Kept as an event rather than a direct call so
-// the key handler stays ignorant of which screen is up — S3's deletion queue steps the same way.
+// the key handler stays ignorant of which screen is up. F4 predicted S3's queue would step the same
+// way and it does not: the deletions screen shows every waiting item at once, so there is no
+// position to move, and neither `05-deletions.md` nor `14-behaviour-and-state.md` asks for one.
+// The listener stays single-consumer until a screen that pages needs it.
 document.addEventListener("shell:step", (e) => {
   if (activeRoute() !== "conflicts") return;
   stepConflict(e.detail?.delta ?? 0);
@@ -489,14 +528,34 @@ function render() {
   // animation of its own to protect, and `setBody`'s `nextSibling` guard already leaves an
   // unchanged node in place. The crossfade is applied AFTER the swap, and only on an advance.
   if (active === "conflicts") {
-    if (dom.bodyRoute !== active) unmountMain();
+    if (dom.bodyRoute !== active) {
+      unmountMain();
+      unmountDeletions();
+    }
     const props = conflictsProps();
     const nodes = renderConflicts(props);
     setBody(nodes);
     crossfadeConflictBody(nodes, props.conflicts[props.index]?.original ?? "(cleared)");
     dom.bodyRoute = active;
+  } else if (active === "deletions") {
+    // PATCHED, NOT REBUILT — the opposite of the conflicts branch above, and the difference is a
+    // text field. `4a Deletions` puts a typed-`DELETE` gate on every permanent card, and that field
+    // clears on blur by design, so rebuilding the body twice a second would wipe a half-typed word
+    // and make the only irreversible action in the app unreachable by keyboard. `updateDeletions`
+    // rebuilds only when something the body draws has moved, applies the busy state in place
+    // otherwise, and carries a half-typed word across the rebuilds it cannot avoid.
+    if (dom.bodyRoute !== active) {
+      unmountMain();
+      unmountDeletions();
+      setBody(renderDeletions(deletionsProps()));
+      dom.bodyRoute = active;
+    } else {
+      const nodes = updateDeletions(deletionsProps());
+      if (nodes) setBody(nodes);
+    }
   } else if (dom.bodyRoute !== active) {
     unmountMain();
+    unmountDeletions();
     setBody(
       active === "main"
         ? renderMain(mainProps(localRoot, remoteRoot))
@@ -814,13 +873,237 @@ function crossfadeConflictBody(nodes, showing) {
   }
 }
 
+// ---- the deletions screen (S3) ----
+//
+// Module-level for the reason the conflicts state is, and for one more: this screen holds a text
+// field whose contents clear on blur by design, so it may not be rebuilt on the poll at all. The
+// state that survives a poll therefore has to live somewhere the poll does not touch.
+
+/**
+ * Which permanent deletion's confirmation is up — `{ path, fingerprint }`, never a bare path.
+ *
+ * A confirmation is about one exact thing. A path is a slot, and a later deletion can move into it:
+ * arm `notes.txt`, let that deletion resolve, then have the file come back and be deleted again.
+ * Keyed on the path alone the takeover re-binds itself to the NEW deletion and reappears with a
+ * live `Delete permanently` that no word was typed for. `armedItem` matches the fingerprint too,
+ * which is what the daemon pins its own approvals to.
+ */
+let deletionArmed = null;
+/** `path_sync_status` replies, by path — the size and mtime a file card draws. */
+const deletionStatuses = new Map();
+const deletionStatusInFlight = new Set();
+/** Item keys with a control command in flight, plus `"all"` for the bulk one. */
+const deletionBusy = new Set();
+/**
+ * WHAT YOU HAVE ALREADY DECIDED, while this app has been open.
+ *
+ * The daemon keeps a withheld deletion in `pending_deletions` until a pass consumes it, so the ~2s
+ * poll would put an approved row straight back on screen — and a KEPT row comes back for ever,
+ * because the wire has no way to refuse a deletion at all (#224: `deny` revokes an approval, and
+ * withholding is already the default). Keyed by `(path, direction)` and PINNED TO THE FINGERPRINT,
+ * which is what the daemon pins its own approvals to: the same path deleted again with different
+ * content is a different question and gets asked again.
+ *
+ * Not reset on navigation. `resetConflictScreen` clears its tally on entry because that tally is a
+ * claim about one visit; this is a record of decisions, and forgetting them on the way back into
+ * the screen would re-ask everything you just answered.
+ */
+const deletionsDecided = new Map();
+
+/**
+ * The queue as the screen sees it: what the daemon is withholding, less what you have answered.
+ *
+ * PRUNES AS IT READS. An entry whose item is no longer withheld has done its job, and dropping it
+ * is what lets a later deletion of the same path be asked about — a fingerprint can legitimately
+ * repeat (a directory's is its `volumeId~nodeId`, which does not change), so absence from the live
+ * queue is the only reliable signal that the decision has been consumed.
+ */
+function visibleDeletions() {
+  const live = store.select.pendingDeletions();
+  const queued = new Set(live.map(itemKey));
+  for (const key of deletionsDecided.keys()) if (!queued.has(key)) deletionsDecided.delete(key);
+  // The size-and-mtime cache is pruned on the same signal, and for a sharper reason: it is keyed by
+  // PATH, so a `notes.txt` that is deleted, settled, replaced and deleted again would otherwise draw
+  // the first file's `4 KB` and `last edited Jan 2026` on a card about the second. Dropping the
+  // entry when the deletion leaves the queue makes the next one ask again — which also gives a read
+  // that failed on a busy index a second chance instead of remembering the failure for the session.
+  const paths = new Set(live.map((item) => item.path));
+  for (const path of deletionStatuses.keys()) if (!paths.has(path)) deletionStatuses.delete(path);
+  return live.filter((item) => deletionsDecided.get(itemKey(item)) !== item.fingerprint);
+}
+
+/**
+ * Fetch one file's index record — its size and mtime — once.
+ *
+ * KEYED BY PATH IN A MAP, which is what makes the conflicts screen's stale-reply race structurally
+ * impossible here rather than guarded against: a reply is filed under the path it was asked for, so
+ * a late one can only ever overwrite its own entry. A failed or absent record still claims the slot
+ * (as `null`), so a file the daemon cannot answer for is asked about once and not on every poll.
+ *
+ * Directories are not asked at all: a directory record's `file_size` is not a subtree total (#208)
+ * and its mtime is the directory's own, so neither is a fact about what you would lose.
+ */
+async function ensurePathStatus(item) {
+  if (item.entity_kind === "directory") return;
+  const path = item.path;
+  if (deletionStatuses.has(path) || deletionStatusInFlight.has(path)) return;
+  deletionStatusInFlight.add(path);
+  let status = null;
+  try {
+    status = await api.pathSyncStatus(path);
+  } catch (error) {
+    console.error("path_sync_status failed:", error);
+  }
+  deletionStatusInFlight.delete(path);
+  deletionStatuses.set(path, status);
+  render();
+}
+
+/**
+ * Approve or keep one withheld deletion.
+ *
+ * APPROVING ASKS FOR A PASS. `approve` records a standing approval and the daemon's own reply says
+ * so — "run `proton-sync syncnow` to apply now" — because the delete itself happens inside the next
+ * reconcile. Without the nudge the row sits there until the scan interval comes round, which reads
+ * as a button that did not work; `03-main-screen.md` makes the same argument for `Sync now`.
+ *
+ * KEEPING CANNOT DO WHAT ITS LABEL SAYS, and that is #224 rather than a bug here. `deny` revokes an
+ * approval — which is exactly right if you approved this and changed your mind, and a no-op
+ * otherwise — but nothing on the wire refuses a deletion durably or puts the file back on the other
+ * side. Phase 1 sends the command it has and remembers the decision for this session; DEVIATIONS
+ * §75 records what a user actually gets.
+ */
+async function decideDeletion(item, approve) {
+  const key = itemKey(item);
+  if (deletionBusy.has(key)) return;
+  deletionBusy.add(key);
+  render();
+
+  let settled = false;
+  try {
+    const reply = await (approve ? api.approve(item.path) : api.deny(item.path));
+    settled = acknowledged(reply);
+  } catch (error) {
+    console.error(approve ? "approve failed:" : "deny failed:", error);
+  }
+  deletionBusy.delete(key);
+  if (settled) {
+    deletionsDecided.set(key, item.fingerprint);
+    if (deletionArmed?.path === item.path && deletionArmed?.fingerprint === item.fingerprint) {
+      deletionArmed = null;
+    }
+  }
+  if (settled && approve) {
+    try {
+      await api.syncNow();
+    } catch (error) {
+      console.error("sync_now failed:", error);
+    }
+  }
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * `Keep both files` — the one bulk action, and the safe one.
+ *
+ * SCOPED TO THE WHOLE PENDING LIST, not to what is on screen, because that is what the wire's
+ * `"all"` selector does. The two differ by exactly the items you have already answered this
+ * session: approve one, then keep the rest, and `deny all` revokes the approval you just gave —
+ * which is the right reading of a button that says *keep both files*, but only if the screen
+ * remembers it that way too. Marking the visible ones alone would leave the approved item recorded
+ * as approved and hidden, while the daemon had just been told to keep it.
+ */
+async function keepAllDeletions() {
+  const items = store.select.pendingDeletions();
+  if (!visibleDeletions().length || deletionBusy.has(BULK_KEY)) return;
+  deletionBusy.add(BULK_KEY);
+  render();
+  let settled = false;
+  try {
+    // `literalPath: false` with the explicit "all" selector. A file literally named `all` is a real
+    // path and would otherwise be the only thing denied (#60); the flag is what keeps the reserved
+    // word and a filename apart on this wire.
+    const reply = await api.deny(BULK_KEY, false);
+    settled = acknowledged(reply);
+  } catch (error) {
+    console.error("deny all failed:", error);
+  }
+  deletionBusy.delete(BULK_KEY);
+  if (settled) {
+    for (const item of items) deletionsDecided.set(itemKey(item), item.fingerprint);
+    deletionArmed = null;
+  }
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * Did the daemon actually act on that approve/deny?
+ *
+ * NOT "did a reply come back". A dead socket resolves rather than rejects — the Tauri commands
+ * return a payload either way — and, more subtly, `apply_approval_command` answers `Ok` with
+ * `no pending deletion matches '<path>'` when the selector is absent from the snapshot it is
+ * holding, which the GUI can reach by acting on a queue that is up to two seconds stale. Treated as
+ * a decision, that hides a row nothing was recorded for.
+ *
+ * Read as a POSITIVE match on the acknowledgement rather than a blacklist of the three `no …`
+ * replies, so the failure direction is safe: if the daemon ever rewords them, the GUI stops
+ * recording decisions and rows stay visible, instead of hiding deletions that never happened.
+ */
+function acknowledged(reply) {
+  if (!reply?.response || reply.error) return false;
+  return /^(approved|denied) /.test(reply.response.message ?? "");
+}
+
+/** Everything the deletions screen reads, plus the actions it can take. */
+function deletionsProps() {
+  const items = visibleDeletions();
+  // Fired and not awaited, like the conflict pair: the cards render now with what they have, and
+  // each reply calls `render()` when it lands.
+  for (const item of items) ensurePathStatus(item);
+  // The `ui` block again (F9). Live, `armed` is the module state above and this is inert; it is how
+  // `4a Armed` says which of the two queued items has its gate satisfied.
+  const ui = activeFixture()?.ui ?? null;
+  return {
+    items,
+    statuses: deletionStatuses,
+    busy: deletionBusy,
+    armed: ui?.armed ?? deletionArmed,
+    handlers: {
+      onArm: (item) => {
+        // Guarded on severity as well as on the gate, because arming is the step that leads to the
+        // only irreversible action in the app and `severityOf` is the one place that decides which
+        // direction that is.
+        if (severityOf(item.direction) !== "permanent") return;
+        deletionArmed = { path: item.path, fingerprint: item.fingerprint };
+        render();
+        // The body swap leaves focus on a button that no longer exists, i.e. on `<body>` — so the
+        // keyboard arrives at a full-window confirmation with nothing selected. Focus goes to the
+        // SAFE button: `Enter` on a screen that just appeared must not be the irreversible one.
+        //
+        // Here and not in the screen module, because it is a consequence of THIS transition rather
+        // than of the body being drawn: the fidelity gate renders the same body cold, and a screen
+        // that focused on mount would put a focus ring in front of it.
+        document.querySelector(".dl-armed-keep")?.focus();
+      },
+      onConfirmArmed: (item) => decideDeletion(item, true),
+      onTrash: (item) => decideDeletion(item, true),
+      onKeep: (item) => decideDeletion(item, false),
+      onKeepAll: () => keepAllDeletions(),
+    },
+  };
+}
+
 /** Everything the main screen reads, plus the actions it can take. */
 function mainProps(localRoot, remoteRoot) {
   return {
     daemonState: store.select.daemonState(),
     response: store.select.response(),
     conflicts: store.select.conflicts(),
-    deletions: store.select.pendingDeletions(),
+    // The same filtered view the chip and the deletions screen read — see `chipFor`. The band says
+    // `Two deletions are waiting on you`, and it must not say it about ones you have answered.
+    deletions: visibleDeletions(),
     localRoot,
     remoteRoot,
     handlers: {

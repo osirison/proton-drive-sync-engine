@@ -57,6 +57,19 @@ const NOT_DRAWN = new Map([
   // which is the exact failure a verbatim copy gate exists to prevent.
   ["CONFLICTS.kindFolder", "no frame opens a type conflict — the deck has no card copy for one"],
   ["CONFLICTS.kindBinary", "no frame opens a conflict whose pair has no text"],
+  // S3's two Phase-1 consequences. Both are sentences the deck does not have because the frame
+  // draws the state they replace: `4a Deletions`' permanent card is a FOLDER whose consequence is
+  // the subtree aggregate (#208), and no frame draws a permanent FILE deletion at all.
+  //
+  // They are new sentences rather than the drawn one with the number omitted, which would leave
+  // "Deleting this removes from this computer" — see the note on `folderConsequence` in copy.js.
+  // The drawn form stays in the deck and stays gated (it is in DRAWN below), so the day #208 lands
+  // the wording it has to match is still checked against the frame it came from.
+  [
+    "DELETIONS.folderConsequenceUnknown",
+    "the drawn sentence needs the subtree aggregate (#208) — this is what Phase 1 says instead",
+  ],
+  ["DELETIONS.fileConsequence", "no frame draws a permanent deletion of a single file"],
 ]);
 
 /**
@@ -123,6 +136,26 @@ const DRAWN = [
   ["CONFLICTS.clearedSub", [{ total: 3, keptBoth: 2, tookProton: 1 }], "3a Conflicts cleared"],
   ["ONBOARDING.cliMissingBody", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
   ["ONBOARDING.cliInstallCommand", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
+  // S3. Nine rows, and SIX OF THEM ARE STRINGS THAT WERE ALREADY DRAWN AND NEVER CHECKED — the
+  // deck's own Deletions section lists the four facts (`deleted on Proton 22m ago`, `last opened
+  // Mar 2024`, `deleted here 6m ago`, `last edited Jan 2026`) and F7 left them out of copy.js
+  // entirely. Nothing caught it because this gate reads copy.js and the frames; a sentence missing
+  // from the MODULE is invisible to it. `title` and `armedBody` were constants and are templates
+  // now (a live queue has a count in the first and a path in the second), which is the transition
+  // the note above records as the way a sentence leaves the gate silently.
+  //
+  // Every argument is read off the frame, as ever. Two of them name numbers Phase 1 cannot produce
+  // (#208) — that is fine and is the point: this table asserts that the DECK still says what the
+  // FRAME draws, which stays true and stays worth checking while the app draws the fallback.
+  ["DELETIONS.title", [2], "4a Deletions"],
+  ["DELETIONS.folderConsequence", ["1,204 photos, 8.4 GB"], "4a Deletions"],
+  ["DELETIONS.deletedOnProton", ["22m ago"], "4a Deletions"],
+  ["DELETIONS.deletedHere", ["6m ago"], "4a Deletions"],
+  ["DELETIONS.lastOpened", ["Mar 2024"], "4a Deletions"],
+  ["DELETIONS.lastEdited", ["Jan 2026"], "4a Deletions"],
+  ["DELETIONS.armedTitle", ["1,204 photos"], "4a Armed"],
+  ["DELETIONS.armedBody", ["photos/2019", "8.4 GB"], "4a Armed"],
+  ["DELETIONS.compact.title", [2], "4a Compact"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */

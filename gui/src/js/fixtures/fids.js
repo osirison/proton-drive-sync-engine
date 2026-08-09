@@ -78,7 +78,17 @@ export const SHELL_FIDS = {
  *     rule at `div[3]`, and the last two rows at `div[4]`/`div[5]` — so rows are keyed by their
  *     position among all children, which is what `menuSection` stamps.
  */
-const HEX_PATHS = { settled: 2, syncing: 3, needsYou: 1, deletions: 1, paused: 1, unreachable: 2 };
+const HEX_PATHS = {
+  settled: 2,
+  syncing: 3,
+  needsYou: 1,
+  deletions: 1,
+  paused: 1,
+  unreachable: 2,
+  // The armed confirmation's 104px mark (`4a Armed`): the body outline, the warning bar, and a
+  // separate `circle` for the dot. Two paths and not one, so the index has to appear.
+  warning: 2,
+};
 
 /** The states whose mark carries a mono numeral — the three that have a count to show. */
 const HEX_NUMERAL = new Set(["syncing", "needsYou", "deletions"]);
@@ -106,6 +116,9 @@ function hexFids(under, state) {
     // the paused branch alone). `text` is the count, which only the three states that HAVE a count
     // draw — verified against every compact frame's node list, not inferred from the component.
     ...(state === "paused" ? { hexRect: (i) => `${under}/svg/rect[${i}]` } : {}),
+    // The warning mark's dot, and the only `circle` in the set — `unreachable` draws its strike as a
+    // second path, not as a shape.
+    ...(state === "warning" ? { hexCircle: `${under}/svg/circle` } : {}),
     ...(HEX_NUMERAL.has(state) ? { hexNumeral: `${under}/svg/text` } : {}),
   };
   if (state !== "syncing") return base;
@@ -441,4 +454,139 @@ export function conflictFids(view) {
   if (!body) throw new Error(`fids: no conflict view "${view}"`);
   const tailAt = { card: 3, diff: 2, cleared: 1 }[view];
   return { ...conflictShell(tailAt, view !== "cleared"), ...body };
+}
+
+// ------------------------------------------------------------------------- S3 · deletions ----
+
+/**
+ * The shell slots on the two `4a` windows. Identical in shape to `conflictShell` — same header, same
+ * doors, same absent `footerLine` — and separate from it because the two screens are free to move
+ * apart, which is this file's rule for a table that describes a different frame.
+ *
+ * `4a Empty` takes none of it: the frame is a 522×422 standalone that draws neither the header nor
+ * the doors, so declaring a slot for either would name a node it does not have — which
+ * `check-fixtures.mjs` fails the build over.
+ */
+const deletionShell = (tailAt) => ({
+  header: "header",
+  mark: "header/img",
+  name: "header/span[0]",
+  spacer: "header/span[1]",
+  chip: "header/span[2]",
+  chipDot: "header/span[2]/span",
+  menu: "header/button",
+  footerNav: `div[${tailAt}]`,
+  footerBar: `div[${tailAt}]/div`,
+  door: (i) => `div[${tailAt}]/div/span[${i}]`,
+});
+
+/**
+ * The queue (`4a Deletions`) — two severity columns either side of the seam.
+ *
+ * `c` IS THE COLUMN AND `i` IS THE CARD WITHIN IT, and the two indices are what make this table
+ * survive a real queue: the frame draws one card per column and every card slot would work as a
+ * fixed key at that arity, right up to the first user with two permanent deletions.
+ *
+ * Column 0 is permanent and column 1 recoverable, which is the drawn left-to-right order and also
+ * the severity order — that coincidence is the screen's whole thesis, so the table numbers by
+ * position and the screen decides which severity goes where.
+ *
+ * THE HEAD'S TWO SPANS SWAP. The dot sits on the OUTSIDE edge of each column, so it is `span[0]` on
+ * the left and `span[1]` on the right (`rows.js` reverses the children). Keying `colDot` as
+ * `span[0]` for both would map the right column's LABEL to the frame's dot — a 194px text node
+ * against an 8px circle, reported as a size failure on a node that is perfectly correct.
+ *
+ * `card(c, i)` is `div[2 + i]`: the column's first two children are its eyebrow and its explanatory
+ * sentence, and the cards follow.
+ */
+const card = (c, i) => `div[1]/div[1]/div[${c}]/div[${2 + i}]`;
+
+const DELETION_QUEUE_FIDS = {
+  titleRow: "div[0]",
+  title: "div[0]/div[0]",
+  sub: "div[0]/div[1]",
+
+  body: "div[1]",
+  seam: "div[1]/div[0]",
+  columns: "div[1]/div[1]",
+  column: (c) => `div[1]/div[1]/div[${c}]`,
+  colHead: (c) => `div[1]/div[1]/div[${c}]/div[0]`,
+  colDot: (c) => `div[1]/div[1]/div[${c}]/div[0]/span[${c === 0 ? 0 : 1}]`,
+  colLabel: (c) => `div[1]/div[1]/div[${c}]/div[0]/span[${c === 0 ? 1 : 0}]`,
+  colNote: (c) => `div[1]/div[1]/div[${c}]/div[1]`,
+
+  card,
+  cardTitle: (c, i) => `${card(c, i)}/div[0]`,
+  cardName: (c, i) => `${card(c, i)}/div[0]/span[0]`,
+  cardKind: (c, i) => `${card(c, i)}/div[0]/span[1]`,
+  cardConsequence: (c, i) => `${card(c, i)}/div[1]`,
+  cardEmphasis: (c, i) => `${card(c, i)}/div[1]/strong`,
+  cardFacts: (c, i) => `${card(c, i)}/div[2]`,
+  cardFact: (c, i, j) => `${card(c, i)}/div[2]/span[${j}]`,
+  // The permanent card's fourth block is a gate and the recoverable card's is a button in a row.
+  // Both are `div[3]` — the same position holding the thing that severity makes different — so they
+  // are two slots over one key rather than one slot meaning two things, and only the column that
+  // draws each ever stamps it.
+  cardGate: (c, i) => `${card(c, i)}/div[3]`,
+  gateHint: (c, i) => `${card(c, i)}/div[3]/div[0]`,
+  gateWord: (c, i) => `${card(c, i)}/div[3]/div[0]/span`,
+  gateRow: (c, i) => `${card(c, i)}/div[3]/div[1]`,
+  gateField: (c, i) => `${card(c, i)}/div[3]/div[1]/input`,
+  gateConfirm: (c, i) => `${card(c, i)}/div[3]/div[1]/button`,
+  cardAction: (c, i) => `${card(c, i)}/div[3]`,
+  actionButton: (c, i) => `${card(c, i)}/div[3]/button`,
+  cardKeep: (c, i) => `${card(c, i)}/button`,
+
+  queueFooter: "div[2]",
+  footerRow: "div[2]/div",
+  footerNote: "div[2]/div/span[0]",
+  footerSpacer: "div[2]/div/span[1]",
+  keepBoth: "div[2]/div/button",
+};
+
+/**
+ * The armed confirmation (`4a Armed`) — the queue's body replaced, not a dialog over it.
+ *
+ * The word box is NOT an input. By the time this is up the word has already been typed on the card,
+ * so the takeover restates it: a bordered `div` holding a mono span and a 1.5px caret span. Mapping
+ * it to a second field would be the app growing a place to type that the design does not have.
+ */
+const DELETION_ARMED_FIDS = {
+  armed: "div[0]",
+  ...hexFids("div[0]", "warning"),
+  armedTitle: "div[0]/div[0]",
+  armedBody: "div[0]/div[1]",
+  armedBodyPath: "div[0]/div[1]/span",
+  armedRow: "div[0]/div[2]",
+  armedWord: "div[0]/div[2]/div",
+  armedWordText: "div[0]/div[2]/div/span[0]",
+  armedCaret: "div[0]/div[2]/div/span[1]",
+  armedConfirm: "div[0]/div[2]/button",
+  armedKeep: "div[0]/button",
+  armedCancel: "div[0]/div[3]",
+};
+
+/**
+ * `4a Empty` — one flat block, and no shell at all.
+ *
+ * Keyed from `div` rather than `div[0]`: the frame's window has exactly one child, and the
+ * prototype's key scheme only indexes a tag that has siblings of its own tag.
+ */
+const DELETION_EMPTY_FIDS = {
+  empty: "div",
+  ...hexFids("div", "settled"),
+  emptyTitle: "div/div[0]",
+  emptySub: "div/div[1]",
+};
+
+/** The three maps a `4a` window fixture asks for by view. (`4a Compact` is F6's; see compactFids.) */
+export function deletionFids(view) {
+  const body = {
+    queue: DELETION_QUEUE_FIDS,
+    armed: DELETION_ARMED_FIDS,
+    empty: DELETION_EMPTY_FIDS,
+  }[view];
+  if (!body) throw new Error(`fids: no deletion view "${view}"`);
+  // The empty state is drawn as a standalone 522 surface with no chrome, so it gets no shell slots.
+  return view === "empty" ? body : { ...deletionShell(view === "armed" ? 1 : 3), ...body };
 }

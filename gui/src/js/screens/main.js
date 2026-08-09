@@ -34,7 +34,7 @@ import { bytes, clock, since } from "../ui/format.js";
 import { renderHexagon, updateHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button } from "../ui/controls.js";
-import { transferRow, eyebrow } from "../ui/rows.js";
+import { transferRow, eyebrow, severityOf } from "../ui/rows.js";
 import { attentionBand, bandButton } from "../ui/bands.js";
 import { fid } from "../fixtures/frames.js";
 
@@ -343,10 +343,13 @@ function bandItems(v, handlers) {
     });
   }
   if (v.deletions.length) {
-    // `local` applies the delete on this computer — the permanent one. `remote` moves Proton's copy
-    // to the Trash, which is recoverable. Column and direction name the same side from opposite
-    // ends; `fixtures/deletions.js` documents the pairing at length.
-    const permanent = v.deletions.filter((d) => d.direction === "local").length;
+    // ASKED OF `severityOf`, not re-derived. `local` applies the delete on this computer — the
+    // permanent one — and `remote` moves Proton's copy to the Trash; column and direction name the
+    // same side from opposite ends, and `fixtures/deletions.js` documents the pairing at length.
+    // This line used to test `d.direction === "local"` itself, which is a second copy of the rule
+    // the Deletions screen sorts its two columns by: the band's `N remove permanently` and the
+    // screen's left column would then be free to disagree about the same list.
+    const permanent = v.deletions.filter((d) => severityOf(d.direction) === "permanent").length;
     items.push({
       tone: "destructive",
       title: MAIN.band.deletionTitle(v.deletions.length),

@@ -275,8 +275,39 @@ export function actionRow({ lead = null, title, note = null, action = null } = {
 // -------------------------------------------------------------------------- deletion cards ----
 
 /**
- * A file waiting to be deleted. `4a Deletions` draws one of each severity, `4a Compact` both again
- * at panel scale.
+ * Which column a pending deletion belongs in — THE one place the wire's `direction` becomes a
+ * severity, because more than one surface asks and they must not answer differently.
+ *
+ * `direction` names the side the delete is APPLIED to, not the side it came from, and reading it
+ * the other way produces a complete, plausible screen that offers `Move to Proton's Trash` for a
+ * file about to leave the disk for good. `Local` = remove it from this computer, because it went
+ * first on Proton → permanent. `Remote` = move Proton's copy to the Trash, because it went here
+ * first → recoverable.
+ *
+ * Here rather than in `screens/deletions.js` because the main screen's attention band needs it too:
+ * it counted `d.direction === "local"` inline, a second derivation of the rule the Deletions screen
+ * sorts its two columns by, and two copies of one rule agree only by hand.
+ *
+ * IT FAILS CLOSED, and the first version failed open. Written as `=== "local" ? permanent :
+ * recoverable`, anything the wire sends that is not exactly `local` lands in the RECOVERABLE column
+ * — which has no typed gate and whose one button approves the deletion in a single click. A missing
+ * field, a typo, or a third `DeleteDirection` added upstream would therefore turn a permanent
+ * removal from this computer into a one-click action, which is the precise failure this screen
+ * exists to prevent. Asking for `remote` instead means an unrecognised direction is treated as the
+ * more dangerous one: you get the gate, and you have to type the word.
+ *
+ * It does NOT throw, where `transferSlotOrder` two hundred lines up does, and the difference is what
+ * the two guard. An unknown transfer direction is a bug in the app and the throw is how it gets
+ * fixed; an unknown delete direction would come off the WIRE, mid-render, on the screen you least
+ * want to blank — so it degrades to the safe reading rather than taking the queue down with it.
+ */
+export function severityOf(direction) {
+  return direction === "remote" ? "recoverable" : "permanent";
+}
+
+/**
+ * ONE SEVERITY'S COLUMN: its eyebrow, the sentence explaining what that severity means, and every
+ * card waiting under it. `4a Deletions` draws two, one either side of the seam.
  *
  * THE EYEBROW MIRRORS THE OTHER WAY FROM THE TRANSFER ROW. Here the dot sits on the OUTSIDE edge —
  * `[dot][PERMANENT · THIS COMPUTER]` on the left, `[RECOVERABLE · PROTON DRIVE][dot]` on the right,
@@ -287,6 +318,39 @@ export function actionRow({ lead = null, title, note = null, action = null } = {
  * SEVERITY SORTS ACROSS THE SEAM: permanent left, recoverable right (S3). The band tint follows
  * severity, not side, and neither band is ever a solid fill — the only solid red in the app is the
  * armed `Delete permanently` button.
+ *
+ * THE HEADER BELONGS TO THE COLUMN AND NOT TO THE CARD, which is the one thing the frame cannot
+ * show you: it draws exactly one card per column, so a builder that emitted eyebrow + sentence +
+ * card is indistinguishable from this at the only arity anybody drew — and draws the severity
+ * header again above every card the moment a real queue holds two. The column is what the frame's
+ * node keys describe (`div[0]` head, `div[1]` sentence, `div[2..]` cards), and it is what a queue
+ * actually has one of.
+ */
+export function deletionColumn({ severity = "permanent", eyebrowText, note = null, cards = [] } = {}) {
+  assertSeverity(severity, "deletionColumn");
+  const side = severity === "permanent" ? "start" : "end";
+  const severityDot = dot({ tone: severity === "permanent" ? "destructive" : "decision", size: 8 });
+  // The shared `.eyebrow` typography, not a second copy of it — the alignment the standalone
+  // builder applies is the flex row's job here, so this takes the class without going through
+  // `eyebrow()`. Wearing only a local class is how the first version of this rendered at 16px sans.
+  const label = el("span", { class: "eyebrow eyebrow-decision" }, eyebrowText);
+
+  return el(
+    "div",
+    { class: `deletion deletion-${severity} deletion-${side}` },
+    el("div", { class: "deletion-head" }, side === "start" ? [severityDot, label] : [label, severityDot]),
+    note ? el("div", { class: "deletion-policy" }, note) : null,
+    ...cards,
+  );
+}
+
+/**
+ * One thing waiting to be deleted: what you would lose, when it happened, and what to do about it.
+ *
+ * NO SEVERITY CLASS OF ITS OWN. The tint, the divider and the emphasis colour all come from the
+ * column it sits in (`.deletion-permanent .deletion-card`), because severity is a property of the
+ * column — it is what sorts the two of them across the seam — and a card carrying its own copy
+ * could be put in the wrong one and still look right.
  *
  * `emphasis` is the substring of `consequence` to set in 600. It is COLOURED only when the deletion
  * is permanent: `1,204 photos, 8.4 GB` goes crimson because it is what you lose, while the
@@ -301,9 +365,6 @@ export function actionRow({ lead = null, title, note = null, action = null } = {
  * have to either lie or grow a second layout, so there isn't one.
  */
 export function deletionCard({
-  severity = "permanent",
-  eyebrowText,
-  policy = null,
   name,
   kind = null,
   consequence,
@@ -313,43 +374,33 @@ export function deletionCard({
   action = null,
   keep = null,
 } = {}) {
-  if (severity !== "permanent" && severity !== "recoverable")
-    throw new Error(`rows: deletionCard severity must be "permanent" or "recoverable", got "${severity}"`);
-
-  const side = severity === "permanent" ? "start" : "end";
-  const severityDot = dot({ tone: severity === "permanent" ? "destructive" : "decision", size: 8 });
-  // The shared `.eyebrow` typography, not a second copy of it — the alignment the standalone
-  // builder applies is the flex row's job here, so this takes the class without going through
-  // `eyebrow()`. Wearing only a local class is how the first version of this rendered at 16px sans.
-  const label = el("span", { class: "eyebrow eyebrow-decision" }, eyebrowText);
-
   return el(
     "div",
-    { class: `deletion deletion-${severity} deletion-${side}` },
-    el("div", { class: "deletion-head" }, side === "start" ? [severityDot, label] : [label, severityDot]),
-    policy ? el("div", { class: "deletion-policy" }, policy) : null,
+    { class: "deletion-card" },
     el(
       "div",
-      { class: "deletion-card" },
-      el(
-        "div",
-        { class: "deletion-title" },
-        el("span", { class: "deletion-name" }, name),
-        kind ? el("span", { class: "deletion-kind" }, kind) : null,
-      ),
-      el("div", { class: "deletion-consequence" }, ...emphasise(consequence, emphasis)),
-      facts.length
-        ? el(
-            "div",
-            { class: "deletion-facts" },
-            facts.map((fact) => el("span", { class: "deletion-fact" }, fact)),
-          )
-        : null,
-      gate,
-      action ? el("div", { class: "deletion-action" }, action) : null,
-      keep,
+      { class: "deletion-title" },
+      el("span", { class: "deletion-name" }, name),
+      kind ? el("span", { class: "deletion-kind" }, kind) : null,
     ),
+    el("div", { class: "deletion-consequence" }, ...emphasise(consequence, emphasis)),
+    facts.length
+      ? el(
+          "div",
+          { class: "deletion-facts" },
+          facts.map((fact) => el("span", { class: "deletion-fact" }, fact)),
+        )
+      : null,
+    gate,
+    action ? el("div", { class: "deletion-action" }, action) : null,
+    keep,
   );
+}
+
+/** The two words this module will accept, in the one place that has to check. */
+function assertSeverity(severity, where) {
+  if (severity !== "permanent" && severity !== "recoverable")
+    throw new Error(`rows: ${where} severity must be "permanent" or "recoverable", got "${severity}"`);
 }
 
 /**
@@ -422,12 +473,13 @@ export function deletionGate({ hint, field, confirm }) {
 }
 
 /** `Keep it — …`, the safe choice, full width and the strongest button in either column. */
-export function keepButton({ label, onClick = null } = {}) {
+export function keepButton({ label, onClick = null, disabled = false } = {}) {
   return button({
     kind: "primarySoft",
     size: "standard",
     label,
     onClick,
+    disabled,
     padding: "10px",
     radius: "var(--r-9)",
     fontSize: "13px",
@@ -443,12 +495,13 @@ export function keepButton({ label, onClick = null } = {}) {
  * for the stylesheet to correct a caller who reaches for a plain `button()` here, so the only place
  * the geometry can live is a builder. Same reason `keepButton` exists.
  */
-export function trashButton({ label, onClick = null } = {}) {
+export function trashButton({ label, onClick = null, disabled = false } = {}) {
   return button({
     kind: "decision",
     size: "standard",
     label,
     onClick,
+    disabled,
     padding: "10px",
     radius: "var(--r-9)",
     fontSize: "13px",

@@ -254,11 +254,26 @@ function mockInvoke(cmd, args) {
       return Promise.resolve("asked systemd to start proton-syncd (preview mock)");
     case "approve":
     case "deny":
-      // Simulate the daemon round trip so the Deletions screen's busy → acknowledged flow is
-      // visible in browser preview. Shaped like a real StatusPayload: the screen only trusts a
-      // reply that carries a `response` and no `error`.
+      // Simulate the daemon round trip so the Deletions screen's busy → settled flow is visible in
+      // browser preview. Shaped like a real StatusPayload, INCLUDING the acknowledgement message:
+      // the screen requires the daemon's own `approved N …` / `denied N …` wording before it treats
+      // anything as decided, because `apply_approval_command` answers `Ok("no pending deletion
+      // matches …")` for a selector it cannot find. A mock without the message is a mock the screen
+      // correctly refuses, which would look like a broken preview.
       return new Promise((resolve) => {
-        setTimeout(() => resolve({ state: "running", response: { paused: false }, error: null }), 800);
+        const verb = cmd === "approve" ? "approved" : "denied";
+        setTimeout(
+          () =>
+            resolve({
+              state: "running",
+              response: {
+                paused: false,
+                message: `${verb} 1 pending deletion(s); run \`proton-sync syncnow\` to apply now`,
+              },
+              error: null,
+            }),
+          800,
+        );
       });
     case "restart_service":
       // Simulate the real stop→start latency so the Settings screen's "Restarting…" state is

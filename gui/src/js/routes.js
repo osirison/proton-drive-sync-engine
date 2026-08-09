@@ -55,8 +55,14 @@ export const ROUTES = {
   // `box-sizing:border-box` and six do not, so 520 is drawn 522 while 600 is drawn 600 — there is no
   // offset to apply, only a number to read off the frame. §48a. A null height sizes to content.
   conflicts: { kind: "overlay", presentation: "screen", task: "S2", issue: 181 },
+  // THERE IS NO `armed` ROUTE, and F4 provisionally listed one. `4a Armed` is a BODY of the
+  // deletions screen — chosen by `screens/deletions.js`'s `bodyOf` from the same queue the cards are
+  // drawn from — not a place you can navigate to: it is a confirmation about one specific item, so
+  // an id you could reach without naming the item would resolve to a question with no subject.
+  // Left in the table it was worse than unused, because `navigate("armed")` would have drawn the
+  // "not built yet" placeholder for a screen that IS built. Esc still cancels it; app.js takes the
+  // key before `closeOverlay` gets it, which is the one thing being a route would have given free.
   deletions: { kind: "overlay", presentation: "screen", task: "S3", issue: 182 },
-  armed: { kind: "overlay", presentation: "screen", task: "S3", issue: 182 },
   neverSynced: {
     kind: "overlay",
     presentation: "dialog",

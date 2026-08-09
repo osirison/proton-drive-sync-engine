@@ -2124,3 +2124,212 @@ on every overlay screen since F4; S2 is simply the first mapped one.
 | S2     | `3a Conflict`          | `· last agreed 3 hours ago`        | the file kind alone               | G12 #217 |
 | S2     | `3a Conflict diff`     | `Open both in an editor` opens it  | a button that does nothing        | #220     |
 | S2     | `3a Conflicts cleared` | a 522px window                     | a 520px column in a 1040 window   | #221     |
+
+### 75. S3 · the deletions screen
+
+**`Keep it` has no command behind it, and it is the safe half of the screen.** `ControlCommand::Deny`
+is documented as *"Revoke a prior approval (before it has applied)"* and does exactly that — it
+deletes a row from `delete_approvals`. There is no *refusal*: withholding is already the default, so
+denying something nobody approved is a no-op. Two things the button's own sentence promises therefore
+do not happen. The refusal is not durable (the planner re-derives the same withheld action next pass,
+so the row is back on the next status reply and back on the screen at the next launch), and the other
+side is not restored (`put it back on Proton Drive` never uploads anything). One engine primitive
+covers both directions — purge the baseline `file_index` record so the surviving side stops looking
+like a delete and starts looking like a fresh copy — and that is #224. Phase 1 sends `deny`, which is
+right in the one case where it does something, and remembers the decision in `deletionsDecided` for as
+long as the app is open so the queue can still reach its empty state.
+
+**The screen may not be rebuilt on the poll, and S2's may.** `4a Deletions` puts a typed-`DELETE`
+field on every permanent card, and `14-behaviour-and-state.md` requires it to clear on blur — so the
+~2s rebuild that the conflicts screen is free to do would wipe a half-typed word twice a second and
+leave the app's only irreversible action unreachable by keyboard. `updateDeletions` rebuilds only when
+a signature over the queue changes and otherwise refreshes the relative times in place. The signature
+deliberately excludes those times, which is why they need refreshing at all.
+
+**Esc is taken before `closeOverlay`.** The armed confirmation is a BODY of the deletions screen
+rather than a route — `4a Armed` keeps the header and the four doors, and a confirmation about one
+specific item has no id you could navigate to without naming the item. F4 had provisionally listed an
+`armed` route; leaving it in was worse than unused, because `navigate("armed")` would have drawn the
+"not built yet" placeholder for a screen that is built. It is gone, and `Press Esc to cancel.` works
+because app.js takes the key ahead of the overlay stack. Left to `closeOverlay`, Esc dismissed the
+whole queue — the frame's own caption doing the opposite of what it says.
+
+**Two numbers and an atime, all #208.** The folder card's `1,204 photos, 8.4 GB` and the armed title's
+`1,204 photos` are one subtree aggregate that no command produces; `last opened Mar 2024` is an atime
+and the index stores mtime only. Four assertions are recorded, and the shapes differ on purpose:
+
+- The consequence becomes a *different sentence* (`Deleting this folder removes everything inside it
+  from this computer.`) rather than the drawn one with the figure omitted, which would read "Deleting
+  this removes from this computer". It keeps the emphasis on the loss — `everything inside it`, true
+  and qualitative — so the card keeps its crimson span and its structure.
+- `armedBody` takes a **null size** and drops the whole `— 8.4 GB —` clause, the shape
+  `MAIN.syncingSub` uses for a null plan summary. An em-dash between two em-dashes would be the app
+  claiming the daemon answered "unknown" about how much is at stake.
+- `armedTitle` takes the noun phrase instead of a count, so one grammar serves both: the frame draws
+  it at `1,204 photos` and Phase 1 passes the path. **The two happen to measure the same.**
+  `Delete photos/2019 from this computer?` is 507.56px against the drawn 507.73 — inside the 0.5px
+  tolerance, so the gate is green on a node whose TEXT differs from the frame. Recorded here because
+  no row can record it: a deviation entry has to fail to exist.
+- `last opened` is omitted entirely, one drawn node the app does not render. `assert.mjs` walks the
+  app's stamped nodes, so an absent node is silently unasserted rather than failed — worth stating,
+  since it is the one Phase-1 omission the gate cannot count.
+
+**Eight deletions in one column is 2,365px of content in a 764px window that cannot scroll.**
+`4a Deletions` draws one card per column and fills 528px exactly, so the frame cannot show it: past
+one card the last seven and the four doors are simply unreachable. `02-shell.md` calls this "a real
+bug found twice during this design" and F4 already wrote the discipline into `.content-region` — a
+list that can genuinely exceed its space opts into scrolling. `.dl-columns` takes it PER RENDER
+rather than always, when any column holds more than one card, because one card per column is the
+drawn arrangement and it does fit: a screen showing what the frame shows should behave as the frame
+does, scrollbar included. The rule is "more than the drawn arrangement" rather than a measurement,
+which is honest about what it is — one card whose consequence wrapped to five lines would still
+overflow, and no queue produces that. Found by rendering the screen against queues no frame draws;
+that method is worth a gate of its own, and it is not one today.
+
+**`deleted on Proton 22m ago` is the age of the PASS, not of the deletion.** `detected_epoch_secs`
+reads like when the deletion happened; `decide_delete_gate` stamps `now` on every withheld action,
+`self.pending_deletions` is replaced wholesale at the end of every plan, and the incremental
+fast-path explicitly cannot idle-skip while anything is pending — so a deletion that happened three
+days ago reports an age of seconds, refreshed every ~30s. Omitted, and filed as #225. It takes the
+folder card's whole facts strip with it: a folder's other fact is the atime (#208), so there is
+nothing left to draw. A file keeps `last edited <month>` from `path_sync_status`.
+
+That also moved the card's one fact from the frame's `span[0]` to its `span[1]`, which the mapping
+has to state rather than derive. `factsOf` returns each fact with the DRAWN slot it stands for;
+stamped by DOM position, the app's `last edited` was compared against `deleted here 6m ago` and
+reported as a width failure on a correct card. The conflict card gets away with position because it
+only ever omits from the end.
+
+**The armed confirmation had folder grammar for a file.** `Everything in archive/old-notes.md is
+removed from disk.` — both drawn permanent items are folders, so no frame and no gate covers the
+case, and `DeleteDirection::Local` on a file is the common shape rather than an edge. The deck gained
+`armedBodyFile`, sharing a tail with `armedBody` so the promise about what cannot be undone is the
+same sentence either way.
+
+**The path's slot in that sentence is found by the template, not by searching for it.** `indexOf`
+finds the first textual match, and the sentence has words before the hole: a folder named `in`
+matched inside `Everything` and the mono span wrapped two letters of the first word. Rendering the
+same template around a marker asks the deck where its own hole is.
+
+**The empty state is a 522px window, exactly as the conflicts cleared state is.** Three assertions,
+#221. `4a Empty` draws neither the header nor the doors, so its fixture declares no shell slots at
+all; the body renders as a centred 520px column inside the 1040 window and is `flex: 1` tall rather
+than 420.
+
+**`primarySoft` was three wrong tokens in light — §66, one screen later.** F5 built `Keep it` from
+`--panel-raised` / `--border-strong` / `--text-bright`, exact on every dark frame and wrong on all
+three values in light: `12a Deletions light` draws `#14161A` / no border / `#FAF8F5` where those
+tokens are `#FFFFFF` / `#E0DCD5` / `#14161A`. In light this button simply *is* the primary button,
+which is `12-light-theme.md`'s own rule ("`Keep both` and `Keep it` stay the loudest thing on their
+screens") reading as a token identity rather than a resemblance. Hence `--btn-primary-soft-*`, whose
+border is the second after `--btn-primary-choice-border` whose themes disagree about whether a border
+exists at all: 38px dark, 36px light, the 2px a border takes out of a border-box.
+
+**Three F5 controls were wrong the moment something rendered them**, and none of the three could have
+been caught before S3 — the fourth, fifth and sixth instances of the undrawn-code class §63 opened.
+
+- `.delete-gate` was `text-align: center; max-width: 160px`. Both drawn gates are left-aligned and
+  neither is 160 wide (`4a Deletions` flexes to 330.64, `5a Plan` is 190), and both draw `#F2F4F7`
+  where `.input` gives `--text-2`. The width belongs to the site, so there is none in the control now.
+- `destructiveDisabled` borrowed `--destructive-border` (.38) where the frame draws
+  `--destructive-btn-border` (.25) — the same hue one step brighter, and F1 had tokenised the pair
+  with this exact site named in its comment.
+- `.deletion-gate-row .btn { flex: none; padding: 10px 17px }` was dead in one half and wrong in the
+  other: controls.js writes padding inline, which no rule can reach past, and the frame leaves the
+  button at the flex default. The geometry is passed at the call site now, as `keepButton`'s own
+  comment already said it had to be.
+
+**A borderless button kind was drawing a 1px transparent border.** `--btn-border` fell back to
+`transparent` with the style left `solid`, so `Delete permanently` measured 172.27×42 against the
+drawn 170.27×40 and reported `transparent` where the frame records `rgb(255, 255, 255)` —
+`currentColor`, which is what a browser reports for a border nobody draws. Both halves are fixed in
+`applyKind`: no border means style `none` and colour `currentColor`.
+
+**The status chip stopped being asserted the moment it changed variant.** `renderHeader` stamped the
+chip's `data-fid`; `updateHeader` REPLACES the chip node when the variant changes, and the
+replacement arrived unstamped. Every frame whose chip is not `idle` reaches its variant that way —
+the first render happens before the first status reply — so the chip and its dot have been
+unasserted on every mapped frame that has one since S1, S2 included. Silently, because `assert.mjs`
+walks the app's stamped nodes: a node that stops being stamped stops being compared. `statusChip`
+stamps itself now, so both paths get it. Measured by reverting the stamp and re-running the gate:
+**696 assertions**, across the twelve mapped frames whose chip is not `idle`. (This screen's total
+went 28,018 → 33,275; the other 4,561 are its own three bodies, which the 28,018 baseline was not
+comparing either — the first render threw inside `renderHexagon` and killed every render after it,
+so the three `4a` frames were reporting header failures with unstamped bodies behind them.)
+
+**A literal NUL made the whole screen a binary blob, and every gate stayed green.** `itemKey` joined
+its two parts with U+0000 written as the byte rather than as the escape. Prettier formatted the file,
+eslint linted it, the tests passed and the harness rendered it — while git classified the blob as
+binary, so `git diff` printed `Binary files differ` for 600 lines, `git blame` and `git grep`
+returned nothing, and a review agent handed the diff could not read the code at all. The tell was a
+`grep` over the file silently finding no matches, which reads as "the code is not there" rather than
+as a broken file. `gui/tools/check-sources.mjs` now fails the build on any invisible character in any
+source file, and it caught itself on the first run: the pattern and the name table spelled the
+characters out, nineteen times, which is the whole argument for the rule.
+
+**The busy set left the render signature, and a rebuild no longer eats a half-typed word.** Folded
+into the signature, clicking `Move to Proton's Trash` on one card rebuilt the body and emptied the
+gate on the other — the exact failure this screen's patch-not-rebuild path exists to prevent, one
+layer in. Each control now registers an `apply(busy)` that sets what a rebuild would have set. A
+rebuild is still sometimes right (a `path_sync_status` reply genuinely changes what a card draws), so
+the typed word and its caret are carried across one, keyed by item: the field clears on BLUR by
+design, and a rebuild is not a blur.
+
+**A no-op reply was being read as a decision.** `apply_approval_command` answers `Ok("no pending
+deletion matches '<path>'")` when the selector is absent from the snapshot it holds — which the GUI
+can reach by acting on a queue up to two seconds stale — and the envelope check treated it as
+settled, hiding a row nothing was recorded for. The check is now a positive match on the daemon's own
+`approved N …` / `denied N …` acknowledgement, so the failure direction is safe: reword the daemon
+and the GUI stops recording decisions rather than hiding deletions that never happened.
+
+**`severityOf` fails CLOSED, and the first version failed open.** Written as `=== "local" ?
+permanent : recoverable`, anything the wire sends that is not exactly `local` lands in the
+recoverable column — which has no typed gate and whose one button approves in a single click. A
+missing field, a typo, or a third `DeleteDirection` added upstream would have turned a permanent
+removal from this computer into a one-click action, which is the precise failure this screen exists
+to prevent. It asks for `remote` instead, so an unrecognised direction gets the gate. It does not
+throw, where `transferSlotOrder` in the same module does: an unknown transfer direction is a bug in
+the app and the throw is how it gets fixed, while an unknown delete direction arrives off the wire
+mid-render, on the screen you least want to blank.
+
+**`severityOf` moved to `ui/rows.js`, because more than one surface asks it.** The attention band was
+counting `d.direction === "local"` inline — a second derivation of the rule the Deletions screen
+sorts its two columns by, agreeing with it only by hand.
+
+**Two harness gaps, both found by being the first to need them.** `check-fixtures.mjs` probed factory
+slots with two arguments and S3's fact strip is keyed by three (column, card, fact), so a correct
+mapping interpolated `span[undefined]` and failed the build. And `compareSvgAttr` could read only hex
+colours, while `4a Armed`'s warning hexagon fills with `rgba(255,59,59,.08)` — the same colour the app
+resolves `rgba(var(--destructive-rgb), 0.08)` to, matching on nothing.
+
+**Six drawn strings were in the deck and not in the module.** `13-copy-deck.md`'s Deletions section
+lists the facts strip in full — `deleted on Proton 22m ago` · `last opened Mar 2024` · `deleted here
+6m ago` · `last edited Jan 2026` — and F7 left all four out of `copy.js`, along with the count in
+`title` and the path in `armedBody`. The copy gate compares the MODULE against the frames, so a
+sentence missing from the module is invisible to it; the gate can only ever catch a string that
+drifts, never one that was never written down. All six are templates in the deck now and all six are
+in the gate's `DRAWN` table.
+
+**`.deletion-kind` keeps `--text-4`, and the light frame disagrees.** `12a Deletions light` draws
+`a folder` / `4 KB` at `#6B7280`, where the same node is `#828B98` in dark and every other `#828B98`
+node in the frame moves to `#4B5563`. `12-light-theme.md` maps the quiet tier two-to-two
+(`#828B98 → #4B5563`, `#6D7783 → #6B7280`) and says so again in prose: *"Metadata inside those cards
+moves from `#828B98` to `#4B5563` — on a light tint the quiet tier is too quiet."* The doc is
+normative for tokens under §1.3 rule 1, so the token stays and the frame's value is the slip. No gate
+sees either way — no light window is mapped (§58b) — which is exactly why it is written down before
+S10 propagates the table.
+
+**`DELETIONS.compact.permanent` still hardcodes the aggregate.** `1,204 photos gone from this
+computer, permanently` is a fixed string in the deck and drawn in `4a Compact`, so the copy gate is
+happy and the panel reproduces the frame. It is the same #208 number, and the day the tray panel
+renders a live queue (S8) it needs the same treatment the card got here.
+
+| screen | frame           | drawn                                     | Phase 1                                | gap      |
+| ------ | --------------- | ----------------------------------------- | -------------------------------------- | -------- |
+| S3     | `4a Deletions`  | `Deleting this removes 1,204 photos, 8.4 GB…` | the sentence without a figure      | G8 #208  |
+| S3     | `4a Deletions`  | `last opened Mar 2024`                    | the clause omitted                     | G8 #208  |
+| S3     | `4a Deletions`  | `deleted on Proton 22m ago`               | the clause omitted                     | G14 #225 |
+| S3     | `4a Deletions`  | `Keep it — put it back on Proton Drive`   | `deny`, remembered for this session    | G13 #224 |
+| S3     | `4a Armed`      | `Delete 1,204 photos from this computer?` | `Delete photos/2019 from this computer?` | G8 #208 |
+| S3     | `4a Armed`      | `Everything in photos/2019 — 8.4 GB —…`   | the sentence without the size clause   | G8 #208  |
+| S3     | `4a Empty`      | a 522px window                            | a 520px column in a 1040 window        | #221     |

@@ -174,6 +174,64 @@ export const KNOWN_DEVIATIONS = [
     issue: "#221",
     why: "the footer is a child of the WINDOW, not the body, so it stays 1040 wide while the frame's is 520 — the narrow window draws 24px padding, a 22px gap and 12.5px labels against the wide window's 32/34/13. Faking those metrics at 1040 would draw four doors huddled inside 960px of chrome, which is neither frame",
   },
+
+  // ---- S3 · the deletions screen. Four rows for one missing number and three for one window size.
+  {
+    frame: "4a Deletions",
+    key: "div[1]/div[1]/div[0]/div[2]/div[1]",
+    props: ["box.h"],
+    detail: "41.59 vs 20.8",
+    issue: "#208",
+    why: "the folder card's consequence draws `1,204 photos, 8.4 GB` from a SUBTREE AGGREGATE, which no command produces and a directory's `file_size` is not. Phase 1 says `Deleting this folder removes everything inside it from this computer.` instead — true, and one line where the frame wraps to two",
+  },
+  {
+    frame: "4a Deletions",
+    key: "div[1]/div[1]/div[0]/div[2]/div[1]/strong",
+    props: ["box.w"],
+    detail: "122.27 vs 116.52",
+    issue: "#208",
+    why: "the emphasised loss is the aggregate itself. Phase 1 emphasises `everything inside it` — the same claim without a number, so the card keeps its crimson span and its structure rather than losing the emphasis with the figure",
+  },
+  {
+    frame: "4a Deletions",
+    key: "div[1]/div[1]/div[0]/div[2]",
+    props: ["box.h"],
+    detail: "275.59 vs 212.8",
+    issue: "#208",
+    why: "a card is as tall as what it says, and this one loses two things: the 20.79px second line of its consequence (#208), and its whole facts strip — a folder's two facts are the atime (#208) and the detected time, which is re-stamped every pass (#225), so there is no strip to draw",
+  },
+  {
+    frame: "4a Armed",
+    key: "div[0]/div[1]",
+    props: ["box.h"],
+    detail: "69.28 vs 46.19",
+    issue: "#208",
+    why: "the confirmation's sentence drops its `— 8.4 GB —` clause: the same aggregate, in the one place `05-deletions.md` makes it load-bearing. Three drawn lines become two. `DELETIONS.armedBody` takes a null size rather than an em-dash, which would be the app claiming the daemon answered `unknown` about how much is at stake",
+  },
+  {
+    frame: "4a Empty",
+    key: "div",
+    props: ["margin-left"],
+    detail: "0px vs 260px",
+    issue: "#221",
+    why: "the frame is a 522px WINDOW with no header and no doors, and the shell's is a fixed, non-resizable 1040 — S3 draws the body as a centred 520px column, which is the closest the shell can get, and a 520 column in a 1040 window has 260px either side where the frame's window has none",
+  },
+  {
+    frame: "4a Empty",
+    key: "div",
+    props: ["margin-right"],
+    detail: "0px vs 260px",
+    issue: "#221",
+    why: "the frame is a 522px WINDOW with no header and no doors, and the shell's is a fixed, non-resizable 1040 — S3 draws the body as a centred 520px column, which is the closest the shell can get, and a 520 column in a 1040 window has 260px either side where the frame's window has none",
+  },
+  {
+    frame: "4a Empty",
+    key: "div",
+    props: ["box.h"],
+    detail: "420 vs 662",
+    issue: "#221",
+    why: "the block is `flex: 1` between a 52px header and a 50px footer the frame does not draw, so it fills 662 of the window's 764 where the frame's whole surface is 422. Pinning it to 420 would leave the empty state floating in the top half of a window whose remaining space belongs to nothing",
+  },
 ];
 
 /** `frame|key|prop` → row, for the O(1) lookup the assertion loop wants. */

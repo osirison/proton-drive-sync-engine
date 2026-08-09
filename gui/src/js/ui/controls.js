@@ -137,11 +137,27 @@ const KIND = {
     weight: 600,
     disabled: true,
   },
-  /** `Keep it — put it back on Proton Drive`. Primary weight, panel fill, brighter border. */
+  /**
+   * `Keep it — put it back on Proton Drive`, `Keep both files`. Primary weight, panel fill,
+   * brighter border — and the loudest thing on the Deletions screen, because it is the reversible
+   * one. Fifteen drawn across `4a Deletions` and `4a Armed`.
+   *
+   * ITS THREE TOKENS ARE A ROLE, exactly as `secondaryFilled`'s are (§66). F5 wrote
+   * `--panel-raised`/`--border-strong`/`--text-bright`, which measures correct on every dark frame
+   * and wrong on all three in light: `12a Deletions light` draws `#14161A` / no border / `#FAF8F5`,
+   * where those tokens are `#FFFFFF` / `#E0DCD5` / `#14161A`. In light this button IS the primary
+   * button, which is `12-light-theme.md`'s own rule — "maximum contrast is the primary action…so
+   * `Keep both` and `Keep it` stay the loudest thing on their screens" — reading as a token
+   * identity rather than as a resemblance.
+   *
+   * `borderStyle` because the light frame draws no border at all: 38px dark, 36px light, which is
+   * the 2px a border takes out of a border-box. Same shape of finding as `primaryChoice`.
+   */
   primarySoft: {
-    bg: "var(--panel-raised)",
-    border: "var(--border-strong)",
-    color: "var(--text-bright)",
+    bg: "var(--btn-primary-soft-bg)",
+    border: "var(--btn-primary-soft-border)",
+    borderStyle: "var(--btn-primary-soft-border-style)",
+    color: "var(--btn-primary-soft-text)",
     weight: 600,
   },
   /** The selected pill tab: a primary fill that keeps its border. */
@@ -203,13 +219,37 @@ const KIND = {
    * gone wrong with the design rather than with this table.
    */
   destructive: { bg: "var(--destructive)", border: null, color: "var(--btn-destructive-text)", weight: 600 },
-  /** The armed gate before the word is typed. */
+  /**
+   * The gate's `Delete` before the word is typed.
+   *
+   * `--destructive-btn-border` and not `--destructive-border`: .25 against .38, and F1 tokenised
+   * the pair with this exact site named in its comment. F5 reached for the card's border, which is
+   * the same hue one step brighter — invisible until something rendered the button next to the card
+   * it was borrowing from.
+   */
   destructiveDisabled: {
     bg: "var(--btn-destructive-disabled-bg)",
-    border: "var(--destructive-border)",
+    border: "var(--destructive-btn-border)",
     color: "var(--btn-destructive-disabled-text)",
     weight: 600,
     disabled: true,
+  },
+  /**
+   * The card gate's `Delete` AFTER the word matches — the one state of this screen no frame draws,
+   * because `4a Deletions` draws the gate empty and `4a Armed` has already left the card behind.
+   *
+   * So it is chosen, and the constraint chooses most of it: `05-deletions.md` says the armed
+   * takeover is "the only place in the app a solid-red fill appears", which rules out promoting this
+   * to `destructive`. What is left is the disabled button with the two things disabled-ness takes
+   * away put back — the label moves from the muted `#8A5A5A` to the live `--destructive-text`, and
+   * the hairline from the .25 button border to the .38 card border. Same fill, so the button does
+   * not jump; a brighter word and a brighter edge, so it is visibly ready. DEVIATIONS §75.
+   */
+  destructiveArmable: {
+    bg: "var(--btn-destructive-disabled-bg)",
+    border: "var(--destructive-border)",
+    color: "var(--destructive-text)",
+    weight: 600,
   },
 };
 
@@ -320,6 +360,7 @@ export function button({
     ...body,
   );
 
+  node.dataset.kind = kind;
   node.style.borderRadius = radius ?? rung.radius;
   node.style.padding = padding ?? rung.padding;
   // A rung may decline to set a size (`choice`), in which case the element keeps the UA default —
@@ -327,6 +368,34 @@ export function button({
   // happens to work; the explicit guard says it is intended rather than tolerated.
   const resolvedSize = fontSize ?? rung.fontSize;
   if (resolvedSize != null) node.style.fontSize = resolvedSize;
+  applyKind(node, kind, glyphTone);
+  return node;
+}
+
+/**
+ * Repaint an existing button as a different KIND, in place.
+ *
+ * For the one control that changes role without changing anything else about itself: the deletion
+ * gate's `Delete`, which goes from `destructiveDisabled` to `destructiveArmable` the instant the
+ * typed word matches. Rebuilding it there would mean re-rendering the card the field is being typed
+ * into, and toggling a class cannot do it — every colour a kind carries is written as an INLINE
+ * custom property, which no stylesheet rule can reach past.
+ *
+ * The KIND TABLE STAYS THE ONE SOURCE. This is the same `applyKind` the constructor calls, so a
+ * kind gains a property in exactly one place and both paths get it.
+ */
+export function setButtonKind(node, kind, glyphTone = null) {
+  applyKind(node, kind, glyphTone);
+  node.classList.remove(`btn-${node.dataset.kind}`);
+  node.classList.add(`btn-${kind}`);
+  node.dataset.kind = kind;
+  node.disabled = Boolean(KIND[kind].disabled);
+}
+
+function applyKind(node, kind, glyphTone) {
+  const role = KIND[kind];
+  if (!role)
+    throw new Error(`controls: unknown button kind "${kind}". Known: ${Object.keys(KIND).join(", ")}`);
   node.style.fontWeight = String(role.weight);
 
   // Colour goes through CUSTOM PROPERTIES rather than straight onto `background`/`color`, so
@@ -338,20 +407,36 @@ export function button({
   // one deliberately maximum-contrast thing on the screen.
   node.style.setProperty("--btn-fg", role.color);
   node.style.setProperty("--btn-bg", role.bg ?? "transparent");
-  node.style.setProperty("--btn-border", role.border ?? "transparent");
+  // A KIND WITH NO BORDER DRAWS NO BORDER — style `none`, not a 1px transparent one, and the colour
+  // a browser reports for a border nobody draws is `currentColor`. Both halves matter to the gate:
+  // `1px solid transparent` is two extra pixels in the border box (`Delete permanently` measured
+  // 172.27×42 against the drawn 170.27×40) and `transparent` is not the `rgb(255, 255, 255)` the
+  // frame records for the same edge. Found on `4a Armed`, true of every borderless kind.
+  node.style.setProperty("--btn-border", role.border ?? "currentColor");
   node.style.setProperty("--btn-bg-hover", role.bgHover ?? role.bg ?? "transparent");
-  node.style.setProperty("--btn-border-hover", role.borderHover ?? role.border ?? "transparent");
+  node.style.setProperty("--btn-border-hover", role.borderHover ?? role.border ?? "currentColor");
   // Press steps up ONE MORE level than hover. `--panel-raised` is the top of the surface ladder, so
   // a kind already sitting there presses to `--border` — the next thing up, and still not a
   // brightness change to the label.
   node.style.setProperty("--btn-bg-active", role.bgActive ?? role.bgHover ?? role.bg ?? "transparent");
-  // The three colours a choice button needs beyond `--btn-fg`, which on those kinds paints nothing.
-  // Set only when the kind declares them, so every other button's inline style is untouched.
-  if (role.labelColor) node.style.setProperty("--btn-label-fg", role.labelColor);
-  if (role.subColor) node.style.setProperty("--btn-sub-fg", role.subColor);
-  if (role.borderStyle) node.style.setProperty("--btn-border-style", role.borderStyle);
+  // The three properties a KIND may or may not own. Set when it declares one and REMOVED when it
+  // does not — because `setButtonKind` repaints in place, and a property left behind from the
+  // previous kind is a colour nothing in the new one asked for. Nothing repaints across a pair that
+  // differs in these today; the clear is here so that the day one does, it does not inherit.
+  setOrClear(node, "--btn-label-fg", role.labelColor);
+  setOrClear(node, "--btn-sub-fg", role.subColor);
+  // A kind that declares no border also declares no border STYLE, so the pair above resolves to
+  // `1px none currentColor` and the border box stays the element's own size.
+  setOrClear(node, "--btn-border-style", role.borderStyle ?? (role.border ? null : "none"));
+  // NOT cleared, because it is not the kind's. The glyph tone is per-instance — `→` is warm and `←`
+  // cool on the same tint — so a repaint that was given none leaves the instance's own alone.
   if (glyphTone) node.style.setProperty("--btn-glyph-fg", GLYPH_TONE[glyphTone]);
   return node;
+}
+
+function setOrClear(node, property, value) {
+  if (value) node.style.setProperty(property, value);
+  else node.style.removeProperty(property);
 }
 
 // ------------------------------------------------------------------------------ text inputs ----

@@ -160,6 +160,36 @@ function hexToRgb(value) {
 }
 
 /**
+ * Any CSS colour literal the prototype writes, in the engine's own serialisation — so the app's
+ * `getComputedStyle` value can be compared against it.
+ *
+ * BOTH SPELLINGS, because the prototype uses both. Hex was the only one until S3: `4a Armed`'s
+ * warning hexagon fills with `rgba(255,59,59,.08)`, which is the same colour the app resolves
+ * `rgba(var(--destructive-rgb), 0.08)` to and did not match on any of hex, spacing or the
+ * leading-dot alpha. A tint written as an rgba literal was simply outside what this could read.
+ */
+function toRgbString(value) {
+  const hex = hexToRgb(value);
+  if (hex != null) return hex;
+  const m = /^rgba?\(([^)]+)\)$/i.exec(String(value ?? "").trim());
+  if (!m) return null;
+  const parts = m[1]
+    .split(/[\s,/]+/)
+    .filter(Boolean)
+    .map(Number);
+  // THREE OR FOUR, EXACTLY. `rgba(1,2,3,4,5)` used to normalise to `rgba(1, 2, 3, 4)` — the extra
+  // parts silently dropped — so a malformed colour in the ground truth could be reshaped into one
+  // that matches what the app computed, and a comparator that quietly agrees is worse than one that
+  // fails. Four is allowed for both spellings because CSS allows both: `rgba()` is an alias of
+  // `rgb()`, so `rgba(1,2,3)` and `rgb(1 2 3 / .5)` are each legal and each mean what they look
+  // like. Anything else returns null, and the caller falls back to comparing the raw strings, which
+  // will not match — loudly, which is the direction a gate should fail in.
+  if (parts.length < 3 || parts.length > 4 || parts.some((n) => !Number.isFinite(n))) return null;
+  const [r, g, b] = parts;
+  return parts.length === 3 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${parts[3]})`;
+}
+
+/**
  * Compare one SVG attribute. `computed` is the app's `getComputedStyle` value for the same
  * attribute, and is only supplied — and only meaningful — for the two colour attributes.
  */
@@ -170,7 +200,7 @@ export function compareSvgAttr(attr, expected, actual, computed = null) {
   const ref = (v) => /^url\(/.test(String(v ?? ""));
   if (ref(expected) && ref(actual)) return null;
 
-  const want = hexToRgb(expected);
+  const want = toRgbString(expected);
   if (want != null && computed != null && want === computed) return null;
   return `${expected} vs ${actual}`;
 }
