@@ -1,0 +1,507 @@
+// The conflicts screen (S2) — one decision, safely.
+//
+// `04-conflicts.md`. The v1 screen was a 236px list beside a line-numbered diff with four
+// equal-weight buttons, and it got two things wrong: a list of conflicts is a list of postponed
+// decisions, and a diff answers "what differs" when the question is "which do I want". So **one
+// conflict fills the window**, the file sits ON the seam, and the diff is one click behind a
+// disclosure.
+//
+// THREE THINGS THIS MODULE OWNS.
+//
+//   · WHICH OF THE THREE BODIES IS SHOWING. Card view, diff view, and the cleared state are one
+//     screen, not three: the queue and the open conflict are the same state, and the disclosure is
+//     a flag on it. `bodyOf` is the whole decision.
+//   · THE QUEUE POSITION, across a rescan. Settling a conflict shortens the list, and the position
+//     has to survive that without skipping the file that slid into the slot. See `advanceAfter`.
+//   · WHAT A TYPE CONFLICT DOES NOT GET. A folder here and a file on Proton has no diff to show, so
+//     the disclosure is not drawn at all — `Conflict.kind` is what makes that answerable (it landed
+//     with this task; DEVIATIONS §74).
+//
+// KEEP BOTH IS THE BRIGHTEST THING ON THE SCREEN, and that is a safety property rather than a
+// styling choice: it is the option that loses nothing, so it wears the maximum-contrast fill while
+// both discarding options wear the decision outline. The arrow glyphs keep their SIDE colours even
+// though the titles are crimson. If a future change makes a destructive button louder than this
+// one, the screen has stopped doing its job.
+//
+// WHAT PHASE 1 CANNOT DRAW, each recorded in DEVIATIONS.md §74 with the issue that closes it:
+// the cards' first line (`You added a line, 5 minutes ago` — #217, no last-agreed version exists),
+// the meta line's `last agreed 3 hours ago` (same gap), the non-text side-by-side preview (no
+// command serves file bytes), and the light theme's assertions (§58b, S10's extractor work).
+
+import { el } from "../ui/el.js";
+import { CONFLICTS } from "../ui/copy.js";
+import { fileSize } from "../ui/format.js";
+import { renderHexagon } from "../ui/hexagon.js";
+import { renderSeam, seamMask } from "../ui/seam.js";
+import { button } from "../ui/controls.js";
+import { dot, eyebrow } from "../ui/rows.js";
+import { alignedRows, compare, summariseSide } from "../ui/diff.js";
+import { fid } from "../fixtures/frames.js";
+
+/** The on-seam mark in the card view, and the compressed one in the diff view. */
+const HERO_SIZE = 44;
+const COMPACT_SIZE = 34;
+/** The settled mark on the cleared state. */
+const CLEARED_SIZE = 96;
+
+/**
+ * Which body to draw.
+ *
+ * Cleared outranks everything because an empty queue makes every other body a window onto nothing;
+ * the diff flag is only meaningful once a conflict is open, and only for a conflict that HAS a
+ * diff — a type conflict cannot reach it (the disclosure is never drawn), but a stale flag left
+ * over from the previous conflict could, so it is filtered here rather than trusted.
+ */
+export function bodyOf({ conflicts = [], index = 0, diffOpen = false } = {}) {
+  if (!conflicts.length) return "cleared";
+  const current = conflicts[Math.min(index, conflicts.length - 1)];
+  return diffOpen && current?.kind !== "type" ? "diff" : "card";
+}
+
+/**
+ * Where the queue lands after the conflict at `index` is settled and the rescan returns `next`.
+ *
+ * NOT `index` UNCHANGED AND NOT `index + 1`. Settling removes an item, so the file that was at
+ * `index + 1` slides into `index`: keeping the index shows the next conflict (right), and
+ * incrementing it SKIPS that file (wrong, and silently — it just never gets asked about). The only
+ * adjustment needed is at the end of the list, where the old index is now past it.
+ *
+ * `Decide later` is the opposite case and does not come through here: nothing is removed, so it
+ * genuinely advances by one, and wraps rather than dead-ending on the last item.
+ */
+export function advanceAfter(index, next) {
+  if (!next.length) return 0;
+  return Math.min(index, next.length - 1);
+}
+
+/** `Decide later` — skip without resolving; the item stays in the queue. */
+export function skipTo(index, total) {
+  return total > 0 ? (index + 1) % total : 0;
+}
+
+// ------------------------------------------------------------------------------- the pager ----
+
+/**
+ * `1 of 3` and the two arrows.
+ *
+ * The disabled `‹` is a per-instance `--btn-fg` override rather than a new kind: it is the only
+ * disabled-looking quiet button in the app, and `.btn:disabled` deliberately only sets
+ * `cursor:default` without recolouring, so the colour has to come from somewhere. A KIND for one
+ * caller would be a sixth entry in a table that five screens read.
+ */
+function pager({ index, total, onPrev, onNext, padBottom = false }) {
+  const step = (glyph, disabled, onClick) => {
+    const node = button({
+      kind: disabled ? "quietOutlined" : "secondaryFilled",
+      size: "icon",
+      label: glyph,
+      fontSize: "13px",
+      disabled,
+      onClick: disabled ? null : onClick,
+    });
+    node.style.width = "30px";
+    node.style.height = "30px";
+    if (disabled) node.style.setProperty("--btn-fg", "var(--text-disabled)");
+    return node;
+  };
+
+  const wrap = el(
+    "div",
+    { class: "cf-pager" },
+    el("span", { class: "cf-position" }, CONFLICTS.position(index + 1, total)),
+    step("‹", index === 0, onPrev),
+    step("›", index >= total - 1, onNext),
+  );
+  if (padBottom) wrap.style.paddingBottom = "4px";
+  return wrap;
+}
+
+// -------------------------------------------------------------------------- the card view ----
+
+/**
+ * One version card: what happened, what differs, and the metadata row.
+ *
+ * `side` is `"mine"` or `"theirs"` — the same two words `ui/diff.js` uses, so the sentence and the
+ * card can never be built for different halves of the same file.
+ *
+ * THE FIRST LINE IS A CONSTANT AND IT IS THE ONE PART THAT IS NOT LIVE. `You added a line` is a
+ * claim against the last agreed version, whose content exists nowhere on the machine (#217). It is
+ * rendered from the deck so the frame matches; a live app draws a sentence it cannot have computed,
+ * which is why §74 records it rather than the screen quietly omitting it.
+ */
+function versionCard({ side, pair, facts }) {
+  const source = side === "mine" ? pair?.original : pair?.sidecar;
+  const text = source?.text ?? null;
+  const lineCount = text == null ? null : text.replace(/\r\n?/g, "\n").replace(/\n$/, "").split("\n").length;
+
+  const card = el("div", { class: "cf-card" });
+  card.append(
+    el("div", { class: "cf-card-happened" }, side === "mine" ? CONFLICTS.mineChange : CONFLICTS.theirsChange),
+  );
+
+  // What differs, in words — and silence rather than a hedge when the grammar does not cover it.
+  // `04-conflicts.md`: fall back to the metadata row alone, and never to the raw diff, which is
+  // what the disclosure is for.
+  const sentence = CONFLICTS.versionDiff(side, facts);
+  if (sentence) card.append(proseWithQuote(sentence, facts?.quoted));
+
+  const meta = el("div", { class: "cf-card-meta" });
+  meta.append(el("span", {}, fileSize(source?.size ?? 0)));
+  if (lineCount != null) meta.append(el("span", {}, CONFLICTS.lineCount(lineCount)));
+  if (source?.mtime_epoch_secs != null) {
+    meta.append(el("span", {}, CONFLICTS.edited(source.mtime_epoch_secs)));
+  }
+  card.append(meta);
+  return card;
+}
+
+/**
+ * The prose sentence with its quoted content in inline mono.
+ *
+ * Split on the quote rather than built from parts, because the deck owns the whole sentence and a
+ * template that emitted three pieces would put the grammar in two places. `indexOf` and not a
+ * regex: the quote is file content and can contain anything a regex would read as syntax.
+ */
+function proseWithQuote(sentence, quoted) {
+  const node = el("div", { class: "cf-card-prose" });
+  const at = quoted ? sentence.indexOf(quoted) : -1;
+  if (at < 0) {
+    node.textContent = sentence;
+    return node;
+  }
+  node.append(
+    sentence.slice(0, at),
+    el("span", { class: "cf-quote" }, quoted),
+    sentence.slice(at + quoted.length),
+  );
+  return node;
+}
+
+function cardBody({ conflict, pair, comparison, onOpenDiff }) {
+  const body = el("div", { class: "cf-body", "data-fid": fid("body") });
+  body.append(renderSeam({ site: "conflictBody" }));
+
+  // The file, on the seam. The mark does NOT declare `flex:none` here — 43 of the 53 drawn marks
+  // do not, and this is one of them (the 34px mark in the diff view is the opposite).
+  const onSeam = el("div", { class: "cf-onseam" });
+  onSeam.append(
+    renderHexagon({
+      size: HERO_SIZE,
+      state: "needsNumeral",
+      tone: "decision",
+      masked: true,
+      numeral: 3,
+    }),
+  );
+  const path = el("div", { class: "cf-path" }, conflict.original);
+  // `position: false` — unlike the main hero's headline, these two are static and their PARENT
+  // carries the stacking, so masking must not turn them into positioned elements.
+  seamMask(path, { pad: 14, position: false });
+  const meta = el("div", { class: "cf-onseam-meta" }, CONFLICTS.meta(fileKindOf(conflict, pair)));
+  seamMask(meta, { pad: 14, padY: 2, position: false });
+  onSeam.append(path, meta);
+  body.append(onSeam);
+
+  const cards = el("div", { class: "cf-cards" });
+  for (const side of ["mine", "theirs"]) {
+    const cell = el("div", { class: `cf-cell cf-cell-${side}` });
+    cell.append(
+      eyebrow({
+        tone: side === "mine" ? "up" : "down",
+        align: side === "mine" ? "start" : "end",
+        text: side === "mine" ? CONFLICTS.mine : CONFLICTS.theirs,
+      }),
+      versionCard({ side, pair, facts: summariseSide(comparison, side) }),
+    );
+    cards.append(cell);
+  }
+  body.append(cards);
+
+  // A type conflict has no diff, so the disclosure is not drawn at all — not disabled, not empty.
+  // Nor is it drawn when a side has no text to compare (binary, too large, or vanished): the
+  // disclosure would open onto nothing.
+  if (conflict.kind !== "type" && comparison) {
+    const wrap = el("div", { class: "cf-disclose" });
+    const btn = button({
+      kind: "quietOutlined",
+      size: "standard",
+      label: CONFLICTS.showDiff,
+      padding: "8px 16px",
+      onClick: onOpenDiff,
+    });
+    // The button's own fill IS the seam mask. As a custom property, not an inline background —
+    // an inline background beats `.btn:hover { background: var(--btn-bg-hover) }` and kills hover.
+    btn.style.setProperty("--btn-bg", "var(--surface)");
+    wrap.append(btn);
+    body.append(wrap);
+  }
+  return body;
+}
+
+/**
+ * The three choices, and the note beneath them.
+ *
+ * The order is the drawn order and it is load-bearing: discard-mine, keep-both, discard-theirs puts
+ * the safe option physically between the two that lose something.
+ */
+function choices({ conflict, onChoose, onLater }) {
+  const grid = el("div", { class: "cf-choices" });
+  const make = (resolution, kind, title, body, glyph, tone) => {
+    const node = button({
+      kind,
+      size: "choice",
+      label: title,
+      sublabel: body,
+      glyph,
+      glyphTone: tone,
+      onClick: () => onChoose(resolution),
+    });
+    return node;
+  };
+  grid.append(
+    make("keep_mine", "decisionChoice", CONFLICTS.keepMine, CONFLICTS.keepMineSub, "→", "up"),
+    make(
+      "keep_both",
+      "primary",
+      CONFLICTS.keepBoth,
+      CONFLICTS.keepBothSub(sidecarName(conflict)),
+      "⇄",
+      "onPrimary",
+    ),
+    make("use_proton", "decisionChoice", CONFLICTS.useTheirs, CONFLICTS.useTheirsSub, "←", "down"),
+  );
+
+  const note = el(
+    "div",
+    { class: "cf-note" },
+    el("span", {}, CONFLICTS.cannotUndo),
+    el("span", { class: "cf-spacer" }),
+    button({
+      kind: "quietOutlined",
+      size: "standard",
+      label: CONFLICTS.later,
+      padding: "8px 15px",
+      onClick: onLater,
+    }),
+  );
+  return el("div", { class: "cf-choices-block" }, grid, note);
+}
+
+/** The sidecar's own file name, which `keepBothSub` quotes back to the user. */
+function sidecarName(conflict) {
+  const parts = String(conflict.sidecar).split("/");
+  return parts[parts.length - 1];
+}
+
+/**
+ * `a plain text file` / `a folder` — the type half of the meta line.
+ *
+ * Deliberately coarse. The pair says whether the original is readable text and `kind` says whether
+ * it is a folder; nothing distinguishes an SVG from a note, because an SVG is valid UTF-8 and reads
+ * exactly the same way. Naming a type we cannot tell apart would be worse than naming a category.
+ */
+function fileKindOf(conflict, pair) {
+  if (conflict.kind === "type") return CONFLICTS.kindFolder;
+  if (pair?.original?.binary_or_large) return CONFLICTS.kindBinary;
+  return CONFLICTS.kindText;
+}
+
+// -------------------------------------------------------------------------- the diff view ----
+
+/**
+ * The disclosure. The seam becomes the diff's GUTTER — `1fr 1px 1fr` with the centre cell filled
+ * flat — which is the one place in the app where the seam is a structural column rather than a
+ * drawn line, so it is a grid cell here and not `renderSeam`.
+ *
+ * THE DIFF VIEW DRAWS NO CHOICE BUTTONS. `04-conflicts.md` says the disclosure "replaces the
+ * version cards", and the frame replaces everything below the compressed header — the three
+ * choices, the note and `Decide later` are all absent from it. The frame wins on geometry under
+ * IMPLEMENTATION-PLAN §1.3, and `Hide differences` is the way back to deciding. §74.
+ */
+function diffBody({ pair, comparison, queue, index, onHideDiff, onOpenBoth }) {
+  const rows = alignedRows(pair?.original?.text, pair?.sidecar?.text) ?? [];
+
+  const panel = el("div", { class: "cf-diff-panel" });
+  const column = (side) => {
+    const cell = el("div", { class: "cf-diff-col" });
+    for (const row of rows) cell.append(diffLine(row, side));
+    return cell;
+  };
+  panel.append(column("mine"), el("div", { class: "cf-diff-gutter" }), column("theirs"));
+
+  const labels = el(
+    "div",
+    { class: "cf-diff-labels" },
+    eyebrow({ tone: "up", align: "start", text: CONFLICTS.mineShort }),
+    eyebrow({ tone: "down", align: "end", text: CONFLICTS.theirsShort }),
+  );
+
+  const counts = el(
+    "div",
+    { class: "cf-diff-counts" },
+    el("span", {}, CONFLICTS.diffCounts(comparison?.differing ?? 0, comparison?.identical ?? 0) ?? ""),
+    el("span", { class: "cf-spacer" }),
+    button({ kind: "quietOutlined", size: "small", label: CONFLICTS.openBoth, onClick: onOpenBoth }),
+    button({ kind: "quietOutlined", size: "small", label: CONFLICTS.hideDiff, onClick: onHideDiff }),
+  );
+
+  const content = el("div", { class: "cf-diff-content" }, labels, panel, counts);
+  const remaining = queueList(queue, index);
+  if (remaining) content.append(remaining);
+  return content;
+}
+
+/**
+ * One side of one row.
+ *
+ * THE ABSENT ROW IS NOT SYMMETRIC. The side that HAS the line is drawn exactly like a changed line
+ * — tinted, numbered in its side colour — and only the empty side gets the placeholder. Treating
+ * `absent` as a third visual kind on both sides would leave the gained line looking unchanged,
+ * which is the one thing the row exists to point at.
+ */
+function diffLine(row, side) {
+  const cell = row[side];
+  const line = el("div", { class: "cf-diff-line" });
+  if (!cell) {
+    line.append(
+      el("span", { class: "cf-diff-n cf-diff-n-absent" }, "·"),
+      el("span", { class: "cf-diff-text cf-diff-text-absent" }, CONFLICTS.absentLine(side)),
+    );
+    return line;
+  }
+  const tinted = row.kind !== "unchanged";
+  if (tinted) line.classList.add(side === "mine" ? "is-changed-mine" : "is-changed-theirs");
+  line.append(
+    el("span", { class: "cf-diff-n" }, String(cell.n)),
+    el("span", { class: "cf-diff-text" }, cell.text),
+  );
+  return line;
+}
+
+/** `Still waiting after this one` — the rest of the queue, as a list rather than a sidebar. */
+function queueList(queue, index) {
+  const rest = queue.filter((_, i) => i !== index);
+  if (!rest.length) return null;
+  const rows = el("div", { class: "cf-queue-rows" });
+  for (const item of rest) {
+    const at = queue.indexOf(item);
+    rows.append(
+      el(
+        "div",
+        { class: "cf-queue-row" },
+        dot({ tone: "decision", size: 6 }),
+        el("span", { class: "cf-queue-path" }, item.original),
+        el(
+          "span",
+          { class: "cf-queue-reason" },
+          item.kind === "type" ? CONFLICTS.typeConflict : CONFLICTS.bothChanged,
+        ),
+        el("span", { class: "cf-queue-pos" }, CONFLICTS.position(at + 1, queue.length)),
+      ),
+    );
+  }
+  return el("div", { class: "cf-queue" }, eyebrow({ tone: "neutral", text: CONFLICTS.stillWaiting }), rows);
+}
+
+// ----------------------------------------------------------------------- the cleared state ----
+
+/**
+ * Nothing left to decide.
+ *
+ * DRAWN 522px WIDE, AND THE APP CANNOT BE. The Tauri window is a fixed, non-resizable 1040×764 and
+ * `conflicts` is routed as a full-window screen, so this renders as a centred 522 column inside the
+ * window rather than as a narrow window — the closest thing to the drawing that the shell can
+ * produce. No gate can tell: the frame's root box is un-comparable (its `⋯` characters are outside
+ * the bundled unicode ranges, which taints the root and every ancestor chain through it). §74.
+ */
+function clearedBody({ settled, onBack }) {
+  const inner = el("div", { class: "cf-cleared-inner" });
+  inner.append(
+    renderHexagon({ size: CLEARED_SIZE, state: "settled" }),
+    el("div", { class: "cf-cleared-title" }, CONFLICTS.clearedTitle),
+    el("div", { class: "cf-cleared-sub" }, CONFLICTS.clearedSub(settled)),
+    button({
+      kind: "secondaryOutlined",
+      size: "bar",
+      label: CONFLICTS.back,
+      padding: "10px 20px",
+      onClick: onBack,
+    }),
+  );
+  return el("div", { class: "cf-cleared" }, inner);
+}
+
+// ------------------------------------------------------------------------------ the screen ----
+
+/**
+ * Render the conflicts screen as an ARRAY of window-root siblings — never a wrapper.
+ *
+ * `shell.css` gives the window `display:flex; flex-direction:column`, and the body block is the
+ * `flex:1` child of the window itself. A wrapper would make the seam's `left:50%` resolve against
+ * the wrapper rather than the 1040px window, which is exactly the geometry the seam encodes.
+ */
+export function renderConflicts(state) {
+  const {
+    conflicts = [],
+    index = 0,
+    diffOpen = false,
+    pair = null,
+    settled = null,
+    onChoose = () => {},
+    onLater = () => {},
+    onOpenDiff = () => {},
+    onHideDiff = () => {},
+    onOpenBoth = () => {},
+    onBack = () => {},
+    onPrev = () => {},
+    onNext = () => {},
+  } = state;
+
+  const body = bodyOf({ conflicts, index, diffOpen });
+  if (body === "cleared") return [clearedBody({ settled, onBack })];
+
+  const at = Math.min(index, conflicts.length - 1);
+  const conflict = conflicts[at];
+  const comparison = compare(pair?.original?.text, pair?.sidecar?.text);
+
+  if (body === "diff") {
+    const head = el(
+      "div",
+      { class: "cf-diff-head" },
+      renderHexagon({
+        size: COMPACT_SIZE,
+        state: "needsNumeral",
+        tone: "decision",
+        masked: true,
+        numeral: conflicts.length,
+        flexNone: true,
+      }),
+      el(
+        "div",
+        { class: "cf-diff-headtext" },
+        el("div", { class: "cf-path-plain" }, conflict.original),
+        el("div", { class: "cf-diff-summary" }, CONFLICTS.diffSummary(comparison?.differing ?? 0) ?? ""),
+      ),
+      pager({ index: at, total: conflicts.length, onPrev, onNext }),
+    );
+    return [head, diffBody({ pair, comparison, queue: conflicts, index: at, onHideDiff, onOpenBoth })];
+  }
+
+  const titleRow = el(
+    "div",
+    { class: "cf-title-row" },
+    el(
+      "div",
+      { class: "cf-title-text" },
+      el("div", { class: "cf-title" }, CONFLICTS.title),
+      el("div", { class: "cf-sub" }, CONFLICTS.sub),
+    ),
+    pager({ index: at, total: conflicts.length, onPrev, onNext, padBottom: true }),
+  );
+
+  return [
+    titleRow,
+    cardBody({ conflict, pair, comparison, onOpenDiff }),
+    choices({ conflict, onChoose, onLater }),
+  ];
+}
