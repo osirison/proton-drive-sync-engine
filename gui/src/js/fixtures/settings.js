@@ -111,6 +111,9 @@ local = true
   proton_list_attempts: 3,
   delete_approval_remote: true,
   delete_approval_local: true,
+  // The same pair, as the radio group binds to it (C1). `true, true` is the card the Deletions tab
+  // draws selected.
+  deletion_policy: "ask_every_time",
 };
 
 /**
@@ -199,6 +202,7 @@ const SKIP_RULES = {
   // because the reply carries it and a fixture that omitted it would describe a different reply.
   considered_files: LOCAL_TOTALS.files,
   unreadable_directories: 0,
+  unreadable_entries: 0,
 };
 
 /**
@@ -264,8 +268,12 @@ export const SETTINGS_FIXTURES = {
    *
    * The mono key line the frame draws, `deletion_policy · applies to both directions`, names a key
    * the daemon does not have; G5 (#194) would mint it natively. Until then it is a label over two
-   * existing keys, so the fixture carries no `deletion_policy` field — inventing one would make the
-   * fixture claim the alias already exists.
+   * existing keys.
+   *
+   * `read_config` DOES now return a `deletion_policy` field, and it is not the alias: it is the two
+   * booleans classified, which is what a radio group binds to. Nothing about it goes into the TOML
+   * — `config.toml` above still shows `[delete_approval]`, because that is what is written. The
+   * distinction is the whole of C1: a name for the mapping, not a new key.
    */
   "8a Deletions tab": {
     status: IDLE_STATUS,

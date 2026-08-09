@@ -40,7 +40,7 @@ export const api = {
   // written; omitted, `free_space` uses the configured local root.
   freeSpace: (path) => invoke("free_space", { path: path ?? null }),
   checkCli: () => invoke("check_cli"),
-  skipRuleUsage: (patterns) => invoke("skip_rule_usage", { patterns }),
+  skipRuleUsage: (patterns, include) => invoke("skip_rule_usage", { patterns, include: include ?? null }),
   // F4's Ctrl W / Ctrl Q. Both go through the same backend paths the tray menu uses, so the
   // shortcut and the menu item cannot drift apart. Note quitting does NOT stop the daemon — see
   // the comment on `quit_app` in commands.rs.
@@ -83,6 +83,10 @@ export const EMPTY_CONFIG = {
   proton_list_attempts: null,
   delete_approval_remote: null,
   delete_approval_local: null,
+  // Not null: an absent `[delete_approval]` table means the daemon asks about every deletion
+  // (`unwrap_or(true)` in config.rs), which is exactly what `get_deletion_policy` reports. A `null`
+  // here would make the empty-config case the one shape the real command never sends.
+  deletion_policy: "ask_every_time",
 };
 
 // ---- browser-preview mock (never runs inside Tauri) ----
@@ -213,6 +217,38 @@ function mockInvoke(cmd, args) {
             db_path: "~/ProtonDrive/.sync/sync_index.db",
           },
         },
+      });
+    case "check_cli":
+      // The silent-precondition-passes case. `null` here would be worse than useless: `check_cli`
+      // runs BEFORE onboarding has a config, so S7 calls it on every `9a` frame, and every frame
+      // but `9a CLI missing` would hand the screen a null to dereference.
+      return Promise.resolve({ installed: true, distro: null });
+    case "free_space":
+      return Promise.resolve({
+        available: 214_000_000_000,
+        total: 500_000_000_000,
+        measured_at: "/home/u",
+      });
+    case "skip_rule_usage":
+      // A well-formed empty report, the way `read_config` answers with EMPTY_CONFIG: a frame that
+      // describes no skip rules still gets every field, so a screen mapping over `rules` does not
+      // throw in browser preview and nowhere else.
+      return Promise.resolve({
+        rules: (args?.patterns ?? []).map((pattern) => ({
+          pattern,
+          files: 0,
+          bytes: 0,
+          unique_files: 0,
+          unique_bytes: 0,
+          samples: [],
+          folder_exists: null,
+          error: null,
+        })),
+        total_files: 0,
+        total_bytes: 0,
+        considered_files: 0,
+        unreadable_directories: 0,
+        unreadable_entries: 0,
       });
     case "start_service":
       return Promise.resolve("asked systemd to start proton-syncd (preview mock)");

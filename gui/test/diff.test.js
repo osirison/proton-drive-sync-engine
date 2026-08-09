@@ -175,6 +175,94 @@ test("a one-line change inside a large file is still summarised", () => {
   });
 });
 
+// ---- the eight defects an adversarial review found, none of which any gate could see ----
+
+test("two lines edited in place are TWO changed lines, not one change plus two inventions", () => {
+  // lcsOps emits a contiguous edited block as k removals THEN k insertions. Pairing one op ahead
+  // matched the last removal with the first insertion and orphaned the rest — so the file came back
+  // as one changed line plus a line each side had supposedly gained, which also slipped under the
+  // `changed.length > 1` refusal. The card then described a file it had misread, confidently.
+  const comparison = compare("eggs\ncoffee\ntea\n", "eggs\nmilk\nbread\n");
+  assert.equal(comparison.changed.length, 2, "two lines changed");
+  assert.deepEqual(comparison.onlyMine, [], "nothing was removed");
+  assert.deepEqual(comparison.onlyTheirs, [], "nothing was added");
+  assert.equal(summariseSide(comparison, "mine"), null, "and the refusal fires");
+});
+
+test("an unequal block pairs what it can and reports the remainder", () => {
+  const comparison = compare("a\nb\nc\nz\n", "A\nz\n");
+  assert.equal(comparison.changed.length, 1);
+  assert.equal(comparison.onlyMine.length, 2, "the two unpaired removals");
+  assert.equal(comparison.onlyTheirs.length, 0);
+});
+
+test("a leftover line is not 'at the end' when the changed line's counterpart follows it", () => {
+  // The block's unpaired removals sit BEFORE its insertions in op order, so nothing agreed follows
+  // them and the old rule — "after the last keep" — called them appends. Both would then have
+  // passed the line-count check (3 - 1 = 2 = two extras), and the card would have read
+  // `Yours has a and 2 extra lines at the end.` about a line that was changed, not added.
+  const comparison = compare("a\nb\nc\n", "X\n");
+  assert.deepEqual(comparison.changed, [{ mine: "a", theirs: "X" }]);
+  assert.deepEqual(
+    comparison.onlyMine.map((extra) => extra.atEnd),
+    [false, false],
+    "the insertion at the end of the block comes after them",
+  );
+  assert.equal(summariseSide(comparison, "mine"), null, "so the sentence falls back");
+});
+
+test("a reordered file has gained nothing, and says nothing", () => {
+  // LCS scores a moved line as a removal plus an insertion, so `milk` looks appended — while both
+  // files are three lines long. `Proton's has an extra line at the end.` would be false.
+  const comparison = compare("milk\neggs\nbread\n", "eggs\nbread\nmilk\n");
+  assert.equal(comparison.mineLines, comparison.theirsLines);
+  assert.equal(summariseSide(comparison, "theirs"), null);
+  assert.equal(summariseSide(comparison, "mine"), null);
+});
+
+test("the counts partition the longer file rather than double-counting a swap", () => {
+  // One line dropped from the top and a different one appended at the bottom: adding the two sides'
+  // extras made `differ + identical` exceed the file's own length.
+  const comparison = compare("alpha\nbeta\ngamma\n", "beta\ngamma\ndelta\n");
+  assert.equal(
+    comparison.differing + comparison.identical,
+    Math.max(comparison.mineLines, comparison.theirsLines),
+  );
+  // And the drawn frame's numbers still hold: 2 + 3 = 5 = the longer file.
+  const drawn = compare(MINE, THEIRS);
+  assert.equal(drawn.differing + drawn.identical, Math.max(drawn.mineLines, drawn.theirsLines));
+});
+
+test("a difference only in trailing whitespace is not quoted twice as itself", () => {
+  // Both cards would quote `buy milk` while each insists the other side has something else.
+  const comparison = compare("buy milk  \n", "buy milk\n");
+  assert.equal(comparison.changed.length, 1);
+  assert.equal(summariseSide(comparison, "mine"), null);
+  assert.equal(summariseSide(comparison, "theirs"), null);
+});
+
+test("truncation never cuts a character in half", () => {
+  const line = "x".repeat(MAX_QUOTE_CHARS - 1) + "😀 and more text after it";
+  const quoted = quote(line);
+  assert.ok(quoted.endsWith("⋯"));
+  assert.doesNotMatch(
+    quoted,
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
+    "a lone surrogate renders as ? and gets attributed to the user's file",
+  );
+  assert.ok(quoted.includes("😀"), "the emoji is kept whole");
+});
+
+test("the disclosure refuses to count a difference no line shows", () => {
+  // `cardinal(0)` is the deliberately lower-cased `zero`, so the header would open a sentence with
+  // it — under a heading claiming the rest of the file matches, about a file the daemon just wrote
+  // a conflict sidecar for.
+  const comparison = compare("a\nb", "a\nb\n");
+  assert.equal(comparison.differing, 0);
+  assert.equal(CONFLICTS.diffSummary(comparison.differing), null);
+  assert.equal(CONFLICTS.diffCounts(comparison.differing, comparison.identical), null);
+});
+
 test("the template answers null for the case that falls back, rather than throwing", () => {
   // `summariseSide` returns null for every comparison outside the drawn grammar — including a
   // multi-line edit, which is what most real conflicts are. S2's most-travelled path therefore feeds

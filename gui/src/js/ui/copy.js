@@ -223,12 +223,25 @@ export const CONFLICTS = {
   cannotUndo: "Discarding a version can't be undone from here.",
   later: "Decide later",
 
-  // The disclosure's header and footer, both counted off the same comparison the cards use.
+  /**
+   * The disclosure's header and footer, both counted off the same comparison the cards use.
+   *
+   * **Zero is refused, not rendered.** `cardinal(0)` is the deliberately lower-cased `zero`, so the
+   * header would open a sentence with `zero lines differ.` — and it is reachable: a sidecar written
+   * with different line endings, or one trailing newline, differs as bytes while no line differs
+   * (`diff.js`'s `invisibleDifference`). A conflict exists there, so `0 lines differ · 2 lines
+   * identical` under a heading that says the file matches is the reassuring-direction lie the cards
+   * already refuse. Null lets the caller keep the disclosure shut.
+   */
   diffSummary: (differing) =>
-    `${cardinal(differing)} ${plural(differing, "line differs", "lines differ")}. Everything else in the file matches.`,
+    differing > 0
+      ? `${cardinal(differing)} ${plural(differing, "line differs", "lines differ")}. Everything else in the file matches.`
+      : null,
   diffCounts: (differing, identical) =>
-    `${count(differing)} ${plural(differing, "line differs", "lines differ")} · ` +
-    `${count(identical)} ${plural(identical, "line identical", "lines identical")}`,
+    differing > 0
+      ? `${count(differing)} ${plural(differing, "line differs", "lines differ")} · ` +
+        `${count(identical)} ${plural(identical, "line identical", "lines identical")}`
+      : null,
   absentLine: "not in your version",
 
   stillWaiting: "Still waiting after this one",

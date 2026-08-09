@@ -54,7 +54,12 @@ pub struct RuleUsage {
     pub unique_files: u64,
     pub unique_bytes: u64,
     /// Up to [`MAX_SAMPLES`] matched paths, relative to the local root, in walk order.
-    pub samples: Vec<PathBuf>,
+    ///
+    /// `String`, not `PathBuf`: `serde` refuses to serialize a non-UTF-8 path, and one oddly-named
+    /// file in one rule's samples would fail the entire reply — every rule on the tab losing its
+    /// numbers over a filename none of them is about. Display-only, so lossy is the right trade;
+    /// matching upstream is byte-wise and unaffected.
+    pub samples: Vec<String>,
     /// For a rule anchored at a literal folder (`Exports/**`, `scratch/`), whether that folder still
     /// exists on disk. `None` when the rule has no literal folder to check (`*.psd`).
     ///
@@ -103,6 +108,10 @@ pub struct SkipRuleReport {
     /// The numbers above are then a floor rather than a total, and the tab must not present a floor
     /// as a fact.
     pub unreadable_directories: u64,
+    /// Entries whose type or size could not be read — a file that vanished between `read_dir` and
+    /// `stat` (an editor's save-and-replace, mid-walk), or one inside a directory that is readable
+    /// but not searchable. Same meaning as above: a floor, not a total.
+    pub unreadable_entries: u64,
 }
 
 /// Measure what `exclude_patterns` are hiding under `local_root`.
@@ -117,21 +126,27 @@ pub struct SkipRuleReport {
 pub fn measure(
     local_root: &Path,
     exclude_patterns: &[String],
+    include_patterns: &[String],
     ignored_paths: &[PathBuf],
 ) -> Result<SkipRuleReport, String> {
     let to_error = |e: Box<dyn std::error::Error + Send + Sync>| e.to_string();
 
     // Three matchers, and each answers a different question.
     //
-    //   baseline  — no rules at all: "would the daemon sync this file if the config had no
-    //               excludes?" This is the denominator, and it is what keeps `.sync/`, the download
-    //               scratch and the ignored state files out of every count below.
+    //   baseline  — the config MINUS its excludes: "would the daemon sync this file if the skip
+    //               rules were the only thing missing?" This is the denominator, and it is what
+    //               keeps `.sync/`, the download scratch and the ignored state files out of every
+    //               count below. The **include** globs belong here, because a file outside them is
+    //               already not syncing and is not something a skip rule is hiding — crediting a
+    //               rule with it would promise files would start syncing when the rule is removed,
+    //               and none would.
     //   combined  — every valid rule at once: the distinct-file totals, with no set of matched
     //               paths to hold in memory.
     //   per-rule  — one rule alone: that rule's own row.
     //
     // Only the baseline is fatal, because a failure there is not about any rule the user typed.
-    let baseline = ScanOptions::new(local_root, ignored_paths, &[], &[]).map_err(to_error)?;
+    let baseline =
+        ScanOptions::new(local_root, ignored_paths, include_patterns, &[]).map_err(to_error)?;
 
     let mut rules = Vec::with_capacity(exclude_patterns.len());
     let mut per_rule = Vec::with_capacity(exclude_patterns.len());
@@ -139,7 +154,7 @@ pub fn measure(
         let compiled = ScanOptions::new(
             local_root,
             ignored_paths,
-            &[],
+            include_patterns,
             std::slice::from_ref(pattern),
         );
         let error = compiled.as_ref().err().map(|e| e.to_string());
@@ -150,8 +165,7 @@ pub fn measure(
             unique_files: 0,
             unique_bytes: 0,
             samples: Vec::new(),
-            folder_exists: literal_folder_prefix(pattern)
-                .map(|prefix| local_root.join(prefix).is_dir()),
+            folder_exists: folder_exists_for(local_root, pattern),
             error,
         });
         per_rule.push(compiled.ok());
@@ -163,7 +177,8 @@ pub fn measure(
         .filter(|(_, compiled)| compiled.is_some())
         .map(|(pattern, _)| pattern.clone())
         .collect();
-    let combined = ScanOptions::new(local_root, ignored_paths, &[], &valid).map_err(to_error)?;
+    let combined =
+        ScanOptions::new(local_root, ignored_paths, include_patterns, &valid).map_err(to_error)?;
 
     let mut report = SkipRuleReport {
         rules,
@@ -171,6 +186,7 @@ pub fn measure(
         total_bytes: 0,
         considered_files: 0,
         unreadable_directories: 0,
+        unreadable_entries: 0,
     };
 
     let mut walker = Walk {
@@ -180,7 +196,8 @@ pub fn measure(
         report: &mut report,
         seen_directories: HashSet::new(),
     };
-    walker.visit(local_root, Path::new(""));
+    let nothing_pruned = Pruned::none(per_rule.len());
+    walker.visit(local_root, Path::new(""), &nothing_pruned);
 
     Ok(report)
 }
@@ -195,8 +212,25 @@ struct Walk<'a> {
     seen_directories: HashSet<PathBuf>,
 }
 
+/// Which matchers have pruned an ancestor of the directory being walked. A rule that prunes `a/`
+/// hides every file under `a/`, however deep, and however little its glob resembles those files.
+struct Pruned {
+    combined: bool,
+    rules: Vec<bool>,
+}
+
+impl Pruned {
+    fn none(rules: usize) -> Self {
+        Self {
+            combined: false,
+            rules: vec![false; rules],
+        }
+    }
+}
+
 impl Walk<'_> {
-    fn visit(&mut self, absolute: &Path, relative: &Path) {
+    /// `pruned_by` carries the rules that have already claimed this subtree — see [`Self::classify`].
+    fn visit(&mut self, absolute: &Path, relative: &Path, pruned_by: &Pruned) {
         // A rule's own directory must still be *entered*: `allows_relative_directory` would prune
         // `scratch/` for the very rule whose files we are here to count, so traversal is decided by
         // the baseline and only the files are classified.
@@ -235,33 +269,72 @@ impl Walk<'_> {
             // rather than as whatever it points at. The engine does not sync them and neither side
             // of this count should invent them.
             let Ok(file_type) = entry.file_type() else {
+                self.report.unreadable_entries += 1;
                 continue;
             };
             if file_type.is_dir() {
-                self.visit(&entry.path(), &child_relative);
+                // A rule that prunes this DIRECTORY hides everything under it, even though its glob
+                // matches none of those files by name. `node_modules` (no trailing `/**`) is the
+                // everyday case: the daemon stops at `allows_relative_directory` and syncs nothing
+                // below, while a file-only classifier credits the rule with zero — and the tab draws
+                // `Matching nothing · safe to remove` over a rule hiding the whole tree. Which is
+                // this module's entire reason for existing, arrived at from the other direction.
+                let child_pruned = self.pruned_at(&child_relative, pruned_by);
+                self.visit(&entry.path(), &child_relative, &child_pruned);
             } else if file_type.is_file() {
-                self.classify(&entry, &child_relative);
+                self.classify(&entry, &child_relative, pruned_by);
             }
         }
     }
 
-    fn classify(&mut self, entry: &std::fs::DirEntry, relative: &Path) {
+    /// Which rules (plus the combined matcher) have pruned this directory or an ancestor of it.
+    /// Inherited downwards: a rule that prunes `a/` owns every file under `a/`, however deep.
+    fn pruned_at(&self, relative: &Path, parent: &Pruned) -> Pruned {
+        Pruned {
+            combined: parent.combined || !self.combined.allows_relative_directory(relative),
+            rules: self
+                .per_rule
+                .iter()
+                .zip(parent.rules.iter())
+                .map(|(options, already)| {
+                    *already
+                        || options
+                            .as_ref()
+                            .is_some_and(|o| !o.allows_relative_directory(relative))
+                })
+                .collect(),
+        }
+    }
+
+    fn classify(&mut self, entry: &std::fs::DirEntry, relative: &Path, pruned_by: &Pruned) {
         if !self.baseline.allows_relative_file(relative) {
             return;
         }
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        // A stat that fails is NOT a zero-byte file. Substituting one puts a fabricated number in a
+        // total the user is about to make a decision on, with nothing marking it as partial — so it
+        // raises the floor flag instead, which is what that flag is for.
+        let size = match entry.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(_) => {
+                self.report.unreadable_entries += 1;
+                0
+            }
+        };
         self.report.considered_files += 1;
 
-        if !self.combined.allows_relative_file(relative) {
+        if pruned_by.combined || !self.combined.allows_relative_file(relative) {
             self.report.total_files += 1;
             self.report.total_bytes = self.report.total_bytes.saturating_add(size);
         }
 
         let mut sole_match = None;
         let mut matches = 0u32;
-        for (index, options) in self.per_rule.iter().enumerate() {
-            let Some(options) = options else { continue };
-            if options.allows_relative_file(relative) {
+        for index in 0..self.per_rule.len() {
+            let hidden = pruned_by.rules[index]
+                || self.per_rule[index]
+                    .as_ref()
+                    .is_some_and(|options| !options.allows_relative_file(relative));
+            if !hidden {
                 continue;
             }
             matches += 1;
@@ -270,7 +343,11 @@ impl Walk<'_> {
             usage.files += 1;
             usage.bytes = usage.bytes.saturating_add(size);
             if usage.samples.len() < MAX_SAMPLES {
-                usage.samples.push(relative.to_path_buf());
+                // Lossy on purpose: samples are display-only, and `serde` REFUSES to serialize a
+                // non-UTF-8 `PathBuf`. One Latin-1-named file landing in one rule's first few
+                // matches would fail the whole reply, so every rule on the tab would lose its
+                // numbers over a filename none of them is about.
+                usage.samples.push(relative.to_string_lossy().into_owned());
             }
         }
         // Removing a rule only starts syncing the files no *other* rule still hides.
@@ -282,6 +359,21 @@ impl Walk<'_> {
     }
 }
 
+/// Whether the folder a rule is anchored at still exists — `None` when the rule anchors at no
+/// folder, or at one that is not inside the sync root.
+///
+/// **Path-safety boundary.** The prefix comes straight from user-typed pattern text, and `..`
+/// contains none of the glob metacharacters that stop the scan — `../../../etc/**` would otherwise
+/// have this function probing outside the sync folder and reporting the result as *"the folder
+/// still exists on this computer"*. The engine's own guard is the one that decides, per the
+/// project's rule that every externally supplied relative path is validated before it is joined
+/// onto a root.
+fn folder_exists_for(local_root: &Path, pattern: &str) -> Option<bool> {
+    let prefix = literal_folder_prefix(pattern)?;
+    let safe = proton_drive_sync_engine::validate_relative_path(&prefix)?;
+    Some(local_root.join(safe).is_dir())
+}
+
 /// The leading run of literal path components in a glob — the folder a rule is anchored at.
 ///
 /// `Exports/**` → `Exports`, `a/b/*.psd` → `a/b`, `*.psd` → `None`, `**/node_modules` → `None`.
@@ -289,20 +381,24 @@ impl Walk<'_> {
 /// simply does not make that claim.
 fn literal_folder_prefix(pattern: &str) -> Option<PathBuf> {
     let mut prefix = PathBuf::new();
+    // A pattern that is *entirely* literal names a single path, not a folder to check for absence:
+    // `notes/todo.txt` matching nothing means the file is gone, which the count already says. That
+    // is decided by STRUCTURE — did a glob component actually stop us — rather than by comparing
+    // lengths, which disagreed with itself on any spelling the rebuild normalises (`/a` loses its
+    // leading separator, `a//b` its empty component) and handed those a folder claim they had not
+    // earned.
+    let mut stopped_at_a_glob = false;
     for component in pattern.split('/') {
         if component.is_empty() {
             continue;
         }
         if component.contains(['*', '?', '[', ']', '{', '}']) {
+            stopped_at_a_glob = true;
             break;
         }
         prefix.push(component);
     }
-    // A pattern that is *entirely* literal names a single path, not a folder to check for absence:
-    // `notes/todo.txt` matching nothing means the file is gone, which the count already says.
-    if prefix.as_os_str().is_empty()
-        || prefix.as_os_str().len() == pattern.trim_end_matches('/').len()
-    {
+    if prefix.as_os_str().is_empty() || !stopped_at_a_glob {
         return None;
     }
     Some(prefix)
@@ -320,7 +416,7 @@ mod tests {
 
     fn measure_at(root: &Path, patterns: &[&str]) -> SkipRuleReport {
         let owned: Vec<String> = patterns.iter().map(|p| (*p).to_string()).collect();
-        measure(root, &owned, &[]).expect("valid globs")
+        measure(root, &owned, &[], &[]).expect("valid globs")
     }
 
     #[test]
@@ -481,6 +577,113 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_that_matches_a_directory_is_credited_with_everything_under_it() {
+        // `node_modules` — no trailing `/**` — matches the DIRECTORY and none of its descendants by
+        // name. The daemon stops at that directory and syncs nothing below it; a file-only
+        // classifier credits the rule with zero and the tab draws `Matching nothing · safe to
+        // remove` over a rule hiding the whole tree. The exact false all-clear this module exists
+        // to prevent, reached from the other direction.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "node_modules/pkg/index.js", 40);
+        write(dir.path(), "node_modules/pkg/deep/more.js", 60);
+        write(dir.path(), "src/app.js", 1);
+
+        let report = measure_at(dir.path(), &["node_modules"]);
+        assert_eq!(
+            report.rules[0].files, 2,
+            "everything under the pruned folder"
+        );
+        assert_eq!(report.rules[0].bytes, 100);
+        assert!(!report.rules[0].matches_nothing());
+        assert_eq!(report.total_files, 2, "and the header total agrees");
+        assert_eq!(report.total_bytes, 100);
+        assert_eq!(report.rules[0].unique_files, 2);
+    }
+
+    #[test]
+    fn a_pruned_subtree_is_attributed_however_deep_the_file_is() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a/b/c/d/e/f.bin", 9);
+        let report = measure_at(dir.path(), &["a"]);
+        assert_eq!(report.rules[0].files, 1);
+        assert_eq!(report.rules[0].bytes, 9);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_non_utf8_filename_does_not_take_the_whole_report_down_with_it() {
+        // `serde` refuses to serialize a non-UTF-8 `PathBuf`, so one Latin-1-named file landing in
+        // one rule's samples used to fail the entire reply — every rule on the tab losing its
+        // numbers over a filename none of them is about.
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("exports")).unwrap();
+        let odd = dir
+            .path()
+            .join("exports")
+            .join(std::ffi::OsStr::from_bytes(b"caf\xe9.tmp"));
+        std::fs::write(&odd, b"xx").unwrap();
+
+        let report = measure_at(dir.path(), &["**/*.tmp"]);
+        assert_eq!(
+            report.rules[0].files, 1,
+            "matched byte-wise, as the engine does"
+        );
+        assert_eq!(report.rules[0].samples.len(), 1);
+        serde_json::to_string(&report).expect("the reply must survive an odd filename");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_stat_ed_raises_the_floor_flag_instead_of_reading_as_empty() {
+        // Substituting a fabricated 0 puts an invented number in a total someone is deciding on,
+        // with nothing marking it as partial.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "scratch/a.bin", 5);
+        let report = measure_at(dir.path(), &["scratch/**"]);
+        assert_eq!(report.unreadable_entries, 0, "a clean tree reports none");
+        assert_eq!(report.rules[0].bytes, 5);
+    }
+
+    #[test]
+    fn include_globs_are_honoured_so_a_rule_is_not_credited_with_already_unsynced_files() {
+        // With `include = ["Documents/**"]`, `Photos/old.psd` is not syncing under any
+        // configuration — so `*.psd` is not what is hiding it, and removing that rule would not
+        // start syncing it. Counting it would make the removal-cost line a false promise.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Documents/plan.psd", 10);
+        write(dir.path(), "Photos/old.psd", 90);
+
+        let excludes = vec!["**/*.psd".to_string()];
+        let includes = vec!["Documents/**".to_string()];
+        let report = measure(dir.path(), &excludes, &includes, &[]).expect("valid globs");
+        assert_eq!(
+            report.rules[0].files, 1,
+            "only the file inside the include scope"
+        );
+        assert_eq!(report.rules[0].bytes, 10);
+        assert_eq!(report.considered_files, 1, "and the denominator agrees");
+    }
+
+    #[test]
+    fn a_rule_pointing_outside_the_sync_root_makes_no_claim_about_a_folder() {
+        // `..` carries none of the glob metacharacters that stop the prefix scan, so without the
+        // engine's own path guard the tab would probe `<root>/../../../etc` and report the answer
+        // as "the folder still exists on this computer".
+        let dir = tempfile::tempdir().unwrap();
+        let report = measure_at(dir.path(), &["../../../etc/**", "/Exports/**"]);
+        assert_eq!(
+            report.rules[0].folder_exists, None,
+            "an escaping prefix is not a folder in the sync root"
+        );
+        assert!(!report.rules[0].is_stale_folder());
+        assert_eq!(
+            report.rules[1].folder_exists,
+            Some(false),
+            "a leading slash is normalised away and the folder really is absent"
+        );
+    }
+
+    #[test]
     fn literal_folder_prefixes() {
         assert_eq!(
             literal_folder_prefix("Exports/**"),
@@ -497,6 +700,16 @@ mod tests {
             None,
             "a fully literal path names a file, not a folder to check"
         );
+        // Decided by STRUCTURE, not by comparing lengths: the rebuild normalises a leading
+        // separator away and drops empty components, so `/a` and `a//b` used to look shorter than
+        // their pattern and earn a folder claim they had not.
+        assert_eq!(literal_folder_prefix("/a"), None, "still fully literal");
+        assert_eq!(literal_folder_prefix("a//b"), None, "still fully literal");
+        assert_eq!(literal_folder_prefix("/a/*.psd"), Some(PathBuf::from("a")));
+        assert_eq!(
+            literal_folder_prefix("héllo/*.psd"),
+            Some(PathBuf::from("héllo"))
+        );
     }
 
     #[test]
@@ -510,7 +723,7 @@ mod tests {
         // A missing root cannot be canonicalized, so the walk records it instead of reporting an
         // empty, clean tree.
         let missing = dir.path().join("gone");
-        let report = measure(&missing, &["*.psd".to_string()], &[]).unwrap();
+        let report = measure(&missing, &["*.psd".to_string()], &[], &[]).unwrap();
         assert_eq!(report.unreadable_directories, 1);
         assert_eq!(report.considered_files, 0);
     }

@@ -68,11 +68,19 @@ export function lines(text) {
   return split;
 }
 
-/** Truncate a quoted line to [`MAX_QUOTE_CHARS`], marking the cut. */
+/**
+ * Truncate a quoted line to [`MAX_QUOTE_CHARS`], marking the cut.
+ *
+ * Cut on CODE POINTS, not UTF-16 units. `slice()` will happily split a surrogate pair, and the
+ * lone half renders as `�` — attributed, in a sentence that presents the quote as the file's own
+ * words, to the user's file. Any line whose 60th unit is the lead of an emoji or a non-BMP script
+ * hits it.
+ */
 export function quote(line) {
   const trimmed = line.trim();
-  if (trimmed.length <= MAX_QUOTE_CHARS) return trimmed;
-  return `${trimmed.slice(0, MAX_QUOTE_CHARS).trimEnd()}⋯`;
+  const points = Array.from(trimmed);
+  if (points.length <= MAX_QUOTE_CHARS) return trimmed;
+  return `${points.slice(0, MAX_QUOTE_CHARS).join("").trimEnd()}⋯`;
 }
 
 /**
@@ -112,38 +120,65 @@ export function compare(mineText, theirsText) {
 
   const ops = lcsOps(midMine, midTheirs);
 
-  // Walk the ops and pair a deletion immediately followed by an insertion (in either order) as ONE
-  // changed line. Without the pairing every edit reads as "removed a line and added a line", which
-  // is true and useless — the sentence the design wants is about a line that changed.
-  // "At the end" means **nothing the two files agree on comes after it** — the trimmed tail is
-  // empty and no `keep` op follows. Marking only the very last op instead would call the second of
-  // two appended lines an insertion in the middle, and the sentence would fall back over a file
-  // that had simply grown by two lines.
-  const tailAgrees = tail > 0;
-  const lastKeep = ops.reduce((last, op, i) => (op.kind === "keep" ? i : last), -1);
-  const isAtEnd = (i) => !tailAgrees && i > lastKeep;
-
+  // Pair removals with insertions BLOCK BY BLOCK, not one op at a time. Without the pairing every
+  // edit reads as "removed a line and added a line", which is true and useless — the sentence the
+  // design wants is about a line that *changed*.
+  //
+  // The block is the load-bearing part. `lcsOps` emits a contiguous edited region as k consecutive
+  // removals followed by k consecutive insertions, so a look-one-ahead pairing matches only the
+  // LAST removal with the FIRST insertion and orphans the rest: two lines edited in place came back
+  // as one changed line plus one line each side supposedly gained. That not only invents content —
+  // it slips under the `changed.length > 1` refusal, so the card confidently described a file it
+  // had misread. Consuming a maximal run and pairing `min(removals, insertions)` keeps the count
+  // honest, which is what the refusal is defending.
   const changed = [];
-  const onlyMine = [];
-  const onlyTheirs = [];
-  for (let i = 0; i < ops.length; i += 1) {
-    const op = ops[i];
-    const next = ops[i + 1];
-    if (op.kind === "remove" && next && next.kind === "insert") {
-      changed.push({ mine: op.line, theirs: next.line });
+  const onlyMineOps = [];
+  const onlyTheirsOps = [];
+  for (let i = 0; i < ops.length;) {
+    if (ops[i].kind === "keep") {
       i += 1;
-    } else if (op.kind === "insert" && next && next.kind === "remove") {
-      changed.push({ mine: next.line, theirs: op.line });
-      i += 1;
-    } else if (op.kind === "remove") {
-      onlyMine.push({ line: op.line, atEnd: isAtEnd(i) });
-    } else if (op.kind === "insert") {
-      onlyTheirs.push({ line: op.line, atEnd: isAtEnd(i) });
+      continue;
     }
+    const removals = [];
+    const insertions = [];
+    let end = i;
+    while (end < ops.length && ops[end].kind !== "keep") {
+      (ops[end].kind === "remove" ? removals : insertions).push({ line: ops[end].line, at: end });
+      end += 1;
+    }
+    const pairs = Math.min(removals.length, insertions.length);
+    for (let k = 0; k < pairs; k += 1) {
+      changed.push({ mine: removals[k].line, theirs: insertions[k].line });
+    }
+    onlyMineOps.push(...removals.slice(pairs));
+    onlyTheirsOps.push(...insertions.slice(pairs));
+    i = end;
   }
 
+  // "At the end" means **nothing else comes after it** — the trimmed tail is empty, and every op
+  // following this one is another extra on the same side. Keying on the last `keep` instead called
+  // a line inserted mid-file "at the end" whenever the edit *after* it was a change rather than an
+  // agreement, which is an ordinary shape: insert a line, then edit the last one.
+  const trailingRun = (owned) => {
+    const indices = new Set(owned.map((entry) => entry.at));
+    let boundary = ops.length;
+    while (boundary > 0 && indices.has(boundary - 1)) boundary -= 1;
+    return boundary;
+  };
+  const mark = (owned) => {
+    const from = tail > 0 ? ops.length : trailingRun(owned);
+    return owned.map((entry) => ({ line: entry.line, atEnd: entry.at >= from }));
+  };
+  const onlyMine = mark(onlyMineOps);
+  const onlyTheirs = mark(onlyTheirsOps);
+
   const identical = head + tail + ops.filter((op) => op.kind === "keep").length;
-  const differing = changed.length + onlyMine.length + onlyTheirs.length;
+  // Counted per FILE POSITION, not per side: a line dropped from one side and a different line
+  // appended to the other occupy one row each in the diff panel, and adding the two lists would
+  // make `N lines differ · M lines identical` sum to more lines than the longer file has. With the
+  // max, `differing + identical === max(mineLines, theirsLines)` — which is exactly the identity the
+  // drawn `2 lines differ · 3 lines identical` (a five-line file) asserts.
+  const differing = changed.length + Math.max(onlyMine.length, onlyTheirs.length);
   return {
     changed,
     onlyMine,
@@ -243,11 +278,31 @@ export function summariseSide(comparison, side) {
   if (ours.some((extra) => !extra.atEnd)) return null;
   if (changed.length === 0 && ours.length === 0) return null;
 
+  // `an extra line at the end` claims this side GAINED a line, and only the line counts can confirm
+  // that. LCS scores a moved line as a removal plus an insertion, so a file whose lines were merely
+  // reordered produces a trailing "extra" on one side while both files have the same length — and
+  // the card would report a line that was never added. Requiring the extras to equal the real gain
+  // refuses that, and every other shape where the two disagree.
+  const gain = Math.max(
+    0,
+    side === "mine"
+      ? comparison.mineLines - comparison.theirsLines
+      : comparison.theirsLines - comparison.mineLines,
+  );
+  if (ours.length !== gain) return null;
+
   // A changed line that is blank or only whitespace has nothing to put in the mono span, and
   // `Yours has  where Proton's has something else` is not a sentence. The headline and the
   // metadata row still stand; this one line goes.
   const quoted = changed.length === 1 ? quote(changed[0][side]) : null;
   if (changed.length === 1 && !quoted) return null;
+  // Trailing whitespace is a real per-line difference and an invisible one. Quoting both sides
+  // renders two cards saying `Yours has buy milk where Proton's has something else` and
+  // `Proton's has buy milk where yours has something else` — the same characters, each insisting
+  // the other is different. Nothing showable, so nothing said.
+  if (changed.length === 1 && quoted === quote(changed[0][side === "mine" ? "theirs" : "mine"])) {
+    return null;
+  }
 
   return {
     /** The changed line as THIS side has it — the content the card quotes in inline mono. */

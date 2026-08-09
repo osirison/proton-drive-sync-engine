@@ -1951,6 +1951,65 @@ Three smaller notes:
   `setup.sh` is about build dependencies, this is about a user-facing instruction — but worth knowing
   they exist.
 
+### 72a. Fourteen defects an adversarial review found, and where they lived
+
+Three reviewers over the C1–C5 commit produced 21 findings; a refutation pass (every finding handed
+to a second agent told to break it, with a real checkout to execute against) killed 7. **Zero of the
+fourteen survivors were reachable by any gate**, for the same reason S1's nine weren't: the fidelity
+and copy gates compare a rendering to a drawing, and none of this code renders anything yet.
+
+They cluster, and the clusters are the lesson:
+
+**Two matchers, one question.** `skip_rules` asked every rule a *file-shaped* question, so a rule
+that matches a **directory** and not its descendants — bare `node_modules`, `a/b`, `*/dir` — was
+credited with zero while the daemon pruned the whole subtree. The tab would have drawn `Matching
+nothing` and `One rule removed — 0 files will start syncing` immediately before deleting that rule
+uploaded a `node_modules`. The module's own doc-comment describes exactly this failure and the test
+that guards it uses `scratch/**`, whose `**` happens to match descendants — so the test passed and
+the shape it was written for did not. Rules now carry `allows_relative_directory` down the recursion.
+
+**Serialization is a boundary too.** `samples: Vec<PathBuf>` cannot serialize a non-UTF-8 path at
+all, so one Latin-1-named file in one rule's first four matches failed the whole reply — every rule
+on the tab losing its numbers over a filename none of them is about. Samples are display-only and
+are now lossy `String`s.
+
+**"No" has more than one meaning.** `skip_rule_usage` guarded "root not configured" and not "root
+not *there*" — an unmounted external drive returned zero for every rule with `folder_exists: false`,
+which is precisely `safe to remove`, on every rule at once. `distro::detect_here` conflated "no such
+file" with "this file names something we have no command for", so a machine that overrode
+`/etc/os-release` got the base package's `/usr/lib` answer contradicting it.
+
+**A diff algorithm's shape is not its meaning.** `lcsOps` emits an edited block as *k* removals then
+*k* insertions; pairing one op ahead matched the last removal with the first insertion and orphaned
+the rest, turning two lines edited in place into one changed line plus a line each side had gained
+— and slipping under the `changed.length > 1` refusal, so the card confidently described a file it
+had misread. Related: a reordered file looked like a gain (LCS scores a move as remove + insert), an
+extra line before a changed one was called "at the end", `differing + identical` could exceed the
+file's own length, a whitespace-only difference rendered two identical quotes each insisting the
+other was different, and `slice()` cut surrogate pairs in half. Each is now a refusal or a fix with a
+named regression test.
+
+**Null is a shape, not an error.** `versionDiff(side, null)` threw — and `summariseSide` returns null
+for the *most common* real conflict, a multi-line edit. `diffSummary(0)` rendered `zero lines
+differ.` Both now answer `null`, so a caller's `if (sentence)` is the documented fallback.
+
+Three of the seven refutations were of the form *"unreachable — nothing calls it yet"*. That is
+true and is not a reason to leave it: the caller is S2 and S6, and this is the commit that decides
+what they find. They were fixed anyway.
+
+Two Copilot findings landed in the same pass and were real (`check_cli` requiring exit-zero while
+its own doc said *presence*; an off-by-`n+m` cell cap). A third — that `Option::as_slice` does not
+compile — was answered rather than applied.
+
+### 72b. C1 is wired, not just written
+
+The review's sharpest process finding: `DeletionPolicy` had no caller outside its own tests.
+`ConfigPayload` returned the two raw booleans and `ConfigUpdate` accepted them, so the four-state
+guarantee — including the undrawn `OnlyRecoverable` and the `absent means true` defaulting — was
+unenforceable from the UI, and S6 would have re-derived it in JavaScript. Both structs now carry
+`deletion_policy` alongside the raw pair: the pair is what the config text shows, the policy is what
+a radio group binds to, and the defaulting lives in one place.
+
 ## 73. C6 is not in this PR
 
 `IMPLEMENTATION-PLAN.md`'s suggested order reads `S1 → C1–C5 → S2 …`, omitting C6, and the omission

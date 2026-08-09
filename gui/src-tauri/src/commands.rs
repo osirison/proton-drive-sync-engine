@@ -203,6 +203,14 @@ pub struct ConfigPayload {
     proton_list_attempts: Option<i64>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
+    /// The same two booleans as the Settings → Deletions radio (C1, #174).
+    ///
+    /// Carried **alongside** them, not instead of them: the raw pair is what the Advanced view and
+    /// the config text show, while the policy is what a radio group can bind to. Deriving it in the
+    /// frontend instead would be a second place that has to know an absent key means `true` — and
+    /// that defaulting is precisely what stops an empty config drawing as `Never ask` on a machine
+    /// that is in fact asking about everything.
+    deletion_policy: config_io::DeletionPolicy,
 }
 
 #[tauri::command]
@@ -225,6 +233,7 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
         proton_list_attempts: doc.get_int("proton_list_attempts"),
         delete_approval_remote: doc.get_delete_approval("remote"),
         delete_approval_local: doc.get_delete_approval("local"),
+        deletion_policy: doc.get_deletion_policy(),
     })
 }
 
@@ -243,6 +252,9 @@ pub struct ConfigUpdate {
     proton_list_attempts: Option<i64>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
+    /// Applied AFTER the two raw booleans, so a screen that sends both cannot end up half-written:
+    /// the policy always sets both directions, which is what makes a radio selection unambiguous.
+    deletion_policy: Option<config_io::DeletionPolicy>,
 }
 
 #[tauri::command]
@@ -281,6 +293,9 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     }
     if let Some(v) = update.delete_approval_local {
         doc.set_delete_approval("local", v);
+    }
+    if let Some(v) = update.deletion_policy {
+        doc.set_deletion_policy(v);
     }
     doc.save(&path).map_err(|e| e.to_string())?;
     // Re-resolve in case local_root / socket / db changed, but keep the daemon-reported live
@@ -736,6 +751,12 @@ pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
 fn probe_cli(proton_cli: &str) -> bool {
     let mut child = match Command::new(proton_cli)
         .arg("--version")
+        // **stdin is nulled, not inherited.** `Command::status()`/`spawn()` inherit stdin by
+        // default, while every other subprocess here uses `.output()` (which pipes it) — so this
+        // was the one place a CLI that reads stdin before exiting could block on the GUI's own
+        // terminal, forever, with no keyboard attached to answer it. Null makes that an immediate
+        // EOF.
+        .stdin(std::process::Stdio::null())
         // Null rather than inherited, so a chatty CLI can neither fill a pipe nobody drains nor
         // print into the GUI's own stdout.
         .stdout(std::process::Stdio::null())
@@ -772,20 +793,60 @@ fn probe_cli(proton_cli: &str) -> bool {
 pub async fn skip_rule_usage(
     app: tauri::AppHandle,
     patterns: Vec<String>,
+    include: Option<Vec<String>>,
 ) -> Result<gui_core::skip_rules::SkipRuleReport, String> {
     let (local_root, db_path) = {
         let paths = app.state::<Mutex<RuntimePaths>>();
         let paths = paths.lock().unwrap();
         (paths.effective_local_root(), paths.effective_db_path())
     };
-    // Not zeros: "these rules hide nothing" and "there is no folder to look in" are different
-    // answers, and only one of them makes a rule safe to remove.
+    // Two different "no" answers, and only one of them makes a rule safe to remove.
+    //
+    // `is not configured` is the easy one. The dangerous one is a root that IS configured and is
+    // not there — an unmounted external drive, a literal `~/ProtonDrive` because `HOME` was unset,
+    // a folder the user moved. `measure` would happily walk nothing, and every rule would come back
+    // `files: 0` with `folder_exists: Some(false)`, which the tab draws as **`Matching nothing · no
+    // such folder here any more — safe to remove`** on every rule at once. Removing them would then
+    // start syncing everything they were hiding, the moment the drive came back.
     let local_root = local_root.ok_or_else(|| "local_root is not configured".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        gui_core::skip_rules::measure(&local_root, &patterns, db_path.as_slice())
+        if !local_root.is_dir() {
+            return Err(format!(
+                "the sync folder {} is not there right now",
+                local_root.display()
+            ));
+        }
+        gui_core::skip_rules::measure(
+            &local_root,
+            &patterns,
+            &include.unwrap_or_default(),
+            &daemon_ignored_paths(db_path.as_ref()),
+        )
     })
     .await
     .map_err(|error| format!("skip-rule scan failed: {error}"))?
+}
+
+/// The state files the daemon keeps out of its own scan, so a relocated index inside the sync root
+/// is not reported as user data some rule is hiding.
+///
+/// Mirrors `scan_options_from_config`: the index plus its two JSON sidecars. (`ScanOptions::new`
+/// expands SQLite's own `-journal`/`-wal`/`-shm` siblings, and a top-level `.sync/` and the download
+/// scratch directory are handled by `should_ignore_path`, so this is the remainder.)
+fn daemon_ignored_paths(db_path: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let Some(db_path) = db_path else {
+        return Vec::new();
+    };
+    let sidecar = |suffix: &str| {
+        let mut name = db_path.as_os_str().to_os_string();
+        name.push(suffix);
+        std::path::PathBuf::from(name)
+    };
+    vec![
+        db_path.clone(),
+        sidecar(".status.json"),
+        sidecar(".metrics.json"),
+    ]
 }
 
 /// `Ctrl W` — hide the window to the tray. Deliberately the SAME path as the tray's

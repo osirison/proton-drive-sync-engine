@@ -175,11 +175,19 @@ pub fn detect(os_release_path: &Path) -> Option<Distro> {
 /// says shipping packages should install — a stateless system has only the latter.
 pub const OS_RELEASE_PATHS: [&str; 2] = ["/etc/os-release", "/usr/lib/os-release"];
 
-/// Identify this machine, trying each of [`OS_RELEASE_PATHS`] in order.
+/// Identify this machine from the first of [`OS_RELEASE_PATHS`] that can be read.
+///
+/// **Select the file, then parse it — never fall through on a parse result.** `detect` answers
+/// `None` both for "no such file" and for "this file names a distribution we have no command for",
+/// and a `find_map` over the two paths cannot tell them apart. On a machine whose `/etc/os-release`
+/// says `ID=mydistro` while the base package's `/usr/lib/os-release` still says `ID=debian`, that
+/// would report Debian — reading a file the machine had explicitly overridden, to contradict it.
 pub fn detect_here() -> Option<Distro> {
     OS_RELEASE_PATHS
         .iter()
-        .find_map(|path| detect(Path::new(path)))
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .as_deref()
+        .and_then(parse_os_release)
 }
 
 #[cfg(test)]
