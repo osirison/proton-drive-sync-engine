@@ -180,7 +180,12 @@ export const CONFLICTS = {
    */
   kindText: "a plain text file",
   kindBinary: "a file this app can't read",
-  kindFolder: "a folder here, a file on Proton Drive",
+  // `a folder here, a file on Proton Drive` until the queue list was measured — a sentence I wrote
+  // from the prose in `04-conflicts.md` rather than off a frame, which is exactly what the copy
+  // gate suspected when it refused it as undrawn. It IS drawn: `3a Conflict diff`'s third queue row
+  // reads `photos/trip · a folder here, a file there · 3 of 3`. The short form is also the better
+  // one — the row already says which side is which by sitting in this app.
+  kindFolder: "a folder here, a file there",
 
   /** The metadata row's other two items. Both are counted off the pair, so both take their number. */
   lineCount: (n) => `${count(n)} ${plural(n, "line", "lines")}`,

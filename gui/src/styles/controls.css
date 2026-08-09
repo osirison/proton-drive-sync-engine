@@ -35,7 +35,10 @@
   white-space: nowrap;
   color: var(--btn-fg);
   background: var(--btn-bg);
-  border: 1px solid var(--btn-border);
+  /* `solid` for all but one kind. `primaryChoice` in LIGHT has no border at all — not a transparent
+     one — and the difference is visible: `none` computes a 0px width, which inside a border-box
+     hands 2px back to the content and is exactly the 281.33 → 283.33 the two frames measure. */
+  border: 1px var(--btn-border-style, solid) var(--btn-border);
   transition:
     background var(--t-press) var(--ease),
     border-color var(--t-press) var(--ease);
@@ -73,8 +76,50 @@
   display: block;
   font-size: 11.5px;
   font-weight: 400;
-  color: var(--btn-primary-quiet-text);
+  color: var(--btn-sub-fg, var(--btn-primary-quiet-text));
   margin-top: 3px;
+}
+
+/* ---- the choice button (`3a Conflict`) ----
+   Three of them, side by side, each a glyphed row over a consequence sentence. The element paints
+   no text — see KIND.decisionChoice — so every colour below lands on a span, and the element keeps
+   the UA's own button colour in both themes.
+
+   `text-align` is here rather than in `.btn` because a button's UA default is `center` and every
+   other button in the app wants it. This is the only left-aligned one. */
+.btn-choice {
+  text-align: left;
+}
+.btn-choice-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.btn-glyph {
+  font-size: 12px;
+  color: var(--btn-glyph-fg);
+}
+.btn-choice-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--btn-label-fg);
+}
+/* Taller and looser than the `.btn-sub` above it, and the ONE sub-label allowed to wrap: `.btn`
+   sets `nowrap` for every other button, and this sentence is drawn on two lines in all six frames
+   that carry it. */
+.btn-choice-sub {
+  font-size: 12px;
+  line-height: 18px;
+  margin-top: 6px;
+  white-space: normal;
+}
+/* The sidecar filename inside `Keep both`'s sentence — the design puts every path in mono, and this
+   one sits INSIDE prose, so it steps down a half-size rather than matching the sentence around it. */
+.btn-choice-sub code,
+.btn-choice-sub .mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16.5px;
 }
 
 /* NO focus rule for buttons, inputs, toggles or radio cards: base.css already applies the 2px ring

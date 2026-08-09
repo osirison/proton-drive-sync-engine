@@ -262,9 +262,9 @@ function choices({ conflict, onChoose, onLater }) {
     make("keep_mine", "decisionChoice", CONFLICTS.keepMine, CONFLICTS.keepMineSub, "→", "up"),
     make(
       "keep_both",
-      "primary",
+      "primaryChoice",
       CONFLICTS.keepBoth,
-      CONFLICTS.keepBothSub(sidecarName(conflict)),
+      monoInProse(CONFLICTS.keepBothSub(sidecarName(conflict)), sidecarName(conflict)),
       "⇄",
       "onPrimary",
     ),
@@ -285,6 +285,23 @@ function choices({ conflict, onChoose, onLater }) {
     }),
   );
   return el("div", { class: "cf-choices-block" }, grid, note);
+}
+
+/**
+ * Lift one substring of a sentence into mono, without the copy deck learning about markup.
+ *
+ * `keepBothSub` stays a flat sentence because that is what the copy gate compares — the whole
+ * string, against the frame's own text. The FRAME, though, draws `todo.proton-cloud.txt` in
+ * 11px IBM Plex Mono inside a 12px sans sentence, so the DOM needs a span the copy does not carry.
+ * Splitting here keeps the grammar in one place; the same trade `proseWithQuote` makes above, and
+ * the same `indexOf` rather than a regex, because a filename can contain anything.
+ *
+ * Returns an array, which `el` flattens — so a sentence whose name is missing renders as itself.
+ */
+function monoInProse(sentence, name) {
+  const at = name ? sentence.indexOf(name) : -1;
+  if (at < 0) return [sentence];
+  return [sentence.slice(0, at), el("span", { class: "mono" }, name), sentence.slice(at + name.length)];
 }
 
 /** The sidecar's own file name, which `keepBothSub` quotes back to the user. */
@@ -327,7 +344,9 @@ function diffBody({ pair, comparison, queue, index, onHideDiff, onOpenBoth }) {
     for (const row of rows) cell.append(diffLine(row, side));
     return cell;
   };
-  panel.append(column("mine"), el("div", { class: "cf-diff-gutter" }), column("theirs"));
+  // The 1px column between the halves — `split` rather than `gutter`, which in a diff means the
+  // line-number channel (`.cf-diff-n`) and would name two different things one word apart.
+  panel.append(column("mine"), el("div", { class: "cf-diff-split" }), column("theirs"));
 
   const labels = el(
     "div",

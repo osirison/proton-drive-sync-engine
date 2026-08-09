@@ -241,6 +241,51 @@
   --btn-destructive-text: #fff;
   --btn-destructive-disabled-text: #8a5a5a;
 
+  /* A BUTTON THAT PAINTS NOTHING ITSELF. `3a Conflict`'s three choice buttons put every string in
+     a span with its own colour — glyph, label, consequence — so the element keeps the UA's own
+     button colour and no text ever inherits it. Measured `rgb(0, 0, 0)` on `3a Conflict` and again
+     on `12a Conflict light`: theme-invariant, because it is never seen.
+
+     It is a token rather than the literal it looks like, for two reasons. check-tokens.mjs allows
+     no raw colour outside this file, and a `revert` would not do it — the app declares
+     `color-scheme: dark`, which moves the UA's `buttontext` off black, while the prototype declares
+     none. Named for the reason rather than the value: anything that starts painting text with it
+     has misread the structure. */
+  --btn-unpainted: #000000;
+  /* `Keep both` — the safe choice, and the only primary that is not a footer bar button. ITS TWO
+     THEMES DISAGREE ABOUT WHETHER THERE IS A BORDER AT ALL, the same shape of finding as
+     --btn-secondary-outline-bg above: dark draws a 1px --border-strong edge, light draws none.
+     Not a rounding artefact — the inner label row measures 281.33px dark against 283.33px light,
+     exactly the 2px a border takes out of a border-box.
+
+     The light COLOUR is the unpainted currentColor rather than a hue, because with no border-style
+     there is nothing to paint and the frame records black. Giving it --border-strong would compute
+     #E0DCD5 against a frame that says rgb(0, 0, 0), and fail on a border nobody draws. */
+  --btn-primary-choice-border: #2e323a;
+  --btn-primary-choice-border-style: solid;
+
+  /* ---- the side-by-side diff (`3a Conflict diff`) ----
+     The two changed-line tints are --up-from and --down-from at .14 — the gradient START stops, not
+     the --up-label/--down-label accents the gutter numerals use. Both are the only .14 surface in
+     the design.
+
+     BOTH LIGHT TINTS ARE CHOSEN, not measured: `12a Conflict light` mirrors the CARD view, so no
+     frame draws this panel in light. Derived by §54's method — the nearest same-family drawn pair
+     is the warn band (--warn/#FF9F1C darkening to #B23F14, .04 → .03, x0.75), and the background
+     column as a whole centres on x0.7; .14 maps to .105 and .098, which agree at .10. DEVIATIONS
+     §74. S10 confirms.
+
+     The three greys are role twins of tokens that already carry these values (--seam, --text-disabled,
+     --border-strong) and take their light values from them. Same-value-different-name is this file's
+     stated doctrine — a diff gutter is not a disabled control glyph, and either must be free to move
+     without dragging the other. The absent-line TEXT is the exception: it reuses
+     --btn-primary-quiet-text, whose comment already names this exact site. */
+  --diff-mine-bg: rgba(229, 91, 43, 0.14);
+  --diff-theirs-bg: rgba(6, 182, 212, 0.14);
+  --diff-divider: #2a2e36;
+  --diff-gutter: #4e5661;
+  --diff-gutter-absent: #2e323a;
+
   /* ---- the hexagon (01-foundations.md §6). Five states, no sixth. ---- */
   --hex-settled-track: #2e323a;
   --hex-settled-check: #e8ebf0;
@@ -370,6 +415,17 @@
     --btn-destructive-bg: #dc2626;
     --btn-destructive-text: #fff;
     --btn-destructive-disabled-text: #c08a8a;
+    /* Measured black here too, on `12a Conflict light` — the element is unpainted in both themes. */
+    --btn-unpainted: #000000;
+    --btn-primary-choice-border: #000000;
+    --btn-primary-choice-border-style: none;
+
+    /* CHOSEN, not drawn — no light frame carries the diff panel. See the dark block. */
+    --diff-mine-bg: rgba(178, 63, 20, 0.1);
+    --diff-theirs-bg: rgba(14, 116, 144, 0.1);
+    --diff-divider: #d9d5ce;
+    --diff-gutter: #b9bec6;
+    --diff-gutter-absent: #e0dcd5;
 
     --hex-settled-track: #c7cbd2;
     --hex-settled-check: #14161a;
@@ -485,6 +541,17 @@
   --btn-destructive-bg: #dc2626;
   --btn-destructive-text: #fff;
   --btn-destructive-disabled-text: #c08a8a;
+  /* Measured black here too, on `12a Conflict light` — the element is unpainted in both themes. */
+  --btn-unpainted: #000000;
+  --btn-primary-choice-border: #000000;
+  --btn-primary-choice-border-style: none;
+
+  /* CHOSEN, not drawn — no light frame carries the diff panel. See the dark block. */
+  --diff-mine-bg: rgba(178, 63, 20, 0.1);
+  --diff-theirs-bg: rgba(14, 116, 144, 0.1);
+  --diff-divider: #d9d5ce;
+  --diff-gutter: #b9bec6;
+  --diff-gutter-absent: #e0dcd5;
 
   --hex-settled-track: #c7cbd2;
   --hex-settled-check: #14161a;

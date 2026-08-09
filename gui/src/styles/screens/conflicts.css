@@ -1,0 +1,422 @@
+/*
+ * The conflicts screen (S2). `04-conflicts.md`, with every number read off `3a Conflict`,
+ * `3a Conflict diff` and `3a Conflicts cleared` rather than the prose.
+ *
+ * THREE BODIES, ONE SCREEN. The card view and the diff view share a title block, a pager and the
+ * 32px gutter; they differ in what sits between. The cleared state shares neither — it is a 522px
+ * window, so it is the one body that does not assume the 1040 layout (see the bottom of this file).
+ *
+ * THE SEAM RUNS THROUGH THE CARD VIEW AND NOT THE DIFF. `3a Conflict` puts the file's mark ON the
+ * centre hairline with the two versions either side of it, which is the screen's whole argument:
+ * this is one file with two histories, not two files. The diff view drops the seam because the
+ * panel's own 1px divider already is one, and two hairlines 12px apart read as a rendering fault.
+ *
+ * WHY SO MANY WIDTHS ARE `1fr` AND NOT THE MEASURED PIXELS. The frames record computed values —
+ * `488px 488px` for the cards, `486.5px 1px 486.5px` for the diff panel, three columns of 317.33px
+ * for the choices. Each is what `1fr` resolves to inside a 976px gutter, so the fraction is both the
+ * intent and the measurement; hard-coding the pixels would pass the gate and break the first time
+ * the window is not 1040 wide.
+ */
+
+/* --------------------------------------------------------------------- the title block ---- */
+
+/* `align-items: flex-end` is what keeps `1 of 3` sitting on the sub-line's baseline rather than the
+   headline's — the pager is 34px tall against a 55px text block, and centring it looks like a
+   mistake nobody can name. */
+.cf-title-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  padding: 6px 32px 0;
+}
+
+.cf-title {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.65px;
+  color: var(--text);
+}
+
+.cf-sub {
+  margin-top: 7px;
+  font-size: 13.5px;
+  color: var(--text-4);
+}
+
+.cf-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cf-position {
+  font-size: 11.5px;
+  color: var(--text-4);
+}
+
+/* ---------------------------------------------------------------------------- the body ---- */
+
+/* `position: relative` is load-bearing and not layout hygiene: the seam is an absolutely positioned
+   1px child, and without a containing block it would measure itself against the window. */
+.cf-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 0 32px;
+  position: relative;
+}
+
+/* The text block takes the row's slack in both headers, which is what pins the pager right. The
+   frames measure it at 842.59px in the card view and 796.59px in the diff — two numbers that are
+   the same rule seen through two different sets of siblings. */
+.cf-title-text,
+.cf-diff-headtext {
+  flex: 1;
+  min-width: 0;
+}
+
+/* -------------------------------------------------------------- the file, on the seam ---- */
+
+.cf-onseam {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+/* THE TWO MASKS. Both lines carry the window's own background so the hairline behind them stops
+   dead at the text and picks up after it — the seam is drawn UNDER this block, not around it, which
+   is why an opaque fill is the whole mechanism. The horizontal padding is the size of the gap. */
+.cf-path {
+  margin-top: 12px;
+  padding: 0 14px;
+  background: var(--surface);
+  font-size: 15px;
+  color: var(--text);
+}
+
+.cf-onseam-meta {
+  margin-top: 5px;
+  padding: 2px 14px;
+  background: var(--surface);
+  font-size: 11.5px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------- the version cards ---- */
+
+/* 30px of padding on the INNER edge of each column rather than a grid gap, so the two cards clear
+   the seam by 30px while their outer edges still reach the 32px gutter. A `gap: 60px` would look
+   identical and measure differently — the columns would be 458px, and the eyebrow above each card
+   would stop short of the gutter. */
+.cf-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 26px;
+}
+
+.cf-cards > :first-child {
+  padding-right: 30px;
+}
+
+.cf-cards > :last-child {
+  padding-left: 30px;
+}
+
+.cf-card {
+  margin-top: 11px;
+  padding: 16px 18px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-13);
+}
+
+.cf-card-happened {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 20.15px is 1.55 × 13px, and it is recorded rather than chosen — the frames carry the computed
+   number because the prototype sets a unitless ratio. Written as the ratio here so the line does
+   not have to be recomputed if the size ever moves. */
+.cf-card-prose {
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+/* File content quoted inside a sentence — `buy milk`, `buy oat milk`. A HALF-SIZE step down, not a
+   mono face: this is the user's own words being read back, and the design keeps mono for paths and
+   machine strings. The 1.55 ratio rides down with it, which is what makes the quoted run sit on the
+   same baseline as the prose around it. */
+.cf-quote {
+  font-size: 12px;
+  color: var(--text-bright);
+}
+
+.cf-card-meta {
+  display: flex;
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------ the diff disclosure ---- */
+
+/* The button's own fill masks the seam behind it, the same trick the two on-seam lines use — set as
+   `--btn-bg` from conflicts.js so `:hover` survives; see the note there. */
+.cf-disclose {
+  margin-top: 22px;
+  position: relative;
+}
+
+/* ----------------------------------------------------------------------- the choices ---- */
+
+.cf-choices-block {
+  padding: 0 32px 16px;
+}
+
+.cf-choices {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.cf-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 11px;
+  font-size: 12px;
+  color: var(--text-5);
+}
+
+.cf-spacer {
+  flex: 1;
+}
+
+/* ---------------------------------------------------------------------- the diff view ---- */
+
+.cf-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 32px 0;
+}
+
+.cf-path-plain {
+  font-size: 15px;
+  color: var(--text);
+}
+
+.cf-diff-summary {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--text-4);
+}
+
+/* A flex column so the queue below can claim the leftover space with `margin-top: auto`. Without
+   this the queue sits directly under the counts row and the bottom of the window is empty. */
+.cf-diff-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* No gap: the two eyebrows sit over two columns that themselves have none, and the panel's divider
+   is what separates them. */
+.cf-diff-labels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  margin-bottom: 9px;
+}
+
+/* `overflow: hidden` is what makes the 13px radius cut the two columns' fills — a changed line's
+   tint reaches the panel edge, and without the clip it squares off the corner it lands in. */
+.cf-diff-panel {
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr;
+  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-13);
+  overflow: hidden;
+}
+
+.cf-diff-col {
+  padding: 12px 0;
+}
+
+.cf-diff-split {
+  background: var(--diff-divider);
+}
+
+.cf-diff-line {
+  display: flex;
+  gap: 12px;
+  padding: 3px 16px;
+}
+
+/* THE TWO TINTS ARE THE ONLY COLOUR IN THE PANEL, and they are the gradient START stops rather than
+   the label accents the numerals use — warm for what is leaving this computer, cool for what is
+   arriving. Neither is drawn in light; see the tokens for how those values were derived. */
+.cf-diff-line.is-changed-mine {
+  background: var(--diff-mine-bg);
+}
+
+.cf-diff-line.is-changed-theirs {
+  background: var(--diff-theirs-bg);
+}
+
+/* A FIXED 16px, right-aligned. The gutter must not resize between line 9 and line 10 — a diff whose
+   text shifts a pixel at the tens boundary reads as a rendering fault, and the frames draw the
+   column at 16px wide for a five-line file. */
+.cf-diff-n {
+  flex: none;
+  width: 16px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--diff-gutter);
+}
+
+.is-changed-mine .cf-diff-n {
+  color: var(--up-label);
+}
+
+.is-changed-theirs .cf-diff-n {
+  color: var(--down-label);
+}
+
+.cf-diff-text {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+/* A changed line's text steps UP to full brightness while an unchanged one stays at --text-3. The
+   tint alone would not carry it: .14 over a near-black panel is a hint, and the design leans on the
+   text tier to say which lines the reader is actually being asked about. */
+.is-changed-mine .cf-diff-text,
+.is-changed-theirs .cf-diff-text {
+  color: var(--text);
+}
+
+/* `· not in your version` — a line the OTHER side has and this one does not. Dimmer than any real
+   line in the panel, because it stands for the absence of one. --btn-primary-quiet-text is not a
+   borrowed token: its own comment names this site. */
+.cf-diff-n-absent {
+  color: var(--diff-gutter-absent);
+}
+
+.cf-diff-text-absent {
+  color: var(--btn-primary-quiet-text);
+}
+
+.cf-diff-counts {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* ---------------------------------------------------------------------- the queue list ---- */
+
+/* `margin-top: auto` and not the 293px the frame records. The queue is pinned to the BOTTOM of the
+   body, and 293px is only what that resolved to for a five-line diff — a longer file would push it
+   off the window. The measurement is the consequence of the rule, not the rule. */
+.cf-queue {
+  margin-top: auto;
+  padding-top: 14px;
+}
+
+.cf-queue-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cf-queue-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 2px;
+  border-top: 1px solid var(--divider);
+}
+
+/* The path takes the row's slack so the reason and the position stay pinned right — and TRUNCATES
+   rather than wrapping, because a two-line queue row breaks the 33px rhythm the whole list is. */
+.cf-queue-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.cf-queue-reason {
+  font-size: 12px;
+  color: var(--text-4);
+}
+
+.cf-queue-pos {
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------- the cleared state ---- */
+
+/* THE ONE BODY THAT IS NOT 1040 WIDE. `3a Conflicts cleared` is a 522px window: nothing is waiting,
+   so the screen has no two columns to hold apart and shrinks to the size of its own sentence. The
+   rules below therefore centre in whatever width they are given rather than assuming either. */
+.cf-cleared {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The 520px the frame's window gives its body, held as a column inside a window that cannot be
+   520px wide. Everything below measures against THIS, not the 1040 around it, so the sentence wraps
+   where it is drawn to wrap. */
+.cf-cleared-inner {
+  width: 520px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 40px 40px;
+}
+
+.cf-cleared .btn {
+  margin-top: 22px;
+}
+
+.cf-cleared-title {
+  margin-top: 24px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.55px;
+  color: var(--text);
+}
+
+/* 300px, and the width is the point: the sentence is three counts long and wraps to two lines at
+   this measure in every frame that draws it. Left to fill 442px it sets as one long line and the
+   block stops reading as a paragraph under a mark. */
+.cf-cleared-sub {
+  margin-top: 10px;
+  width: 300px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-4);
+  text-align: center;
+}
