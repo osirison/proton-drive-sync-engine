@@ -1789,14 +1789,22 @@ is why it does not reuse `index::scan_local_files_with_options`. Consequences wo
 
 - **The walk is not the daemon's walk.** The daemon's scan prunes an excluded directory, so it never
   sees inside `video-raw/**`; this one must, or every directory rule would report zero. Traversal is
-  decided by a *baseline* `ScanOptions` with no rules, and only the files are classified. The engine
-  still owns every question about what counts (`should_ignore_path`, `.sync/`, the download scratch,
-  glob semantics, non-UTF-8 keys) — none of it is reimplemented here.
+  decided by a *baseline* `ScanOptions` carrying the config's includes but **none** of its excludes.
+  The engine still owns every question about what counts (`should_ignore_path`, `.sync/`, the
+  download scratch, glob semantics, non-UTF-8 keys) — none of it is reimplemented here.
+- **A rule that prunes a directory owns everything under it.** A pattern can match a folder without
+  matching any of its descendants by name (`node_modules`, `a/b`, `*/dir`), and the daemon stops at
+  the folder. So each rule is asked `allows_relative_directory` on the way down and that answer is
+  inherited, however deep. Classifying files alone reported zero for exactly those rules — see §72a.
 - **An unreadable directory is skipped and counted, not fatal.** The engine's own scanner hard-fails
   there; one root-owned directory blanking the whole tab would be worse than a floor plus
-  `unreadable_directories`.
-- **Include globs are not applied.** A file can be unsynced for failing an `include` list rather than
-  for matching a skip rule, and the tab lists only excludes.
+  `unreadable_directories`/`unreadable_entries`.
+- **Include globs ARE applied, and belong in the baseline.** A file outside the include list is
+  already not syncing, so no skip rule is what hides it — crediting a rule with it would make
+  `One rule removed — N files will start syncing` promise files that would not. The tab still lists
+  only excludes; the includes are the Advanced tab's, and `skip_rule_usage` takes them so the two
+  cannot describe different rulesets. (Omitting the argument does not fail, it silently widens every
+  count — which is why the command's doc says so.)
 
 ### 69a. The fixture's byte discriminator does not survive real data
 
