@@ -40,6 +40,13 @@
 }
 
 /* Sized to the mark exactly: any padding here would move the header's 12px gaps. */
+/* A BUTTON THAT MUST NOT LOOK LIKE ONE. The mark is bare on every frame; F4 wraps it in a button so
+   it can be a home affordance, and three UA button defaults then land on the `<img>` inside it —
+   `font-size: 13.3333px`, `text-align: center`, and a `color` of `buttontext`, which under the
+   app's `color-scheme: dark` is WHITE where the frame inherits #F2F4F7. None of them is visible on
+   an image, and all three are compared: the first mapped overlay screen (S2) found them on all
+   three of its frames at once. Inherited rather than restated, so the header stays the one place
+   that decides. */
 .app-home {
   flex: none;
   width: 20px;
@@ -49,6 +56,9 @@
   background: none;
   cursor: pointer;
   display: block;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
 }
 
 .app-name {

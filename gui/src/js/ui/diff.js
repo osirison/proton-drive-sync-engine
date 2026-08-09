@@ -77,7 +77,13 @@ export function lines(text) {
  * hits it.
  */
 export function quote(line) {
-  const trimmed = line.trim();
+  // THE LIST MARKER IS NOT PART OF THE QUOTE. `3a Conflict` quotes `buy milk` out of a line that
+  // reads `- buy milk`, and the sentence around it is why: "Yours has - buy milk where Proton's has
+  // something else" reads as a typo rather than as a quotation. Stripped for the three markers a
+  // plain-text list actually uses, and deliberately not for `1.` — a numbered item's number is
+  // content the reader may be pointing at, and dropping it could quote two different lines
+  // identically.
+  const trimmed = line.trim().replace(/^[-*+]\s+/, "");
   const points = Array.from(trimmed);
   if (points.length <= MAX_QUOTE_CHARS) return trimmed;
   return `${points.slice(0, MAX_QUOTE_CHARS).join("").trimEnd()}⋯`;

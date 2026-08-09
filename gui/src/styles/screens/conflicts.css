@@ -44,6 +44,7 @@
    headline's — the pager is 34px tall against a 55px text block, and centring it looks like a
    mistake nobody can name. */
 .cf-title-row {
+  flex: none;
   display: flex;
   align-items: flex-end;
   gap: 16px;
@@ -64,12 +65,17 @@
 }
 
 .cf-pager {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
+/* MONO, like every counted position in the app. `1 of 3` is a coordinate, not prose — and the
+   monospace is doing work rather than decoration: at `9 of 10` a proportional face would move the
+   two arrows beside it a pixel to the left. */
 .cf-position {
+  font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--text-4);
 }
@@ -83,6 +89,7 @@
   display: flex;
   flex-direction: column;
   padding: 0 32px;
+  margin-top: 26px;
   position: relative;
 }
 
@@ -98,6 +105,7 @@
 /* -------------------------------------------------------------- the file, on the seam ---- */
 
 .cf-onseam {
+  flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -111,6 +119,7 @@
   margin-top: 12px;
   padding: 0 14px;
   background: var(--surface);
+  font-family: var(--font-mono);
   font-size: 15px;
   color: var(--text);
 }
@@ -119,6 +128,7 @@
   margin-top: 5px;
   padding: 2px 14px;
   background: var(--surface);
+  font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--text-5);
 }
@@ -172,16 +182,24 @@
    machine strings. The 1.55 ratio rides down with it, which is what makes the quoted run sit on the
    same baseline as the prose around it. */
 .cf-quote {
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-bright);
 }
 
+/* The ROW carries no type of its own — the three items do. Putting 11px mono on the row instead
+   reads identically and measures differently: the frame leaves the row at the inherited 16px sans,
+   and a gate that checks computed values on every mapped node sees the difference. */
 .cf-card-meta {
   display: flex;
   gap: 14px;
   margin-top: 14px;
   padding-top: 13px;
   border-top: 1px solid var(--border-subtle);
+}
+
+.cf-card-meta > span {
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-5);
 }
@@ -193,11 +211,13 @@
 .cf-disclose {
   margin-top: 22px;
   position: relative;
+  text-align: center;
 }
 
 /* ----------------------------------------------------------------------- the choices ---- */
 
 .cf-choices-block {
+  flex: none;
   padding: 0 32px 16px;
 }
 
@@ -207,11 +227,16 @@
   gap: 12px;
 }
 
+/* Same shape as the metadata row above: the ROW inherits, the sentence inside it is the 12px. The
+   spacer and the `Decide later` button are the row's other two children and neither wants 12px. */
 .cf-note {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-top: 11px;
+}
+
+.cf-note > span:first-child {
   font-size: 12px;
   color: var(--text-5);
 }
@@ -223,6 +248,7 @@
 /* ---------------------------------------------------------------------- the diff view ---- */
 
 .cf-diff-head {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -230,6 +256,7 @@
 }
 
 .cf-path-plain {
+  font-family: var(--font-mono);
   font-size: 15px;
   color: var(--text);
 }
@@ -246,6 +273,8 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  padding: 0 32px;
+  margin-top: 20px;
 }
 
 /* No gap: the two eyebrows sit over two columns that themselves have none, and the panel's divider
@@ -260,6 +289,7 @@
 /* `overflow: hidden` is what makes the 13px radius cut the two columns' fills — a changed line's
    tint reaches the panel edge, and without the clip it squares off the corner it lands in. */
 .cf-diff-panel {
+  flex: none;
   display: grid;
   grid-template-columns: 1fr 1px 1fr;
   background: var(--panel);
@@ -343,6 +373,10 @@
   align-items: center;
   gap: 14px;
   margin-top: 12px;
+}
+
+.cf-diff-counts > span:first-child {
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-5);
 }
@@ -355,6 +389,10 @@
 .cf-queue {
   margin-top: auto;
   padding-top: 14px;
+}
+
+.cf-queue > .eyebrow {
+  margin-bottom: 9px;
 }
 
 .cf-queue-rows {
@@ -379,6 +417,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--font-mono);
   font-size: 12.5px;
   color: var(--text-2);
 }
@@ -389,6 +428,7 @@
 }
 
 .cf-queue-pos {
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-5);
 }
@@ -420,6 +460,7 @@
 
 .cf-cleared-title {
   margin-top: 24px;
+  text-align: center;
   font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.55px;
