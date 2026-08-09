@@ -174,7 +174,6 @@ pub fn measure(
     };
 
     let mut walker = Walk {
-        root: local_root,
         baseline: &baseline,
         combined: &combined,
         per_rule: &per_rule,
@@ -187,7 +186,6 @@ pub fn measure(
 }
 
 struct Walk<'a> {
-    root: &'a Path,
     baseline: &'a ScanOptions,
     combined: &'a ScanOptions,
     /// `None` for a rule whose glob did not compile — it matches nothing rather than everything.
@@ -281,7 +279,6 @@ impl Walk<'_> {
             usage.unique_files += 1;
             usage.unique_bytes = usage.unique_bytes.saturating_add(size);
         }
-        let _ = self.root;
     }
 }
 

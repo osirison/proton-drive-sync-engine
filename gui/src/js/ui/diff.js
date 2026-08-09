@@ -33,6 +33,10 @@
  * part that actually differs rather than the file. A one-line change in a 9,000-line file trims to
  * a 1×1 middle and is summarised; two files that share nothing are refused, and a card that says
  * nothing is the documented outcome for that.
+ *
+ * Counted as the table `lcsOps` actually allocates — `(n + 1) × (m + 1)`, not `n × m` — so the
+ * number here is the number of cells, and the guard cannot be passed by an input that then
+ * allocates more than it promised.
  */
 export const MAX_DIFF_CELLS = 250_000;
 
@@ -104,7 +108,7 @@ export function compare(mineText, theirsText) {
 
   const midMine = mine.slice(head, mine.length - tail);
   const midTheirs = theirs.slice(head, theirs.length - tail);
-  if (midMine.length * midTheirs.length > MAX_DIFF_CELLS) return null;
+  if ((midMine.length + 1) * (midTheirs.length + 1) > MAX_DIFF_CELLS) return null;
 
   const ops = lcsOps(midMine, midTheirs);
 

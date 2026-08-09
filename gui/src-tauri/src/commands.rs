@@ -724,12 +724,15 @@ pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
 /// press of `Check again` park another. `Command::status()` on its own has no timeout, which is why
 /// this polls instead.
 ///
-/// Three outcomes, and the middle one is the reason `installed` is documented as *presence*:
-/// - the spawn fails (`ENOENT`, not executable) → **false**. This is the real "isn't installed".
-/// - it starts but does not finish in time → **true**, and the child is killed. The binary is
-///   plainly there; sending someone to an install screen for a tool that is installed and stuck
-///   would be advice that cannot work.
-/// - it finishes → whether it exited `0`.
+/// **A successful spawn IS the answer**, and the exit status is deliberately ignored. `installed`
+/// means the executable is there, and a `proton-drive` that exits non-zero on `--version` — a
+/// wrapper script, a missing shared library, a broken install — is present and broken, not absent.
+/// Routing that user to an install screen would answer a question they do not have, which is the
+/// same mistake as doing it for a CLI that is merely logged out. Only a failed spawn (`ENOENT`, not
+/// executable) is "isn't installed".
+///
+/// So the wait exists purely to **reap**: an unwaited child stays a zombie for the life of the GUI,
+/// and `Check again` can be pressed repeatedly.
 fn probe_cli(proton_cli: &str) -> bool {
     let mut child = match Command::new(proton_cli)
         .arg("--version")
@@ -745,15 +748,12 @@ fn probe_cli(proton_cli: &str) -> bool {
 
     let deadline = std::time::Instant::now() + CLI_PROBE_TIMEOUT;
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            // An error from `try_wait` means the child is unwaitable, not that it is absent.
-            Err(_) => return true,
-            Ok(None) => {}
+        // `Err` here means the child is unwaitable — still not a statement about presence.
+        if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+            return true;
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
-            // Reap it, or the killed child stays a zombie for the life of the GUI process.
             let _ = child.wait();
             return true;
         }
