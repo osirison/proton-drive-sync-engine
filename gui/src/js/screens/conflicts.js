@@ -178,7 +178,7 @@ function proseWithQuote(sentence, quoted) {
 }
 
 function cardBody({ conflict, pair, comparison, onOpenDiff }) {
-  const body = el("div", { class: "cf-body", "data-fid": fid("body") });
+  const body = fid(el("div", { class: "cf-body" }), "body");
   body.append(renderSeam({ site: "conflictBody" }));
 
   // The file, on the seam. The mark does NOT declare `flex:none` here — 43 of the 53 drawn marks

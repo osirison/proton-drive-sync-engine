@@ -18,6 +18,26 @@
  * the window is not 1040 wide.
  */
 
+/* ------------------------------------------------------------------------ the advance ---- */
+
+/* `04-conflicts.md`: "Choosing advances to the next conflict with a 220ms crossfade; the header
+   stays put." Applied by app.js only when the conflict actually changes — never on the first mount
+   and never on a poll, so the fidelity gate reads `animation-name: none` the way the frames do.
+   base.css's `prefers-reduced-motion` block already collapses every duration in the app to 0.01ms,
+   so there is nothing to opt out of here. */
+@keyframes cf-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.cf-advancing {
+  animation: cf-appear var(--t-appear) var(--ease);
+}
+
 /* --------------------------------------------------------------------- the title block ---- */
 
 /* `align-items: flex-end` is what keeps `1 of 3` sitting on the sub-line's baseline rather than the

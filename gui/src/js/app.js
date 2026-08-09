@@ -27,6 +27,7 @@ import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
 import { CHROME } from "./ui/copy.js";
 import { renderMain, updateMain, unmountMain } from "./screens/main.js";
+import { renderConflicts, advanceAfter, skipTo } from "./screens/conflicts.js";
 import { activeFixture } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
 
@@ -162,6 +163,9 @@ function openOverlay(id, opener = null) {
     dialogReturn = null;
     screenStack.push({ id, back });
   }
+  // Conflicts is entered fresh every time: the queue starts at the top, and the "what you settled"
+  // tally that the cleared state reads is a claim about THIS visit. See resetConflictScreen.
+  if (id === "conflicts") resetConflictScreen();
   render();
 }
 
@@ -255,6 +259,18 @@ function onKeydown(e) {
       new CustomEvent("shell:step", { detail: { delta: e.key === "ArrowLeft" ? -1 : 1 } }),
     );
   }
+}
+
+// The event F4 defined and nothing consumed until S2. Kept as an event rather than a direct call so
+// the key handler stays ignorant of which screen is up — S3's deletion queue steps the same way.
+document.addEventListener("shell:step", (e) => {
+  if (activeRoute() !== "conflicts") return;
+  stepConflict(e.detail?.delta ?? 0);
+});
+
+/** Which screen the body is showing — the innermost overlay, or the door you are on. */
+function activeRoute() {
+  return onboardingLatch ? "onboarding" : (screenStack[screenStack.length - 1]?.id ?? route);
 }
 
 // ---- the ⋯ menu ----
@@ -398,7 +414,7 @@ function render() {
   // screen overlay and not `route`, and getting that wrong is what loses the user's place. See
   // routes.js `isDialog` and DEVIATIONS §57.
   const dialogRoute = onboardingLatch ? null : dialogOverlay;
-  const active = onboardingLatch ? "onboarding" : (screenStack[screenStack.length - 1]?.id ?? route);
+  const active = activeRoute();
   const spec = ROUTES[active];
   const chip = chipFor();
 
@@ -458,7 +474,17 @@ function render() {
 
   // --- body: mounted when the route changes, PATCHED on every poll in between, so a screen holds
   // its own nodes — and its own running animations — across a status reply.
-  if (dom.bodyRoute !== active) {
+  // Conflicts rebuilds on every pass rather than patching: unlike the main screen it runs no
+  // animation of its own to protect, and `setBody`'s `nextSibling` guard already leaves an
+  // unchanged node in place. The crossfade is applied AFTER the swap, and only on an advance.
+  if (active === "conflicts") {
+    if (dom.bodyRoute !== active) unmountMain();
+    const props = conflictsProps();
+    const nodes = renderConflicts(props);
+    setBody(nodes);
+    crossfadeConflictBody(nodes, props.conflicts[props.index]?.original ?? "(cleared)");
+    dom.bodyRoute = active;
+  } else if (dom.bodyRoute !== active) {
     unmountMain();
     setBody(
       active === "main"
@@ -581,6 +607,163 @@ function setBody(nodes) {
     anchor = node;
   }
   dom.bodyNodes = nodes;
+}
+
+// ---- the conflicts screen (S2) ----
+//
+// Module-level for the same reason `menuOpen` is: `render()` rebuilds the body from scratch on
+// every 2s poll, so a screen that owned its own state would forget which conflict you were on
+// twice a second.
+
+let conflictIndex = 0;
+let conflictDiffOpen = false;
+let conflictPair = null; // the two versions' bytes
+let conflictPairKey = null; // which conflict they belong to — null while a fetch is in flight
+/**
+ * WHAT YOU DECIDED WHILE YOU WERE HERE, and only while you were here.
+ *
+ * `3a Conflicts cleared` reads `You settled 3 conflicts — 2 kept both versions, 1 took Proton's`,
+ * which is a claim about THIS VISIT. Nothing on disk records it: a resolved conflict leaves a
+ * sidecar or it leaves nothing, and neither says which button was pressed. So the tally is counted
+ * here as the choices are made, and reset on entry — a cleared screen reached without deciding
+ * anything shows the sentence with no counts rather than yesterday's.
+ */
+let conflictsSettled = { total: 0, keptBoth: 0, tookProton: 0 };
+/** The conflict the body was last built for — what makes an ADVANCE distinguishable from a poll. */
+let conflictShowing = null;
+
+/** Entering the screen fresh: the queue starts at the top and the tally starts empty. */
+function resetConflictScreen() {
+  conflictIndex = 0;
+  conflictDiffOpen = false;
+  conflictPair = null;
+  conflictPairKey = null;
+  conflictsSettled = { total: 0, keptBoth: 0, tookProton: 0 };
+  conflictShowing = null;
+}
+
+/**
+ * Fetch the two versions' text for the conflict now showing, once.
+ *
+ * Guarded on the conflict's own path rather than on `conflictPair == null`, because a pair that
+ * legitimately reads as two empty files is indistinguishable from one not yet fetched — and the
+ * unguarded version re-reads both files off disk on every poll.
+ */
+async function ensureConflictPair(conflict) {
+  if (!conflict || conflictPairKey === conflict.original) return;
+  conflictPairKey = conflict.original;
+  try {
+    conflictPair = await api.readConflictPair(conflict);
+  } catch (error) {
+    // Not fatal and not a placeholder: the cards fall back to the metadata row alone, which is what
+    // `04-conflicts.md` asks for when the content cannot be read. A pair invented here would be a
+    // diff of files nobody has seen.
+    console.error("read_conflict_pair failed:", error);
+    conflictPair = null;
+  }
+  render();
+}
+
+async function chooseConflict(conflict, choice) {
+  try {
+    await api.resolveConflict(conflict, choice);
+  } catch (error) {
+    console.error("resolve_conflict failed:", error);
+    return;
+  }
+  conflictsSettled = {
+    total: conflictsSettled.total + 1,
+    keptBoth: conflictsSettled.keptBoth + (choice === "keep_both" ? 1 : 0),
+    tookProton: conflictsSettled.tookProton + (choice === "use_proton" ? 1 : 0),
+  };
+  // Re-scan before moving: settling one removes it, and `advanceAfter` needs the list it is
+  // adjusting against. Keeping the old length here is what makes the last conflict dead-end.
+  let next = store.select.conflicts();
+  try {
+    next = await api.scanConflicts();
+    store.setConflicts(next);
+  } catch (error) {
+    console.error("scan_conflicts failed:", error);
+  }
+  conflictIndex = advanceAfter(conflictIndex, next);
+  conflictDiffOpen = false;
+  conflictPairKey = null;
+  render();
+}
+
+/** Everything the conflicts screen reads, plus the actions it can take. */
+function conflictsProps() {
+  const conflicts = store.select.conflicts();
+  const at = Math.min(conflictIndex, Math.max(0, conflicts.length - 1));
+  const conflict = conflicts[at] ?? null;
+  // Fired and not awaited: the screen renders now with whatever it has, and `ensureConflictPair`
+  // calls `render()` again when the bytes land. Awaiting here would block the body on two file
+  // reads and show a blank window while they happen.
+  ensureConflictPair(conflict);
+  return {
+    conflicts,
+    index: at,
+    diffOpen: conflictDiffOpen,
+    pair: conflictPairKey === conflict?.original ? conflictPair : null,
+    settled: conflictsSettled,
+    onChoose: (choice) => chooseConflict(conflict, choice),
+    onLater: () => {
+      conflictIndex = skipTo(at, conflicts.length);
+      conflictDiffOpen = false;
+      render();
+    },
+    onOpenDiff: () => {
+      conflictDiffOpen = true;
+      render();
+    },
+    onHideDiff: () => {
+      conflictDiffOpen = false;
+      render();
+    },
+    // `Open both in an editor` is DRAWN AND INERT, and that is the process rather than an
+    // oversight. There is no command that opens a path, and `commands.rs` is explicit that a
+    // screen task never adds one — a screen needing something the surface lacks files a C-item,
+    // which adds the command before the screen is built. S2 found this one too late for that, so
+    // the button is drawn (the frame draws it) and does nothing until the C-item lands. §74.
+    onOpenBoth: null,
+    onBack: () => navigate("main"),
+    onPrev: () => stepConflict(-1),
+    onNext: () => stepConflict(1),
+  };
+}
+
+/** `‹ ›` and the arrow keys. Clamped, not wrapped — only `Decide later` wraps. */
+function stepConflict(delta) {
+  const total = store.select.conflicts().length;
+  if (!total) return;
+  const next = Math.min(total - 1, Math.max(0, conflictIndex + delta));
+  if (next === conflictIndex) return;
+  conflictIndex = next;
+  conflictDiffOpen = false;
+  render();
+}
+
+/**
+ * The 220ms crossfade, applied to the body that just arrived.
+ *
+ * ONLY WHEN THE CONFLICT CHANGES. A poll re-renders the same conflict twice a second, and animating
+ * that would leave the screen permanently pulsing; the first mount is excluded too, so the fidelity
+ * gate — which renders a fixture cold and reads computed styles immediately — never catches a body
+ * mid-animation and compares `animation-name: cf-appear` against the frame's `none`.
+ *
+ * A FADE-IN RATHER THAN A TRUE CROSSFADE, and `04-conflicts.md` asks for the latter. A real one
+ * needs both bodies alive and stacked, which needs a positioned wrapper — and `renderConflicts`
+ * returns window-root SIBLINGS precisely so the seam's `left: 50%` resolves against the 1040px
+ * window. The wrapper would move the seam. DEVIATIONS §74.
+ */
+function crossfadeConflictBody(nodes, showing) {
+  const advanced = conflictShowing !== null && conflictShowing !== showing;
+  conflictShowing = showing;
+  if (!advanced) return;
+  for (const node of nodes) {
+    node.classList.add("cf-advancing");
+    node.addEventListener("animationend", () => node.classList.remove("cf-advancing"), { once: true });
+  }
 }
 
 /** Everything the main screen reads, plus the actions it can take. */
