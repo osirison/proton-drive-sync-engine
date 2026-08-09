@@ -542,8 +542,8 @@ function render() {
     // text field. `4a Deletions` puts a typed-`DELETE` gate on every permanent card, and that field
     // clears on blur by design, so rebuilding the body twice a second would wipe a half-typed word
     // and make the only irreversible action in the app unreachable by keyboard. `updateDeletions`
-    // rebuilds only when something structural moved and otherwise refreshes the relative times in
-    // place, returning null.
+    // rebuilds only when something the body draws has moved, applies the busy state in place
+    // otherwise, and carries a half-typed word across the rebuilds it cannot avoid.
     if (dom.bodyRoute !== active) {
       unmountMain();
       unmountDeletions();
