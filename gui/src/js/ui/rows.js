@@ -287,9 +287,22 @@ export function actionRow({ lead = null, title, note = null, action = null } = {
  * Here rather than in `screens/deletions.js` because the main screen's attention band needs it too:
  * it counted `d.direction === "local"` inline, a second derivation of the rule the Deletions screen
  * sorts its two columns by, and two copies of one rule agree only by hand.
+ *
+ * IT FAILS CLOSED, and the first version failed open. Written as `=== "local" ? permanent :
+ * recoverable`, anything the wire sends that is not exactly `local` lands in the RECOVERABLE column
+ * — which has no typed gate and whose one button approves the deletion in a single click. A missing
+ * field, a typo, or a third `DeleteDirection` added upstream would therefore turn a permanent
+ * removal from this computer into a one-click action, which is the precise failure this screen
+ * exists to prevent. Asking for `remote` instead means an unrecognised direction is treated as the
+ * more dangerous one: you get the gate, and you have to type the word.
+ *
+ * It does NOT throw, where `transferSlotOrder` two hundred lines up does, and the difference is what
+ * the two guard. An unknown transfer direction is a bug in the app and the throw is how it gets
+ * fixed; an unknown delete direction would come off the WIRE, mid-render, on the screen you least
+ * want to blank — so it degrades to the safe reading rather than taking the queue down with it.
  */
 export function severityOf(direction) {
-  return direction === "local" ? "permanent" : "recoverable";
+  return direction === "remote" ? "recoverable" : "permanent";
 }
 
 /**

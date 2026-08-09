@@ -2282,6 +2282,16 @@ settled, hiding a row nothing was recorded for. The check is now a positive matc
 `approved N …` / `denied N …` acknowledgement, so the failure direction is safe: reword the daemon
 and the GUI stops recording decisions rather than hiding deletions that never happened.
 
+**`severityOf` fails CLOSED, and the first version failed open.** Written as `=== "local" ?
+permanent : recoverable`, anything the wire sends that is not exactly `local` lands in the
+recoverable column — which has no typed gate and whose one button approves in a single click. A
+missing field, a typo, or a third `DeleteDirection` added upstream would have turned a permanent
+removal from this computer into a one-click action, which is the precise failure this screen exists
+to prevent. It asks for `remote` instead, so an unrecognised direction gets the gate. It does not
+throw, where `transferSlotOrder` in the same module does: an unknown transfer direction is a bug in
+the app and the throw is how it gets fixed, while an unknown delete direction arrives off the wire
+mid-render, on the screen you least want to blank.
+
 **`severityOf` moved to `ui/rows.js`, because more than one surface asks it.** The attention band was
 counting `d.direction === "local"` inline — a second derivation of the rule the Deletions screen
 sorts its two columns by, agreeing with it only by hand.

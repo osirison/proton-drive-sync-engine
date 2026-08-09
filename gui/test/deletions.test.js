@@ -54,6 +54,19 @@ test("direction names the side the delete lands on, not the side it came from", 
   assert.equal(severityOf("remote"), "recoverable");
 });
 
+test("an unrecognised direction is treated as permanent, not as recoverable", () => {
+  // FAIL CLOSED. The recoverable column has no typed gate and its one button approves in a single
+  // click, so anything the wire sends that is not exactly `remote` — a missing field, a typo, a
+  // third `DeleteDirection` added upstream — must land on the side that makes you type the word.
+  for (const direction of [undefined, null, "", "LOCAL", "trash", "Remote"]) {
+    assert.equal(severityOf(direction), "permanent", `"${direction}" must not skip the gate`);
+  }
+  const stray = { path: "x", direction: "who knows", entity_kind: "file", fingerprint: "f" };
+  const [permanent, recoverable] = splitQueue([stray]);
+  assert.equal(permanent.length, 1);
+  assert.deepEqual(recoverable, []);
+});
+
 test("the queue splits into the drawn order — permanent first, recoverable second", () => {
   const [permanent, recoverable] = splitQueue([file, folder]);
   assert.deepEqual(
