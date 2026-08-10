@@ -36,7 +36,7 @@ import {
   boxComparability,
 } from "./props.mjs";
 import { FIXTURES } from "../../src/js/fixtures/frames.js";
-import { OWES_FIT } from "./frame-classes.mjs";
+import { OWES_BOX, OWES_FIT } from "./frame-classes.mjs";
 import { isKnown, unmetDeviations, KNOWN_DEVIATIONS } from "./known-deviations.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -344,8 +344,10 @@ for (const entry of index) {
       if (reason) record({ frame: frame.label, key: node.key, prop, detail: reason });
     }
     // Size, as a border box in both documents — see the note on `width` in props.mjs. Skipped where
-    // the node's text needs a glyph no bundled font provides; that width measures the machine.
-    for (const side of boxComparable(want) ? ["w", "h"] : []) {
+    // the node's text needs a glyph no bundled font provides (that width measures the machine), and
+    // skipped whole for a content crop, whose every box is an artefact of the width it was drawn at
+    // — see `OWES_BOX`.
+    for (const side of OWES_BOX(entry.kind) && boxComparable(want) ? ["w", "h"] : []) {
       asserted++;
       if (Math.abs(want.box[side] - node.box[side]) > LENGTH_TOLERANCE_PX) {
         record({

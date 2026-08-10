@@ -621,28 +621,46 @@ export function dayChips({ days, selected = [], onToggle }) {
   );
 }
 
-/** The `‹ ›` / `− +` stepper. Both glyphs are drawn as filled secondaries at icon size. */
+/**
+ * The `− ＋` stepper. Both glyphs are drawn as filled secondaries at icon size.
+ *
+ * `＋` IS THE FULLWIDTH PLUS, U+FF0B, and it is what both frames that draw a stepper carry — the
+ * ASCII `+` sits high and thin beside a `−` that is already the typographic minus. The icon rung's
+ * 15px is the `⋯` menu's size and would draw these two a size loud, so the glyphs set 13px, which
+ * is what `8a Settings` and `8a Schedule monthly` both measure.
+ */
 export function stepper({ value, onStep, format = String, min = null, max = null } = {}) {
   const at = (delta) => (delta < 0 ? min != null && value <= min : max != null && value >= max);
-  return el(
-    "div",
-    { class: "stepper" },
+  const step = (label, delta) =>
     button({
       kind: "secondaryFilled",
       size: "icon",
-      label: "−",
-      disabled: at(-1),
-      onClick: () => onStep(-1),
-    }),
+      fontSize: "13px",
+      label,
+      disabled: at(delta),
+      onClick: () => onStep(delta),
+    });
+  return el(
+    "div",
+    { class: "stepper" },
+    step("−", -1),
     el("span", { class: "stepper-value mono" }, format(value)),
-    button({ kind: "secondaryFilled", size: "icon", label: "+", disabled: at(1), onClick: () => onStep(1) }),
+    step("＋", 1),
   );
 }
 
 /**
- * Radio cards — Settings › Deletions' three policies, and the schedule's Weekly/Monthly.
- * `14-behaviour-and-state.md`: selected is `border:1px --border-strong; background:--panel-raised`
- * plus the 4px ring dot, and the ring is `1.5px --line-inert` when it is not.
+ * Radio cards — Settings › Deletions' three policies.
+ *
+ * REBUILT FROM THE FRAME BY S6, and the shape changed. F5 wrote it from
+ * `14-behaviour-and-state.md`'s prose as `card > [ring, body > [title, text]]`; `8a Deletions tab`
+ * draws `card > [head > [ring, title, badge], text]` — the ring is INSIDE a flex head row with the
+ * title and the `recommended` badge, and the body is that row's sibling, indented past the ring by
+ * a 26px padding rather than by being nested under it. Nothing had rendered one, so nothing
+ * disagreed: the fourth primitive in this module to be corrected by the first screen to draw it.
+ *
+ * The prose and the frame also disagree about the unselected ring — 1.5px in `08-settings.md`, 1px
+ * on the frame. The frame wins, as it does for the 13-to-6 footer split (§40). DEVIATIONS §78.
  */
 export function radioCard({
   selected = false,
@@ -669,12 +687,13 @@ export function radioCard({
         }
       },
     },
-    el("span", { class: "radio-ring" + (selected ? " is-selected" : "") }),
     el(
       "div",
-      { class: "radio-body" },
-      el("div", { class: "radio-title" }, title, note ? el("span", { class: "radio-note" }, note) : null),
-      body ? el("div", { class: "radio-text" }, body) : null,
+      { class: "radio-head" },
+      el("span", { class: "radio-ring" + (selected ? " is-selected" : "") }),
+      el("span", { class: "radio-title" }, title),
+      note ? el("span", { class: "radio-note" }, note) : null,
     ),
+    body ? el("div", { class: "radio-text" }, body) : null,
   );
 }

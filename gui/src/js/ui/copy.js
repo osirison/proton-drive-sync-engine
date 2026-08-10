@@ -682,6 +682,11 @@ export const SETTINGS = {
   choose: "Choose…",
   pairLocalNote: (files, size) =>
     `${count(files)} files, ${bytes(size)} in here today. Changing it starts a fresh merge — nothing gets deleted.`,
+  // The drawn sentence minus its opening clause. `12,480 files, 41.2 GB` is G7 (#207) — no command
+  // reports the folder's totals, and `skip_rule_usage`'s `considered_files` is a count with no byte
+  // twin, so half of it would still be missing. What is left is the half that matters: a warning
+  // about what changing the folder does. Same shape as `DELETIONS.folderConsequenceUnknown`.
+  pairLocalNoteUnknown: "Changing it starts a fresh merge — nothing gets deleted.",
   pairRemoteNote: "Folder on your Proton Drive. Must already exist.",
 
   cadenceTitle: "How often it checks",
@@ -697,11 +702,27 @@ export const SETTINGS = {
   at: "at",
   onDay: "On day",
   monthEdgeNote: "Months without a 15th are skipped to the last day.",
+  // The second panel, as Phase 1 can honestly title it. G4 (#193): there is no `full_scan_schedule`
+  // key, no scheduler and no command — and `events_full_scan_every`, the nearest real thing, counts
+  // PASSES rather than days and defaults to off. So the panel keeps its shell and changes its
+  // subject to the one cadence the config does carry, `scan_interval_secs`.
+  //
+  // NOT the drawn title with a different control under it: `Compare everything, top to bottom` over
+  // a timer that (with live updates on) runs an incremental pass would be a false claim about what
+  // the app does with someone's files, which is the one thing this screen may not do.
+  timer: "Look for changes on a timer",
+  timerSub: "A backstop for the live updates above. It runs whether or not Proton reported anything.",
+  timerUnit: (mins) => `${mins} min`,
+  timerSeconds: (secs) => `${secs} s`,
 
   runOne: "Run one now",
   fullSweep: "Full sweep now",
   fullSweepNote:
     "Takes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.",
+  // Both dropped clauses are G18 (#238): no per-pass duration exists anywhere, and `status_history`
+  // does not record which past pass was a full sweep — so `Takes about 4 minutes` and `Last one 2
+  // days ago` have no source and no near neighbour. What survives is what is true every time.
+  fullSweepNoteUnknown: "Compares every file on both sides. Syncing keeps working while it runs.",
   sweepNow: "Sweep now",
 
   skipIntro:
@@ -711,8 +732,29 @@ export const SETTINGS = {
   skippingNow: (n) => `Skipping ${count(n)} files right now`,
   skippingSize: (n, size) => `Skipping ${count(n)} files, ${bytes(size)}`,
   ruleAdded: (date) => `added ${date} · the folder still exists on this computer`,
+  // The drawn line without its date. A TOML array of globs carries no per-entry timestamps, so
+  // `added 14 Jul` has no possible source — not a missing command, an absent fact.
+  ruleFolderHere: "the folder still exists on this computer",
   matchingNothing: "Matching nothing",
+  // A rule the walk could not evaluate — a bad glob, or a folder it was refused. `RuleUsage.error`
+  // carries the reason and it goes in the mono line beneath, unrewritten. No frame draws it, and
+  // `Matching nothing` would be the wrong thing to say: nothing was measured, not nothing matched.
+  ruleUnchecked: "Couldn't be checked",
+  // The walk is still running. `skip_rule_usage` reads every file in the sync folder, which is
+  // seconds on a large one — and for that whole time the rows have no counts. Saying so is the
+  // only honest thing here: `Matching nothing` would be a measurement nobody took, over a rule the
+  // next line invites you to remove.
+  ruleChecking: "Checking…",
+  // A rule typed in and not saved. `skip_rule_usage` walked the config on disk, so this rule has no
+  // counts — and borrowing a neighbour's or drawing zeros would both say something untrue about how
+  // many files it hides.
+  ruleNotSaved: "Not saved yet",
   staleRule: "no such folder here any more — safe to remove",
+  // `hidingTotal` when the walk could not read everything. `skip_rule_usage` returns
+  // `unreadable_directories`/`unreadable_entries` precisely so the tab does not present a floor as
+  // a fact (`skip_rules.rs`), and every number on this tab is then a lower bound.
+  hidingFloor: (n, size) =>
+    `hiding at least ${count(n)} files, ${bytes(size)} — some folders could not be read`,
   remove: "Remove",
   addRulePlaceholder: "Add a rule — e.g. *.psd or scratch/**",
   add: "Add",
@@ -746,6 +788,48 @@ export const SETTINGS = {
   refusedDaemonExample: "remote_root: /Drive/Archive2026 — not found",
   refusedBack: "Go back and fix it",
   refusedCreate: "Create it on Proton Drive",
+  // The refusal Phase 1 can actually produce. `write_config` refuses on `ConfigDoc::validate` — a
+  // serde/TOML check against `FileConfig` that never contacts Proton Drive — so it cannot know a
+  // remote folder is missing and cannot say so (G16, #236). The title therefore names what IS known
+  // (the save did not happen) and the body keeps the sentence `08-settings.md` calls the important
+  // one, which is true of every refusal whatever caused it.
+  refusedTitleUnknown: "That change wasn't saved",
+  refusedBodyUnknown: "Nothing was saved — your old settings are still running.",
+
+  // The save landed, and the daemon is still running the old config. There is no config-reload path
+  // in the engine — no SIGHUP handler, no watcher (DEVIATIONS §68) — so `Changes here take effect on
+  // the next sync` is true only after a restart. Undrawn: no frame draws a settled save.
+  savedNote: "Saved. The sync service is still running the old settings until it restarts.",
+  restart: "Restart it now",
+  restarting: "Restarting the sync service…",
+  // Templates, so the daemon's own words go in unrewritten (voice rule 4). Every one of these is a
+  // state the bar reports and no frame draws — a control that answered with silence is the failure
+  // #140 already recorded once.
+  restartFailed: (reason) => `The sync service did not restart — ${reason}`,
+  saving: "Saving…",
+  sweeping: "Starting a full sweep…",
+  sweepFailed: (reason) => `The full sweep didn't start — ${reason}`,
+  chooseFailed: (reason) => `The folder picker didn't open — ${reason}`,
+
+  // ------------------------------------------------------------------- Advanced (not drawn) ----
+  // `08-settings.md` names six things this tab holds and does not draw it. Four of the six have no
+  // key and no command (G17, #237); these are the two that round-trip through `ConfigUpdate`, plus
+  // the file itself, which is not a setting but is the answer to "where did this go".
+  includeTitle: "Only sync these",
+  includeSub:
+    "With nothing here, everything syncs except what the rules on What to skip hide. Add a pattern and only matching files sync.",
+  includeEmpty: "No patterns — everything syncs.",
+  addIncludePlaceholder: "Add a pattern — e.g. work/** or *.md",
+  cliTitle: "Where the Proton Drive command lives",
+  cliSub: "The app runs this program to reach Proton Drive. A bare name is looked up on PATH.",
+  configFileTitle: "The file these settings are written to",
+  configFileMissing: "Not created yet — saving writes it.",
+  // The config file could not be read — a TOML typo, or a permission. A template, so the reason is
+  // the parser's own words (voice rule 4). Undrawn, and it outranks everything else on the screen:
+  // every control below it is describing a file nobody could open.
+  configUnreadable: (reason) => `These aren't the settings that are running — ${reason}`,
+  advancedMissing:
+    "Log level, the socket path, the conflict suffix and resetting the index aren't settings the app can write yet.",
 };
 
 // --------------------------------------------------------------------------- onboarding ----

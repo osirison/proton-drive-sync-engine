@@ -173,14 +173,21 @@
 /* ------------------------------------------------------------------------------ toggles ---- */
 
 /* 44×26 with a 26px knob track. Two states, nothing between. */
+/* Measured off `8a Settings`, which draws the only toggle in the design — and draws it as a plain
+   `div`, so a `<button>` has to put back what the UA stylesheet takes: `font`, `color` and
+   `text-align` are all asserted properties and a button sets its own. NO BORDER at any point: the
+   drawn track is a fill and nothing else. */
 .toggle {
   flex: none;
   width: 44px;
   height: 26px;
   padding: 0;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--r-pill);
   background: var(--panel-alt);
+  font: inherit;
+  color: inherit;
+  text-align: start;
   cursor: pointer;
   position: relative;
   transition:
@@ -189,23 +196,25 @@
 }
 .toggle.is-on {
   background: var(--text);
-  border-color: var(--text);
 }
 
+/* `left` rather than a transform, because the knob's POSITION is what the frame records — an
+   absolutely-positioned node reports used values for `left` and `right`, and a transform moves the
+   pixels while leaving both where they started. 21px is 44 − 20 − 3. */
 .toggle-knob {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: var(--r-dot);
   background: var(--text-4);
   transition:
-    transform var(--t-press) var(--ease),
+    left var(--t-press) var(--ease),
     background var(--t-press) var(--ease);
 }
 .toggle.is-on .toggle-knob {
-  transform: translateX(18px);
+  left: 21px;
   background: var(--surface);
 }
 
@@ -282,37 +291,53 @@
 
 /* -------------------------------------------------------------------- tabs, chips, stepper ---- */
 
-.pill-tabs,
-.day-chips {
+.pill-tabs {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+
+/* Measured off `8a Settings`' seven day chips: 42px wide at a 5px gap, not the pill row's 44/8.
+   S6 does not render them — the schedule they belong to is G4 (#193) — so these are the numbers
+   waiting for whoever builds it, not numbers any gate checks. */
+.day-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
 .day-chips .btn {
-  width: 44px;
+  width: 42px;
 }
 
 .stepper {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+/* 28×28, both of them. `SIZE.icon` sets radius, padding and font-size and no box, so the two glyphs
+   sized themselves off their own metrics — `−` came out 20.91×20 against `＋`'s 27×21, visibly
+   different from each other and 8px short of the drawn square. Nothing could see it: the stepper is
+   not mapped (the schedule it belongs to is G4), so the box gate never looks. */
+.stepper .btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
 }
 .stepper-value {
   font-family: var(--font-mono);
-  font-size: 12.5px;
-  color: var(--text-2);
-  min-width: 3ch;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 48px;
   text-align: center;
 }
 
 /* -------------------------------------------------------------------------- radio cards ---- */
 
+/* Every value below is measured off `8a Deletions tab`, which is the only frame that draws one.
+   The card itself is a plain block: the flex row is the HEAD, not the card. See `radioCard`. */
 .radio-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
   padding: 14px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-12);
   background: var(--panel);
   cursor: pointer;
@@ -330,51 +355,78 @@
   background: var(--panel-raised);
 }
 /* The Deletions tab's "Never ask" card is tinted destructive: there is no gate on the control, so
-   the card itself has to carry the weight. */
+   the card itself has to carry the weight. Its own tint pair rather than --destructive-bg/-border,
+   which are .06/.38 where this card measures .04/.30 — the same per-site alpha step §52a records
+   for the bands. */
 .radio-card.tone-destructive {
-  border-color: var(--destructive-border);
-  background: var(--destructive-bg);
+  border-color: var(--destructive-card-border);
+  background: var(--destructive-card-bg);
+}
+
+.radio-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
 }
 
 .radio-ring {
   flex: none;
-  width: 17px;
-  height: 17px;
-  margin-top: 1px;
+  width: 15px;
+  height: 15px;
   border-radius: var(--r-dot);
-  /* 1.5px, not 1px — `08-settings.md` gives the unselected ring its own width, and DEVIATIONS §12
-     tokenised the colour as --line-inert. */
-  border: 1.5px solid var(--line-inert);
-  position: relative;
+  /* 1px, not the 1.5px `08-settings.md` prose gives it: the frame draws 1px, and a measured frame
+     outranks prose (§40, §78). DEVIATIONS §12 tokenised the colour as --line-inert. */
+  border: 1px solid var(--line-inert);
 }
+/* No `::after`: the drawn dot IS the border. A 15px box with a 4px ring leaves a 7px well of the
+   card's own surface, which is why the selected ring reads as filled on the raised card and would
+   read as a hole on a lighter one. */
 .radio-ring.is-selected {
-  border-color: var(--text);
+  border: 4px solid var(--text);
 }
-.radio-ring.is-selected::after {
-  content: "";
-  position: absolute;
-  inset: 3.5px;
-  border-radius: var(--r-dot);
-  background: var(--text);
+/* The unselected ring on the destructive card is not the neutral inert line — it is tinted with
+   the card, at the one opaque value the frame carries.
+
+   `:not(.is-selected)` IS LOAD-BEARING. Without it this rule is three classes to the selected
+   rule's two, so it won the cascade on `border-color` and drew the SELECTED `Never ask` dot in
+   #6B3A3A instead of white — a state no frame draws (`8a Deletions tab` selects the first card),
+   so nothing could have compared it. */
+.radio-card.tone-destructive .radio-ring:not(.is-selected) {
+  border-color: var(--destructive-ring);
 }
 
 .radio-title {
-  font-size: 13px;
+  flex: 1;
+  font-size: 13.5px;
   font-weight: 600;
-  color: var(--text-bright);
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+  color: var(--text-2);
+}
+.radio-card.is-selected .radio-title {
+  color: var(--text);
+}
+.radio-card.tone-destructive .radio-title {
+  color: var(--destructive-text);
 }
 .radio-note {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 400;
   color: var(--text-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-5);
+  padding: 2px 7px;
 }
+/* 26px is the ring plus the head row's gap: the body lines up with the title, not with the ring. */
 .radio-text {
   font-size: 12.5px;
   color: var(--text-4);
   line-height: 1.55;
-  margin-top: 5px;
+  margin-top: 8px;
+  padding-left: 26px;
+}
+.radio-card.is-selected .radio-text {
+  color: var(--text-3);
+}
+.radio-card.tone-destructive .radio-text {
+  color: var(--text-2);
 }

@@ -19,6 +19,9 @@ export const api = {
   pause: () => invoke("pause"),
   resume: () => invoke("resume"),
   syncNow: () => invoke("sync_now"),
+  // Settings › `Sweep now`. NOT `syncNow`: this latches the next pass to a full-tree walk, which is
+  // the whole difference between the two under an event-driven default.
+  resync: () => invoke("resync"),
   // `literalPath: true` (the default) marks `target` as a row's actual relative path, so a file
   // literally named "all" can never be mistaken for the every-item selector; the Approve-all /
   // Deny-all buttons pass `false` with the explicit "all" argument.
@@ -27,6 +30,10 @@ export const api = {
   listPendingDeletions: () => invoke("list_pending_deletions"),
   readConfig: () => invoke("read_config"),
   writeConfig: (update) => invoke("write_config", { update }),
+  // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
+  // not open — the two were one answer until Copilot's second pass, which made a broken picker
+  // indistinguishable from a closed one.
+  chooseFolder: (start) => invoke("choose_folder", { start: start ?? null }),
   runDryRun: () => invoke("run_dry_run"),
   listRemote: (path) => invoke("list_remote", { path: path ?? null }),
   scanConflicts: () => invoke("scan_conflicts"),
@@ -258,6 +265,21 @@ function mockInvoke(cmd, args) {
       });
     case "start_service":
       return Promise.resolve("asked systemd to start proton-syncd (preview mock)");
+    case "write_config":
+      // Accepts. The REFUSAL is what `8a Save refused` is for, and it is reached by the fixture's
+      // own `saveError` rather than by a mock that decides to fail — a preview that rejected every
+      // fourth save would be a design surface nobody could look at on purpose.
+      return Promise.resolve(null);
+    case "resync":
+      return Promise.resolve({
+        state: "running",
+        response: { status: "syncing", paused: false, syncing: true, message: "full sweep queued" },
+        error: null,
+      });
+    case "choose_folder":
+      // A dismissed picker, which is what a browser has to be: there is no native dialog here, and
+      // answering with a plausible path would stage a folder change nobody chose.
+      return Promise.resolve(null);
     case "approve":
     case "deny":
       // Simulate the daemon round trip so the Deletions screen's busy → settled flow is visible in

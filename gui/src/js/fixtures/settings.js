@@ -31,6 +31,7 @@
 
 import { SETTINGS } from "../ui/copy.js";
 import { ago } from "./clock.js";
+import { settingsFids } from "./fids.js";
 
 /**
  * The daemon behind all five frames: reachable, not paused, nothing in flight — every `8a` header
@@ -238,7 +239,9 @@ export const SETTINGS_FIXTURES = {
     status: IDLE_STATUS,
     config: CONFIG,
     localTotals: LOCAL_TOTALS,
+    route: "settings",
     ui: { tab: "folders", schedule: "weekly" },
+    fids: settingsFids("folders"),
   },
 
   /**
@@ -270,7 +273,9 @@ export const SETTINGS_FIXTURES = {
     // Nothing is pinned for the bottom panel: `SETTINGS.unsyncableNote` is a fixed deck string that
     // already says "Two more files", and the live count behind it is `skipped_unsupported` on a plan
     // summary — a number this frame's daemon has never produced (no pass has run with a plan).
+    route: "settings",
     ui: { tab: "skip", dirty: true, removing: "video-raw/**" },
+    fids: settingsFids("skip"),
   },
 
   /**
@@ -289,7 +294,9 @@ export const SETTINGS_FIXTURES = {
   "8a Deletions tab": {
     status: IDLE_STATUS,
     config: CONFIG,
+    route: "settings",
     ui: { tab: "deletions" },
+    fids: settingsFids("deletions"),
   },
 
   /**
@@ -315,7 +322,9 @@ export const SETTINGS_FIXTURES = {
     status: IDLE_STATUS,
     config: CONFIG,
     localTotals: LOCAL_TOTALS,
+    route: "settings",
     ui: { tab: "folders", schedule: "monthly" },
+    fids: settingsFids("monthly"),
   },
 
   /**
@@ -340,6 +349,8 @@ export const SETTINGS_FIXTURES = {
     status: IDLE_STATUS,
     config: CONFIG,
     saveError: SETTINGS.refusedDaemonExample,
+    route: "settings",
     ui: { dialog: "saveRefused" },
+    fids: settingsFids("refused"),
   },
 };

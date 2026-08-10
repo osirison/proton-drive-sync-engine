@@ -416,6 +416,103 @@ export const KNOWN_DEVIATIONS = [
     issue: "#231",
     why: "the pending dialog's footer row keeps `only on this computer so far` and loses `Open folder`, the same missing opener; the row is now the height of its remaining text",
   },
+
+  // ---- S6 · settings ----
+  //
+  // ELEVEN ROWS, FOUR CAUSES, AND EVERY ONE OF THEM IS A SENTENCE OR A CONTROL THAT IS NOT DRAWN.
+  // Nothing here is a colour or a spacing that came out wrong: the tab bodies, the panels, the rule
+  // rows and the three radio cards all match the frames exactly. What is left is the shape the
+  // omissions leave behind — a helper one line shorter, a panel head that reaches the full width
+  // because the schedule control is missing from beside it, and a tail that sits 71px lower because
+  // the block above it was never built.
+  {
+    frame: "8a Settings",
+    key: "div[2]/div[2]/div[0]",
+    props: ["box.h"],
+    detail: "109 vs 91",
+    issue: "#207",
+    why: "the local side's helper drops `12,480 files, 41.2 GB in here today` (G7 — no command reports the folder's totals, and `considered_files` is a count with no byte twin) and keeps the sentence that matters, `Changing it starts a fresh merge`; one line instead of two takes 18px off the column",
+  },
+  {
+    frame: "8a Settings",
+    key: "div[2]/div[2]/div[0]/div[2]",
+    props: ["box.h"],
+    detail: "36 vs 18",
+    issue: "#207",
+    why: "the helper itself: the drawn sentence wraps to two lines at 458px and the Phase-1 half fits on one",
+  },
+  {
+    frame: "8a Settings",
+    key: "div[2]/div[2]/div[1]",
+    props: ["box.h"],
+    detail: "109 vs 91",
+    issue: "#207",
+    why: "the Proton side is a grid cell, so it stretches to whatever the taller column is — it loses the same 18px its neighbour does, and its own helper is unchanged",
+  },
+  {
+    frame: "8a Settings",
+    key: "div[2]/div[5]/div[0]/div[0]",
+    props: ["box.w"],
+    detail: "762.88 vs 938",
+    issue: "#193",
+    why: "the schedule panel's head row draws a Weekly/Monthly segmented control 155px wide beside its text, and G4 has no `full_scan_schedule` key for it to set — with the control gone the text block takes the width the control and its 20px gap were holding",
+  },
+  {
+    frame: "8a Settings",
+    key: "div[2]/div[5]/div[0]/div[0]/div[0]",
+    props: ["box.w"],
+    detail: "762.88 vs 938",
+    issue: "#193",
+    why: "the panel title inside that block, at the same width for the same reason",
+  },
+  {
+    frame: "8a Settings",
+    key: "div[2]/div[5]/div[0]/div[0]/div[1]",
+    props: ["box.w"],
+    detail: "762.88 vs 938",
+    issue: "#193",
+    why: "and its sub-line. The height is unaffected: both sentences are one line at either width",
+  },
+  {
+    frame: "8a Skip rules",
+    key: "div[2]/div[2]",
+    props: ["margin-top"],
+    detail: "85.8125px vs 156.812px",
+    issue: "#232",
+    why: "the tail is pushed to the bottom with `margin-top:auto`, so its used value measures whatever is above it — and what is above it is 71px shorter without the unsyncable panel (G15: a socket or a symlink never enters the index, so there is nothing to count and `See them` would open the one group `7a Never synced` already omits)",
+  },
+  {
+    frame: "8a Skip rules",
+    key: "div[2]/div[2]/div[1]",
+    props: ["margin-top"],
+    detail: "12px vs 0px",
+    issue: "#232",
+    why: "the `.sync` note's 12px separates it from that panel, so with the panel gone the margin belongs to nothing — setting it anyway would be spacing a block against something that is not there",
+  },
+  {
+    frame: "8a Save refused",
+    key: "div",
+    props: ["box.h"],
+    detail: "165 vs 145",
+    issue: "#236",
+    why: "the refusal's body drops `Create the folder on Proton Drive first, or pick a different one.` — `write_config` validates TOML and never contacts Proton Drive, so it cannot know a remote folder is missing (G16) — and one line instead of two takes 20px off the dialog",
+  },
+  {
+    frame: "8a Save refused",
+    key: "div/div",
+    props: ["box.h"],
+    detail: "165 vs 145",
+    issue: "#236",
+    why: "the text column inside it, losing the same line",
+  },
+  {
+    frame: "8a Save refused",
+    key: "div/div/div[1]",
+    props: ["box.h"],
+    detail: "40 vs 20",
+    issue: "#236",
+    why: "the body itself: two lines drawn, one line true of every refusal Phase 1 can produce",
+  },
 ];
 
 /** `frame|key|prop` → row, for the O(1) lookup the assertion loop wants. */

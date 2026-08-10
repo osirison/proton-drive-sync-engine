@@ -1002,3 +1002,212 @@ export function activityFids(view) {
   const dialog = view === "neverSynced" || view === "details" || view === "filePending";
   return dialog ? body : { ...activityShell, ...body };
 }
+
+// ------------------------------------------------------------------------------ S6 · settings ----
+//
+// FIVE FRAMES, ONE SCREEN, AND TWO OF THEM ARE NOT WINDOWS. `8a Settings` and `8a Skip rules` are
+// the same 1040 window on tabs 1 and 2. `8a Deletions tab` and `8a Schedule monthly` are drawn at
+// 600px (`frame-classes.mjs` calls them crops) and `8a Save refused` is a dialog over any of them.
+//
+// A CROP IS A RE-RENDER, NOT A CUT-OUT, and `8a Schedule monthly` proves it: the same panel that
+// `8a Settings` draws with `padding:13px 18px` and an 18.125px sub-line is drawn here at
+// `18px 20px` with an 18.75px one. So nothing about a crop's geometry is a fact about the window —
+// which is why assert.mjs compares a crop's STYLES and not its boxes (see `OWES_BOX`), and why the
+// monthly crop maps thin. DEVIATIONS §78.
+//
+// WHAT IS UNDECLARED HERE, AND WHY EACH ONE IS. A slot is undeclared when the app draws SOMETHING
+// ELSE at that node or nothing at all; where the app draws the right thing at the wrong size, the
+// node stays mapped and the difference goes in `known-deviations.mjs` instead. The two lists are
+// not interchangeable and this note names only the first.
+//
+//   · `div[2]/div[4]/div[0]/div[2]` — the live-updates key line. The frame draws
+//     `event_driven_reconcile`; the engine's key is `events_driven`, and
+//     `14-behaviour-and-state.md:25` says so in as many words. The app draws the real key, so this
+//     is the prototype being wrong rather than the app being unable — a drawing mistake, which is
+//     neither a mapped node nor a known-deviations row (the same call `5a Checking`'s unlit doors
+//     got, one screen over).
+//   · the whole weekly/monthly control and the day/time row (`div[2]/div[5]/div[0]/div[1]` and
+//     `div[2]/div[5]/div[1]`, plus every node the monthly crop draws below its header) — G4 (#193).
+//     There is no `full_scan_schedule` key, no scheduler and no command that returns any of it.
+//   · `div[2]/div[2]/div[0]` on the skip tab — the unsyncable panel and its `See them` (G15 #232):
+//     the files it counts never enter the index, and that button would open the one group `7a
+//     Never synced` already omits for the same reason. Its PARENT `div[2]/div[2]` is declared, as
+//     `tail`, because the app does draw that block — it holds the `.sync` note.
+//   · `div[3]` on the deletions crop, and `div[0]` on the monthly crop. Both are drawn and both
+//     are mapped nowhere, for the reason the module note above gives: a crop cannot say where an
+//     `auto` margin sits, and the two frames disagree about the head row's gap.
+//   · `div/div/div[3]/button[1]` on the refusal (`Create it on Proton Drive`) — G16 (#236).
+//
+// NOT undeclared, though an earlier version of this note claimed it: `div[2]/div[2]/div[0]/div[2]`,
+// the local helper. The app draws that node with the Phase-1 half of its sentence, so it is mapped
+// as `pairSideNote(0)`, asserted, and carries a known-deviations row for the 18px the missing clause
+// costs. Saying it was undeclared would have told the next reader that G7's omission is invisible to
+// the gate, when it is the one thing about it the gate does see.
+
+const settingsShell = {
+  header: "header",
+  mark: "header/img",
+  name: "header/span[0]",
+  spacer: "header/span[1]",
+  chip: "header/span[2]",
+  chipDot: "header/span[2]/span",
+  menu: "header/button",
+
+  titleBlock: "div[0]",
+  title: "div[0]/div[0]",
+  sub: "div[0]/div[1]",
+
+  tabs: "div[1]",
+  tab: (i) => `div[1]/button[${i}]`,
+
+  content: "div[2]",
+
+  // The action bar, which on this screen REPLACES the four doors — `routes.js` records the split
+  // and both 1040 frames draw it. `barNote` is one node in two moods: the neutral saving note, or
+  // the amber cost line when a staged change has one.
+  bar: "div[3]",
+  barNote: "div[3]/span[0]",
+  barSpacer: "div[3]/span[1]",
+  discard: "div[3]/button[0]",
+  save: "div[3]/button[1]",
+};
+
+/** `8a Settings` — tab 1, at rest: the pair, its short seam, and the two cadence panels. */
+const SETTINGS_FOLDERS_FIDS = {
+  seam: "div[2]/div[0]",
+  pairLabel: "div[2]/div[1]",
+  pairGrid: "div[2]/div[2]",
+  // `s` is the drawn left-to-right position (0 this computer, 1 Proton Drive), the same convention
+  // `planSides` uses: the frame decides the order, not the direction of travel.
+  pairSide: (s) => `div[2]/div[2]/div[${s}]`,
+  pairSideLabel: (s) => `div[2]/div[2]/div[${s}]/div[0]`,
+  pairSideRow: (s) => `div[2]/div[2]/div[${s}]/div[1]`,
+  pairSideInput: (s) => `div[2]/div[2]/div[${s}]/div[1]/input`,
+  pairSideNote: (s) => `div[2]/div[2]/div[${s}]/div[2]`,
+  pairChoose: "div[2]/div[2]/div[0]/div[1]/button",
+
+  cadenceLabel: "div[2]/div[3]",
+  livePanel: "div[2]/div[4]",
+  liveBody: "div[2]/div[4]/div[0]",
+  liveTitle: "div[2]/div[4]/div[0]/div[0]",
+  liveSub: "div[2]/div[4]/div[0]/div[1]",
+  liveToggle: "div[2]/div[4]/div[1]",
+  liveKnob: "div[2]/div[4]/div[1]/span",
+
+  timerPanel: "div[2]/div[5]",
+  timerHead: "div[2]/div[5]/div[0]",
+  timerText: "div[2]/div[5]/div[0]/div[0]",
+  timerTitle: "div[2]/div[5]/div[0]/div[0]/div[0]",
+  timerSub: "div[2]/div[5]/div[0]/div[0]/div[1]",
+
+  runLabel: "div[2]/div[6]",
+  runPanel: "div[2]/div[7]",
+  runBody: "div[2]/div[7]/div",
+  runTitle: "div[2]/div[7]/div/div[0]",
+  runNote: "div[2]/div[7]/div/div[1]",
+  runButton: "div[2]/div[7]/button",
+};
+
+/** `8a Skip rules` — tab 2, with a removal staged. */
+const SETTINGS_SKIP_FIDS = {
+  skipIntro: "div[2]/div[0]",
+  rules: "div[2]/div[1]",
+  rulesHead: "div[2]/div[1]/div[0]",
+  rulesLabel: "div[2]/div[1]/div[0]/span[0]",
+  rulesSpacer: "div[2]/div[1]/div[0]/span[1]",
+  rulesTotal: "div[2]/div[1]/div[0]/span[2]",
+  // Rows start at `div[1]`: the head is `div[0]` of the same block, and the add row is the last
+  // child rather than a block of its own.
+  rule: (i) => `div[2]/div[1]/div[${i + 1}]`,
+  rulePattern: (i) => `div[2]/div[1]/div[${i + 1}]/span`,
+  ruleBody: (i) => `div[2]/div[1]/div[${i + 1}]/div`,
+  ruleEffect: (i) => `div[2]/div[1]/div[${i + 1}]/div/div[0]`,
+  ruleDetail: (i) => `div[2]/div[1]/div[${i + 1}]/div/div[1]`,
+  ruleRemove: (i) => `div[2]/div[1]/div[${i + 1}]/button`,
+  addRow: "div[2]/div[1]/div[4]",
+  addInput: "div[2]/div[1]/div[4]/input",
+  addButton: "div[2]/div[1]/div[4]/button",
+
+  tail: "div[2]/div[2]",
+  dotSyncNote: "div[2]/div[2]/div[1]",
+  dotSyncName: "div[2]/div[2]/div[1]/span",
+};
+
+/**
+ * `8a Deletions tab` — tab 3, drawn as a 600px crop.
+ *
+ * The crop's own root is a bordered, rounded, padded card that exists nowhere in the window, so it
+ * is undeclared; every node below it is the tab's real content and maps straight across. Only
+ * styles are compared here (see the module note), which is what lets a 546px drawn card be checked
+ * against the 976px one the window actually has.
+ */
+const SETTINGS_DELETIONS_FIDS = {
+  deletionsTitle: "div[0]",
+  deletionsSub: "div[1]",
+  cards: "div[2]",
+  card: (i) => `div[2]/div[${i}]`,
+  cardHead: (i) => `div[2]/div[${i}]/div[0]`,
+  cardRing: (i) => `div[2]/div[${i}]/div[0]/span[0]`,
+  cardTitle: (i) => `div[2]/div[${i}]/div[0]/span[1]`,
+  cardBadge: "div[2]/div[0]/div[0]/span[2]",
+  cardBody: (i) => `div[2]/div[${i}]/div[1]`,
+  // `policyKey` (`div[3]`) IS DRAWN AND IS NOT MAPPED. Its only distinguishing geometry is
+  // `margin-top:auto`, and a computed margin resolved by `auto` is a used value — 72.375px in a
+  // 520-tall crop, 172.5px in the 764-tall window. That is the same artefact `OWES_BOX` skips a
+  // crop's widths for, arriving through a property that skip does not cover. The line itself is
+  // shipped as drawn (§68); it is the crop that cannot say where it sits.
+};
+
+/**
+ * `8a Schedule monthly` — the schedule panel G4 (#193) does not build.
+ *
+ * TWO SLOTS, AND BOTH ARE THE PANEL'S HEADER. Everything under it — the Weekly/Monthly control, the
+ * twenty day chips, the time stepper, the `full_scan_schedule` key line and the month-edge note —
+ * needs a key the engine does not have. What is left is the panel and the title above the fold, and
+ * even the sub-line is out: this crop draws it at 18.75px line-height where the same sentence in the
+ * window is 18.125px, so the two frames disagree about a node neither of them owns.
+ */
+const SETTINGS_MONTHLY_FIDS = {
+  // `div[0]`, the head row, is NOT mapped either: the crop draws it `gap:18px` where the window
+  // draws the same row at 20px. Two frames of one panel disagreeing about one number is the whole
+  // reason this frame maps thin, and mapping the row would make the app fail whichever it is not.
+  timerText: "div[0]/div[0]",
+  timerTitle: "div[0]/div[0]/div[0]",
+};
+
+/**
+ * `8a Save refused` — a dialog, so no shell slots.
+ *
+ * `body` is declared even though Phase 1 draws one line where the frame draws two (G16, #236): the
+ * node exists in both, its styles are comparable, and leaving it out would hide the height it gets
+ * wrong instead of recording it. That is the difference between an undeclared slot and a
+ * known-deviations row — this one is a capability gap with an issue, so it is the row.
+ */
+const SETTINGS_REFUSED_FIDS = {
+  refusedRow: "div",
+  refusedMark: "div/svg",
+  refusedMarkPath: (i) => `div/svg/path[${i}]`,
+  refusedMarkDot: "div/svg/circle",
+  refusedText: "div/div",
+  refusedTitle: "div/div/div[0]",
+  refusedBody: "div/div/div[1]",
+  refusedReason: "div/div/div[2]",
+  refusedActions: "div/div/div[3]",
+  refusedBack: "div/div/div[3]/button[0]",
+};
+
+/** The five maps an `8a` fixture asks for by view. */
+export function settingsFids(view) {
+  const body = {
+    folders: SETTINGS_FOLDERS_FIDS,
+    skip: SETTINGS_SKIP_FIDS,
+    deletions: SETTINGS_DELETIONS_FIDS,
+    monthly: SETTINGS_MONTHLY_FIDS,
+    refused: SETTINGS_REFUSED_FIDS,
+  }[view];
+  if (!body) throw new Error(`fids: no settings view "${view}"`);
+  // The two crops and the dialog are standalone surfaces: neither draws the app header, and neither
+  // draws the action bar the two 1040 frames carry.
+  const standalone = view === "deletions" || view === "monthly" || view === "refused";
+  return standalone ? body : { ...settingsShell, ...body };
+}

@@ -186,6 +186,19 @@
   --destructive-text: #ff9c9c; /* the emphasised loss inside a destructive card */
   --destructive-border: rgba(255, 59, 59, 0.38);
   --destructive-bg: rgba(255, 59, 59, 0.06);
+  /* Settings › Deletions' `Never ask` card — a FIFTH crimson alpha pair, .04/.30 against the base
+     .06/.38. The same per-site step §52a measured across the bands: this card is not warning you
+     that something is about to happen, it is describing a policy you may choose, so it is drawn a
+     notch quieter than the card that says a file is going. Light steps the border the way
+     --decision-card-border does (.30 → .28 of its own base) and keeps the fill, which light's own
+     --destructive-bg already carries at .04. S10 confirms. */
+  --destructive-card-bg: rgba(255, 59, 59, 0.04);
+  --destructive-card-border: rgba(255, 59, 59, 0.3);
+  /* The unselected radio ring on that card: the one place the design tints an inert hairline. The
+     frame draws it OPAQUE (#6B3A3A) rather than as a crimson alpha — a 1px ring at .3 over a .04
+     fill would be invisible — so it is a colour, not a tint. Light is --line-inert warmed the same
+     distance toward that theme's --destructive; no light frame draws this card. S10 confirms. */
+  --destructive-ring: #6b3a3a;
   /* The disabled `Delete` on `4a Armed`, before the word is typed. NOT --destructive-bg: measured
      0.1 against that token's 0.06, and DEVIATIONS §27 already records .08 as a third value on the
      warning hexagon's tint. Three alphas of one hue, each drawn somewhere. */
@@ -416,6 +429,9 @@
     --destructive-text: #b91c1c;
     --destructive-border: rgba(220, 38, 38, 0.4);
     --destructive-bg: rgba(220, 38, 38, 0.04);
+    --destructive-card-bg: rgba(220, 38, 38, 0.04);
+    --destructive-card-border: rgba(220, 38, 38, 0.32);
+    --destructive-ring: #d9b8b8;
     --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
     --destructive-divider: rgba(220, 38, 38, 0.16);
     --destructive-row-bg: rgba(220, 38, 38, 0.03);
@@ -549,6 +565,9 @@
   --destructive-text: #b91c1c;
   --destructive-border: rgba(220, 38, 38, 0.4);
   --destructive-bg: rgba(220, 38, 38, 0.04);
+  --destructive-card-bg: rgba(220, 38, 38, 0.04);
+  --destructive-card-border: rgba(220, 38, 38, 0.32);
+  --destructive-ring: #d9b8b8;
   --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
   --destructive-divider: rgba(220, 38, 38, 0.16);
   --destructive-row-bg: rgba(220, 38, 38, 0.03);

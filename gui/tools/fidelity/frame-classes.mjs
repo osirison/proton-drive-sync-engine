@@ -80,3 +80,23 @@ export function classify(label, width) {
 
 /** Only a full window owes the fit gate a 1040×764 with nothing painting over the footer. */
 export const OWES_FIT = (kind) => kind === "window";
+
+/**
+ * A CROP'S BOXES ARE NOT COMPARABLE, and the comment on `crop` above already says half of it: the
+ * frame's own width is "an artefact of how it was drawn". So is every width inside it — a 600px
+ * re-render of a block that lives in a 1040 window draws its children 546 wide where the window
+ * draws them 976 — and so is every height, because the text in them wraps at the drawn width. `8a
+ * Deletions tab`'s card bodies are 38.75px tall over two lines and 19.38px over one; nothing about
+ * that is a fact about the app.
+ *
+ * `8a Schedule monthly` settles it beyond doubt. It is the SAME panel `8a Settings` draws, at a
+ * different padding (18/20 against 13/18) and a different sub-line height (18.75 against 18.125):
+ * the two frames disagree with each other, so neither can be the box the app owes.
+ *
+ * Styles are still compared in full, which is what these two frames are actually evidence of — the
+ * radio card's tint, ring, badge and body colours came off `8a Deletions tab` and are asserted
+ * against it. The alternative was a 546px column invented inside a 976px tab to make a crop's
+ * arithmetic come out, which would be a screen built to satisfy a measurement rather than a design.
+ * DEVIATIONS §78.
+ */
+export const OWES_BOX = (kind) => kind !== "crop";
