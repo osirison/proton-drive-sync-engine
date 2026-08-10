@@ -905,13 +905,16 @@ const ACTIVITY_PASSES_FIDS = {
  * group's was, not the same one twice.
  */
 const NEVER_SYNCED_FIDS = {
-  neverHead: "div[0]",
-  neverHeadings: "div[0]/div",
-  neverTitle: "div[0]/div/div[0]",
-  neverSub: "div[0]/div/div[1]",
-  neverClose: "div[0]/button",
+  // `dlg*` rather than `never*`/`details*`: the head is built by `app.js`, which does not know
+  // which dialog it is building, and only one dialog is ever open — so a shared name is what lets
+  // the chrome be stamped at all. The BODY slots below stay dialog-specific.
+  dlgHead: "div[0]",
+  dlgHeadings: "div[0]/div",
+  dlgTitle: "div[0]/div/div[0]",
+  dlgSub: "div[0]/div/div[1]",
+  dlgClose: "div[0]/button",
 
-  neverBody: "div[1]",
+  dlgBody: "div[1]",
   // NOT indexed: one heading and one button for the whole group, however many rules are in it.
   // A function key called with no argument returns `null`, which `fid()` stamps as the literal
   // string "null" — a key no frame has, and a hard `(mapping)` failure rather than a skip.
@@ -923,7 +926,7 @@ const NEVER_SYNCED_FIDS = {
   ruleRowNote: (i, j) => (i === 0 && j < 2 ? `div[1]/div[${j + 2}]/span[1]` : null),
   changeRule: "div[1]/button",
 
-  neverFoot: "div[2]",
+  dlgFoot: "div[2]",
   reassurance: "div[2]/span[0]",
   done: "div[2]/button",
 };
@@ -935,16 +938,16 @@ const NEVER_SYNCED_FIDS = {
  * the webview's own and needs no command.
  */
 const DETAILS_FIDS = {
-  detailsHead: "div[0]",
-  detailsTitle: "div[0]/div",
-  detailsClose: "div[0]/button",
+  dlgHead: "div[0]",
+  dlgTitle: "div[0]/div",
+  dlgClose: "div[0]/button",
 
-  detailsBody: "div[1]",
+  dlgBody: "div[1]",
   kvRow: (i) => `div[1]/div[${i}]`,
   kvKey: (i) => `div[1]/div[${i}]/span[0]`,
   kvValue: (i) => `div[1]/div[${i}]/span[1]`,
 
-  detailsFoot: "div[2]",
+  dlgFoot: "div[2]",
   copyAll: "div[2]/button[0]",
 };
 

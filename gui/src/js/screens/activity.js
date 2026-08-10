@@ -286,6 +286,7 @@ function lookupField({ value, matches, onInput, onClear, inputRef }) {
         )
       : null,
   );
+  fid(field, "search");
   return fid(el("div", { class: "activity-lookup-wrap" }, field), "searchWrap");
 }
 
@@ -411,7 +412,7 @@ function quietBody(props) {
     "div",
     { class: "activity-seam-block" },
     fid(renderSeam({ site: "activityQuiet" }), "seam"),
-    el("div", { class: "activity-verdict" }, fid(mark, "hexagon"), fid(agree, "agree")),
+    fid(el("div", { class: "activity-verdict" }, fid(mark, "hexagon"), fid(agree, "agree")), "verdict"),
     fid(
       el(
         "div",
@@ -433,7 +434,7 @@ function quietBody(props) {
     fid(el("div", { class: "activity-list" }, listFooter(props.onPasses)), "list"),
   );
 
-  return [seamBlock, content];
+  return [fid(seamBlock, "seamBlock"), fid(content, "content")];
 }
 
 // ------------------------------------------------------------------------- the lookup body ----
@@ -499,12 +500,18 @@ function lookupBody(props) {
     hero.append(quoted);
   }
 
-  const seamBlock = el(
-    "div",
-    { class: "activity-seam-block activity-seam-lookup" },
-    fid(renderSeam({ site: "fileLookup" }), "seam"),
-    hero,
+  const seamBlock = fid(
+    el(
+      "div",
+      { class: "activity-seam-block activity-seam-lookup" },
+      fid(renderSeam({ site: "fileLookup" }), "seam"),
+      fid(hero, "hero"),
+    ),
+    "seamBlock",
   );
+  // 26px here against the quiet tab's 24px, and 34px for the block below — measured, and the only
+  // two numbers on this screen that differ between its own two states for no reason but the drawing.
+  seamBlock.style.marginTop = "26px";
 
   // The two cards are drawn only for a path the index actually knows. A miss has no sides to
   // describe, and a folder has no single size.
@@ -564,7 +571,8 @@ function lookupBody(props) {
       )
     : el("div", { class: "activity-content" });
 
-  return [seamBlock, tail];
+  tail.style.marginTop = "34px";
+  return [seamBlock, fid(tail, "content")];
 }
 
 /**
@@ -658,8 +666,13 @@ function passesTab(props) {
     onSelect: (id) => (id === "files" ? props.onFiles?.() : null),
   });
   tabs.classList.add("activity-tabs");
+  // `pillTabs` builds the two buttons, so they are stamped from the outside — the builder is shared
+  // with S6 and has no business knowing about fid slots.
+  fid(tabs.children[0], "filesTab");
+  fid(tabs.children[1], "passesTab");
+  const tabsSpacer = el("span", { class: "activity-spacer" });
   tabs.append(
-    el("span", { class: "activity-spacer" }),
+    fid(tabsSpacer, "tabsSpacer"),
     // The one body-level `Details` button in all 51 frames. It opens the same 522x462 overlay the
     // footer's fourth door does — the same route, reached twice on the one screen that has room
     // for it. Not a pill: 8px/13px padding against the tabs' 7px/15px.
@@ -767,19 +780,24 @@ export function renderNeverSyncedBody(props) {
   }
 
   return [
-    dialogBody({ padding: "0 24px", marginTop: "20px", children: body }),
-    dialogFoot({
-      padding: "14px 24px 18px",
-      marginTop: "14px",
-      children: [
-        fid(
-          el("span", { class: "activity-reassurance" }, ACTIVITY.neverSyncedDialog.reassurance),
-          "reassurance",
-        ),
-        el("span", { class: "activity-spacer" }),
-        fid(filledSecondary(ACTIVITY.neverSyncedDialog.done, props.onClose), "done"),
-      ],
-    }),
+    fid(dialogBody({ padding: "0 24px", marginTop: "20px", children: body }), "dlgBody"),
+    fid(
+      dialogFoot({
+        padding: "14px 24px 18px",
+        marginTop: "14px",
+        gap: "12px",
+        align: "center",
+        children: [
+          fid(
+            el("span", { class: "activity-reassurance" }, ACTIVITY.neverSyncedDialog.reassurance),
+            "reassurance",
+          ),
+          el("span", { class: "activity-spacer" }),
+          fid(filledSecondary(ACTIVITY.neverSyncedDialog.done, props.onClose), "done"),
+        ],
+      }),
+      "dlgFoot",
+    ),
   ];
 }
 
@@ -807,39 +825,41 @@ export function renderDetailsBody(props) {
     ["socket", socketOk ? "connected" : "disconnected"],
   ];
 
-  return [
-    dialogBody({
-      padding: "16px 22px 0",
-      children: rows.map(([key, value], i) =>
+  const kvRow = ([key, value], i) =>
+    fid(
+      el(
+        "div",
+        { class: "activity-kv" },
+        fid(el("span", { class: "activity-kv-key" }, key), "kvKey", i),
         fid(
-          el(
-            "div",
-            { class: "activity-kv" },
-            fid(el("span", { class: "activity-kv-key" }, key), "kvKey", i),
-            fid(
-              el("span", { class: `activity-kv-value${key === "source" ? " is-quiet" : ""}` }, value),
-              "kvValue",
-              i,
-            ),
-          ),
-          "kvRow",
+          el("span", { class: `activity-kv-value${key === "source" ? " is-quiet" : ""}` }, value),
+          "kvValue",
           i,
         ),
       ),
-    }),
-    dialogFoot({
-      padding: "14px 22px 16px",
-      marginTop: "12px",
-      children: [
-        // `Copy all` stays. It needs no command — the clipboard is the webview's own — so it is the
-        // one footer control on this screen that is not gated on a gap. `Open the system log` goes
-        // with the other two openers (G14).
-        fid(
-          smallSecondary(ACTIVITY.copyAll, () => copyDetails(rows), { padding: "8px 14px" }),
-          "copyAll",
-        ),
-      ],
-    }),
+      "kvRow",
+      i,
+    );
+
+  return [
+    fid(dialogBody({ padding: "16px 22px 0", overflow: "hidden", children: rows.map(kvRow) }), "dlgBody"),
+    fid(
+      dialogFoot({
+        padding: "14px 22px 16px",
+        marginTop: "12px",
+        gap: "8px",
+        children: [
+          // `Copy all` stays. It needs no command — the clipboard is the webview's own — so it is
+          // the one footer control on this screen not gated on a gap. `Open the system log` goes
+          // with the other two openers (G14).
+          fid(
+            smallSecondary(ACTIVITY.copyAll, () => copyDetails(rows), { padding: "8px 14px" }),
+            "copyAll",
+          ),
+        ],
+      }),
+      "dlgFoot",
+    ),
   ];
 }
 
@@ -860,24 +880,40 @@ function copyDetails(rows) {
  *
  * No head and no ✕ either: this dialog draws neither, so it takes no `dialogHead`. Esc still closes.
  */
+/** The 48px one-way mark, with the gradient subtree the frame records under `defs`. */
+function pendingMark() {
+  // `masked`: the frame fills the track with `--surface`, the same way the settled marks do.
+  const svg = renderHexagon({ size: PENDING_MARK, state: "syncing", direction: "up", masked: true });
+  fid(svg, "pendingHexagon");
+  fid(svg.querySelector("defs"), "pendingHexDefs");
+  fid(svg.querySelector("defs > linearGradient"), "pendingHexGradient");
+  const stops = svg.querySelectorAll("defs > linearGradient > stop");
+  stops.forEach((stop, j) => fid(stop, "pendingHexStop", j));
+  svg.querySelectorAll(":scope > path").forEach((path, i) => fid(path, "pendingHexPath", i));
+  return svg;
+}
+
 export function renderFilePendingBody(props) {
   const t = props.transfer;
-  const hero = el(
-    "div",
-    { class: "activity-pending-hero" },
-    fid(renderHexagon({ size: PENDING_MARK, state: "syncing", direction: "up" }), "pendingHexagon"),
-    fid(el("div", { class: "activity-pending-path" }, t.path), "pendingPath"),
-    fid(el("div", { class: "activity-pending-title" }, ACTIVITY.lookup.pending), "pendingTitle"),
-    t.bytes_total != null && t.started_epoch_secs != null
-      ? fid(
-          el(
-            "div",
-            { class: "activity-pending-sub" },
-            ACTIVITY.lookup.pendingSub(since(t.started_epoch_secs), t.bytes_total),
-          ),
-          "pendingSub",
-        )
-      : null,
+  const hero = fid(
+    el(
+      "div",
+      { class: "activity-pending-hero" },
+      pendingMark(),
+      fid(el("div", { class: "activity-pending-path" }, t.path), "pendingPath"),
+      fid(el("div", { class: "activity-pending-title" }, ACTIVITY.lookup.pending), "pendingTitle"),
+      t.bytes_total != null && t.started_epoch_secs != null
+        ? fid(
+            el(
+              "div",
+              { class: "activity-pending-sub" },
+              ACTIVITY.lookup.pendingSub(since(t.started_epoch_secs), t.bytes_total),
+            ),
+            "pendingSub",
+          )
+        : null,
+    ),
+    "pendingHero",
   );
 
   return [

@@ -36,10 +36,13 @@
   flex: none;
 }
 /* The two rungs track the width family, not anything semantic: 520 gets the tighter one. */
+/* `align-items: baseline` and NO padding-bottom — both measured off `6a Details`, the only mapped
+   frame that draws this rung. The shorthand's 20px bottom padded a head the frame gives none, the
+   same defect the wide rung carried. */
 .dialog-head-compact {
   gap: 10px;
-  padding: 20px 22px;
-  align-items: center;
+  padding: 20px 22px 0;
+  align-items: baseline;
 }
 /* NO padding-bottom. `7a Never synced` records 22px top and 24px each side and nothing at the
    foot — its 69.38px height is 47.38 of content plus the 22 above it, and the shorthand's 22px
@@ -54,11 +57,16 @@
   flex: 1;
   min-width: 0;
 }
+/* `flex: 1` only when the title IS the flex child. Under a sub-line it sits inside
+   `.dialog-headings`, which takes the flex — and `7a Never synced` records the title there at the
+   initial `flex-grow: 0` / `flex-basis: auto`. */
 .dialog-title {
-  flex: 1;
-  min-width: 0;
   font-size: 16px;
   font-weight: 600;
+}
+.dialog-head > .dialog-title {
+  flex: 1;
+  min-width: 0;
 }
 .dialog-head-wide .dialog-title {
   font-size: 18px;
@@ -71,22 +79,37 @@
   color: var(--text-4);
 }
 
-.dialog-close {
+/* Per rung, not per class: `7a Never synced` records `flex-shrink: 0` on its ✕ and `6a Details`
+   records the initial `1`. Two frames, two answers. */
+.dialog-head-wide .dialog-close {
   flex: none;
+}
+
+/* A FIXED SQUARE, which is a robustness fix rather than a cosmetic one. `✕` (U+2715) is outside the
+   bundled subsets, so its advance width comes from whatever the machine has installed — and left to
+   size itself the button was 1.94px narrower here than on the prototype's machine. That difference
+   does not stay in the button: `.dialog-headings` is `flex: 1` beside it, so the title and the
+   sub-line under it inherit the error, and `boxComparability` cannot see it (its taint reaches a
+   node's parent, and these sit two levels below the flex container that holds the glyph).
+   26x26 is the drawn size; pinning it makes the head's layout independent of the font. */
+.dialog-close {
+  width: 26px;
+  height: 26px;
 }
 
 /* The scrolling middle and the ruled foot. Neither existed before S5, because the four dialogs
    built until now put a placeholder where their body goes; `7a Never synced` and `6a Details`
    both draw the pair, so it is built once here rather than twice in the screen. */
+/* WHAT REPEATS IS HERE; WHAT DIFFERS IS INLINE. The two dialogs that draw these agree on the
+   border, the flex roles and nothing else — `7a Never synced`'s body overflows visibly and its foot
+   is `center`/12px, `6a Details` clips and its foot is `normal`/8px. `gap`, `align-items` and
+   `overflow` are all asserted, so putting a majority value here quietly fails the other frame. */
 .dialog-body {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
 }
 .dialog-foot {
   display: flex;
-  align-items: center;
-  gap: 12px;
   flex: none;
   border-top: 1px solid var(--divider);
 }

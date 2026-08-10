@@ -55,7 +55,7 @@ import {
   passesSummaryOf,
 } from "./screens/activity.js";
 import { severityOf } from "./ui/rows.js";
-import { activeFixture } from "./fixtures/frames.js";
+import { activeFixture, fid } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
 
 // ---- shell state ----
@@ -1590,19 +1590,30 @@ async function lookupPath(query) {
  * `7a Never synced`'s counted title stayed at whatever was known before its data arrived.
  */
 function dialogChildren(dspec, content, title, headless, width = dspec.size?.[0] ?? 522) {
+  const head = headless
+    ? null
+    : dialogHead({
+        title,
+        subtitle: content?.subtitle ?? null,
+        id: "dialog-title",
+        size: width >= 600 ? "wide" : "compact",
+        // Per route, not always. `8a Save refused` and `9a CLI missing` draw no ✕ at all — they
+        // are asking you to choose between two repairs, and a dismiss button in the corner is a
+        // third answer the design does not offer. Esc still closes them, through F4's chain.
+        onClose: dspec.closable ? () => closeOverlay() : null,
+      });
+  if (head) {
+    // The head's own nodes, stamped here because this is where they are built. `dialogHead` cannot
+    // do it: `ui/dialog.js` is a foundation primitive and importing `fixtures/frames.js` there
+    // would close the cycle that module's header forbids.
+    fid(head, "dlgHead");
+    fid(head.querySelector(".dialog-headings"), "dlgHeadings");
+    fid(head.querySelector(".dialog-title"), "dlgTitle");
+    fid(head.querySelector(".dialog-subtitle"), "dlgSub");
+    fid(head.querySelector(".dialog-close"), "dlgClose");
+  }
   return [
-    headless
-      ? null
-      : dialogHead({
-          title,
-          subtitle: content?.subtitle ?? null,
-          id: "dialog-title",
-          size: width >= 600 ? "wide" : "compact",
-          // Per route, not always. `8a Save refused` and `9a CLI missing` draw no ✕ at all — they
-          // are asking you to choose between two repairs, and a dismiss button in the corner is a
-          // third answer the design does not offer. Esc still closes them, through F4's chain.
-          onClose: dspec.closable ? () => closeOverlay() : null,
-        }),
+    head,
     ...(content?.children ?? [
       screenPlaceholder(title, dspec.task && dspec.issue ? `${dspec.task} · issue ${dspec.issue}` : null),
     ]),

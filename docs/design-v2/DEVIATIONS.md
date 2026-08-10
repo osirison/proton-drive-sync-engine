@@ -2626,3 +2626,38 @@ loop for its full 3s index busy timeout". One index open per keystroke queues be
 own writer, and a 20-character path is 20 of them whose answers the latest-wins guard then throws
 away. The field repaints on the keystroke and the index is asked afterwards; the two are
 deliberately not coupled.
+
+**A MAPPED FRAME CAN RENDER ALMOST NOTHING AND THE GATE STAYS GREEN, and S5 is where that finally
+cost something.** The never-synced band and the whole `7a Never synced` body rendered EMPTY through
+four separate causes, and every gate passed: `assert.mjs` compares nodes the app has stamped, so a
+block that renders nothing stamps nothing and is simply not compared. It was found by dumping the
+`data-fid` attributes per frame — `7a Never synced` had 2 where it should have had 7 — not by any
+check.
+
+`assert.mjs` now reports, per frame, the slots its fixture DECLARES that the running app never
+stamped. `check-fixtures.mjs` already fails on the complement (a declared slot whose key exists in
+no frame — how the dead `hexRect`/`hexNumeral` declarations were found); this is the other half, and
+it is invisible to that gate because the key is real and merely unreached.
+
+A report rather than a failure, for the same reason the unmapped-frames line is one: it is true of
+shipped screens too. `2a Syncing` and `2a Needs you` declare `transferTrack`/`transferFill` for a
+progress bar that is unreachable by construction (§63, #98), and four compact frames declare `meta`
+and `action` for panel states they do not draw. Listed every run so that "the gate is green" is
+never confused with "the gate looked at anything".
+
+Acting on S5's own entries took the screen from 49,299 assertions to **51,743**, and the newly
+compared nodes were not all correct: thirteen further mismatches surfaced the moment they were
+stamped, every one of them shared dialog CSS carrying a value that differs per dialog —
+`.dialog-head-compact` padding its bottom where the frame gives none (the same defect the wide rung
+had), `.dialog-title` taking the flex that belongs to `.dialog-headings`, and `gap` / `align-items`
+/ `overflow` stated once in `dialog.css` where `6a Details` and `7a Never synced` disagree on all
+three. What repeats is in the stylesheet now; what differs is inline at the call site, which is what
+the measurement said in the first place.
+
+**The ✕ is a fixed 26x26 square, and that is a robustness fix.** `✕` (U+2715) is outside the bundled
+font subsets, so its advance comes from whatever the machine has installed — left to size itself the
+button came out 1.94px narrower here than on the prototype's machine. The error does not stay in the
+button: `.dialog-headings` is `flex: 1` beside it, so the title and sub-line under it inherit it, and
+`boxComparability` cannot see that — its taint reaches a node's PARENT, and these sit two levels
+below the flex container holding the glyph. Pinning the drawn size makes the head's layout
+independent of the font rather than recording a deviation for it.

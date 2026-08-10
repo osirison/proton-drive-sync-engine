@@ -130,17 +130,26 @@ export function dialogHead({ title, subtitle = null, onClose = null, size = "com
  * callers is a table pretending to be a pattern; what genuinely repeats — `flex:1`, the divider,
  * the 12px gap — is in `dialog.css`, and the rest is measured per dialog at the call site.
  */
-export function dialogBody({ padding = null, marginTop = null, children = [] } = {}) {
+export function dialogBody({ padding = null, marginTop = null, overflow = null, children = [] } = {}) {
   const node = el("div", { class: "dialog-body" }, children);
   if (padding != null) node.style.padding = padding;
   if (marginTop != null) node.style.marginTop = marginTop;
+  if (overflow != null) node.style.overflow = overflow;
   return node;
 }
 
-export function dialogFoot({ padding = null, marginTop = null, children = [] } = {}) {
+export function dialogFoot({
+  padding = null,
+  marginTop = null,
+  gap = null,
+  align = null,
+  children = [],
+} = {}) {
   const node = el("div", { class: "dialog-foot" }, children);
   if (padding != null) node.style.padding = padding;
   if (marginTop != null) node.style.marginTop = marginTop;
+  if (gap != null) node.style.gap = gap;
+  if (align != null) node.style.alignItems = align;
   return node;
 }
 
