@@ -2775,16 +2775,19 @@ the deck's sentence begins `One rule removed`, and there is no plural form to re
 data has no byte discriminator. The rule is the **folder anchor** plus whether the samples are the
 whole set:
 
-| `files` | `folder_exists` | drawn                                                                               |
-| ------- | --------------- | ----------------------------------------------------------------------------------- |
-| > 0     | `null`          | `Skipping 2 files right now` + the paths — **only when `samples.length === files`** |
-| > 0     | `true`/`false`  | `Skipping 2 files, 3.1 GB` + `the folder still exists…` when it does                |
-| 0       | `false`         | `Matching nothing` + `safe to remove`, at `opacity:.62`                             |
-| 0       | `true`          | `Matching nothing` + `the folder still exists…`, **not dimmed**                     |
-| 0       | `null`          | `Matching nothing`, no second line                                                  |
-| —       | `error`         | `Couldn't be checked` + the walk's own words, in mono                               |
+| `files`    | `folder_exists` | drawn                                                                               |
+| ---------- | --------------- | ----------------------------------------------------------------------------------- |
+| **absent** | —               | `Checking…`, no second line — the walk has not answered for this rule               |
+| > 0        | `null`          | `Skipping 2 files right now` + the paths — **only when `samples.length === files`** |
+| > 0        | `true`/`false`  | `Skipping 2 files, 3.1 GB` + `the folder still exists…` when it does                |
+| 0          | `false`         | `Matching nothing` + `safe to remove`, at `opacity:.62`                             |
+| 0          | `true`          | `Matching nothing` + `the folder still exists…`, **not dimmed**                     |
+| 0          | `null`          | `Matching nothing`, no second line                                                  |
+| —          | `error`         | `Couldn't be checked` + the walk's own words, in mono                               |
 
-Two of those six are the point. The samples clause exists because the command caps samples at four
+The first row is the review's (§78j): `files ?? 0` collapsed "not measured" into "measured zero", so
+every rule read `Matching nothing` for the length of a local-tree walk and permanently after a failed
+one. Three of the seven are the point. The samples clause exists because the command caps samples at four
 (`MAX_SAMPLES`) and a list of four under `Skipping 50 files right now` reads as the full set. And
 **`safe to remove` is never said of a rule that is hiding something**: it needs nothing matched AND
 the folder known gone, because removing a rule that still matches files starts syncing them, and
