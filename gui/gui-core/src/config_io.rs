@@ -234,7 +234,11 @@ impl ConfigDoc {
         //
         // An ABSENT key is not one of these: the daemon fills it from its own default. An EMPTY
         // one is, and it is what a settings form produces when someone clears a field.
-        for key in ["local_root", "remote_root"] {
+        // `proton_cli` is STRICTER THAN THE DAEMON, deliberately. `validate_runtime_config` does
+        // not check it, so an empty value starts a daemon that then fails every single pass with
+        // `os error 2` — the ENOENT loop #158 traced, arriving from a settings field someone
+        // cleared rather than from a PATH race. There is no config in which an empty CLI works.
+        for key in ["local_root", "remote_root", "proton_cli"] {
             if self.get_str(key).is_some_and(|v| v.trim().is_empty()) {
                 return Err(ConfigError::Invalid(format!("{key} must not be empty")));
             }
@@ -399,7 +403,7 @@ exclude = ["*.tmp"]
         // A settings form produces this the moment someone clears a field. It parses as valid TOML
         // and the daemon exits on it at `validate_runtime_config` — after the GUI has said "Saved"
         // and the process running the old settings is already gone.
-        for key in ["local_root", "remote_root"] {
+        for key in ["local_root", "remote_root", "proton_cli"] {
             let doc = ConfigDoc::from_toml_str(&format!("{key} = \"\"\n")).unwrap();
             let err = doc.validate().unwrap_err();
             assert!(

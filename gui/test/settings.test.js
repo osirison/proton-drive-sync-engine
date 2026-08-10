@@ -222,6 +222,9 @@ test("an absent key equals its default, so re-picking what is shown writes nothi
     {},
   );
   assert.deepEqual(configUpdate(fresh, { events_driven: true }), {});
+  // The timer draws `5 min` on a silent config, so stepping up and back down to it writes nothing.
+  assert.deepEqual(configUpdate(fresh, { scan_interval_secs: 300 }), {});
+  assert.deepEqual(configUpdate(fresh, { scan_interval_secs: 360 }), { scan_interval_secs: 360 });
   // And a real change from the default is still a change.
   assert.deepEqual(configUpdate(fresh, { events_driven: false }), { events_driven: false });
   assert.deepEqual(configUpdate(fresh, { delete_approval_local: false }), { delete_approval_local: false });

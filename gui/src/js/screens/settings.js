@@ -232,6 +232,9 @@ export function removalCost(saved, staged, report) {
  * report a change that removing and re-adding the same rule did not make.
  */
 export const ABSENT_DEFAULTS = {
+  // `src/config.rs` resolves this to 300 when the file is silent, and `timerPanel` draws that —
+  // so stepping the timer up and back down to what it already said must not stage a change.
+  scan_interval_secs: 300,
   events_driven: true,
   delete_approval_remote: true,
   delete_approval_local: true,
@@ -347,9 +350,12 @@ function pairSide(props, side) {
       { class: local ? "settings-pair-row" : "settings-pair-row-single" },
       input,
       local
-        ? fid(
-            inputButton(SETTINGS.choose, () => handlers.onChoose?.(), "11px 15px"),
-            "pairChoose",
+        ? focusable(
+            fid(
+              inputButton(SETTINGS.choose, () => handlers.onChoose?.(), "11px 15px"),
+              "pairChoose",
+            ),
+            "choose",
           )
         : null,
     ),
@@ -563,10 +569,13 @@ function ruleRow(props, rule, i, pending) {
         "ruleBody",
         i,
       ),
-      fid(
-        rowButton(SETTINGS.remove, () => props.handlers.onRemoveRule?.(rule.pattern)),
-        "ruleRemove",
-        i,
+      focusable(
+        fid(
+          rowButton(SETTINGS.remove, () => props.handlers.onRemoveRule?.(rule.pattern)),
+          "ruleRemove",
+          i,
+        ),
+        `remove:${rule.pattern}`,
       ),
     ),
     "rule",
@@ -648,9 +657,12 @@ function rulesBlock(props) {
             }),
             "addInput",
           ),
-          fid(
-            inputButton(SETTINGS.add, () => handlers.onAddRule?.(), "11px 18px"),
-            "addButton",
+          focusable(
+            fid(
+              inputButton(SETTINGS.add, () => handlers.onAddRule?.(), "11px 18px"),
+              "addButton",
+            ),
+            "add:exclude",
           ),
         ),
         "addRow",
