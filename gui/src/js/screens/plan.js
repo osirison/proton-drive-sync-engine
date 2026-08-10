@@ -81,11 +81,15 @@ export function isGated(action) {
  *
  * A deliberate second copy of `plan.rs::sorted_for_display`, which lives in gui-core and cannot be
  * reached from here — `run_dry_run` returns the parsed `DryRunReport` verbatim, in emission order.
- * Change one, change the other. "Otherwise the daemon's order" rests on `Array#sort` being stable.
+ * Change one, change the other. The index is an explicit tie-break: the daemon's order does not
+ * depend on sort stability, which nothing here tests in WebKitGTK — the engine that ships.
  */
 export function sortedForDisplay(plan = []) {
   const first = (row) => (isDisplayDestructive(row.action) ? 0 : 1);
-  return [...plan].sort((a, b) => first(a) - first(b));
+  return plan
+    .map((row, at) => ({ row, at }))
+    .sort((a, b) => first(a.row) - first(b.row) || a.at - b.at)
+    .map(({ row }) => row);
 }
 
 /**
