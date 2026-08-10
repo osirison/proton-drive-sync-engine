@@ -2935,14 +2935,22 @@ settings is gone. It now makes the daemon's own two checks, so those configs are
 and surface through `8a Save refused` with the daemon's wording, which is the path the frame exists
 for.
 
-**And two more from the review bot's suppressed block, which is where this repo's real findings keep
-turning up.** `choose_folder` folded a task-join failure into `None` with `unwrap_or(None)`, making a
+**And four more from the review bot's SUPPRESSED block, over two passes — which is where this
+repo's real findings keep turning up (13/13 before this PR, 15/15 after).** They arrive collapsed
+behind a `<details>` and never as inline comments, so they have to be expanded by hand every time. `choose_folder` folded a task-join failure into `None` with `unwrap_or(None)`, making a
 picker that could not open indistinguishable from one somebody closed — the same silence as
 `Sweep now`, one file over; it now returns `Result<Option<String>, String>` and the bar says which
 happened. And `.radio-card.tone-destructive .radio-ring` was three classes to the selected rule's
 two, so it won the cascade on `border-color` and drew the SELECTED `Never ask` dot in `#6B3A3A`
 instead of white. No frame draws that state — `8a Deletions tab` selects the first card — so nothing
 could have compared it, which is the same blind spot as everything else in this section.
+
+The third pass found the other two, and both are a promise the code had stopped keeping. The
+picker's `into_path()` failure still folded into `Ok(None)` — i.e. into "dismissed" — one commit
+after the doc comment above it started promising the opposite. And `loaded` was `configLoaded`
+alone, so a config that PARSED once and stopped parsing later left a stale `configInfo` behind a
+true flag: the screen kept a deletion-policy card selected from the last good read, underneath the
+banner saying the file could not be read. Answering for a file and disclaiming it in one breath.
 
 The eight refuted findings were: the per-visit reset (deliberate, and documented at the function),
 the toggle's transition on first paint (§30's own rule), `intervalLabel(0)` (unreachable —

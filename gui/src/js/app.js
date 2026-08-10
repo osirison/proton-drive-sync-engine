@@ -2020,7 +2020,12 @@ function settingsProps() {
     // `refreshConfig` swallows it, so `configInfo` stays null — and `?? {}` would draw that as an
     // empty, valid config: both folder fields blank, live updates on, and a deletion policy card
     // selected that is not the one running. A screen may not answer for a file it could not read.
-    loaded: Boolean(activeFixture()) || configLoaded,
+    // `configLoaded && !configError`, and the second half is not redundant: `refreshConfig` runs on
+    // a timer, so a file that PARSED once and stops parsing later leaves `configLoaded` true with a
+    // stale `configInfo` behind it. The screen would then keep a deletion-policy card selected from
+    // the last good read, underneath a banner saying the file could not be read — answering for it
+    // and disclaiming it in the same breath.
+    loaded: Boolean(activeFixture()) || (configLoaded && !configError),
     configError: activeFixture() ? null : configError,
     // The daemon is mid-pass, or one has just been asked for: `Sweep now` would queue behind it
     // with nothing to show for the click.

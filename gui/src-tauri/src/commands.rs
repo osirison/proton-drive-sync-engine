@@ -362,13 +362,20 @@ pub async fn choose_folder(
         if let Some(dir) = start.filter(|s| !s.is_empty()) {
             builder = builder.set_directory(dir);
         }
-        builder
-            .blocking_pick_folder()
-            .and_then(|folder| folder.into_path().ok())
-            .map(|path| path.display().to_string())
+        // `into_path()` FAILS INTO `Err`, NOT INTO `None`. It errors on a `FilePath` that is a URI
+        // rather than a path — a portal backend, not the `gtk3` one this build links — and folding
+        // that into `None` would have made an unusable selection read as a cancellation, which is
+        // the contract this function's own doc comment had just finished promising it does not do.
+        match builder.blocking_pick_folder() {
+            None => Ok(None),
+            Some(folder) => folder
+                .into_path()
+                .map(|path| Some(path.display().to_string()))
+                .map_err(|e| format!("that folder is not a path this app can use: {e}")),
+        }
     })
     .await
-    .map_err(|join_error| format!("folder picker task failed: {join_error}"))
+    .unwrap_or_else(|join_error| Err(format!("folder picker task failed: {join_error}")))
 }
 
 /// The dry-run plan plus the derived safety facts the Plan-preview screen needs.
