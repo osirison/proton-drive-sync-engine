@@ -52,6 +52,29 @@ export function actionsThatHappen(summary) {
   return Math.max(0, (summary.total ?? 0) - (summary.skipped_unsupported ?? 0));
 }
 
+/**
+ * Has the merge finished, and did it work?
+ *
+ * `waiting` · `failed` · `done`, from one status reply plus what the flow remembers. Pure, because
+ * every arm of it is a claim about someone's files: `done` opens a dialog that says `Both sides now
+ * match` and `Nothing was deleted`.
+ *
+ * A COMPLETED PASS IS NOT A SUCCESSFUL ONE. `reconcile_blocking` bumps `reconcile_seq` either way —
+ * "the attempt is complete (recorded either way)", src/daemon.rs — and records the reason in
+ * `last_error`, so the counter alone would call a failed first sync a finished merge.
+ *
+ * @param reply    the daemon's `response`, or null when it has not answered
+ * @param mergeSeq `reconcile_seq` when the merge was started, or null if it had not answered then
+ */
+export function mergeOutcomeOf(reply, mergeSeq = null) {
+  if (!reply || reply.syncing) return "waiting";
+  const seq = reply.reconcile_seq ?? 0;
+  // With a counter to compare against, a pass has to have completed since the merge began; without
+  // one, the daemon had never answered, so any recorded sync is this one.
+  if (mergeSeq != null ? seq <= mergeSeq : !reply.last_sync_epoch_secs) return "waiting";
+  return reply.last_error ? "failed" : "done";
+}
+
 /** Can step 1 proceed? Both roots must be non-empty — the daemon has no folder pair otherwise. */
 export function pairReady({ local = "", remote = "" } = {}) {
   return Boolean(String(local).trim() && String(remote).trim());

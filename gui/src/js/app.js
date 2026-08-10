@@ -70,6 +70,7 @@ import {
   unmountOnboarding,
   renderOnboardingFooter,
   onboardingBarShape,
+  mergeOutcomeOf,
   renderFirstSync,
   renderConsent,
   renderCliMissing,
@@ -535,14 +536,23 @@ function render() {
   const remoteRoot = live?.remote_root ?? configInfo?.remote_root ?? null;
 
   // Latched, not a raw read of the daemon state — see routes.js for the whole reason.
+  //
+  // THE FLOW OVERRIDES THE LATCH once it is past the takeover, and it has to: `derive_state` returns
+  // `firstRun` for a reachable daemon that has never synced, which is exactly what the daemon is
+  // between `start_service` and its first pass beginning — so the latch would re-enter mid-merge and
+  // redraw step 2, with its stale plan, behind the merge dialog. `nextOnboardingLatch` stays pure;
+  // this is the caller knowing something the daemon state cannot say.
   const wasOnboarding = onboardingLatch;
-  onboardingLatch = nextOnboardingLatch(
-    onboardingLatch,
-    st,
-    Boolean(localRoot && remoteRoot),
-    configLoaded,
-    statusPolled,
-  );
+  onboardingLatch =
+    onboardingStage !== null
+      ? false
+      : nextOnboardingLatch(
+          onboardingLatch,
+          st,
+          Boolean(localRoot && remoteRoot),
+          configLoaded,
+          statusPolled,
+        );
   // ENTERING the takeover discards both layers. Hiding them is not enough: the latch releases when
   // the daemon comes up, and anything still held would be restored on the way out — so finishing a
   // first-run setup would land you on the Conflicts screen with a Details dialog over it, from
@@ -2527,8 +2537,13 @@ function onboardingDialogContent(id) {
           },
           onStartSyncing: async () => {
             if (!onboardingAgreed) return;
+            // `resume` RESOLVES with its error inside the payload rather than rejecting, so the
+            // dialog closes on the round trip landing, not on the daemon being resumed. Deliberate,
+            // and the same call S4's `Run this sync` makes: the main screen behind is where both
+            // outcomes are legible (`Resume` on a paused daemon, `Try again now` on an unreachable
+            // one), and holding someone inside a consent they have already given is worse.
             await command(api.resume);
-            onboardingStage = null;
+            resetOnboardingFlow();
             render();
           },
         },
@@ -2536,6 +2551,26 @@ function onboardingDialogContent(id) {
     };
   }
   return null;
+}
+
+/**
+ * The flow is over. Everything it holds is per-run, and a later re-entry — a config wiped from under
+ * a machine whose daemon is gone — must open at step 1 with no plan and an unticked box, not at
+ * step 2 with yesterday's rehearsal already agreed to.
+ */
+function resetOnboardingFlow() {
+  onboardingStage = null;
+  onboardingStep = "folders";
+  onboardingRoots = null;
+  onboardingSeq += 1;
+  onboardingAnswered = null;
+  onboardingDryRun = null;
+  onboardingError = null;
+  onboardingCheckedAt = null;
+  onboardingAgreed = false;
+  onboardingMergeSeq = null;
+  onboardingMergeSeen = false;
+  onboardingMergeWaits = 0;
 }
 
 /** Take the merge dialog down and put its reason on step 2, where `Back` and `Check again` are. */
@@ -2570,12 +2605,12 @@ function advanceOnboardingStage() {
     return;
   }
   onboardingMergeSeen = true;
-  if (reply.syncing) return;
-  const seq = reply.reconcile_seq ?? 0;
-  // A pass has to have COMPLETED since the merge started. Without the counter a status reply
-  // arriving before the daemon's first pass begins reads as a finished merge.
-  if (onboardingMergeSeq != null && seq <= onboardingMergeSeq) return;
-  if (onboardingMergeSeq == null && !reply.last_sync_epoch_secs) return;
+  const outcome = mergeOutcomeOf(reply, onboardingMergeSeq);
+  if (outcome === "waiting") return;
+  if (outcome === "failed") {
+    failOnboardingMerge(reply.last_error);
+    return;
+  }
   onboardingStage = "consent";
   if (!reply.paused) command(api.pause);
 }

@@ -3110,3 +3110,29 @@ Same pattern as §78h: F1–F6 wrote these against frames nothing had rendered y
 67,109 assertions / 0 failures, 275/275 drawn strings, 240 tests. 36 of 51 frames mapped. Fifteen
 Phase-1 deviations recorded against #240, #241, #242, #243, #244, #191, #206, #207, #213, #218 and
 #229; five gaps filed as #240–#244.
+
+### 79i. Three transitions the frames cannot show, found by reading the daemon rather than the drawing
+
+**A completed pass is not a successful one.** `advanceOnboardingStage` opened the consent dialog on
+`reconcile_seq` advancing — and `reconcile_blocking` bumps that counter on failure too ("the attempt
+is complete (recorded either way)", `src/daemon.rs`), recording the reason in `last_error`. So a
+first sync that failed — the CLI not logged in, the boot-PATH class this project has already shipped
+once — opened a dialog saying `Both sides now match` and `Nothing was deleted` over a merge that did
+nothing. The decision moved into `mergeOutcomeOf`, pure and tested, because every arm of it is a
+claim about someone's files; a failure now goes back to step 2 with the daemon's own string.
+
+**The latch re-entered mid-merge.** `derive_state` returns `firstRun` for a reachable daemon that has
+never synced, which is exactly what the daemon is between `start_service` and its first pass
+beginning — so the takeover would reopen behind the merge dialog, drawing step 2 and its stale plan.
+`nextOnboardingLatch` stays pure (it is PR #131's routing and is carried forward verbatim); the
+caller overrides it while the flow is past the takeover, which is a thing the daemon state cannot
+say.
+
+**Nothing reset the flow.** `onboardingStep`, the plan and the ticked consent box all survived the
+run. A later re-entry would have opened at step 2 on yesterday's rehearsal with the box already
+ticked — so consent completing resets the lot.
+
+`resume` was left as it was, deliberately: it resolves with its error inside the payload rather than
+rejecting, so the dialog closes on the round trip landing rather than on the daemon being resumed.
+That is the same call `5a Plan`'s `Run this sync` makes (§76) — the main screen behind is where both
+outcomes are legible, and holding someone inside a consent they have already given is worse.

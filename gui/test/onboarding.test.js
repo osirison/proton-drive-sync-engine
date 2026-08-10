@@ -17,6 +17,7 @@ import {
   pairReady,
   factRows,
   mergeFooterText,
+  mergeOutcomeOf,
   onboardingBarShape,
 } from "../src/js/screens/onboarding.js";
 import { ONBOARDING } from "../src/js/ui/copy.js";
@@ -155,4 +156,42 @@ test("a whole number of gigabytes is not written with a trailing .0", () => {
 test("the free-space line states what C4 answers and claims nothing about what it needs", () => {
   assert.equal(ONBOARDING.freeSpaceHave(214_000_000_000), "You have 214 GB.");
   assert.ok(!ONBOARDING.freeSpaceHave(1).includes("Needs"));
+});
+
+// ---- has the merge finished, and did it work -------------------------------------------------
+
+const reply = (over = {}) => ({
+  syncing: false,
+  paused: false,
+  reconcile_seq: 1,
+  last_sync_epoch_secs: 1_754_000_000,
+  last_error: null,
+  ...over,
+});
+
+test("a merge that has not answered, or is still running, is not a merge that finished", () => {
+  assert.equal(mergeOutcomeOf(null, 0), "waiting");
+  assert.equal(mergeOutcomeOf(reply({ syncing: true }), 0), "waiting");
+  // The pass counter has not moved past where it stood when the merge started.
+  assert.equal(mergeOutcomeOf(reply({ reconcile_seq: 4 }), 4), "waiting");
+  assert.equal(mergeOutcomeOf(reply({ reconcile_seq: 3 }), 4), "waiting");
+});
+
+test("a COMPLETED pass is not a SUCCESSFUL one", () => {
+  // `reconcile_blocking` bumps the counter either way and records the reason. Without the
+  // `last_error` arm the consent dialog opens over a merge that did nothing, saying `Both sides now
+  // match` and `Nothing was deleted`.
+  assert.equal(mergeOutcomeOf(reply({ reconcile_seq: 5 }), 4), "done");
+  assert.equal(
+    mergeOutcomeOf(reply({ reconcile_seq: 5, last_error: "proton-drive: not logged in" }), 4),
+    "failed",
+  );
+});
+
+test("with no counter to compare against, a recorded sync is this one", () => {
+  // The daemon had never answered when `Start the first sync` was pressed, so there is no seq to
+  // beat and `last_sync_epoch_secs` is the only evidence a pass ran at all.
+  assert.equal(mergeOutcomeOf(reply({ last_sync_epoch_secs: null }), null), "waiting");
+  assert.equal(mergeOutcomeOf(reply(), null), "done");
+  assert.equal(mergeOutcomeOf(reply({ last_error: "boom" }), null), "failed");
 });
