@@ -2439,6 +2439,13 @@ group's `focusout` listener are two halves of one rule (set the attribute alone 
 stays armed; add the listener alone and the gate cannot be completed), so they are `gateGroup` in
 controls.js now and `deletionGate` uses it too.
 
+**A re-check clears the gate ALWAYS, where `06-plan.md` asks for it only when the plan changed.**
+Not a decision this screen makes so much as one its own structure makes for it: a re-check goes
+through the checking body, the checking body wears the four doors, and the bar holding the field
+therefore does not exist while the rehearsal runs. The stricter behaviour is the safe direction — a
+word typed against a plan that is being re-derived is a word typed against nothing — and building the
+looser one would mean carrying the field across a footer that is not there.
+
 **An action bar was rebuilt on every poll, and nobody noticed because every one of them was a
 placeholder.** The shell patched the four doors and rebuilt the bar; the moment a bar holds a text
 field that is a half-typed `DELETE` destroyed twice a second. The footer is now patched by owner
