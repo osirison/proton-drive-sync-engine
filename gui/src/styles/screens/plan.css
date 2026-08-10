@@ -298,9 +298,15 @@
   text-align: center;
 }
 /* The daemon's exact string, quoted rather than paraphrased — the same block `6a Activity passes`
-   gives a failed pass, on `--surface` inside the panel so it reads as a quotation. */
+   gives a failed pass, on `--surface` inside the panel so it reads as a quotation.
+
+   MONO IS THE POINT, not decoration: voice rule 4 is "never paraphrase a daemon error — exact
+   string, in mono", and there is no global `.mono` class in this app for it to inherit (the class is
+   a marker each site spells out, because the size step is per-site). Left to the sans stack the rule
+   is half-kept: the string is exact and does not read as quoted. */
 .pl-failed-error {
   max-width: 440px;
+  font-family: var(--font-mono);
   margin-top: 16px;
   padding: 9px 12px;
   border: 1px solid var(--border-subtle);

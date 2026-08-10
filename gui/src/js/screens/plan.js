@@ -261,9 +261,9 @@ function titleRow(model, handlers) {
 }
 
 /** The quiet re-check, at whichever of its two drawn sizes the caller sits at. */
-function checkAgain({ handlers, size, padding, fontSize = "12.5px" }) {
+function checkAgain({ handlers, size, padding, fontSize = "12.5px", kind = "secondary" }) {
   return button({
-    kind: "secondary",
+    kind,
     size,
     label: PLAN.checkAgain,
     padding,
@@ -664,8 +664,15 @@ export function renderPlanBar(state = {}) {
 
 function buildBar(v, handlers, state) {
   if (v.body === "failed") {
+    // THE LOUD ONE, where every other `Check again` in this screen is quiet. Maximum contrast is the
+    // primary action and the primary action here is the only one — there is no plan to run, and
+    // re-checking is both the way out and completely safe. The same rule that makes `Keep it` the
+    // brightest button on the deletions screen.
     return renderActionBar({
-      primary: checkAgain({ handlers, size: "bar", padding: "11px 20px", fontSize: "13px" }),
+      primary: fid(
+        checkAgain({ handlers, size: "bar", kind: "primary", padding: "11px 22px", fontSize: "13px" }),
+        "checkAgain",
+      ),
     });
   }
   const gated = v.model.gated.length > 0;
