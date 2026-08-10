@@ -929,11 +929,15 @@ export function renderSettingsBar(props = {}) {
 }
 
 /**
- * The bar's left-hand sentence: the cost of a staged change, the state a save left behind, or the
- * standing promise about what saving writes.
+ * The bar's left-hand sentence: what just happened, the cost of a staged change, the state a save
+ * left behind, or the standing promise about what saving writes — in that order.
  */
-export function barNoteOf({ cost = null, note = null } = {}) {
-  return cost ?? note ?? SETTINGS.saveNote;
+export function barNoteOf({ notice = null, cost = null, note = null } = {}) {
+  // `notice` FIRST. It is the only one of the three that is about something that just happened —
+  // a sweep that did not start, a restart that failed — and a cost line is standing information
+  // about a change that has not been made yet. Reporting the cost over the failure would put the
+  // silence back one layer up.
+  return notice ?? cost ?? note ?? SETTINGS.saveNote;
 }
 
 /**

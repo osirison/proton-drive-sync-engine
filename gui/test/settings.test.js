@@ -305,7 +305,10 @@ test("the stepper moves a minute at a time and clamps at both ends", () => {
 
 // ---- the footer bar ----------------------------------------------------------------------------
 
-test("the bar says the cost first, then what a save left behind, then the standing promise", () => {
+test("the bar says what just happened first, and only then the standing information", () => {
+  // A control that failed outranks a cost line: the cost is about a change not yet made, and
+  // reporting it over the failure would put the silence back one layer up.
+  assert.equal(barNoteOf({ notice: "x", cost: "c", note: "n" }), "x");
   assert.equal(barNoteOf({ cost: "c", note: "n" }), "c");
   assert.equal(barNoteOf({ note: "n" }), "n");
   assert.equal(barNoteOf({}), SETTINGS.saveNote);

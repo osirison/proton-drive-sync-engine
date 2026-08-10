@@ -2009,17 +2009,13 @@ function settingsProps() {
     // note: the deck has one cost sentence and it says `One rule removed`, so a second removal has
     // no wording and inventing a plural would be inventing the number in it too.
     cost: removalCost(saved.exclude, config.exclude, skip),
-    // The bar's sentence, in the order it is allowed to speak: what was just asked for, then what
-    // a save left behind. The cost line outranks both — see `barNoteOf`.
-    note:
-      settingsNotice ??
-      (settingsSaving
-        ? SETTINGS.saving
-        : settingsRestarting
-          ? SETTINGS.restarting
-          : settingsSaved
-            ? SETTINGS.savedNote
-            : null),
+    // WHAT JUST HAPPENED, which outranks even the cost line — see `barNoteOf`. A control that
+    // failed has to be able to say so over standing information about a staged change, or the fix
+    // for one silence introduces another.
+    notice:
+      settingsNotice ?? (settingsSaving ? SETTINGS.saving : settingsRestarting ? SETTINGS.restarting : null),
+    // What a save left behind: the daemon is still running the old config until it restarts.
+    note: settingsSaved ? SETTINGS.savedNote : null,
     // WHETHER THE CONFIG IS KNOWN AT ALL. `read_config` rejects an unparseable file and
     // `refreshConfig` swallows it, so `configInfo` stays null — and `?? {}` would draw that as an
     // empty, valid config: both folder fields blank, live updates on, and a deletion policy card
