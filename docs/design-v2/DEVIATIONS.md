@@ -2957,3 +2957,156 @@ the toggle's transition on first paint (§30's own rule), `intervalLabel(0)` (un
 `MIN_INTERVAL_SECS` clamps), the floor hedge on a row (the header carries it), the zero-cost removal
 (78d), the content region's scroll (78i, already fixed), `OWES_BOX` (78a), and a claim about the
 daemon still running.
+
+## The onboarding takeover (S7)
+
+## 79. Two steps, three dialogs, and a takeover that cannot survive its own success
+
+`09-onboarding.md` describes one flow: choose two folders, look at what the first merge would do,
+watch it happen, agree to two-way deletion. The five `9a` frames are three window states and two
+dialogs, and the shell has one slot for each — except that the sequence itself has nowhere to live.
+
+**The takeover holds steps 1 and 2 only, and the two post-merge frames float.** `routes.js`'s latch
+releases on any reachable daemon state, which is by design: the takeover exists so a machine with no
+daemon is not stranded on the unreachable screen, and its exit condition is the daemon coming up.
+`Start the first sync` starts the daemon. So the moment the flow succeeds, the latch opens — and
+`9a First sync` and `9a Consent` are both drawn AFTER that, against a `running` and a `paused`
+daemon respectively (the F9 fixtures pin exactly those states, and say so).
+
+Two answers were possible: a second latch the daemon state cannot release, or the two surfaces as
+dialogs over whatever the released latch left behind. The frames settle it — both are drawn at 600px
+with their own chrome, not as 1040 windows — so they are dialogs, and `app.js` drives all three from
+`onboardingStage` rather than through `openOverlay`. That also gives the third one what it needs:
+`9a CLI missing` is a dialog **over** the takeover, and the line that resolved the dialog layer used
+to null itself out whenever the takeover was open.
+
+None of the three is closable and Esc reaches none of them, because none is in `dialogOverlay` at
+all. The cost is that `closeOverlay` cannot be used to dismiss them; the flow's own buttons do it.
+
+### 79a. `Syncing stays paused until you agree.` is made true rather than drawn
+
+Nothing starts a daemon paused. `start_service` starts it and it syncs; the consent screen then
+claims it is paused, which would be a false statement about someone's files — the thing the schedule
+panel one screen over (§78b) changed its own title rather than say.
+
+So the flow makes it true: when the merge's pass completes (`reconcile_seq` has advanced past the
+value it held when `Start the first sync` was pressed, and `syncing` is false), the app pauses the
+daemon and opens the consent dialog. `Start syncing` resumes it. Leaving without agreeing leaves the
+daemon paused, which is exactly what the sentence promises, and the main screen behind offers
+`Resume`.
+
+The counter is load-bearing and not decoration: a status reply arriving before the daemon's first
+pass begins reads as a finished merge without it, and the consent dialog would open over a merge
+that had not started.
+
+### 79b. `See all 471 actions` is a derivation, not a field
+
+The frame draws `See all 471 actions` and `3 files can't be synced` on the same screen, and both are
+true: `SkipUnsupported` **is** a plan row, so `PlanSummary::total` is 474 and the button names the
+471 that will actually happen. `actionsThatHappen` is `total − skipped_unsupported`, in one place.
+Reading `total` straight draws 474 and the two numbers stop agreeing with each other.
+
+(The button itself is not drawn — see 79e — but the derivation is, because the same question is what
+the fact row answers.)
+
+### 79c. What Phase 1 cannot say, and what it says instead
+
+Every row here is a clause or a node the flow cannot source. All are in `known-deviations.mjs` with
+the exact measurement, so the day the capability lands the build fails until the row is deleted.
+
+| Drawn | Phase 1 | Why | Issue |
+| --- | --- | --- | --- |
+| `341 files / 2.1 GB` per card | no stats row | nothing counts files or bytes under a *candidate* folder — the pair is not indexed yet, because this is the screen that chooses it | #240 |
+| `Signed in as you@proton.me · 39.1 GB of 500 GB used` | omitted | the daemon reuses the CLI's keyring session and never sees an address or a quota | #241 |
+| `files · 1.4 GB` / `files · 38.4 GB` | `files` | no level of the dry-run surface carries a size | #191 |
+| `Needs 38.4 GB free. You have 214 GB.` | `You have 214 GB.` | C4 answers the free space; the *needed* half is a byte total of a download plan, which nothing carries | #206 |
+| `11,798 files already match on both sides` | row omitted | a count of files the plan does **not** act on, absent from `PlanSummary` by construction | #242 |
+| `3 files can't be synced — a socket and two shortcuts` | `3 files can't be synced` | nothing enumerates the kinds; those files never enter the index | #232 |
+| `worked out 40 seconds ago · about 25 minutes to finish` | the first clause | `run_dry_run` reports what would happen, never how long it would take | #229 |
+| the split progress bar, `44 sent` / `115 received` | omitted | `SyncActivity` counts actions, not directions | #243 |
+| `159 of 471 done · about 17 minutes left` | the first clause | same estimate | #229 |
+| `nothing deleted · 2 conflicts kept as copies` | drawn from the approved plan; omitted with none in hand | no reply carries a per-pass summary *while the pass runs* | #213 |
+| `12,480 files, 41.2 GB.` | dropped from the consent sub-line | no command reports index-wide totals | #207 |
+| the install command box | omitted | see 79d | #218 |
+
+**`Nothing will be deleted · on either side` is conditional**, and that is not an omission. It is the
+row `09-onboarding.md` calls the whole point of the step — "zero destructive actions stated as an
+explicit positive fact, not a counter reading 0" — so it is drawn only when the plan really has
+none. A plan that would delete something cannot say it, and no frame draws that state.
+
+### 79d. The command box, and three other buttons with no destination
+
+§72 recorded that `sudo apt install proton-drive` works on no distribution, by this project's own
+documentation, and told S7 not to ship a copyable command box from that table until the design
+settles what the real instruction is. It has not, and this repo's own README says only "`proton-drive`
+must be installed, authenticated, and on your `PATH` first" — there is no true command to put in the
+box. So the box goes and the dialog is `mark · title · body · Check again`. The `Detected Debian`
+half of C5 is what still works, and it stays.
+
+Three more drawn buttons have nowhere to go, all for the same structural reason — the takeover covers
+everything and cannot be dismissed, so there is no sub-screen to visit and come back from (#244):
+
+- **`Add skip rules`** — the editor is `8a Skip rules`, a Settings tab. Leaving for it is a one-way
+  door: on a machine with no daemon the main screen offers `Try again now` and nothing that resumes
+  setup. The panel keeps its sentence, whose "or any time later in Settings" is the half that works.
+- **`See all 471 actions`** — the action list is the Plan screen, behind a footer door the takeover
+  covers.
+- **`Installation help`** — needs G14 (#231) as well: nothing in the command surface opens a URL.
+
+A disabled button would be worse than an absent one (§76's own rule, and `button()` attaches no
+listener to a disabled kind — so one armed later paints live and does nothing).
+
+### 79e. The remote path is a field where the frame draws a line
+
+`9a Folders` draws `Browse Proton Drive…` under the remote card. S6 already settled that a remote
+folder cannot be browsed for — `list_remote` reads a path and no picker exists for one — and drew
+`8a Settings`' remote side as a field with no button for exactly that reason. S7 takes the same
+answer: the button goes, and the path itself becomes editable so the step can still produce a pair.
+
+**That node is deliberately unmapped.** A UA rule pins an `<input>`'s `overflow` to `clip` and its
+`display` to `inline-block`, and the frame draws a `<div>`; the two can never agree on either. That
+is a construction difference, not a missing capability, so it does not belong in
+`known-deviations.mjs` — whose own bar says a node that was never mapped is not what that file is
+for. The local path stays a `<div>` and is mapped.
+
+The asymmetry has one visible consequence: a path longer than the card wraps on the local side
+(`word-break: break-all`, as drawn) and scrolls on the remote one. Measured at 1042×766 with a
+300-character path — the window still fits, nothing paints over the footer.
+
+### 79f. Two undrawn bodies, because a rehearsal takes time and can fail
+
+Step 2 has to run `run_dry_run` before it can say anything, and the flow's own step 1 writes the
+config that command reads. Neither the waiting state nor the failure is drawn, and without them a
+machine with no `proton-syncd` on its `PATH` gets a blank middle. Both borrow shapes that exist:
+`5a Checking`'s dry-run mark and copy for the wait, S4's failed body for the failure, with the
+daemon's string quoted verbatim (voice rule 4).
+
+The error block caps its height and wraps anywhere, which `.pl-failed-error` does not: a daemon
+failing with a long stderr would otherwise grow the block until it painted over the footer. Driven
+with a 10 KB error at 1042×766 — 766, no overlap.
+
+### 79g. Four primitives, corrected by the screen that drew them first
+
+Same pattern as §78h: F1–F6 wrote these against frames nothing had rendered yet.
+
+- **The step chip is not a pill.** `CHIP.step` existed with `border: null, dot: null`, but `.chip`
+  carries `padding:5px 12px`, `border-radius:99px`, `display:flex` and a 7px gap — and both `9a`
+  window frames draw `step N of 2` as bare mono text. It takes its own class rather than four
+  resets, and `updateHeader` now finds the chip by `[data-variant]`: a `.chip` selector returns null
+  on onboarding and threw on every patch pass.
+- **The checkbox's wrapper painted the box.** `.checkbox` set `font-size:13px` and
+  `color:--text-bright`, which the 17px box inherited; `9a Consent` draws box and sentence as
+  siblings with only the sentence carrying that pair. Both moved to `.checkbox-label`, and
+  `position:relative` moved from the box (where it contained nothing) to the wrapper (where it
+  contains the visually-hidden input).
+- **`.dot` had no directional fill.** `9a Folders`' two 8px side markers are `--up-label` /
+  `--down-label`; the tone table had inert, destructive and decision only.
+- **`bytes()` wrote a trailing `.0`.** `214.0 GB` where `9a Review` draws `214 GB`, and `500.0 GB`
+  where `9a Folders` draws `500 GB`. Its own comment already said KB stays whole; a whole number of
+  anything does. No frame draws an `X.0` size, so nothing else moved.
+
+### 79h. The gate
+
+67,109 assertions / 0 failures, 275/275 drawn strings, 240 tests. 36 of 51 frames mapped. Fifteen
+Phase-1 deviations recorded against #240, #241, #242, #243, #244, #191, #206, #207, #213, #218 and
+#229; five gaps filed as #240–#244.

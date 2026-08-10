@@ -101,9 +101,25 @@ test("an unknown id passes through unchanged, for the caller to reject", () => {
 // `filePending` joined the set with S5. It is the fourth and, unlike the other three, it draws no
 // title row and no ✕ — which is a fact about its CONTENTS, not about how it is presented, so it is
 // still a dialog by this test's measure: a floating surface with no header and no footer doors.
-test("only the four drawn dialogs are dialogs", () => {
+test("only the seven drawn dialogs are dialogs", () => {
   const dialogs = Object.keys(ROUTES).filter((id) => isDialog(id));
-  assert.deepEqual(dialogs.sort(), ["details", "filePending", "neverSynced", "saveRefused"]);
+  assert.deepEqual(dialogs.sort(), [
+    "cliMissing",
+    "consent",
+    "details",
+    "filePending",
+    "firstSync",
+    "neverSynced",
+    "saveRefused",
+  ]);
+});
+
+test("none of onboarding's three dialogs is closable", () => {
+  // They are not opened by the user and Esc cannot reach them: app.js drives all three from its own
+  // flow state rather than through `openOverlay`, so `closeOverlay` has nothing to close.
+  for (const id of ["firstSync", "consent", "cliMissing"]) {
+    assert.equal(ROUTES[id].closable, false, `${id} must not be closable`);
+  }
 });
 
 test("every overlay declares a presentation, and no door does", () => {
@@ -130,7 +146,15 @@ test("the onboarding takeover is not a dialog", () => {
 test("every dialog carries the drawn size, not the declared one", () => {
   // §48a: four of the ten drawn dialogs opt into border-box and six do not, so 520 is drawn 522
   // while 600 is drawn 600. There is no offset to apply — only a number read off the frame.
-  const drawn = { details: [522, 462], neverSynced: [602, 602], saveRefused: [600, null] };
+  const drawn = {
+    details: [522, 462],
+    neverSynced: [602, 602],
+    saveRefused: [600, null],
+    // `9a First sync` is the 600 that does not opt into border-box; the other two do.
+    firstSync: [602, 542],
+    consent: [600, null],
+    cliMissing: [600, null],
+  };
   for (const [id, size] of Object.entries(drawn)) {
     assert.deepEqual(ROUTES[id].size, size, `${id} must carry its drawn box`);
   }

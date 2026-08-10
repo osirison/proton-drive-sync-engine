@@ -30,6 +30,7 @@
 // they are not a single scenario, and treating them as one would mean picking which frame to break.
 
 import { ago } from "./clock.js";
+import { onboardingFids } from "./fids.js";
 import { action, bulk, summaryOf } from "./dryrun.js";
 
 /**
@@ -131,6 +132,8 @@ export const ONBOARDING_FIXTURES = {
       // about what `format.bytes` does to a whole number of GB.
       account: { email: "you@proton.me", used: 39_100_000_000, total: 500_000_000_000 },
     },
+    route: "onboarding",
+    fids: onboardingFids("folders"),
     ui: { step: "folders" },
   },
 
@@ -207,6 +210,8 @@ export const ONBOARDING_FIXTURES = {
     // half is relative, so it is an offset per the clock convention; the second is an estimate no
     // command produces — `run_dry_run` reports what would happen, never how long it would take.
     planTiming: { workedOutEpochSecs: ago(40), etaSecs: 1500 },
+    route: "onboarding",
+    fids: onboardingFids("review"),
     ui: { step: "review" },
   },
 
@@ -266,7 +271,8 @@ export const ONBOARDING_FIXTURES = {
     // 44/471 and 115/471, which would be 9% and 24%. The frame's bar is drawn, not computed, and the
     // fixture reproduces the frame.
     progress: { sent: 44, received: 115, up: 0.12, down: 0.22, remainingSecs: 1020 },
-    ui: { step: "firstSync" },
+    fids: onboardingFids("firstSync"),
+    ui: { step: "firstSync", dialog: "firstSync" },
   },
 
   /**
@@ -317,7 +323,8 @@ export const ONBOARDING_FIXTURES = {
     // The box is drawn unchecked and `Start syncing` disabled (`#2A2E36`/`#6D7783`), which is the
     // state the whole dialog exists to hold. The checkbox is the only one in all 51 frames
     // (DEVIATIONS §55).
-    ui: { step: "consent", agreed: false },
+    fids: onboardingFids("consent"),
+    ui: { step: "consent", dialog: "consent", agreed: false },
   },
 
   /**
@@ -341,6 +348,8 @@ export const ONBOARDING_FIXTURES = {
     status: NO_DAEMON,
     config: NO_CONFIG,
     cli: { installed: false, distro: { id: "debian", name: "Debian" } },
-    ui: { step: "cliMissing" },
+    route: "onboarding",
+    fids: onboardingFids("cliMissing"),
+    ui: { step: "cliMissing", dialog: "cliMissing" },
   },
 };

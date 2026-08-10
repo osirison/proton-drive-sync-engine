@@ -87,8 +87,12 @@ export function bytes(n) {
     value /= 1000;
     unit++;
   }
-  // KB stays whole: the deck writes `96 KB`, not `96.0 KB`.
-  return unit === 0 ? `${Math.round(value)} ${units[unit]}` : `${value.toFixed(1)} ${units[unit]}`;
+  // KB stays whole: the deck writes `96 KB`, not `96.0 KB`. So does a whole number of anything —
+  // `9a Folders` draws `500 GB` and `9a Review` `214 GB`, and `.0` there is the rule misfiring, not
+  // a size someone wrote.
+  if (unit === 0) return `${Math.round(value)} ${units[unit]}`;
+  const shown = value.toFixed(1);
+  return `${shown.endsWith(".0") ? shown.slice(0, -2) : shown} ${units[unit]}`;
 }
 
 /**

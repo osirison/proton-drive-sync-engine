@@ -1211,3 +1211,159 @@ export function settingsFids(view) {
   const standalone = view === "deletions" || view === "monthly" || view === "refused";
   return standalone ? body : { ...settingsShell, ...body };
 }
+
+// ------------------------------------------------------------------------- S7 · onboarding ----
+
+// FIVE FRAMES, TWO OF WHICH ARE THE WINDOW. `9a Folders` and `9a Review` are the takeover's two
+// steps; the other three are dialogs with no header and no footer nav of their own.
+//
+// UNDECLARED, AND WHY EACH ONE IS. A slot is undeclared where the app draws nothing at that node,
+// which on this screen is most of what the frames carry — DEVIATIONS §79 has the issue per row:
+//
+//   · `9a Folders` — each card's stats row (`…/div[1]/div[1]`, #240), the account line
+//     (`…/div[1]/div[2]`, #241), `Browse Proton Drive…` (`…/div[1]/div[1]/button`, #99) and
+//     `Add skip rules` (`div[1]/div[2]/button`, #244). The remote card's PATH is drawn and still
+//     undeclared: it is an `<input>` where the frame has a `<div>`, and a UA rule pins an input's
+//     `overflow` to `clip` and its `display` to `inline-block` — a construction difference, which
+//     is not what `known-deviations.mjs` is for.
+//   · `9a Review` — the already-matching fact row (`div[1]/div[1]/div[0]`, #242) and
+//     `See all 471 actions` (`div[1]/div[2]/button`, #244), which has nowhere to open from inside a
+//     takeover that covers the plan door.
+//   · `9a First sync` — the split progress bar and its two labels (`div[0]/div[5]`, #243).
+//   · `9a CLI missing` — the command box (`div/div/div[2]`, #218) and `Installation help`
+//     (`div/div/div[3]/button[1]`, #231 and #244).
+//
+// The two window frames' header has no `menu` slot — onboarding drops the ⋯ — and no `chipDot`:
+// `step N of 2` is text only.
+const onboardingShell = {
+  header: "header",
+  mark: "header/img",
+  name: "header/span[0]",
+  spacer: "header/span[1]",
+  chip: "header/span[2]",
+};
+
+const ONBOARDING_FOLDERS_FIDS = {
+  ...onboardingShell,
+  titleBlock: "div[0]",
+  title: "div[0]/div[0]",
+  sub: "div[0]/div[1]",
+  foldersBlock: "div[1]",
+  seam: "div[1]/div[0]",
+  grid: "div[1]/div[1]",
+  side: (s) => `div[1]/div[1]/div[${s}]`,
+  sideLabel: (s) => `div[1]/div[1]/div[${s}]/div[0]`,
+  // The label row MIRRORS: dot then eyebrow on this computer, eyebrow then dot on Proton Drive.
+  sideDot: (s) => `div[1]/div[1]/div[${s}]/div[0]/span[${s === 0 ? 0 : 1}]`,
+  sideEyebrow: (s) => `div[1]/div[1]/div[${s}]/div[0]/span[${s === 0 ? 1 : 0}]`,
+  card: (s) => `div[1]/div[1]/div[${s}]/div[1]`,
+  cardPath: (s) => `div[1]/div[1]/div[${s}]/div[1]/div[0]`,
+  cardButton: (s) => `div[1]/div[1]/div[${s}]/div[1]/button`,
+  sideNote: (s) => `div[1]/div[1]/div[${s}]/div[2]`,
+  skipPanel: "div[1]/div[2]",
+  skipGlyph: "div[1]/div[2]/span",
+  skipText: "div[1]/div[2]/div",
+  bar: "div[2]",
+  barText: "div[2]/span[0]",
+  barSpacer: "div[2]/span[1]",
+  barPrimary: "div[2]/button",
+};
+
+// The fact rows are keyed by the DRAWN row they stand for, not by their position in the app's list:
+// row 0 is omitted, so the app's first row is the frame's second. Row 3 is the only one with a mark
+// instead of a dot, which moves its two spans up one.
+const ONBOARDING_REVIEW_FIDS = {
+  ...onboardingShell,
+  hero: "div[0]",
+  heroSeam: "div[0]/div[0]",
+  heroMark: "div[0]/svg",
+  heroMarkPath: (i) => `div[0]/svg/path[${i}]`,
+  heroTitle: "div[0]/div[1]",
+  heroSub: "div[0]/div[2]",
+  body: "div[1]",
+  counts: "div[1]/div[0]",
+  countSide: (s) => `div[1]/div[0]/div[${s}]`,
+  countEyebrow: (s) => `div[1]/div[0]/div[${s}]/div[0]`,
+  countRow: (s) => `div[1]/div[0]/div[${s}]/div[1]`,
+  countNumeral: (s) => `div[1]/div[0]/div[${s}]/div[1]/span[0]`,
+  countUnit: (s) => `div[1]/div[0]/div[${s}]/div[1]/span[1]`,
+  countNote: (s) => `div[1]/div[0]/div[${s}]/div[2]`,
+  facts: "div[1]/div[1]",
+  fact: (i) => `div[1]/div[1]/div[${i}]`,
+  factDot: (i) => `div[1]/div[1]/div[${i}]/span[0]`,
+  factLabel: (i) => `div[1]/div[1]/div[${i}]/span[${i === 3 ? 0 : 1}]`,
+  factNote: (i) => `div[1]/div[1]/div[${i}]/span[${i === 3 ? 1 : 2}]`,
+  factMark: (i) => `div[1]/div[1]/div[${i}]/svg`,
+  factMarkPath: (i) => `div[1]/div[1]/div[${i}]/svg/path`,
+  timing: "div[1]/div[2]",
+  timingText: "div[1]/div[2]/span[0]",
+  bar: "div[2]",
+  barBack: "div[2]/button[0]",
+  barSpacer: "div[2]/span",
+  barPrimary: "div[2]/button[1]",
+};
+
+const ONBOARDING_FIRST_SYNC_FIDS = {
+  mergeBody: "div[0]",
+  mergeSeam: "div[0]/div[0]",
+  mergeLabelLeft: "div[0]/div[1]",
+  mergeLabelRight: "div[0]/div[2]",
+  mergeMark: "div[0]/svg",
+  mergeMarkDefs: "div[0]/svg/defs",
+  mergeMarkGradient: (i) => `div[0]/svg/defs/lineargradient[${i}]`,
+  mergeMarkStop: (i, j) => `div[0]/svg/defs/lineargradient[${i}]/stop[${j}]`,
+  mergeMarkPath: (i) => `div[0]/svg/path[${i}]`,
+  mergeNumeral: "div[0]/svg/text",
+  mergeTitle: "div[0]/div[3]",
+  mergeSub: "div[0]/div[4]",
+  mergeClose: "div[0]/div[6]",
+  mergeFoot: "div[1]",
+  // NO `mergeFootText`. `nothing deleted · 2 conflicts kept as copies` is built from the plan the
+  // person approved one step earlier, and a fixture is one frame — there is no earlier step in it,
+  // so the node can never be stamped here and a declared slot would only be reported as missing.
+  mergeFootSpacer: "div[1]/span[1]",
+  mergeFootButton: "div[1]/button",
+};
+
+const ONBOARDING_CONSENT_FIDS = {
+  doneHead: "div[0]",
+  doneMark: "div[0]/svg",
+  doneMarkPath: (i) => `div[0]/svg/path[${i}]`,
+  doneTitle: "div[0]/div[0]",
+  doneSub: "div[0]/div[1]",
+  consentPanel: "div[1]",
+  consentTitle: "div[1]/div[0]",
+  consentBody: "div[1]/div[1]",
+  consentFooter: "div[1]/div[2]",
+  consentBox: "div[1]/div[2]/span[0]",
+  consentLabel: "div[1]/div[2]/span[1]",
+  doneFoot: "div[2]",
+  doneFootText: "div[2]/span[0]",
+  doneFootSpacer: "div[2]/span[1]",
+  doneFootButton: "div[2]/button",
+};
+
+const ONBOARDING_CLI_FIDS = {
+  cliRow: "div",
+  cliMark: "div/svg",
+  cliMarkPath: (i) => `div/svg/path[${i}]`,
+  cliMarkDot: "div/svg/circle",
+  cliCol: "div/div",
+  cliTitle: "div/div/div[0]",
+  cliBody: "div/div/div[1]",
+  cliButtons: "div/div/div[3]",
+  cliCheckAgain: "div/div/div[3]/button[0]",
+};
+
+/** The five maps a `9a` fixture asks for by step. */
+export function onboardingFids(step) {
+  const table = {
+    folders: ONBOARDING_FOLDERS_FIDS,
+    review: ONBOARDING_REVIEW_FIDS,
+    firstSync: ONBOARDING_FIRST_SYNC_FIDS,
+    consent: ONBOARDING_CONSENT_FIDS,
+    cliMissing: ONBOARDING_CLI_FIDS,
+  }[step];
+  if (!table) throw new Error(`fids: no onboarding step "${step}"`);
+  return table;
+}

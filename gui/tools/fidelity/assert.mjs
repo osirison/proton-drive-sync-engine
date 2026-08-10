@@ -452,10 +452,13 @@ if (unmet.length) {
 
 if (failures.length) {
   console.error("");
-  for (const f of failures.slice(0, 40)) {
+  // 40 by default so a broken build prints a page rather than a screenful of scrollback.
+  // `FIDELITY_SHOW=200` is for developing a screen, where the first forty are all one cause.
+  const SHOW = Number(process.env.FIDELITY_SHOW ?? 40);
+  for (const f of failures.slice(0, SHOW)) {
     console.error(`  ${f.frame} · ${f.key || "(root)"} · ${f.prop}\n      ${f.detail}`);
   }
-  if (failures.length > 40) console.error(`  … and ${failures.length - 40} more`);
+  if (failures.length > SHOW) console.error(`  … and ${failures.length - SHOW} more`);
   console.error(`\nfidelity:assert: ${failures.length} failure(s).`);
 }
 

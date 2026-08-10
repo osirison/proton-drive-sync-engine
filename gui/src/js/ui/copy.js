@@ -910,6 +910,26 @@ export const ONBOARDING = {
   consentPaused: "Syncing stays paused until you agree.",
   consentStart: "Start syncing",
 
+  // ---- the Phase-1 forms. Each is the drawn sentence with the clause no command can answer taken
+  // out, and each is a template so the copy gate keeps checking the drawn original. §79.
+  /** `files · 1.4 GB`, or `files` alone — no dry-run field carries a size (#191, #206). */
+  sideUnit: (n, size = null) => `${plural(n, "file", "files")}${size ? ` · ${bytes(size)}` : ""}`,
+  /** `freeSpace` minus `Needs 38.4 GB free.`, which has no source at any level of the plan (#206). */
+  freeSpaceHave: (have) => `You have ${bytes(have)}.`,
+  /** `cannotSync` minus the kinds it names — nothing enumerates them (#232). */
+  cannotSyncPlain: (n) => `${count(n)} ${plural(n, "file", "files")} can't be synced`,
+  /** `workedOut` minus the estimate; no command reports how long a pass will take (#229). */
+  workedOutPlain: (ago) => `worked out ${ago}`,
+  /** `progressSub` minus `about 17 minutes left` (#229). The fraction is `SyncActivity`'s own. */
+  progressDone: (done, total) => `${count(done)} of ${count(total)} done`,
+  nothingDeletedShort: "nothing deleted",
+  conflictsKept: (n) => `${count(n)} ${plural(n, "conflict", "conflicts")} kept as copies`,
+  /** `doneSub` minus its totals (#207), with the conflict count taken from the plan rather than 2. */
+  doneSubPhase1: (conflicts) =>
+    conflicts
+      ? `Nothing was deleted, and ${count(conflicts)} ${plural(conflicts, "file is", "files are")} waiting for you to pick a version.`
+      : "Nothing was deleted.",
+
   cliMissingTitle: "Proton Drive's command line tool isn't installed",
 
   /**

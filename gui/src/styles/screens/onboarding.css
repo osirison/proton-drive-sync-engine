@@ -1,0 +1,405 @@
+/* The onboarding takeover (S7) — `9a Folders`, `9a Review`, and the three dialogs.
+   Every value is read off the frame; `docs/design-v2/DEVIATIONS.md` §79 carries what is not drawn. */
+
+/* --------------------------------------------------------------- step 1 · which folders ---- */
+
+.ob-title-block {
+  flex: none;
+  padding: 20px 32px 0;
+  text-align: center;
+}
+.ob-title {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.ob-sub {
+  margin-top: 9px;
+  font-size: 14px;
+  color: var(--text-4);
+}
+
+.ob-folders {
+  position: relative;
+  flex: 1;
+  margin-top: 36px;
+  padding: 0 32px;
+}
+.ob-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.ob-side {
+  padding-right: 36px;
+}
+.ob-side.is-remote {
+  padding-right: 0;
+  padding-left: 36px;
+}
+.ob-side-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ob-side.is-remote .ob-side-label {
+  justify-content: flex-end;
+}
+.ob-card {
+  margin-top: 13px;
+  padding: 18px 20px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-14);
+}
+.ob-card-path {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text);
+  word-break: break-all;
+}
+/* The remote path is a field where the frame draws a line, because no picker exists for a remote
+   folder (#99). Everything the input adds is taken back off so it reads as the drawn line; what
+   cannot be taken off is `overflow`, which a UA rule pins to `clip` on every input. §79. */
+.ob-card-input {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  color: var(--text);
+  text-align: right;
+}
+.ob-card-button {
+  display: inline-block;
+  width: 100%;
+  margin-top: 14px;
+}
+.ob-side-note {
+  margin-top: 11px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-5);
+}
+.ob-side.is-remote .ob-side-note {
+  text-align: right;
+}
+
+.ob-skip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 34px;
+  padding: 14px 18px;
+  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-12);
+}
+/* The never-synced band draws this glyph amber; here it is the quiet label tier. */
+.ob-skip .band-glyph {
+  color: var(--text-label);
+}
+.ob-skip-text {
+  flex: 1;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------- step 2 · nothing deleted ---- */
+
+.ob-hero {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 32px 0;
+}
+.ob-hero-mark {
+  position: relative;
+}
+.ob-hero-title {
+  margin-top: 20px;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  text-align: center;
+}
+/* 636, not the doc's 600: base.css opts everything into `border-box`, so the mask's 18px side
+   padding sits inside the max-width rather than outside it. The drawn box is 636. */
+.ob-hero-sub {
+  max-width: 636px;
+  margin-top: 11px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.ob-review {
+  position: relative;
+  flex: 1;
+  margin-top: 30px;
+  padding: 0 32px;
+}
+.ob-counts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.ob-count-side {
+  padding-right: 36px;
+}
+.ob-count-side.is-remote {
+  padding-right: 0;
+  padding-left: 36px;
+  text-align: right;
+}
+.ob-count-row {
+  display: flex;
+  align-items: baseline;
+  gap: 11px;
+  margin-top: 12px;
+}
+.ob-count-side.is-remote .ob-count-row {
+  justify-content: flex-end;
+}
+.ob-numeral {
+  font-size: 38px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 38px;
+}
+.ob-count-unit {
+  font-size: 14px;
+  color: var(--text-3);
+}
+.ob-count-note {
+  margin-top: 9px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-5);
+}
+
+.ob-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 28px;
+}
+.ob-fact {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 2px;
+  border-top: 1px solid var(--divider);
+}
+/* The last row is closed at the bottom: it is the one the screen exists to make. */
+.ob-fact.is-last {
+  border-bottom: 1px solid var(--divider);
+}
+.ob-fact > .dot {
+  margin: 0 3.5px;
+}
+.ob-fact-label {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-bright);
+}
+.ob-fact-label.is-dim {
+  color: var(--text-2);
+}
+.ob-fact-note {
+  font-size: 12.5px;
+  color: var(--text-4);
+}
+.ob-fact-note.tone-decision {
+  color: var(--decision-text);
+}
+
+.ob-timing {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+.ob-timing-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* The rehearsal in flight and the rehearsal that failed — neither is drawn; `5a Checking` and S4's
+   failed body are the shapes. */
+.ob-working {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 520px;
+  margin: 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 40px 40px;
+  text-align: center;
+}
+.ob-working-title {
+  margin-top: 24px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+.ob-working-sub {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-4);
+}
+/* The daemon's exact string, quoted — voice rule 4. `.pl-failed-error` is the same block on the plan
+   screen; this one also CAPS ITS HEIGHT, because a daemon that fails with a long stderr would
+   otherwise grow the block until it paints over the footer, and `overflow-wrap` because a failure
+   naming an unbroken path would grow it sideways. */
+.ob-working-error {
+  max-width: 440px;
+  max-height: 168px;
+  overflow: auto;
+  margin-top: 16px;
+  padding: 9px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-9);
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- `9a First sync` dialog ---- */
+
+.ob-merge {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 30px;
+}
+.ob-merge-label {
+  position: absolute;
+  top: 26px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.ob-merge-label.is-left {
+  left: 26px;
+  color: var(--up-label);
+}
+.ob-merge-label.is-right {
+  right: 26px;
+  color: var(--down-label);
+}
+.ob-merge-mark {
+  position: relative;
+}
+.ob-merge-title {
+  margin-top: 20px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+.ob-merge-sub {
+  margin-top: 9px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-4);
+}
+.ob-merge-close {
+  max-width: 368px;
+  margin-top: 22px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-5);
+  text-align: center;
+}
+.ob-merge-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 22px 16px;
+  border-top: 1px solid var(--divider);
+}
+.ob-merge-foot-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------- `9a Consent` dialog ---- */
+
+.ob-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.ob-done-title {
+  margin-top: 20px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  text-align: center;
+}
+.ob-done-sub {
+  margin-top: 10px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+  text-align: center;
+}
+.ob-done + .band-consent {
+  margin-top: 24px;
+}
+.ob-done-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+.ob-done-foot-text {
+  font-size: 12px;
+  color: var(--text-5);
+}
+
+/* --------------------------------------------------------------- `9a CLI missing` dialog ---- */
+
+.ob-cli {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.ob-cli-mark {
+  margin-top: 2px;
+}
+.ob-cli-col {
+  flex: 1;
+}
+.ob-cli-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.ob-cli-body {
+  margin-top: 7px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+.ob-cli-buttons {
+  display: flex;
+  gap: 9px;
+  margin-top: 14px;
+}

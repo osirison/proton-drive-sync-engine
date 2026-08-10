@@ -25,7 +25,7 @@ import {
 } from "./ui/chrome.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
-import { ACTIVITY, CHROME, SETTINGS } from "./ui/copy.js";
+import { ACTIVITY, CHROME, ONBOARDING, SETTINGS } from "./ui/copy.js";
 import { clock, since } from "./ui/format.js";
 import { renderMain, updateMain, unmountMain } from "./screens/main.js";
 import { renderConflicts, advanceAfter, skipTo } from "./screens/conflicts.js";
@@ -64,6 +64,16 @@ import {
   isDirty,
   removalCost,
 } from "./screens/settings.js";
+import {
+  renderOnboarding,
+  updateOnboarding,
+  unmountOnboarding,
+  renderOnboardingFooter,
+  onboardingBarShape,
+  renderFirstSync,
+  renderConsent,
+  renderCliMissing,
+} from "./screens/onboarding.js";
 import { severityOf } from "./ui/rows.js";
 import { activeFixture, fid } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
@@ -142,7 +152,12 @@ function toggleTheme() {
  * screen carry those states, which is where the design puts them.
  */
 function chipFor() {
-  if (onboardingLatch) return { variant: "step", text: CHROME.chips.step(1) };
+  // `step 1 of 2` / `step 2 of 2` — the one chip in the app that is not daemon-derived. Keyed off
+  // the route as well as the latch, because a `?frame=` selecting either step polls its own
+  // unreachable status and the latch has not closed yet on the first render.
+  if (onboardingLatch || activeRoute() === "onboarding") {
+    return { variant: "step", text: CHROME.chips.step(onboardingStepNow() === "review" ? 2 : 1) };
+  }
   // The plan screen owns the chip while it is open, outranking a waiting decision: `06-plan.md`
   // says it reads `rehearsal · nothing has changed` for the whole visit.
   if (activeRoute() === "plan") return { variant: "rehearsal", text: CHROME.chips.rehearsal };
@@ -541,6 +556,10 @@ function render() {
     dialogOverlay = null;
     dialogReturn = null;
   }
+  // The CLI check runs before the flow has a config, so it is asked as soon as the takeover opens
+  // (and once per app run). The merge's own progress is what advances the flow past it.
+  if (onboardingLatch || activeRoute() === "onboarding") ensureCliCheck();
+  advanceOnboardingStage();
 
   // The two layers, read back out. A dialog floats over whatever body is showing — which may be a
   // screen overlay and not `route`, and getting that wrong is what loses the user's place. See
@@ -565,7 +584,10 @@ function render() {
     dialogReturn = null;
     activityPendingTransfer = null;
   }
-  const dialogRoute = onboardingLatch ? null : (activeFixture()?.ui?.dialog ?? dialogOverlay);
+  // ONBOARDING'S OWN DIALOGS OUTRANK BOTH. `9a CLI missing` floats over the takeover — the takeover
+  // used to null this line outright — and `9a First sync` / `9a Consent` float over whatever the
+  // released latch left behind. None of the three is in `dialogOverlay`, so Esc cannot reach them.
+  const dialogRoute = onboardingDialog() ?? (onboardingLatch ? null : dialogOverlay);
   const active = activeRoute();
   const spec = ROUTES[active];
   const chip = chipFor();
@@ -584,7 +606,10 @@ function render() {
     chip: chip.variant,
     chipText: chip.text,
     // Onboarding drops the ⋯ button, not just the chip — both 9a frames have four header slots.
-    hasMenu: !onboardingLatch,
+    // Keyed off the ROUTE and not the latch alone: `9a Review` carries a written folder pair, which
+    // is exactly the state the latch does not re-enter on, so a fixture selecting step 2 renders
+    // with the latch open and would grow a ⋯ the frame does not draw.
+    hasMenu: !onboardingLatch && active !== "onboarding",
     // `&& !onboardingLatch` is NOT redundant, and leaving it off was a regression this file already
     // shipped once. `onMain` used to read `route === "main" && !overlay`, which is TRUE during the
     // takeover on a fresh machine — route is still "main" and no overlay is open — so the mark
@@ -595,7 +620,7 @@ function render() {
     // makes the app mark the home affordance now that onboarding has no footer nav — so a home
     // button there is a working door out of a flow that is not supposed to have one, on a machine
     // with no folder pair chosen yet.
-    hasHome: !onMain && !onboardingLatch,
+    hasHome: !onMain && !onboardingLatch && active !== "onboarding",
   };
   const navOpts = {
     // `active`, NOT the module `route`. S5 is the first screen whose frames draw a LIT door — all
@@ -730,6 +755,18 @@ function render() {
         }
       }
     }
+  } else if (active === "onboarding") {
+    // PATCHED, NOT REBUILT, for the same reason the settings screen is: step 1 holds the remote
+    // path in a live `<input>`, and a rebuild on the ~2s poll would move the caret to the end of
+    // whatever is being typed. `updateOnboarding` rebuilds only when the body itself has moved.
+    if (dom.bodyRoute !== active) {
+      unmountScreens();
+      setBody(renderOnboarding(onboardingProps()));
+      dom.bodyRoute = active;
+    } else {
+      const nodes = updateOnboarding(onboardingProps());
+      if (nodes) setBody(nodes);
+    }
   } else if (dom.bodyRoute !== active) {
     unmountScreens();
     setBody(
@@ -776,7 +813,12 @@ function render() {
             // is what makes the rebuild conditional — an unchanged bar is left where it is.
             owner === "settings"
             ? settingsBarUnchanged(dom.footer)
-            : true;
+            : // Same trade on the onboarding bar, and it matters more: `See what will happen` arms
+              // as the remote field is typed into, and rebuilding the bar under the caret is what
+              // `updateOnboarding` is avoiding one layer up.
+              owner === "onboarding"
+              ? dom.footer.dataset.shape === onboardingBarShape(onboardingProps())
+              : true;
   }
   if (!patched) {
     const built =
@@ -785,11 +827,13 @@ function render() {
           ? renderPlanBar(planProps())
           : owner === "settings"
             ? renderSettingsBar(settingsProps())
-            : renderActionBar({
-                consequence: "This screen is not built yet.",
-                // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
-                bottom: spec.takeover ? 18 : 14,
-              })
+            : owner === "onboarding"
+              ? renderOnboardingFooter(onboardingProps())
+              : renderActionBar({
+                  consequence: "This screen is not built yet.",
+                  // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
+                  bottom: spec.takeover ? 18 : 14,
+                })
         : renderFooterNav({
             ...navOpts,
             order: FOOTER_ORDER,
@@ -914,6 +958,7 @@ function unmountScreens() {
   unmountMain();
   unmountDeletions();
   unmountPlan();
+  unmountOnboarding();
 }
 
 function setBody(nodes) {
@@ -1808,6 +1853,7 @@ const activityInputRef = { node: null };
  * for anything it does not own.
  */
 function dialogContentFor(id) {
+  if (id === "firstSync" || id === "consent" || id === "cliMissing") return onboardingDialogContent(id);
   return id === "saveRefused" ? settingsDialog(id) : activityDialog(id);
 }
 
@@ -2205,6 +2251,334 @@ document.addEventListener("shell:save", () => {
   // and a retry that SUCCEEDED would leave "Nothing was saved" on screen over a config that was.
   if (activeRoute() === "settings" && !dialogOverlay) saveSettings();
 });
+
+// ---- onboarding (S7) ----
+//
+// The takeover holds the two steps; the three dialogs are driven from `onboardingStage` rather than
+// through `openOverlay`, because none of them is opened by the user and none may be closed by Esc.
+//
+// The flow ENDS at `Start the first sync`: starting the daemon makes it reachable, which releases
+// the latch by design (`nextOnboardingLatch`), so the merge and the consent float over the main
+// screen. That is the answer to a takeover that cannot survive its own success. DEVIATIONS §79.
+
+/** The proposals step 1 offers. `setup.sh`'s own two examples, and both are editable here. */
+const PROPOSED_LOCAL = "~/ProtonDrive";
+const PROPOSED_REMOTE = "/Drive/RemoteFolder";
+
+let onboardingStep = "folders";
+let onboardingRoots = null; // { local, remote } — proposals until step 1 writes them
+let onboardingSeq = 0; // the rehearsal token, the same shape as the plan screen's
+let onboardingAnswered = null;
+let onboardingWaiting = null;
+let onboardingDryRun = null;
+let onboardingError = null;
+let onboardingCheckedAt = null;
+let onboardingStage = null; // null | "firstSync" | "consent"
+let onboardingMergeSeq = null; // the daemon's pass counter when the merge started
+let onboardingMergeSeen = false; // has the daemon answered at all since the merge started?
+let onboardingMergeWaits = 0; // polls with no answer before it ever answered
+let onboardingAgreed = false;
+let onboardingStarting = false;
+let onboardingFreeSpace = null;
+let onboardingFreeSpaceAsked = false;
+let cliPresence = null; // `check_cli`'s reply, or null before it has answered
+let cliAsked = false;
+let cliChecking = false; // a check in flight — holds the dialog up across `Check again`
+
+/** Which step is showing. A fixture names it; otherwise the flow's own state does. */
+function onboardingStepNow() {
+  const named = activeFixture()?.ui?.step;
+  if (named === "review" || named === "folders") return named;
+  return onboardingStep;
+}
+
+/** Which dialog the flow has open, if any. A fixture may name one directly. */
+function onboardingDialog() {
+  const named = activeFixture()?.ui?.dialog;
+  if (named) return named;
+  if (cliChecking || cliPresence?.installed === false) return "cliMissing";
+  return onboardingStage;
+}
+
+/**
+ * The CLI check: a silent precondition that only surfaces when it fails.
+ *
+ * Asked once per app run. A rejected call leaves `cliPresence` null — "we could not ask" is not
+ * "it is missing", and putting a blocking dialog in front of someone on the strength of a failed
+ * round trip would be the same false alarm as rendering an unknown count as zero.
+ */
+async function ensureCliCheck(again = false) {
+  if (cliChecking || (cliAsked && !again)) return;
+  cliAsked = true;
+  cliChecking = true;
+  try {
+    // Assigned only on success: `Check again` on a machine where the round trip itself fails must
+    // leave the dialog saying what it said, not flip to the tarball branch as though detection had
+    // come back with nothing.
+    cliPresence = await api.checkCli();
+  } catch (error) {
+    console.error("check_cli failed:", error);
+  }
+  cliChecking = false;
+  render();
+}
+
+/** C4, for the download side of step 2. `path` is null: the local root may not exist yet. */
+async function ensureFreeSpace() {
+  if (onboardingFreeSpaceAsked) return;
+  onboardingFreeSpaceAsked = true;
+  try {
+    onboardingFreeSpace = await api.freeSpace(null);
+  } catch (error) {
+    console.error("free_space failed:", error);
+  }
+  render();
+}
+
+/** The rehearsal behind step 2 — one child at a time, the same token discipline as `ensurePlan`. */
+async function ensureOnboardingPlan() {
+  if (onboardingWaiting !== null || onboardingAnswered === onboardingSeq) return;
+  const seq = onboardingSeq;
+  onboardingWaiting = seq;
+  let payload = null;
+  let error = null;
+  try {
+    payload = await api.runDryRun();
+  } catch (e) {
+    error = String(e);
+  }
+  onboardingWaiting = null;
+  if (seq !== onboardingSeq) {
+    render();
+    return;
+  }
+  onboardingAnswered = seq;
+  if (payload?.report) {
+    onboardingDryRun = payload;
+    onboardingError = null;
+    onboardingCheckedAt = Math.floor(Date.now() / 1000);
+  } else {
+    onboardingDryRun = null;
+    onboardingError = error ?? "the rehearsal returned nothing";
+    onboardingCheckedAt = null;
+  }
+  render();
+}
+
+/**
+ * The pair as it stands. A FUNCTION, not a value captured per render, because step 1's field and its
+ * `Choose…` button are built once and live across polls: a handler holding the roots from the render
+ * that built it puts the other side back to its proposal on the next keystroke.
+ */
+function onboardingRootsNow() {
+  return onboardingRoots ?? { local: PROPOSED_LOCAL, remote: PROPOSED_REMOTE };
+}
+
+function onboardingProps() {
+  const roots = onboardingRootsNow();
+  const step = onboardingStepNow();
+  if (step === "review") {
+    ensureOnboardingPlan();
+    ensureFreeSpace();
+  }
+  return {
+    step,
+    local: roots.local,
+    remote: roots.remote,
+    dryRun: onboardingAnswered === onboardingSeq ? onboardingDryRun : null,
+    error: onboardingAnswered === onboardingSeq ? onboardingError : null,
+    checking: onboardingAnswered !== onboardingSeq,
+    checkedAt: onboardingCheckedAt,
+    freeSpace: onboardingFreeSpace,
+    handlers: {
+      onRoot: (which, value) => {
+        onboardingRoots = { ...onboardingRootsNow(), [which]: value };
+        // Safe under the caret: step 1's body signature does not carry the roots, so nothing here
+        // rebuilds the field. The footer does rebuild — which is the point, since emptying the path
+        // must disarm `See what will happen` in the same keystroke rather than 2s later.
+        render();
+      },
+      onChooseLocal: async () => {
+        try {
+          const picked = await api.chooseFolder(onboardingRootsNow().local);
+          // A cancelled picker resolves with null. Keeping the proposal is the whole point.
+          if (picked) {
+            onboardingRoots = { ...onboardingRootsNow(), local: picked };
+            render();
+          }
+        } catch (error) {
+          console.error("choose_folder failed:", error);
+        }
+      },
+      onNext: async () => {
+        if (onboardingStarting) return;
+        onboardingStarting = true;
+        try {
+          // The pair has to be ON DISK before the rehearsal: `run_dry_run` shells
+          // `proton-syncd --dry-run`, which reads the config file and not this screen.
+          const pair = onboardingRootsNow();
+          await api.writeConfig({ local_root: pair.local, remote_root: pair.remote });
+          await refreshConfig();
+          onboardingStep = "review";
+          onboardingSeq += 1;
+        } catch (error) {
+          // Surfaced through step 2's failed body rather than swallowed: a refused write is exactly
+          // the case where the next screen would otherwise rehearse the OLD config.
+          onboardingStep = "review";
+          onboardingSeq += 1;
+          onboardingAnswered = onboardingSeq;
+          onboardingError = String(error?.message ?? error);
+          onboardingDryRun = null;
+        }
+        onboardingStarting = false;
+        render();
+      },
+      onBack: () => {
+        onboardingStep = "folders";
+        // The token moves so a return to step 2 rehearses again — the pair may have changed.
+        onboardingSeq += 1;
+        render();
+      },
+      onCheck: () => {
+        onboardingSeq += 1;
+        render();
+      },
+      onStart: async () => {
+        if (onboardingStarting) return;
+        onboardingStarting = true;
+        onboardingStage = "firstSync";
+        onboardingMergeSeq = store.select.response()?.reconcile_seq ?? null;
+        onboardingMergeSeen = false;
+        onboardingMergeWaits = 0;
+        render();
+        try {
+          await api.startService();
+        } catch (error) {
+          // `start_service` REJECTS, unlike the status commands — no systemd unit and no
+          // `proton-syncd` on PATH is the common first-run failure, and its reason is the only thing
+          // that tells someone which. Back to step 2, with the daemon's own words.
+          failOnboardingMerge(String(error?.message ?? error));
+        }
+        onboardingStarting = false;
+        clearTimeout(pollTimer);
+        poll();
+      },
+    },
+  };
+}
+
+/** What each of the flow's three dialogs draws. */
+function onboardingDialogContent(id) {
+  if (id === "cliMissing") {
+    return {
+      head: false,
+      label: ONBOARDING.cliMissingTitle,
+      signature: JSON.stringify(cliPresence),
+      children: renderCliMissing({
+        cli: activeFixture()?.cli ?? cliPresence,
+        handlers: { onCheckCli: () => ensureCliCheck(true) },
+      }),
+    };
+  }
+  if (id === "firstSync") {
+    const reply = store.select.response();
+    const activity = reply?.activity ?? null;
+    const summary = onboardingDryRun?.report?.summary ?? null;
+    return {
+      head: false,
+      label: ONBOARDING.progressTitle,
+      // The plan's two counters are in here as well as the live ones: the footer sentence is built
+      // from the reviewed plan, and a signature that omits it freezes the sentence at whatever was
+      // known on the render that mounted the dialog.
+      signature: JSON.stringify([
+        reply?.pending_changes,
+        activity?.action_index,
+        activity?.action_total,
+        summary && [summary.destructive_actions, summary.conflicts],
+      ]),
+      children: renderFirstSync({
+        pending: reply?.pending_changes ?? null,
+        activity,
+        summary,
+        handlers: { onPause: () => command(api.pause) },
+      }),
+    };
+  }
+  if (id === "consent") {
+    const summary = onboardingDryRun?.report?.summary ?? null;
+    // The sidecars on disk first, the reviewed plan second: `2 files are waiting for you to pick a
+    // version` is a claim about NOW, and `scan_conflicts` is the only thing that counts them. The
+    // plan's own figure is the fallback for a scan that has not come back.
+    const conflicts = store.select.unresolvedConflictCount() || (summary?.conflicts ?? 0);
+    return {
+      head: false,
+      label: ONBOARDING.consentTitle,
+      // `conflicts` in the signature, not just the plan's: the scan lands on the first poll, after
+      // the dialog has mounted, and a signature that misses it leaves the sentence saying nothing
+      // is waiting when two files are.
+      signature: JSON.stringify([onboardingAgreed, conflicts]),
+      children: renderConsent({
+        agreed: activeFixture()?.ui?.agreed ?? onboardingAgreed,
+        conflicts,
+        handlers: {
+          onAgree: (on) => {
+            onboardingAgreed = on;
+            render();
+          },
+          onStartSyncing: async () => {
+            if (!onboardingAgreed) return;
+            await command(api.resume);
+            onboardingStage = null;
+            render();
+          },
+        },
+      }),
+    };
+  }
+  return null;
+}
+
+/** Take the merge dialog down and put its reason on step 2, where `Back` and `Check again` are. */
+function failOnboardingMerge(reason) {
+  onboardingStage = null;
+  onboardingStep = "review";
+  onboardingAnswered = onboardingSeq;
+  onboardingDryRun = null;
+  onboardingError = reason;
+  onboardingCheckedAt = null;
+}
+
+/**
+ * Advance the flow when the merge finishes, and make `Syncing stays paused until you agree.` true.
+ *
+ * Nothing starts a daemon paused, so the claim is made true here rather than drawn as a claim about
+ * a daemon that is still running: the pass the person approved completes, then the daemon is paused
+ * and the consent dialog opens. Leaving without agreeing leaves it paused, which is what the
+ * sentence says. §79.
+ */
+function advanceOnboardingStage() {
+  if (onboardingStage !== "firstSync" || activeFixture()) return;
+  const reply = store.select.response();
+  // A DAEMON THAT NEVER CAME UP. `start_service` resolving means the unit was asked to start, not
+  // that it is running — so a dialog that only ever advances on a reply would sit over an
+  // unreachable machine claiming a merge was under way. Bounded to a handful of polls, and only
+  // before the first answer: a blip after the merge has begun is not a failure to start.
+  if (!reply) {
+    if (onboardingMergeSeen) return;
+    if (++onboardingMergeWaits < 8) return;
+    failOnboardingMerge(store.select.error() ?? "the daemon did not start");
+    return;
+  }
+  onboardingMergeSeen = true;
+  if (reply.syncing) return;
+  const seq = reply.reconcile_seq ?? 0;
+  // A pass has to have COMPLETED since the merge started. Without the counter a status reply
+  // arriving before the daemon's first pass begins reads as a finished merge.
+  if (onboardingMergeSeq != null && seq <= onboardingMergeSeq) return;
+  if (onboardingMergeSeq == null && !reply.last_sync_epoch_secs) return;
+  onboardingStage = "consent";
+  if (!reply.paused) command(api.pause);
+}
 
 // ---- data ----
 async function refreshConfig() {
