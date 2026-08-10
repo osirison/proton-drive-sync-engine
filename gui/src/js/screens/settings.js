@@ -554,10 +554,23 @@ function rulesBlock(props) {
         ),
         "rulesHead",
       ),
-      // A rule the report has nothing for still draws — the config is what lists it, and a row that
-      // vanished while its counts were being measured would read as a rule that had been removed.
-      rules.map((pattern, i) =>
-        ruleRow(props, byPattern.get(pattern) ?? { pattern }, i, !savedRules.includes(pattern)),
+      // A NODE THE FRAME DOES NOT HAVE, and the one place this screen adds one. The window is fixed
+      // at 764px and cannot grow, so a config with a dozen exclude rules pushes the add row and the
+      // `.sync` note straight through the footer — `02-shell.md` calls that "a real bug found twice
+      // during this design". The frames leave every node here `overflow: visible` and `overflow` is
+      // an asserted property, so the scroll cannot go on any of them; it goes on a wrapper instead,
+      // which is invisible to the gate because nothing stamps it. Rows keep their own keys.
+      //
+      // A CAP RATHER THAN A SCROLL WAS THE OTHER OPTION and it is the wrong one here. `+n more` is
+      // right for the main screen's transfer rows, which are a report; these rows each carry the
+      // only `Remove` button that rule will ever have, so hiding the twelfth would make it
+      // unremovable from the screen that exists to remove it.
+      el(
+        "div",
+        { class: "settings-rules-scroll" },
+        rules.map((pattern, i) =>
+          ruleRow(props, byPattern.get(pattern) ?? { pattern }, i, !savedRules.includes(pattern)),
+        ),
       ),
       fid(
         el(

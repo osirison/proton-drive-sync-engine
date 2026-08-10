@@ -217,6 +217,15 @@
   color: var(--text-5);
 }
 
+/* FIVE ROWS, THEN IT SCROLLS. A row is 59px (13 + 32 + 13 + its 1px rule), and the space between
+   the list head and the add row in a 764px window is about 325px — so five rows fit and a sixth
+   would start pushing the tail through the footer. The three drawn rules are well inside it, so the
+   frame is unaffected; see `rulesBlock` for why this is a wrapper rather than a rule on the list. */
+.settings-rules-scroll {
+  max-height: 295px;
+  overflow-y: auto;
+}
+
 .settings-rule {
   display: flex;
   align-items: center;
@@ -224,8 +233,9 @@
   padding: 13px 2px;
   border-top: 1px solid var(--divider);
 }
-/* The head row sets the first rule's own top rule 11px below it. */
-.settings-rules-head + .settings-rule {
+/* The head row sets the first rule's own top rule 11px below it — and the rule is the FIRST ROW's
+   margin, not the scroller's, because that is the node the frame records it on. */
+.settings-rules-scroll > .settings-rule:first-child {
   margin-top: 11px;
 }
 /* A rule matching nothing whose folder is gone. The one dimmed row in the design, and it is dimmed
@@ -328,8 +338,11 @@
   border-top: 0;
   padding: 6px 0;
 }
+/* The include list on Advanced, for the same reason and inside a shorter panel. */
 .settings-panel-list {
   display: block;
+  max-height: 180px;
+  overflow-y: auto;
 }
 .settings-panel-block .settings-add {
   margin-top: 11px;

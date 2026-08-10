@@ -2812,6 +2812,28 @@ SIGHUP handler, no watcher (§68) — so `Changes here take effect on the next s
 a restart. The bar's second slot, which holds `Discard changes` while there is something to discard,
 becomes `Restart it now` in the one moment there is not.
 
+### 78i. The one node this screen adds, and why it is not on a mapped one
+
+The window is fixed at 764px and cannot grow. A config with a dozen exclude rules pushes the add row
+and the `.sync` note straight through the footer — which `02-shell.md` calls "a real bug found twice
+during this design", and which measured 1040×1158 with thirteen rules before it was fixed.
+
+**The scroll cannot go on any node the frame draws.** All 22 in-scope 1040 frames leave their content
+`overflow: visible` (only `6a Activity passes` sets `hidden`), `overflow` is an asserted property,
+and every node on this tab is mapped. `shell.css`'s `.content-region` takes the other option — it
+sets `hidden` and opts a genuinely long list into `.is-scrollable` — but it does so on a node no S6
+frame maps.
+
+So the rows sit inside a wrapper the frame has no node for, capped at five rows (`59px` each, against
+about 325px of space between the list head and the add row). Nothing stamps the wrapper, so the gate
+never sees it; the rows keep their own keys, and the first row keeps the 11px the frame records on
+the ROW rather than moving it to the wrapper.
+
+**A cap with `+n more` was the other option and it is wrong here.** That is right for the main
+screen's transfer rows, which are a report; these rows each carry the only `Remove` button that rule
+will ever have, so hiding the twelfth would make it unremovable from the screen that exists to remove
+it. The include list on Advanced is capped the same way, in a shorter panel.
+
 ### 78g. Two commands, and why they were not C-items
 
 `commands.rs` says screens never add to the command surface and that capability tasks are how it
