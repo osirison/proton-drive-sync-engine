@@ -420,6 +420,30 @@ exclude = ["*.tmp"]
     }
 
     #[test]
+    fn an_unparseable_file_refuses_the_write_before_a_byte_is_touched() {
+        // THIS IS WHAT MAKES A STALE BASE HARMLESS, and it is the reason the Settings screen keeps
+        // drawing the last good config under its "these aren't the settings that are running"
+        // banner rather than blanking every field. `write_config` (src-tauri) opens with
+        // `ConfigDoc::load(&path)?`, so while the file on disk does not parse, NO save can write
+        // anything at all — the diff the screen computed against stale values never reaches a file.
+        //
+        // Pinned rather than assumed: if that first line ever stopped reloading, the stale base
+        // would become a real defect and this test is what would say so.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proton-sync.toml");
+        std::fs::write(&path, "local_root = \n").unwrap();
+        let err = match ConfigDoc::load(&path) {
+            Err(e) => e,
+            Ok(_) => panic!("an unparseable file must not load"),
+        };
+        assert!(matches!(err, ConfigError::Parse(_)), "got {err:?}");
+        assert!(
+            err.to_string().starts_with("config is not valid TOML"),
+            "got {err}"
+        );
+    }
+
+    #[test]
     fn a_glob_the_daemon_cannot_compile_is_refused() {
         // `exclude = ["["]` is well-typed TOML and a fatal `invalid scan filter configuration` at
         // startup. Same for an include pattern, which the Advanced tab writes.
