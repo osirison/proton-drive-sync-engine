@@ -81,7 +81,23 @@ test("a directory is answered as a folder rather than as a file that is fine", (
 // engine could grow a fourth; the dangerous default is the reassuring one, so this pins that an
 // unrecognised status never comes back as "safely on both sides".
 test("an unrecognised sync_status fails closed — never the settled mark, never the safe words", () => {
-  for (const unknown of ["", "pending", "PENDING", "synced ", null, undefined, 7]) {
+  // `constructor` / `__proto__` / `toString` are in the list because the verdicts are a TABLE now,
+  // and a table can be reached by a key off Object's prototype where the switch it replaced could
+  // not. Each answers with something truthy that has no `mark` and no `sub`, so an unguarded
+  // lookup throws rather than falling through to the cautious verdict. `sync_status` is a string
+  // off the wire; nothing stops the engine sending one of these.
+  for (const unknown of [
+    "",
+    "pending",
+    "PENDING",
+    "synced ",
+    null,
+    undefined,
+    7,
+    "constructor",
+    "__proto__",
+    "toString",
+  ]) {
     const v = verdictOf(tracked({ sync_status: unknown }), "14:32");
     assert.notEqual(v.mark, "settled", `mark for ${JSON.stringify(unknown)}`);
     assert.notEqual(v.title, ACTIVITY.lookup.safe, `title for ${JSON.stringify(unknown)}`);

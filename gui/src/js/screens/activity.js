@@ -103,6 +103,19 @@ export function footerVariantOf(props) {
  *
  * `mark` is `null` where no hexagon belongs: a miss is not a state a file is in.
  */
+const VERDICTS = {
+  // `sub` is a function throughout so the three entries have one shape, though only `synced` uses
+  // the argument: its sentence names WHEN the two sides agreed, and with no time to put in it the
+  // clause goes rather than asserting one the reply does not carry.
+  synced: {
+    mark: "settled",
+    title: ACTIVITY.lookup.safe,
+    sub: (at) => (at ? ACTIVITY.lookup.safeSub(at) : null),
+  },
+  modified: { mark: "outline", title: ACTIVITY.lookup.changed, sub: () => ACTIVITY.lookup.changedSub },
+  conflict: { mark: "needsDot", title: ACTIVITY.lookup.conflict, sub: () => ACTIVITY.lookup.conflictSub },
+};
+
 export function verdictOf(status, at = null, error = null) {
   // A FAILED CHECK IS NOT A MISS. `path_sync_status` returning nothing because it could not open
   // the index looks identical to it returning nothing because the path is not there — and saying
@@ -121,36 +134,18 @@ export function verdictOf(status, at = null, error = null) {
     return { key: "miss", mark: null, title: ACTIVITY.lookup.noMatch, sub: ACTIVITY.lookup.noMatchSub };
   if (status.entity_kind === "directory")
     return { key: "folder", mark: "outline", title: ACTIVITY.lookup.folder, sub: ACTIVITY.lookup.folderSub };
-  switch (status.sync_status) {
-    case "conflict":
-      return {
-        key: "conflict",
-        mark: "needsDot",
-        title: ACTIVITY.lookup.conflict,
-        sub: ACTIVITY.lookup.conflictSub,
-      };
-    case "modified":
-      return {
-        key: "modified",
-        mark: "outline",
-        title: ACTIVITY.lookup.changed,
-        sub: ACTIVITY.lookup.changedSub,
-      };
-    case "synced":
-      return {
-        key: "synced",
-        mark: "settled",
-        title: ACTIVITY.lookup.safe,
-        // The `since` clause is a claim about WHEN, and `mtime` is the only timestamp on the reply.
-        // With no mtime the sentence would be asserting a time it does not have, so it goes.
-        sub: at ? ACTIVITY.lookup.safeSub(at) : null,
-      };
-    default:
-      // An unrecognised `sync_status` is not "fine". `path_sync_status` documents three values and
-      // the engine could grow a fourth; drawing the settled mark for a word this build has never
-      // seen would say a file is safe on no evidence at all.
-      return { key: "unknown", mark: "outline", title: ACTIVITY.lookup.changed, sub: null };
-  }
+
+  // `Object.hasOwn`, NOT `VERDICTS[status.sync_status]` on its own. The status is a string off the
+  // wire, so `constructor` and `__proto__` reach this lookup and answer with something from
+  // Object's prototype — truthy, with no `mark` and no `sub`, so the call below would throw on a
+  // reply the daemon could theoretically send. The switch this replaced could not be reached that
+  // way; a table can, and that is the one thing a table costs.
+  const found = Object.hasOwn(VERDICTS, status.sync_status) ? VERDICTS[status.sync_status] : null;
+  // An unrecognised `sync_status` is not "fine". `path_sync_status` documents three values and the
+  // engine could grow a fourth; drawing the settled mark for a word this build has never seen would
+  // say a file is safe on no evidence at all. Keeping the table CLOSED is what makes that one line.
+  if (!found) return { key: "unknown", mark: "outline", title: ACTIVITY.lookup.changed, sub: null };
+  return { key: status.sync_status, mark: found.mark, title: found.title, sub: found.sub(at) };
 }
 
 /**
