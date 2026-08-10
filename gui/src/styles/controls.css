@@ -314,6 +314,15 @@
   align-items: center;
   gap: 6px;
 }
+/* 28×28, both of them. `SIZE.icon` sets radius, padding and font-size and no box, so the two glyphs
+   sized themselves off their own metrics — `−` came out 20.91×20 against `＋`'s 27×21, visibly
+   different from each other and 8px short of the drawn square. Nothing could see it: the stepper is
+   not mapped (the schedule it belongs to is G4), so the box gate never looks. */
+.stepper .btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
 .stepper-value {
   font-family: var(--font-mono);
   font-size: 13px;

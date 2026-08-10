@@ -226,8 +226,30 @@ impl ConfigDoc {
     pub fn validate(&self) -> Result<(), ConfigError> {
         let rendered = self.to_toml_string();
         toml::from_str::<proton_drive_sync_engine::config::FileConfig>(&rendered)
-            .map(|_| ())
-            .map_err(|e| ConfigError::Invalid(e.to_string()))
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        // AND THE CHECKS A PARSE CANNOT MAKE. `FileConfig` is a serde shape: every value below is
+        // well-typed TOML and still a config the daemon exits on at `validate_runtime_config`
+        // (src/config.rs) — which is the worst possible moment to find out, because by then the GUI
+        // has said "Saved" and the daemon that was running the old settings is gone.
+        //
+        // An ABSENT key is not one of these: the daemon fills it from its own default. An EMPTY
+        // one is, and it is what a settings form produces when someone clears a field.
+        for key in ["local_root", "remote_root"] {
+            if self.get_str(key).is_some_and(|v| v.trim().is_empty()) {
+                return Err(ConfigError::Invalid(format!("{key} must not be empty")));
+            }
+        }
+        // The globs are compiled at startup and a bad pattern is fatal there. Compiling them here
+        // against a throwaway root is exactly the daemon's own check: the root only decides which
+        // paths are ignored, and this call passes none.
+        proton_drive_sync_engine::index::ScanOptions::new(
+            Path::new("/"),
+            &[],
+            &self.get_string_array("include"),
+            &self.get_string_array("exclude"),
+        )
+        .map_err(|e| ConfigError::Invalid(format!("invalid scan filter configuration: {e}")))?;
+        Ok(())
     }
 
     /// Validate, then write the document atomically with mode `0600`. Never writes a config the
@@ -370,6 +392,46 @@ exclude = ["*.tmp"]
         let doc = ConfigDoc::from_toml_str("local_root = \"/x\"\nfrobnicate = 1\n").unwrap();
         let err = doc.validate().unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn an_empty_root_is_refused_before_it_reaches_the_daemon() {
+        // A settings form produces this the moment someone clears a field. It parses as valid TOML
+        // and the daemon exits on it at `validate_runtime_config` — after the GUI has said "Saved"
+        // and the process running the old settings is already gone.
+        for key in ["local_root", "remote_root"] {
+            let doc = ConfigDoc::from_toml_str(&format!("{key} = \"\"\n")).unwrap();
+            let err = doc.validate().unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("{key} must not be empty")),
+                "got {err:?}"
+            );
+        }
+        // ABSENT is not empty: the daemon fills an absent key from its own default.
+        ConfigDoc::from_toml_str("remote_root = \"/Drive/x\"\n")
+            .unwrap()
+            .validate()
+            .expect("an absent local_root is the daemon's default, not a refusal");
+    }
+
+    #[test]
+    fn a_glob_the_daemon_cannot_compile_is_refused() {
+        // `exclude = ["["]` is well-typed TOML and a fatal `invalid scan filter configuration` at
+        // startup. Same for an include pattern, which the Advanced tab writes.
+        for key in ["include", "exclude"] {
+            let doc = ConfigDoc::from_toml_str(&format!("{key} = [\"[\"]\n")).unwrap();
+            let err = doc.validate().unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("invalid scan filter configuration"),
+                "got {err:?} for {key}"
+            );
+        }
+        ConfigDoc::from_toml_str("exclude = [\"*.tmp\", \"video-raw/**\"]\n")
+            .unwrap()
+            .validate()
+            .expect("the patterns the Settings screen writes must still pass");
     }
 
     #[test]

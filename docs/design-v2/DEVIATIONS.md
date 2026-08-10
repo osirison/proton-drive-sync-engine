@@ -2886,3 +2886,54 @@ ring at .3 over a .04 fill would be invisible.
 | S6     | `8a Save refused`     | `That folder doesn't exist on Proton Drive`                    | a generic refusal title                   | G16 #236 |
 | S6     | `8a Save refused`     | `Create it on Proton Drive`                                    | omitted; `Go back and fix it` stays       | G16 #236 |
 | S6     | _(not drawn)_         | Advanced: socket path, log level, conflict suffix, index reset | named as not writable yet                 | G17 #237 |
+
+### 78j. What the review found, and the shape it was
+
+Four independent reviewers over the S6 diff produced 32 findings; 24 survived an adversarial
+refutation pass. **No gate caught any of them** — the fifth screen in a row for which that is true —
+and they fall into three shapes, none of which a fidelity harness can see.
+
+**Silence where a control failed.** Five findings, one cause. `resync`, like every status command,
+**resolves** with a socket failure folded into its payload rather than rejecting (`commands.rs` says
+so in as many words), so `await api.resync()` inside a `try` is a `catch` that never fires: against a
+stopped daemon, or one older than `ControlCommand::Resync`, `Sweep now` did nothing at all and said
+nothing at all. `restart_service` does reject — and its reason went into `settingsError`, which only
+the refusal dialog reads and only `saveSettings` opens, so a failed restart was equally silent while
+the bar still said the save had landed. Both now report into the bar's own sentence, and both have a
+busy state: PR #140 filed this exact shape once already.
+
+**A screen answering for a file it could not read.** `read_config` rejects an unparseable config and
+`refreshConfig` swallowed it, so `configInfo ?? {}` drew an empty, valid config — blank folders, live
+updates on, a five-minute timer, and a **deletion-policy card selected that is not the one running**.
+The failure is now recorded (`configError`), the tabs carry a line saying the settings on screen are
+not the settings in force, and the Deletions tab selects no card until the file has actually been
+read. Same class as §68's fourth combination: this screen does not guess at a safety policy.
+
+**Unknown drawn as zero, twice.** `ruleEffect` read `rule.files ?? 0`, so a rule the walk had not
+measured — the whole duration of a local-tree walk, and permanently after one fails — rendered
+`Matching nothing`, one line above `safe to remove`. And `configUpdate` compared a staged value
+against `null` for an absent key, so clicking the deletion card that was **already selected** marked
+the screen dirty and wrote two keys the file never had. Both are this project's own rules broken
+inside the screen that states them: "unknown is never zero", and a footer promising that saving
+writes only what you changed.
+
+Two more worth naming. **Focus**: the body is rebuilt on every poll and only the five text inputs
+were restored, so tabbing to any of the other twenty-one controls lost the keyboard to `<body>`
+within two seconds — measured, not argued. Every control now carries a `data-sfocus` id, the restore
+scans for it, and the same attribute is what lets `Go back and fix it` put the caret back in the
+field it told you to fix. **A save in flight**: `settingsEdits = {}` on the way back discarded a
+keystroke typed while the write was running and then reported it saved; the map is now cleared only
+if it is still the one that was sent.
+
+**And two fixes went into the engine's side of the wall.** `ConfigDoc::validate` was a serde parse,
+which passes `local_root = ""` and `exclude = ["["]` — both fatal at
+`config::validate_runtime_config`, i.e. after the GUI has said "Saved" and the daemon running the old
+settings is gone. It now makes the daemon's own two checks, so those configs are refused at the write
+and surface through `8a Save refused` with the daemon's wording, which is the path the frame exists
+for.
+
+The eight refuted findings were: the per-visit reset (deliberate, and documented at the function),
+the toggle's transition on first paint (§30's own rule), `intervalLabel(0)` (unreachable —
+`MIN_INTERVAL_SECS` clamps), the floor hedge on a row (the header carries it), the zero-cost removal
+(78d), the content region's scroll (78i, already fixed), `OWES_BOX` (78a), and a claim about the
+daemon still running.

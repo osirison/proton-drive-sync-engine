@@ -72,6 +72,20 @@
   flex: 1;
 }
 
+/* The config file could not be read. Amber rather than crimson: nothing is at risk and nothing has
+   been changed — the screen simply cannot answer for the file, which is the same register the
+   never-synced band uses. */
+.settings-unreadable {
+  margin-bottom: 16px;
+  padding: 11px 14px;
+  border: 1px solid var(--warn-band-border);
+  border-radius: var(--r-11);
+  background: var(--warn-band-bg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
 /* --------------------------------------------------------------------------- tab 1 · folders ---- */
 
 /* Two fixed 488px columns rather than `1fr 1fr`: the seam is positioned at `left:50%` and the two

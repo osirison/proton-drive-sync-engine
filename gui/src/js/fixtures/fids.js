@@ -1015,7 +1015,11 @@ export function activityFids(view) {
 // which is why assert.mjs compares a crop's STYLES and not its boxes (see `OWES_BOX`), and why the
 // monthly crop maps thin. DEVIATIONS §78.
 //
-// WHAT IS UNDECLARED HERE, AND WHY EACH ONE IS:
+// WHAT IS UNDECLARED HERE, AND WHY EACH ONE IS. A slot is undeclared when the app draws SOMETHING
+// ELSE at that node or nothing at all; where the app draws the right thing at the wrong size, the
+// node stays mapped and the difference goes in `known-deviations.mjs` instead. The two lists are
+// not interchangeable and this note names only the first.
+//
 //   · `div[2]/div[4]/div[0]/div[2]` — the live-updates key line. The frame draws
 //     `event_driven_reconcile`; the engine's key is `events_driven`, and
 //     `14-behaviour-and-state.md:25` says so in as many words. The app draws the real key, so this
@@ -1025,11 +1029,20 @@ export function activityFids(view) {
 //   · the whole weekly/monthly control and the day/time row (`div[2]/div[5]/div[0]/div[1]` and
 //     `div[2]/div[5]/div[1]`, plus every node the monthly crop draws below its header) — G4 (#193).
 //     There is no `full_scan_schedule` key, no scheduler and no command that returns any of it.
-//   · `div[2]/div[2]/div[0]/div[2]`, the local helper's first clause — G7 (#207).
-//   · `div[2]/div[2]` on the skip tab's unsyncable panel (`div[2]/div[2]/div[0]`) — G15 (#232): the
-//     files it counts never enter the index, and `See them` would open the one group `7a Never
-//     synced` already omits for the same reason.
+//   · `div[2]/div[2]/div[0]` on the skip tab — the unsyncable panel and its `See them` (G15 #232):
+//     the files it counts never enter the index, and that button would open the one group `7a
+//     Never synced` already omits for the same reason. Its PARENT `div[2]/div[2]` is declared, as
+//     `tail`, because the app does draw that block — it holds the `.sync` note.
+//   · `div[3]` on the deletions crop, and `div[0]` on the monthly crop. Both are drawn and both
+//     are mapped nowhere, for the reason the module note above gives: a crop cannot say where an
+//     `auto` margin sits, and the two frames disagree about the head row's gap.
 //   · `div/div/div[3]/button[1]` on the refusal (`Create it on Proton Drive`) — G16 (#236).
+//
+// NOT undeclared, though an earlier version of this note claimed it: `div[2]/div[2]/div[0]/div[2]`,
+// the local helper. The app draws that node with the Phase-1 half of its sentence, so it is mapped
+// as `pairSideNote(0)`, asserted, and carries a known-deviations row for the 18px the missing clause
+// costs. Saying it was undeclared would have told the next reader that G7's omission is invisible to
+// the gate, when it is the one thing about it the gate does see.
 
 const settingsShell = {
   header: "header",

@@ -65,6 +65,35 @@ const inputButton = (label, onClick, padding) =>
 const rowButton = (label, onClick) =>
   button({ kind: "secondary", label, onClick, padding: "6px 13px", radius: "var(--r-8)", fontSize: "12px" });
 
+/** The stepper's two buttons, named so a repeated press keeps the keyboard on the one being used. */
+function namedSteps(node) {
+  const [minus, plus] = node.querySelectorAll(".btn");
+  focusable(minus, "interval-down");
+  focusable(plus, "interval-up");
+  return node;
+}
+
+/**
+ * Name a control so focus can find it again.
+ *
+ * THIS SCREEN IS A FORM AND IT IS REBUILT TWICE A SECOND. Every handler here ends in a render and
+ * the status poll rebuilds the body anyway, so a control that is focused when that happens is
+ * removed from the document and the keyboard lands on `<body>`: Tab restarts at the top, Space does
+ * nothing, and there are twenty-one such controls on this screen against five text fields. The
+ * review measured it — `focused before: radio: Never ask` / `after poll: BODY`.
+ *
+ * `data-sfocus` is matched by scanning rather than by a selector, so an id may contain anything a
+ * skip pattern can. `data-focus-key` is a SELECTOR (`focusKeyOf` in app.js hands it to
+ * `querySelector`), so only ids that are safe inside one carry it — that is what lets a dialog
+ * opened over this screen put focus back on the field it was opened from.
+ */
+function focusable(node, id) {
+  if (!node) return node;
+  node.dataset.sfocus = id;
+  if (/^[a-z0-9:_-]+$/i.test(id)) node.dataset.focusKey = `[data-sfocus="${id}"]`;
+  return node;
+}
+
 // ------------------------------------------------------------------------------ the model ----
 
 /**
@@ -116,11 +145,19 @@ export function policyOf(config) {
  * files starts syncing them, and this is the sentence someone acts on without checking.
  */
 export function ruleEffect(rule) {
+  // NOT MEASURED IS NOT MEASURED ZERO, and this is the branch the review caught reading the other
+  // way. `skip_rule_usage` walks the local tree, is fired unawaited on every visit, and can fail —
+  // so for the length of the walk, and permanently after an error, the report has nothing to say
+  // about a rule that may be hiding forty gigabytes. `rule.files ?? 0` turned that into
+  // `Matching nothing`, which is this project's own "unknown is never zero" rule broken on the one
+  // sentence that invites someone to delete a rule.
   if (!rule) return null;
   // The walk could not evaluate this pattern. Its own words, in mono (voice rule 4) — and no
   // counts, because a rule that could not be checked has none.
   if (rule.error) return { effect: SETTINGS.ruleUnchecked, detail: rule.error, dim: false };
-  const files = rule.files ?? 0;
+  // A row the report never answered for. `files` absent — not zero — is what says so.
+  if (rule.files == null) return { effect: SETTINGS.ruleChecking, detail: null, dim: false };
+  const files = rule.files;
   if (files > 0) {
     const named = rule.folder_exists == null && (rule.samples ?? []).length === files;
     return {
@@ -194,12 +231,26 @@ export function removalCost(saved, staged, report) {
  * Arrays compare by content: `exclude` is staged as a new array on every edit, so identity would
  * report a change that removing and re-adding the same rule did not make.
  */
+export const ABSENT_DEFAULTS = {
+  events_driven: true,
+  delete_approval_remote: true,
+  delete_approval_local: true,
+  deletion_policy: "ask_every_time",
+};
+
 export function configUpdate(config, edits) {
   const same = (a, b) =>
     Array.isArray(a) && Array.isArray(b) ? a.length === b.length && a.every((v, i) => v === b[i]) : a === b;
   const update = {};
   for (const [key, value] of Object.entries(edits ?? {})) {
-    if (!same(value, config?.[key])) update[key] = value;
+    // AN ABSENT KEY IS ITS DEFAULT, not a difference from it. `read_config` returns `null` for a
+    // key the file does not have and the screen draws the daemon's default in its place — so on a
+    // fresh config, clicking the card that is already selected staged `true` against `null` and
+    // marked the screen dirty, and saving materialised two keys the file never had. That is the
+    // opposite of what the footer promises. Only the keys whose drawn value comes from a default
+    // are listed: everything else is drawn empty when absent, and setting it IS a change.
+    const current = config?.[key] ?? (key in ABSENT_DEFAULTS ? ABSENT_DEFAULTS[key] : config?.[key]);
+    if (!same(value, current)) update[key] = value;
   }
   return update;
 }
@@ -280,6 +331,8 @@ function pairSide(props, side) {
       "aria-label": local ? MAIN.sideLocal : MAIN.sideRemote,
       // The caret survives the 2s rebuild by NAME — app.js finds the field again through this.
       "data-field": local ? "local_root" : "remote_root",
+      "data-sfocus": local ? "field:local_root" : "field:remote_root",
+      "data-focus-key": local ? '[data-sfocus="field:local_root"]' : '[data-sfocus="field:remote_root"]',
       onInput: (e) => handlers.onRoot?.(local ? "local_root" : "remote_root", e.target.value),
     }),
     "pairSideInput",
@@ -348,6 +401,7 @@ function livePanel(props) {
     label: SETTINGS.eventsDriven,
     onChange: (next) => handlers.onEvents?.(next),
   });
+  focusable(knob, "events");
   fid(knob.querySelector(".toggle-knob"), "liveKnob");
   return fid(
     panel("settings-panel-row", [
@@ -404,13 +458,15 @@ function timerPanel(props) {
         "div",
         { class: "settings-panel-control" },
         el("span", { class: "settings-control-label" }, SETTINGS.every),
-        stepper({
-          value: secs,
-          format: intervalLabel,
-          min: MIN_INTERVAL_SECS,
-          max: MAX_INTERVAL_SECS,
-          onStep: (delta) => handlers.onInterval?.(stepInterval(secs, delta)),
-        }),
+        namedSteps(
+          stepper({
+            value: secs,
+            format: intervalLabel,
+            min: MIN_INTERVAL_SECS,
+            max: MAX_INTERVAL_SECS,
+            onStep: (delta) => handlers.onInterval?.(stepInterval(secs, delta)),
+          }),
+        ),
         el("span", { class: "settings-spacer" }),
         keyLine("scan_interval_secs"),
       ),
@@ -440,6 +496,7 @@ function sweepPanel(props) {
     }),
     "runButton",
   );
+  focusable(sweep, "sweep");
   if (syncing) {
     setButtonKind(sweep, "primaryDisabled");
     sweep.disabled = true;
@@ -582,6 +639,8 @@ function rulesBlock(props) {
               placeholder: SETTINGS.addRulePlaceholder,
               mono: true,
               "data-field": "draft-exclude",
+              "data-sfocus": "field:draft-exclude",
+              "data-focus-key": '[data-sfocus="field:draft-exclude"]',
               onInput: (e) => handlers.onDraft?.("exclude", e.target.value),
               onKeydown: (e) => {
                 if (e.key === "Enter") handlers.onAddRule?.();
@@ -637,8 +696,12 @@ const POLICY_COPY = {
 };
 
 function deletionsTab(props) {
-  const { config, handlers } = props;
-  const selected = policyOf(config);
+  const { config, handlers, loaded } = props;
+  // NO CARD UNTIL THE FILE HAS BEEN READ. `policyOf({})` answers `ask_every_time`, which is the
+  // daemon's default and a true statement about an EMPTY config — and a lie about one that could
+  // not be parsed, or one that simply has not come back yet. This is the screen's most consequential
+  // control; it does not guess.
+  const selected = loaded ? policyOf(config) : null;
   return [
     fid(el("div", { class: "settings-section-title" }, SETTINGS.deletionsTitle), "deletionsTitle"),
     fid(el("div", { class: "settings-section-sub" }, SETTINGS.deletionsSub), "deletionsSub"),
@@ -660,6 +723,7 @@ function deletionsTab(props) {
             "card",
             i,
           );
+          focusable(card, `policy:${policy.id}`);
           fid(card.querySelector(".radio-head"), "cardHead", i);
           fid(card.querySelector(".radio-ring"), "cardRing", i);
           fid(card.querySelector(".radio-title"), "cardTitle", i);
@@ -707,7 +771,10 @@ function advancedTab(props) {
                 { class: "settings-rule settings-rule-plain" },
                 el("span", { class: "settings-rule-pattern" }, pattern),
                 el("div", { class: "settings-rule-body" }),
-                rowButton(SETTINGS.remove, () => handlers.onRemoveInclude?.(pattern)),
+                focusable(
+                  rowButton(SETTINGS.remove, () => handlers.onRemoveInclude?.(pattern)),
+                  `include:${pattern}`,
+                ),
               ),
             ),
       ),
@@ -719,12 +786,17 @@ function advancedTab(props) {
           placeholder: SETTINGS.addIncludePlaceholder,
           mono: true,
           "data-field": "draft-include",
+          "data-sfocus": "field:draft-include",
+          "data-focus-key": '[data-sfocus="field:draft-include"]',
           onInput: (e) => handlers.onDraft?.("include", e.target.value),
           onKeydown: (e) => {
             if (e.key === "Enter") handlers.onAddInclude?.();
           },
         }),
-        inputButton(SETTINGS.add, () => handlers.onAddInclude?.(), "11px 18px"),
+        focusable(
+          inputButton(SETTINGS.add, () => handlers.onAddInclude?.(), "11px 18px"),
+          "add:include",
+        ),
       ),
     ]),
     panel("settings-panel-block", [
@@ -737,6 +809,8 @@ function advancedTab(props) {
           value: config.proton_cli ?? "",
           mono: true,
           "data-field": "proton_cli",
+          "data-sfocus": "field:proton_cli",
+          "data-focus-key": '[data-sfocus="field:proton_cli"]',
           "aria-label": SETTINGS.cliTitle,
           onInput: (e) => handlers.onField?.("proton_cli", e.target.value),
         }),
@@ -767,6 +841,13 @@ const TAB_BODIES = {
 export function renderSettings(props = {}) {
   const tab = props.tab ?? "folders";
   const body = TAB_BODIES[tab] ?? TAB_BODIES.folders;
+  // ABOVE EVERY TAB, when the file behind them could not be read. `read_config` rejects an
+  // unparseable or unreadable config and the screen would otherwise draw it as an empty, valid one:
+  // blank folders, live updates on, a timer at five minutes and a deletion policy card selected.
+  // Every control below this line is describing a file nobody could open, so the line says so.
+  const unreadable = props.configError
+    ? el("div", { class: "settings-unreadable" }, SETTINGS.configUnreadable(props.configError))
+    : null;
   const titleBlock = fid(
     el(
       "div",
@@ -783,11 +864,11 @@ export function renderSettings(props = {}) {
   });
   tabs.classList.add("settings-tabs");
   fid(tabs, "tabs");
-  for (const [i, node] of [...tabs.children].entries()) fid(node, "tab", i);
+  for (const [i, node] of [...tabs.children].entries()) focusable(fid(node, "tab", i), `tab:${TABS[i].id}`);
   return [
     titleBlock,
     tabs,
-    fid(el("div", { class: `settings-content settings-content-${tab}` }, body(props)), "content"),
+    fid(el("div", { class: `settings-content settings-content-${tab}` }, unreadable, body(props)), "content"),
   ];
 }
 

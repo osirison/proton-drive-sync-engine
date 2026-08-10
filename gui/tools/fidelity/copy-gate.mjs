@@ -133,13 +133,16 @@ const NOT_DRAWN = new Map([
   ],
   // 3. States no frame draws, reachable on the first click.
   ["SETTINGS.ruleUnchecked", "no frame draws a rule the walk could not evaluate (`RuleUsage.error`)"],
+  ["SETTINGS.ruleChecking", "no frame draws the tab while the local-tree walk is still running"],
   ["SETTINGS.ruleNotSaved", "no frame draws a rule added and not yet saved"],
   [
     "SETTINGS.savedNote",
     "no frame draws a settled save — and §68 records that a save takes effect on restart, not on the next sync",
   ],
   ["SETTINGS.restart", "the action on that state"],
-  ["SETTINGS.restartFailed", "and what it says when the restart does not happen"],
+  ["SETTINGS.restarting", "no frame draws a restart in flight"],
+  ["SETTINGS.saving", "no frame draws a save in flight"],
+  ["SETTINGS.sweeping", "no frame draws a sweep being asked for"],
   // 4. The Advanced tab, which `08-settings.md` specifies in prose and draws nowhere.
   ["SETTINGS.includeTitle", "the Advanced tab is not drawn in any frame"],
   ["SETTINGS.includeSub", "the Advanced tab is not drawn in any frame"],

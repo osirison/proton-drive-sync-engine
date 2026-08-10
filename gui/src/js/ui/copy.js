@@ -740,6 +740,11 @@ export const SETTINGS = {
   // carries the reason and it goes in the mono line beneath, unrewritten. No frame draws it, and
   // `Matching nothing` would be the wrong thing to say: nothing was measured, not nothing matched.
   ruleUnchecked: "Couldn't be checked",
+  // The walk is still running. `skip_rule_usage` reads every file in the sync folder, which is
+  // seconds on a large one — and for that whole time the rows have no counts. Saying so is the
+  // only honest thing here: `Matching nothing` would be a measurement nobody took, over a rule the
+  // next line invites you to remove.
+  ruleChecking: "Checking…",
   // A rule typed in and not saved. `skip_rule_usage` walked the config on disk, so this rule has no
   // counts — and borrowing a neighbour's or drawing zeros would both say something untrue about how
   // many files it hides.
@@ -796,7 +801,14 @@ export const SETTINGS = {
   // the next sync` is true only after a restart. Undrawn: no frame draws a settled save.
   savedNote: "Saved. The sync service is still running the old settings until it restarts.",
   restart: "Restart it now",
-  restartFailed: "The sync service did not restart.",
+  restarting: "Restarting the sync service…",
+  // Templates, so the daemon's own words go in unrewritten (voice rule 4). Every one of these is a
+  // state the bar reports and no frame draws — a control that answered with silence is the failure
+  // #140 already recorded once.
+  restartFailed: (reason) => `The sync service did not restart — ${reason}`,
+  saving: "Saving…",
+  sweeping: "Starting a full sweep…",
+  sweepFailed: (reason) => `The full sweep didn't start — ${reason}`,
 
   // ------------------------------------------------------------------- Advanced (not drawn) ----
   // `08-settings.md` names six things this tab holds and does not draw it. Four of the six have no
@@ -811,6 +823,10 @@ export const SETTINGS = {
   cliSub: "The app runs this program to reach Proton Drive. A bare name is looked up on PATH.",
   configFileTitle: "The file these settings are written to",
   configFileMissing: "Not created yet — saving writes it.",
+  // The config file could not be read — a TOML typo, or a permission. A template, so the reason is
+  // the parser's own words (voice rule 4). Undrawn, and it outranks everything else on the screen:
+  // every control below it is describing a file nobody could open.
+  configUnreadable: (reason) => `These aren't the settings that are running — ${reason}`,
   advancedMissing:
     "Log level, the socket path, the conflict suffix and resetting the index aren't settings the app can write yet.",
 };

@@ -82,6 +82,15 @@ let dialogReturn = null; // where to send focus when it closes — see focusKeyO
 let menuOpen = false;
 let configInfo = null;
 let configLoaded = false; // has the GUI config file been read at least once (even if empty)?
+/**
+ * Why the last `read_config` failed, or null.
+ *
+ * `configLoaded` alone cannot tell "not read yet" from "will never read": `read_config` rejects an
+ * unparseable or unreadable file and `refreshConfig` swallowed it, so a config with a typo in it
+ * left the Settings screen drawing an EMPTY, VALID config — blank folders, live updates on, and a
+ * deletion-policy card selected that is not the one the daemon is running on.
+ */
+let configError = null;
 let statusPolled = false; // has at least one get_status round trip completed (success or failure)?
 let onboardingLatch = false; // sticky: are we in the first-run onboarding takeover? (see routes.js)
 let pollTimer = null;
@@ -699,16 +708,26 @@ function render() {
       unmountScreens();
       resetSettingsScreen();
     }
+    // EVERY CONTROL, NOT JUST THE TEXT FIELDS. This screen is a form with twenty-one focusable
+    // controls and five inputs, and it is rebuilt on every poll — so restoring only the inputs left
+    // the keyboard on `<body>` within two seconds of tabbing to a radio card, a tab pill or the
+    // toggle. `data-sfocus` names each one (see `focusable` in screens/settings.js); the scan
+    // rather than a selector is because a rule's id carries its pattern, which can hold anything.
     const focused = document.activeElement;
-    const field = focused instanceof HTMLInputElement ? focused.dataset.field : null;
-    const caret = field ? focused.selectionStart : null;
+    const key = focused instanceof HTMLElement ? focused.closest("[data-sfocus]")?.dataset.sfocus : null;
+    // The SELECTION, not just the caret: a poll landing on a double-clicked path segment collapsed
+    // it, so the next keystroke inserted where it should have replaced.
+    const input = focused instanceof HTMLInputElement ? focused : null;
+    const range = input ? [input.selectionStart, input.selectionEnd, input.selectionDirection] : null;
     setBody(renderSettings(settingsProps()));
     dom.bodyRoute = active;
-    if (field) {
-      const next = document.querySelector(`input[data-field="${field}"]`);
+    if (key) {
+      const next = [...document.querySelectorAll("[data-sfocus]")].find((n) => n.dataset.sfocus === key);
       if (next) {
         next.focus();
-        if (caret != null) next.setSelectionRange(caret, caret);
+        if (range && next instanceof HTMLInputElement && range[0] != null) {
+          next.setSelectionRange(range[0], range[1] ?? range[0], range[2] ?? "none");
+        }
       }
     }
   } else if (dom.bodyRoute !== active) {
@@ -1904,10 +1923,30 @@ let settingsEdits = {};
  */
 let settingsDrafts = { exclude: "", include: "" };
 let settingsSaving = false;
+/**
+ * A `Sweep now` in flight.
+ *
+ * The daemon reports `syncing` and the button disables on it, but the poll is 2s away and the click
+ * has to answer NOW: without this the button stays live for up to two seconds after being pressed,
+ * which is how a second sweep gets queued by someone who thought the first one missed. PR #140
+ * filed the same shape on the approve/deny buttons.
+ */
+let settingsSweeping = false;
 /** The daemon's refusal, verbatim. Non-null is what opens `8a Save refused`. */
 let settingsError = null;
 /** A save landed and the daemon is still running the old config — see `SETTINGS.savedNote`. */
 let settingsSaved = false;
+/** A restart asked for and not yet answered. `restart_service` can take ten seconds. */
+let settingsRestarting = false;
+/**
+ * What the bar says about the last thing that was asked for — in flight, or failed.
+ *
+ * Every one of these was silence before the S6 review: `resync` RESOLVES with a socket error folded
+ * into its payload rather than rejecting, so a `Sweep now` against a dead daemon did nothing at all
+ * and said nothing at all; a failed `restart_service` wrote its reason into a variable only the
+ * refusal dialog reads, and nothing opens that dialog from there.
+ */
+let settingsNotice = null;
 
 /** Entering or leaving: nothing staged, no draft, no refusal, and the walk to be asked for again. */
 function resetSettingsScreen() {
@@ -1915,6 +1954,9 @@ function resetSettingsScreen() {
   settingsEdits = {};
   settingsDrafts = { exclude: "", include: "" };
   settingsSaving = false;
+  settingsSweeping = false;
+  settingsRestarting = false;
+  settingsNotice = null;
   settingsError = null;
   settingsSaved = false;
   skipRuleReport = null;
@@ -1925,6 +1967,7 @@ function resetSettingsScreen() {
 function stageSetting(key, value) {
   settingsEdits = { ...settingsEdits, [key]: value };
   settingsSaved = false;
+  settingsNotice = null;
   render();
 }
 
@@ -1966,9 +2009,26 @@ function settingsProps() {
     // note: the deck has one cost sentence and it says `One rule removed`, so a second removal has
     // no wording and inventing a plural would be inventing the number in it too.
     cost: removalCost(saved.exclude, config.exclude, skip),
-    note: settingsSaved ? SETTINGS.savedNote : null,
-    // The daemon is mid-pass: `Sweep now` would queue behind it with nothing to show for the click.
-    syncing: Boolean(store.select.response()?.syncing),
+    // The bar's sentence, in the order it is allowed to speak: what was just asked for, then what
+    // a save left behind. The cost line outranks both — see `barNoteOf`.
+    note:
+      settingsNotice ??
+      (settingsSaving
+        ? SETTINGS.saving
+        : settingsRestarting
+          ? SETTINGS.restarting
+          : settingsSaved
+            ? SETTINGS.savedNote
+            : null),
+    // WHETHER THE CONFIG IS KNOWN AT ALL. `read_config` rejects an unparseable file and
+    // `refreshConfig` swallows it, so `configInfo` stays null — and `?? {}` would draw that as an
+    // empty, valid config: both folder fields blank, live updates on, and a deletion policy card
+    // selected that is not the one running. A screen may not answer for a file it could not read.
+    loaded: Boolean(activeFixture()) || configLoaded,
+    configError: activeFixture() ? null : configError,
+    // The daemon is mid-pass, or one has just been asked for: `Sweep now` would queue behind it
+    // with nothing to show for the click.
+    syncing: settingsSweeping || Boolean(store.select.response()?.syncing),
     handlers: {
       onTab: (id) => {
         settingsTab = id;
@@ -1982,6 +2042,7 @@ function settingsProps() {
       // (DEVIATIONS §68). `deletion_policy` goes with them because `write_config` applies it after
       // the two and a stale value there would overwrite what was just chosen.
       onPolicy: (policy) => {
+        settingsNotice = null;
         settingsEdits = {
           ...settingsEdits,
           delete_approval_remote: policy.remote,
@@ -2047,12 +2108,25 @@ async function chooseLocalRoot() {
 
 /** `Sweep now` — a full-tree walk on the next pass, which `sync_now` is not. */
 async function sweepNow() {
-  try {
-    await api.resync();
-  } catch (error) {
-    console.error("resync failed:", error);
-  }
+  if (settingsSweeping) return;
+  settingsSweeping = true;
+  settingsNotice = SETTINGS.sweeping;
   render();
+  try {
+    // THE REPLY HAS TO BE READ, not just awaited. `resync` is a status command, and every one of
+    // them folds a socket failure into the payload rather than rejecting (`commands.rs`) — so
+    // against a stopped daemon, or one older than `ControlCommand::Resync`, the `catch` below never
+    // fires and an unread reply is a button that does nothing and says nothing.
+    const reply = await api.resync();
+    settingsNotice = reply?.error ? SETTINGS.sweepFailed(reply.error) : null;
+  } catch (error) {
+    settingsNotice = SETTINGS.sweepFailed(String(error?.message ?? error));
+  }
+  // Released as soon as the daemon has answered. From here the button stays disabled on the reply's
+  // own `syncing`, which is the fact rather than our memory of having asked — so re-poll for it.
+  settingsSweeping = false;
+  clearTimeout(pollTimer);
+  poll();
 }
 
 /**
@@ -2070,9 +2144,13 @@ async function saveSettings() {
   settingsSaving = true;
   settingsError = null;
   render();
+  // THE MAP AS IT WAS SENT. Every staging path assigns a fresh object, so identity is an exact
+  // "nothing was staged since" test — and clearing the whole map on the way back would discard a
+  // keystroke typed while the write was in flight, while telling the person it had been saved.
+  const sent = settingsEdits;
   try {
     await api.writeConfig(update);
-    settingsEdits = {};
+    if (settingsEdits === sent) settingsEdits = {};
     settingsSaved = true;
     // The rules changed under the report, so the counts on the skip tab are about a config that is
     // no longer on disk. Ask again rather than showing yesterday's numbers next to today's rules.
@@ -2089,14 +2167,24 @@ async function saveSettings() {
 
 /** The saved-but-not-live prompt's action. Failure leaves the note saying so, not silence. */
 async function restartAfterSave() {
+  if (settingsRestarting) return;
+  settingsRestarting = true;
+  settingsNotice = null;
+  render();
   try {
     await api.restartService();
     settingsSaved = false;
+    settingsNotice = null;
   } catch (error) {
-    console.error("restart_service failed:", error);
-    settingsError = String(error?.message ?? error);
+    // `restart_service` DOES reject, unlike the status commands — and it waits up to eight seconds
+    // for the daemon to stop, so this is both a real failure path and a slow one. Its reason went
+    // into `settingsError` before the review, which only the refusal dialog reads and only
+    // `saveSettings` opens.
+    settingsNotice = SETTINGS.restartFailed(String(error?.message ?? error));
   }
-  render();
+  settingsRestarting = false;
+  clearTimeout(pollTimer);
+  poll();
 }
 
 /** True when the bar on screen already draws what the current state says. */
@@ -2106,19 +2194,25 @@ function settingsBarUnchanged(node) {
 
 // Ctrl S. The shell owns the key and the screen owns what it means, so the event is how they meet.
 document.addEventListener("shell:save", () => {
-  if (activeRoute() === "settings") saveSettings();
+  // NOT BEHIND A DIALOG. `activeRoute()` collapses a dialog back to the route underneath, so
+  // without this a Ctrl+S while `8a Save refused` is up would re-run the save behind the modal —
+  // and a retry that SUCCEEDED would leave "Nothing was saved" on screen over a config that was.
+  if (activeRoute() === "settings" && !dialogOverlay) saveSettings();
 });
 
 // ---- data ----
 async function refreshConfig() {
   try {
     configInfo = await api.readConfig();
+    configError = null;
     // A missing config file reads back as an empty doc (not an error), so a successful read means we
     // now *know* whether a folder pair exists — the signal nextOnboardingLatch needs to distinguish a
     // fresh machine from a config file that simply hasn't been read yet.
     configLoaded = true;
-  } catch (_) {
-    /* config not readable yet — leave placeholders */
+  } catch (error) {
+    // Recorded rather than swallowed. Nothing retries differently, but the screen that draws this
+    // file has to be able to say it could not be read instead of describing one that is not there.
+    configError = String(error?.message ?? error);
   }
   render();
 }

@@ -109,6 +109,19 @@ test("a rule that IS hiding files is never called safe to remove", () => {
   }
 });
 
+test("a rule the walk has not measured is not a rule that matches nothing", () => {
+  // The tab fires the local-tree walk unawaited on every visit, so for the length of that walk —
+  // seconds on a large folder — the report says nothing about any rule. `files ?? 0` turned that
+  // into `Matching nothing`, which is "unknown is never zero" broken on the one line that invites
+  // someone to delete a rule that may be hiding forty gigabytes.
+  const unmeasured = ruleEffect({ pattern: "video-raw/**" });
+  assert.equal(unmeasured.effect, SETTINGS.ruleChecking);
+  assert.equal(unmeasured.detail, null);
+  assert.notEqual(unmeasured.effect, SETTINGS.matchingNothing);
+  // A measured zero still says so.
+  assert.equal(ruleEffect(rule({ files: 0 })).effect, SETTINGS.matchingNothing);
+});
+
 test("a rule the walk could not evaluate says so, in the daemon's own words", () => {
   const effect = ruleEffect(rule({ error: "invalid glob: unterminated [" }));
   assert.equal(effect.effect, SETTINGS.ruleUnchecked);
@@ -193,6 +206,27 @@ test("an array compares by content, not by identity", () => {
     exclude: ["*.tmp", "*.psd"],
   });
   assert.deepEqual(configUpdate(config, { exclude: [] }), { exclude: [] });
+});
+
+test("an absent key equals its default, so re-picking what is shown writes nothing", () => {
+  // `read_config` returns null for a key the file does not have and the screen draws the daemon's
+  // default in its place. Clicking the card that is already selected must not materialise two keys
+  // the file never had — the footer promises the opposite.
+  const fresh = { local_root: "~/ProtonDrive" };
+  assert.deepEqual(
+    configUpdate(fresh, {
+      delete_approval_remote: true,
+      delete_approval_local: true,
+      deletion_policy: "ask_every_time",
+    }),
+    {},
+  );
+  assert.deepEqual(configUpdate(fresh, { events_driven: true }), {});
+  // And a real change from the default is still a change.
+  assert.deepEqual(configUpdate(fresh, { events_driven: false }), { events_driven: false });
+  assert.deepEqual(configUpdate(fresh, { delete_approval_local: false }), { delete_approval_local: false });
+  // A key with no default is drawn empty when absent, so setting it IS a change.
+  assert.deepEqual(configUpdate(fresh, { remote_root: "/Drive/x" }), { remote_root: "/Drive/x" });
 });
 
 test("dirty is exactly `there is something to write`", () => {
