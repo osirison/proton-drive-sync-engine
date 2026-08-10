@@ -119,8 +119,13 @@
    its one button needs an opener command that does not exist (#231). Left to the browser that
    draws a ring around the whole 600px panel, which reads as an error state. Nothing is lost: -1
    keeps the surface out of the Tab order, so no keyboard user can land on it by tabbing, and every
-   control inside keeps its own ring. */
-.dialog:focus {
+   control inside keeps its own ring.
+
+   `:not(:focus-visible)` rather than a bare `:focus`: the global ring in base.css is already
+   `:focus-visible`-only, and `.dialog:focus` outranks it on specificity — so the blunt form would
+   have suppressed a ring the browser had decided WAS keyboard-driven, which is the one case it
+   should survive. */
+.dialog:focus:not(:focus-visible) {
   outline: none;
 }
 

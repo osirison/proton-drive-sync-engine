@@ -311,10 +311,13 @@ for (const entry of index) {
   // removed for exactly this reason. So this is that convention made enforceable rather than a new
   // rule. A slot deliberately left for a state this frame does not draw belongs undeclared, the way
   // S4 leaves `5a Checking`'s progress line and `5a Plan`'s two G3 buttons undeclared.
+  // STATIC KEYS ONLY, and that is a real limit rather than an implementation detail. A factory slot
+  // (`row: (i) => …`) resolves to a different key per call, so deciding whether it was "reached"
+  // would mean inverting the factory or guessing its arity — and a wrong guess reports a live slot
+  // as dead. So factory slots are OUT of this report: `ruleRow`, `kvRow`, `passRow` and `door` are
+  // not covered by it, and a screen that stopped rendering its rows would not show up here.
   const declared = new Set(
     Object.entries(FIXTURES[frame.label]?.fids ?? {})
-      // A factory slot resolves to many keys and to `null` for the ones its frame lacks; it counts
-      // as stamped if any of its keys was.
       .filter(([, key]) => typeof key === "string")
       .map(([slot]) => slot),
   );

@@ -60,10 +60,13 @@
 /* The drawn span, made editable — see `lookupField` for why this is not an <input>. Mono holding a
    path, sans holding the prompt; the class comes from the value rather than from `:empty`, which
    WebKit breaks the first time someone clears the field. */
+/* NO `outline: none`. This is the screen's primary keyboard control, and `base.css` already rings
+   on `:focus-visible` ONLY — so a pointer press draws nothing and the reset bought nothing, while
+   costing a keyboard user the one indicator telling them where they are. `outline` is not in
+   STYLE_PROPS either, so the ring was never something the gate wanted suppressed. */
 .activity-lookup-input {
   flex: 1;
   min-width: 0;
-  outline: none;
   font-family: var(--font-mono);
   font-size: 14px;
   color: var(--text);

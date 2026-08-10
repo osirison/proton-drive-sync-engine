@@ -319,9 +319,14 @@ function seamSide(which, sub) {
 /**
  * The never-synced band. Two nodes, not one — see `noticeBand`'s `wrapped`.
  *
- * The count is `unique_files` across the rules that matched anything. With the `can't be synced`
- * group unsourced the sentence's second clause drops, which is what `neverSyncedSub`'s zero form
- * is for: claiming `zero can't be synced at all` would be a sentence about a group nobody measured.
+ * The count is `report.total_files` — the DISTINCT-FILE UNION, see `neverSyncedFrom`, which is the
+ * one field that answers "how many files are never synced". Not `unique_files`: that is
+ * `matches == 1` and belongs to a different question. This comment said otherwise for two commits
+ * after the code was corrected, which is precisely how someone "fixes" the code back.
+ *
+ * With the `can't be synced` group unsourced the sentence's second clause drops, which is what
+ * `neverSyncedSub`'s zero form is for: claiming `zero can't be synced at all` would be a sentence
+ * about a group nobody measured.
  */
 function neverSyncedBand(never, onShow) {
   const band = noticeBand({
