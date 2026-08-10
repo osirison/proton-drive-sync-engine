@@ -339,15 +339,23 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
 /// webview a file dialog of its own.
 ///
 /// `start` seeds the dialog at the value currently in the field; a path that no longer exists is
-/// passed anyway and the picker falls back to its own default rather than failing. `None` back
-/// means the picker was dismissed, which is not an error and must not read as one.
+/// passed anyway and the picker falls back to its own default rather than failing.
+///
+/// `Ok(None)` IS A DISMISSED PICKER AND `Err` IS A BROKEN ONE, and the two must not be the same
+/// answer. The first version returned `Option<String>` and folded a join/panic error into `None`
+/// with `unwrap_or(None)` — so a picker that could not open at all was indistinguishable from one
+/// somebody closed, and the button reported nothing either way. That is the silence S6's review
+/// found on `Sweep now`, one file over.
 ///
 /// BLOCKING, ON A BLOCKING THREAD. The plugin marshals the dialog onto the GTK main thread itself
 /// and `blocking_pick_folder` waits for it — waiting on the main loop from the main loop is the
 /// WebKitGTK abort of #142/#143, and an async command's body runs on the async runtime, not the
 /// main loop. `spawn_blocking` states that rather than relying on it.
 #[tauri::command]
-pub async fn choose_folder(app: tauri::AppHandle, start: Option<String>) -> Option<String> {
+pub async fn choose_folder(
+    app: tauri::AppHandle,
+    start: Option<String>,
+) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use tauri_plugin_dialog::DialogExt;
         let mut builder = app.dialog().file();
@@ -360,7 +368,7 @@ pub async fn choose_folder(app: tauri::AppHandle, start: Option<String>) -> Opti
             .map(|path| path.display().to_string())
     })
     .await
-    .unwrap_or(None)
+    .map_err(|join_error| format!("folder picker task failed: {join_error}"))
 }
 
 /// The dry-run plan plus the derived safety facts the Plan-preview screen needs.

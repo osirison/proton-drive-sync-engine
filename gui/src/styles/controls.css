@@ -385,8 +385,13 @@
   border: 4px solid var(--text);
 }
 /* The unselected ring on the destructive card is not the neutral inert line — it is tinted with
-   the card, at the one opaque value the frame carries. */
-.radio-card.tone-destructive .radio-ring {
+   the card, at the one opaque value the frame carries.
+
+   `:not(.is-selected)` IS LOAD-BEARING. Without it this rule is three classes to the selected
+   rule's two, so it won the cascade on `border-color` and drew the SELECTED `Never ask` dot in
+   #6B3A3A instead of white — a state no frame draws (`8a Deletions tab` selects the first card),
+   so nothing could have compared it. */
+.radio-card.tone-destructive .radio-ring:not(.is-selected) {
   border-color: var(--destructive-ring);
 }
 

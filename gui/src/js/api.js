@@ -30,7 +30,9 @@ export const api = {
   listPendingDeletions: () => invoke("list_pending_deletions"),
   readConfig: () => invoke("read_config"),
   writeConfig: (update) => invoke("write_config", { update }),
-  // Settings › `Choose…`. Answers null when the picker is dismissed, which is not an error.
+  // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
+  // not open — the two were one answer until Copilot's second pass, which made a broken picker
+  // indistinguishable from a closed one.
   chooseFolder: (start) => invoke("choose_folder", { start: start ?? null }),
   runDryRun: () => invoke("run_dry_run"),
   listRemote: (path) => invoke("list_remote", { path: path ?? null }),

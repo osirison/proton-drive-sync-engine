@@ -809,6 +809,7 @@ export const SETTINGS = {
   saving: "Saving…",
   sweeping: "Starting a full sweep…",
   sweepFailed: (reason) => `The full sweep didn't start — ${reason}`,
+  chooseFailed: (reason) => `The folder picker didn't open — ${reason}`,
 
   // ------------------------------------------------------------------- Advanced (not drawn) ----
   // `08-settings.md` names six things this tab holds and does not draw it. Four of the six have no

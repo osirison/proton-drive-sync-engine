@@ -2935,6 +2935,15 @@ settings is gone. It now makes the daemon's own two checks, so those configs are
 and surface through `8a Save refused` with the daemon's wording, which is the path the frame exists
 for.
 
+**And two more from the review bot's suppressed block, which is where this repo's real findings keep
+turning up.** `choose_folder` folded a task-join failure into `None` with `unwrap_or(None)`, making a
+picker that could not open indistinguishable from one somebody closed — the same silence as
+`Sweep now`, one file over; it now returns `Result<Option<String>, String>` and the bar says which
+happened. And `.radio-card.tone-destructive .radio-ring` was three classes to the selected rule's
+two, so it won the cascade on `border-color` and drew the SELECTED `Never ask` dot in `#6B3A3A`
+instead of white. No frame draws that state — `8a Deletions tab` selects the first card — so nothing
+could have compared it, which is the same blind spot as everything else in this section.
+
 The eight refuted findings were: the per-visit reset (deliberate, and documented at the function),
 the toggle's transition on first paint (§30's own rule), `intervalLabel(0)` (unreachable —
 `MIN_INTERVAL_SECS` clamps), the floor hedge on a row (the header carries it), the zero-cost removal

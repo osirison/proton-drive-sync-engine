@@ -2092,13 +2092,18 @@ function removePattern(key, pattern) {
   render();
 }
 
-/** `Choose…`. A dismissed picker answers `null`, which is not an error and must not read as one. */
+/**
+ * `Choose…`. A dismissed picker answers `null`, which is not an error and must not read as one —
+ * and a picker that could not OPEN rejects, which is an error and must not read as a dismissal.
+ * `choose_folder` returns `Result<Option<String>, String>` precisely so the two stay apart.
+ */
 async function chooseLocalRoot() {
   try {
     const picked = await api.chooseFolder(settingsEdits.local_root ?? configInfo?.local_root ?? null);
     if (picked) stageSetting("local_root", picked);
   } catch (error) {
-    console.error("choose_folder failed:", error);
+    settingsNotice = SETTINGS.chooseFailed(String(error?.message ?? error));
+    render();
   }
 }
 
