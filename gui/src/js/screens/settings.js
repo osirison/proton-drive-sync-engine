@@ -819,6 +819,12 @@ function advancedTab(props) {
         { class: "settings-panel-control" },
         textInput({
           value: config.proton_cli ?? "",
+          // THE DAEMON'S DEFAULT, AS A PLACEHOLDER. An absent key draws the field empty, which
+          // reads as "nothing is set" when `proton-drive` is in fact what runs — the same
+          // absent-is-not-empty confusion `ABSENT_DEFAULTS` fixes for the keys that DO draw their
+          // default. A placeholder says it without staging anything. Not deck copy: it is a program
+          // name, like the mono key lines §68 keeps out of `copy.js`.
+          placeholder: "proton-drive",
           mono: true,
           "data-field": "proton_cli",
           "data-sfocus": "field:proton_cli",
