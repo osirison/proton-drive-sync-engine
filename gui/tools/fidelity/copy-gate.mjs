@@ -70,6 +70,12 @@ const NOT_DRAWN = new Map([
     "the drawn sentence needs the subtree aggregate (#208) — this is what Phase 1 says instead",
   ],
   ["DELETIONS.fileConsequence", "no frame draws a permanent deletion of a single file"],
+  // S4's failed rehearsal. `14-behaviour-and-state.md`'s empty-and-error table specifies the state
+  // in prose — "dry run failed → show the daemon string, offer `Check again`" — and no frame draws
+  // it, so the deck has no words for it and these two are S4's. The daemon's own message is not copy
+  // and never passes through here: it is quoted exactly, in mono (voice rule 4).
+  ["PLAN.failedTitle", "no frame draws a failed rehearsal — 14-behaviour-and-state.md specifies it in prose"],
+  ["PLAN.failedSub", "no frame draws a failed rehearsal — 14-behaviour-and-state.md specifies it in prose"],
 ]);
 
 /**
@@ -156,6 +162,37 @@ const DRAWN = [
   ["DELETIONS.armedTitle", ["1,204 photos"], "4a Armed"],
   ["DELETIONS.armedBody", ["photos/2019", "8.4 GB"], "4a Armed"],
   ["DELETIONS.compact.title", [2], "4a Compact"],
+  // S4. ELEVEN ROWS, EIGHT OF WHICH WERE CONSTANTS UNTIL THIS COMMIT — a real plan has its own
+  // counts, its own paths and its own number of things that cannot be undone, so every sentence on
+  // this screen that names one had to become a template. That is exactly the transition the note
+  // above records as the way a sentence leaves the gate silently, which is why they are listed here
+  // in the same commit that moves them.
+  //
+  // `destructiveRemote` carried the FIXTURE'S OWN PATH as a literal (`archive/old-notes.md is
+  // removed from Proton Drive…`), so it read as a constant and passed while being unable to name any
+  // other file. The argument here is that same path — read off the frame, as every argument in this
+  // table is — so what is checked is unchanged and what the app can now say is not.
+  //
+  // TWO SENTENCES ON THIS SCREEN ARE OUTSIDE THIS TABLE AND OUTSIDE `NOT_DRAWN`, because they are
+  // templates no frame draws: `PLAN.destructiveLocal` (the mirror of the drawn sentence, for a
+  // deletion applied HERE — `05-deletions.md` builds its two columns on that same mirror) and
+  // `PLAN.destructiveMany` (more than one gated deletion, where naming them all would run past the
+  // band). `NOT_DRAWN` only reaches constants; a template that no frame renders has nowhere to be
+  // declared, which is a hole in this gate rather than in the deck. gui/test/plan.test.js pins both.
+  ["PLAN.title", [9], "5a Plan"],
+  ["PLAN.sub", [1], "5a Plan"],
+  ["PLAN.sideUnit", [3, "4.1 MB"], "5a Plan"],
+  ["PLAN.plusFolder", [1], "5a Plan"],
+  ["PLAN.plusRename", [1], "5a Plan"],
+  ["PLAN.destructiveTitle", [1], "5a Plan"],
+  ["PLAN.destructiveRemote", ["archive/old-notes.md"], "5a Plan"],
+  ["PLAN.actionSummary", [9, 1], "5a Plan"],
+  ["PLAN.safeSub", [5], "5a Plan safe"],
+  ["PLAN.checkedAgo", ["40 seconds ago"], "5a Plan safe"],
+  // Drawn, and NOT rendered by the app: neither half of it has a source (G9 #209, G7 #207), so S4
+  // omits the line whole. The deck still has to say what the frame draws — this is the same shape as
+  // `DELETIONS.folderConsequence`, which is gated at a number Phase 1 cannot produce either.
+  ["PLAN.checkingProgress", [8431, 12480], "5a Checking"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */

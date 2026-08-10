@@ -191,6 +191,14 @@
      warning hexagon's tint. Three alphas of one hue, each drawn somewhere. */
   --btn-destructive-disabled-bg: rgba(255, 59, 59, 0.1);
   --destructive-divider: rgba(255, 59, 59, 0.2);
+  /* The tinted row in `5a Plan`'s action list — a FIFTH crimson alpha, and the quietest. It is not
+     --destructive-bg: measured .05 against that token's .06, which is the same one-notch step the
+     compact panel takes, on a row rather than on a band.
+
+     Its light value is not derived, it is READ OFF a drawn frame: --compact-permanent-bg is this
+     exact alpha (.05 → .03 in `12a Compact needs light`), so the pair already exists in the palette
+     and this token joins it rather than guessing a ratio. S10 confirms. */
+  --destructive-row-bg: rgba(255, 59, 59, 0.05);
   --destructive-btn-border: rgba(255, 59, 59, 0.25);
   --destructive-btn-bg: rgba(255, 59, 59, 0.1);
   --destructive-input-border: rgba(255, 59, 59, 0.35); /* the typed-DELETE field */
@@ -414,6 +422,7 @@
     --destructive-bg: rgba(220, 38, 38, 0.04);
     --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
     --destructive-divider: rgba(220, 38, 38, 0.16);
+    --destructive-row-bg: rgba(220, 38, 38, 0.03);
     --destructive-btn-border: rgba(220, 38, 38, 0.2);
     --destructive-btn-bg: rgba(220, 38, 38, 0.07);
     --destructive-input-border: rgba(220, 38, 38, 0.35);
@@ -546,6 +555,7 @@
   --destructive-bg: rgba(220, 38, 38, 0.04);
   --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
   --destructive-divider: rgba(220, 38, 38, 0.16);
+  --destructive-row-bg: rgba(220, 38, 38, 0.03);
   --destructive-btn-border: rgba(220, 38, 38, 0.2);
   --destructive-btn-bg: rgba(220, 38, 38, 0.07);
   --destructive-input-border: rgba(220, 38, 38, 0.35);

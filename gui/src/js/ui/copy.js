@@ -443,24 +443,59 @@ export const DELETIONS = {
 
 // -------------------------------------------------------------------------- plan a sync ----
 
+// EIGHT OF THESE WERE CONSTANTS AND ARE TEMPLATES NOW, which is the transition the copy gate's own
+// `DRAWN` table warns is how a sentence leaves the gate silently — so every one of them is listed
+// there in this same commit, rendered at the arguments its frame draws it at. They had to move: a
+// real plan has its own counts, and a deck that says `One file gets deleted for good` over a plan
+// that deletes three is worse than a deck with no sentence at all. `destructiveRemote` is the
+// sharpest case — it carried the FIXTURE'S OWN PATH (`archive/old-notes.md`) as a literal.
 export const PLAN = {
-  title: (n) => `The next sync moves ${count(n)} things`,
-  sub: "One of them can't be undone. Everything here is a rehearsal — nothing has changed yet.",
+  title: (n) => `The next sync moves ${count(n)} ${plural(n, "thing", "things")}`,
+  // The count is the DESTRUCTIVE one, not the total: `One of them can't be undone` is a claim about
+  // how many of the moves are irreversible. A plan with nothing destructive drops the clause rather
+  // than saying `Zero of them` — and still says the sentence that matters, because the whole screen
+  // is a rehearsal whether or not anything in it is dangerous.
+  sub: (n) =>
+    n > 0
+      ? `${cardinal(n)} of them can't be undone. Everything here is a rehearsal — nothing has changed yet.`
+      : "Everything here is a rehearsal — nothing has changed yet.",
   checkAgain: "Check again",
 
   leaving: "Leaving this computer",
   arriving: "Arriving from Proton",
-  filesAnd: (n, size) => `${count(n)} files, ${bytes(size)}`,
-  plusFolder: "Plus one new folder created on Proton Drive to hold them.",
-  plusRename: "One file you renamed will be renamed here to match.",
+  // THE UNIT ONLY, because the frame draws the count as its own 42px span beside it — `3` and
+  // `files, 4.1 MB` are two nodes, and a template holding both would put the numeral inside the
+  // 14px tier. `size` is a formatted string (`4.1 MB`) or null; Phase 1 always passes null, because
+  // no dry-run field carries a byte total (G2, #191), and the clause is omitted rather than faked.
+  sideUnit: (n, size = null) => `${plural(n, "file", "files")}${size ? `, ${size}` : ""}`,
+  plusFolder: (n) =>
+    `Plus ${cardinal(n).toLowerCase()} new ${plural(n, "folder", "folders")} created on Proton Drive to hold them.`,
+  plusRename: (n) =>
+    `${cardinal(n)} ${plural(n, "file", "files")} you renamed will be renamed here to match.`,
 
-  destructiveTitle: "One file gets deleted for good",
-  destructiveBody:
-    "archive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.",
+  destructiveTitle: (n) =>
+    `${cardinal(n)} ${plural(n, "file", "files")} ${plural(n, "gets", "get")} deleted for good`,
+  // Two directions and a plural, where the deck has one sentence. The drawn one is a `remote_delete`
+  // — gone from here already, about to go from Proton — and its mirror is a `local_delete`, which is
+  // the same sentence with the sides swapped and the one no frame draws. Neither invents anything:
+  // the second is the first read the other way round, which is the same relationship
+  // `05-deletions.md` builds its two columns on.
+  destructiveRemote: (path) =>
+    `${path} is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.`,
+  destructiveLocal: (path) =>
+    `${path} is removed from this computer. It's already gone from Proton Drive, so nothing will bring it back.`,
+  // More than one, where naming them all would run past the band. It says the number and the
+  // consequence and stops — the rows themselves are directly below, tinted, each with its own path.
+  destructiveMany: (n) => `${count(n)} files are removed for good. Nothing will bring them back.`,
   leaveItAlone: "Leave it alone",
 
   everyAction: "Every action, in order",
-  actionSummary: (n) => `${count(n)} actions · 1 conflict kept as both copies`,
+  // The conflict clause is CONDITIONAL. Written flat, a plan with a delete and no conflict claims
+  // `· 1 conflict kept as both copies` in mono beside nine rows that contain none.
+  actionSummary: (n, conflicts = 0) =>
+    conflicts > 0
+      ? `${count(n)} ${plural(n, "action", "actions")} · ${count(conflicts)} ${plural(conflicts, "conflict", "conflicts")} kept as both copies`
+      : `${count(n)} ${plural(n, "action", "actions")}`,
 
   gate: "type DELETE to allow it",
   gateWhy: "Only needed because this plan deletes something.",
@@ -468,7 +503,11 @@ export const PLAN = {
   run: "Run this sync",
 
   safeTitle: "Nothing gets deleted",
-  safeSub: "Five files move, both sides end up with everything. This plan is safe to run.",
+  // The FILES that move — uploads plus downloads — and not the action count. `5a Plan safe` draws
+  // seven actions and says `Five files move`, because the new folder and the rename are not files
+  // arriving or leaving. The same two numbers the seam block counts, added up.
+  safeSub: (n) =>
+    `${cardinal(n)} ${plural(n, "file", "files")} move, both sides end up with everything. This plan is safe to run.`,
   newFolder: "new folder",
   moved: "moved",
   checkedAgo: (ago) => `Checked ${ago} against both sides.`,
@@ -477,6 +516,17 @@ export const PLAN = {
   checkingSub: "Comparing both sides. Nothing is being touched.",
   checkingProgress: (done, total) => `${count(done)} of ${count(total)} files`,
   stop: "Stop",
+
+  // The failed rehearsal. `14-behaviour-and-state.md`'s empty-and-error table specifies the state —
+  // "dry run failed → show the daemon string, offer `Check again`" — in prose, and no frame draws
+  // it, so these two sentences are S4's rather than the deck's (copy-gate `NOT_DRAWN`). The title
+  // deliberately echoes `checkingTitle`: it is the same sentence in the past tense, so the screen
+  // that was working something out now says it could not.
+  //
+  // NEITHER ONE PARAPHRASES THE ERROR (voice rule 4). They introduce it; the daemon's exact string
+  // is rendered beneath in mono, and there is no formatter for it anywhere in the app.
+  failedTitle: "Couldn't work out what would change",
+  failedSub: "Nothing has been touched. This is what it said:",
 };
 
 // ----------------------------------------------------------------------------- activity ----

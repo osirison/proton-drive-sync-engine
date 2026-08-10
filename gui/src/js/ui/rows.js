@@ -26,7 +26,7 @@
 // 16px sans: it is naming a *thing you are about to lose*, not printing a path.
 
 import { el } from "./el.js";
-import { button } from "./controls.js";
+import { button, gateGroup } from "./controls.js";
 
 // ------------------------------------------------------------------------------ primitives ----
 
@@ -272,6 +272,81 @@ export function actionRow({ lead = null, title, note = null, action = null } = {
   ]);
 }
 
+// ----------------------------------------------------------------------------- plan rows ----
+
+// TWO NEW RUNGS ON THE LADDER, added by S4 exactly as the module header says a screen should:
+// `5a Plan`'s action list is `padding:8px 2px` gap-13 with the rule on the BOTTOM, and `5a Plan
+// safe`'s two side lists are `padding:7px 0` gap-11 with it on the top. The bottom rule is the rare
+// one — eleven border-bottom rows across the whole prototype against ninety-two border-top — and it
+// is not decoration: the list's own block draws the rule ABOVE the first row, so each row closing
+// itself is what makes the last row's edge land on the list's bottom rather than on the footer.
+//
+// THE GLYPH IS A 13px SLOT, NOT A CHARACTER WIDTH. All four marks (`→ ← ＋ ↷`) and the conflict's
+// 6px ring occupy the same 13px, centred, so nine rows of mixed kinds keep one left edge for their
+// paths. The ring gets 3.5px either side because 6 + 3.5 + 3.5 = 13 — the dot is doing the glyph's
+// job at the glyph's width, rather than being a narrower thing the rows then fail to line up on.
+
+/** Which colour a row's mark carries. Per instance, like `transferRow`'s: `→` is warm, `←` cool. */
+const GLYPH_TONE = new Set(["up", "down", "quiet", "destructive"]);
+
+function glyphNode(glyph, tone) {
+  // A ring rather than a character, for the one row kind that is not a direction: a conflict is not
+  // going anywhere, it is being kept twice. `decision` and not `destructive` — an outline is a
+  // choice already made for you (both copies kept), not a thing being taken away.
+  if (glyph == null) return dot({ tone: "decision", size: 6, ring: "1px" });
+  if (!GLYPH_TONE.has(tone)) {
+    throw new Error(`rows: unknown glyph tone "${tone}". Known: ${[...GLYPH_TONE].join(", ")}`);
+  }
+  return el("span", { class: `plan-glyph glyph-${tone}` }, glyph);
+}
+
+/**
+ * One row of `5a Plan`'s `Every action, in order` list: mark · path · plain-English outcome.
+ *
+ * THE DESTRUCTIVE ROW IS TINTED AND BRIGHTER, and both halves are measured rather than styled by
+ * feel: the tint is `rgba(255,59,59,.05)` — a fifth crimson alpha, tokenised as `--destructive-row-bg`
+ * — and the path steps UP from `--text-2` to `--text` while the outcome goes crimson. The row is
+ * louder than its neighbours in three dimensions because it is the one that cannot be undone.
+ *
+ * It is still only a row, which is the design's own point: the band above it is what makes the
+ * dangerous thing more than a line in a list, and this tint is how the list agrees with the band.
+ */
+export function planActionRow({
+  glyph = null,
+  tone = "quiet",
+  path,
+  outcome = null,
+  destructive = false,
+} = {}) {
+  return flatRow(
+    "plan",
+    [
+      glyphNode(glyph, tone),
+      el("span", { class: "plan-path" }, path),
+      outcome ? el("span", { class: "plan-outcome" }, outcome) : null,
+    ],
+    { class: destructive ? "is-destructive" : null },
+  );
+}
+
+/**
+ * One row of a `5a Plan safe` side list: mark · path · what it is.
+ *
+ * THE NOTE'S REGISTER CHANGES THE PATH'S COLOUR, which reads as a quirk and is the design being
+ * precise. A row whose note is a SIZE is a file moving — mono 11px, path at `--text-2`. A row whose
+ * note is a WORD (`new folder`, `moved`) is something else happening — sans 11.5px, path one tier
+ * quieter at `--text-3`. `06-plan.md` states it outright ("New folders show `new folder` instead of
+ * a size, in 11.5px `#6D7783` with the path in `#99A2AE`"), and the frame draws the same rule on the
+ * rename row, which the prose does not mention.
+ */
+export function planSideRow({ glyph, tone = "quiet", path, note = null, noteIsSize = true } = {}) {
+  return flatRow("side", [
+    glyphNode(glyph, tone),
+    el("span", { class: "side-path" + (noteIsSize ? "" : " is-quiet") }, path),
+    note ? el("span", { class: noteIsSize ? "side-size" : "side-note" }, note) : null,
+  ]);
+}
+
 // -------------------------------------------------------------------------- deletion cards ----
 
 /**
@@ -460,15 +535,10 @@ export function deleteHint(sentence, word = "DELETE") {
  * `onChange` recomputes from the field's real value, and there is no second place to keep in step.
  */
 export function deletionGate({ hint, field, confirm }) {
-  const row = el("div", { class: "deletion-gate-row", "data-delete-gate": "" }, field, confirm);
-  row.addEventListener("focusout", (e) => {
-    // Still inside the pair — moving between the field and its button is not leaving.
-    if (row.contains(e.relatedTarget)) return;
-    const input = row.querySelector(".delete-gate");
-    if (!input || input.value === "") return;
-    input.value = "";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  // The field and its button are the group here. `gateGroup` owns both halves of that rule — the
+  // attribute the field's own blur consults and the listener that notices focus leaving entirely —
+  // because S4's gate spans a whole footer bar and a second copy of the pair is how the two drift.
+  const row = gateGroup(el("div", { class: "deletion-gate-row" }, field, confirm));
   return el("div", { class: "deletion-gate" }, hint, row);
 }
 

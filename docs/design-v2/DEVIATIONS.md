@@ -2333,3 +2333,137 @@ renders a live queue (S8) it needs the same treatment the card got here.
 | S3     | `4a Armed`      | `Delete 1,204 photos from this computer?` | `Delete photos/2019 from this computer?` | G8 #208 |
 | S3     | `4a Armed`      | `Everything in photos/2019 — 8.4 GB —…`   | the sentence without the size clause   | G8 #208  |
 | S3     | `4a Empty`      | a 522px window                            | a 520px column in a 1040 window        | #221     |
+
+### 76. S4 · the plan screen
+
+**There are four bodies, and the frames draw three.** `14-behaviour-and-state.md`'s empty-and-error
+table specifies the fourth in prose — *"dry run failed → show the daemon string, offer `Check
+again`"* — and it is the state a machine with no `proton-syncd` on its PATH reaches on the first
+click. Without it the screen renders nothing at all. Its two sentences (`Couldn't work out what would
+change` / `Nothing has been touched. This is what it said:`) are S4's rather than the deck's and are
+exempted in `copy-gate.mjs` with that reason; the daemon's own message is quoted exactly, in mono,
+and passes through no formatter (voice rule 4). The block is composed from drawn parts: `4a Empty`'s
+centred 520 column, `3a Conflicts cleared`'s 88px mark, and `6a Activity passes`' quoted-error box.
+
+**This is the one screen whose FOOTER changes with its own state.** `routes.js` records a footer per
+route from a 13-to-6 census, and the plan route is not one answer: `5a Plan` and `5a Plan safe` draw
+a footer action bar, `5a Checking` draws the four doors. So the shell asks the screen
+(`footerKindOf`) instead of the table. The failed body takes the bar, because `Check again` has to
+live somewhere and the doors are not somewhere.
+
+**`5a Checking` draws no status chip, and the app draws one.** The frame's header is `mark · name ·
+spacer · ⋯` — three slots where the other two `5a` frames have four. `06-plan.md`'s Behaviour section
+says the opposite in prose: the chip reads `rehearsal · nothing has changed` **the whole time**, and
+the checking state is the middle of that time. The doc is normative for semantics under §1.3 rule 1
+and the frame for per-element geometry, so the app keeps the chip and the slot is simply not declared
+in `planFids` — nothing is compared against a node the frame does not have. The chip also OUTRANKS a
+waiting decision while this screen is open, which is a real precedence choice: it is the screen's
+promise that nothing you are looking at has happened, and `3 waiting` in its place would answer a
+different question in the one corner of the window that could reassure you.
+
+**The safe screen is chosen on "every action is a file crossing the seam", not on "nothing is
+destructive".** `5a Plan safe` is two lists of files and has nowhere to put anything else, so a plan
+holding a conflict, an adoption, a type clash or a purge would render as a complete, calm screen with
+an action silently missing — on the screen whose entire promise is that it lists every one. Those
+plans get the list body; the destructive band appears within it only when something is actually
+gated. Both drawn frames come out exactly as drawn. An action this app has never heard of is treated
+the same way, which is why `sideOf` answers `null` by default rather than guessing a side.
+
+**The two destructive sets are not one set, and `plan.rs` already said so.** *Display-destructive*
+(tinted, sorted first) is `remote_delete | local_delete | purge`; *gated* (the band, the typed word)
+is `delete_direction().is_some()`, which excludes `purge`. A purge clears an index row for a file
+already gone from both sides — putting the typed-`DELETE` gate in front of somebody for one is how a
+gate stops meaning anything. The screen keys the tint on the first set and the band on the second.
+
+**The typed word authorises nothing, and that is #227 rather than a shortcut.** `apply_approval_command`
+matches against the daemon's **current** `pending_deletions`, and at plan time nothing is pending: a
+deletion becomes pending only when a pass withholds it, and no pass has reached this plan. So
+`approve(path)` before `sync_now` records nothing. `Run this sync` therefore asks for a sync and
+nothing more; the pass withholds the delete exactly as it would have anyway and it arrives on the
+Deletions screen to be answered there. Nothing is deleted that the user did not agree to — they agree
+**twice**, which is safe and is not what the design says.
+
+**Both filtered-apply buttons are hidden, not drawn-and-inert.** `Run it without the deletion` is G3
+(#192) and `06-plan.md` says outright to hide it rather than fake it. `Leave it alone` — the band's
+own escape hatch — is the same capability reached from the band: drop this one action and run the
+rest. Read the other way (a durable refusal of this deletion) it is #224, which does not exist
+either. So it is hidden by the same rule, and deliberately not left drawn: a button that quietly does
+nothing would be worst of all right there, because it is the escape hatch on the one screen where
+somebody is looking for one. Four style-gate rows record the widths that change (`#192`).
+
+**No byte total exists anywhere in the dry-run surface.** `PlannedAction` carries `path`,
+`destination_path`, `action`, `entity_kind`, `conflict_path` and `remote_id` — and no size. So
+`files, 4.1 MB` draws as `files` on both sides of both 1040 frames (four `box.w` rows, G2 #191), and
+every per-file size on the safe screen (`1.2 MB`, `2.8 MB`, `96 KB`, `2.4 MB`, `184 KB`) is omitted.
+Those cost no assertion at all, which is worth saying rather than leaving to look like coverage:
+every one of those rows sits inside a subtree containing an unbundled glyph, so the harness does not
+compare their boxes. `new folder` and `moved` are drawable and are drawn.
+
+**`8,431 of 12,480 files` is omitted whole, because its two halves are two different gaps.**
+`run_dry_run` is a single async command with no progress channel (G9 #209) and nothing reports an
+index-wide file count (G7 #207). Half a fraction is a fraction with no denominator. The `Stop` button
+keeps its own 22px margin rather than widening to stand in for the missing line.
+
+**`Stop` is the one button in the app that masks the seam with its own fill.** `06-plan.md` calls it
+out — *"`Stop` is `background:#0A0B0D`, not transparent, so the seam passes behind it"* — and the
+frame backs it up on the half the prose leaves out: the button is `position: relative` as well as
+filled, which is F3's rule 3 (an absolutely positioned seam paints above a static sibling's
+background *and* its text, whatever the DOM order — the `1a Compact` bug §36 records). So the app
+wears the mask through `seamMask` with `pad: null`, keeping the button's own 9px/18px padding, and
+the two agree on every property. Worth writing down because it is the one place a CONTROL is a mask:
+every other masked node in the design is a line of text.
+
+**`move_remote` and `move_local` were the same sentence, and only one of them is drawn.** F7's
+`OUTCOMES` gave both `moved to match Proton`, which is right for a rename that happened on Proton and
+says the opposite for one you made here. Fixed to `moved on Proton to match`. Four more variants had
+no wording at all — `local_delete`, `purge`, `auto_link`, `type_conflict` — and F7's note said the
+words did not exist yet and inventing them would be that module doing design. That was right while
+nothing rendered a plan; it stops being right on the screen that draws every row of one, because the
+alternative to a chosen word is a row that names your file and says nothing about what happens to it.
+`local_delete` was the worst to leave blank: it is the tinted, destructive row. All four are chosen
+copy, recorded here so the deck can overrule them.
+
+**`sortedForDisplay` is a second copy of `plan.rs::sorted_for_display`, on purpose.** That function
+lives in gui-core and cannot be reached from the frontend: `run_dry_run` returns the parsed
+`DryRunReport` verbatim, so what arrives over the wire is the daemon's emission order with nothing
+sorted. Reusing the Rust one would mean changing what the command returns, which changes a payload
+three other things parse. Both carry a comment pointing at the other.
+
+**The gate's group is the whole footer bar, and both halves of that rule now live in one place.** The
+field clears on blur unless focus lands inside `[data-delete-gate]`, and the button it unlocks is two
+siblings away — so without the attribute on the BAR, tabbing from the field to `Run this sync` blurs
+it, the field clears, the button disables mid-Tab and focus lands on nothing. Measured, not reasoned
+about: the first version of this screen shipped exactly that and the gate could not be completed by
+keyboard at all, which is the trap `deleteGate`'s own comment records from S3. The attribute and the
+group's `focusout` listener are two halves of one rule (set the attribute alone and an abandoned word
+stays armed; add the listener alone and the gate cannot be completed), so they are `gateGroup` in
+controls.js now and `deletionGate` uses it too.
+
+**An action bar was rebuilt on every poll, and nobody noticed because every one of them was a
+placeholder.** The shell patched the four doors and rebuilt the bar; the moment a bar holds a text
+field that is a half-typed `DELETE` destroyed twice a second. The footer is now patched by owner
+(`dom.footerOwner`) with the screen deciding what a rebuild means.
+
+**`max-width: 496px` where `06-plan.md` writes 460.** The safe hero's sentence is masked with 18px of
+padding either side, and `base.css` opts the whole app into `border-box` while the prototype does not
+(§19) — so 460 of content is a 496px border box here. Capping at 460 wraps the sentence a word early.
+
+**Eight sentences became templates, and two of them cannot be gated.** A real plan has its own
+counts, its own paths and its own number of things that cannot be undone, so every sentence naming
+one had to move — including `destructiveBody`, which carried the FIXTURE'S OWN PATH
+(`archive/old-notes.md …`) as a literal and therefore read as a constant while being unable to name
+any other file. All eight are in the copy gate's `DRAWN` table in the same commit, which is the rule
+S1 wrote down after three sentences left the gate silently by becoming templates. Two cannot be:
+`PLAN.destructiveLocal` (the mirror, for a deletion applied here) and `PLAN.destructiveMany` (more
+than one gated deletion) are templates no frame renders, and `NOT_DRAWN` only reaches constants.
+`gui/test/plan.test.js` pins both.
+
+| screen | frame          | drawn                                    | Phase 1                              | gap      |
+| ------ | -------------- | ---------------------------------------- | ------------------------------------ | -------- |
+| S4     | `5a Plan`      | `3` `files, 4.1 MB`                      | `3` `files`                          | G2 #191  |
+| S4     | `5a Plan safe` | a size on every row                      | the row without its size             | G2 #191  |
+| S4     | `5a Plan`      | `Run it without the deletion`            | hidden                               | G3 #192  |
+| S4     | `5a Plan`      | `Leave it alone`                         | hidden                               | G3 #192  |
+| S4     | `5a Plan`      | typing `DELETE` authorises the deletion  | the delete is asked again by S3       | #227     |
+| S4     | `5a Checking`  | `8,431 of 12,480 files`                  | the line omitted                     | G9 #209, G7 #207 |
+| S4     | `5a Checking`  | a 522px window                           | a 520px column in a 1040 window      | #221     |

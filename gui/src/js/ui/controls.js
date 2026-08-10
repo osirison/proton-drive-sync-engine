@@ -500,6 +500,37 @@ export function deleteGate({ onChange = null, word = "DELETE" } = {}) {
   return field;
 }
 
+/**
+ * Mark a node as the gate's GROUP: the region a typed word may move within, and outside which it is
+ * abandoned.
+ *
+ * BOTH HALVES OF ONE RULE, in one place, because they are two halves of one rule and were written
+ * twice. `deleteGate`'s own blur consults `[data-delete-gate]` to decide that reaching the button is
+ * not leaving; this listener is what notices that focus has left the group ENTIRELY — which the
+ * field's blur cannot see, because by then focus is on the button and the field blurred a step
+ * earlier. Set the attribute without the listener and a word typed, tabbed past and abandoned stays
+ * armed for the next click; add the listener without the attribute and the gate cannot be completed
+ * at all. S3 had both on its card; S4's group is a whole footer bar, and the second copy is how the
+ * two would have drifted.
+ *
+ * The value goes back through a dispatched `input` event rather than by calling a repaint directly,
+ * so there is one path from "what the field holds" to "what the button looks like" and no second one
+ * to keep in step.
+ */
+export function gateGroup(node) {
+  if (!node) return node;
+  node.dataset.deleteGate = "";
+  node.addEventListener("focusout", (e) => {
+    // Still inside the group — moving between the field and its button is not leaving.
+    if (node.contains(e.relatedTarget)) return;
+    const field = node.querySelector(".delete-gate");
+    if (!field || field.value === "") return;
+    field.value = "";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  return node;
+}
+
 // --------------------------------------------------------------------------------- toggles ----
 
 /** The 44×26 toggle. Two drawn states and nothing between them. */

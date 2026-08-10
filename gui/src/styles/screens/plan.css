@@ -1,0 +1,314 @@
+/* The plan screen (S4) — `5a Plan`, `5a Plan safe`, `5a Checking`. See js/screens/plan.js.
+ *
+ * Every value here was read off the three frames rather than transcribed from `06-plan.md`, which
+ * is the §1.3 rule for per-element geometry. Where the two disagree the frame wins and the
+ * difference is in DEVIATIONS.md §76.
+ *
+ * THE TWO 1040 FRAMES ARE ONE BLOCK LIST WITH DIFFERENT MIDDLES. Both open with a full-width
+ * seam block whose grid is `1fr 1fr` and whose right column is right-aligned entire; what changes is
+ * what hangs under each count — a sentence on `5a Plan`, the files themselves on `5a Plan safe` —
+ * and whether a destructive band interrupts. So the seam block is one rule set with one modifier,
+ * not two that happen to look alike.
+ */
+
+/* ------------------------------------------------------------------------------ the title -- */
+
+.pl-title-row {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  gap: 16px;
+  padding: 6px 32px 0;
+}
+.pl-title-text {
+  flex: 1;
+  min-width: 0;
+}
+.pl-title {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+.pl-sub {
+  margin-top: 7px;
+  font-size: 13.5px;
+  color: var(--text-4);
+}
+/* `Check again` sits beside a headline that takes every pixel it is given, so the button holds its
+   own width instead of being squeezed by it. Measured (`flex-shrink: 0`), not assumed — the flex
+   default would shrink it as the title grows. */
+.pl-title-row .btn {
+  flex: none;
+}
+
+/* -------------------------------------------------------------------------- the seam block -- */
+
+/* `position: relative` is load-bearing and not tidiness: it is the seam's containing block, and
+   without it the 1px line resolves `left: 50%` against the window and lands somewhere else. */
+.pl-seam-block {
+  flex: none;
+  margin-top: 24px;
+  padding: 0 32px;
+  position: relative;
+}
+/* Under the safe hero the block sits 10px tighter, because the hero above it already carries the
+   air. Measured per frame: 24 on `5a Plan`, 14 on `5a Plan safe`. */
+.pl-hero + .pl-seam-block {
+  margin-top: 14px;
+}
+
+.pl-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+/* A 30px gutter on the seam's side of each column — the gap either side of the centre line, which
+   is what stops a path from touching it. */
+.pl-side {
+  padding-right: 30px;
+}
+.pl-side.is-arriving {
+  padding-right: 0;
+  padding-left: 30px;
+}
+/* THE WHOLE COLUMN, but only where the column is nothing but text. `5a Plan` right-aligns the
+   arriving side entire — label, count and sentence — which is `01-foundations.md` §5's rule 4 made
+   visible: direction is carried by position first. `5a Plan safe` does NOT, because its third child
+   is a list of rows, and a right-aligned column would drag each path away from the glyph beside it;
+   there the eyebrow carries its own alignment and the count is pushed over by `justify-content`.
+   Measured per frame, and the gate reads `text-align` on the column itself. */
+.pl-seam-block.is-aligned .pl-side.is-arriving {
+  text-align: right;
+}
+
+.pl-count {
+  display: flex;
+  align-items: baseline;
+  gap: 11px;
+  margin-top: 12px;
+}
+.pl-side.is-arriving .pl-count {
+  justify-content: flex-end;
+}
+/* The one place in the design a number is set this large. `line-height: 1` because the row is
+   baseline-aligned against a 14px unit beside it — normal leading would push the baseline down and
+   the two would stop sitting on one line. */
+.pl-numeral {
+  font-size: 42px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1;
+}
+.pl-unit {
+  font-size: 14px;
+  color: var(--text-3);
+}
+.pl-side-note {
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-4);
+}
+.pl-side-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 16px;
+}
+
+/* --------------------------------------------------------------------- the destructive band -- */
+
+.pl-band-wrap {
+  flex: none;
+  margin-top: 22px;
+  padding: 0 32px;
+}
+/* The path inside the consequence, one tier smaller than the sentence around it — the deck's
+   two-tier rule (plain sentences for people, mono for anything the daemon owns) inside one line,
+   exactly as the armed confirmation draws it. There is no global `.mono`: the class is a marker and
+   each site says what it means, because the size step is per-site and the family alone is not. */
+.pl-band-wrap .band-notice-note .mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------------------- the action list -- */
+
+.pl-list {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  margin-top: 20px;
+  padding: 0 32px;
+}
+.pl-list-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.pl-list-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+/* The rule above the first row belongs to the LIST; each row closes itself (rows.css `.row-plan`),
+   so the last row's edge lands on the bottom of the list rather than against the footer's own. */
+.pl-rows {
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--divider);
+  overflow: hidden;
+}
+/* Nine rows is what fits (`ROWS_THAT_FIT`). Past that the list scrolls rather than pushing the
+   footer out of a window that cannot grow — the frame's own `overflow: hidden` would silently drop
+   the tenth action off a screen whose entire promise is that it lists every one. */
+.pl-rows.is-scrollable {
+  overflow-y: auto;
+}
+
+/* ------------------------------------------------------------------------------- the footer -- */
+
+.pl-gate {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+/* The typed-DELETE field. Its crimson border and mono tracking belong to the site, exactly as the
+   deletion card's do — the same input elsewhere is an ordinary text field. 190px and not `flex: 1`:
+   this one sits in a footer bar beside a sentence, where the card's flexes to its column. */
+.pl-gate .delete-gate {
+  width: 190px;
+  padding: 10px 13px;
+  border-color: var(--destructive-input-border);
+  background: var(--destructive-input-bg);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.pl-gate-why {
+  max-width: 210px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-5);
+}
+.pl-checked {
+  font-size: 12px;
+  color: var(--text-5);
+}
+
+/* ---------------------------------------------------------------------------- the safe hero -- */
+
+.pl-hero {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  position: relative;
+}
+/* Over the seam, not under it: an absolutely positioned seam paints above every static sibling, so
+   the mark that masks it has to be positioned too (F3 rule 3). */
+.pl-hero-mark {
+  position: relative;
+}
+.pl-hero-title {
+  margin-top: 24px;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  text-align: center;
+}
+/* 496 AND NOT THE 460 THE SPEC WRITES, and the difference is the box model rather than the design:
+   `base.css` opts the whole app into `border-box` and the prototype does not, so 460 of content
+   plus the mask's 18px either side is a 496px border box here. Capping at 460 would wrap this
+   sentence a word early. DEVIATIONS §19 is the same conversion, one screen over. */
+.pl-hero-sub {
+  max-width: 496px;
+  margin-top: 10px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-4);
+  text-align: center;
+}
+.pl-spacer {
+  flex: 1;
+}
+
+/* --------------------------------------------------------------------- checking, and failed -- */
+
+/* Both are the 520px centred column `4a Empty` and `3a Conflicts cleared` established: the frame is
+   a 522px WINDOW and the shell's is a fixed, non-resizable 1040, so this is the closest it can get
+   and the difference is recorded (#221) rather than faked. */
+.pl-checking,
+.pl-failed {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 520px;
+  margin: 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.pl-checking {
+  padding: 0 40px 60px;
+}
+.pl-checking-mark {
+  position: relative;
+}
+.pl-checking-title {
+  margin-top: 24px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  text-align: center;
+}
+.pl-checking-sub {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-4);
+  text-align: center;
+}
+/* The button's OWN margin, kept at the frame's 22px. What is missing above it is the progress line —
+   `8,431 of 12,480 files`, whose two halves are two different missing capabilities (#209, #207) — so
+   the block is one node shorter here and this gap is unchanged rather than widened to stand in for
+   it. Recorded in §76. */
+.pl-stop {
+  margin-top: 22px;
+}
+
+.pl-failed {
+  padding: 0 40px;
+}
+.pl-failed-title {
+  margin-top: 20px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+.pl-failed-sub {
+  margin-top: 9px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-4);
+  text-align: center;
+}
+/* The daemon's exact string, quoted rather than paraphrased — the same block `6a Activity passes`
+   gives a failed pass, on `--surface` inside the panel so it reads as a quotation. */
+.pl-failed-error {
+  max-width: 440px;
+  margin-top: 16px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-8);
+  background: var(--surface);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

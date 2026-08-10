@@ -26,6 +26,7 @@
 
 import { ago } from "./clock.js";
 import { action, summaryOf } from "./dryrun.js";
+import { planFids } from "./fids.js";
 
 /**
  * The daemon behind all three rehearsal frames: reachable, idle, nothing in flight.
@@ -148,6 +149,8 @@ export const PLAN_FIXTURES = {
     status: idleDaemon(),
     localTotals: { files: 12_480 },
     ui: { checking: true, scanned: 8431 },
+    route: "plan",
+    fids: planFids("checking"),
   },
 
   // ---- 5a Plan — a plan that would destroy something ------------------------------------------
@@ -178,6 +181,8 @@ export const PLAN_FIXTURES = {
       // would never appear here even though it is tinted like one.
       files_at_risk: ["archive/old-notes.md"],
     },
+    route: "plan",
+    fids: planFids("plan"),
   },
 
   // ---- 5a Plan safe — the ordinary plan, and the reason the screen shrinks ---------------------
@@ -216,5 +221,7 @@ export const PLAN_FIXTURES = {
         return ago(40);
       },
     },
+    route: "plan",
+    fids: planFids("safe"),
   },
 };

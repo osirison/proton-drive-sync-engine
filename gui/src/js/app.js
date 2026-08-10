@@ -36,6 +36,14 @@ import {
   itemKey,
   BULK_KEY,
 } from "./screens/deletions.js";
+import {
+  renderPlan,
+  updatePlan,
+  unmountPlan,
+  renderPlanBar,
+  updatePlanBar,
+  footerKindOf,
+} from "./screens/plan.js";
 import { severityOf } from "./ui/rows.js";
 import { activeFixture } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
@@ -106,6 +114,12 @@ function toggleTheme() {
  */
 function chipFor() {
   if (onboardingLatch) return { variant: "step", text: CHROME.chips.step(1) };
+  // THE PLAN SCREEN OWNS THE CHIP WHILE IT IS OPEN, and it outranks a waiting decision on purpose.
+  // `06-plan.md`: the chip says `rehearsal · nothing has changed` **the whole time** — it is the
+  // screen's promise that nothing you are looking at has happened, and a `3 waiting` in its place
+  // would be answering a different question in the one corner of the window that could reassure you.
+  // The queues have not gone anywhere; they are one click away on the doors underneath.
+  if (activeRoute() === "plan") return { variant: "rehearsal", text: CHROME.chips.rehearsal };
 
   const state = store.select.daemonState();
   const decisions = store.select.unresolvedConflictCount();
@@ -139,6 +153,11 @@ function navigate(id) {
   // IMPLEMENTATION-PLAN §3.3's assumption, and on Settings and Plan there is no other way back:
   // clicking the door you are already on returns to the main screen.
   route = route === id ? "main" : id;
+  // The plan is entered FRESH every time, the way the conflicts screen is: what a rehearsal found
+  // ten minutes ago is not what this sync would do, and a screen offering to run a stale plan under
+  // a live `Run this sync` is the one mistake this screen exists to prevent. Leaving discards it for
+  // the same reason.
+  if (route === "plan" || id === "plan") resetPlanScreen();
   // A door leaves everything stacked over the old screen behind — both layers, not just the top
   // one. Cleared directly rather than by popping: the door itself keeps focus, so there is no
   // return target to honour.
@@ -365,6 +384,9 @@ const dom = {
   bodyNodes: [],
   footer: null,
   footerKind: null,
+  // Which screen an action bar belongs to. Two screens' bars are both `actionBar` and are not
+  // interchangeable — see the footer block in render().
+  footerOwner: null,
   bodyRoute: null,
   // The dialog layer (F5). Keyed like the body, and for a harder reason: the armed deletion's
   // typed-`DELETE` field CLEARS ON BLUR by design, so a layer rebuilt on the ~2s poll would destroy
@@ -528,15 +550,25 @@ function render() {
   // animation of its own to protect, and `setBody`'s `nextSibling` guard already leaves an
   // unchanged node in place. The crossfade is applied AFTER the swap, and only on an advance.
   if (active === "conflicts") {
-    if (dom.bodyRoute !== active) {
-      unmountMain();
-      unmountDeletions();
-    }
+    if (dom.bodyRoute !== active) unmountScreens();
     const props = conflictsProps();
     const nodes = renderConflicts(props);
     setBody(nodes);
     crossfadeConflictBody(nodes, props.conflicts[props.index]?.original ?? "(cleared)");
     dom.bodyRoute = active;
+  } else if (active === "plan") {
+    // PATCHED, NOT REBUILT, for both of the reasons the deletions screen is and one of its own: the
+    // gate is a text field that clears on blur, the `Checked 40 seconds ago` line counts up at
+    // SECOND resolution, and the checking body runs two CSS animations that a rebuild restarts from
+    // 0%. `updatePlan` rebuilds only when the plan itself has moved.
+    if (dom.bodyRoute !== active) {
+      unmountScreens();
+      setBody(renderPlan(planProps()));
+      dom.bodyRoute = active;
+    } else {
+      const nodes = updatePlan(planProps());
+      if (nodes) setBody(nodes);
+    }
   } else if (active === "deletions") {
     // PATCHED, NOT REBUILT — the opposite of the conflicts branch above, and the difference is a
     // text field. `4a Deletions` puts a typed-`DELETE` gate on every permanent card, and that field
@@ -545,8 +577,7 @@ function render() {
     // rebuilds only when something the body draws has moved, applies the busy state in place
     // otherwise, and carries a half-typed word across the rebuilds it cannot avoid.
     if (dom.bodyRoute !== active) {
-      unmountMain();
-      unmountDeletions();
+      unmountScreens();
       setBody(renderDeletions(deletionsProps()));
       dom.bodyRoute = active;
     } else {
@@ -554,8 +585,7 @@ function render() {
       if (nodes) setBody(nodes);
     }
   } else if (dom.bodyRoute !== active) {
-    unmountMain();
-    unmountDeletions();
+    unmountScreens();
     setBody(
       active === "main"
         ? renderMain(mainProps(localRoot, remoteRoot))
@@ -576,16 +606,38 @@ function render() {
 
   // --- footer: either the four doors or an action bar — never both, never neither. The 13-to-6
   // split is measured, not chosen; see routes.js.
-  const kind = spec.footer ?? "doors";
-  const navPatched = kind === "doors" && dom.footerKind === "doors" && updateFooterNav(dom.footer, navOpts);
-  if (!navPatched) {
+  //
+  // THE PLAN SCREEN ANSWERS FOR ITSELF, and it is the only route that does. Its three frames are not
+  // one footer: `5a Plan` and `5a Plan safe` draw an action bar, `5a Checking` draws the four doors.
+  // routes.js records the route's usual answer; the screen records what its current STATE draws.
+  const kind = active === "plan" ? footerKindOf(planProps()) : (spec.footer ?? "doors");
+  // WHOSE bar it is, not just that it is one. A bar built for the plan screen and a placeholder bar
+  // are both `actionBar`, and patching one as the other leaves the previous screen's controls in the
+  // footer of the next.
+  const owner = kind === "actionBar" ? active : null;
+  // PATCHED RATHER THAN REBUILT, and until S4 only the doors were. An action bar was rebuilt on
+  // every ~2s poll, which was invisible while every one of them was a placeholder — and is a
+  // half-typed `DELETE` destroyed twice a second the moment a bar holds the gate. `updatePlanBar`
+  // returns false when the bar's shape has actually changed, which is the signal to rebuild.
+  let patched = false;
+  if (dom.footer && dom.footerKind === kind && dom.footerOwner === owner) {
+    patched =
+      kind === "doors"
+        ? updateFooterNav(dom.footer, navOpts)
+        : owner === "plan"
+          ? updatePlanBar(dom.footer, planProps())
+          : true;
+  }
+  if (!patched) {
     const built =
       kind === "actionBar"
-        ? renderActionBar({
-            consequence: "This screen is not built yet.",
-            // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
-            bottom: spec.takeover ? 18 : 14,
-          })
+        ? owner === "plan"
+          ? renderPlanBar(planProps())
+          : renderActionBar({
+              consequence: "This screen is not built yet.",
+              // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
+              bottom: spec.takeover ? 18 : 14,
+            })
         : renderFooterNav({
             ...navOpts,
             order: FOOTER_ORDER,
@@ -596,6 +648,7 @@ function render() {
     else root.append(built);
     dom.footer = built;
     dom.footerKind = kind;
+    dom.footerOwner = owner;
   }
 
   // --- the dialog layer: mounted when the route changes, PATCHED (i.e. left alone) otherwise.
@@ -669,6 +722,20 @@ function titleFor(id) {
  * travelling segments, the glow's `breathe`, the chip's `blip`. So a poll that changes nothing moves
  * nothing, and a decision arriving appends one block and touches neither of the other two.
  */
+/**
+ * Drop every screen's cached view before mounting a different one.
+ *
+ * ALL OF THEM, EVERY TIME, and not "the one we were on". Each module's cache is a module-level
+ * `view` that its `update*` reads to decide whether to rebuild, so a screen left holding a stale one
+ * patches nodes that are no longer in the document the next time it is opened. Naming them
+ * individually at each of the four call sites is how the fifth screen gets forgotten at one of them.
+ */
+function unmountScreens() {
+  unmountMain();
+  unmountDeletions();
+  unmountPlan();
+}
+
 function setBody(nodes) {
   for (const node of dom.bodyNodes) if (!nodes.includes(node)) node.remove();
   let anchor = dom.header;
@@ -1091,6 +1158,124 @@ function deletionsProps() {
       onTrash: (item) => decideDeletion(item, true),
       onKeep: (item) => decideDeletion(item, false),
       onKeepAll: () => keepAllDeletions(),
+    },
+  };
+}
+
+// ---- the plan screen (S4) ----
+//
+// Module-level for the reason the other two screens' state is, and for one more: this is the only
+// screen driven by a COMMAND rather than by the poll, so the rehearsal's result has to outlive the
+// renders that happen while it is in flight.
+
+/** The last `DryRunPayload`, the daemon's message if it refused, and when the answer landed. */
+let planDryRun = null;
+let planError = null;
+let planCheckedAt = null;
+/**
+ * Which rehearsal the app is waiting for, and it is a TOKEN rather than a boolean.
+ *
+ * `run_dry_run` cannot be cancelled — it is one async command that resolves once, at the end — so
+ * `Stop` and `Check again` can only ever stop BELIEVING an answer that is still coming. Bumping the
+ * token makes every reply check whether it is still the one being waited for, which is the same
+ * superseded-reply guard `ensureConflictPair` needs for a much shorter round trip. Without it, a
+ * slow first rehearsal lands after a fast second one and the screen shows the older plan.
+ */
+let planSeq = 0;
+// `null` and not `0`: the first render must not find the initial token already "waiting", which is
+// what a matching pair means. That version fired no rehearsal at all on the first visit.
+let planWaiting = null;
+
+/** Entering the screen fresh: no plan, no error, and a rehearsal on its way. */
+function resetPlanScreen() {
+  planDryRun = null;
+  planError = null;
+  planCheckedAt = null;
+  planSeq += 1;
+  planWaiting = null;
+}
+
+/**
+ * Run the rehearsal, once per visit and once per `Check again`.
+ *
+ * Fired and not awaited, like `ensureConflictPair` and `ensurePathStatus`: the screen renders the
+ * checking body now and this calls `render()` again when the answer lands.
+ *
+ * NOT RE-FIRED ON THE POLL. `planWaiting` names the rehearsal in flight and `planDryRun`/`planError`
+ * name the one that finished, so a screen that has either does nothing here — otherwise every status
+ * tick would shell a fresh `proton-syncd --dry-run`, which walks the whole remote.
+ */
+async function ensurePlan() {
+  if (planWaiting === planSeq || planDryRun || planError) return;
+  const seq = planSeq;
+  planWaiting = seq;
+  let payload = null;
+  let error = null;
+  try {
+    payload = await api.runDryRun();
+  } catch (e) {
+    // The daemon's own string, kept exactly as it arrived — `14-behaviour-and-state.md` says the
+    // failed rehearsal shows it, and voice rule 4 says never to paraphrase one.
+    error = String(e);
+  }
+  // Superseded: a re-check (or leaving and coming back) has already asked again. Drop this answer
+  // rather than letting it overwrite the newer one.
+  if (seq !== planSeq) return;
+  planWaiting = null;
+  if (payload?.report) {
+    planDryRun = payload;
+    planError = null;
+  } else {
+    // A resolved reply that is not a report is not a plan. `run_dry_run` either returns a
+    // `DryRunPayload` or fails, so this is the browser-preview mock answering `null` for a frame
+    // that describes no rehearsal — and treating it as an empty plan would draw `The next sync moves
+    // 0 things` over a screen that has been told nothing.
+    planDryRun = null;
+    planError = error ?? "the rehearsal returned no plan";
+  }
+  planCheckedAt = Math.floor(Date.now() / 1000);
+  render();
+}
+
+/** Everything the plan screen reads, plus the actions it can take. */
+function planProps() {
+  // The `ui` block (F9), which is how `5a Checking` says it is the state between the call and its
+  // answer — the fixture carries no `dryRun` at all, so the mock resolves null and the live path
+  // would call that a failure. `ui.checking` is screen state no daemon reply can carry, which is
+  // exactly what that slot is for.
+  const ui = activeFixture()?.ui ?? null;
+  ensurePlan();
+  return {
+    dryRun: planDryRun,
+    error: planError,
+    checking: ui?.checking ?? planWaiting === planSeq,
+    checkedAt: ui?.checkedAt ?? planCheckedAt,
+    handlers: {
+      onCheck: () => {
+        resetPlanScreen();
+        render();
+      },
+      // STOPPING CANNOT STOP THE CHILD, and pretending otherwise would be the fake this codebase
+      // keeps refusing: `run_dry_run` has no cancel, so the `proton-syncd --dry-run` already running
+      // runs to completion. It is READ-ONLY — the index is opened read-only and nothing is written —
+      // so the cost is some CPU, and its answer is dropped by the token above.
+      //
+      // What the button can honestly do is leave: a rehearsal you stopped has nothing to show, and
+      // the design draws no third empty state for one. A previous plan is restored if there is one,
+      // which is the case when `Check again` was pressed over a plan you were already reading.
+      onStop: () => {
+        planSeq += 1;
+        planWaiting = null;
+        if (!planDryRun && !planError) navigate("main");
+        else render();
+      },
+      // `Run this sync` asks the daemon for a pass. See `runNow` in screens/plan.js for what the
+      // typed word can and cannot authorise; the main screen is where a running pass is visible, and
+      // the plan on this screen is stale the moment the pass starts.
+      onRun: async () => {
+        await command(api.syncNow);
+        navigate("main");
+      },
     },
   };
 }

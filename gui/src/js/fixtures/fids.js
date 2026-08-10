@@ -579,6 +579,163 @@ const DELETION_EMPTY_FIDS = {
   emptySub: "div/div[1]",
 };
 
+// ------------------------------------------------------------------------------ S4 · plan ----
+
+/**
+ * The shell slots on the three `5a` frames, of which there are two shapes and NOT one.
+ *
+ * `5a Plan` and `5a Plan safe` carry a chip and a footer ACTION BAR — no doors at all, so no
+ * `footerNav`/`door` slots, and the bar is the screen's own node rather than chrome's.
+ * `5a Checking` is the other way round: four doors, and NO CHIP — the frame's header is
+ * `img · name · spacer · ⋯`, three slots where the other two have four.
+ *
+ * The app draws a chip there anyway, because `06-plan.md`'s Behaviour section says the chip reads
+ * `rehearsal · nothing has changed` for the whole rehearsal and the frame is the middle of one. The
+ * slot is simply not declared, so nothing is compared against a node the frame does not have.
+ * DEVIATIONS §76.
+ *
+ * NO `chipDot` ON ANY OF THEM. The rehearsal chip is text only (`02-shell.md`'s own table: "none —
+ * text only"), so the app renders no dot and declaring the slot would name a node neither side has.
+ */
+const planShell = (chip) => ({
+  header: "header",
+  mark: "header/img",
+  name: "header/span[0]",
+  spacer: "header/span[1]",
+  ...(chip ? { chip: "header/span[2]" } : {}),
+  menu: "header/button",
+});
+
+/**
+ * The seam block, which both 1040 frames draw and which sits at a different index in each.
+ *
+ * `s` IS THE SIDE — 0 leaving, 1 arriving — and it is the drawn left-to-right order, so the table
+ * numbers by position and the screen decides what goes where. Same shape as S3's two columns, and
+ * for the same reason: the frame draws one arrangement and the code must not hard-code it twice.
+ */
+const planSides = (at) => ({
+  seamBlock: at,
+  seam: `${at}/div[0]`,
+  sides: `${at}/div[1]`,
+  side: (s) => `${at}/div[1]/div[${s}]`,
+  sideLabel: (s) => `${at}/div[1]/div[${s}]/div[0]`,
+  sideCount: (s) => `${at}/div[1]/div[${s}]/div[1]`,
+  sideNumeral: (s) => `${at}/div[1]/div[${s}]/div[1]/span[0]`,
+  sideUnit: (s) => `${at}/div[1]/div[${s}]/div[1]/span[1]`,
+});
+
+/**
+ * `5a Plan` — the plan that would destroy something.
+ *
+ * TWO SLOTS THE APP NEVER STAMPS, and they are absences rather than omissions: `div[2]/div/button`
+ * is `Leave it alone` and `div[4]/button[0]` is `Run it without the deletion`. Both need the
+ * filtered apply (G3, #192) and `06-plan.md` says to hide a button rather than fake it, so neither
+ * is drawn and neither is declared — a slot declared but never stamped is inert, but a slot declared
+ * for a button the app has decided not to draw is a mapping waiting to be wrong.
+ *
+ * `run` IS `button[1]`, which is the whole point of saying so: with the first button gone, the one
+ * the app draws is still the frame's SECOND, and mapping it to `button[0]` would compare a primary
+ * against a secondary and quietly pass on colours that happen to be close.
+ */
+const PLAN_FIDS = {
+  titleRow: "div[0]",
+  titleText: "div[0]/div",
+  title: "div[0]/div/div[0]",
+  sub: "div[0]/div/div[1]",
+  checkAgain: "div[0]/button",
+
+  ...planSides("div[1]"),
+  sideNote: (s) => `div[1]/div[1]/div[${s}]/div[2]`,
+
+  bandWrap: "div[2]",
+  band: "div[2]/div",
+  bandMark: "div[2]/div/svg",
+  bandMarkPath: (i) => `div[2]/div/svg/path[${i}]`,
+  bandMarkDot: "div[2]/div/svg/circle",
+  bandBody: "div[2]/div/div",
+  bandTitle: "div[2]/div/div/div[0]",
+  bandNote: "div[2]/div/div/div[1]",
+  bandNotePath: "div[2]/div/div/div[1]/span",
+
+  list: "div[3]",
+  listHead: "div[3]/div[0]",
+  listLabel: "div[3]/div[0]/span[0]",
+  listSpacer: "div[3]/div[0]/span[1]",
+  listCount: "div[3]/div[0]/span[2]",
+  rows: "div[3]/div[1]",
+  row: (i) => `div[3]/div[1]/div[${i}]`,
+  rowGlyph: (i) => `div[3]/div[1]/div[${i}]/span[0]`,
+  rowPath: (i) => `div[3]/div[1]/div[${i}]/span[1]`,
+  rowOutcome: (i) => `div[3]/div[1]/div[${i}]/span[2]`,
+
+  bar: "div[4]",
+  gate: "div[4]/div",
+  gateField: "div[4]/div/input",
+  gateWhy: "div[4]/div/span",
+  barSpacer: "div[4]/span",
+  run: "div[4]/button[1]",
+};
+
+/** `5a Plan safe` — the hero, the two file lists, and the bar with both its buttons drawn. */
+const PLAN_SAFE_FIDS = {
+  hero: "div[0]",
+  heroSeam: "div[0]/div[0]",
+  heroMark: "div[0]/svg",
+  heroMarkPath: (i) => `div[0]/svg/path[${i}]`,
+  heroTitle: "div[0]/div[1]",
+  heroSub: "div[0]/div[2]",
+
+  ...planSides("div[1]"),
+  sideList: (s) => `div[1]/div[1]/div[${s}]/div[2]`,
+  sideRow: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]`,
+  sideRowGlyph: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[0]`,
+  sideRowPath: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[1]`,
+  sideRowNote: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[2]`,
+
+  spacer: "div[2]",
+  bar: "div[3]",
+  checked: "div[3]/span[0]",
+  barSpacer: "div[3]/span[1]",
+  checkAgain: "div[3]/button[0]",
+  run: "div[3]/button[1]",
+};
+
+/**
+ * `5a Checking` — the rehearsal in flight.
+ *
+ * The mark is the SYNCING construction with F2's `dryRun` dash, so it carries the gradient subtree
+ * the other two states have no `defs` for. `div[0]/div[3]` — `8,431 of 12,480 files` — is not
+ * declared, because neither half of that sentence has a source (G9 #209, G7 #207) and the app draws
+ * no node for it.
+ */
+const PLAN_CHECKING_FIDS = {
+  checking: "div[0]",
+  checkingSeam: "div[0]/div[0]",
+  checkingMark: "div[0]/svg",
+  checkingMarkDefs: "div[0]/svg/defs",
+  checkingMarkGradient: (i) => `div[0]/svg/defs/lineargradient[${i}]`,
+  checkingMarkStop: (i, j) => `div[0]/svg/defs/lineargradient[${i}]/stop[${j}]`,
+  checkingMarkPath: (i) => `div[0]/svg/path[${i}]`,
+  checkingTitle: "div[0]/div[1]",
+  checkingSub: "div[0]/div[2]",
+  stop: "div[0]/button",
+
+  footerNav: "div[1]",
+  footerBar: "div[1]/div",
+  door: (i) => `div[1]/div/span[${i}]`,
+};
+
+/** The three maps a `5a` fixture asks for by view. */
+export function planFids(view) {
+  const body = {
+    plan: PLAN_FIDS,
+    safe: PLAN_SAFE_FIDS,
+    checking: PLAN_CHECKING_FIDS,
+  }[view];
+  if (!body) throw new Error(`fids: no plan view "${view}"`);
+  return { ...planShell(view !== "checking"), ...body };
+}
+
 /** The three maps a `4a` window fixture asks for by view. (`4a Compact` is F6's; see compactFids.) */
 export function deletionFids(view) {
   const body = {
