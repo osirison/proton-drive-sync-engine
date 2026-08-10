@@ -276,7 +276,14 @@
   border-radius: var(--r-5);
   background: transparent;
 }
+/* `position` IS ON THE CHECKED RULE, not on the box, and the split is the whole point: the tick
+   below is `position:absolute` and is the box's own generated child, so the box has to be its
+   containing block — but `9a Consent` draws this box UNCHECKED and `static`, and `position` is an
+   asserted property. Scoping it to the state that needs it is exact in the drawn state and correct
+   in the one no frame draws. (The wrapper's own `position:relative` is for the visually-hidden
+   input beside the box, which is a different need and does not substitute for this.) */
 .checkbox-input:checked + .checkbox-box {
+  position: relative;
   background: var(--text);
   border-color: var(--text);
 }

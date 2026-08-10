@@ -1318,9 +1318,10 @@ const ONBOARDING_FIRST_SYNC_FIDS = {
   mergeSub: "div[0]/div[4]",
   mergeClose: "div[0]/div[6]",
   mergeFoot: "div[1]",
-  // NO `mergeFootText`. `nothing deleted · 2 conflicts kept as copies` is built from the plan the
-  // person approved one step earlier, and a fixture is one frame — there is no earlier step in it,
-  // so the node can never be stamped here and a declared slot would only be reported as missing.
+  // `mergeFootText` IS mapped, and the fixture is what makes that possible: the sentence is built
+  // from the step-2 rehearsal, which is module state, so the dialog reads `activeFixture()?.dryRun`
+  // first — the same fallback `cliMissing` and `consent` already take for their own module state.
+  mergeFootText: "div[1]/span[0]",
   mergeFootSpacer: "div[1]/span[1]",
   mergeFootButton: "div[1]/button",
 };

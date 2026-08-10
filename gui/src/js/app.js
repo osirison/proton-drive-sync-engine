@@ -71,6 +71,8 @@ import {
   renderOnboardingFooter,
   onboardingBarShape,
   mergeOutcomeOf,
+  firstSyncShape,
+  updateFirstSync,
   renderFirstSync,
   renderConsent,
   renderCliMissing,
@@ -543,16 +545,21 @@ function render() {
   // redraw step 2, with its stale plan, behind the merge dialog. `nextOnboardingLatch` stays pure;
   // this is the caller knowing something the daemon state cannot say.
   const wasOnboarding = onboardingLatch;
+  const reachable = st === "idle" || st === "running" || st === "paused" || st === "authExpired";
+  // A merge that failed against a daemon that then came up is not onboarding's problem any more.
+  if (onboardingFailure && reachable) onboardingFailure = null;
   onboardingLatch =
     onboardingStage !== null
       ? false
-      : nextOnboardingLatch(
-          onboardingLatch,
-          st,
-          Boolean(localRoot && remoteRoot),
-          configLoaded,
-          statusPolled,
-        );
+      : onboardingFailure
+        ? true
+        : nextOnboardingLatch(
+            onboardingLatch,
+            st,
+            Boolean(localRoot && remoteRoot),
+            configLoaded,
+            statusPolled,
+          );
   // ENTERING the takeover discards both layers. Hiding them is not enough: the latch releases when
   // the daemon comes up, and anything still held would be restored on the way out — so finishing a
   // first-run setup would land you on the Conflicts screen with a Details dialog over it, from
@@ -927,6 +934,16 @@ function render() {
       }
       dom.dialogSignature = content.signature;
     }
+  }
+
+  // The merge dialog's two moving numbers, patched rather than rebuilt: its mark is the syncing
+  // hexagon, and a rebuild restarts both travelling segments from 0% twice a second.
+  if (dialogRoute === "firstSync" && dom.dialog) {
+    const reply = store.select.response();
+    updateFirstSync(dom.dialog.querySelector(".dialog"), {
+      pending: remainingOf(reply?.activity ?? null, reply),
+      activity: reply?.activity ?? null,
+    });
   }
 
   // --- the ⋯ menu, the one part that is genuinely torn down and rebuilt. It has no animation and
@@ -2287,13 +2304,22 @@ let onboardingStage = null; // null | "firstSync" | "consent"
 let onboardingMergeSeq = null; // the daemon's pass counter when the merge started
 let onboardingMergeSeen = false; // has the daemon answered at all since the merge started?
 let onboardingMergeWaits = 0; // polls with no answer before it ever answered
+let onboardingFailure = null; // the merge's reason for failing, until the flow or the daemon moves
 let onboardingAgreed = false;
 let onboardingStarting = false;
 let onboardingFreeSpace = null;
-let onboardingFreeSpaceAsked = false;
+let onboardingFreeSpaceAsked = null; // the local root the answer is about
 let cliPresence = null; // `check_cli`'s reply, or null before it has answered
 let cliAsked = false;
 let cliChecking = false; // a check in flight — holds the dialog up across `Check again`
+
+/** Files still to move — the activity's own counters, falling back to the watch queue. */
+function remainingOf(activity, reply) {
+  if (activity?.action_total != null) {
+    return Math.max(0, activity.action_total - (activity.action_index ?? 0));
+  }
+  return reply?.pending_changes ?? null;
+}
 
 /** Which step is showing. A fixture names it; otherwise the flow's own state does. */
 function onboardingStepNow() {
@@ -2306,7 +2332,10 @@ function onboardingStepNow() {
 function onboardingDialog() {
   const named = activeFixture()?.ui?.dialog;
   if (named) return named;
-  if (cliChecking || cliPresence?.installed === false) return "cliMissing";
+  // NOT `cliChecking ||`: the first check is in flight on every first run, and holding the dialog up
+  // for it flashes "the command line tool isn't installed" before anything has been checked. A
+  // RE-check keeps the dialog because `cliPresence` still holds the answer it is re-asking.
+  if (cliPresence?.installed === false) return "cliMissing";
   return onboardingStage;
 }
 
@@ -2333,11 +2362,16 @@ async function ensureCliCheck(again = false) {
   render();
 }
 
-/** C4, for the download side of step 2. `path` is null: the local root may not exist yet. */
-async function ensureFreeSpace() {
-  if (onboardingFreeSpaceAsked) return;
-  onboardingFreeSpaceAsked = true;
+/**
+ * C4, for the download side of step 2. Keyed on the local root rather than asked once: `Back`, a
+ * different folder and `See what will happen` again is a question about a different disk.
+ */
+async function ensureFreeSpace(root) {
+  if (onboardingFreeSpaceAsked === root) return;
+  onboardingFreeSpaceAsked = root;
   try {
+    // `null` rather than the root itself: the folder may not exist yet, and `free_space` walks up to
+    // the nearest existing ancestor of the CONFIGURED root, which step 1 has just written.
     onboardingFreeSpace = await api.freeSpace(null);
   } catch (error) {
     console.error("free_space failed:", error);
@@ -2381,7 +2415,16 @@ async function ensureOnboardingPlan() {
  * that built it puts the other side back to its proposal on the next keystroke.
  */
 function onboardingRootsNow() {
-  return onboardingRoots ?? { local: PROPOSED_LOCAL, remote: PROPOSED_REMOTE };
+  if (onboardingRoots) return onboardingRoots;
+  // A CONFIGURED PAIR BEATS THE PROPOSAL. The latch enters on `firstRun` as well as on a fresh
+  // machine — a reachable daemon that has never synced — and that one HAS a config. Proposing
+  // `~/ProtonDrive` over it and writing that back on `See what will happen` would repoint someone's
+  // daemon at a folder they never chose.
+  const live = store.select.response()?.config ?? null;
+  return {
+    local: live?.local_root ?? configInfo?.local_root ?? PROPOSED_LOCAL,
+    remote: live?.remote_root ?? configInfo?.remote_root ?? PROPOSED_REMOTE,
+  };
 }
 
 function onboardingProps() {
@@ -2389,7 +2432,7 @@ function onboardingProps() {
   const step = onboardingStepNow();
   if (step === "review") {
     ensureOnboardingPlan();
-    ensureFreeSpace();
+    ensureFreeSpace(roots.local);
   }
   return {
     step,
@@ -2493,24 +2536,37 @@ function onboardingDialogContent(id) {
   if (id === "firstSync") {
     const reply = store.select.response();
     const activity = reply?.activity ?? null;
-    const summary = onboardingDryRun?.report?.summary ?? null;
+    // THE FIXTURE'S PLAN FIRST, the same fallback the other two branches take (`?? cliPresence`,
+    // `?? onboardingAgreed`): the footer sentence comes from the step-2 rehearsal, which is module
+    // state no `?frame=` can reach, so without this the one in-flight claim this flow makes about
+    // someone's files is never compared against the frame that draws it.
+    const summary = (activeFixture()?.dryRun ?? onboardingDryRun)?.report?.summary ?? null;
     return {
       head: false,
       label: ONBOARDING.progressTitle,
-      // The plan's two counters are in here as well as the live ones: the footer sentence is built
-      // from the reviewed plan, and a signature that omits it freezes the sentence at whatever was
-      // known on the render that mounted the dialog.
-      signature: JSON.stringify([
-        reply?.pending_changes,
-        activity?.action_index,
-        activity?.action_total,
-        summary && [summary.destructive_actions, summary.conflicts],
-      ]),
+      // SHAPE ONLY — see `firstSyncShape`. The numbers move every poll and are patched in place.
+      signature: firstSyncShape({ activity, summary }),
       children: renderFirstSync({
-        pending: reply?.pending_changes ?? null,
+        // NOT `pending_changes`, which S1 already documents as the trap it is: it is the local
+        // filesystem-watch queue, and a pass driven by Proton — which the first merge always is —
+        // carries an EMPTY one while downloading, so the mark would read 0 for the whole merge.
+        // `action_total - action_index` is the files still to move, which is what the frame draws.
+        pending: remainingOf(activity, reply),
         activity,
         summary,
-        handlers: { onPause: () => command(api.pause) },
+        handlers: {
+          // PAUSING ENDS THE FLOW. A paused daemon completes no pass, so `mergeOutcomeOf` would
+          // wait forever behind a dialog with no ✕ and no Esc. Handing off to the main screen —
+          // which draws `Paused` and a `Resume` — is the same call routes.js makes for a state
+          // onboarding cannot resolve. The consent is not obtained on this path; the daemon's own
+          // delete guard is on by default, so every deletion still goes through the Deletions
+          // screen. §79k.
+          onPause: async () => {
+            await command(api.pause);
+            resetOnboardingFlow();
+            render();
+          },
+        },
       }),
     };
   }
@@ -2545,6 +2601,10 @@ function onboardingDialogContent(id) {
             await command(api.resume);
             resetOnboardingFlow();
             render();
+            // The dialogs are not opened through `openOverlay`, so there is no `dialogReturn` to
+            // restore — focus would land on `<body>`. The main screen's own action is where someone
+            // who has just agreed should be standing.
+            focusAfterSwap(".main-actions .btn");
           },
         },
       }),
@@ -2568,6 +2628,9 @@ function resetOnboardingFlow() {
   onboardingError = null;
   onboardingCheckedAt = null;
   onboardingAgreed = false;
+  onboardingFreeSpace = null;
+  onboardingFreeSpaceAsked = null;
+  onboardingFailure = null;
   onboardingMergeSeq = null;
   onboardingMergeSeen = false;
   onboardingMergeWaits = 0;
@@ -2581,6 +2644,12 @@ function failOnboardingMerge(reason) {
   onboardingDryRun = null;
   onboardingError = reason;
   onboardingCheckedAt = null;
+  // The latch cannot bring the takeover back on its own — the pair is written by now, which is
+  // exactly the condition it declines to re-enter on — so the failure is latched here instead. It
+  // only holds the takeover while the daemon is UNREACHABLE; a reachable daemon that failed a pass
+  // is the main screen's business, which is routes.js's own rule about not trapping someone in a
+  // wizard that cannot fix their problem.
+  onboardingFailure = reason;
 }
 
 /**

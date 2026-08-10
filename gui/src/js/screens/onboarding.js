@@ -14,7 +14,7 @@
 import { el } from "../ui/el.js";
 import { MAIN, ONBOARDING, PLAN } from "../ui/copy.js";
 import { count, since } from "../ui/format.js";
-import { renderHexagon } from "../ui/hexagon.js";
+import { renderHexagon, updateHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button, textInput, checkbox, setButtonKind } from "../ui/controls.js";
 import { consentPanel, warnGlyph } from "../ui/bands.js";
@@ -69,9 +69,13 @@ export function actionsThatHappen(summary) {
 export function mergeOutcomeOf(reply, mergeSeq = null) {
   if (!reply || reply.syncing) return "waiting";
   const seq = reply.reconcile_seq ?? 0;
-  // With a counter to compare against, a pass has to have completed since the merge began; without
-  // one, the daemon had never answered, so any recorded sync is this one.
-  if (mergeSeq != null ? seq <= mergeSeq : !reply.last_sync_epoch_secs) return "waiting";
+  // THE COUNTER, NOT `last_sync_epoch_secs`, on both arms. `self.last_sync` is set inside the Ok
+  // path of `reconcile_blocking_inner` (src/daemon.rs) — a pass that FAILS never sets it — while the
+  // counter advances either way. Testing the timestamp left a failed first sync on a machine that
+  // had never synced reporting `waiting` forever, with the merge dialog claiming progress and no way
+  // out of it.
+  const completed = mergeSeq != null ? seq > mergeSeq : seq > 0 || Boolean(reply.last_sync_epoch_secs);
+  if (!completed) return "waiting";
   return reply.last_error ? "failed" : "done";
 }
 
@@ -591,6 +595,31 @@ export function renderFirstSync(props = {}) {
   ].filter(Boolean);
   foot.append(...footChildren);
   return [body, foot];
+}
+
+/**
+ * What a REBUILD of the merge dialog would change — and deliberately not the two numbers that move.
+ *
+ * The dialog layer replaces the surface's children when this string moves, and the mark inside it is
+ * the syncing hexagon: `replaceChildren` restarts both travelling segments from 0%, which is the
+ * failure `updateHexagon` exists to prevent and which a per-action counter in here would cause on
+ * every poll. So the shape is what is in the signature and the numbers are patched by
+ * `updateFirstSync`.
+ */
+export function firstSyncShape(props = {}) {
+  return JSON.stringify([props.activity?.action_total != null, mergeFooterText(props)]);
+}
+
+/** Patch the two moving values in place, leaving the mark and its animations alone. */
+export function updateFirstSync(surface, props = {}) {
+  if (!surface) return;
+  updateHexagon(surface.querySelector(".ob-merge-mark"), { numeral: props.pending ?? null });
+  const sub = surface.querySelector(".ob-merge-sub");
+  const activity = props.activity ?? null;
+  if (sub && activity?.action_total != null) {
+    const text = ONBOARDING.progressDone(activity.action_index ?? 0, activity.action_total);
+    if (sub.textContent !== text) sub.textContent = text;
+  }
 }
 
 /**

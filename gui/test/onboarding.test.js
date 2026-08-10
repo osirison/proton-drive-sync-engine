@@ -188,10 +188,18 @@ test("a COMPLETED pass is not a SUCCESSFUL one", () => {
   );
 });
 
-test("with no counter to compare against, a recorded sync is this one", () => {
+test("with no counter to compare against, the counter is still what says a pass ran", () => {
   // The daemon had never answered when `Start the first sync` was pressed, so there is no seq to
-  // beat and `last_sync_epoch_secs` is the only evidence a pass ran at all.
-  assert.equal(mergeOutcomeOf(reply({ last_sync_epoch_secs: null }), null), "waiting");
+  // beat — but `reconcile_seq` starts at 0 on a fresh daemon and advances once per attempt.
+  assert.equal(mergeOutcomeOf(reply({ reconcile_seq: 0, last_sync_epoch_secs: null }), null), "waiting");
   assert.equal(mergeOutcomeOf(reply(), null), "done");
-  assert.equal(mergeOutcomeOf(reply({ last_error: "boom" }), null), "failed");
+});
+
+test("a FAILED first sync on a machine that has never synced is not `waiting` forever", () => {
+  // `self.last_sync` is set inside the Ok path of `reconcile_blocking_inner` (src/daemon.rs), so a
+  // pass that fails never sets it. Testing the timestamp left the merge dialog — which has no ✕ and
+  // no Esc — claiming progress for the rest of the session.
+  const failed = reply({ reconcile_seq: 1, last_sync_epoch_secs: null, last_error: "not logged in" });
+  assert.equal(mergeOutcomeOf(failed, null), "failed");
+  assert.equal(mergeOutcomeOf(failed, 0), "failed");
 });

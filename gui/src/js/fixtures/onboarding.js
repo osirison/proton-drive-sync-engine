@@ -263,6 +263,16 @@ export const ONBOARDING_FIXTURES = {
       },
     },
     config: CHOSEN_CONFIG,
+    // THE PLAN THE PERSON APPROVED ONE STEP EARLIER, because the footer sentence is built from it
+    // and not from a status reply: `nothing deleted · 2 conflicts kept as copies` is `9a Review`'s
+    // own plan restated — zero destructive actions, two conflicts — so this is the same merge, seen
+    // from the next frame. It is the step-2 payload narrowed to the two counters this frame draws;
+    // the rest of `9a Review`'s dataset is that frame's business.
+    dryRun: {
+      report: { summary: summaryOf(REVIEW_PLAN), plan: REVIEW_PLAN },
+      requires_delete_gate: false,
+      files_at_risk: [],
+    },
     // The split bar and its two labels. NO COMMAND REPORTS PER-DIRECTION PROGRESS WITHIN A PASS:
     // `SyncActivity` counts actions, not directions, and G2 (#191) covers byte totals per direction
     // for a finished window rather than a running pass. So all four are pinned.

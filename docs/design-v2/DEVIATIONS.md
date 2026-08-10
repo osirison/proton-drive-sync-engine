@@ -3096,9 +3096,17 @@ Same pattern as §78h: F1–F6 wrote these against frames nothing had rendered y
   on onboarding and threw on every patch pass.
 - **The checkbox's wrapper painted the box.** `.checkbox` set `font-size:13px` and
   `color:--text-bright`, which the 17px box inherited; `9a Consent` draws box and sentence as
-  siblings with only the sentence carrying that pair. Both moved to `.checkbox-label`, and
-  `position:relative` moved from the box (where it contained nothing) to the wrapper (where it
-  contains the visually-hidden input).
+  siblings with only the sentence carrying that pair. Both moved to `.checkbox-label`, and the
+  wrapper gained `position:relative` for the visually-hidden input beside the box.
+
+  **The box's own `position:relative` was then removed, which was wrong, and the correction is the
+  interesting half.** The box is the containing block of `::after` — the tick — so without it a
+  ticked box draws its checkmark against the wrapper instead, 1px left and 2px up of where F5's
+  offsets were written. Nothing could see it: `9a Consent` is drawn UNCHECKED, the fixture pins
+  `agreed: false`, and the tick is the only thing in the app that state contains. But the frame does
+  say `static`, and `position` is asserted. So it lives on the CHECKED rule, which is exact in the
+  drawn state and correct in the one no frame draws. Found by review; the two states are measured
+  (`static`/no tick, then `relative` with the tick at `left:5px top:1px` inside the box).
 - **`.dot` had no directional fill.** `9a Folders`' two 8px side markers are `--up-label` /
   `--down-label`; the tone table had inert, destructive and decision only.
 - **`bytes()` wrote a trailing `.0`.** `214.0 GB` where `9a Review` draws `214 GB`, and `500.0 GB`
@@ -3154,3 +3162,54 @@ The second: `FIDELITY_SHOW` (a new env override for the harness's 40-failure pri
 `Number(...)` without checking it, and `Number("")` is `0` while `Number("x")` is `NaN` — either
 prints nothing while the summary line still says how many failed. It falls back to 40 unless the
 value is a positive finite number.
+
+### 79k. What an adversarial review found, and the shape it was
+
+Three reviewers over the branch produced 21 findings; a refutation pass and hand-verification against
+the daemon's own source settled them. Every one was in an undrawn state, a transition, or a
+live-daemon shape — the fourth screen running where that is true of all of them.
+
+**Two were the same bug seen twice, and both are about a first sync that fails.**
+`self.last_sync` is set inside the Ok path of `reconcile_blocking_inner`, so a pass that fails never
+sets it — and `mergeOutcomeOf`'s no-counter arm tested exactly that timestamp. A failed first sync on
+a machine that had never synced therefore reported `waiting` forever, behind a dialog with no ✕ and
+no Esc. The counter is what says a pass ran, on both arms. And `failOnboardingMerge` wrote its reason
+into state nothing could render: the latch declines to re-enter once a pair is written, which is by
+then always. The failure is latched, and holds the takeover open **only while the daemon is
+unreachable** — a reachable daemon that failed a pass is the main screen's business, which is
+`routes.js`'s own rule about not trapping someone in a wizard that cannot fix their problem.
+
+**One was a trap I had built.** `Pause` in the merge dialog paused a daemon that then completes no
+pass, so the flow waited forever behind a dialog nobody can dismiss. Pausing now ends the flow and
+hands off to the main screen, which draws `Paused` and a `Resume`. The consent is not obtained on
+that path; the daemon's delete guard is on by default, so every deletion still goes through the
+Deletions screen.
+
+**One was a trap S1 had already documented.** The merge mark's numeral was `pending_changes` — the
+local filesystem-watch queue, which a pass driven by Proton carries empty. `screens/main.js` records
+this in full ("the headline read `Syncing 0 changes` with a literal `0` inside the mark"), and the
+first merge is by definition the pass with the emptiest queue. It is `action_total - action_index`
+now: the files still to move, which is what the frame draws.
+
+**One was a regression from a fix.** Holding the CLI dialog up across a re-check (`cliChecking ||`)
+also held it up across the FIRST check, so every first run flashed "the command line tool isn't
+installed" before anything had been checked. The re-check needs no flag: `cliPresence` still holds
+the answer it is re-asking.
+
+**One was the poll destroying an animation**, which is this project's oldest UI failure mode: the
+merge dialog's signature carried a per-action counter, so the layer replaced its children twice a
+second and restarted both of the hexagon's travelling segments. The signature is the shape now and
+the two numbers are patched in place.
+
+Also fixed: a folder pair the machine already has now beats the proposal (the latch enters on
+`firstRun` too, and that daemon HAS a config — proposing `~/ProtonDrive` over it and writing it back
+would repoint someone's daemon at a folder they never chose); free space is re-asked when the folder
+changes rather than once per run; `differ(1)` said `1 files differ on both sides`; and focus lands on
+the main screen's own action when the consent dialog closes.
+
+**One thing is recorded rather than fixed.** `Nothing gets deleted today` is drawn unconditionally
+while the fact row below it is gated on `destructive_actions`. The planner's bootstrap arm emits no
+`Delete` or `Purge` at all (`plan_bootstrap_entity_action`), so the case needs a pre-existing `.sync`
+index under the chosen local root — re-running setup over an old sync root. The deck has no headline
+for that situation and inventing one is a design decision, not a build one; the enumerated claim is
+gated, and this is the question to put to the design.

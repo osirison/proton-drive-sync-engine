@@ -881,7 +881,7 @@ export const ONBOARDING = {
   freeSpace: (need, have) => `Needs ${bytes(need)} free. You have ${bytes(have)}.`,
   alreadyMatch: (n) => `${count(n)} files already match on both sides`,
   leftAlone: "left alone",
-  differ: (n) => `${count(n)} files differ on both sides`,
+  differ: (n) => `${count(n)} ${plural(n, "file differs", "files differ")} on both sides`,
   differSub: "both copies kept — you decide later",
   cannotSync: (n) => `${count(n)} files can't be synced — a socket and two shortcuts`,
   skipped: "skipped",
