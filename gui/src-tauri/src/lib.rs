@@ -11,17 +11,23 @@ use std::sync::Mutex;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        // Settings › Folders' `Choose…`. Registered for the Rust side only: `commands::choose_folder`
+        // calls it, and an app-defined command needs no capability grant — so the webview never gets
+        // a file dialog it could open on its own.
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(config_path::RuntimePaths::resolve()))
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::pause,
             commands::resume,
             commands::sync_now,
+            commands::resync,
             commands::approve,
             commands::deny,
             commands::list_pending_deletions,
             commands::read_config,
             commands::write_config,
+            commands::choose_folder,
             commands::run_dry_run,
             commands::list_remote,
             commands::scan_conflicts,

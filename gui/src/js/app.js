@@ -25,7 +25,7 @@ import {
 } from "./ui/chrome.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
-import { ACTIVITY, CHROME } from "./ui/copy.js";
+import { ACTIVITY, CHROME, SETTINGS } from "./ui/copy.js";
 import { clock, since } from "./ui/format.js";
 import { renderMain, updateMain, unmountMain } from "./screens/main.js";
 import { renderConflicts, advanceAfter, skipTo } from "./screens/conflicts.js";
@@ -55,6 +55,15 @@ import {
   normaliseQuery,
   passesSummaryOf,
 } from "./screens/activity.js";
+import {
+  renderSettings,
+  renderSettingsBar,
+  renderSaveRefused,
+  settingsBarShape,
+  configUpdate,
+  isDirty,
+  removalCost,
+} from "./screens/settings.js";
 import { severityOf } from "./ui/rows.js";
 import { activeFixture, fid } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
@@ -680,6 +689,28 @@ function render() {
       activityInputRef.node.focus();
       putCaret(activityInputRef.node, caret);
     }
+  } else if (active === "settings") {
+    // REBUILT EVERY PASS, with the focused field's caret put back — the same trade the activity
+    // screen makes and for the same reason, except that this screen has five text fields rather
+    // than one. Everything they hold lives in `settingsEdits`, so a rebuild loses nothing except
+    // the selection, which is restored below; patching instead would mean a diff over four tab
+    // bodies to protect state that is not in the DOM in the first place.
+    if (dom.bodyRoute !== active) {
+      unmountScreens();
+      resetSettingsScreen();
+    }
+    const focused = document.activeElement;
+    const field = focused instanceof HTMLInputElement ? focused.dataset.field : null;
+    const caret = field ? focused.selectionStart : null;
+    setBody(renderSettings(settingsProps()));
+    dom.bodyRoute = active;
+    if (field) {
+      const next = document.querySelector(`input[data-field="${field}"]`);
+      if (next) {
+        next.focus();
+        if (caret != null) next.setSelectionRange(caret, caret);
+      }
+    }
   } else if (dom.bodyRoute !== active) {
     unmountScreens();
     setBody(
@@ -720,18 +751,26 @@ function render() {
         ? updateFooterNav(dom.footer, navOpts)
         : owner === "plan"
           ? updatePlanBar(dom.footer, planProps())
-          : true;
+          : // The settings bar is REBUILT rather than patched, and it holds no typed state to
+            // protect: `Save`'s enabled-ness, the note and the amber cost line all move with
+            // `settingsEdits`, and every one of them changes on the same keystroke. `dataset.shape`
+            // is what makes the rebuild conditional — an unchanged bar is left where it is.
+            owner === "settings"
+            ? settingsBarUnchanged(dom.footer)
+            : true;
   }
   if (!patched) {
     const built =
       kind === "actionBar"
         ? owner === "plan"
           ? renderPlanBar(planProps())
-          : renderActionBar({
-              consequence: "This screen is not built yet.",
-              // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
-              bottom: spec.takeover ? 18 : 14,
-            })
+          : owner === "settings"
+            ? renderSettingsBar(settingsProps())
+            : renderActionBar({
+                consequence: "This screen is not built yet.",
+                // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
+                bottom: spec.takeover ? 18 : 14,
+              })
         : renderFooterNav({
             ...navOpts,
             order: FOOTER_ORDER,
@@ -762,7 +801,7 @@ function render() {
       // placeholder. `activityDialog` returns null for a dialog it does not own AND for one whose
       // data has gone — `filePending` describes an in-flight transfer, and there is nothing to say
       // about one that has finished.
-      const content = activityDialog(dialogRoute);
+      const content = dialogContentFor(dialogRoute);
       const title = content?.title ?? dspec.label ?? titleFor(dialogRoute);
       // `7a File pending` draws no title row at all, so it is named for a screen reader directly
       // rather than pointing at a heading it does not have. `dialog()` enforces exactly one of the
@@ -796,7 +835,7 @@ function render() {
     // the surface carries the appear animation and the focus trap. Only the children below the head
     // are replaced, and focus is carried across by position — `Copy all` must survive a counter
     // moving underneath it.
-    const content = activityDialog(dialogRoute);
+    const content = dialogContentFor(dialogRoute);
     if (content?.signature && content.signature !== dom.dialogSignature) {
       const dspec = ROUTES[dialogRoute];
       const [w] = dspec.size ?? [522, null];
@@ -1744,6 +1783,41 @@ function putCaret(node, offset) {
 /** Where the lookup field is, so Ctrl F and a rebuild can both put the caret back in it. */
 const activityInputRef = { node: null };
 
+/**
+ * Which screen owns the dialog that is open. One function per screen rather than one growing
+ * switch: a dialog's contents are the screen's business, and `activityDialog` already returns null
+ * for anything it does not own.
+ */
+function dialogContentFor(id) {
+  return id === "saveRefused" ? settingsDialog(id) : activityDialog(id);
+}
+
+/**
+ * `8a Save refused`. No title row and no ✕ — the frame draws neither, and the route says so.
+ *
+ * Returns null with no error to show, which is what keeps a dismissed refusal dismissed: the
+ * dialog's own `Go back and fix it` clears the error as it closes.
+ */
+function settingsDialog(id) {
+  if (id !== "saveRefused") return null;
+  const error = activeFixture()?.saveError ?? settingsError;
+  if (!error) return null;
+  return {
+    head: false,
+    label: SETTINGS.refusedTitleUnknown,
+    signature: String(error),
+    children: [
+      renderSaveRefused({
+        error,
+        onBack: () => {
+          settingsError = null;
+          closeOverlay();
+        },
+      }),
+    ],
+  };
+}
+
 /** What each of this screen's three dialogs draws, and whether it wears a title row at all. */
 function activityDialog(id) {
   const props = activityProps();
@@ -1808,6 +1882,224 @@ function activityDialog(id) {
   }
   return null;
 }
+
+// ---- the settings screen (S6) ----
+//
+// THE STAGED EDIT LIVES HERE, NOT IN THE DOM, and it has to: the body is rebuilt or patched on
+// every 2s poll, so a form that kept its half-typed folder path in an `<input>`'s value would lose
+// it twice a second. `settingsEdits` is the only record of what has been changed and not saved —
+// `Discard changes` is `settingsEdits = {}` and nothing else.
+
+let settingsTab = "folders";
+/** Staged fields, keyed exactly as `ConfigPayload` names them. Empty means nothing to save. */
+let settingsEdits = {};
+/** The add-rule / add-pattern field. Not a config field: it is staged only once `Add` is pressed. */
+let settingsDraft = "";
+let settingsSaving = false;
+/** The daemon's refusal, verbatim. Non-null is what opens `8a Save refused`. */
+let settingsError = null;
+/** A save landed and the daemon is still running the old config — see `SETTINGS.savedNote`. */
+let settingsSaved = false;
+
+/** Entering or leaving: nothing staged, no draft, no refusal, and the walk to be asked for again. */
+function resetSettingsScreen() {
+  settingsTab = "folders";
+  settingsEdits = {};
+  settingsDraft = "";
+  settingsSaving = false;
+  settingsError = null;
+  settingsSaved = false;
+  skipRuleReport = null;
+  skipRuleAsked = false;
+}
+
+/** Stage one field. Any edit clears the saved notice: it is no longer describing what is on disk. */
+function stageSetting(key, value) {
+  settingsEdits = { ...settingsEdits, [key]: value };
+  settingsSaved = false;
+  render();
+}
+
+/**
+ * Everything the settings screen reads, plus the actions it can take.
+ *
+ * `saved` and `config` are BOTH here and they are different things: `saved` is the config on disk
+ * (what the rules list and every measured count describe) and `config` is that with the staged edits
+ * on top (what every control shows). `screens/settings.js`'s `rulesBlock` explains why the tab needs
+ * both rather than one merged view.
+ */
+function settingsProps() {
+  const ui = activeFixture()?.ui ?? null;
+  const saved = activeFixture()?.config ?? configInfo ?? {};
+  const tab = ui?.tab ?? settingsTab;
+  // Fired and not awaited — see `ensureSkipRules`. Only the tab that draws the counts asks for the
+  // walk; the other three would pay for a full metadata pass of the sync folder to draw nothing.
+  if (tab === "skip") ensureSkipRules();
+  // THE FIXTURE'S STAGED EDIT. `8a Skip rules` draws a removal staged but not saved, which is a
+  // frontend state and not a config — so the frame names the rule in its `ui` and the edit is
+  // reconstructed here, rather than the fixture shipping a second config that disagrees with the
+  // first about what is on disk.
+  const edits = ui?.removing
+    ? { exclude: (saved.exclude ?? []).filter((p) => p !== ui.removing) }
+    : settingsEdits;
+  const config = { ...saved, ...edits };
+  const skip = activeFixture()?.skipRules ?? skipRuleReport;
+  const dirty = ui?.dirty ?? isDirty(saved, edits);
+  return {
+    tab,
+    saved,
+    config,
+    skip,
+    dirty,
+    draft: settingsDraft,
+    saving: settingsSaving,
+    justSaved: settingsSaved,
+    // The amber line, when a single removal is staged. Any other staged change leaves the neutral
+    // note: the deck has one cost sentence and it says `One rule removed`, so a second removal has
+    // no wording and inventing a plural would be inventing the number in it too.
+    cost: removalCost(saved.exclude, config.exclude, skip),
+    note: settingsSaved ? SETTINGS.savedNote : null,
+    // The daemon is mid-pass: `Sweep now` would queue behind it with nothing to show for the click.
+    syncing: Boolean(store.select.response()?.syncing),
+    handlers: {
+      onTab: (id) => {
+        settingsTab = id;
+        render();
+      },
+      onRoot: (key, value) => stageSetting(key, value),
+      onField: (key, value) => stageSetting(key, value),
+      onEvents: (on) => stageSetting("events_driven", on),
+      onInterval: (secs) => stageSetting("scan_interval_secs", secs),
+      // Writes BOTH booleans, always — a card that set one would leave a pair no card describes
+      // (DEVIATIONS §68). `deletion_policy` goes with them because `write_config` applies it after
+      // the two and a stale value there would overwrite what was just chosen.
+      onPolicy: (policy) => {
+        settingsEdits = {
+          ...settingsEdits,
+          delete_approval_remote: policy.remote,
+          delete_approval_local: policy.local,
+          deletion_policy: policy.id,
+        };
+        settingsSaved = false;
+        render();
+      },
+      onDraft: (value) => {
+        settingsDraft = value;
+        render();
+      },
+      onAddRule: () => addPattern("exclude"),
+      onRemoveRule: (pattern) => removePattern("exclude", pattern),
+      onAddInclude: () => addPattern("include"),
+      onRemoveInclude: (pattern) => removePattern("include", pattern),
+      onChoose: chooseLocalRoot,
+      onSweep: sweepNow,
+      onSave: saveSettings,
+      onDiscard: () => {
+        settingsEdits = {};
+        settingsDraft = "";
+        settingsSaved = false;
+        render();
+      },
+      onRestart: restartAfterSave,
+    },
+  };
+}
+
+/** The current staged value of a list field, saved-or-staged. */
+const stagedList = (key) => settingsEdits[key] ?? (activeFixture()?.config ?? configInfo)?.[key] ?? [];
+
+function addPattern(key) {
+  const pattern = settingsDraft.trim();
+  // A duplicate is not an error and not a second row: the rule is already there, so the field
+  // clears and nothing is staged.
+  if (pattern && !stagedList(key).includes(pattern)) {
+    settingsEdits = { ...settingsEdits, [key]: [...stagedList(key), pattern] };
+    settingsSaved = false;
+  }
+  settingsDraft = "";
+  render();
+}
+
+/** Un-stages an addition and stages a removal, from one path — both are "not in the staged list". */
+function removePattern(key, pattern) {
+  settingsEdits = { ...settingsEdits, [key]: stagedList(key).filter((p) => p !== pattern) };
+  settingsSaved = false;
+  render();
+}
+
+/** `Choose…`. A dismissed picker answers `null`, which is not an error and must not read as one. */
+async function chooseLocalRoot() {
+  try {
+    const picked = await api.chooseFolder(settingsEdits.local_root ?? configInfo?.local_root ?? null);
+    if (picked) stageSetting("local_root", picked);
+  } catch (error) {
+    console.error("choose_folder failed:", error);
+  }
+}
+
+/** `Sweep now` — a full-tree walk on the next pass, which `sync_now` is not. */
+async function sweepNow() {
+  try {
+    await api.resync();
+  } catch (error) {
+    console.error("resync failed:", error);
+  }
+  render();
+}
+
+/**
+ * Write the staged edits, and only them.
+ *
+ * The refusal opens `8a Save refused` rather than being swallowed: `write_config` rejects a config
+ * the daemon's own parser would refuse, and a save that silently did nothing is the failure that
+ * dialog exists to prevent. A successful save clears the staging and leaves the note saying the
+ * daemon is still running the old config, because it is — there is no reload path in the engine.
+ */
+async function saveSettings() {
+  const saved = activeFixture()?.config ?? configInfo ?? {};
+  const update = configUpdate(saved, settingsEdits);
+  if (settingsSaving || Object.keys(update).length === 0) return;
+  settingsSaving = true;
+  settingsError = null;
+  render();
+  try {
+    await api.writeConfig(update);
+    settingsEdits = {};
+    settingsSaved = true;
+    // The rules changed under the report, so the counts on the skip tab are about a config that is
+    // no longer on disk. Ask again rather than showing yesterday's numbers next to today's rules.
+    skipRuleReport = null;
+    skipRuleAsked = false;
+    await refreshConfig();
+  } catch (error) {
+    settingsError = String(error?.message ?? error);
+    openOverlay("saveRefused");
+  }
+  settingsSaving = false;
+  render();
+}
+
+/** The saved-but-not-live prompt's action. Failure leaves the note saying so, not silence. */
+async function restartAfterSave() {
+  try {
+    await api.restartService();
+    settingsSaved = false;
+  } catch (error) {
+    console.error("restart_service failed:", error);
+    settingsError = String(error?.message ?? error);
+  }
+  render();
+}
+
+/** True when the bar on screen already draws what the current state says. */
+function settingsBarUnchanged(node) {
+  return node.dataset.shape === settingsBarShape(settingsProps());
+}
+
+// Ctrl S. The shell owns the key and the screen owns what it means, so the event is how they meet.
+document.addEventListener("shell:save", () => {
+  if (activeRoute() === "settings") saveSettings();
+});
 
 // ---- data ----
 async function refreshConfig() {

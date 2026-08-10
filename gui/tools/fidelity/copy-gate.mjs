@@ -106,6 +106,53 @@ const NOT_DRAWN = new Map([
   ["ACTIVITY.lookup.failed", "no frame draws a lookup whose command failed"],
   ["ACTIVITY.lookup.failedSub", "no frame draws a lookup whose command failed"],
   ["ACTIVITY.lookup.unknownSub", "no frame draws a `sync_status` this build does not recognise"],
+  // S6. EIGHTEEN ROWS, AND THE PATTERN IN THEM IS THE SCREEN'S: this is the tab with four tabs and
+  // three drawn ones, so a third of what it says has no frame to be checked against. They fall into
+  // four groups, and only the first is a design decision Phase 1 made for itself.
+  //
+  // Note what is NOT here. `pairLocalNoteUnknown`, `ruleFolderHere` and `refusedBodyUnknown` are all
+  // Phase-1 forms of a drawn sentence with a clause removed, and the gate finds them inside the
+  // longer string — so they are checked verbatim against the frame they came from, which is exactly
+  // what should happen to a sentence that is a subset of a drawn one. A new sentence needs a row
+  // here; an amputated one does not.
+  //
+  // 1. The schedule panel on its Phase-1 subject (G4 #193).
+  [
+    "SETTINGS.timer",
+    "G4 (#193): no `full_scan_schedule` key exists, so the panel is about `scan_interval_secs` instead",
+  ],
+  ["SETTINGS.timerSub", "G4 (#193): the sub-line of that panel, on the same subject"],
+  // 2. A drawn sentence whose every clause needs data nothing returns, so nothing of it survives.
+  [
+    "SETTINGS.fullSweepNoteUnknown",
+    "G18 (#238): `Takes about 4 minutes` and `Last one 2 days ago` both need per-pass data that does not exist",
+  ],
+  [
+    "SETTINGS.refusedTitleUnknown",
+    "G16 (#236): `write_config` never contacts Proton Drive, so it cannot say a folder is missing",
+  ],
+  // 3. States no frame draws, reachable on the first click.
+  ["SETTINGS.ruleUnchecked", "no frame draws a rule the walk could not evaluate (`RuleUsage.error`)"],
+  ["SETTINGS.ruleNotSaved", "no frame draws a rule added and not yet saved"],
+  [
+    "SETTINGS.savedNote",
+    "no frame draws a settled save — and §68 records that a save takes effect on restart, not on the next sync",
+  ],
+  ["SETTINGS.restart", "the action on that state"],
+  ["SETTINGS.restartFailed", "and what it says when the restart does not happen"],
+  // 4. The Advanced tab, which `08-settings.md` specifies in prose and draws nowhere.
+  ["SETTINGS.includeTitle", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.includeSub", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.includeEmpty", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.addIncludePlaceholder", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.cliTitle", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.cliSub", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.configFileTitle", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.configFileMissing", "the Advanced tab is not drawn in any frame"],
+  [
+    "SETTINGS.advancedMissing",
+    "G17 (#237): the four settings the config layer cannot round-trip, named rather than left to be looked for",
+  ],
 ]);
 
 /**
@@ -245,6 +292,18 @@ const DRAWN = [
   ["ACTIVITY.passes.chartSub", ["12:45"], "6a Activity passes"],
   ["ACTIVITY.passes.mostRecent", ["14:32"], "6a Activity passes"],
   ["ACTIVITY.passes.retried", ["14:17"], "6a Activity passes"],
+  // S6. SEVEN TEMPLATES, NONE OF WHICH WAS CHECKED BY ANYTHING until the screen that draws them was
+  // built — the same hole the ACTIVITY block above records, one screen later. Two of them
+  // (`pairLocalNote`, `fullScanSub`) are gated here and NOT rendered by the app: their counts are
+  // G7 (#207), so the deck still has to say what the frame draws while the screen draws the half of
+  // it that has a source. That is the shape `PLAN.checkingProgress` already has.
+  ["SETTINGS.pairLocalNote", [12480, 41_200_000_000], "8a Settings"],
+  ["SETTINGS.fullScanSub", [12480], "8a Settings"],
+  ["SETTINGS.hidingTotal", [4, 3_102_940_000], "8a Skip rules"],
+  ["SETTINGS.skippingNow", [2], "8a Skip rules"],
+  ["SETTINGS.skippingSize", [2, 3_100_000_000], "8a Skip rules"],
+  ["SETTINGS.ruleAdded", ["14 Jul"], "8a Skip rules"],
+  ["SETTINGS.ruleRemovedCost", [2, 3_100_000_000], "8a Skip rules"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */

@@ -7,6 +7,15 @@
 //! command before the screen is built. `free_space`, `check_cli` and `skip_rule_usage` arrived that
 //! way. The rule that matters is the one about parallel screen work, not a freeze.
 //!
+//! **S6 added two, and they are recorded here rather than smuggled in.** `resync` and
+//! `choose_folder` are the two controls on `8a Settings` that no existing command answers —
+//! `Sweep now` is a full-tree walk (`Syncnow` is not one) and `Choose…` is a folder picker. Neither
+//! was worth a C-item by the time S6 found them: both are five lines over machinery that already
+//! exists (`ControlCommand::Resync` has shipped in the daemon since #160), the alternative was two
+//! more dead buttons of the kind #224/#227 already record, and S6 is the last screen in flight, so
+//! the collision the rule protects against cannot happen. A screen that needs *data* still files a
+//! C-item — that is the case the rule is really about, and `skip_rule_usage` is why.
+//!
 //! **A command that touches the filesystem, a subprocess or a socket must be `async` and do its
 //! work in `spawn_blocking`.** A synchronous one runs on the GTK main loop, and WebKitGTK aborts
 //! the whole process when that loop stalls (#142/#143). `read_config`, `write_config`,
@@ -149,6 +158,21 @@ pub async fn resume(app: tauri::AppHandle) -> StatusPayload {
 #[tauri::command]
 pub async fn sync_now(app: tauri::AppHandle) -> StatusPayload {
     status_round_trip(app, ControlCommand::Syncnow).await
+}
+
+/// Settings › *Sweep now* — the full-tree comparison, not an ordinary pass.
+///
+/// `Resync` and `Syncnow` both schedule a reconcile; the difference is what that reconcile IS. A
+/// `Syncnow` under the default config is an incremental, event-driven pass, which is precisely the
+/// thing `Compare everything, top to bottom` is offering an alternative to. `Resync` latches the
+/// next pass to a full-tree walk (`ControlShared.force_full_walk`, consumed once), so this is the
+/// only command in the surface that answers the button.
+///
+/// An older daemon that predates the variant rejects it as an unknown command — the reply carries
+/// the error and the button reports it, rather than silently doing an ordinary sync.
+#[tauri::command]
+pub async fn resync(app: tauri::AppHandle) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Resync).await
 }
 
 /// The shared body of `approve`/`deny`: a path-argument round trip folded into a `StatusPayload`.
@@ -308,6 +332,35 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     resolved.daemon_db_path = paths.daemon_db_path.take();
     *paths = resolved;
     Ok(())
+}
+
+/// Settings › Folders' `Choose…` — the native folder picker, behind the same facade as everything
+/// else, so `api.js` stays the frontend's only backend surface and no capability JSON grants the
+/// webview a file dialog of its own.
+///
+/// `start` seeds the dialog at the value currently in the field; a path that no longer exists is
+/// passed anyway and the picker falls back to its own default rather than failing. `None` back
+/// means the picker was dismissed, which is not an error and must not read as one.
+///
+/// BLOCKING, ON A BLOCKING THREAD. The plugin marshals the dialog onto the GTK main thread itself
+/// and `blocking_pick_folder` waits for it — waiting on the main loop from the main loop is the
+/// WebKitGTK abort of #142/#143, and an async command's body runs on the async runtime, not the
+/// main loop. `spawn_blocking` states that rather than relying on it.
+#[tauri::command]
+pub async fn choose_folder(app: tauri::AppHandle, start: Option<String>) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let mut builder = app.dialog().file();
+        if let Some(dir) = start.filter(|s| !s.is_empty()) {
+            builder = builder.set_directory(dir);
+        }
+        builder
+            .blocking_pick_folder()
+            .and_then(|folder| folder.into_path().ok())
+            .map(|path| path.display().to_string())
+    })
+    .await
+    .unwrap_or(None)
 }
 
 /// The dry-run plan plus the derived safety facts the Plan-preview screen needs.

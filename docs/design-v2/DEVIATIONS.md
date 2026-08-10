@@ -2680,3 +2680,187 @@ were reported — an unrecognised status that failed closed on the mark and not 
 dialog that read an absent reply as a negative one. Both were doctrines this codebase already holds
 (`countersUnknown`, `dash()`, the all-clear note above) applied in one place and not the next; the
 sweep is what turned that into a rule rather than three separate fixes.
+
+## The settings screen (S6)
+
+## 78. Four tabs, three drawn, and the largest single deviation in the build
+
+`08-settings.md` specifies four tabs and the frames draw three of them. `8a Settings` is Folders,
+`8a Skip rules` is What to skip, `8a Deletions tab` is Deletions, `8a Schedule monthly` is one panel
+of Folders in its other state, and `8a Save refused` is a dialog over any of them. **Advanced is
+specified in prose and drawn nowhere.**
+
+### 78a. A crop is a re-render, not a cut-out — and its boxes are not comparable
+
+`frame-classes.mjs` has said since F8 that a crop's own width is "an artefact of how it was drawn".
+It is more general than that, and `8a Schedule monthly` is the proof: it is the SAME panel
+`8a Settings` draws, at `padding:18px 20px` against the window's `13px 18px`, with an 18.75px
+sub-line against the window's 18.125px. **Two frames of one panel disagree with each other**, so
+neither can be the box the app owes — and the disagreement is not confined to the outer node, since
+a 600px re-render draws its children 546 wide where the 1040 window draws them 976, and text wrapped
+at 546 is twice the height it is at 976.
+
+So `OWES_BOX(kind)` now skips the box comparison for a crop, whole. **Styles are still compared in
+full**, and that is what these two frames are actually evidence of: the radio card's tint, its ring,
+its badge and all three of its body colours came off `8a Deletions tab` and are asserted against it.
+
+The rejected alternative was a 546px column invented inside a 976px tab so a crop's arithmetic would
+come out — a screen built to satisfy a measurement rather than a design.
+
+One node stayed unmapped for a related reason. `8a Deletions tab`'s `deletion_policy` key line
+(`div[3]`) is positioned by `margin-top:auto`, and a computed margin resolved by `auto` is a **used
+value**: 72.375px in a 520-tall crop, 172.5px in the 764-tall window. Same artefact, arriving
+through a property `OWES_BOX` does not cover. The line ships as drawn; it is the crop that cannot say
+where it sits. `8a Schedule monthly`'s head row (`div[0]`) is unmapped on the same footing — the two
+frames give it different gaps.
+
+### 78b. The schedule panel keeps its shell and changes its subject
+
+**This is the largest single Phase-1 deviation in the design-v2 build**, and the issue that scopes
+S6 says so in advance.
+
+The frame draws a whole full-sweep schedule: a Weekly/Monthly segmented control, seven day chips, a
+time stepper, and the key line `full_scan_schedule · weekly sun 03:00`. There is no
+`full_scan_schedule` key, no scheduler in the daemon and no command that returns any of it (G4,
+[#193](https://github.com/osirison/proton-drive-sync-engine/issues/193)). `events_full_scan_every` is
+the nearest real thing and it counts _passes_, not days, and defaults to off.
+
+`IMPLEMENTATION-PLAN.md` §4 says to present `scan_interval` in plain language inside the same panel
+shell. So the shell, the head row and the divided control row are the frame's, and the subject is
+Phase 1's — **including the title**. `Compare everything, top to bottom` over a timer that (with live
+updates on) schedules an _incremental_ pass would be a false claim about what happens to someone's
+files, which is the one thing this screen may not do. The panel now reads `Look for changes on a
+timer` over `scan_interval_secs`, with the stepper in the row the day chips were drawn in.
+
+`assert.mjs` does not compare text, so the retitled block still asserts every style and its own box:
+the three `box.w` rows in `known-deviations.mjs` are the head row spreading into the 155px the
+segmented control and its gap were holding, and nothing else.
+
+### 78c. Two keys, two different answers, and the difference is which side is wrong
+
+`8a Settings` draws `event_driven_reconcile` under the live-updates toggle. **That key does not
+exist** — the engine's is `events_driven`, and `14-behaviour-and-state.md:25` says so in as many
+words. The app draws the real key and the node is left **unmapped**: this is the prototype being
+wrong rather than the app being unable, which is neither a mapped node nor a `known-deviations` row
+(the bar there is a missing capability with an open issue). Same call `5a Checking`'s unlit doors got.
+
+`8a Deletions tab` draws `deletion_policy · applies to both directions`, and **that one ships as
+drawn**. It also names a key the daemon does not have — §68 — but it names the _policy the two
+`[delete_approval]` booleans express_, which is what a person choosing between three cards is
+setting. G5 ([#194](https://github.com/osirison/proton-drive-sync-engine/issues/194)) would mint it
+natively. The two lines get opposite treatment because the frame is wrong about one and early about
+the other.
+
+### 78d. Everything above the footer is the saved config; the footer is the staged edit
+
+`8a Skip rules` draws a removal staged but not saved, and F9 recorded the frame as internally
+inconsistent: `video-raw/**` is in the list at full opacity while the footer says that rule was
+removed, and it is counted inside `hiding 4 files, 3.1 GB in total`. The fixture left the call to S6.
+
+It is not inconsistent — it is a rule. **Every count on the tab was measured against the config on
+disk**, so a list that dropped the row while the total still counted it would be a screen disagreeing
+with itself. The rows are the saved config, the footer is the diff, and the amber cost line is where
+the news is.
+
+A staged ADDITION is the one exception and barely one: an added rule has no measured row to leave
+alone, so it appears with `Not saved yet` where its counts would be. Without it, `Add` would look
+like a control that does nothing — the removal at least turns the footer amber.
+
+The cost line reads `unique_files`/`unique_bytes` (§69b) and only fires for a **single** removal:
+the deck's sentence begins `One rule removed`, and there is no plural form to reach for.
+
+### 78e. The rule sub-line's discriminator, and the cell that fails closed
+
+§69a left this to S6: the frame draws two of the five answers a `RuleUsage` can produce, and live
+data has no byte discriminator. The rule is the **folder anchor** plus whether the samples are the
+whole set:
+
+| `files` | `folder_exists` | drawn                                                                               |
+| ------- | --------------- | ----------------------------------------------------------------------------------- |
+| > 0     | `null`          | `Skipping 2 files right now` + the paths — **only when `samples.length === files`** |
+| > 0     | `true`/`false`  | `Skipping 2 files, 3.1 GB` + `the folder still exists…` when it does                |
+| 0       | `false`         | `Matching nothing` + `safe to remove`, at `opacity:.62`                             |
+| 0       | `true`          | `Matching nothing` + `the folder still exists…`, **not dimmed**                     |
+| 0       | `null`          | `Matching nothing`, no second line                                                  |
+| —       | `error`         | `Couldn't be checked` + the walk's own words, in mono                               |
+
+Two of those six are the point. The samples clause exists because the command caps samples at four
+(`MAX_SAMPLES`) and a list of four under `Skipping 50 files right now` reads as the full set. And
+**`safe to remove` is never said of a rule that is hiding something**: it needs nothing matched AND
+the folder known gone, because removing a rule that still matches files starts syncing them, and
+this is the sentence someone acts on without checking. `gui/test/settings.test.js` pins the whole
+table, including the three cells no frame draws.
+
+`hiding N files` also has a hedged form. `skip_rule_usage` returns
+`unreadable_directories`/`unreadable_entries` precisely so the tab does not present a floor as a
+fact; with either above zero, every number on the tab is a lower bound and the line says so.
+
+### 78f. The refusal Phase 1 can actually produce
+
+`write_config` refuses on `ConfigDoc::validate` — a serde/TOML check against `FileConfig` that never
+contacts Proton Drive. So it cannot know a remote folder is missing and cannot say `That folder
+doesn't exist on Proton Drive`; nor is there a command behind `Create it on Proton Drive`. Filed as
+G16 ([#236](https://github.com/osirison/proton-drive-sync-engine/issues/236)).
+
+What ships is the generic title, the sentence `08-settings.md` calls the important one — _"Nothing
+was saved — your old settings are still running."_ — and the daemon's reason in mono with the
+`config would be rejected by the daemon: ` prefix stripped, because that prefix is the GUI's sentence
+about the daemon's words and the body already says it.
+
+**And a save that succeeds is not live either.** There is no config-reload path in the engine — no
+SIGHUP handler, no watcher (§68) — so `Changes here take effect on the next sync` is true only after
+a restart. The bar's second slot, which holds `Discard changes` while there is something to discard,
+becomes `Restart it now` in the one moment there is not.
+
+### 78g. Two commands, and why they were not C-items
+
+`commands.rs` says screens never add to the command surface and that capability tasks are how it
+grows. S6 added two, and they are recorded there rather than smuggled in:
+
+- **`resync`** — `Sweep now` is a _full-tree_ walk and `sync_now` is not one. `ControlCommand::Resync`
+  has been in the daemon since #160 and no command exposed it.
+- **`choose_folder`** — a native folder picker behind the same facade as everything else, so `api.js`
+  stays the frontend's only backend surface and no capability JSON grants the webview a file dialog
+  of its own. `tauri-plugin-dialog` is registered for the Rust side alone.
+
+Both are five lines over machinery that already exists; the alternative was two more dead buttons of
+the kind #224 and #227 already record. A screen that needs _data_ still files a C-item.
+
+### 78h. Four primitives corrected by the first screen to draw them
+
+`radioCard`, `toggle`, `stepper` and `dayChips` were all written by F5 from prose and none had a
+consumer until now. Every one of them was wrong somewhere:
+
+- **`radioCard`'s tree.** F5 wrote `card > [ring, body > [title, text]]`; the frame draws
+  `card > [head > [ring, title, badge], text]`. The ring is inside a flex head row and the body is
+  that row's sibling, indented past it by a 26px padding rather than by nesting.
+- **The unselected ring is 1px, not the 1.5px `08-settings.md` gives it.** The frame wins, as it does
+  for the 13-to-6 footer split (§40). The selected ring has no inner dot either — the drawn dot IS a
+  4px border with a 7px well of the card's own surface showing through.
+- **`toggle` had a border and the frame has none**, and its knob is 20px rather than 18. The knob now
+  moves by `left` rather than a transform, because an absolutely-positioned node reports used values
+  for `left`/`right` and a transform moves the pixels while leaving both where they started. A
+  `<button>` also has to put back the `font`, `color` and `text-align` the UA sets, all three of
+  which are asserted properties and none of which a drawn `div` has.
+- **`stepper`'s glyph is `＋` (U+FF0B), at 13px** — the icon rung's 15px is the `⋯` menu's size.
+- **`dayChips` is 42px at a 5px gap**, not the pill row's 44/8. S6 does not render them (the schedule
+  is G4), so those two numbers are waiting for whoever builds it rather than checked by anything.
+
+Three tokens were minted with them: `--destructive-card-bg`/`--destructive-card-border` (.04/.30
+against the base .06/.38 — the per-site alpha step §52a measured across the bands) and
+`--destructive-ring`, the one place the design tints an inert hairline, drawn opaque because a 1px
+ring at .3 over a .04 fill would be invisible.
+
+| screen | frame                 | drawn                                                          | Phase 1                                   | gap      |
+| ------ | --------------------- | -------------------------------------------------------------- | ----------------------------------------- | -------- |
+| S6     | `8a Settings`         | the Weekly/Monthly control, day chips, time stepper            | the panel shell over `scan_interval_secs` | G4 #193  |
+| S6     | `8a Settings`         | `12,480 files, 41.2 GB in here today`                          | the merge warning alone                   | G7 #207  |
+| S6     | `8a Settings`         | `A full check of all 12,480 files as a safety net`             | a sentence about the timer                | G7 #207  |
+| S6     | `8a Settings`         | `Takes about 4 minutes … Last one 2 days ago`                  | what is true every time                   | G18 #238 |
+| S6     | `8a Settings`         | `event_driven_reconcile`                                       | `events_driven`, the key that exists      | —        |
+| S6     | `8a Skip rules`       | `added 14 Jul` on a rule                                       | the folder clause alone                   | —        |
+| S6     | `8a Skip rules`       | the unsyncable panel and `See them`                            | omitted; the `.sync` note stays           | G15 #232 |
+| S6     | `8a Schedule monthly` | the whole monthly variant                                      | the panel head alone                      | G4 #193  |
+| S6     | `8a Save refused`     | `That folder doesn't exist on Proton Drive`                    | a generic refusal title                   | G16 #236 |
+| S6     | `8a Save refused`     | `Create it on Proton Drive`                                    | omitted; `Go back and fix it` stays       | G16 #236 |
+| S6     | _(not drawn)_         | Advanced: socket path, log level, conflict suffix, index reset | named as not writable yet                 | G17 #237 |
