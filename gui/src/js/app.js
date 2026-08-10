@@ -52,6 +52,7 @@ import {
   renderFilePendingBody,
   footerVariantOf,
   neverSyncedFrom,
+  normaliseQuery,
   passesSummaryOf,
 } from "./screens/activity.js";
 import { severityOf } from "./ui/rows.js";
@@ -1542,7 +1543,7 @@ async function ensureSkipRules() {
  * `ACTIVITY.matches` is unreachable until that gap closes.
  */
 async function lookupPath(query) {
-  const path = query.trim().replace(/^\/+/, "");
+  const path = normaliseQuery(query);
   if (!path) {
     activityLookup = null;
     activityLookupInFlight = null;

@@ -266,8 +266,15 @@ function lookupField({ value, matches, onInput, onClear, inputRef }) {
     { class: `activity-lookup${filled ? " is-filled" : ""}` },
     fid(el("span", { class: "activity-lookup-icon" }, "⌕"), "searchIcon"),
     fid(input, "searchValue"),
+    // `matches: null` means ASKED-BUT-NOT-ANSWERED, and it renders as nothing rather than as a
+    // count. The lookup is debounced, so for 180ms after a keystroke the resolved answer belongs to
+    // an older query — and rendering `0 matches` there flashes a false negative at exactly the
+    // moment someone is typing a path that does match. The empty span keeps the node the frame has.
     filled
-      ? fid(el("span", { class: "activity-lookup-count" }, ACTIVITY.matches(matches ?? 0)), "searchCount")
+      ? fid(
+          el("span", { class: "activity-lookup-count" }, matches == null ? "" : ACTIVITY.matches(matches)),
+          "searchCount",
+        )
       : fid(el("span", { class: "activity-lookup-hint" }, ACTIVITY.lookupShortcut), "searchHint"),
     filled
       ? fid(
@@ -377,9 +384,13 @@ function filesTab(props) {
   // 4px padding-top and loses its own 18px margin.
   const looking = Boolean(lookup);
 
+  // Only the answer to the query that is IN the field. `path_sync_status` takes an exact relative
+  // path, so a resolved lookup answers for exactly one string; while the field holds anything else
+  // there is no count to state.
+  const answered = lookup && lookup.path === normaliseQuery(query);
   const field = lookupField({
     value: query,
-    matches: lookup?.status?.tracked ? 1 : 0,
+    matches: answered ? (lookup.status?.tracked ? 1 : 0) : null,
     onInput: props.onQuery,
     onClear: props.onClearQuery,
     inputRef: props.inputRef,
@@ -581,6 +592,18 @@ function lookupBody(props) {
  * `proton_id` is `volumeId~nodeId`; the volume half is the same for every file on the drive, so
  * eliding the whole string would show four characters that never change.
  */
+/**
+ * The path a typed query stands for — trimmed, and without a leading slash.
+ *
+ * Shared with `lookupPath` in app.js so the two agree on what "the same query" means; they would
+ * otherwise disagree the moment someone types a leading space, and the count would never appear.
+ */
+export function normaliseQuery(query) {
+  return String(query ?? "")
+    .trim()
+    .replace(/^\/+/, "");
+}
+
 export function elideId(protonId) {
   const node = String(protonId).split("~").pop() ?? "";
   return node.length <= 9 ? node : `${node.slice(0, 4)}…${node.slice(-4)}`;

@@ -20,6 +20,7 @@ import {
   neverSyncedFrom,
   footerVariantOf,
   elideId,
+  normaliseQuery,
 } from "../src/js/screens/activity.js";
 import { ACTIVITY } from "../src/js/ui/copy.js";
 import { cardinal } from "../src/js/ui/format.js";
@@ -250,4 +251,16 @@ test("the id elide takes the NODE half, because the volume half never changes", 
   // Short enough to show whole, and a bare node id with no volume prefix.
   assert.equal(elideId("8b3c1f2a~abc123"), "abc123");
   assert.equal(elideId("4c8f2e7d10b64f2ca39c5e0b8d7f9a21"), "4c8f…9a21");
+});
+
+// The query and the answer have to agree on what "the same path" is, or the count never appears —
+// app.js decides which path to ASK about and the screen decides whether the answer is still the
+// one on screen, and the two read the same function to stay in step.
+test("a typed query normalises to the path the index is asked for", () => {
+  assert.equal(normaliseQuery("  docs/spec.md  "), "docs/spec.md");
+  assert.equal(normaliseQuery("/docs/spec.md"), "docs/spec.md");
+  assert.equal(normaliseQuery("///docs/spec.md"), "docs/spec.md");
+  assert.equal(normaliseQuery(""), "");
+  assert.equal(normaliseQuery(null), "");
+  assert.equal(normaliseQuery(undefined), "");
 });
