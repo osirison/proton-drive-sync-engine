@@ -47,12 +47,22 @@ const row = (path, action, extra = {}) => ({
   ...extra,
 });
 
-/** `5a Plan`'s own nine, in the daemon's emission order rather than the drawn one. */
+/**
+ * `5a Plan`'s own nine, row for row, in the daemon's emission order rather than the drawn one.
+ *
+ * IT HAS TO BE THE FIXTURE'S NINE and not a six-row sketch of them, which is what this was: the
+ * counts these tests assert are the counts the frame draws (`3` leaving, `2` arriving, `9 actions`),
+ * so a shorter plan asserts numbers no frame ever produced and quietly drops the multi-upload and
+ * multi-download cases — the only ones where a per-side count can disagree with a per-side list.
+ */
 const NINE = [
   row("docs/spec.md", "upload"),
+  row("photos/trip/img_0042.jpg", "upload"),
+  row("notes/scratch.md", "upload"),
   row("photos/trip", "create_remote_directory", { entity_kind: "directory" }),
   row("archive/old-notes.md", "remote_delete"),
   row("reports/q3-summary.pdf", "download"),
+  row("design/logo.svg", "download"),
   row("notes/old.md", "move_local", { destination_path: "notes/archive/old.md" }),
   row("notes/todo.txt", "conflict", { conflict_path: "notes/todo.proton-cloud.txt" }),
 ];
@@ -151,7 +161,16 @@ test("destructive rows float to the top and everything else keeps the daemon's o
   assert.equal(sorted[0].action, "remote_delete");
   assert.deepEqual(
     sorted.slice(1).map((r) => r.path),
-    ["docs/spec.md", "photos/trip", "reports/q3-summary.pdf", "notes/old.md", "notes/todo.txt"],
+    [
+      "docs/spec.md",
+      "photos/trip/img_0042.jpg",
+      "notes/scratch.md",
+      "photos/trip",
+      "reports/q3-summary.pdf",
+      "design/logo.svg",
+      "notes/old.md",
+      "notes/todo.txt",
+    ],
   );
   // The input is not mutated: the caller's plan is the payload's own array.
   assert.equal(NINE[0].path, "docs/spec.md");
@@ -169,16 +188,20 @@ test("two deletions keep their own relative order", () => {
 
 test("the side counts are files, and the folder and the rename are sentences", () => {
   const model = summarise(NINE);
-  assert.equal(model.uploads, 1);
-  assert.equal(model.downloads, 1);
+  // The frame's own numerals: `3` over `files` on the left, `2` on the right, `9 actions` in the
+  // tally. If this constant ever stops being the fixture's nine, these stop being the frame's.
+  assert.equal(model.total, 9);
+  assert.equal(model.uploads, 3);
+  assert.equal(model.downloads, 2);
   assert.equal(model.newFolders, 1);
   assert.equal(model.renames, 1);
   assert.equal(model.conflicts, 1);
   // The new folder is on the leaving side and the rename on the arriving one, but neither is counted
   // as a file — that is the distinction `5a Plan safe` makes when it says `Five files move` over
-  // seven actions.
-  assert.equal(model.leaving.length, 2);
-  assert.equal(model.arriving.length, 2);
+  // seven actions. So each side LISTS one more row than it COUNTS.
+  assert.equal(model.leaving.length, 4);
+  assert.equal(model.arriving.length, 3);
+  assert.equal(PLAN.safeSub(model.uploads + model.downloads), PLAN.safeSub(5));
 });
 
 test("the two moves are on opposite sides of the seam", () => {

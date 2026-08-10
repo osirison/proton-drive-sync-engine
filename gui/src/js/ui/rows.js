@@ -308,6 +308,14 @@ function glyphNode(glyph, tone) {
  * — and the path steps UP from `--text-2` to `--text` while the outcome goes crimson. The row is
  * louder than its neighbours in three dimensions because it is the one that cannot be undone.
  *
+ * `tinted` AND `destructive` ARE TWO FLAGS BECAUSE THEY ARE TWO SETS, which is the same distinction
+ * `plan.rs` draws and the design conflates. Display-destructive rows sort together and share the
+ * background; only the ones that take user data away get the brighter path and the crimson outcome.
+ * A `purge` is the row that separates them — it is sorted and tinted with the deletions and destroys
+ * nothing, so a crimson `record cleared, no file touched` would be the app saying it took something.
+ * (Its glyph is already quiet for exactly that reason; one flag made the text disagree with the mark
+ * on the same row.)
+ *
  * It is still only a row, which is the design's own point: the band above it is what makes the
  * dangerous thing more than a line in a list, and this tint is how the list agrees with the band.
  */
@@ -316,6 +324,7 @@ export function planActionRow({
   tone = "quiet",
   path,
   outcome = null,
+  tinted = false,
   destructive = false,
 } = {}) {
   return flatRow(
@@ -325,7 +334,12 @@ export function planActionRow({
       el("span", { class: "plan-path" }, path),
       outcome ? el("span", { class: "plan-outcome" }, outcome) : null,
     ],
-    { class: destructive ? "is-destructive" : null },
+    {
+      class:
+        [tinted || destructive ? "is-tinted" : null, destructive ? "is-destructive" : null]
+          .filter(Boolean)
+          .join(" ") || null,
+    },
   );
 }
 

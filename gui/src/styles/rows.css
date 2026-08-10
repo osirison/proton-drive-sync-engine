@@ -263,7 +263,14 @@
   color: var(--text-4);
 }
 
-/* The one row that cannot be undone: tinted, its path a tier brighter, its outcome crimson. */
+/* Sorted and tinted with the deletions. A `purge` stops here: it destroys no user data, so it gets
+   the background that groups it and none of the emphasis that says something is being lost. */
+.row-plan.is-tinted {
+  background: var(--destructive-row-bg);
+}
+/* The row that cannot be undone: its path a tier brighter, its outcome crimson. Always drawn with
+   `is-tinted` (see planActionRow); the background is repeated here so the emphasis can never appear
+   without it. */
 .row-plan.is-destructive {
   background: var(--destructive-row-bg);
 }

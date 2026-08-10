@@ -492,7 +492,11 @@ function actionList(model) {
         tone,
         path: pathOf(row),
         outcome: outcomeOf(row.action, "plan"),
-        destructive: isDisplayDestructive(row.action),
+        // THE TWO SETS AGAIN, one flag each. The tint groups the rows `sorted_for_display` floats to
+        // the top; the emphasis marks the ones that take something away. A `purge` is in the first
+        // set and not the second, which is the whole reason `plan.rs` keeps them apart.
+        tinted: isDisplayDestructive(row.action),
+        destructive: isGated(row.action),
       }),
       "row",
       i,
