@@ -516,8 +516,13 @@ export const PLAN = {
   // The FILES that move — uploads plus downloads — and not the action count. `5a Plan safe` draws
   // seven actions and says `Five files move`, because the new folder and the rename are not files
   // arriving or leaving. The same two numbers the seam block counts, added up.
+  // THE VERB AGREES TOO, and the first version only agreed the noun — `One file move` at the count a
+  // single edited file produces, which is the second most likely plan there is. `No files` rather
+  // than `zero files` at nought: a plan can be entirely a new folder or a rename, so this sentence
+  // has to survive a count of nought without claiming the plan is empty (the empty plan has its own
+  // two sentences above).
   safeSub: (n) =>
-    `${cardinal(n)} ${plural(n, "file", "files")} move, both sides end up with everything. This plan is safe to run.`,
+    `${n === 0 ? "No files" : `${cardinal(n)} ${plural(n, "file", "files")}`} ${plural(n, "moves", "move")}, both sides end up with everything. This plan is safe to run.`,
   // The plan with nothing in it, which `14-behaviour-and-state.md` routes to the safe variant
   // ("Plan · Empty: safe-plan variant") and no frame draws — so these two are S4's rather than the
   // deck's. It is not an edge case: it is what you get for clicking `Plan a sync` on a folder that

@@ -564,7 +564,7 @@ function safeBody(model) {
     empty ? null : seamBlock({ model, site: "planSafeList", detail: sideList(model), aligned: false }),
     // The empty flex:1 block the frame draws between the lists and the footer. A real node rather
     // than a margin: the footer is a child of the WINDOW, so something has to take up the slack.
-    fid(el("div", { class: "pl-spacer" }), "spacer"),
+    fid(el("div", { class: "pl-spacer" }), "tailSpacer"),
   ].filter(Boolean);
 }
 
@@ -691,9 +691,16 @@ function buildBar(v, handlers, state) {
     });
   }
   const gated = v.model.gated.length > 0;
+  // BUILT LIVE AND THEN DISABLED, never built disabled. `button()` attaches no listener at all when
+  // the KIND is a disabled one (`onClick: disabled || role.disabled ? null : onClick`), and
+  // `setButtonKind` only repaints — so a button born `primaryDisabled` and later armed paints as a
+  // live white primary, takes focus, and does nothing at all by pointer or by Enter. That is the
+  // whole screen's action, inert, on exactly the plans the gate exists for. The browser refuses to
+  // dispatch a click on a disabled element, so the guard is unchanged: the listener cannot fire
+  // until `setButtonKind` clears `disabled`, and `runNow` asks the field again anyway.
   const run = fid(
     button({
-      kind: gated ? "primaryDisabled" : "primary",
+      kind: "primary",
       size: "bar",
       label: PLAN.run,
       padding: "11px 22px",
@@ -703,13 +710,18 @@ function buildBar(v, handlers, state) {
     }),
     "run",
   );
+  if (gated) setButtonKind(run, "primaryDisabled");
   const bar = renderActionBar({
     consequence: gated ? gateBlock(run) : fid(el("span", { class: "pl-checked" }, checkedText(v)), "checked"),
     // The re-check moves into the bar exactly when the title row above it has gone: `5a Plan` draws
-    // it beside the title, `5a Plan safe` in the footer. One button, two homes, never both.
-    secondary: gated
-      ? null
-      : fid(checkAgain({ handlers, size: "bar", padding: "11px 20px", fontSize: "13px" }), "checkAgain"),
+    // it beside the title, `5a Plan safe` in the footer. One button, two homes, never both — and the
+    // question is which BODY is showing, not whether the plan is gated. An ungated plan that still
+    // gets the list body (a conflict, an adoption, a purge) has the title row and its button, so
+    // keying on the gate drew the same control twice in one window.
+    secondary:
+      v.body === "safe"
+        ? fid(checkAgain({ handlers, size: "bar", padding: "11px 20px", fontSize: "13px" }), "checkAgain")
+        : null,
     primary: run,
   });
   // THE GROUP THE FIELD MAY MOVE WITHIN IS THE BAR, and this one line is what makes the gate
@@ -768,10 +780,16 @@ function checkedText(v) {
  * WHAT THE TYPED WORD CANNOT DO is authorise the deletion, and that is an engine gap rather than a
  * shortcut taken here. `approve` matches against the daemon's CURRENT `pending_deletions` snapshot,
  * and at plan time nothing is pending — the delete has not been withheld yet, because no pass has
- * reached it. So there is nothing to approve in advance: `Run this sync` asks for a sync, the pass
- * withholds the delete exactly as it would have anyway, and it arrives on the Deletions screen to be
- * answered there. Nothing is deleted that you did not agree to twice; what is missing is the ability
- * to agree once. DEVIATIONS §76.
+ * reached it. So there is nothing to approve in advance: `Run this sync` asks for a sync and nothing
+ * more.
+ *
+ * WHAT HAPPENS NEXT DEPENDS ON THE DAEMON'S OWN GUARD, and it is not one answer. With delete
+ * approval on — the default, both directions — the pass withholds the delete exactly as it would
+ * have anyway and it arrives on the Deletions screen to be answered there: agreed to twice, which is
+ * safe and is not what the design asks for. With it OFF (`--no-delete-approval`, a `[delete_approval]`
+ * false, or a `.proton-sync.toml` that turns the guard off for that subtree) the pass deletes, and
+ * the word typed here is the only thing that stood in front of it — which is the job the design
+ * gives it, arrived at from the other direction. DEVIATIONS §76.
  */
 function runNow(v, state) {
   if (v.model.gated.length) {
@@ -844,16 +862,6 @@ function signatureOf(v) {
     v.body,
     v.model.rows.map((row) => [row.path, row.destination_path, row.action, row.entity_kind]),
   ]);
-}
-
-/**
- * The plan the screen is currently showing, as one comparable string — `null` when it is not showing
- * one. `app.js` asks this to decide whether a re-check invalidated an armed gate.
- */
-export function planIdentity(state = {}) {
-  const v = viewOf(state);
-  if (v.body === "checking" || v.body === "failed") return null;
-  return signatureOf(v);
 }
 
 /**

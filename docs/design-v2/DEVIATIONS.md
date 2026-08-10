@@ -1776,11 +1776,11 @@ prompt does. S6 keeps the prompt and this row records the copy.
 reads the index; match each exclude glob against it" — and it cannot produce the drawn data.
 
 The engine applies selective-sync filters to the local scan, the remote listing **and** the
-base-index records *before* planning, so an excluded file is never inserted. A rule that has been in
+base-index records _before_ planning, so an excluded file is never inserted. A rule that has been in
 the config since before its files existed therefore matches **zero index records**. The frames prove
 it on their own numbers: `8a Skip rules` names `exports/draft.tmp` and `exports/render-final.tmp` as
-hidden by `*.tmp`, and `7a Never synced` says of those same two files *"They live in your folder but
-no copy exists on Proton Drive."* Never synced → never in `file_index`. An index-backed count answers
+hidden by `*.tmp`, and `7a Never synced` says of those same two files _"They live in your folder but
+no copy exists on Proton Drive."_ Never synced → never in `file_index`. An index-backed count answers
 `0` for the row the frame draws populated, and fires `Matching nothing · safe to remove` over a rule
 that is at that moment hiding a 40 GB export folder.
 
@@ -1789,7 +1789,7 @@ is why it does not reuse `index::scan_local_files_with_options`. Consequences wo
 
 - **The walk is not the daemon's walk.** The daemon's scan prunes an excluded directory, so it never
   sees inside `video-raw/**`; this one must, or every directory rule would report zero. Traversal is
-  decided by a *baseline* `ScanOptions` carrying the config's includes but **none** of its excludes.
+  decided by a _baseline_ `ScanOptions` carrying the config's includes but **none** of its excludes.
   The engine still owns every question about what counts (`should_ignore_path`, `.sync/`, the
   download scratch, glob semantics, non-UTF-8 keys) — none of it is reimplemented here.
 - **A rule that prunes a directory owns everything under it.** A pattern can match a folder without
@@ -1823,7 +1823,7 @@ anywhere: a TOML array of globs carries no per-entry timestamps.)
 `Matching nothing` is about the count; `no such folder here any more — safe to remove` is about the
 folder. They come apart — an empty folder that still exists matches nothing and is **not** safe to
 remove — so the reply carries `folder_exists: Option<bool>` rather than a `stale` flag, and
-`is_stale_folder()` requires the folder to be *known gone*. A rule with no literal folder prefix
+`is_stale_folder()` requires the folder to be _known gone_. A rule with no literal folder prefix
 (`*.psd`) makes no claim at all. The frame corroborates the split: `video-raw/**` matches files and
 its second line still reads `the folder still exists on this computer`.
 
@@ -1832,12 +1832,12 @@ second rule also hides does not start syncing when this one goes.
 
 ## 70. The conflict card's first sentence needs a version that no longer exists
 
-`04-conflicts.md` gives the version cards three parts. C3 (#176) delivers the second — *what differs,
-in words* — and **cannot deliver the first.**
+`04-conflicts.md` gives the version cards three parts. C3 (#176) delivers the second — _what differs,
+in words_ — and **cannot deliver the first.**
 
 `You added a line, 5 minutes ago` is a claim about your version against the **last agreed** one, and
 the last agreed version's content exists nowhere on the machine: the conflict sidecar is Proton's
-copy *as it is now*, the local file is yours, and the index keeps the baseline's SHA-1 without its
+copy _as it is now_, the local file is yours, and the index keeps the baseline's SHA-1 without its
 bytes. Against Proton's copy alone the very same edit reads as a removal. This is not a harder
 version of the diff problem; it is a different one, needing a capability nothing has. The relative
 time in that sentence comes from the mtimes and is fine — the verb is the gap. Filed as **#217**.
@@ -1852,7 +1852,7 @@ by two different models.
 ### 70a. What the grammar covers, and what falls back to silence
 
 `04-conflicts.md` is explicit that a summary which cannot be generated falls back to **the metadata
-row alone**, and must *not* fall back to showing the raw diff — that is what the disclosure is for.
+row alone**, and must _not_ fall back to showing the raw diff — that is what the disclosure is for.
 `summariseSide` therefore returns `null` rather than stretching a sentence, for: more than one
 changed line (quoting one of four describes the file wrongly, not partially), an extra line that is
 not at the end (the only extra-line clause drawn is `an extra line at the end`), a blank changed line
@@ -1869,7 +1869,7 @@ Two readings had to be settled from the frames rather than the prose:
 
 - **`and is otherwise the same` is about ONE SIDE, not about the pair.** The left card claims it on a
   pair where Proton's has a line yours does not. Read symmetrically, the drawn sentence is unreachable
-  at its own frame's input; read as *this side introduces nothing else*, both drawn sentences fall
+  at its own frame's input; read as _this side introduces nothing else_, both drawn sentences fall
   out of one grammar. Pinned by a test.
 - **The two drawn forms are not one template.** The left contrasts the sides and closes with
   `otherwise the same`; the right, with an equally changed line, does not. Nothing explains the
@@ -1889,7 +1889,7 @@ strings, which is the only guard that holds. A **directory** is indistinguishabl
 > place to ask. `scan_conflicts` is already standing at the original with a path in hand, and one
 > `symlink_metadata` settles it before any content is read. `Conflict.kind` now carries the answer
 > (`content` / `type`), which is what makes the disclosure hideable and the queue's `a folder here,
-> a file there` renderable rather than hard-coded. The rest of this section stands.
+a file there` renderable rather than hard-coded. The rest of this section stands.
 
 Line endings are normalised before splitting. A sidecar written on another platform would otherwise
 differ on **every** line, and `400 lines differ` is the worst possible wrong answer on a screen where
@@ -1900,8 +1900,8 @@ it argues for discarding a version. A difference that is only a trailing newline
 ## 71. Free space: Phase 1 has the half the fallback assumes it has
 
 `9a Review` draws `Needs 38.4 GB free. You have 214 GB.` and `14-behaviour-and-state.md`'s fallback
-table says: *Free-space check on the local root | Onboarding step 2 | Omit the "You have 214 GB"
-clause.* The fallback assumes **needs** is always known and only **have** can go missing.
+table says: _Free-space check on the local root | Onboarding step 2 | Omit the "You have 214 GB"
+clause._ The fallback assumes **needs** is always known and only **have** can go missing.
 
 **It is exactly inverted.** C4 (#177) supplies `You have 214 GB` exactly and always. `Needs 38.4 GB
 free` cannot be computed at all: `PlannedAction` carries `path`, `destination_path`, `action`,
@@ -1914,7 +1914,7 @@ between omitting the line until G6 lands, adding a deck string for the have-only
 the line only post-G6. C4 supplies the number and files the knot rather than settling it.
 
 The command walks up to the nearest existing ancestor, because onboarding asks about free space
-*before* the folder is created — a plain `statvfs` on the chosen path returns `ENOENT` on the one
+_before_ the folder is created — a plain `statvfs` on the chosen path returns `ENOENT` on the one
 screen that needs the number. It reports `f_bavail`, not `f_bfree`: the difference is the
 root-reserved pool, which a desktop app can see and can never write into, and this is a safety claim.
 
@@ -1936,9 +1936,9 @@ on either, and the literal is what lets the error name the string the user typed
 ## 72. The install command in `9a CLI missing` does not work on any distribution
 
 The frame draws a command box containing `sudo apt install proton-drive`. This project's own
-documentation contradicts it twice — *"`proton-drive` is not available in Linux distribution
-repositories, so it can't be a package dependency"* and *"The native packages deliberately do **not**
-declare `proton-drive` as a dependency (it isn't in any distro repo)"*. There is no distribution
+documentation contradicts it twice — _"`proton-drive` is not available in Linux distribution
+repositories, so it can't be a package dependency"_ and _"The native packages deliberately do **not**
+declare `proton-drive` as a dependency (it isn't in any distro repo)"_. There is no distribution
 where a package manager installs it, so **for every user, including Debian users, the truthful
 instruction today is the tarball/manual path.**
 
@@ -1959,8 +1959,8 @@ Three smaller notes:
   recognised distribution gets its brand name from our own table; one known only through its
   `ID_LIKE` parent uses its own `NAME`, because `Detected Debian` on a machine that is not Debian
   would be worse than either the truth or silence.
-- **There are two detection mechanisms in this repo.** `setup.sh` detects by *package-manager
-  presence* (`command -v dnf` / `apt-get` / `pacman`); C5 detects the *distribution* via
+- **There are two detection mechanisms in this repo.** `setup.sh` detects by _package-manager
+  presence_ (`command -v dnf` / `apt-get` / `pacman`); C5 detects the _distribution_ via
   `/etc/os-release`, as the issue and the plan specify. They disagree on a machine with `apt`
   installed under a non-Debian id, and they are separately maintained tables. Not reconciled here —
   `setup.sh` is about build dependencies, this is about a user-facing instruction — but worth knowing
@@ -1975,7 +1975,7 @@ and copy gates compare a rendering to a drawing, and none of this code renders a
 
 They cluster, and the clusters are the lesson:
 
-**Two matchers, one question.** `skip_rules` asked every rule a *file-shaped* question, so a rule
+**Two matchers, one question.** `skip_rules` asked every rule a _file-shaped_ question, so a rule
 that matches a **directory** and not its descendants — bare `node_modules`, `a/b`, `*/dir` — was
 credited with zero while the daemon pruned the whole subtree. The tab would have drawn `Matching
 nothing` and `One rule removed — 0 files will start syncing` immediately before deleting that rule
@@ -1989,13 +1989,13 @@ on the tab losing its numbers over a filename none of them is about. Samples are
 are now lossy `String`s.
 
 **"No" has more than one meaning.** `skip_rule_usage` guarded "root not configured" and not "root
-not *there*" — an unmounted external drive returned zero for every rule with `folder_exists: false`,
+not _there_" — an unmounted external drive returned zero for every rule with `folder_exists: false`,
 which is precisely `safe to remove`, on every rule at once. `distro::detect_here` conflated "no such
 file" with "this file names something we have no command for", so a machine that overrode
 `/etc/os-release` got the base package's `/usr/lib` answer contradicting it.
 
-**A diff algorithm's shape is not its meaning.** `lcsOps` emits an edited block as *k* removals then
-*k* insertions; pairing one op ahead matched the last removal with the first insertion and orphaned
+**A diff algorithm's shape is not its meaning.** `lcsOps` emits an edited block as _k_ removals then
+_k_ insertions; pairing one op ahead matched the last removal with the first insertion and orphaned
 the rest, turning two lines edited in place into one changed line plus a line each side had gained
 — and slipping under the `changed.length > 1` refusal, so the card confidently described a file it
 had misread. Related: a reordered file looked like a gain (LCS scores a move as remove + insert), an
@@ -2005,15 +2005,15 @@ other was different, and `slice()` cut surrogate pairs in half. Each is now a re
 named regression test.
 
 **Null is a shape, not an error.** `versionDiff(side, null)` threw — and `summariseSide` returns null
-for the *most common* real conflict, a multi-line edit. `diffSummary(0)` rendered `zero lines
+for the _most common_ real conflict, a multi-line edit. `diffSummary(0)` rendered `zero lines
 differ.` Both now answer `null`, so a caller's `if (sentence)` is the documented fallback.
 
-Three of the seven refutations were of the form *"unreachable — nothing calls it yet"*. That is
+Three of the seven refutations were of the form _"unreachable — nothing calls it yet"_. That is
 true and is not a reason to leave it: the caller is S2 and S6, and this is the commit that decides
 what they find. They were fixed anyway.
 
 Two Copilot findings landed in the same pass and were real (`check_cli` requiring exit-zero while
-its own doc said *presence*; an off-by-`n+m` cell cap). A third — that `Option::as_slice` does not
+its own doc said _presence_; an off-by-`n+m` cell cap). A third — that `Option::as_slice` does not
 compile — was answered rather than applied.
 
 ### 72b. C1 is wired, not just written
@@ -2039,15 +2039,15 @@ the screen that owns it (#188).
 `IMPLEMENTATION-PLAN.md` §4 lists the ten daemon capabilities the design assumes and which four are
 Phase 2. Each Phase-1 fallback gets a row here as its screen lands — G1–G5 close them.
 
-| screen | frame        | drawn                                 | Phase 1 draws                      | closed by |
-| ------ | ------------ | ------------------------------------- | ---------------------------------- | --------- |
-| S1     | `2a Settled` | `· 12,480 files · 41.2 GB`            | the timestamp alone                | G7 #207   |
-| S1     | `2a Syncing` | three transfer rows, one queued       | the one in-flight transfer         | G10 #211  |
-| S1     | `2a Syncing` | a progress bar at the real percentage | no track at all                    | E1 #98    |
-| S1     | `2a Syncing` | `386 MB sent · 1.1 GB received today` | the folder pair (the shell's line) | G2 #191   |
-| S7     | `9a Review`  | `Needs 38.4 GB free. You have 214 GB.` | the free-space half only (§71)     | G6 #206   |
-| S2     | `3a Conflict`| `You added a line, 5 minutes ago`     | the relative time (§70)            | G12 #217  |
-| S7     | `9a CLI missing` | `sudo apt install proton-drive`   | the tarball path for everyone (§72)| #218      |
+| screen | frame            | drawn                                  | Phase 1 draws                       | closed by |
+| ------ | ---------------- | -------------------------------------- | ----------------------------------- | --------- |
+| S1     | `2a Settled`     | `· 12,480 files · 41.2 GB`             | the timestamp alone                 | G7 #207   |
+| S1     | `2a Syncing`     | three transfer rows, one queued        | the one in-flight transfer          | G10 #211  |
+| S1     | `2a Syncing`     | a progress bar at the real percentage  | no track at all                     | E1 #98    |
+| S1     | `2a Syncing`     | `386 MB sent · 1.1 GB received today`  | the folder pair (the shell's line)  | G2 #191   |
+| S7     | `9a Review`      | `Needs 38.4 GB free. You have 214 GB.` | the free-space half only (§71)      | G6 #206   |
+| S2     | `3a Conflict`    | `You added a line, 5 minutes ago`      | the relative time (§70)             | G12 #217  |
+| S7     | `9a CLI missing` | `sudo apt install proton-drive`        | the tarball path for everyone (§72) | #218      |
 
 ### 74. S2 · the conflicts screen
 
@@ -2119,17 +2119,17 @@ be a home affordance, and three UA button defaults then landed on the image: `fo
 where the frame inherits `#F2F4F7`. None is visible on an image and all three are compared. Present
 on every overlay screen since F4; S2 is simply the first mapped one.
 
-| screen | frame                  | drawn                              | Phase 1                           | gap      |
-| ------ | ---------------------- | ---------------------------------- | --------------------------------- | -------- |
-| S2     | `3a Conflict`          | `· last agreed 3 hours ago`        | the file kind alone               | G12 #217 |
-| S2     | `3a Conflict diff`     | `Open both in an editor` opens it  | a button that does nothing        | #220     |
-| S2     | `3a Conflicts cleared` | a 522px window                     | a 520px column in a 1040 window   | #221     |
+| screen | frame                  | drawn                             | Phase 1                         | gap      |
+| ------ | ---------------------- | --------------------------------- | ------------------------------- | -------- |
+| S2     | `3a Conflict`          | `· last agreed 3 hours ago`       | the file kind alone             | G12 #217 |
+| S2     | `3a Conflict diff`     | `Open both in an editor` opens it | a button that does nothing      | #220     |
+| S2     | `3a Conflicts cleared` | a 522px window                    | a 520px column in a 1040 window | #221     |
 
 ### 75. S3 · the deletions screen
 
 **`Keep it` has no command behind it, and it is the safe half of the screen.** `ControlCommand::Deny`
-is documented as *"Revoke a prior approval (before it has applied)"* and does exactly that — it
-deletes a row from `delete_approvals`. There is no *refusal*: withholding is already the default, so
+is documented as _"Revoke a prior approval (before it has applied)"_ and does exactly that — it
+deletes a row from `delete_approvals`. There is no _refusal_: withholding is already the default, so
 denying something nobody approved is a no-op. Two things the button's own sentence promises therefore
 do not happen. The refusal is not durable (the planner re-derives the same withheld action next pass,
 so the row is back on the next status reply and back on the screen at the next launch), and the other
@@ -2158,8 +2158,8 @@ whole queue — the frame's own caption doing the opposite of what it says.
 `1,204 photos` are one subtree aggregate that no command produces; `last opened Mar 2024` is an atime
 and the index stores mtime only. Four assertions are recorded, and the shapes differ on purpose:
 
-- The consequence becomes a *different sentence* (`Deleting this folder removes everything inside it
-  from this computer.`) rather than the drawn one with the figure omitted, which would read "Deleting
+- The consequence becomes a _different sentence_ (`Deleting this folder removes everything inside it
+from this computer.`) rather than the drawn one with the figure omitted, which would read "Deleting
   this removes from this computer". It keeps the emphasis on the loss — `everything inside it`, true
   and qualitative — so the card keeps its crimson span and its structure.
 - `armedBody` takes a **null size** and drops the whole `— 8.4 GB —` clause, the shape
@@ -2219,7 +2219,7 @@ than 420.
 **`primarySoft` was three wrong tokens in light — §66, one screen later.** F5 built `Keep it` from
 `--panel-raised` / `--border-strong` / `--text-bright`, exact on every dark frame and wrong on all
 three values in light: `12a Deletions light` draws `#14161A` / no border / `#FAF8F5` where those
-tokens are `#FFFFFF` / `#E0DCD5` / `#14161A`. In light this button simply *is* the primary button,
+tokens are `#FFFFFF` / `#E0DCD5` / `#14161A`. In light this button simply _is_ the primary button,
 which is `12-light-theme.md`'s own rule ("`Keep both` and `Keep it` stay the loudest thing on their
 screens") reading as a token identity rather than a resemblance. Hence `--btn-primary-soft-*`, whose
 border is the second after `--btn-primary-choice-border` whose themes disagree about whether a border
@@ -2313,8 +2313,8 @@ in the gate's `DRAWN` table.
 **`.deletion-kind` keeps `--text-4`, and the light frame disagrees.** `12a Deletions light` draws
 `a folder` / `4 KB` at `#6B7280`, where the same node is `#828B98` in dark and every other `#828B98`
 node in the frame moves to `#4B5563`. `12-light-theme.md` maps the quiet tier two-to-two
-(`#828B98 → #4B5563`, `#6D7783 → #6B7280`) and says so again in prose: *"Metadata inside those cards
-moves from `#828B98` to `#4B5563` — on a light tint the quiet tier is too quiet."* The doc is
+(`#828B98 → #4B5563`, `#6D7783 → #6B7280`) and says so again in prose: _"Metadata inside those cards
+moves from `#828B98` to `#4B5563` — on a light tint the quiet tier is too quiet."_ The doc is
 normative for tokens under §1.3 rule 1, so the token stays and the frame's value is the slip. No gate
 sees either way — no light window is mapped (§58b) — which is exactly why it is written down before
 S10 propagates the table.
@@ -2324,21 +2324,21 @@ computer, permanently` is a fixed string in the deck and drawn in `4a Compact`, 
 happy and the panel reproduces the frame. It is the same #208 number, and the day the tray panel
 renders a live queue (S8) it needs the same treatment the card got here.
 
-| screen | frame           | drawn                                     | Phase 1                                | gap      |
-| ------ | --------------- | ----------------------------------------- | -------------------------------------- | -------- |
-| S3     | `4a Deletions`  | `Deleting this removes 1,204 photos, 8.4 GB…` | the sentence without a figure      | G8 #208  |
-| S3     | `4a Deletions`  | `last opened Mar 2024`                    | the clause omitted                     | G8 #208  |
-| S3     | `4a Deletions`  | `deleted on Proton 22m ago`               | the clause omitted                     | G14 #225 |
-| S3     | `4a Deletions`  | `Keep it — put it back on Proton Drive`   | `deny`, remembered for this session    | G13 #224 |
-| S3     | `4a Armed`      | `Delete 1,204 photos from this computer?` | `Delete photos/2019 from this computer?` | G8 #208 |
-| S3     | `4a Armed`      | `Everything in photos/2019 — 8.4 GB —…`   | the sentence without the size clause   | G8 #208  |
-| S3     | `4a Empty`      | a 522px window                            | a 520px column in a 1040 window        | #221     |
+| screen | frame          | drawn                                         | Phase 1                                  | gap      |
+| ------ | -------------- | --------------------------------------------- | ---------------------------------------- | -------- |
+| S3     | `4a Deletions` | `Deleting this removes 1,204 photos, 8.4 GB…` | the sentence without a figure            | G8 #208  |
+| S3     | `4a Deletions` | `last opened Mar 2024`                        | the clause omitted                       | G8 #208  |
+| S3     | `4a Deletions` | `deleted on Proton 22m ago`                   | the clause omitted                       | G14 #225 |
+| S3     | `4a Deletions` | `Keep it — put it back on Proton Drive`       | `deny`, remembered for this session      | G13 #224 |
+| S3     | `4a Armed`     | `Delete 1,204 photos from this computer?`     | `Delete photos/2019 from this computer?` | G8 #208  |
+| S3     | `4a Armed`     | `Everything in photos/2019 — 8.4 GB —…`       | the sentence without the size clause     | G8 #208  |
+| S3     | `4a Empty`     | a 522px window                                | a 520px column in a 1040 window          | #221     |
 
 ### 76. S4 · the plan screen
 
 **There are four bodies, and the frames draw three.** `14-behaviour-and-state.md`'s empty-and-error
-table specifies the fourth in prose — *"dry run failed → show the daemon string, offer `Check
-again`"* — and it is the state a machine with no `proton-syncd` on its PATH reaches on the first
+table specifies the fourth in prose — _"dry run failed → show the daemon string, offer `Check
+again`"_ — and it is the state a machine with no `proton-syncd` on its PATH reaches on the first
 click. Without it the screen renders nothing at all. Its two sentences (`Couldn't work out what would
 change` / `Nothing has been touched. This is what it said:`) are S4's rather than the deck's and are
 exempted in `copy-gate.mjs` with that reason; the daemon's own message is quoted exactly, in mono,
@@ -2369,8 +2369,8 @@ plans get the list body; the destructive band appears within it only when someth
 gated. Both drawn frames come out exactly as drawn. An action this app has never heard of is treated
 the same way, which is why `sideOf` answers `null` by default rather than guessing a side.
 
-**The two destructive sets are not one set, and `plan.rs` already said so.** *Display-destructive*
-(tinted, sorted first) is `remote_delete | local_delete | purge`; *gated* (the band, the typed word)
+**The two destructive sets are not one set, and `plan.rs` already said so.** _Display-destructive_
+(tinted, sorted first) is `remote_delete | local_delete | purge`; _gated_ (the band, the typed word)
 is `delete_direction().is_some()`, which excludes `purge`. A purge clears an index row for a file
 already gone from both sides — putting the typed-`DELETE` gate in front of somebody for one is how a
 gate stops meaning anything. The screen keys the tint on the first set and the band on the second.
@@ -2379,9 +2379,16 @@ gate stops meaning anything. The screen keys the tint on the first set and the b
 matches against the daemon's **current** `pending_deletions`, and at plan time nothing is pending: a
 deletion becomes pending only when a pass withholds it, and no pass has reached this plan. So
 `approve(path)` before `sync_now` records nothing. `Run this sync` therefore asks for a sync and
-nothing more; the pass withholds the delete exactly as it would have anyway and it arrives on the
-Deletions screen to be answered there. Nothing is deleted that the user did not agree to — they agree
-**twice**, which is safe and is not what the design says.
+nothing more.
+
+**What happens next is the daemon's own guard, and it is not one answer.** With delete approval on —
+the default, both directions — the pass withholds the delete exactly as it would have anyway and it
+arrives on the Deletions screen to be answered there: agreed to **twice**, which is safe and is not
+what the design says. With it OFF (`--no-delete-approval`, `[delete_approval] remote/local = false`,
+or a `.proton-sync.toml` turning the guard off for that subtree — `decide_delete_gate` asks the
+per-path resolver first) the pass deletes, and the word typed on this screen is the only thing that
+stood in front of it. So the gate is either a formality or the whole protection depending on a config
+key this screen never reads, which is the sharpest way to say why #227 matters.
 
 **Both filtered-apply buttons are hidden, not drawn-and-inert.** `Run it without the deletion` is G3
 (#192) and `06-plan.md` says outright to hide it rather than fake it. `Leave it alone` — the band's
@@ -2405,10 +2412,10 @@ index-wide file count (G7 #207). Half a fraction is a fraction with no denominat
 keeps its own 22px margin rather than widening to stand in for the missing line.
 
 **`Stop` is the one button in the app that masks the seam with its own fill.** `06-plan.md` calls it
-out — *"`Stop` is `background:#0A0B0D`, not transparent, so the seam passes behind it"* — and the
+out — _"`Stop` is `background:#0A0B0D`, not transparent, so the seam passes behind it"_ — and the
 frame backs it up on the half the prose leaves out: the button is `position: relative` as well as
 filled, which is F3's rule 3 (an absolutely positioned seam paints above a static sibling's
-background *and* its text, whatever the DOM order — the `1a Compact` bug §36 records). So the app
+background _and_ its text, whatever the DOM order — the `1a Compact` bug §36 records). So the app
 wears the mask through `seamMask` with `pad: null`, keeping the button's own 9px/18px padding, and
 the two agree on every property. Worth writing down because it is the one place a CONTROL is a mask:
 every other masked node in the design is a line of text.
@@ -2465,12 +2472,12 @@ S1 wrote down after three sentences left the gate silently by becoming templates
 than one gated deletion) are templates no frame renders, and `NOT_DRAWN` only reaches constants.
 `gui/test/plan.test.js` pins both.
 
-| screen | frame          | drawn                                    | Phase 1                              | gap      |
-| ------ | -------------- | ---------------------------------------- | ------------------------------------ | -------- |
-| S4     | `5a Plan`      | `3` `files, 4.1 MB`                      | `3` `files`                          | G2 #191  |
-| S4     | `5a Plan safe` | a size on every row                      | the row without its size             | G2 #191  |
-| S4     | `5a Plan`      | `Run it without the deletion`            | hidden                               | G3 #192  |
-| S4     | `5a Plan`      | `Leave it alone`                         | hidden                               | G3 #192  |
-| S4     | `5a Plan`      | typing `DELETE` authorises the deletion  | the delete is asked again by S3       | #227     |
-| S4     | `5a Checking`  | `8,431 of 12,480 files`                  | the line omitted                     | G9 #209, G7 #207 |
-| S4     | `5a Checking`  | a 522px window                           | a 520px column in a 1040 window      | #221     |
+| screen | frame          | drawn                                   | Phase 1                                 | gap              |
+| ------ | -------------- | --------------------------------------- | --------------------------------------- | ---------------- |
+| S4     | `5a Plan`      | `3` `files, 4.1 MB`                     | `3` `files`                             | G2 #191          |
+| S4     | `5a Plan safe` | a size on every row                     | the row without its size                | G2 #191          |
+| S4     | `5a Plan`      | `Run it without the deletion`           | hidden                                  | G3 #192          |
+| S4     | `5a Plan`      | `Leave it alone`                        | hidden                                  | G3 #192          |
+| S4     | `5a Plan`      | typing `DELETE` authorises the deletion | asked again by S3, or applied unguarded | #227             |
+| S4     | `5a Checking`  | `8,431 of 12,480 files`                 | the line omitted                        | G9 #209, G7 #207 |
+| S4     | `5a Checking`  | a 522px window                          | a 520px column in a 1040 window         | #221             |

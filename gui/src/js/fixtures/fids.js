@@ -692,7 +692,13 @@ const PLAN_SAFE_FIDS = {
   sideRowPath: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[1]`,
   sideRowNote: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[2]`,
 
-  spacer: "div[2]",
+  // `tailSpacer`, NOT `spacer`. `planShell` already declares `spacer` for the HEADER's flex gap, and
+  // these two tables are spread into one object — so a second `spacer` here silently wins, and
+  // `renderHeader` stamps the header's 0-height gap with the key of a 116px block at the bottom of
+  // the screen. It passed: the box comparison is skipped (the ⋯ taints the root's children) and the
+  // two nodes happen to agree on `flex-grow: 1; flex-basis: 0%` and on nothing else being set. A
+  // mapping that is wrong and green is the one thing this harness cannot survive.
+  tailSpacer: "div[2]",
   bar: "div[3]",
   checked: "div[3]/span[0]",
   barSpacer: "div[3]/span[1]",

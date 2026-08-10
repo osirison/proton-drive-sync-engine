@@ -122,13 +122,20 @@ test("checking outranks everything, and a failure outranks a plan", () => {
 
 test("an empty plan is safe, not a list", () => {
   assert.equal(bodyOf({ dryRun: payload([]) }), "safe");
-  // …and it is the likeliest plan there is, so it does not get the safe screen's own words. Left
-  // alone, `safeSub(0)` reads `zero files move` — `cardinal(0)` is deliberately lower-cased for a
-  // sentence nobody was supposed to reach, and this screen reaches it every time both sides match.
+  // …and it is the likeliest plan there is, so it does not get the safe screen's own words: `Nothing
+  // gets deleted` over a count of nought is true and is not what somebody came to read.
   assert.equal(summarise([]).total, 0);
   assert.equal(PLAN.nothingTitle, "Nothing needs to move");
   assert.match(PLAN.nothingSub, /^Both sides already match\./);
-  assert.match(PLAN.safeSub(0), /^zero files move/);
+});
+
+test("the safe sentence agrees with its own count, including at one and at nought", () => {
+  // `One file move` was the first version, at the count a single edited file produces — `plural`
+  // agreed the noun and the verb was baked in, which is the exact failure its own docstring warns
+  // about. Nought is reachable without the plan being empty: a plan can be one new folder.
+  assert.match(PLAN.safeSub(1), /^One file moves,/);
+  assert.match(PLAN.safeSub(5), /^Five files move,/);
+  assert.match(PLAN.safeSub(0), /^No files move,/);
 });
 
 test("only the checking body wears the four doors", () => {
