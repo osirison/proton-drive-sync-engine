@@ -766,27 +766,7 @@ function render() {
         padding: dspec.padding ?? null,
         label: headless ? (content.label ?? title) : null,
         labelledBy: headless ? null : "dialog-title",
-        children: [
-          headless
-            ? null
-            : dialogHead({
-                title,
-                subtitle: content?.subtitle ?? null,
-                id: "dialog-title",
-                size: w >= 600 ? "wide" : "compact",
-                // Per route, not always. `8a Save refused` and `9a CLI missing` draw no ✕ at all —
-                // they are asking you to choose between two repairs, and a dismiss button in the
-                // corner is a third answer the design does not offer. Esc still closes them,
-                // through F4's chain.
-                onClose: dspec.closable ? () => closeOverlay() : null,
-              }),
-          ...(content?.children ?? [
-            screenPlaceholder(
-              title,
-              dspec.task && dspec.issue ? `${dspec.task} · issue ${dspec.issue}` : null,
-            ),
-          ]),
-        ],
+        children: dialogChildren(dspec, content, title, headless),
       });
       root.append(built);
       dom.dialog = built;
@@ -809,12 +789,17 @@ function render() {
     // moving underneath it.
     const content = activityDialog(dialogRoute);
     if (content?.signature && content.signature !== dom.dialogSignature) {
+      const dspec = ROUTES[dialogRoute];
+      const [w] = dspec.size ?? [522, null];
+      const title = content.title ?? dspec.label ?? titleFor(dialogRoute);
       const surface = dom.dialog.querySelector(".dialog");
-      const head = surface.querySelector(".dialog-head");
       const focusables = [...surface.querySelectorAll("button, input, [tabindex]")];
       const at = focusables.indexOf(document.activeElement);
-      while (surface.lastChild && surface.lastChild !== head) surface.lastChild.remove();
-      surface.append(...content.children);
+      // THE HEAD IS REBUILT TOO, and leaving it out was a bug rather than an economy: `7a Never
+      // synced`'s title COUNTS the rules (`4 files are never synced`), so a head that survives the
+      // update keeps whatever number was known when the dialog opened — which, on the render that
+      // mounts it, is none. The surface itself stays, so the appear animation does not restart.
+      surface.replaceChildren(...dialogChildren(dspec, content, title, content.head === false, w));
       if (at >= 0) {
         const next = [...surface.querySelectorAll("button, input, [tabindex]")];
         (next[at] ?? surface).focus();
@@ -1525,10 +1510,12 @@ function resetActivityScreen() {
 
 /** The exclude rules' cost, once per visit. Fired and not awaited, like every other screen's fetch. */
 async function ensureSkipRules() {
-  // A fixture already carries the answer, and firing the command under `?frame=` would walk the
-  // developer's own home directory to render a still.
-  if (activeFixture()) return;
-  if (skipRuleAsked) return;
+  // `configLoaded`, NOT `configInfo`. The rules come from the config file, and `read_config` is a
+  // round trip — so the first render of this screen has no config at all, sees an empty `exclude`,
+  // and would latch `skipRuleAsked` on the strength of not having asked yet. The band would then
+  // never appear until you left the screen and came back. Latching only once the config is
+  // genuinely known is what makes "no rules" mean no rules.
+  if (skipRuleAsked || !configLoaded) return;
   skipRuleAsked = true;
   const exclude = configInfo?.exclude ?? [];
   // Nothing excluded is not a reason to walk the tree: the band counts files a RULE hides, and with
@@ -1595,6 +1582,33 @@ async function lookupPath(query) {
   render();
 }
 
+/**
+ * A dialog's children — the head, then whatever the screen puts under it.
+ *
+ * SHARED BY THE MOUNT AND THE UPDATE, which is the whole point. Written twice, the update quietly
+ * grew a different dialog from the one that opened: the first version rebuilt only the body, so
+ * `7a Never synced`'s counted title stayed at whatever was known before its data arrived.
+ */
+function dialogChildren(dspec, content, title, headless, width = dspec.size?.[0] ?? 522) {
+  return [
+    headless
+      ? null
+      : dialogHead({
+          title,
+          subtitle: content?.subtitle ?? null,
+          id: "dialog-title",
+          size: width >= 600 ? "wide" : "compact",
+          // Per route, not always. `8a Save refused` and `9a CLI missing` draw no ✕ at all — they
+          // are asking you to choose between two repairs, and a dismiss button in the corner is a
+          // third answer the design does not offer. Esc still closes them, through F4's chain.
+          onClose: dspec.closable ? () => closeOverlay() : null,
+        }),
+    ...(content?.children ?? [
+      screenPlaceholder(title, dspec.task && dspec.issue ? `${dspec.task} · issue ${dspec.issue}` : null),
+    ]),
+  ].filter(Boolean);
+}
+
 /** Everything the activity screen reads, plus the actions it can take. */
 function activityProps() {
   const ui = activeFixture()?.ui ?? null;
@@ -1602,11 +1616,12 @@ function activityProps() {
   const history = response?.status_history ?? [];
   const lastSync = response?.last_sync_epoch_secs ?? null;
 
-  // Fired and not awaited — see `ensureSkipRules`. Never on the passes tab: nothing there draws it.
+  // Fired and not awaited — see `ensureSkipRules`. Not on the passes tab, which draws none of it —
+  // but the never-synced DIALOG needs the same report, and it opens over either tab.
   const tab = ui?.tab ?? activityTab;
-  if (tab === "files") ensureSkipRules();
+  if (tab === "files" || dialogOverlay === "neverSynced" || ui?.dialog === "neverSynced") ensureSkipRules();
 
-  const never = neverSyncedFrom(ui?.skipRules ?? skipRuleReport);
+  const never = neverSyncedFrom(skipRuleReport);
   return {
     tab,
     query: ui?.query ?? activityQuery,
@@ -1703,8 +1718,19 @@ const activityInputRef = { node: null };
 function activityDialog(id) {
   const props = activityProps();
   if (id === "details") {
+    const summary = store.select.planSummary();
     const body = {
-      counters: store.select.statCounters(),
+      // NOT `statCounters()`, and the difference is one row. That selector answers the MAIN
+      // screen's tiles, where `conflicts` means "unresolved sidecars on disk" — a scan of the
+      // filesystem. This panel is labelled with the wire's own field names, and `conflicts` is
+      // literally a `PlanSummary` field: what the last plan found. The two are different
+      // quantities, and the gate cannot tell them apart here because both drew a single digit.
+      counters: {
+        pending_changes: store.select.pendingChanges(),
+        conflicts: summary?.conflicts ?? null,
+        destructive_actions: summary?.destructive_actions ?? null,
+        skipped_unsupported: summary?.skipped_unsupported ?? null,
+      },
       // The FIXTURE's config first. `configInfo` is filled by `refreshConfig`, which is a round
       // trip — so under `?frame=` the first render has none, and two of these eight rows would
       // draw a dash where the frame draws a value.
@@ -1724,6 +1750,7 @@ function activityDialog(id) {
       title: props.never
         ? ACTIVITY.neverSyncedDialog.title(props.never.total)
         : ACTIVITY.neverSyncedDialog.title(0),
+      signature: JSON.stringify(props.never),
       children: renderNeverSyncedBody({
         never: props.never,
         onClose: () => closeOverlay(),

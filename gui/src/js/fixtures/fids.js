@@ -912,13 +912,16 @@ const NEVER_SYNCED_FIDS = {
   neverClose: "div[0]/button",
 
   neverBody: "div[1]",
-  ruleHeading: (i) => (i === 0 ? "div[1]/div[0]" : null),
+  // NOT indexed: one heading and one button for the whole group, however many rules are in it.
+  // A function key called with no argument returns `null`, which `fid()` stamps as the literal
+  // string "null" — a key no frame has, and a hard `(mapping)` failure rather than a skip.
+  ruleHeading: "div[1]/div[0]",
   ruleSub: (i) => (i === 0 ? "div[1]/div[1]" : null),
   rulePattern: (i) => (i === 0 ? "div[1]/div[1]/span" : null),
   ruleRow: (i, j) => (i === 0 && j < 2 ? `div[1]/div[${j + 2}]` : null),
   ruleRowPath: (i, j) => (i === 0 && j < 2 ? `div[1]/div[${j + 2}]/span[0]` : null),
   ruleRowNote: (i, j) => (i === 0 && j < 2 ? `div[1]/div[${j + 2}]/span[1]` : null),
-  changeRule: (i) => (i === 0 ? "div[1]/button" : null),
+  changeRule: "div[1]/button",
 
   neverFoot: "div[2]",
   reassurance: "div[2]/span[0]",

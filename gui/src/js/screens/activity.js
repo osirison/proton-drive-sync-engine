@@ -321,17 +321,22 @@ function seamSide(which, sub) {
  * is for: claiming `zero can't be synced at all` would be a sentence about a group nobody measured.
  */
 function neverSyncedBand(never, onShow) {
-  return fid(
-    noticeBand({
-      tone: "warn",
-      wrapped: true,
-      mark: fid(warnGlyph("⊘"), "bandGlyph"),
-      title: fid(el("span", {}, ACTIVITY.neverSyncedTitle(never.total)), "bandTitle"),
-      note: ACTIVITY.neverSyncedSub(never.total, 0),
-      action: fid(filledSecondary(ACTIVITY.showThem, onShow, { class: "band-action" }), "bandAction"),
-    }),
-    "band",
-  );
+  const band = noticeBand({
+    tone: "warn",
+    wrapped: true,
+    mark: fid(warnGlyph("⊘"), "bandGlyph"),
+    // A PLAIN STRING, not a node. Wrapping it in a span to have something to stamp puts the fid on
+    // an inline child of the title div — so the gate compared the frame's 806px block against a
+    // 146px inline span. `noticeBand` builds the real title node; it is found afterwards.
+    title: ACTIVITY.neverSyncedTitle(never.total),
+    note: ACTIVITY.neverSyncedSub(never.total, 0),
+    action: fid(filledSecondary(ACTIVITY.showThem, onShow, { class: "band-action" }), "bandAction"),
+  });
+  fid(band.querySelector(".band-notice-title"), "bandTitle");
+  fid(band.querySelector(".band-notice-note"), "bandNote");
+  fid(band.querySelector(".band-notice-body"), "bandBody");
+  fid(band.querySelector(".band-notice"), "bandRow");
+  return fid(band, "band");
 }
 
 /**
@@ -745,18 +750,20 @@ export function renderNeverSyncedBody(props) {
     // `samples` is capped at MAX_SAMPLES per rule by the walk, so a rule matching thousands of
     // files lists the first few and the count above says how many there are in total.
     for (const [j, sample] of (rule.samples ?? []).entries()) {
-      body.push(fid(pathRow({ path: sample.path, note: bytes(sample.bytes), mono: true }), "ruleRow", i, j));
+      const row = pathRow({ path: sample.path, note: bytes(sample.bytes), mono: true });
+      // The first row of each rule clears its sentence by 11px; the rest sit on the row rhythm.
+      if (j === 0) row.style.marginTop = "11px";
+      body.push(fid(row, "ruleRow", i, j));
     }
   }
   // One button too, and for the same reason: it opens the rules tab, which is where every one of
   // them is edited. N buttons pointing at one destination is N ways to do one thing.
   if (rules.length > 0) {
-    body.push(
-      fid(
-        smallSecondary(ACTIVITY.neverSyncedDialog.changeRule, props.onChangeRule, { padding: "7px 14px" }),
-        "changeRule",
-      ),
-    );
+    const change = smallSecondary(ACTIVITY.neverSyncedDialog.changeRule, props.onChangeRule, {
+      padding: "7px 14px",
+    });
+    change.style.marginTop = "12px";
+    body.push(fid(change, "changeRule"));
   }
 
   return [

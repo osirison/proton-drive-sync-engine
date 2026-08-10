@@ -85,7 +85,12 @@
 /* The wrapped form (`noticeBand({ wrapped: true })`). `7a Activity quiet` draws the warn band as
    two nodes: the tinted box is a BLOCK carrying the padding, and the flex row is a child with no
    box of its own. `.band-notice-outer` therefore declares no `display` — the frame records the
-   initial `block` there — and the gap moves down to the row that actually uses it. */
+   initial `block` there — and the gap moves down to the row that actually uses it, which also
+   means the OUTER must give the gap back: `.band-notice-warn` sets it on whichever node wears
+   that class, and a `gap` on a block is inert to the eye but asserted by the gate. */
+.band-notice-outer {
+  gap: normal;
+}
 .band-notice-outer > .band-notice {
   gap: 12px;
 }
@@ -102,9 +107,19 @@
   color: var(--text-3);
 }
 
-/* The `⊘`. A bare glyph rather than an icon, at the same 13px as the row arrows. */
-.band-glyph {
+/* A NOTICE band's button, and only a notice band's. `7a Activity quiet` records `flex-shrink: 0`
+   on `Show them` — the sentence beside it gives way first, which is the right way round, since a
+   truncated `Show them` is an unusable control and a truncated sentence is still readable.
+   `2a Needs you`'s `Compare` and `Review` wear the same class through `bandButton` and record the
+   initial `1`, so this cannot be stated on the class itself: two frames, two answers, one class. */
+.band-notice .band-action {
   flex: none;
+}
+
+/* The `⊘`. A bare glyph rather than an icon, at the same 13px as the row arrows.
+   NO `flex: none`: the one frame that draws it records the initial `flex-shrink: 1`, and it cannot
+   shrink in practice anyway — the body beside it is the only flexible child of that row. */
+.band-glyph {
   font-size: 13px;
   color: var(--warn);
 }
