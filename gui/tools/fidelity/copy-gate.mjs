@@ -76,6 +76,16 @@ const NOT_DRAWN = new Map([
   // and never passes through here: it is quoted exactly, in mono (voice rule 4).
   ["PLAN.failedTitle", "no frame draws a failed rehearsal — 14-behaviour-and-state.md specifies it in prose"],
   ["PLAN.failedSub", "no frame draws a failed rehearsal — 14-behaviour-and-state.md specifies it in prose"],
+  // S4's empty plan, which is the safe variant with different words: no frame draws a rehearsal that
+  // found nothing to do, and it is the likeliest thing a user sees.
+  [
+    "PLAN.nothingTitle",
+    "no frame draws a plan with nothing in it — 14-behaviour-and-state.md routes it to the safe variant",
+  ],
+  [
+    "PLAN.nothingSub",
+    "no frame draws a plan with nothing in it — 14-behaviour-and-state.md routes it to the safe variant",
+  ],
 ]);
 
 /**

@@ -121,6 +121,13 @@ test("checking outranks everything, and a failure outranks a plan", () => {
 
 test("an empty plan is safe, not a list", () => {
   assert.equal(bodyOf({ dryRun: payload([]) }), "safe");
+  // …and it is the likeliest plan there is, so it does not get the safe screen's own words. Left
+  // alone, `safeSub(0)` reads `zero files move` — `cardinal(0)` is deliberately lower-cased for a
+  // sentence nobody was supposed to reach, and this screen reaches it every time both sides match.
+  assert.equal(summarise([]).total, 0);
+  assert.equal(PLAN.nothingTitle, "Nothing needs to move");
+  assert.match(PLAN.nothingSub, /^Both sides already match\./);
+  assert.match(PLAN.safeSub(0), /^zero files move/);
 });
 
 test("only the checking body wears the four doors", () => {

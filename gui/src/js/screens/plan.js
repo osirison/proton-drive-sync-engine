@@ -295,7 +295,17 @@ function seamBlock({ model, site, detail, aligned }) {
   const sides = fid(el("div", { class: "pl-sides" }), "sides");
   for (const [s, side] of ["leaving", "arriving"].entries()) {
     const leaving = side === "leaving";
+    const tail = detail(side, s);
+    // NOTHING THAT READS ZERO GETS A TILE — `06-plan.md`'s own emphasis, and a side with no files
+    // and nothing to say under it is exactly that. Both drawn frames have traffic in both
+    // directions, so nothing settles this by drawing it; the rule does. Most real plans are
+    // one-directional, so this is the common case rather than an edge.
+    if (!(leaving ? model.uploads : model.downloads) && !tail) continue;
     const column = fid(el("div", { class: `pl-side${leaving ? "" : " is-arriving"}` }), "side", s);
+    // PLACED RATHER THAN FLOWED, the same guard S3's queue columns carry. A grid child with no
+    // sibling falls into the FIRST cell, so a plan with nothing leaving would draw `Arriving from
+    // Proton` on this computer's side of the seam — the one arrangement that makes the screen lie.
+    column.style.gridColumn = String(s + 1);
     column.append(
       fid(
         eyebrow({
@@ -324,7 +334,6 @@ function seamBlock({ model, site, detail, aligned }) {
         s,
       ),
     );
-    const tail = detail(side, s);
     if (tail) column.append(tail);
     sides.append(column);
   }
@@ -494,8 +503,18 @@ function planBody(model, handlers) {
   return blocks;
 }
 
-/** State B — the ordinary safe plan. The screen shrinks to a hero and two short lists. */
+/**
+ * State B — the ordinary safe plan. The screen shrinks to a hero and two short lists.
+ *
+ * A PLAN WITH NOTHING IN IT IS THIS BODY TOO, which is `14-behaviour-and-state.md`'s own routing
+ * ("Plan · Empty: safe-plan variant") and is the likeliest thing anybody sees: you click `Plan a
+ * sync` on a folder that is already in sync. No frame draws it, and the safe screen left unchanged
+ * says `Nothing gets deleted` over `zero files move` above two columns of `0` — three ways of
+ * saying nothing happens, none of them the sentence a person came for. So the hero says what is
+ * true and the seam block goes entirely: there are no sides when nothing crosses.
+ */
 function safeBody(model) {
+  const empty = model.total === 0;
   const hero = fid(el("div", { class: "pl-hero" }), "hero");
   // `heroSeam`, NOT `seam`. `5a Plan safe` draws TWO seams — the hero's and the list block's, a
   // continuation pair overlapping by 40px so the joint is invisible — and a slot name stamps a key,
@@ -506,9 +525,16 @@ function safeBody(model) {
     "heroMark",
   );
   for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "heroMarkPath", i);
-  const title = fid(el("div", { class: "pl-hero-title" }, PLAN.safeTitle), "heroTitle");
+  const title = fid(
+    el("div", { class: "pl-hero-title" }, empty ? PLAN.nothingTitle : PLAN.safeTitle),
+    "heroTitle",
+  );
   const sub = fid(
-    el("div", { class: "pl-hero-sub" }, PLAN.safeSub(model.uploads + model.downloads)),
+    el(
+      "div",
+      { class: "pl-hero-sub" },
+      empty ? PLAN.nothingSub : PLAN.safeSub(model.uploads + model.downloads),
+    ),
     "heroSub",
   );
   // Masked, both of them: the seam runs 40px past the bottom of this block and straight through the
@@ -520,11 +546,11 @@ function safeBody(model) {
   hero.append(mark, title, sub);
   return [
     hero,
-    seamBlock({ model, site: "planSafeList", detail: sideList(model), aligned: false }),
+    empty ? null : seamBlock({ model, site: "planSafeList", detail: sideList(model), aligned: false }),
     // The empty flex:1 block the frame draws between the lists and the footer. A real node rather
     // than a margin: the footer is a child of the WINDOW, so something has to take up the slack.
     fid(el("div", { class: "pl-spacer" }), "spacer"),
-  ];
+  ].filter(Boolean);
 }
 
 /**
