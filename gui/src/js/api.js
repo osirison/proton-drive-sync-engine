@@ -230,6 +230,12 @@ function mockInvoke(cmd, args) {
         measured_at: "/home/u",
       });
     case "skip_rule_usage":
+      // THE FRAME'S OWN REPORT FIRST, exactly as `read_config` serves `fixture.config`. `7a Never
+      // synced` and `7a Activity quiet` both describe a machine with a `*.tmp` rule hiding two
+      // files, and without this the screen asks a mock that answers "nothing is hidden" — so the
+      // band never appears and the dialog's body is empty. Both are then unmapped rather than
+      // wrong, which the style gate reports as green.
+      if (fixture?.skipRules) return Promise.resolve(fixture.skipRules);
       // A well-formed empty report, the way `read_config` answers with EMPTY_CONFIG: a frame that
       // describes no skip rules still gets every field, so a screen mapping over `rules` does not
       // throw in browser preview and nowhere else.

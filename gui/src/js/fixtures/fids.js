@@ -712,7 +712,18 @@ const PLAN_CHECKING_FIDS = {
 
   footerNav: "div[1]",
   footerBar: "div[1]/div",
-  door: (i) => `div[1]/div/span[${i}]`,
+  // `door` IS UNDECLARED HERE, and it is the one slot in this file dropped because the PROTOTYPE is
+  // wrong rather than because the app cannot draw it.
+  //
+  // `02-shell.md:42` states the rule without exception — "the active one is `#F2F4F7`" — and the
+  // three S5 windows draw it: `Activity` lit, the other three at `#828B98`. `5a Checking` is the
+  // plan screen, so `Plan a sync` should be lit and the frame paints all four unlit. S5 is what
+  // surfaced it, because until then no mapped frame had a door that could be lit: `2a` is the root
+  // and `3a`/`4a` are overlays, whose frames correctly light nothing.
+  //
+  // The app follows the prose. Mapping the doors here would assert the drawn mistake and turn a
+  // correct screen into a red gate; a known-deviations row would be worse still, since that file's
+  // bar is a MISSING CAPABILITY with an open issue and this is neither. DEVIATIONS §77.
 };
 
 /** The three maps a `5a` fixture asks for by view. */
@@ -736,4 +747,258 @@ export function deletionFids(view) {
   if (!body) throw new Error(`fids: no deletion view "${view}"`);
   // The empty state is drawn as a standalone 522 surface with no chrome, so it gets no shell slots.
   return view === "empty" ? body : { ...deletionShell(view === "armed" ? 1 : 3), ...body };
+}
+
+// ------------------------------------------------------------------------------ S5 · activity ----
+//
+// SIX FRAMES, THREE TREE SHAPES, AND ONE THING TO WATCH: A KEY IS A NAME, NOT AN ADDRESS.
+//
+// assert.mjs resolves a stamped key against the FRAME's node map and compares that node's styles
+// with the stamped element's. So where the app omits a block for want of data, the block below it
+// keeps the key of the node it stands for even though its own position has moved — that is the
+// mechanism working as designed (the same one that lets the footer's `<button class="door">` be
+// compared against a drawn `span`), not a fiction about structure.
+//
+// Two frames of the same screen have INCOMPATIBLE shells. `7a Activity quiet` opens with a title
+// block and puts the search field at `div[1]`; `7a File lookup` has no title node at all and the
+// field IS `div[0]`. One table cannot describe both, so there are two.
+
+/** The header, which all three windows draw identically. The chip is `idle` on every one of them. */
+const activityShell = {
+  header: "header",
+  mark: "header/img",
+  name: "header/span[0]",
+  spacer: "header/span[1]",
+  chip: "header/span[2]",
+  chipDot: "header/span[2]/span",
+  menu: "header/button",
+};
+
+/** The four doors, at whichever index the blocks above them leave. */
+const activityDoors = (at) => ({
+  footerNav: at,
+  footerBar: `${at}/div`,
+  door: (i) => `${at}/div/span[${i}]`,
+});
+
+/**
+ * `7a Activity quiet` — the files tab with nothing waiting.
+ *
+ * UNDECLARED, AND EACH FOR A REASON THE SCREEN RECORDS: both seam sides' numeral rows
+ * (`div[2]/div[2]/div[s]/div[1]`, G7 #207), the right side's `next full check in 4m`
+ * (G4 #193), and the whole `Last things to move` head and its three rows
+ * (`div[3]/div[1]/div[0..3]`, G13). The app draws no node for any of them.
+ */
+const ACTIVITY_QUIET_FIDS = {
+  title: "div[0]/div[0]",
+  sub: "div[0]/div[1]",
+
+  searchWrap: "div[1]",
+  search: "div[1]/div",
+  searchIcon: "div[1]/div/span[0]",
+  // The `<input>` against the drawn `span`. Styles, box and text are compared; the tag is recorded
+  // and never compared — see `lookupField`.
+  searchValue: "div[1]/div/span[1]",
+  searchHint: "div[1]/div/span[2]",
+
+  seamBlock: "div[2]",
+  seam: "div[2]/div[0]",
+  verdict: "div[2]/div[1]",
+  hexagon: "div[2]/div[1]/svg",
+  hexPath: (i) => `div[2]/div[1]/svg/path[${i}]`,
+  agree: "div[2]/div[1]/div",
+  sides: "div[2]/div[2]",
+  sideLocal: "div[2]/div[2]/div[0]",
+  sideRemote: "div[2]/div[2]/div[1]",
+
+  content: "div[3]",
+  // The warn band is TWO nodes here and one on `5a Plan`. `noticeBand({ wrapped: true })` is what
+  // makes the outer a block with the padding and the inner the flex row.
+  band: "div[3]/div[0]",
+  bandRow: "div[3]/div[0]/div",
+  bandGlyph: "div[3]/div[0]/div/span",
+  bandBody: "div[3]/div[0]/div/div",
+  bandTitle: "div[3]/div[0]/div/div/div[0]",
+  bandNote: "div[3]/div[0]/div/div/div[1]",
+  bandAction: "div[3]/div[0]/div/button",
+
+  list: "div[3]/div[1]",
+  listFoot: "div[3]/div[1]/div[4]",
+  listNote: "div[3]/div[1]/div[4]/span[0]",
+  // `All 7 files` (`button[0]`) is undeclared: it has no destination in any frame and no id in
+  // routes.js, so the app draws only the tab switch beside it.
+  passesButton: "div[3]/div[1]/div[4]/button[1]",
+
+  ...activityDoors("div[4]"),
+};
+
+/**
+ * `7a File lookup` — one path, resolved. No title block: the search field is the first content
+ * block and wears the 4px padding-top the title block had.
+ *
+ * UNDECLARED: the four `This file's history` rows (`div[2]/div[0..3]`, G1 #190) and the two
+ * openers in its footer row (`div[2]/div[5]/button[0..1]`, G14). The `linked · id` line stays,
+ * because `proton_id` is on the reply today.
+ */
+const ACTIVITY_LOOKUP_FIDS = {
+  searchWrap: "div[0]",
+  search: "div[0]/div",
+  searchIcon: "div[0]/div/span[0]",
+  searchValue: "div[0]/div/span[1]",
+  searchCount: "div[0]/div/span[2]",
+  searchClear: "div[0]/div/button",
+
+  seamBlock: "div[1]",
+  seam: "div[1]/div[0]",
+  hero: "div[1]/div[1]",
+  hexagon: "div[1]/div[1]/svg",
+  hexPath: (i) => `div[1]/div[1]/svg/path[${i}]`,
+  lookupPath: "div[1]/div[1]/div[0]",
+  lookupVerdict: "div[1]/div[1]/div[1]",
+  lookupSub: "div[1]/div[1]/div[2]",
+
+  cards: "div[1]/div[2]",
+  card: (s) => `div[1]/div[2]/div[${s}]`,
+  cardLabel: (s) => `div[1]/div[2]/div[${s}]/div[0]`,
+  cardBox: (s) => `div[1]/div[2]/div[${s}]/div[1]`,
+  cardMeta: (s) => `div[1]/div[2]/div[${s}]/div[1]/div[0]`,
+  cardSize: (s) => `div[1]/div[2]/div[${s}]/div[1]/div[0]/span[0]`,
+  cardPath: (s) => `div[1]/div[2]/div[${s}]/div[1]/div[1]`,
+
+  content: "div[2]",
+  historyFoot: "div[2]/div[5]",
+  linked: "div[2]/div[5]/span[1]",
+
+  ...activityDoors("div[3]"),
+};
+
+/**
+ * `6a Activity passes` — the other tab. The pill strip exists ONLY here; the quiet tab's way in is
+ * the button in its list footer.
+ *
+ * UNDECLARED: the whole twenty-bar chart card (`div[2]`, G12 — no per-pass duration exists) and
+ * `Open the system log` (`div[3]/div[6]/button`, G14).
+ */
+const ACTIVITY_PASSES_FIDS = {
+  title: "div[0]/div[0]",
+  sub: "div[0]/div[1]",
+
+  tabs: "div[1]",
+  filesTab: "div[1]/button[0]",
+  passesTab: "div[1]/button[1]",
+  tabsSpacer: "div[1]/span",
+  detailsButton: "div[1]/button[2]",
+
+  passes: "div[3]",
+  passRow: (i) => `div[3]/div[${i}]`,
+  passesFoot: "div[3]/div[6]",
+  retention: "div[3]/div[6]/span[0]",
+
+  ...activityDoors("div[4]"),
+};
+
+/**
+ * `7a Never synced` — the 602x602 dialog, one group instead of two.
+ *
+ * UNDECLARED: the whole `Can't be synced` group (`div[1]/div[4..7]`, G15). A socket or a symlink
+ * never enters the index, so there is nothing to enumerate — which is a harder gap than the rule
+ * group's was, not the same one twice.
+ */
+const NEVER_SYNCED_FIDS = {
+  // `dlg*` rather than `never*`/`details*`: the head is built by `app.js`, which does not know
+  // which dialog it is building, and only one dialog is ever open — so a shared name is what lets
+  // the chrome be stamped at all. The BODY slots below stay dialog-specific.
+  dlgHead: "div[0]",
+  dlgHeadings: "div[0]/div",
+  dlgTitle: "div[0]/div/div[0]",
+  dlgSub: "div[0]/div/div[1]",
+  dlgClose: "div[0]/button",
+
+  dlgBody: "div[1]",
+  // NOT indexed: one heading and one button for the whole group, however many rules are in it.
+  // A function key called with no argument returns `null`, which `fid()` stamps as the literal
+  // string "null" — a key no frame has, and a hard `(mapping)` failure rather than a skip.
+  ruleHeading: "div[1]/div[0]",
+  ruleSub: (i) => (i === 0 ? "div[1]/div[1]" : null),
+  rulePattern: (i) => (i === 0 ? "div[1]/div[1]/span" : null),
+  ruleRow: (i, j) => (i === 0 && j < 2 ? `div[1]/div[${j + 2}]` : null),
+  ruleRowPath: (i, j) => (i === 0 && j < 2 ? `div[1]/div[${j + 2}]/span[0]` : null),
+  ruleRowNote: (i, j) => (i === 0 && j < 2 ? `div[1]/div[${j + 2}]/span[1]` : null),
+  changeRule: "div[1]/button",
+
+  dlgFoot: "div[2]",
+  reassurance: "div[2]/span[0]",
+  done: "div[2]/button",
+};
+
+/**
+ * `6a Details` — the 522x462 dialog of eight rows.
+ *
+ * UNDECLARED: `Open the system log` (`div[2]/button[1]`, G14). `Copy all` stays — the clipboard is
+ * the webview's own and needs no command.
+ */
+const DETAILS_FIDS = {
+  dlgHead: "div[0]",
+  dlgTitle: "div[0]/div",
+  dlgClose: "div[0]/button",
+
+  dlgBody: "div[1]",
+  kvRow: (i) => `div[1]/div[${i}]`,
+  kvKey: (i) => `div[1]/div[${i}]/span[0]`,
+  kvValue: (i) => `div[1]/div[${i}]/span[1]`,
+
+  dlgFoot: "div[2]",
+  copyAll: "div[2]/button[0]",
+};
+
+/**
+ * `7a File pending` — 18 nodes, no title row, no ✕.
+ *
+ * UNDECLARED: the progress bar (`div[1]` and `div[1]/div`, G14's sibling — no fraction is
+ * computable in either direction, see §63) and `Open folder` (`div[2]/button`, G14). Note the
+ * bar's absence moves nothing: it sits BELOW the hero and above the footer row, and the footer row
+ * keeps its own key.
+ */
+const FILE_PENDING_FIDS = {
+  pendingHero: "div[0]",
+  pendingHexagon: "div[0]/svg",
+  pendingHexDefs: "div[0]/svg/defs",
+  // NO INDEX on the gradient: this mark travels in ONE direction, so `defs` holds a single
+  // `linearGradient` and the prototype's key scheme drops the index when a tag has no same-tag
+  // sibling. The two-direction marks on `2a Syncing` carry `lineargradient[0]`/`[1]`.
+  pendingHexGradient: "div[0]/svg/defs/lineargradient",
+  pendingHexStop: (j) => `div[0]/svg/defs/lineargradient/stop[${j}]`,
+  pendingHexPath: (i) => `div[0]/svg/path[${i}]`,
+  pendingPath: "div[0]/div[0]",
+  pendingTitle: "div[0]/div[1]",
+  pendingSub: "div[0]/div[2]",
+
+  pendingFoot: "div[2]",
+  pendingNote: "div[2]/span[0]",
+};
+
+/**
+ * The six maps an activity fixture asks for by view.
+ *
+ * EVERY DIALOG SLOT IS PREFIXED, and that is a collision rule rather than a naming preference. A
+ * dialog floats over a body, so BOTH screens are rendering and both call `fid()`; a slot name in
+ * two tables is resolved by NAME, so a `hexagon` declared for `7a File pending`'s 48px mark would
+ * be stamped by whatever hexagon the screen behind it drew first — the 168px main-screen mark, or
+ * the 52px settled mark on the quiet tab. That is the failure `activeRoute`'s own note describes,
+ * one layer up, and it is reported as a size mismatch on a screen nobody was looking at.
+ */
+export function activityFids(view) {
+  const body = {
+    quiet: ACTIVITY_QUIET_FIDS,
+    lookup: ACTIVITY_LOOKUP_FIDS,
+    passes: ACTIVITY_PASSES_FIDS,
+    neverSynced: NEVER_SYNCED_FIDS,
+    details: DETAILS_FIDS,
+    filePending: FILE_PENDING_FIDS,
+  }[view];
+  if (!body) throw new Error(`fids: no activity view "${view}"`);
+  // The three dialogs are standalone surfaces with no app header and no footer doors — see
+  // `deletionFids`, which draws the same line for `4a Empty`.
+  const dialog = view === "neverSynced" || view === "details" || view === "filePending";
+  return dialog ? body : { ...activityShell, ...body };
 }

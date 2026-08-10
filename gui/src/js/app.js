@@ -25,7 +25,8 @@ import {
 } from "./ui/chrome.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
-import { CHROME } from "./ui/copy.js";
+import { ACTIVITY, CHROME } from "./ui/copy.js";
+import { clock, since } from "./ui/format.js";
 import { renderMain, updateMain, unmountMain } from "./screens/main.js";
 import { renderConflicts, advanceAfter, skipTo } from "./screens/conflicts.js";
 import {
@@ -44,8 +45,18 @@ import {
   updatePlanBar,
   footerKindOf,
 } from "./screens/plan.js";
+import {
+  renderActivity,
+  renderDetailsBody,
+  renderNeverSyncedBody,
+  renderFilePendingBody,
+  footerVariantOf,
+  neverSyncedFrom,
+  normaliseQuery,
+  passesSummaryOf,
+} from "./screens/activity.js";
 import { severityOf } from "./ui/rows.js";
-import { activeFixture } from "./fixtures/frames.js";
+import { activeFixture, fid } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
 
 // ---- shell state ----
@@ -155,6 +166,9 @@ function navigate(id) {
   // the only way in. Moving the token here also drops an in-flight rehearsal's reply where it lands,
   // rather than writing it into state the next visit throws away.
   if (was === "plan") resetPlanScreen();
+  // Same rule for the activity screen: a tab, a half-typed path and a filesystem walk are all
+  // per-visit, so leaving drops them rather than carrying them into a session that may be hours old.
+  if (was === "activity") resetActivityScreen();
   // A door leaves everything stacked over the old screen behind — both layers, not just the top
   // one. Cleared directly rather than by popping: the door itself keeps focus, so there is no
   // return target to honour.
@@ -336,6 +350,23 @@ document.addEventListener("shell:step", (e) => {
   stepConflict(e.detail?.delta ?? 0);
 });
 
+// F4's other unconsumed event, and S5 is what it was waiting for. `Ctrl F` is drawn as a hint in
+// the empty lookup field on `7a Activity quiet`, so it was a promise the app had not yet kept.
+//
+// After a frame, not immediately: the key handler navigates to the activity door first, and the
+// input does not exist until that render has run.
+document.addEventListener("shell:focus-lookup", () => {
+  if (activeRoute() !== "activity") return;
+  queueMicrotask(() => {
+    const node = activityInputRef.node;
+    if (!node) return;
+    node.focus();
+    // To the END of whatever is already there. Focusing a contenteditable leaves the caret at
+    // offset 0, so Ctrl F on a field holding a path would type into the middle of it.
+    putCaret(node, null);
+  });
+});
+
 /**
  * Which screen the body is showing — the innermost overlay, or the door you are on.
  *
@@ -404,6 +435,7 @@ const dom = {
   // this cache was built for, one level in.
   dialog: null,
   dialogRoute: null,
+  dialogSignature: null, // what the mounted dialog's body was built from — see the layer below
   dialogDetach: null,
   panel: null,
   // The preview's own pages (F9). Latched for the same reason `panel` is, and it is not hypothetical:
@@ -495,7 +527,27 @@ function render() {
   // The two layers, read back out. A dialog floats over whatever body is showing — which may be a
   // screen overlay and not `route`, and getting that wrong is what loses the user's place. See
   // routes.js `isDialog` and DEVIATIONS §57.
-  const dialogRoute = onboardingLatch ? null : dialogOverlay;
+  //
+  // A FIXTURE MAY ALSO NAME THE DIALOG IT DRAWS, for the same reason `activeRoute` lets it name a
+  // route: three of S5's six frames ARE dialogs (`6a Details`, `7a Never synced`, `7a File
+  // pending`), and `dialogOverlay` is module state no `?frame=` can reach. Without this the harness
+  // opens the underlying screen and files all three under "screen not built yet".
+  // `filePending` describes a transfer that is happening, and when it finishes there is nothing left
+  // for the dialog to say — so it closes itself rather than letting the fallback below replace its
+  // body with the not-built-yet placeholder.
+  //
+  // A REPLY THAT SAYS "NO TRANSFER" IS NOT THE SAME AS NO REPLY. `response()` is null whenever the
+  // poll throws — `poll()` publishes `{ state: "unreachable" }` with no `response` — so testing the
+  // transfer alone closed the dialog on one failed round trip, while the upload it describes was
+  // still running. That is this project's own rule about unknown never rendering as zero
+  // (`countersUnknown`, `dash()`), one layer up: an absent answer is not an answer.
+  const reply = store.select.response();
+  if (dialogOverlay === "filePending" && !activeFixture() && reply && !reply.activity?.transfer) {
+    dialogOverlay = null;
+    dialogReturn = null;
+    activityPendingTransfer = null;
+  }
+  const dialogRoute = onboardingLatch ? null : (activeFixture()?.ui?.dialog ?? dialogOverlay);
   const active = activeRoute();
   const spec = ROUTES[active];
   const chip = chipFor();
@@ -528,12 +580,28 @@ function render() {
     hasHome: !onMain && !onboardingLatch,
   };
   const navOpts = {
-    active: ROUTES[route]?.kind === "door" ? route : null,
+    // `active`, NOT the module `route`. S5 is the first screen whose frames draw a LIT door — all
+    // three activity windows paint `Activity` at --text and the other three at --text-4 — and under
+    // `?frame=` the module `route` is still "main", so the gate would have compared four unlit
+    // doors against three lit frames. `activeRoute()` collapses a dialog back to its underlying
+    // route and yields the overlay id for a screen overlay, which is why the `kind === "door"`
+    // test stays: `conflicts` and `deletions` are overlays, and their frames draw no lit door.
+    active: ROUTES[active]?.kind === "door" ? active : null,
     // The mono line is drawn on the settled and syncing main screens ONLY. `2a Needs you` is also
     // the main screen and drops it — the attention band has taken the space, and the footer tightens
     // from 22/20 to 20/16 to match. Measured, and the fidelity gate caught the first version of this
     // line assuming every main screen was the same.
-    variant: onMain ? (banded ? "banded" : "withLine") : "standard",
+    //
+    // `tight` is the fourth variant and was dead until S5: `7a Activity quiet` and `7a File lookup`
+    // are 18/14 while `6a Activity passes` — the same screen, the other tab — is the standard 18/15.
+    // So the variant is per-STATE, not per-route, exactly as `footerKindOf` is for the plan screen.
+    variant: onMain
+      ? banded
+        ? "banded"
+        : "withLine"
+      : active === "activity"
+        ? footerVariantOf(activityProps())
+        : "standard",
     line: onMain && !banded ? `${localRoot ?? "—"} ⇄ ${remoteRoot ?? "—"}` : null,
   };
 
@@ -596,6 +664,21 @@ function render() {
     } else {
       const nodes = updateDeletions(deletionsProps());
       if (nodes) setBody(nodes);
+    }
+  } else if (active === "activity") {
+    // REBUILT EVERY PASS, and the one thing that makes that safe is putting the caret back. The
+    // body holds a live `<input>`: rebuilding it drops focus and the caret position, so a poll
+    // landing mid-word would move the cursor to the front of what someone was typing. Restoring
+    // both after the swap is cheaper than the patch path the plan and deletions screens need,
+    // because nothing here animates and nothing else here holds state.
+    const focused = document.activeElement === activityInputRef.node;
+    const caret = focused ? caretOffset() : null;
+    if (dom.bodyRoute !== active) unmountScreens();
+    setBody(renderActivity(activityProps()));
+    dom.bodyRoute = active;
+    if (focused && activityInputRef.node) {
+      activityInputRef.node.focus();
+      putCaret(activityInputRef.node, caret);
     }
   } else if (dom.bodyRoute !== active) {
     unmountScreens();
@@ -675,32 +758,63 @@ function render() {
     if (dialogRoute) {
       const dspec = ROUTES[dialogRoute];
       const [w, h] = dspec.size ?? [522, null];
-      const title = dspec.label ?? titleFor(dialogRoute);
+      // S5 is the first task to give a dialog a real body; the other three still draw the
+      // placeholder. `activityDialog` returns null for a dialog it does not own AND for one whose
+      // data has gone — `filePending` describes an in-flight transfer, and there is nothing to say
+      // about one that has finished.
+      const content = activityDialog(dialogRoute);
+      const title = content?.title ?? dspec.label ?? titleFor(dialogRoute);
+      // `7a File pending` draws no title row at all, so it is named for a screen reader directly
+      // rather than pointing at a heading it does not have. `dialog()` enforces exactly one of the
+      // two, which is what makes this an either/or rather than a pair of optional fields.
+      const headless = content?.head === false;
       const built = dialog({
         width: w,
         height: h,
         tone: dspec.tone ?? "plain",
-        labelledBy: "dialog-title",
-        children: [
-          dialogHead({
-            title,
-            id: "dialog-title",
-            size: w >= 600 ? "wide" : "compact",
-            // Per route, not always. `8a Save refused` and `9a CLI missing` draw no ✕ at all — they
-            // are asking you to choose between two repairs, and a dismiss button in the corner is a
-            // third answer the design does not offer. Esc still closes them, through F4's chain.
-            onClose: dspec.closable ? () => closeOverlay() : null,
-          }),
-          screenPlaceholder(title, dspec.task && dspec.issue ? `${dspec.task} · issue ${dspec.issue}` : null),
-        ],
+        padding: dspec.padding ?? null,
+        label: headless ? (content.label ?? title) : null,
+        labelledBy: headless ? null : "dialog-title",
+        children: dialogChildren(dspec, content, title, headless),
       });
       root.append(built);
       dom.dialog = built;
       // Attached after append: the trap focuses on attach, and focus() on a detached node is a
       // silent no-op that leaves the keyboard on whatever opened the dialog.
       dom.dialogDetach = focusTrap(built);
+      dom.dialogSignature = content?.signature ?? null;
     }
     dom.dialogRoute = dialogRoute;
+  } else if (dialogRoute && dom.dialog) {
+    // A MOUNTED DIALOG HAS TO BE ABLE TO CHANGE, and until S5 none of them could: the identity
+    // check above is the only thing that ever rebuilds one, so `6a Details` — eight live counters —
+    // would have frozen at whatever the reply held on the render that opened it. On a real machine
+    // that is the poll before the panel appeared; under `?frame=` it is an empty store, which is
+    // how the gate found it (four rows drawing an em-dash where the frame draws a value).
+    //
+    // Keyed on a SIGNATURE rather than rebuilt every pass, because the poll runs twice a second and
+    // the surface carries the appear animation and the focus trap. Only the children below the head
+    // are replaced, and focus is carried across by position — `Copy all` must survive a counter
+    // moving underneath it.
+    const content = activityDialog(dialogRoute);
+    if (content?.signature && content.signature !== dom.dialogSignature) {
+      const dspec = ROUTES[dialogRoute];
+      const [w] = dspec.size ?? [522, null];
+      const title = content.title ?? dspec.label ?? titleFor(dialogRoute);
+      const surface = dom.dialog.querySelector(".dialog");
+      const focusables = [...surface.querySelectorAll("button, input, [tabindex]")];
+      const at = focusables.indexOf(document.activeElement);
+      // THE HEAD IS REBUILT TOO, and leaving it out was a bug rather than an economy: `7a Never
+      // synced`'s title COUNTS the rules (`4 files are never synced`), so a head that survives the
+      // update keeps whatever number was known when the dialog opened — which, on the render that
+      // mounts it, is none. The surface itself stays, so the appear animation does not restart.
+      surface.replaceChildren(...dialogChildren(dspec, content, title, content.head === false, w));
+      if (at >= 0) {
+        const next = [...surface.querySelectorAll("button, input, [tabindex]")];
+        (next[at] ?? surface).focus();
+      }
+      dom.dialogSignature = content.signature;
+    }
   }
 
   // --- the ⋯ menu, the one part that is genuinely torn down and rebuilt. It has no animation and
@@ -1345,6 +1459,354 @@ async function command(run) {
   }
   clearTimeout(pollTimer);
   poll();
+}
+
+// ---- the activity screen (S5) ----
+//
+// Two tabs and a lookup, all three of them screen-local: `routes.js` has ONE `activity` door and no
+// sub-route, which is right — a tab is not a place, and neither is a half-typed path. What that
+// costs is that both reset on leaving, and `07-activity.md` asks for nothing else.
+
+/** `"files"` or `"passes"`. The pills only exist on the passes tab; `Sync passes` is the way in. */
+let activityTab = "files";
+/** What is in the lookup field, and the answer for it — the second only moves when a reply lands. */
+let activityQuery = "";
+let activityLookup = null; // { path, status } — `status` null-but-present means "asked, not found"
+let activityLookupInFlight = null;
+let activityLookupTimer = null;
+/**
+ * Which in-flight path this session has already offered the pending dialog for.
+ *
+ * A LATCH, not a flag, and without it the dialog is a trap: the trigger is "the looked-up path is
+ * the one moving", which stays true after you dismiss it — so Esc would close the dialog and the
+ * next render would open it again.
+ */
+let activityPendingShown = null;
+/** The in-flight transfer the pending dialog is describing, held across a poll that came back empty. */
+let activityPendingTransfer = null;
+
+/**
+ * How long to wait after a keystroke before asking the index.
+ *
+ * `path_sync_status` is SYNCHRONOUS on the Rust side and its own module header warns it "can hold
+ * the loop for its full 3s index busy timeout". Asking on every keystroke puts one index open per
+ * character into a queue behind the daemon's own writer; typing a 20-character path is 20 of them,
+ * and the answers arrive in an order the latest-wins guard then has to throw away. 180ms is below
+ * the ~250ms that reads as lag and above a fast typist's inter-key gap.
+ */
+const LOOKUP_DEBOUNCE_MS = 180;
+/**
+ * `skip_rule_usage`'s report, and whether it has been asked for on this visit.
+ *
+ * ASKED ONCE PER VISIT, NEVER ON THE POLL. This command WALKS THE LOCAL TREE — that is the whole
+ * reason it can answer a question the index cannot — so firing it every two seconds would put a
+ * full metadata walk of someone's sync folder on a timer. The plan screen guards `run_dry_run` the
+ * same way and for the same reason.
+ */
+let skipRuleReport = null;
+let skipRuleAsked = false;
+
+/** Entering or leaving: no tab memory, no query, no answer, and the walk to be asked for again. */
+function resetActivityScreen() {
+  activityTab = "files";
+  activityQuery = "";
+  activityLookup = null;
+  activityLookupInFlight = null;
+  activityPendingShown = null;
+  activityPendingTransfer = null;
+  clearTimeout(activityLookupTimer);
+  activityLookupTimer = null;
+  skipRuleReport = null;
+  skipRuleAsked = false;
+}
+
+/** The exclude rules' cost, once per visit. Fired and not awaited, like every other screen's fetch. */
+async function ensureSkipRules() {
+  // `configLoaded`, NOT `configInfo`. The rules come from the config file, and `read_config` is a
+  // round trip — so the first render of this screen has no config at all, sees an empty `exclude`,
+  // and would latch `skipRuleAsked` on the strength of not having asked yet. The band would then
+  // never appear until you left the screen and came back. Latching only once the config is
+  // genuinely known is what makes "no rules" mean no rules.
+  if (skipRuleAsked || !configLoaded) return;
+  skipRuleAsked = true;
+  const exclude = configInfo?.exclude ?? [];
+  // Nothing excluded is not a reason to walk the tree: the band counts files a RULE hides, and with
+  // no rules the answer is known without asking.
+  if (exclude.length === 0) return;
+  try {
+    skipRuleReport = await api.skipRuleUsage(exclude, configInfo?.include ?? []);
+  } catch (error) {
+    console.error("skip_rule_usage failed:", error);
+  }
+  render();
+}
+
+/**
+ * Look one path up.
+ *
+ * AN EXACT RELATIVE PATH, and that is narrower than the frame implies: `7a File lookup` draws the
+ * query `spec.md` resolving to `docs/spec.md`, which is a name-to-path SEARCH, and no Phase-1
+ * command lists or searches local files — `path_sync_status` opens the index at the path it is
+ * given and nothing else. So a bare name that is not at the root MISSES, and the deck's own
+ * `No file by that name in your sync folder.` is the honest answer rather than a failure. G17.
+ *
+ * The consequence for the drawn `1 match`: the count is only ever 0 or 1 here, so the plural arm of
+ * `ACTIVITY.matches` is unreachable until that gap closes.
+ */
+async function lookupPath(query) {
+  const path = normaliseQuery(query);
+  if (!path) {
+    activityLookup = null;
+    activityLookupInFlight = null;
+    render();
+    return;
+  }
+  // Latest-wins. Typing outruns the round trip, and an early reply landing after a later one would
+  // put the verdict for `doc` under the word `docs/spec.md`.
+  activityLookupInFlight = path;
+  let status = null;
+  let failure = null;
+  try {
+    status = await api.pathSyncStatus(path);
+  } catch (error) {
+    console.error("path_sync_status failed:", error);
+    // KEPT, not swallowed. A caught error and a path that is not in the index both leave `status`
+    // null, and the screen must not tell someone their file is missing when the check is what
+    // failed. The daemon's own words go through untouched, to be quoted in mono.
+    failure = String(error?.message ?? error);
+  }
+  if (activityLookupInFlight !== path) return;
+  activityLookupInFlight = null;
+  activityLookup = { path, status, error: failure };
+  // THE PENDING DIALOG'S TRIGGER, and it is the only one the data supports. `7a File lookup` and
+  // `7a File pending` are the same lookup in two states — a file that is settled, and a file that
+  // is moving right now — so looking up the file the daemon is currently transferring is what
+  // tells the two apart. Nothing else could: `SyncActivity` carries exactly ONE in-flight transfer
+  // (#211), so a lookup for any other moving file cannot reach this state at all.
+  //
+  // Latched, so dismissing it sticks. The condition stays true for as long as the transfer runs.
+  const moving = store.select.response()?.activity?.transfer ?? null;
+  if (moving?.path === path && activityPendingShown !== path) {
+    activityPendingShown = path;
+    navigate("filePending");
+    return;
+  }
+  render();
+}
+
+/**
+ * A dialog's children — the head, then whatever the screen puts under it.
+ *
+ * SHARED BY THE MOUNT AND THE UPDATE, which is the whole point. Written twice, the update quietly
+ * grew a different dialog from the one that opened: the first version rebuilt only the body, so
+ * `7a Never synced`'s counted title stayed at whatever was known before its data arrived.
+ */
+function dialogChildren(dspec, content, title, headless, width = dspec.size?.[0] ?? 522) {
+  const head = headless
+    ? null
+    : dialogHead({
+        title,
+        subtitle: content?.subtitle ?? null,
+        id: "dialog-title",
+        size: width >= 600 ? "wide" : "compact",
+        // Per route, not always. `8a Save refused` and `9a CLI missing` draw no ✕ at all — they
+        // are asking you to choose between two repairs, and a dismiss button in the corner is a
+        // third answer the design does not offer. Esc still closes them, through F4's chain.
+        onClose: dspec.closable ? () => closeOverlay() : null,
+      });
+  if (head) {
+    // The head's own nodes, stamped here because this is where they are built. `dialogHead` cannot
+    // do it: `ui/dialog.js` is a foundation primitive and importing `fixtures/frames.js` there
+    // would close the cycle that module's header forbids.
+    fid(head, "dlgHead");
+    fid(head.querySelector(".dialog-headings"), "dlgHeadings");
+    fid(head.querySelector(".dialog-title"), "dlgTitle");
+    fid(head.querySelector(".dialog-subtitle"), "dlgSub");
+    fid(head.querySelector(".dialog-close"), "dlgClose");
+  }
+  return [
+    head,
+    ...(content?.children ?? [
+      screenPlaceholder(title, dspec.task && dspec.issue ? `${dspec.task} · issue ${dspec.issue}` : null),
+    ]),
+  ].filter(Boolean);
+}
+
+/** Everything the activity screen reads, plus the actions it can take. */
+function activityProps() {
+  const ui = activeFixture()?.ui ?? null;
+  const response = store.select.response();
+  const history = response?.status_history ?? [];
+  const lastSync = response?.last_sync_epoch_secs ?? null;
+
+  // Fired and not awaited — see `ensureSkipRules`. Not on the passes tab, which draws none of it —
+  // but the never-synced DIALOG needs the same report, and it opens over either tab.
+  const tab = ui?.tab ?? activityTab;
+  if (tab === "files" || dialogOverlay === "neverSynced" || ui?.dialog === "neverSynced") ensureSkipRules();
+
+  const never = neverSyncedFrom(skipRuleReport);
+  return {
+    tab,
+    query: ui?.query ?? activityQuery,
+    lookup: ui?.lookup ?? activityLookup,
+    editedAt: ui?.clock?.edited ?? null,
+    never,
+    history,
+    localRoot: response?.config?.local_root ?? configInfo?.local_root ?? null,
+    remoteRoot: response?.config?.remote_root ?? configInfo?.remote_root ?? null,
+    // Both sub-lines are claims about WHEN, so both are omitted rather than guessed when the daemon
+    // has not reported a pass yet.
+    quietSub: lastSync != null ? ACTIVITY.quietSub(clockAt(ui, "since", lastSync), since(lastSync)) : null,
+    checkedAgo: lastSync != null ? since(lastSync, "short") : null,
+    // THE PINNED CLOCK LITERAL WINS UNDER A FIXTURE, and this screen is the first that needed it.
+    // `clock.js` states the rule: a DURATION is pinned as an epoch offset (`ago(120)` is always "2
+    // minutes ago" wherever it runs), but an epoch rendered as `14:32` moves with the machine's
+    // timezone and across midnight — so a frame drawing an absolute time pins the string beside the
+    // epoch and the screen reads that one.
+    //
+    // Not a gate convenience. Without it the lookup sub-line renders a different time on every run
+    // and its width lands where it lands: it happened to be 1px out when this was written, and it
+    // would have been green at some hours and red at others — a gate that fails by the clock is
+    // worse than one that fails.
+    agreedAt: lastSync != null ? clockAt(ui, "agreed", lastSync) : null,
+    passesSub: passesSummaryOf(history),
+    // WHETHER THE TWO SIDES ARE KNOWN TO AGREE, and nothing else may stand in for it. `Both sides
+    // agree` over a settled hexagon is the strongest claim this app makes; `derive_state` reports
+    // `idle` only for a daemon that answered and has nothing outstanding, and a last pass is what
+    // gives the claim a moment to be true at. `copy.js` records the identical failure on the main
+    // screen — a state falling through to `Everything is up to date` "would be a false all-clear on
+    // a daemon that cannot reach Proton at all".
+    agreed: store.select.daemonState() === "idle" && lastSync != null,
+    onQuery: (value) => {
+      activityQuery = value;
+      // The field repaints NOW and the index is asked later — the two are deliberately not
+      // coupled. A control that waits 180ms to show what you typed is a broken control.
+      clearTimeout(activityLookupTimer);
+      activityLookupTimer = setTimeout(() => lookupPath(value), LOOKUP_DEBOUNCE_MS);
+      render();
+    },
+    onClearQuery: () => {
+      activityQuery = "";
+      activityLookup = null;
+      activityLookupInFlight = null;
+      activityPendingShown = null;
+      clearTimeout(activityLookupTimer);
+      render();
+    },
+    onPasses: () => {
+      activityTab = "passes";
+      render();
+    },
+    onFiles: () => {
+      activityTab = "files";
+      render();
+    },
+    onDetails: () => navigate("details"),
+    onShowNeverSynced: () => navigate("neverSynced"),
+    inputRef: activityInputRef,
+  };
+}
+
+/** A frame's pinned clock string if it has one for this slot, else the live value. */
+function clockAt(ui, slot, epochSecs) {
+  return ui?.clock?.[slot] ?? clock(epochSecs);
+}
+
+/**
+ * The caret's offset in the lookup field, and how to put it back after a rebuild.
+ *
+ * The SELECTION API, not `selectionStart` — the field is a contenteditable span (see
+ * `lookupField`), and `selectionStart` is `undefined` on one, which reads as "no caret" and
+ * silently sends the cursor to the front of whatever someone was typing.
+ */
+function caretOffset() {
+  const sel = window.getSelection();
+  return sel && sel.rangeCount ? sel.getRangeAt(0).startOffset : null;
+}
+
+function putCaret(node, offset) {
+  const text = node.firstChild;
+  const range = document.createRange();
+  // Clamped, and defaulting to the end. A rebuild can shorten the text under the caret, and a
+  // programmatic focus (Ctrl F on a field that already holds a path) wants the end, not the front.
+  const length = text?.length ?? 0;
+  if (text) range.setStart(text, Math.min(offset ?? length, length));
+  else range.setStart(node, 0);
+  range.collapse(true);
+  const sel = window.getSelection();
+  // Guarded for the same reason `caretOffset` is: `getSelection()` answers null in a detached or
+  // sandboxed document, and this one would take the whole render down with it.
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/** Where the lookup field is, so Ctrl F and a rebuild can both put the caret back in it. */
+const activityInputRef = { node: null };
+
+/** What each of this screen's three dialogs draws, and whether it wears a title row at all. */
+function activityDialog(id) {
+  const props = activityProps();
+  if (id === "details") {
+    const summary = store.select.planSummary();
+    const body = {
+      // NOT `statCounters()`, and the difference is one row. That selector answers the MAIN
+      // screen's tiles, where `conflicts` means "unresolved sidecars on disk" — a scan of the
+      // filesystem. This panel is labelled with the wire's own field names, and `conflicts` is
+      // literally a `PlanSummary` field: what the last plan found. The two are different
+      // quantities, and the gate cannot tell them apart here because both drew a single digit.
+      counters: {
+        pending_changes: store.select.pendingChanges(),
+        conflicts: summary?.conflicts ?? null,
+        destructive_actions: summary?.destructive_actions ?? null,
+        skipped_unsupported: summary?.skipped_unsupported ?? null,
+      },
+      // The FIXTURE's config first. `configInfo` is filled by `refreshConfig`, which is a round
+      // trip — so under `?frame=` the first render has none, and two of these eight rows would
+      // draw a dash where the frame draws a value.
+      config: activeFixture()?.config ?? configInfo,
+      socketOk: Boolean(store.select.response()) && !store.select.error(),
+      historyCount: props.history.length,
+    };
+    return {
+      signature:
+        JSON.stringify(body.counters) + JSON.stringify(body.config) + body.socketOk + body.historyCount,
+      children: renderDetailsBody(body),
+    };
+  }
+  if (id === "neverSynced") {
+    return {
+      subtitle: ACTIVITY.neverSyncedDialog.sub,
+      title: props.never
+        ? ACTIVITY.neverSyncedDialog.title(props.never.total)
+        : ACTIVITY.neverSyncedDialog.title(0),
+      signature: JSON.stringify(props.never),
+      children: renderNeverSyncedBody({
+        never: props.never,
+        onClose: () => closeOverlay(),
+        onChangeRule: () => navigate("settings"),
+      }),
+    };
+  }
+  if (id === "filePending") {
+    // The LAST TRANSFER SEEN, when the daemon has gone quiet. The close above now keeps the dialog
+    // open through an unreachable poll, so this has to have something to draw — and the last thing
+    // known to be true beats both a placeholder and a blank. `started_epoch_secs` keeps the
+    // sub-line honest while it waits: the transfer did start then, however long ago that now reads.
+    const live = store.select.response()?.activity?.transfer ?? null;
+    if (live) activityPendingTransfer = live;
+    const transfer = live ?? activityPendingTransfer;
+    if (!transfer) return null;
+    // NO TITLE ROW AND NO ✕ — this dialog draws neither, so it takes no `dialogHead` and needs an
+    // `aria-label` of its own instead of pointing at a heading that does not exist.
+    return {
+      head: false,
+      label: ACTIVITY.lookup.pending,
+      signature: JSON.stringify(transfer),
+      children: renderFilePendingBody({ transfer }),
+    };
+  }
+  return null;
 }
 
 // ---- data ----

@@ -35,6 +35,7 @@ import {
   LENGTH_TOLERANCE_PX,
   boxComparability,
 } from "./props.mjs";
+import { FIXTURES } from "../../src/js/fixtures/frames.js";
 import { OWES_FIT } from "./frame-classes.mjs";
 import { isKnown, unmetDeviations, KNOWN_DEVIATIONS } from "./known-deviations.mjs";
 
@@ -144,6 +145,8 @@ const record = (row) => (isKnown(row.frame, row.key, row.prop, row.detail) ? dev
 let asserted = 0;
 let mapped = 0;
 const unmappedFrames = [];
+/** Per frame: the slots its fixture declares that the running app never stamped. */
+const deadSlots = [];
 
 for (const entry of index) {
   const frame = JSON.parse(readFileSync(join(FRAMES, entry.file), "utf8"));
@@ -298,6 +301,30 @@ for (const entry of index) {
   }
   mapped++;
 
+  // A DECLARED SLOT THE APP NEVER STAMPS IS DEAD, and this is the check that would have caught S5's
+  // never-synced dialog rendering an empty body while every gate stayed green. `check-fixtures.mjs`
+  // already fails on a declared slot whose KEY exists in no frame — the complement, a slot whose key
+  // is real but which nothing ever reaches, is invisible to it and to the comparison below, because
+  // an unstamped node is simply not compared.
+  //
+  // The project's convention is already "declare only what you stamp": `hexRect`/`hexNumeral` were
+  // removed for exactly this reason. So this is that convention made enforceable rather than a new
+  // rule. A slot deliberately left for a state this frame does not draw belongs undeclared, the way
+  // S4 leaves `5a Checking`'s progress line and `5a Plan`'s two G3 buttons undeclared.
+  // STATIC KEYS ONLY, and that is a real limit rather than an implementation detail. A factory slot
+  // (`row: (i) => …`) resolves to a different key per call, so deciding whether it was "reached"
+  // would mean inverting the factory or guessing its arity — and a wrong guess reports a live slot
+  // as dead. So factory slots are OUT of this report: `ruleRow`, `kvRow`, `passRow` and `door` are
+  // not covered by it, and a screen that stopped rendering its rows would not show up here.
+  const declared = new Set(
+    Object.entries(FIXTURES[frame.label]?.fids ?? {})
+      .filter(([, key]) => typeof key === "string")
+      .map(([slot]) => slot),
+  );
+  const stampedKeys = new Set(seen.map((s) => s.key));
+  const dead = [...declared].filter((slot) => !stampedKeys.has(FIXTURES[frame.label].fids[slot]));
+  if (dead.length) deadSlots.push({ frame: frame.label, slots: dead });
+
   for (const node of seen) {
     const want = expected.get(node.key);
     if (!want) {
@@ -390,6 +417,12 @@ if (unmappedFrames.length) {
   console.log(
     `  ${unmappedFrames.length} frames carry no data-fid yet (screen not built): ${unmappedFrames.slice(0, 6).join(", ")}${unmappedFrames.length > 6 ? ", …" : ""}`,
   );
+}
+
+if (deadSlots.length) {
+  console.log("");
+  console.log("Declared fid slots the app never stamped — dead mappings, or a block that renders nothing:");
+  for (const d of deadSlots) console.log(`  ${d.frame}: ${d.slots.join(", ")}`);
 }
 
 // Printed every run, in full, and never folded into the pass count. A recorded deviation is a

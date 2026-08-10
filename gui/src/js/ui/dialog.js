@@ -122,6 +122,38 @@ export function dialogHead({ title, subtitle = null, onClose = null, size = "com
 }
 
 /**
+ * The scrolling middle of a dialog, and the ruled row at its foot.
+ *
+ * `padding` and `margin` are inline rather than a rung per dialog, because the two frames that draw
+ * them agree on nothing except the border: `7a Never synced` is `0 24px` over a 20px gap with an
+ * 18px-deep foot, `6a Details` is `16px 22px 0` over 12px with a 16px-deep foot. Two rungs for two
+ * callers is a table pretending to be a pattern; what genuinely repeats — `flex:1`, the divider,
+ * the 12px gap — is in `dialog.css`, and the rest is measured per dialog at the call site.
+ */
+export function dialogBody({ padding = null, marginTop = null, overflow = null, children = [] } = {}) {
+  const node = el("div", { class: "dialog-body" }, children);
+  if (padding != null) node.style.padding = padding;
+  if (marginTop != null) node.style.marginTop = marginTop;
+  if (overflow != null) node.style.overflow = overflow;
+  return node;
+}
+
+export function dialogFoot({
+  padding = null,
+  marginTop = null,
+  gap = null,
+  align = null,
+  children = [],
+} = {}) {
+  const node = el("div", { class: "dialog-foot" }, children);
+  if (padding != null) node.style.padding = padding;
+  if (marginTop != null) node.style.marginTop = marginTop;
+  if (gap != null) node.style.gap = gap;
+  if (align != null) node.style.alignItems = align;
+  return node;
+}
+
+/**
  * The ✕. A `secondary` at a size nothing else in the app uses — 26x26 at `--r-7` — so it overrides
  * rather than earning a rung on controls.js's ladder.
  *

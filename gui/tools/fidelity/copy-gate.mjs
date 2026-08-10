@@ -86,6 +86,26 @@ const NOT_DRAWN = new Map([
     "PLAN.nothingSub",
     "no frame draws a plan with nothing in it — 14-behaviour-and-state.md routes it to the safe variant",
   ],
+  // S5's four undrawn lookup verdicts. `path_sync_status` answers `synced`, `modified` or
+  // `conflict`, reports `tracked:false` for a path the index has never seen, and marks a directory
+  // through `entity_kind` — FIVE outcomes, of which `7a File lookup` draws exactly one. The other
+  // four are reachable from the first thing anyone types into the field, so they are copy the
+  // screen must have and copy no frame can check.
+  //
+  // `noMatch` is the one sentence here the design DOES specify: `14-behaviour-and-state.md:130`
+  // gives it verbatim for `Activity › lookup`, and it is in copy.js for the first time with S5.
+  // The other three are S5's wording, and DEVIATIONS §77 records them as such.
+  ["ACTIVITY.lookup.noMatch", "14-behaviour-and-state.md specifies it; no frame draws a miss"],
+  ["ACTIVITY.lookup.noMatchSub", "no frame draws a miss — the lookup matches an exact relative path"],
+  ["ACTIVITY.lookup.changed", "no frame draws a `modified` verdict"],
+  ["ACTIVITY.lookup.changedSub", "no frame draws a `modified` verdict"],
+  ["ACTIVITY.lookup.conflict", "no frame draws a `conflict` verdict"],
+  ["ACTIVITY.lookup.conflictSub", "no frame draws a `conflict` verdict"],
+  ["ACTIVITY.lookup.folder", "no frame looks a directory up"],
+  ["ACTIVITY.lookup.folderSub", "no frame looks a directory up"],
+  ["ACTIVITY.lookup.failed", "no frame draws a lookup whose command failed"],
+  ["ACTIVITY.lookup.failedSub", "no frame draws a lookup whose command failed"],
+  ["ACTIVITY.lookup.unknownSub", "no frame draws a `sync_status` this build does not recognise"],
 ]);
 
 /**
@@ -194,6 +214,37 @@ const DRAWN = [
   // omits the line whole. The deck still has to say what the frame draws — same shape as
   // `DELETIONS.folderConsequence`, which is gated at a number Phase 1 cannot produce either.
   ["PLAN.checkingProgress", [8431, 12480], "5a Checking"],
+  // S5. SEVENTEEN ROWS, AND FIFTEEN OF THEM WERE NEVER CHECKED BY ANYTHING — the whole ACTIVITY
+  // block's templates were absent from this table until now, so every counted sentence on the
+  // busiest screen in the app was unasserted while its constants were green.
+  //
+  // Two more became templates in this commit and had to land here in the same one: `passes.summary`
+  // (every number in it is live — `status_history` holds up to 20 entries and clean-vs-failed is
+  // `last_error == null`) and `neverSyncedSub` (the two group counts). That is the transition the
+  // note above records as the way a sentence leaves the gate silently, and this is the third time
+  // it has come up.
+  //
+  // `neverSyncedTitle` and `neverSyncedDialog.title` RENDER THE SAME STRING from two deck entries
+  // pointed at two different frames — the band says it at 13.5px and the dialog at 18px, over
+  // deliberately different sub-lines. The label on each row is load-bearing: swapping them would
+  // still pass, and would stop proving that both frames say it.
+  ["ACTIVITY.quietSub", ["14:32", "2 minutes ago"], "7a Activity quiet"],
+  ["ACTIVITY.watched", ["2m ago"], "7a Activity quiet"],
+  ["ACTIVITY.nextCheck", ["4m"], "7a Activity quiet"],
+  ["ACTIVITY.neverSyncedTitle", [4], "7a Activity quiet"],
+  ["ACTIVITY.neverSyncedSub", [2, 2], "7a Activity quiet"],
+  ["ACTIVITY.lastToMoveSub", [7, 3], "7a Activity quiet"],
+  ["ACTIVITY.allFiles", [7], "7a Activity quiet"],
+  ["ACTIVITY.matches", [1], "7a File lookup"],
+  ["ACTIVITY.lookup.safeSub", ["14:32"], "7a File lookup"],
+  ["ACTIVITY.lookup.linked", ["4c8f…9a21"], "7a File lookup"],
+  ["ACTIVITY.lookup.pendingSub", ["8 seconds ago", 2800000], "7a File pending"],
+  ["ACTIVITY.neverSyncedDialog.title", [4], "7a Never synced"],
+  ["ACTIVITY.neverSyncedDialog.ruleSub", ["*.tmp"], "7a Never synced"],
+  ["ACTIVITY.passes.summary", [18, 20, 1, true], "6a Activity passes"],
+  ["ACTIVITY.passes.chartSub", ["12:45"], "6a Activity passes"],
+  ["ACTIVITY.passes.mostRecent", ["14:32"], "6a Activity passes"],
+  ["ACTIVITY.passes.retried", ["14:17"], "6a Activity passes"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */

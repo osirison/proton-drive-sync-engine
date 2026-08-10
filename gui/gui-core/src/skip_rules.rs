@@ -36,6 +36,27 @@ use std::path::{Path, PathBuf};
 /// The frame names them individually, so this is a display cap, not a page size.
 pub const MAX_SAMPLES: usize = 4;
 
+/// One file a rule is hiding, named and sized.
+///
+/// The size is here because **two** screens draw it and the walk already knows it. `7a Never
+/// synced` lists `exports/draft.tmp · 2.1 MB` under *You told it to skip these*, and S6's skip tab
+/// names the same files. `classify` stats every file it visits to build the rule totals, so
+/// carrying the number it already has costs nothing — where re-deriving it later would mean a
+/// second walk of the same tree to answer a question this one had already answered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkipSample {
+    /// Relative to the local root.
+    ///
+    /// `String`, not `PathBuf`: `serde` refuses to serialize a non-UTF-8 path, and one oddly-named
+    /// file in one rule's samples would fail the entire reply — every rule on the tab losing its
+    /// numbers over a filename none of them is about. Display-only, so lossy is the right trade;
+    /// matching upstream is byte-wise and unaffected.
+    pub path: String,
+    /// The file's size. `0` when it could not be stat'd, which also raises
+    /// [`SkipRuleReport::unreadable_entries`] — so a zero here is never silently a fact.
+    pub bytes: u64,
+}
+
 /// What one exclude rule is hiding.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RuleUsage {
@@ -53,13 +74,8 @@ pub struct RuleUsage {
     /// whether to remove it.
     pub unique_files: u64,
     pub unique_bytes: u64,
-    /// Up to [`MAX_SAMPLES`] matched paths, relative to the local root, in walk order.
-    ///
-    /// `String`, not `PathBuf`: `serde` refuses to serialize a non-UTF-8 path, and one oddly-named
-    /// file in one rule's samples would fail the entire reply — every rule on the tab losing its
-    /// numbers over a filename none of them is about. Display-only, so lossy is the right trade;
-    /// matching upstream is byte-wise and unaffected.
-    pub samples: Vec<String>,
+    /// Up to [`MAX_SAMPLES`] of the files this rule hides, in walk order. See [`SkipSample`].
+    pub samples: Vec<SkipSample>,
     /// For a rule anchored at a literal folder (`Exports/**`, `scratch/`), whether that folder still
     /// exists on disk. `None` when the rule has no literal folder to check (`*.psd`).
     ///
@@ -343,11 +359,11 @@ impl Walk<'_> {
             usage.files += 1;
             usage.bytes = usage.bytes.saturating_add(size);
             if usage.samples.len() < MAX_SAMPLES {
-                // Lossy on purpose: samples are display-only, and `serde` REFUSES to serialize a
-                // non-UTF-8 `PathBuf`. One Latin-1-named file landing in one rule's first few
-                // matches would fail the whole reply, so every rule on the tab would lose its
-                // numbers over a filename none of them is about.
-                usage.samples.push(relative.to_string_lossy().into_owned());
+                usage.samples.push(SkipSample {
+                    // Lossy on purpose — see `SkipSample::path`.
+                    path: relative.to_string_lossy().into_owned(),
+                    bytes: size,
+                });
             }
         }
         // Removing a rule only starts syncing the files no *other* rule still hides.
@@ -524,6 +540,27 @@ mod tests {
         assert_eq!(report.rules[0].files, 2);
         assert_eq!(report.rules[0].bytes, 12);
         assert_eq!(report.considered_files, 3);
+    }
+
+    #[test]
+    fn a_sample_carries_the_size_the_walk_already_measured() {
+        // `7a Never synced` lists `exports/draft.tmp · 2.1 MB` — a per-FILE size, which the rule's
+        // own `bytes` total cannot answer. `classify` stats every file anyway, so the number is
+        // free here and would cost a second walk of the same tree anywhere else.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "exports/draft.tmp", 2_100);
+        write(dir.path(), "exports/render-final.tmp", 840);
+
+        let report = measure_at(dir.path(), &["**/*.tmp"]);
+        let mut samples = report.rules[0].samples.clone();
+        samples.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].path, "exports/draft.tmp");
+        assert_eq!(samples[0].bytes, 2_100);
+        assert_eq!(samples[1].path, "exports/render-final.tmp");
+        assert_eq!(samples[1].bytes, 840);
+        // And the rule total is still the sum, not a sample of it.
+        assert_eq!(report.rules[0].bytes, 2_940);
     }
 
     #[test]

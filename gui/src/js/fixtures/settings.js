@@ -140,17 +140,19 @@ const LOCAL_TOTALS = { files: 12480, bytes: 41_200_000_000 };
  * this computer` (`SETTINGS.ruleAdded`). A rule matching nothing whose folder is still there is
  * idle, not safe to remove.
  *
- * THE BYTES RECONCILE, AND `*.tmp` CONTRIBUTING NOTHING IS WHAT THE FRAME SAYS rather than a value
- * left blank. The total is `hiding 4 files, 3.1 GB in total` and `video-raw/**` alone is `3.1 GB`, so
- * the frame's own arithmetic gives `*.tmp` zero at this precision. That reading is confirmed by the
- * row itself: the deck has two forms, `skippingNow(n)` = `Skipping 2 files right now` and
- * `skippingSize(n, size)` = `Skipping 2 files, 3.1 GB`, and `*.tmp` is drawn with the FIRST.
+ * THE BYTE DISCRIMINATOR IS GONE, AND A SECOND FRAME IS WHAT RETIRED IT. This block used to give
+ * `*.tmp` `bytes: 0`, read off `8a Skip rules`' own arithmetic — `hiding 4 files, 3.1 GB in total`
+ * minus `video-raw/**`'s `3.1 GB` leaves nothing at that precision — so that `bytes` could be the
+ * field telling `skippingNow(n)` (`Skipping 2 files right now`) from `skippingSize(n, size)`
+ * (`Skipping 2 files, 3.1 GB`). DEVIATIONS §69a already recorded that live data has no such
+ * discriminator and that S6 must decide the sub-line on something else.
  *
- * So `bytes` is the discriminator S6 renders on, and it has to stay zero here. An earlier version
- * gave `*.tmp` 2.8 MB — a number the frame draws nowhere, chosen so the parts would sum to a total
- * that still rounds to `3.1 GB`. It does round, and it also destroyed the only field that says which
- * of the two deck strings this row takes. ⚠ Live data has no such discriminator: every rule with
- * files has bytes above zero, so S6 must decide the sub-line rule on something else. DEVIATIONS §69a.
+ * `7a Never synced` settles it from the other side: it draws THE SAME TWO FILES with their sizes —
+ * `exports/draft.tmp · 2.1 MB` and `exports/render-final.tmp · 840 KB`. Those are drawn numbers, not
+ * inferred ones, so the rule's total is 2.94 MB and the fixture says so. Every drawn string survives:
+ * 3.1 GB + 2.94 MB still renders `3.1 GB` through `format.bytes`. The alternative — samples summing
+ * to 2.94 MB inside a rule claiming zero — is a dataset no walk could produce, and the fixture's own
+ * rule is that a screen and the dialog it links to must not describe two different configurations.
  *
  * `unique_*` is what the staged-removal cost line counts — see the note on `8a Skip rules`. Here it
  * equals `files`/`bytes` on every row, because no two of these rules overlap.
@@ -160,10 +162,14 @@ const SKIP_RULES = {
     {
       pattern: "*.tmp",
       files: 2,
-      bytes: 0,
+      // The sum of its two samples, which are the two files `7a Never synced` draws by name.
+      bytes: 2_940_000,
       unique_files: 2,
-      unique_bytes: 0,
-      samples: ["exports/draft.tmp", "exports/render-final.tmp"],
+      unique_bytes: 2_940_000,
+      samples: [
+        { path: "exports/draft.tmp", bytes: 2_100_000 },
+        { path: "exports/render-final.tmp", bytes: 840_000 },
+      ],
       // A bare file glob is anchored at no folder, so it makes no claim about one.
       folder_exists: null,
       error: null,
@@ -174,7 +180,10 @@ const SKIP_RULES = {
       bytes: 3_100_000_000,
       unique_files: 2,
       unique_bytes: 3_100_000_000,
-      samples: ["video-raw/a-roll.mov", "video-raw/b-roll.mov"],
+      samples: [
+        { path: "video-raw/a-roll.mov", bytes: 1_600_000_000 },
+        { path: "video-raw/b-roll.mov", bytes: 1_500_000_000 },
+      ],
       // `the folder still exists on this computer`, in the deck's own words.
       folder_exists: true,
       error: null,
@@ -195,8 +204,10 @@ const SKIP_RULES = {
   ],
   // `hiding 4 files, 3.1 GB in total` — a count of distinct FILES, not the sum of the rows: the
   // command counts a doubly-matched file once, and here nothing overlaps so the two agree anyway.
+  // The bytes are the two rules summed (3.1 GB + 2.94 MB), which `format.bytes` renders `3.1 GB` —
+  // the drawn string, reached by arithmetic rather than by rounding one of the parts to zero.
   total_files: 4,
-  total_bytes: 3_100_000_000,
+  total_bytes: 3_102_940_000,
   // NOT DRAWN. No frame states a denominator, so this is the only number in the family it could be
   // (`12,480 files … in here today`, the same pair the header uses). Nothing renders it; it is here
   // because the reply carries it and a fixture that omitted it would describe a different reply.

@@ -344,6 +344,12 @@
    centres the others would fight it. The negative margin against the wider padding is what makes
    the tint run past the list's inset; rounded at the bottom only, because it hangs off the row. */
 .row-pass.is-failed {
+  /* A BLOCK, so the flex row's own two properties have to be given back. `.row-pass` sets
+     `gap:14px` and `.row` sets `align-items:center`; neither means anything on a block, and the
+     frame records both as their initial `normal`. Latent since F7 — `6a Activity passes` is the
+     only frame that draws this row and nothing asserted it until S5 mapped it. */
+  align-items: normal;
+  gap: normal;
   display: block;
   margin: 0 -12px;
   padding: 12px;

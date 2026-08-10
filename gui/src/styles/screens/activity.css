@@ -1,0 +1,386 @@
+/* The activity screen (S5) — see js/screens/activity.js for what each block is and what it omits.
+ *
+ * Every number here is measured off `7a Activity quiet`, `7a File lookup`, `6a Activity passes`,
+ * `7a Never synced`, `6a Details` and `7a File pending`. Where two frames of the SAME screen differ
+ * by a pixel (the title block's padding-top, the sub-line's margin, the footer nav's top padding)
+ * the difference is written inline at the call site rather than smoothed into one value here — this
+ * screen has two tabs and they were drawn on different days.
+ */
+
+/* --------------------------------------------------------------------------- the page ------ */
+
+.activity-title-block {
+  padding-right: 32px;
+  padding-left: 32px;
+  flex: none;
+}
+.activity-title {
+  font-size: 26px;
+  font-weight: 600;
+  /* -0.025em, which is the -0.65px the frames measure at 26px. Absent from 07-activity.md's prose
+     and present in all three window frames. */
+  letter-spacing: -0.025em;
+  color: var(--text);
+}
+.activity-sub {
+  font-size: 13.5px;
+  color: var(--text-4);
+}
+
+/* ------------------------------------------------------------------------- the lookup ------ */
+
+.activity-lookup-wrap {
+  padding: 0 32px;
+  margin-top: 18px;
+  flex: none;
+}
+.activity-lookup {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-11);
+  background: var(--panel);
+}
+/* Holding a value the field brightens its border and its glyph — the only two things that change
+   besides the contents. The 48 to 50px growth the frames record is a CONSEQUENCE of the ✕ being
+   2px taller than the `Ctrl F` chip it replaces, not a declared height. */
+.activity-lookup.is-filled {
+  border-color: var(--border-strong);
+}
+.activity-lookup-icon {
+  font-size: 14px;
+  color: var(--text-label);
+}
+.activity-lookup.is-filled .activity-lookup-icon {
+  color: var(--text-3);
+}
+
+/* The drawn span, made editable — see `lookupField` for why this is not an <input>. Mono holding a
+   path, sans holding the prompt; the class comes from the value rather than from `:empty`, which
+   WebKit breaks the first time someone clears the field. */
+/* NO `outline: none`. This is the screen's primary keyboard control, and `base.css` already rings
+   on `:focus-visible` ONLY — so a pointer press draws nothing and the reset bought nothing, while
+   costing a keyboard user the one indicator telling them where they are. `outline` is not in
+   STYLE_PROPS either, so the ring was never something the gate wanted suppressed. */
+.activity-lookup-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text);
+}
+/* Empty, the field IS its prompt. The ELEMENT's own colour has to change, not just the
+   placeholder's: that is the value the gate reads, and it also drives the four border colours,
+   since an unset `border-color` resolves to `currentColor`. */
+.activity-lookup-input.is-empty {
+  font-family: inherit;
+  color: var(--text-5);
+}
+/* A pseudo-element, so the placeholder is not part of the field's value — it contributes nothing
+   to `textContent`, which is what the input handler reads. */
+.activity-lookup-input.is-empty::before {
+  content: attr(data-placeholder);
+}
+.activity-lookup-hint {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-5);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-disabled);
+}
+/* The count REPLACES the shortcut chip and drops its box entirely — the frame records no border,
+   no radius and no padding on it, so this is not the chip recoloured. */
+.activity-lookup-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+/* NO `flex: none` on any of the three trailing controls. They cannot shrink in practice — the
+   value beside them is the only flexible child — and the frames record all three at the initial
+   `flex-shrink: 1`, which is an asserted property. */
+
+/* ---------------------------------------------------------------------------- the seam ----- */
+
+.activity-seam-block {
+  position: relative;
+  padding: 0 32px;
+  margin-top: 24px;
+  flex: none;
+}
+/* `position:relative` on the block that holds the mark and the label, not on the label itself —
+   the seam line is absolutely positioned and this is what lifts the whole stack over it. */
+.activity-verdict {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.activity-agree {
+  margin-top: 11px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.activity-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 18px;
+}
+/* The 30px inner padding is what clears the seam line: the columns meet at 488px and the line sits
+   at 520/519, so without it the sub-lines would run into the hairline. */
+.activity-side-local {
+  padding-right: 30px;
+}
+.activity-side-remote {
+  padding-left: 30px;
+  text-align: right;
+}
+.activity-side-sub {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------------- the body -------- */
+
+.activity-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 0 32px;
+  margin-top: 24px;
+}
+.activity-spacer {
+  flex: 1;
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 20px;
+}
+.activity-list-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 2px 0;
+  margin-top: 2px;
+  border-top: 1px solid var(--divider);
+}
+.activity-list-note {
+  font-size: 12px;
+  color: var(--text-5);
+}
+
+/* -------------------------------------------------------------------- the lookup result ---- */
+
+.activity-hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.activity-hero-path {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--text);
+}
+.activity-hero-title {
+  margin-top: 10px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.activity-hero-sub {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-4);
+}
+
+/* The daemon's own string when a lookup could not be made. Mono, dimmer than the verdict above it
+   — it is a quotation, not a sentence the app wrote. */
+.activity-hero-error {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.activity-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 22px;
+}
+.activity-card-local {
+  padding-right: 30px;
+}
+.activity-card-remote {
+  padding-left: 30px;
+}
+.activity-card-box {
+  padding: 14px 16px;
+  margin-top: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-12);
+  background: var(--panel-raised);
+}
+.activity-card-meta {
+  display: flex;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+/* The right column right-aligns THREE times independently — the label, this row and the path — and
+   never on the cell, which the frame records as `start`. Setting `text-align:right` on the cell
+   reproduces the pixels and fails the gate on two nodes. */
+.activity-card-remote .activity-card-meta {
+  justify-content: flex-end;
+}
+.activity-card-path {
+  margin-top: 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+  /* 07-activity.md asks for this and no gate can see it: `word-break` is not in STYLE_PROPS. A
+     deep path is exactly what this screen exists to look up, so it is implemented anyway. */
+  word-break: break-all;
+}
+.activity-card-remote .activity-card-path {
+  text-align: right;
+}
+
+.activity-history-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 2px 0;
+  margin-top: 2px;
+  border-top: 1px solid var(--divider);
+}
+.activity-linked {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------------ the passes tab --- */
+
+.activity-tabs {
+  padding: 0 32px;
+  margin-top: 22px;
+  flex: none;
+}
+/* NO `display` — the frame records the initial `block` here, unlike the files tab's content block
+   which is a flex column. Two blocks doing the same job on two tabs, drawn differently. */
+.activity-passes {
+  flex: 1;
+  min-height: 0;
+  padding: 0 32px;
+  margin-top: 20px;
+  overflow: hidden;
+}
+.activity-passes-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 2px 0;
+  margin-top: 4px;
+  border-top: 1px solid var(--divider);
+}
+.activity-retention {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-5);
+}
+
+/* --------------------------------------------------------------------------- the dialogs --- */
+
+.activity-rule-sub {
+  margin-top: 7px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-4);
+}
+/* The pattern is a mono span INSIDE the sentence, not part of the string — which is also why the
+   copy gate matches this line through the frame's joined text rather than one node's. */
+.activity-rule-pattern {
+  display: inline;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 17.25px;
+  color: var(--text-2);
+}
+.activity-reassurance {
+  font-size: 12px;
+  color: var(--text-5);
+}
+
+.activity-kv {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--divider);
+}
+/* EVERY value in this panel is mono, including the prose-looking `on` and `connected` — the
+   pathRow doctrine (a size in mono, a kind noun in prose) does not reach here. */
+.activity-kv-key {
+  flex: none;
+  width: 150px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+.activity-kv-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-bright);
+}
+/* `source` alone is dimmer, and it is the one row that describes the round trip rather than the
+   daemon. Measured, not smoothed. */
+.activity-kv-value.is-quiet {
+  color: var(--text-3);
+}
+
+.activity-pending-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+/* None of the three lines carries a mask background: there is no seam behind this dialog. */
+.activity-pending-path {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text);
+}
+.activity-pending-title {
+  margin-top: 9px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.activity-pending-sub {
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--text-4);
+}
+.activity-pending-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+.activity-pending-note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
