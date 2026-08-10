@@ -219,22 +219,20 @@ function restoreFocus(back) {
 }
 
 /**
- * Move focus onto a control that has just replaced the one the user was standing on.
+ * Move focus onto the control that replaced the one the user was standing on.
  *
- * ONLY WHEN THE KEYBOARD WAS ALREADY IN THE SCREEN. A body swap leaves focus on `<body>`, so a
- * keyboard user who pressed `Check again` lands in front of a screen whose only control they cannot
- * reach without tabbing from the top — the same failure S3 fixes by focusing the safe button after
- * arming. Guarded on the active element having been inside the app rather than done unconditionally,
- * because a screen that grabs focus on MOUNT would put a focus ring in front of the fidelity gate,
- * which renders every fixture cold.
+ * A body swap leaves focus on `<body>`, so a keyboard user who pressed `Check again` lands in front
+ * of a screen whose only control they cannot reach without tabbing from the top — the same failure
+ * S3 fixes by focusing the safe button after arming.
+ *
+ * CALLED FROM A CONTROL'S OWN HANDLER AND NOWHERE ELSE, which is what keeps it out of the fidelity
+ * gate's way: a screen that took focus on MOUNT would put a focus ring in front of every fixture,
+ * all of which render cold. This runs because somebody pressed something.
  */
 function focusAfterSwap(selector) {
-  const from = document.activeElement;
-  if (!from || from === document.body || !document.getElementById("app-root")?.contains(from)) {
-    // The node the user was on is already gone: `setBody` removed it, so `contains` is false and the
-    // browser has moved focus to <body>. That is exactly the case this exists for.
-    if (from !== document.body) return;
-  }
+  // A microtask, because the caller has just re-rendered and the target may be a node `setBody` is
+  // still inserting; `focus()` on a detached element is a silent no-op, which is the same trap S3's
+  // `restoreGate` records one screen over.
   queueMicrotask(() => document.querySelector(selector)?.focus());
 }
 
