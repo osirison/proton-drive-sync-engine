@@ -1893,8 +1893,16 @@ function activityDialog(id) {
 let settingsTab = "folders";
 /** Staged fields, keyed exactly as `ConfigPayload` names them. Empty means nothing to save. */
 let settingsEdits = {};
-/** The add-rule / add-pattern field. Not a config field: it is staged only once `Add` is pressed. */
-let settingsDraft = "";
+/**
+ * The two add fields, ONE PER LIST. Not config fields: a draft is staged only once `Add` is pressed.
+ *
+ * Two, not one, and the reason is that the lists mean opposite things. A pattern typed into the skip
+ * tab HIDES what it matches; the same pattern in Advanced's include list makes it the only thing
+ * that syncs. One shared buffer would carry a half-typed `*.psd` across a tab switch and hand it to
+ * whichever `Add` was pressed next — inverting what the person meant, on the two settings that
+ * decide what is backed up at all.
+ */
+let settingsDrafts = { exclude: "", include: "" };
 let settingsSaving = false;
 /** The daemon's refusal, verbatim. Non-null is what opens `8a Save refused`. */
 let settingsError = null;
@@ -1905,7 +1913,7 @@ let settingsSaved = false;
 function resetSettingsScreen() {
   settingsTab = "folders";
   settingsEdits = {};
-  settingsDraft = "";
+  settingsDrafts = { exclude: "", include: "" };
   settingsSaving = false;
   settingsError = null;
   settingsSaved = false;
@@ -1951,7 +1959,7 @@ function settingsProps() {
     config,
     skip,
     dirty,
-    draft: settingsDraft,
+    drafts: settingsDrafts,
     saving: settingsSaving,
     justSaved: settingsSaved,
     // The amber line, when a single removal is staged. Any other staged change leaves the neutral
@@ -1983,8 +1991,8 @@ function settingsProps() {
         settingsSaved = false;
         render();
       },
-      onDraft: (value) => {
-        settingsDraft = value;
+      onDraft: (key, value) => {
+        settingsDrafts = { ...settingsDrafts, [key]: value };
         render();
       },
       onAddRule: () => addPattern("exclude"),
@@ -1996,7 +2004,7 @@ function settingsProps() {
       onSave: saveSettings,
       onDiscard: () => {
         settingsEdits = {};
-        settingsDraft = "";
+        settingsDrafts = { exclude: "", include: "" };
         settingsSaved = false;
         render();
       },
@@ -2009,14 +2017,14 @@ function settingsProps() {
 const stagedList = (key) => settingsEdits[key] ?? (activeFixture()?.config ?? configInfo)?.[key] ?? [];
 
 function addPattern(key) {
-  const pattern = settingsDraft.trim();
+  const pattern = settingsDrafts[key].trim();
   // A duplicate is not an error and not a second row: the rule is already there, so the field
   // clears and nothing is staged.
   if (pattern && !stagedList(key).includes(pattern)) {
     settingsEdits = { ...settingsEdits, [key]: [...stagedList(key), pattern] };
     settingsSaved = false;
   }
-  settingsDraft = "";
+  settingsDrafts = { ...settingsDrafts, [key]: "" };
   render();
 }
 

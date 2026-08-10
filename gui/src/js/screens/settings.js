@@ -532,7 +532,7 @@ function ruleRow(props, rule, i, pending) {
  * `Add` would look like a control that does nothing — the removal at least turns the footer amber.
  */
 function rulesBlock(props) {
-  const { saved, config, skip, handlers, draft } = props;
+  const { saved, config, skip, handlers, drafts } = props;
   const savedRules = saved?.exclude ?? [];
   const added = (config.exclude ?? []).filter((p) => !savedRules.includes(p));
   const rules = [...savedRules, ...added];
@@ -578,11 +578,11 @@ function rulesBlock(props) {
           { class: "settings-add" },
           fid(
             textInput({
-              value: draft ?? "",
+              value: drafts?.exclude ?? "",
               placeholder: SETTINGS.addRulePlaceholder,
               mono: true,
-              "data-field": "draft",
-              onInput: (e) => handlers.onDraft?.(e.target.value),
+              "data-field": "draft-exclude",
+              onInput: (e) => handlers.onDraft?.("exclude", e.target.value),
               onKeydown: (e) => {
                 if (e.key === "Enter") handlers.onAddRule?.();
               },
@@ -690,7 +690,7 @@ function deletionsTab(props) {
  * title, a sentence about what it does to your files, and the key underneath in mono.
  */
 function advancedTab(props) {
-  const { config, handlers, draft } = props;
+  const { config, handlers, drafts } = props;
   const include = config.include ?? [];
   return [
     panel("settings-panel-block", [
@@ -715,11 +715,11 @@ function advancedTab(props) {
         "div",
         { class: "settings-add" },
         textInput({
-          value: draft ?? "",
+          value: drafts?.include ?? "",
           placeholder: SETTINGS.addIncludePlaceholder,
           mono: true,
-          "data-field": "draft",
-          onInput: (e) => handlers.onDraft?.(e.target.value),
+          "data-field": "draft-include",
+          onInput: (e) => handlers.onDraft?.("include", e.target.value),
           onKeydown: (e) => {
             if (e.key === "Enter") handlers.onAddInclude?.();
           },
