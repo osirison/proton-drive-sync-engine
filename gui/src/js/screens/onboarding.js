@@ -572,7 +572,10 @@ export function renderFirstSync(props = {}) {
   // The sentence is about the plan the person approved, so with no plan in hand there is nothing to
   // claim and the node goes rather than rendering empty.
   const footText = mergeFooterText(props);
-  foot.append(
+  // FILTERED, never `append(null)`: `Element.append` stringifies its argument, so a null child is
+  // inserted as the literal text "null" — the bug app.js's own note on `replaceChildren` records,
+  // and the style gate cannot see a stray text node.
+  const footChildren = [
     footText ? fid(el("span", { class: "ob-merge-foot-text" }, footText), "mergeFootText") : null,
     fid(el("span", { class: "shell-spacer" }), "mergeFootSpacer"),
     fid(
@@ -585,7 +588,8 @@ export function renderFirstSync(props = {}) {
       }),
       "mergeFootButton",
     ),
-  );
+  ].filter(Boolean);
+  foot.append(...footChildren);
   return [body, foot];
 }
 

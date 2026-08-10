@@ -454,7 +454,10 @@ if (failures.length) {
   console.error("");
   // 40 by default so a broken build prints a page rather than a screenful of scrollback.
   // `FIDELITY_SHOW=200` is for developing a screen, where the first forty are all one cause.
-  const SHOW = Number(process.env.FIDELITY_SHOW ?? 40);
+  // Anything that is not a positive number falls back rather than silencing the report: `Number("")`
+  // is 0 and `Number("x")` is NaN, and both would print nothing while the count still said dozens.
+  const asked = Number(process.env.FIDELITY_SHOW);
+  const SHOW = Number.isFinite(asked) && asked > 0 ? asked : 40;
   for (const f of failures.slice(0, SHOW)) {
     console.error(`  ${f.frame} · ${f.key || "(root)"} · ${f.prop}\n      ${f.detail}`);
   }

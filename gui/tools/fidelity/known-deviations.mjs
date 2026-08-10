@@ -599,7 +599,7 @@ export const KNOWN_DEVIATIONS = [
     frame: "9a First sync",
     key: "div[1]/span[1]",
     props: ["box.w"],
-    detail: "174.55 vs 438.25",
+    detail: "174.55 vs 476.95",
     issue: "#213",
     why: "the footer spacer, grown by the sentence beside it: `nothing deleted · 2 conflicts kept as copies` is a claim about the pass in flight, and no reply carries a per-pass summary while it runs",
   },

@@ -3136,3 +3136,21 @@ ticked — so consent completing resets the lot.
 rejecting, so the dialog closes on the round trip landing rather than on the daemon being resumed.
 That is the same call `5a Plan`'s `Run this sync` makes (§76) — the main screen behind is where both
 outcomes are legible, and holding someone inside a consent they have already given is worse.
+
+### 79j. `append(null)` printed the word
+
+Copilot's two findings on the PR, both real and both validated against the code before being taken.
+
+The merge dialog's footer omits its sentence when there is no plan in hand (79c) — and omitted it by
+passing `null` to `Element.append`, which **stringifies its argument**. So `9a First sync` rendered
+the literal text `null` beside `Pause`, on the one dialog nobody had looked at with a plan absent.
+Every gate was green over it: the style gate compares STAMPED nodes and a stray text node is not one,
+the copy gate reads the deck rather than the DOM, and the deviation row for the spacer beside it had
+pinned the width the null text produced. `app.js`'s own note on `replaceChildren(null)` records this
+exact bug from the F4 rewrite — "it took looking at a screenshot" — so this is the second time, and
+the children are filtered now.
+
+The second: `FIDELITY_SHOW` (a new env override for the harness's 40-failure print cap) took
+`Number(...)` without checking it, and `Number("")` is `0` while `Number("x")` is `NaN` — either
+prints nothing while the summary line still says how many failed. It falls back to 40 unless the
+value is a positive finite number.
