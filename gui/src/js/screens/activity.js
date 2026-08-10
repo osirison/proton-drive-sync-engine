@@ -427,18 +427,34 @@ function filesTab(props) {
 function quietBody(props) {
   const { never, checkedAgo } = props;
 
-  const mark = renderHexagon({ size: SEAM_MARK, state: "settled", masked: true });
-  const agree = el("div", { class: "activity-agree" }, ACTIVITY.agree);
-  // `position:false` matters: the frame records this label as STATIC. The mask's default writes
-  // `position:relative`, which is an asserted property and would fail on the one node it is
-  // applied to — the surrounding block already carries the stacking context.
-  seamMask(agree, { pad: 16, position: false });
+  // THE VERDICT IS DRAWN ONLY WHEN IT IS KNOWN TO BE TRUE. `Both sides agree` over a settled
+  // hexagon is the strongest claim in the app, and it was rendered unconditionally here — on a
+  // paused daemon, a syncing one, an unreachable one and a first run alike. `7a Activity quiet`
+  // draws the idle case because that is the frame; the screen runs in all of them.
+  //
+  // Omitted rather than replaced: no frame draws this screen in any other state and the deck has no
+  // sentence for one, so inventing a verdict would be the second mistake. The seam and both sides
+  // stay — their sub-lines are already gated on having something true to say.
+  const verdict = props.agreed
+    ? (() => {
+        const mark = renderHexagon({ size: SEAM_MARK, state: "settled", masked: true });
+        const agree = el("div", { class: "activity-agree" }, ACTIVITY.agree);
+        // `position:false` matters: the frame records this label as STATIC. The mask's default
+        // writes `position:relative`, an asserted property, and would fail on the one node it is
+        // applied to — the surrounding block already carries the stacking context.
+        seamMask(agree, { pad: 16, position: false });
+        return fid(
+          el("div", { class: "activity-verdict" }, fid(mark, "hexagon"), fid(agree, "agree")),
+          "verdict",
+        );
+      })()
+    : null;
 
   const seamBlock = el(
     "div",
     { class: "activity-seam-block" },
     fid(renderSeam({ site: "activityQuiet" }), "seam"),
-    fid(el("div", { class: "activity-verdict" }, fid(mark, "hexagon"), fid(agree, "agree")), "verdict"),
+    verdict,
     fid(
       el(
         "div",

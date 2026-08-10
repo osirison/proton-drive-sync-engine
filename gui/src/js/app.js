@@ -1670,6 +1670,13 @@ function activityProps() {
     // worse than one that fails.
     agreedAt: lastSync != null ? clockAt(ui, "agreed", lastSync) : null,
     passesSub: passesSummaryOf(history),
+    // WHETHER THE TWO SIDES ARE KNOWN TO AGREE, and nothing else may stand in for it. `Both sides
+    // agree` over a settled hexagon is the strongest claim this app makes; `derive_state` reports
+    // `idle` only for a daemon that answered and has nothing outstanding, and a last pass is what
+    // gives the claim a moment to be true at. `copy.js` records the identical failure on the main
+    // screen — a state falling through to `Everything is up to date` "would be a false all-clear on
+    // a daemon that cannot reach Proton at all".
+    agreed: store.select.daemonState() === "idle" && lastSync != null,
     onQuery: (value) => {
       activityQuery = value;
       // The field repaints NOW and the index is asked later — the two are deliberately not

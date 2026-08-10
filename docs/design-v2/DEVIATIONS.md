@@ -2661,3 +2661,22 @@ button: `.dialog-headings` is `flex: 1` beside it, so the title and sub-line und
 `boxComparability` cannot see that — its taint reaches a node's PARENT, and these sit two levels
 below the flex container holding the glyph. Pinning the drawn size makes the head's layout
 independent of the font rather than recording a deviation for it.
+
+**`Both sides agree` was rendered unconditionally, which is a false all-clear.** `7a Activity quiet`
+draws the settled hexagon over the strongest claim the app makes, and the screen rendered it in
+every daemon state — paused, syncing, unreachable, first run. `copy.js` already records the
+identical failure one screen over: the sign-in-expired hero exists because a state "that fell
+through to `Everything is up to date` would be a false all-clear on a daemon that cannot reach
+Proton at all". Same sentence class, same mistake, a screen later.
+
+The verdict block is now drawn only when `derive_state` reports `idle` AND a pass has been recorded
+— a daemon that answered, has nothing outstanding, and has a moment for the claim to be true at.
+OMITTED rather than replaced in every other state: no frame draws this screen outside idle and the
+deck has no sentence for one, so inventing a verdict would be the second mistake. The seam and both
+sides stay, since their sub-lines are already gated on having something true to say.
+
+Found by sweeping the diff for the shape of two review findings rather than fixing them where they
+were reported — an unrecognised status that failed closed on the mark and not on the words, and a
+dialog that read an absent reply as a negative one. Both were doctrines this codebase already holds
+(`countersUnknown`, `dash()`, the all-clear note above) applied in one place and not the next; the
+sweep is what turned that into a rule rather than three separate fixes.
