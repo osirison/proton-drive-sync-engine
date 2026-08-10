@@ -532,12 +532,20 @@ function render() {
   // route: three of S5's six frames ARE dialogs (`6a Details`, `7a Never synced`, `7a File
   // pending`), and `dialogOverlay` is module state no `?frame=` can reach. Without this the harness
   // opens the underlying screen and files all three under "screen not built yet".
-  // `filePending` describes a transfer that is happening. When it finishes there is nothing left
-  // for the dialog to say, and the fallback below would replace its body with the not-built-yet
-  // placeholder — so it closes itself instead.
-  if (dialogOverlay === "filePending" && !activeFixture() && !store.select.response()?.activity?.transfer) {
+  // `filePending` describes a transfer that is happening, and when it finishes there is nothing left
+  // for the dialog to say — so it closes itself rather than letting the fallback below replace its
+  // body with the not-built-yet placeholder.
+  //
+  // A REPLY THAT SAYS "NO TRANSFER" IS NOT THE SAME AS NO REPLY. `response()` is null whenever the
+  // poll throws — `poll()` publishes `{ state: "unreachable" }` with no `response` — so testing the
+  // transfer alone closed the dialog on one failed round trip, while the upload it describes was
+  // still running. That is this project's own rule about unknown never rendering as zero
+  // (`countersUnknown`, `dash()`), one layer up: an absent answer is not an answer.
+  const reply = store.select.response();
+  if (dialogOverlay === "filePending" && !activeFixture() && reply && !reply.activity?.transfer) {
     dialogOverlay = null;
     dialogReturn = null;
+    activityPendingTransfer = null;
   }
   const dialogRoute = onboardingLatch ? null : (activeFixture()?.ui?.dialog ?? dialogOverlay);
   const active = activeRoute();
@@ -1474,6 +1482,8 @@ let activityLookupTimer = null;
  * next render would open it again.
  */
 let activityPendingShown = null;
+/** The in-flight transfer the pending dialog is describing, held across a poll that came back empty. */
+let activityPendingTransfer = null;
 
 /**
  * How long to wait after a keystroke before asking the index.
@@ -1503,6 +1513,7 @@ function resetActivityScreen() {
   activityLookup = null;
   activityLookupInFlight = null;
   activityPendingShown = null;
+  activityPendingTransfer = null;
   clearTimeout(activityLookupTimer);
   activityLookupTimer = null;
   skipRuleReport = null;
@@ -1771,7 +1782,13 @@ function activityDialog(id) {
     };
   }
   if (id === "filePending") {
-    const transfer = store.select.response()?.activity?.transfer ?? null;
+    // The LAST TRANSFER SEEN, when the daemon has gone quiet. The close above now keeps the dialog
+    // open through an unreachable poll, so this has to have something to draw — and the last thing
+    // known to be true beats both a placeholder and a blank. `started_epoch_secs` keeps the
+    // sub-line honest while it waits: the transfer did start then, however long ago that now reads.
+    const live = store.select.response()?.activity?.transfer ?? null;
+    if (live) activityPendingTransfer = live;
+    const transfer = live ?? activityPendingTransfer;
     if (!transfer) return null;
     // NO TITLE ROW AND NO ✕ — this dialog draws neither, so it takes no `dialogHead` and needs an
     // `aria-label` of its own instead of pointing at a heading that does not exist.
