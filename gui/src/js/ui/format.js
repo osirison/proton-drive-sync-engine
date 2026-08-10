@@ -209,7 +209,12 @@ const OUTCOMES = {
   // Proton` is right for it. `move_remote` is the mirror: a rename you made HERE, applied on Proton,
   // where "to match Proton" says the opposite of what happens. No frame draws it, which is why the
   // duplicate survived; S4 is the first screen to render either. DEVIATIONS §76.
-  move_remote: { plan: "moved on Proton to match", row: "moved on Proton" },
+  //
+  // THE PLAN REGISTER NAMES BOTH ENDS, because it is a sentence and not a label: `moved on Proton to
+  // match` trails off — matching what? — where its mirror does not. `this computer` and never a brand
+  // or an OS name (voice rule 6). The ROW register stays terse on both sides: `moved on Proton` is a
+  // complete label, and the two registers exist precisely because a row is not a sentence.
+  move_remote: { plan: "moved on Proton to match this computer", row: "moved on Proton" },
   move_local: { plan: "moved to match Proton", row: "moved to match" },
   conflict: { plan: "both copies kept, nothing lost", row: "both copies kept" },
   remote_delete: { plan: "deleted for good on Proton", row: "deleted for good on Proton" },
