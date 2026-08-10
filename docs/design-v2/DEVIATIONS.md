@@ -2602,3 +2602,27 @@ argument rather than a caller-side `.toLowerCase()`, since above ten `cardinal` 
 | S5     | `6a Details`         | `Open the system log`                    | omitted; `Copy all` stays               | G14 #231     |
 | S5     | all three            | `Open folder`, `Open on Proton Drive`    | omitted                                 | G14 #231     |
 | S5     | `5a Checking`        | four unlit doors on the plan screen      | `Plan a sync` lit, per `02-shell.md:42` | —            |
+
+**`ACTIVITY.nothingRecent` stays undrawn, and it looks like it should not.**
+`14-behaviour-and-state.md:129` gives it as the empty state for `Activity › files` — _"Nothing has
+moved in the last hour."_ — and the shipped screen has no `Last things to move` rows, so that state
+is now the standing one rather than an edge case. It is still not rendered: the sentence is a CLAIM
+about the last hour, and the gap that removed the rows (#230) is precisely the absence of any
+per-file record to make it from. The app cannot know whether it is true. `quietIsNormal` is the
+frame's own sentence, says nothing the daemon has not reported, and is what the row keeps.
+
+**The pending dialog's trigger is the only one the data supports.** No frame and no doc says how
+`7a File pending` is reached, and `routes.js` had no id for it. `7a File lookup` and `7a File
+pending` are the same lookup in two states — a file that is settled, and a file that is moving right
+now — so looking up the file the daemon is currently transferring is what tells them apart. Nothing
+else could: `SyncActivity` carries exactly ONE in-flight transfer (#211), so a lookup for any other
+moving file cannot reach this state. It is latched, because the condition stays true for as long as
+the transfer runs and Esc would otherwise reopen it on the next render, and it closes itself when
+the transfer ends rather than degrading to the not-built-yet placeholder.
+
+**The lookup is debounced by 180ms, which is a correctness fix rather than a nicety.**
+`path_sync_status` is synchronous on the Rust side and its own module header warns it "can hold the
+loop for its full 3s index busy timeout". One index open per keystroke queues behind the daemon's
+own writer, and a 20-character path is 20 of them whose answers the latest-wins guard then throws
+away. The field repaints on the keystroke and the index is asked afterwards; the two are
+deliberately not coupled.

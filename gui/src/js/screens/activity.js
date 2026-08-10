@@ -323,6 +323,13 @@ function neverSyncedBand(never, onShow) {
  * no destination in any frame, no id in `routes.js` and no count to put in it — the same shape as
  * S3's #224 and S4's #227, and this time there is nothing to file that the rows' own gap does not
  * already cover.
+ *
+ * AND `ACTIVITY.nothingRecent` IS NOT DRAWN HERE, which is worth stating because it looks like it
+ * should be. `14-behaviour-and-state.md:129` gives it as the empty state for `Activity › files`:
+ * "Nothing has moved in the last hour." But that sentence is a CLAIM about the last hour, and the
+ * gap that removed the rows (#230) is exactly the absence of any per-file record to make it from —
+ * so the app cannot know whether it is true. `quietIsNormal` is the frame's own sentence, says
+ * nothing the daemon has not reported, and is what stays.
  */
 function listFooter(onPasses) {
   return fid(

@@ -531,6 +531,13 @@ function render() {
   // route: three of S5's six frames ARE dialogs (`6a Details`, `7a Never synced`, `7a File
   // pending`), and `dialogOverlay` is module state no `?frame=` can reach. Without this the harness
   // opens the underlying screen and files all three under "screen not built yet".
+  // `filePending` describes a transfer that is happening. When it finishes there is nothing left
+  // for the dialog to say, and the fallback below would replace its body with the not-built-yet
+  // placeholder — so it closes itself instead.
+  if (dialogOverlay === "filePending" && !activeFixture() && !store.select.response()?.activity?.transfer) {
+    dialogOverlay = null;
+    dialogReturn = null;
+  }
   const dialogRoute = onboardingLatch ? null : (activeFixture()?.ui?.dialog ?? dialogOverlay);
   const active = activeRoute();
   const spec = ROUTES[active];
@@ -1472,6 +1479,26 @@ let activityTab = "files";
 let activityQuery = "";
 let activityLookup = null; // { path, status } — `status` null-but-present means "asked, not found"
 let activityLookupInFlight = null;
+let activityLookupTimer = null;
+/**
+ * Which in-flight path this session has already offered the pending dialog for.
+ *
+ * A LATCH, not a flag, and without it the dialog is a trap: the trigger is "the looked-up path is
+ * the one moving", which stays true after you dismiss it — so Esc would close the dialog and the
+ * next render would open it again.
+ */
+let activityPendingShown = null;
+
+/**
+ * How long to wait after a keystroke before asking the index.
+ *
+ * `path_sync_status` is SYNCHRONOUS on the Rust side and its own module header warns it "can hold
+ * the loop for its full 3s index busy timeout". Asking on every keystroke puts one index open per
+ * character into a queue behind the daemon's own writer; typing a 20-character path is 20 of them,
+ * and the answers arrive in an order the latest-wins guard then has to throw away. 180ms is below
+ * the ~250ms that reads as lag and above a fast typist's inter-key gap.
+ */
+const LOOKUP_DEBOUNCE_MS = 180;
 /**
  * `skip_rule_usage`'s report, and whether it has been asked for on this visit.
  *
@@ -1489,6 +1516,9 @@ function resetActivityScreen() {
   activityQuery = "";
   activityLookup = null;
   activityLookupInFlight = null;
+  activityPendingShown = null;
+  clearTimeout(activityLookupTimer);
+  activityLookupTimer = null;
   skipRuleReport = null;
   skipRuleAsked = false;
 }
@@ -1544,6 +1574,19 @@ async function lookupPath(query) {
   if (activityLookupInFlight !== path) return;
   activityLookupInFlight = null;
   activityLookup = { path, status };
+  // THE PENDING DIALOG'S TRIGGER, and it is the only one the data supports. `7a File lookup` and
+  // `7a File pending` are the same lookup in two states — a file that is settled, and a file that
+  // is moving right now — so looking up the file the daemon is currently transferring is what
+  // tells the two apart. Nothing else could: `SyncActivity` carries exactly ONE in-flight transfer
+  // (#211), so a lookup for any other moving file cannot reach this state at all.
+  //
+  // Latched, so dismissing it sticks. The condition stays true for as long as the transfer runs.
+  const moving = store.select.response()?.activity?.transfer ?? null;
+  if (moving?.path === path && activityPendingShown !== path) {
+    activityPendingShown = path;
+    navigate("filePending");
+    return;
+  }
   render();
 }
 
@@ -1586,13 +1629,18 @@ function activityProps() {
     passesSub: passesSummaryOf(history),
     onQuery: (value) => {
       activityQuery = value;
-      lookupPath(value);
+      // The field repaints NOW and the index is asked later — the two are deliberately not
+      // coupled. A control that waits 180ms to show what you typed is a broken control.
+      clearTimeout(activityLookupTimer);
+      activityLookupTimer = setTimeout(() => lookupPath(value), LOOKUP_DEBOUNCE_MS);
       render();
     },
     onClearQuery: () => {
       activityQuery = "";
       activityLookup = null;
       activityLookupInFlight = null;
+      activityPendingShown = null;
+      clearTimeout(activityLookupTimer);
       render();
     },
     onPasses: () => {
