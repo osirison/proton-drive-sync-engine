@@ -114,6 +114,16 @@
   border-top: 1px solid var(--divider);
 }
 
+/* NO RING ON THE SURFACE ITSELF. `dialog()` gives it `tabindex="-1"` so the focus trap has
+   somewhere to put focus when a dialog holds no control — which `7a File pending` does not, since
+   its one button needs an opener command that does not exist (#231). Left to the browser that
+   draws a ring around the whole 600px panel, which reads as an error state. Nothing is lost: -1
+   keeps the surface out of the Tab order, so no keyboard user can land on it by tabbing, and every
+   control inside keeps its own ring. */
+.dialog:focus {
+  outline: none;
+}
+
 /* --------------------------------------------------------------------------------- motion ---- */
 
 /* --t-appear, the duration 01-foundations.md §7 gives for "a panel or band appearing". A transform

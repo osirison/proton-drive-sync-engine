@@ -596,15 +596,34 @@ export function elideId(protonId) {
  * it moved, and an empty detail column is the truthful answer rather than `nothing to do`, which is
  * a claim that the pass ran and found nothing.
  */
-function passRowFor(entry) {
+function passRowFor(entry, retriedAt = null) {
   const failed = entry.last_error != null;
   return passRow({
     outcome: failed ? "failed" : "clean",
     label: failed ? ACTIVITY.passes.unreachable : ACTIVITY.passes.clean,
-    detail: failed ? null : detailOf(entry),
+    // A FAILED PASS SAYS WHEN IT WAS PUT RIGHT, which is the frame's own `retried at 14:17 and
+    // worked`. The retry is not a field on the entry — it is the next pass that succeeded — so a
+    // failure with nothing after it yet has no such clause, and gets none rather than a guess.
+    detail: failed ? (retriedAt ? ACTIVITY.passes.retried(retriedAt) : null) : detailOf(entry),
     time: clock(entry.epoch_secs),
     error: failed ? entry.last_error : null,
   });
+}
+
+/**
+ * When each failed pass was put right — the clock time of the next pass that succeeded.
+ *
+ * Computed over the wire's own OLDEST-FIRST order, before the list is reversed for display, because
+ * "the next one" is a fact about the order the passes actually happened in.
+ */
+function retriesIn(entries) {
+  const at = new Map();
+  for (const [i, entry] of entries.entries()) {
+    if (entry.last_error == null) continue;
+    const next = entries.slice(i + 1).find((e) => e.last_error == null);
+    if (next) at.set(i, clock(next.epoch_secs));
+  }
+  return at;
 }
 
 /**
@@ -698,8 +717,12 @@ function passesTab(props) {
 
   // NEWEST FIRST, which is the opposite of the wire. `6a Activity passes` draws 14:32 at the top
   // and 12:30 at the bottom; `status_history` arrives oldest-first. Reversed on a copy — the array
-  // is the store's and `reverse()` mutates in place.
-  const rows = [...history].reverse().map((entry, i) => fid(passRowFor(entry), "passRow", i));
+  // is the store's and `reverse()` mutates in place. The retry times are worked out BEFORE the
+  // reversal, where "the next pass" still means the next one.
+  const retried = retriesIn(history);
+  const rows = history
+    .map((entry, i) => fid(passRowFor(entry, retried.get(i) ?? null), "passRow", history.length - 1 - i))
+    .reverse();
 
   const foot = fid(
     el(
