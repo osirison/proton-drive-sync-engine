@@ -209,10 +209,9 @@
 }
 
 /* ---- the two plan rungs (S4). See rows.js for why the ladder is open and why this one closes
-   itself at the bottom instead of opening at the top. `border-top: 0` and not a width override: the
-   shorthand resets the style to `none` and the colour to `currentColor`, which is exactly what the
-   frame records for these rows (`rgb(242, 244, 247)`, the inherited text colour, on an edge nobody
-   draws). */
+   itself at the bottom. `border-top: 0` and not a width override: the shorthand resets the style to
+   `none` and the colour to `currentColor`, which is what the frame records for these rows
+   (`rgb(242, 244, 247)`, the inherited text colour, on an edge nobody draws). */
 .row-plan {
   gap: 13px;
   padding: 8px 2px;
@@ -263,14 +262,13 @@
   color: var(--text-4);
 }
 
-/* Sorted and tinted with the deletions. A `purge` stops here: it destroys no user data, so it gets
-   the background that groups it and none of the emphasis that says something is being lost. */
+/* Sorted and tinted with the deletions. A `purge` stops here: it destroys no user data, so it takes
+   the grouping background and none of the emphasis. */
 .row-plan.is-tinted {
   background: var(--destructive-row-bg);
 }
-/* The row that cannot be undone: its path a tier brighter, its outcome crimson. Always drawn with
-   `is-tinted` (see planActionRow); the background is repeated here so the emphasis can never appear
-   without it. */
+/* Always drawn together with `is-tinted` (see planActionRow); the background is repeated here so
+   the emphasis can never appear without it. */
 .row-plan.is-destructive {
   background: var(--destructive-row-bg);
 }

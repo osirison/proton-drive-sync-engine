@@ -582,20 +582,12 @@ const DELETION_EMPTY_FIDS = {
 // ------------------------------------------------------------------------------ S4 · plan ----
 
 /**
- * The shell slots on the three `5a` frames, of which there are two shapes and NOT one.
- *
- * `5a Plan` and `5a Plan safe` carry a chip and a footer ACTION BAR — no doors at all, so no
- * `footerNav`/`door` slots, and the bar is the screen's own node rather than chrome's.
- * `5a Checking` is the other way round: four doors, and NO CHIP — the frame's header is
- * `img · name · spacer · ⋯`, three slots where the other two have four.
- *
- * The app draws a chip there anyway, because `06-plan.md`'s Behaviour section says the chip reads
- * `rehearsal · nothing has changed` for the whole rehearsal and the frame is the middle of one. The
- * slot is simply not declared, so nothing is compared against a node the frame does not have.
- * DEVIATIONS §76.
- *
- * NO `chipDot` ON ANY OF THEM. The rehearsal chip is text only (`02-shell.md`'s own table: "none —
- * text only"), so the app renders no dot and declaring the slot would name a node neither side has.
+ * Shell slots for the three `5a` frames — two shapes, not one. `5a Plan` and `5a Plan safe` draw a
+ * chip and the screen's own footer action bar (no doors, hence no `footerNav`/`door` slots).
+ * `5a Checking` draws four doors and no chip; the app draws a chip there anyway (`06-plan.md`
+ * Behaviour keeps `rehearsal · nothing has changed` up for the whole pass), so the slot is left
+ * undeclared rather than compared against a node the frame does not have. DEVIATIONS §76.
+ * No `chipDot` on any of them: the rehearsal chip is text only (`02-shell.md`, "none — text only").
  */
 const planShell = (chip) => ({
   header: "header",
@@ -607,11 +599,9 @@ const planShell = (chip) => ({
 });
 
 /**
- * The seam block, which both 1040 frames draw and which sits at a different index in each.
- *
- * `s` IS THE SIDE — 0 leaving, 1 arriving — and it is the drawn left-to-right order, so the table
- * numbers by position and the screen decides what goes where. Same shape as S3's two columns, and
- * for the same reason: the frame draws one arrangement and the code must not hard-code it twice.
+ * The seam block both 1040 frames draw, at a different index in each. `s` is the drawn
+ * left-to-right position (0 leaving, 1 arriving), not a direction — the screen decides what goes
+ * where, as with S3's two columns.
  */
 const planSides = (at) => ({
   seamBlock: at,
@@ -627,15 +617,12 @@ const planSides = (at) => ({
 /**
  * `5a Plan` — the plan that would destroy something.
  *
- * TWO SLOTS THE APP NEVER STAMPS, and they are absences rather than omissions: `div[2]/div/button`
- * is `Leave it alone` and `div[4]/button[0]` is `Run it without the deletion`. Both need the
- * filtered apply (G3, #192) and `06-plan.md` says to hide a button rather than fake it, so neither
- * is drawn and neither is declared — a slot declared but never stamped is inert, but a slot declared
- * for a button the app has decided not to draw is a mapping waiting to be wrong.
+ * Two frame slots are deliberately undeclared: `div[2]/div/button` (`Leave it alone`) and
+ * `div[4]/button[0]` (`Run it without the deletion`) both need the filtered apply (G3, #192), and
+ * `06-plan.md` says hide a button rather than fake it — so neither is drawn nor mapped.
  *
- * `run` IS `button[1]`, which is the whole point of saying so: with the first button gone, the one
- * the app draws is still the frame's SECOND, and mapping it to `button[0]` would compare a primary
- * against a secondary and quietly pass on colours that happen to be close.
+ * `run` is `button[1]`: with the frame's first button gone the app's button is still the frame's
+ * second, and `button[0]` would compare a primary against a secondary.
  */
 const PLAN_FIDS = {
   titleRow: "div[0]",
@@ -692,12 +679,11 @@ const PLAN_SAFE_FIDS = {
   sideRowPath: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[1]`,
   sideRowNote: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[2]`,
 
-  // `tailSpacer`, NOT `spacer`. `planShell` already declares `spacer` for the HEADER's flex gap, and
-  // these two tables are spread into one object — so a second `spacer` here silently wins, and
-  // `renderHeader` stamps the header's 0-height gap with the key of a 116px block at the bottom of
-  // the screen. It passed: the box comparison is skipped (the ⋯ taints the root's children) and the
-  // two nodes happen to agree on `flex-grow: 1; flex-basis: 0%` and on nothing else being set. A
-  // mapping that is wrong and green is the one thing this harness cannot survive.
+  // `tailSpacer`, not `spacer`: `planShell` already declares `spacer` for the header's flex gap and
+  // the two tables spread into one object, so a second `spacer` here wins and `renderHeader` stamps
+  // the header's 0-height gap with this 116px block's key. The collision passes green — the box
+  // comparison is skipped (the ⋯ taints the root's children) and both nodes set only
+  // `flex-grow: 1; flex-basis: 0%`.
   tailSpacer: "div[2]",
   bar: "div[3]",
   checked: "div[3]/span[0]",
@@ -707,12 +693,10 @@ const PLAN_SAFE_FIDS = {
 };
 
 /**
- * `5a Checking` — the rehearsal in flight.
- *
- * The mark is the SYNCING construction with F2's `dryRun` dash, so it carries the gradient subtree
- * the other two states have no `defs` for. `div[0]/div[3]` — `8,431 of 12,480 files` — is not
- * declared, because neither half of that sentence has a source (G9 #209, G7 #207) and the app draws
- * no node for it.
+ * `5a Checking` — the rehearsal in flight. The mark is the syncing construction with F2's `dryRun`
+ * dash, so it carries a gradient `defs` subtree the other two states have none of.
+ * `div[0]/div[3]` (`8,431 of 12,480 files`) is undeclared: neither half of it has a source
+ * (G9 #209, G7 #207) and the app draws no node for it.
  */
 const PLAN_CHECKING_FIDS = {
   checking: "div[0]",

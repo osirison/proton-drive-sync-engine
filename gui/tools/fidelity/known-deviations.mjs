@@ -233,16 +233,16 @@ export const KNOWN_DEVIATIONS = [
     why: "the block is `flex: 1` between a 52px header and a 50px footer the frame does not draw, so it fills 662 of the window's 764 where the frame's whole surface is 422. Pinning it to 420 would leave the empty state floating in the top half of a window whose remaining space belongs to nothing",
   },
 
-  // ---- S4 · the plan screen. Three causes, and not one of them is a value anybody chose: four rows
-  // for the byte totals nothing reports, four for two buttons that need a capability the daemon does
-  // not have, and sixteen for a 522px frame drawn inside a 1040px window.
+  // ---- S4 · the plan screen. Three causes: four rows for the byte totals nothing reports (#191),
+  // four for two buttons that need a capability the daemon does not have (#192), and sixteen for a
+  // 522px frame drawn inside a 1040px window (#221).
   {
     frame: "5a Plan",
     key: "div[1]/div[1]/div[0]/div[1]/span[1]",
     props: ["box.w"],
     detail: "71.92 vs 26.22",
     issue: "#191",
-    why: "the leaving side's `files, 4.1 MB` loses its byte total: G2 — `PlannedAction` carries `path`, `destination_path`, `action`, `entity_kind`, `conflict_path` and `remote_id`, and no size, so the dry-run surface has no per-direction total to draw. Phase 1 says `files` and the unit measures 26px against the drawn 72px",
+    why: "the leaving side's `files, 4.1 MB` loses its byte total: G2 — `PlannedAction` carries no size field, so the dry-run surface has no per-direction total to draw and Phase 1 says `files` alone",
   },
   {
     frame: "5a Plan",
@@ -250,7 +250,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.w"],
     detail: "75.11 vs 26.22",
     issue: "#191",
-    why: "the arriving side's `files, 2.6 MB`, for the same reason as the leaving side's — one missing field, drawn twice",
+    why: "the arriving side's `files, 2.6 MB`, absent for the same reason as the leaving side's — one missing field, drawn twice",
   },
   {
     frame: "5a Plan",
@@ -258,7 +258,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.w"],
     detail: "756.3 vs 884",
     issue: "#192",
-    why: "the destructive band's body takes the width `Leave it alone` would have occupied. That button is the filtered apply reached from the band (G3) — drop this one action and run the rest — and `06-plan.md` says to hide a button rather than fake it. A drawn button that quietly did nothing would be worst of all here: it is the escape hatch on the one screen where somebody is looking for one",
+    why: "the destructive band's body takes the width `Leave it alone` would have occupied — that button is the filtered apply reached from the band (G3), and `06-plan.md` says to hide a button rather than fake it",
   },
   {
     frame: "5a Plan",
@@ -274,7 +274,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.w"],
     detail: "756.3 vs 884",
     issue: "#192",
-    why: "the band's consequence sentence, widened by the same absent button. It still wraps to one line, so only the box moves",
+    why: "the band's consequence sentence, widened by the same absent button; it still wraps to one line, so only the box moves",
   },
   {
     frame: "5a Plan",
@@ -282,7 +282,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.w"],
     detail: "207.52 vs 418.41",
     issue: "#192",
-    why: "the action bar's spacer absorbs the 199px `Run it without the deletion` (G3 #192). `06-plan.md` is explicit — \"if unavailable, hide the button rather than faking it\" — and the design's own reason for the button is that you should not have to choose between all of it and none, which is precisely what a filtered apply the daemon cannot perform would be pretending to offer",
+    why: 'the action bar\'s spacer absorbs the 199px `Run it without the deletion` (G3 #192), which `06-plan.md` is explicit about — "if unavailable, hide the button rather than faking it"',
   },
   {
     frame: "5a Plan safe",
@@ -290,7 +290,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.w"],
     detail: "71.92 vs 26.22",
     issue: "#191",
-    why: "the leaving side's byte total, absent for the same reason on the safe screen. Its per-file sizes (`1.2 MB`, `2.8 MB`, `96 KB`) are absent too and cost no assertion: every one of those rows sits inside a subtree containing an unbundled glyph, so the harness does not compare their boxes",
+    why: "the leaving side's byte total, absent for the same reason on the safe screen; its per-file sizes (`1.2 MB`, `2.8 MB`, `96 KB`) are absent too and cost no assertion, because each of those rows sits inside a subtree containing an unbundled glyph and the harness does not compare their boxes",
   },
   {
     frame: "5a Plan safe",
@@ -302,14 +302,14 @@ export const KNOWN_DEVIATIONS = [
   },
 
   // The 522px window inside a 1040px shell — `3a Conflicts cleared` and `4a Empty`'s situation for a
-  // third time, and the first one with a SEAM in it.
+  // third time, and the first with a seam in it.
   {
     frame: "5a Checking",
     key: "div[0]",
     props: ["margin-left"],
     detail: "0px vs 260px",
     issue: "#221",
-    why: "the frame is a 522px WINDOW and the shell's is a fixed, non-resizable 1040 — S4 draws the body as a centred 520px column, which is the closest the shell can get, and a 520 column in a 1040 window has 260px either side where the frame's window has none",
+    why: "the frame is a 522px window against the shell's fixed, non-resizable 1040, so S4 draws the body as a centred 520px column — the closest it gets — and that column has 260px either side where the frame's window has none",
   },
   {
     frame: "5a Checking",
@@ -317,7 +317,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["margin-right"],
     detail: "0px vs 260px",
     issue: "#221",
-    why: "the frame is a 522px WINDOW and the shell's is a fixed, non-resizable 1040 — S4 draws the body as a centred 520px column, which is the closest the shell can get, and a 520 column in a 1040 window has 260px either side where the frame's window has none",
+    why: "the frame is a 522px window against the shell's fixed, non-resizable 1040, so S4 draws the body as a centred 520px column — the closest it gets — and that column has 260px either side where the frame's window has none",
   },
   {
     frame: "5a Checking",
@@ -325,7 +325,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.h"],
     detail: "543 vs 542",
     issue: "#221",
-    why: "the seam is pinned 60px off each end of its block, so it is exactly as tall as the block minus 120 — and the block is one pixel shorter here because the 1040 footer beneath it is one pixel taller than the 520 one (31px of doors against 32). The line is the same line; the window under it is a different width",
+    why: "the seam is pinned 60px off each end of its block, so it is exactly as tall as the block minus 120 — and the block is one pixel shorter here because the 1040 footer beneath it is one pixel taller than the 520 one (31px of doors against 32)",
   },
   {
     frame: "5a Checking",
@@ -333,7 +333,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["padding-right"],
     detail: "24px vs 40px",
     issue: "#221",
-    why: "the footer is a child of the WINDOW, not the body, so it stays 1040 wide while the frame's is 520 — the narrow window draws 24px padding, a 22px gap and 12.5px labels against the wide window's 32/34/13. Faking those metrics at 1040 would draw four doors huddled inside 960px of chrome, which is neither frame",
+    why: "the footer is a child of the window, not the body, so it stays 1040 wide while the frame's is 520 — the narrow window draws 24px padding, a 22px gap and 12.5px labels against the wide window's 32/34/13",
   },
   {
     frame: "5a Checking",
@@ -341,7 +341,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["padding-left"],
     detail: "24px vs 40px",
     issue: "#221",
-    why: "the footer is a child of the WINDOW, not the body, so it stays 1040 wide while the frame's is 520 — the narrow window draws 24px padding, a 22px gap and 12.5px labels against the wide window's 32/34/13. Faking those metrics at 1040 would draw four doors huddled inside 960px of chrome, which is neither frame",
+    why: "the footer is a child of the window, not the body, so it stays 1040 wide while the frame's is 520 — the narrow window draws 24px padding, a 22px gap and 12.5px labels against the wide window's 32/34/13",
   },
   {
     frame: "5a Checking",

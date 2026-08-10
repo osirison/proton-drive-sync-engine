@@ -274,25 +274,21 @@ export function actionRow({ lead = null, title, note = null, action = null } = {
 
 // ----------------------------------------------------------------------------- plan rows ----
 
-// TWO NEW RUNGS ON THE LADDER, added by S4 exactly as the module header says a screen should:
-// `5a Plan`'s action list is `padding:8px 2px` gap-13 with the rule on the BOTTOM, and `5a Plan
-// safe`'s two side lists are `padding:7px 0` gap-11 with it on the top. The bottom rule is the rare
-// one — eleven border-bottom rows across the whole prototype against ninety-two border-top — and it
-// is not decoration: the list's own block draws the rule ABOVE the first row, so each row closing
-// itself is what makes the last row's edge land on the list's bottom rather than on the footer.
+// Two rungs the module header's ladder did not model. `5a Plan`'s action list is the rule-on-BOTTOM
+// rung (§53a); `5a Plan safe`'s two side lists are `padding:7px 0` gap-11, rule on top.
+// The bottom rule has to be per-row: the list's own block draws a rule above the first row, so a row
+// closing itself is what lands the last edge on the list's bottom rather than on the footer.
 //
-// THE GLYPH IS A 13px SLOT, NOT A CHARACTER WIDTH. All four marks (`→ ← ＋ ↷`) and the conflict's
-// 6px ring occupy the same 13px, centred, so nine rows of mixed kinds keep one left edge for their
-// paths. The ring gets 3.5px either side because 6 + 3.5 + 3.5 = 13 — the dot is doing the glyph's
-// job at the glyph's width, rather than being a narrower thing the rows then fail to line up on.
+// The glyph is a 13px slot, not a character width — all four marks (`→ ← ＋ ↷`) and the conflict's
+// 6px ring occupy it, centred, so mixed rows share one left edge for their paths. The ring's 3.5px
+// either side is 6 + 3.5 + 3.5 = 13.
 
 /** Which colour a row's mark carries. Per instance, like `transferRow`'s: `→` is warm, `←` cool. */
 const GLYPH_TONE = new Set(["up", "down", "quiet", "destructive"]);
 
 function glyphNode(glyph, tone) {
-  // A ring rather than a character, for the one row kind that is not a direction: a conflict is not
-  // going anywhere, it is being kept twice. `decision` and not `destructive` — an outline is a
-  // choice already made for you (both copies kept), not a thing being taken away.
+  // No glyph = the conflict row: a ring, since it has no direction. `decision` (outline = a choice
+  // already made for you, both copies kept) and not `destructive`.
   if (glyph == null) return dot({ tone: "decision", size: 6, ring: "1px" });
   if (!GLYPH_TONE.has(tone)) {
     throw new Error(`rows: unknown glyph tone "${tone}". Known: ${[...GLYPH_TONE].join(", ")}`);
@@ -303,21 +299,14 @@ function glyphNode(glyph, tone) {
 /**
  * One row of `5a Plan`'s `Every action, in order` list: mark · path · plain-English outcome.
  *
- * THE DESTRUCTIVE ROW IS TINTED AND BRIGHTER, and both halves are measured rather than styled by
- * feel: the tint is `rgba(255,59,59,.05)` — a fifth crimson alpha, tokenised as `--destructive-row-bg`
- * — and the path steps UP from `--text-2` to `--text` while the outcome goes crimson. The row is
- * louder than its neighbours in three dimensions because it is the one that cannot be undone.
+ * Measured: the tint is `rgba(255,59,59,.05)` (tokenised `--destructive-row-bg`), and a destructive
+ * row steps its path up from `--text-2` to `--text` with the outcome crimson.
  *
- * `tinted` AND `destructive` ARE TWO FLAGS BECAUSE THEY ARE TWO SETS, which is the same distinction
- * `plan.rs` draws and the design conflates. Display-destructive rows sort together and share the
- * background; only the ones that take user data away get the brighter path and the crimson outcome.
- * A `purge` is the row that separates them — it is sorted and tinted with the deletions and destroys
- * nothing, so a crimson `record cleared, no file touched` would be the app saying it took something.
- * (Its glyph is already quiet for exactly that reason; one flag made the text disagree with the mark
- * on the same row.)
- *
- * It is still only a row, which is the design's own point: the band above it is what makes the
- * dangerous thing more than a line in a list, and this tint is how the list agrees with the band.
+ * `tinted` and `destructive` are two flags because they are two sets — the distinction `plan.rs`
+ * draws and the design conflates. Display-destructive rows sort together and share the background;
+ * only rows that take user data away get the brighter path and crimson outcome. A `purge` is tinted
+ * and not destructive: it destroys nothing, so crimson would claim otherwise, and its glyph is
+ * already quiet.
  */
 export function planActionRow({
   glyph = null,
@@ -346,12 +335,11 @@ export function planActionRow({
 /**
  * One row of a `5a Plan safe` side list: mark · path · what it is.
  *
- * THE NOTE'S REGISTER CHANGES THE PATH'S COLOUR, which reads as a quirk and is the design being
- * precise. A row whose note is a SIZE is a file moving — mono 11px, path at `--text-2`. A row whose
- * note is a WORD (`new folder`, `moved`) is something else happening — sans 11.5px, path one tier
- * quieter at `--text-3`. `06-plan.md` states it outright ("New folders show `new folder` instead of
- * a size, in 11.5px `#6D7783` with the path in `#99A2AE`"), and the frame draws the same rule on the
- * rename row, which the prose does not mention.
+ * `noteIsSize` flips the path's tier as well as the note's register: a size is a file moving (note
+ * mono 11px, path `--text-2`); a word (`new folder`, `moved`) is something else (note sans 11.5px,
+ * path one tier quieter at `--text-3`). `06-plan.md`: "New folders show `new folder` instead of a
+ * size, in 11.5px `#6D7783` with the path in `#99A2AE`" — and the frame applies it to the rename row
+ * too, which the prose does not mention.
  */
 export function planSideRow({ glyph, tone = "quiet", path, note = null, noteIsSize = true } = {}) {
   return flatRow("side", [
@@ -549,9 +537,9 @@ export function deleteHint(sentence, word = "DELETE") {
  * `onChange` recomputes from the field's real value, and there is no second place to keep in step.
  */
 export function deletionGate({ hint, field, confirm }) {
-  // The field and its button are the group here. `gateGroup` owns both halves of that rule — the
-  // attribute the field's own blur consults and the listener that notices focus leaving entirely —
-  // because S4's gate spans a whole footer bar and a second copy of the pair is how the two drift.
+  // `gateGroup` owns both halves of the clear-on-blur rule — the `[data-delete-gate]` attribute the
+  // field's own blur consults, and the `focusout` listener that clears when focus leaves the pair.
+  // Shared with S4's footer-bar gate; a second copy of the pair is how the two drift.
   const row = gateGroup(el("div", { class: "deletion-gate-row" }, field, confirm));
   return el("div", { class: "deletion-gate" }, hint, row);
 }

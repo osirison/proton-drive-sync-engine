@@ -204,32 +204,23 @@ const OUTCOMES = {
   download: { plan: "brought to this computer", row: "brought here" },
   create_remote_directory: { plan: "folder created on Proton", row: "folder created on Proton" },
   create_local_directory: { plan: "folder created here", row: "folder created here" },
-  // THE TWO MOVES ARE NOT ONE OUTCOME, and F7 gave them the same words. `move_local` applies a
-  // rename that happened on PROTON to the local copy — that is the drawn row, and `moved to match
-  // Proton` is right for it. `move_remote` is the mirror: a rename you made HERE, applied on Proton,
-  // where "to match Proton" says the opposite of what happens. No frame draws it, which is why the
-  // duplicate survived; S4 is the first screen to render either. DEVIATIONS §76.
-  //
-  // THE PLAN REGISTER NAMES BOTH ENDS, because it is a sentence and not a label: `moved on Proton to
-  // match` trails off — matching what? — where its mirror does not. `this computer` and never a brand
-  // or an OS name (voice rule 6). The ROW register stays terse on both sides: `moved on Proton` is a
-  // complete label, and the two registers exist precisely because a row is not a sentence.
+  // The two moves are mirrors, not one outcome: `move_local` applies a rename made on Proton to the
+  // local copy (the drawn row); `move_remote` applies a rename made here to Proton, where "to match
+  // Proton" would say the opposite of what happens. No frame draws `move_remote`, so it went
+  // undetected until S4 rendered it. DEVIATIONS §76.
+  // The plan register has to name both ends — `moved on Proton to match` trails off — and says
+  // `this computer`, never a brand or OS name (voice rule 6). The row register stays terse.
   move_remote: { plan: "moved on Proton to match this computer", row: "moved on Proton" },
   move_local: { plan: "moved to match Proton", row: "moved to match" },
   conflict: { plan: "both copies kept, nothing lost", row: "both copies kept" },
   remote_delete: { plan: "deleted for good on Proton", row: "deleted for good on Proton" },
   skip_unsupported: { plan: "skipped, can't be synced", row: "skipped, can't be synced" },
 
-  // THE FOUR F7 LEFT NULL, WRITTEN BY S4 RATHER THAN MEASURED. No frame draws an outcome for any of
-  // them and `13-copy-deck.md` carries none — F7's note said the words did not exist yet and that
-  // inventing them here would be this module doing design. That was right while nothing rendered a
-  // plan; it stops being right the moment a screen draws every row of one, because the alternative
-  // to a chosen word is a row that names your file and says nothing about what happens to it — on
-  // the screen whose only job is telling you whether it is safe to run. `local_delete` is the worst
-  // of the four to leave blank: it is the destructive row, tinted red, with no sentence.
-  //
-  // Each is the narrowest true statement rather than a translation of the engine's noun, and each is
-  // recorded in DEVIATIONS §76 as chosen copy so the deck can overrule it.
+  // The four F7 left null, chosen by S4 rather than measured: no frame draws an outcome for any of
+  // them and `13-copy-deck.md` carries none. They are here because a screen now draws every row of a
+  // plan, and the fallback is a labelless row — `local_delete` would be the destructive row, tinted,
+  // with no sentence. Each is the narrowest true statement rather than a translation of the engine's
+  // noun, and each is recorded in DEVIATIONS §76 as chosen copy the deck can overrule.
   local_delete: { plan: "deleted for good on this computer", row: "deleted for good here" },
   purge: { plan: "record cleared, no file touched", row: "record cleared" },
   auto_link: { plan: "already matching, linked up", row: "linked up" },

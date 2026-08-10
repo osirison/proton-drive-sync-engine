@@ -1,22 +1,13 @@
-// The plan screen's pure decisions (S4), tested on their own because a passing style gate would not
-// defend one of them: every one is about a plan no `5a` frame draws.
+// The plan screen's pure decisions (S4). A frame is one plan — nine actions with a remote delete,
+// seven files moving — so the style gate defends none of what is here: two deletions, a deletion
+// applied on this computer, a `purge`, an adoption or type clash the safe screen has no column for,
+// a summary claiming a conflict that is not there, a rehearsal that failed.
 //
-// A frame is ONE plan. What the gate checks is nine actions with a remote delete, and seven files
-// moving. What it cannot check is a plan that deletes two things, one that deletes from THIS
-// computer, one carrying a `purge` (tinted like a deletion and never gated), one carrying an
-// adoption or a type clash the safe screen has no column for, a plan with no conflict beside a
-// summary that claims one, or a rehearsal that failed. Those are where this screen goes wrong, so
-// those are what is here.
-//
-// The two that would fail loudest and quietest at once:
-//
-//   · `isGated` against `isDisplayDestructive`. Collapse them and a `purge` — an index row for a
-//     file already gone from both sides — puts the typed-DELETE gate in front of somebody for
-//     nothing, which is how a gate stops meaning anything. Collapse them the other way and a real
-//     deletion loses its tint.
-//   · `bodyOf`. The safe screen has two lists of files and nowhere to put anything else, so if it
-//     is chosen on "nothing is destructive" rather than on "everything is a file crossing the seam",
-//     a plan with a conflict in it renders a complete, calm screen with an action silently missing.
+// Two invariants carry the file:
+//   · `isGated` is not `isDisplayDestructive`. Collapsed one way, a `purge` puts the typed-DELETE
+//     gate in front of somebody for nothing; collapsed the other, a real deletion loses its tint.
+//   · `bodyOf` keys on "everything is a file crossing the seam", not "nothing is destructive" — the
+//     safe screen has two file lists and nowhere to draw a conflict, which would go missing.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -48,12 +39,10 @@ const row = (path, action, extra = {}) => ({
 });
 
 /**
- * `5a Plan`'s own nine, row for row, in the daemon's emission order rather than the drawn one.
- *
- * IT HAS TO BE THE FIXTURE'S NINE and not a six-row sketch of them, which is what this was: the
- * counts these tests assert are the counts the frame draws (`3` leaving, `2` arriving, `9 actions`),
- * so a shorter plan asserts numbers no frame ever produced and quietly drops the multi-upload and
- * multi-download cases — the only ones where a per-side count can disagree with a per-side list.
+ * `5a Plan`'s own nine, row for row, in the daemon's emission order rather than the drawn one. It
+ * has to be the fixture's nine: the counts asserted below are the ones the frame draws (`3`
+ * leaving, `2` arriving, `9 actions`), and a shorter plan drops the multi-upload and multi-download
+ * cases — the only ones where a per-side count can disagree with a per-side list.
  */
 const NINE = [
   row("docs/spec.md", "upload"),
@@ -103,8 +92,8 @@ test("the drawn plan is the list and the drawn safe plan is the hero", () => {
 });
 
 test("a plan the safe screen cannot hold gets the list, however harmless it is", () => {
-  // Not one of these is destructive, and not one of them is a file crossing the seam — so the safe
-  // screen would draw two empty columns and forget the action entirely.
+  // None of these is destructive and none is a file crossing the seam, so the safe screen would
+  // draw two empty columns and lose the action.
   for (const action of ["conflict", "auto_link", "type_conflict", "skip_unsupported", "purge"]) {
     assert.equal(bodyOf({ dryRun: payload([row("a", "upload"), row("b", action)]) }), "plan", action);
   }
@@ -121,10 +110,9 @@ test("checking outranks everything, and a failure outranks a plan", () => {
   assert.equal(bodyOf({ dryRun: payload(NINE), checking: true }), "checking");
   assert.equal(bodyOf({ error: "boom", checking: true }), "checking");
   assert.equal(bodyOf({ error: "boom" }), "failed");
-  // BOTH AT ONCE IS UNREACHABLE — `ensurePlan` clears one when it sets the other — and the order is
-  // still worth pinning, because the two readings are not equally safe. A rehearsal that failed
-  // leaves the plan on screen unverified, and drawing it under a live `Run this sync` would offer to
-  // run something the app has just failed to check.
+  // Both at once is unreachable (`ensurePlan` clears one when it sets the other), but the order
+  // still matters: a failed rehearsal leaves the plan unverified, and drawing it under a live
+  // `Run this sync` would offer to run what the app has just failed to check.
   assert.equal(bodyOf({ dryRun: payload(NINE), error: "boom" }), "failed");
   // Nothing at all is the state between the call and its answer, not an empty plan.
   assert.equal(bodyOf({}), "checking");
@@ -132,17 +120,16 @@ test("checking outranks everything, and a failure outranks a plan", () => {
 
 test("an empty plan is safe, not a list", () => {
   assert.equal(bodyOf({ dryRun: payload([]) }), "safe");
-  // …and it is the likeliest plan there is, so it does not get the safe screen's own words: `Nothing
-  // gets deleted` over a count of nought is true and is not what somebody came to read.
+  // …with its own words rather than the safe screen's: `Nothing gets deleted` over a count of
+  // nought is true and says nothing.
   assert.equal(summarise([]).total, 0);
   assert.equal(PLAN.nothingTitle, "Nothing needs to move");
   assert.match(PLAN.nothingSub, /^Both sides already match\./);
 });
 
 test("the safe sentence agrees with its own count, including at one and at nought", () => {
-  // `One file move` was the first version, at the count a single edited file produces — `plural`
-  // agreed the noun and the verb was baked in, which is the exact failure its own docstring warns
-  // about. Nought is reachable without the plan being empty: a plan can be one new folder.
+  // `plural` agrees the noun only; the verb has to be agreed alongside it. Nought is reachable
+  // without the plan being empty — a plan can be one new folder.
   assert.match(PLAN.safeSub(1), /^One file moves,/);
   assert.match(PLAN.safeSub(5), /^Five files move,/);
   assert.match(PLAN.safeSub(0), /^No files move,/);
@@ -189,16 +176,16 @@ test("two deletions keep their own relative order", () => {
 test("the side counts are files, and the folder and the rename are sentences", () => {
   const model = summarise(NINE);
   // The frame's own numerals: `3` over `files` on the left, `2` on the right, `9 actions` in the
-  // tally. If this constant ever stops being the fixture's nine, these stop being the frame's.
+  // tally.
   assert.equal(model.total, 9);
   assert.equal(model.uploads, 3);
   assert.equal(model.downloads, 2);
   assert.equal(model.newFolders, 1);
   assert.equal(model.renames, 1);
   assert.equal(model.conflicts, 1);
-  // The new folder is on the leaving side and the rename on the arriving one, but neither is counted
-  // as a file — that is the distinction `5a Plan safe` makes when it says `Five files move` over
-  // seven actions. So each side LISTS one more row than it COUNTS.
+  // The new folder (leaving) and the rename (arriving) are listed but not counted as files — the
+  // distinction `5a Plan safe` makes saying `Five files move` over seven actions, so each side
+  // lists one more row than it counts.
   assert.equal(model.leaving.length, 4);
   assert.equal(model.arriving.length, 3);
   assert.equal(PLAN.safeSub(model.uploads + model.downloads), PLAN.safeSub(5));
@@ -241,7 +228,7 @@ test("the band's title agrees with the number of files in it", () => {
 
 test("a whole folder is not called a file", () => {
   // `plan_sync` emits LocalDelete/RemoteDelete with EntityKind::Directory when a subtree went
-  // cleanly on one side — the largest loss this band can describe, and the one it would understate.
+  // cleanly on one side — the largest loss this band describes.
   const folder = row("photos/2019", "local_delete", { entity_kind: "directory" });
   const file = row("a.md", "remote_delete");
   assert.equal(gatedKind([folder]), "folder");
@@ -262,7 +249,7 @@ test("a folder's consequence names what is inside it", () => {
     "photos/2019 and everything inside it is removed from this computer. It's already gone from " +
       "Proton Drive, so nothing will bring it back.",
   );
-  // The clause is appended AFTER the path, so the mono span in the band still wraps the path alone.
+  // The clause is appended after the path, so the mono span in the band still wraps the path alone.
   assert.match(PLAN.destructiveRemote("photos/2019", true), /^photos\/2019 and everything inside it /);
 });
 
@@ -270,6 +257,26 @@ test("the side unit omits a size it was not given", () => {
   assert.equal(PLAN.sideUnit(3, "4.1 MB"), "files, 4.1 MB");
   assert.equal(PLAN.sideUnit(3, null), "files");
   assert.equal(PLAN.sideUnit(1, null), "file");
+});
+
+test("both directions are counted, and each sentence names its own side", () => {
+  // The engine emits `create_local_directory` and `move_remote` too; counting only their mirrors
+  // left a side with no sentence and — before the row test in `seamBlock` — no column at all.
+  const model = summarise([
+    row("here/new", "create_local_directory", { entity_kind: "directory" }),
+    row("there/new", "create_remote_directory", { entity_kind: "directory" }),
+    row("a.md", "move_remote", { destination_path: "b.md" }),
+    row("c.md", "move_local", { destination_path: "d.md" }),
+  ]);
+  assert.equal(model.newFolders, 2);
+  assert.equal(model.renames, 2);
+  assert.equal(model.leaving.length, 2);
+  assert.equal(model.arriving.length, 2);
+  // Nought files either way, and neither side is empty.
+  assert.equal(model.uploads, 0);
+  assert.equal(model.downloads, 0);
+  assert.match(PLAN.plusFolderHere(1), /created on this computer/);
+  assert.match(PLAN.plusRenameThere(1), /renamed on Proton Drive to match\.$/);
 });
 
 test("the folder and rename sentences count", () => {
@@ -282,10 +289,9 @@ test("the folder and rename sentences count", () => {
 // ------------------------------------------------------------------------------- the outcomes
 
 test("every action the engine can emit has an outcome in the plan register", () => {
-  // The list is `SyncAction`'s own variants (src/sync.rs, snake_case). A blank here is a row that
-  // names your file and says nothing about what happens to it — which is the whole of what this
-  // screen is for. Four of these were null until S4 and are recorded in DEVIATIONS §76 as chosen
-  // copy rather than measured.
+  // `SyncAction`'s own variants (src/sync.rs, snake_case). A blank is a row that names a file and
+  // says nothing about what happens to it. Four of these are chosen copy rather than measured, and
+  // are recorded in DEVIATIONS §76.
   const actions = [
     "upload",
     "download",
@@ -308,8 +314,8 @@ test("every action the engine can emit has an outcome in the plan register", () 
 });
 
 test("the two moves no longer say the same thing", () => {
-  // F7 gave both the drawn `moved to match Proton`, which is right for a rename that happened on
-  // Proton and says the opposite for one you made here.
+  // F7 gave both the drawn `moved to match Proton`, which is right for a rename made on Proton and
+  // says the opposite for one made here.
   assert.notEqual(outcomeOf("move_local", "plan"), outcomeOf("move_remote", "plan"));
   assert.equal(outcomeOf("move_local", "plan"), "moved to match Proton");
 });
@@ -323,7 +329,7 @@ test("an action the engine cannot emit still returns nothing rather than a guess
 test("a conflict draws a ring and a deletion draws a crimson cross", () => {
   assert.equal(markOf("conflict").glyph, null);
   assert.deepEqual(markOf("remote_delete"), { glyph: "✕", tone: "destructive" });
-  // A purge is tinted with the deletions and is NOT crimson: it takes nothing away from you.
+  // A purge is tinted with the deletions but is not crimson: it takes nothing away.
   assert.equal(markOf("purge").tone, "quiet");
 });
 
