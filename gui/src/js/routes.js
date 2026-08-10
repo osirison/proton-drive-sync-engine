@@ -71,6 +71,25 @@ export const ROUTES = {
     task: "S5",
     issue: 184,
   },
+  // `7a File pending` — one file, on its way. The odd one out among the dialogs in three ways, all
+  // measured: it draws NO title row and no ✕, it carries its padding on the surface itself (which
+  // is why it comes out at exactly 600 where `neverSynced` and `details` gain 2px — §48a), and it
+  // is CONTENT-SIZED, so `height` is null rather than the 239px the frame happens to be. That
+  // number is the sum of what the prototype drew, and this build draws one thing less: the progress
+  // bar has no computable value in either direction, so it is omitted and the dialog is shorter.
+  //
+  // `closable:false` is the ✕, not the exit. Unlike `saveRefused` — the other dialog without one,
+  // which withholds it because a dismiss would be a third answer to a two-way choice — this one
+  // simply has no corner to put it in. Esc closes it through F4's chain like every other overlay.
+  filePending: {
+    kind: "overlay",
+    presentation: "dialog",
+    closable: false,
+    size: [600, null],
+    padding: "24px 26px 22px",
+    task: "S5",
+    issue: 184,
+  },
   saveRefused: {
     kind: "overlay",
     presentation: "dialog",

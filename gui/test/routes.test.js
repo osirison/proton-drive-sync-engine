@@ -98,9 +98,12 @@ test("an unknown id passes through unchanged, for the caller to reject", () => {
 // here because the two are one word apart in the table and the wrong one is not a crash — it is a
 // scrim over a screen that should have been replaced, or a full window with no way back.
 
-test("only the three drawn dialogs are dialogs", () => {
+// `filePending` joined the set with S5. It is the fourth and, unlike the other three, it draws no
+// title row and no ✕ — which is a fact about its CONTENTS, not about how it is presented, so it is
+// still a dialog by this test's measure: a floating surface with no header and no footer doors.
+test("only the four drawn dialogs are dialogs", () => {
   const dialogs = Object.keys(ROUTES).filter((id) => isDialog(id));
-  assert.deepEqual(dialogs.sort(), ["details", "neverSynced", "saveRefused"]);
+  assert.deepEqual(dialogs.sort(), ["details", "filePending", "neverSynced", "saveRefused"]);
 });
 
 test("every overlay declares a presentation, and no door does", () => {

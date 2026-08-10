@@ -104,9 +104,16 @@ export function attentionBand({ items = [] } = {}) {
  * these. The first is controls.js's `radioCard` wearing a destructive tone; the second is a prose
  * callout on a spec sheet, with no glyph and no button at all.
  */
-export function noticeBand({ tone = "destructive", mark = null, title, note = null, action = null } = {}) {
+export function noticeBand({
+  tone = "destructive",
+  mark = null,
+  title,
+  note = null,
+  action = null,
+  wrapped = false,
+} = {}) {
   toneOf(tone);
-  return shell(tone, `band-notice band-notice-${tone}`, [
+  const row = [
     mark,
     el(
       "div",
@@ -115,7 +122,18 @@ export function noticeBand({ tone = "destructive", mark = null, title, note = nu
       note ? el("div", { class: "band-notice-note" }, note) : null,
     ),
     action,
-  ]);
+  ];
+  // TWO NODES OR ONE, and it is measured rather than a matter of taste. `5a Plan`'s destructive
+  // band is ONE node carrying both the tint and the flex row (`div[2]/div`, and PLAN_FIDS maps it
+  // there); `7a Activity quiet`'s warn band is TWO — an outer `display:block` box holding the
+  // padding, border, radius and tint, and an inner flex row with no box of its own.
+  //
+  // `display` is an asserted property and a `data-fid` key is an element path, so the one-node form
+  // fails this frame twice over: `block` vs `flex` at the outer node, and no node at all where the
+  // frame records the inner row. A flag rather than switching the shared form, because S4's frame
+  // is already shipped and green against the one-node form.
+  if (!wrapped) return shell(tone, `band-notice band-notice-${tone}`, row);
+  return shell(tone, `band-notice-outer band-notice-${tone}`, [el("div", { class: "band-notice" }, row)]);
 }
 
 /**

@@ -41,9 +41,13 @@
   padding: 20px 22px;
   align-items: center;
 }
+/* NO padding-bottom. `7a Never synced` records 22px top and 24px each side and nothing at the
+   foot — its 69.38px height is 47.38 of content plus the 22 above it, and the shorthand's 22px
+   bottom pushed every row below it down by that much. The wide rung is drawn by exactly one frame
+   and `6a Details` / `8a Save refused` both take the compact one, so this is safe to correct. */
 .dialog-head-wide {
   gap: 12px;
-  padding: 22px 24px;
+  padding: 22px 24px 0;
 }
 
 .dialog-headings {
@@ -61,12 +65,30 @@
   letter-spacing: -0.36px;
 }
 .dialog-subtitle {
+  margin-top: 6px;
   font-size: 12.5px;
+  line-height: 1.55;
   color: var(--text-4);
 }
 
 .dialog-close {
   flex: none;
+}
+
+/* The scrolling middle and the ruled foot. Neither existed before S5, because the four dialogs
+   built until now put a placeholder where their body goes; `7a Never synced` and `6a Details`
+   both draw the pair, so it is built once here rather than twice in the screen. */
+.dialog-body {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  border-top: 1px solid var(--divider);
 }
 
 /* --------------------------------------------------------------------------------- motion ---- */

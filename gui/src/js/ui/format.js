@@ -48,11 +48,17 @@ const CARDINALS = ["zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven"
  */
 export const plural = (n, one, many) => (Number(n) === 1 ? one : many);
 
-export function cardinal(n) {
+export function cardinal(n, register = "sentence") {
   if (n == null) return EM_DASH;
   const value = Number(n);
   if (!Number.isInteger(value) || value < 0 || value >= CARDINALS.length) return count(n);
-  return CARDINALS[value];
+  const word = CARDINALS[value];
+  // S5 is the first mid-sentence use, and the paragraph above is why it needs a register rather
+  // than a caller-side `.toLowerCase()`: `7a Never synced`'s band draws BOTH forms in one sentence
+  // — "Two match a rule you wrote; two can't be synced at all." Above ten `cardinal` has already
+  // handed back to `count()`, whose digits lower-case to themselves, so the register only ever
+  // touches the spelled forms.
+  return register === "mid" ? word.toLowerCase() : word;
 }
 
 /**

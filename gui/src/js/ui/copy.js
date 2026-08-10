@@ -551,21 +551,50 @@ export const ACTIVITY = {
   watched: (ago) => `watched continuously · checked ${ago}`,
   nextCheck: (inTime) => `next full check in ${inTime}`,
 
-  neverSyncedTitle: (n) => `${count(n)} files are never synced`,
-  neverSyncedSub:
-    "They sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.",
+  neverSyncedTitle: (n) => `${count(n)} ${plural(n, "file is", "files are")} never synced`,
+  /**
+   * Two clauses, and the second one goes when its group does.
+   *
+   * Drawn at (2, 2). The `cannot` group — sockets and symlinks — has no Phase-1 source at all
+   * (nothing that is not a file ever enters the index), so live this renders with `cannot: 0` and
+   * the sentence has to stop after the first clause rather than claim `zero can't be synced`.
+   */
+  neverSyncedSub: (byRule, cannot) => {
+    const head = `They sit in your folder but aren't copied anywhere.`;
+    const first = `${cardinal(byRule)} ${plural(byRule, "matches", "match")} a rule you wrote`;
+    if (!cannot) return `${head} ${first}.`;
+    return `${head} ${first}; ${cardinal(cannot, "mid")} can't be synced at all.`;
+  },
   showThem: "Show them",
 
   lastToMove: "Last things to move",
-  lastToMoveSub: (n, days) => `${count(n)} files in the last ${days} days`,
+  lastToMoveSub: (n, days) =>
+    `${count(n)} ${plural(n, "file", "files")} in the last ${count(days)} ${plural(days, "day", "days")}`,
   quietIsNormal: "Quiet is normal — most days nothing needs to move.",
-  allFiles: (n) => `All ${count(n)} files`,
+  allFiles: (n) => `All ${count(n)} ${plural(n, "file", "files")}`,
   passesTab: "Sync passes",
+  filesTab: "Files",
   nothingRecent: "Nothing has moved in the last hour.",
 
   lookup: {
     safe: "Safely on both sides",
     safeSub: (at) => `Identical here and on Proton Drive since ${at} today.`,
+
+    // THE FOUR VERDICTS NO FRAME DRAWS. `path_sync_status` answers `synced` / `modified` /
+    // `conflict`, and also reports `tracked: false` and `entity_kind: "directory"` — five outcomes
+    // reachable from the first thing anyone types, of which the frames draw exactly one. Undrawn
+    // states are where every bug on this project has lived, so they are written here rather than
+    // improvised at the call site, and pinned by a unit test the way S4 pinned `PLAN.destructive*`.
+    changed: "Changed here, not sent yet",
+    changedSub: "This computer has the newer copy. The next sync sends it.",
+    conflict: "Both sides changed",
+    conflictSub: "Both copies were edited. Nothing is lost — Conflicts decides which one to keep.",
+    folder: "That's a folder",
+    folderSub: "Folders are followed as a whole. Look up a file inside it to see where it stands.",
+    // 14-behaviour-and-state.md:130, verbatim. The miss is the ordinary case, not an error: the
+    // lookup matches a relative path exactly, so a bare name that is not at the root misses.
+    noMatch: "No file by that name in your sync folder.",
+    noMatchSub: "Type the path as it sits inside your sync folder, like docs/spec.md.",
     history: "This file's history",
     sent: "Sent to Proton Drive",
     keptYours: "Both sides had changed — you kept yours",
@@ -593,7 +622,23 @@ export const ACTIVITY = {
   },
 
   passes: {
-    summary: "18 of the last 20 passes finished cleanly. One failed and retried on its own.",
+    /**
+     * Drawn at (18, 20, 1, true). Every number in it is live — `status_history` holds up to
+     * `STATUS_HISTORY_LIMIT` (20) entries and clean-vs-failed is `last_error == null` — so it
+     * cannot stay the constant it was: against the shipped six-entry fixture the true sentence is
+     * `5 of the last 6 …`.
+     *
+     * `recovered` is the one argument that is not a count. "retried on its own" is a claim that a
+     * LATER pass succeeded, which is a fact about the ORDER of the history and not about any one
+     * entry; when the newest pass is itself the failure there has been no retry yet, and saying so
+     * would be false in the one state where the user most needs the truth.
+     */
+    summary: (clean, total, failed, recovered) => {
+      if (!failed) return `All ${count(total)} recent ${plural(total, "pass", "passes")} finished cleanly.`;
+      const head = `${count(clean)} of the last ${count(total)} passes finished cleanly.`;
+      if (!recovered) return `${head} The most recent one failed.`;
+      return `${head} ${cardinal(failed)} failed and ${plural(failed, "retried on its own", "retried on their own")}.`;
+    },
     chartTitle: "Last 20 passes",
     chartSub: (from) => `how long each took · ${from} onward`,
     mostRecent: (at) => `most recent ${at}`,

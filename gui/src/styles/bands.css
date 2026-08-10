@@ -82,6 +82,13 @@
   padding: 15px 18px;
   border-radius: var(--r-13);
 }
+/* The wrapped form (`noticeBand({ wrapped: true })`). `7a Activity quiet` draws the warn band as
+   two nodes: the tinted box is a BLOCK carrying the padding, and the flex row is a child with no
+   box of its own. `.band-notice-outer` therefore declares no `display` — the frame records the
+   initial `block` there — and the gap moves down to the row that actually uses it. */
+.band-notice-outer > .band-notice {
+  gap: 12px;
+}
 /* The title keeps the ordinary text colour. Only the GLYPH is amber — the sentence is not a
    warning, it is a count. */
 .band-notice-warn .band-notice-title {

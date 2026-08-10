@@ -15,7 +15,10 @@
 //   2. whole-index totals — `7a Activity quiet`, `12,480 files · 41.2 GB` on both seam sides
 //      (now filed as G7, #207; carried as `localTotals`, since a scalar pre-empts no design)
 //   3. per-file recent activity — `7a Activity quiet`, the `Last things to move` rows
-//   4. never-synced enumeration — `7a Never synced`, all four rows
+//   4. never-synced enumeration — `7a Never synced`. HALF-CLOSED by C2: `skip_rule_usage` walks
+//      the local tree and reports what each exclude rule matches, with sizes, so the two
+//      rule-matched rows and the band's count are live now. The other two — a socket and a
+//      symlink — remain out of reach for a different reason (see the frame's own note)
 //   5. per-path history — `7a File lookup`, the `This file's history` block (G1, #190)
 //   6. upload bytes-so-far — `7a File pending`, the progress bar
 //
@@ -31,6 +34,7 @@
 
 import { ACTIVITY } from "../ui/copy.js";
 import { ago } from "./clock.js";
+import { activityFids } from "./fids.js";
 // `summary` here is the counters-only form: these are `status_history` entries, whose summaries
 // describe plans the daemon has already discarded, so there is no plan to derive one from. `total`
 // and `destructive_actions` are still derived — they are the two a hand-written summary gets wrong.
@@ -157,6 +161,7 @@ export const ACTIVITY_FIXTURES = {
   // the frame draws counts, not bytes — what it actually lacks is a per-pass duration, which G2 as
   // written in IMPLEMENTATION-PLAN.md (`2a Syncing` footer, `7a` seam counts) does not cover.
   "6a Activity passes": {
+    fids: activityFids("passes"),
     status: idleDaemon({
       last_plan_summary: summary({ uploads: 2, downloads: 1, conflicts: 1 }),
       last_successful_sync_summary: summary({ uploads: 2, downloads: 1, conflicts: 1 }),
@@ -194,6 +199,7 @@ export const ACTIVITY_FIXTURES = {
         }),
       ],
     }),
+    route: "activity",
     ui: {
       tab: "passes",
       clock: {
@@ -225,6 +231,7 @@ export const ACTIVITY_FIXTURES = {
   // stated `socket: "connected"` beside a reply that plainly connected would be asserting its own
   // premise. One history entry is carried so `source · status_history` is true of this dataset.
   "6a Details": {
+    fids: activityFids("details"),
     status: idleDaemon({
       pending_changes: 0,
       // `total` is `plan.len()` — the sum of every counter, not a subset of them
@@ -242,7 +249,13 @@ export const ACTIVITY_FIXTURES = {
       status_history: [pass(ago(120), { done: summary({ uploads: 2, downloads: 1, conflicts: 1 }) })],
     }),
     config: fileConfig(),
-    ui: { dialog: "details" },
+    // A DIALOG FLOATS OVER A BODY, and naming the route is what decides which one. Without it
+    // `activeRoute()` falls through to `main`, so the main screen renders underneath and stamps its
+    // own `data-fid`s — which is harmless only because every slot in this dialog's map is prefixed.
+    // Naming the route makes the thing behind the scrim the screen this dialog is actually opened
+    // from, which is what the design says it is.
+    route: "activity",
+    ui: { tab: "files", dialog: "details" },
   },
 
   // ---- 7a Activity quiet — the default, and the hardest frame to source -------------------------
@@ -283,6 +296,7 @@ export const ACTIVITY_FIXTURES = {
   // So this entry carries the status, the config, and the tab — and the screen it drives is honest
   // about being mostly Phase 2.
   "7a Activity quiet": {
+    fids: activityFids("quiet"),
     status: idleDaemon({
       status_history: [pass(ago(120), { done: summary({ uploads: 2, downloads: 1, conflicts: 1 }) })],
     }),
@@ -294,6 +308,35 @@ export const ACTIVITY_FIXTURES = {
     // was filed, and a fixture carrying it on one frame and not the others was that inconsistency
     // made durable.
     localTotals: { files: 12480, bytes: 41_200_000_000 },
+    // WHAT C2 CHANGED. This block was recorded here as unbuildable — "the command does not exist
+    // yet … counting them means walking the filesystem, not reading the index" — and that is
+    // precisely what `skip_rule_usage` now does. So the never-synced band and the dialog's first
+    // group are live data, and this is the report the command returns for this machine.
+    //
+    // `unique_files`, not `files`: a path matched by two rules is ONE file that is never synced.
+    skipRules: {
+      rules: [
+        {
+          pattern: "*.tmp",
+          files: 2,
+          bytes: 2_940_000,
+          unique_files: 2,
+          unique_bytes: 2_940_000,
+          samples: [
+            { path: "exports/draft.tmp", bytes: 2_100_000 },
+            { path: "exports/render-final.tmp", bytes: 840_000 },
+          ],
+          folder_exists: null,
+          error: null,
+        },
+      ],
+      total_files: 12_480,
+      total_bytes: 41_200_000_000,
+      considered_files: 12_482,
+      unreadable_directories: 0,
+      unreadable_entries: 0,
+    },
+    route: "activity",
     ui: {
       tab: "files",
       // `Nothing has needed to move since 14:32.` — the absolute half of `ago(120)` above.
@@ -332,6 +375,7 @@ export const ACTIVITY_FIXTURES = {
   // in the reply at all. Both clock literals are pinned below (rule 3), but only the local one has
   // a field behind it.
   "7a File lookup": {
+    fids: activityFids("lookup"),
     status: idleDaemon(),
     // KEYED BY PATH, because `path_sync_status` takes one. A flat `EmblemStatus` here reads as the
     // answer to every question, and `api.js` serves this key by looking the asked-for path up — so a
@@ -349,9 +393,27 @@ export const ACTIVITY_FIXTURES = {
         proton_id: "8b3c1f2a~4c8f2e7d10b64f2ca39c5e0b8d7f9a21",
       },
     },
+    route: "activity",
     ui: {
+      tab: "files",
       query: "spec.md",
       path: "docs/spec.md",
+      // What the screen actually renders from — `path_sync_status`'s reply for the typed path,
+      // held beside the query the way the live screen holds it. `pathStatus` above is the command's
+      // whole keyed table; this is the one answer the frame is showing.
+      lookup: {
+        path: "docs/spec.md",
+        status: {
+          tracked: true,
+          sync_status: "synced",
+          entity_kind: "file",
+          file_size: 1_200_000,
+          get mtime() {
+            return ago(180);
+          },
+          proton_id: "8b3c1f2a~4c8f2e7d10b64f2ca39c5e0b8d7f9a21",
+        },
+      },
       clock: { edited: "14:31", received: "14:32", agreed: "14:32" },
     },
   },
@@ -373,6 +435,7 @@ export const ACTIVITY_FIXTURES = {
   //
   // `only on this computer so far` needs no data — it is what "an upload is in flight" means.
   "7a File pending": {
+    fids: activityFids("filePending"),
     status: {
       state: "running",
       response: {
@@ -423,10 +486,16 @@ export const ACTIVITY_FIXTURES = {
         },
       },
     },
+    // A DIALOG FLOATS OVER A BODY, and naming the route is what decides which one. Without it
+    // `activeRoute()` falls through to `main`, so the main screen renders underneath and stamps its
+    // own `data-fid`s — which is harmless only because every slot in this dialog's map is prefixed.
+    // Naming the route makes the thing behind the scrim the screen this dialog is actually opened
+    // from, which is what the design says it is.
+    route: "activity",
     ui: {
-      // routes.js has no id for this one yet — it is a dialog S5 adds — so it is named after its
-      // frame rather than given an invented route spelling. `details` and `neverSynced` in this
-      // file DO match routes.js, deliberately.
+      tab: "files",
+      // routes.js NOW has an id for this one — S5 added `filePending`, content-sized at [600, null]
+      // with no `dialogHead`, which is what this frame draws.
       dialog: "filePending",
       path: "photos/trip/img_0042.jpg",
     },
@@ -441,12 +510,13 @@ export const ACTIVITY_FIXTURES = {
   // Everything else is unavailable, and for two different reasons worth keeping apart:
   //
   //   · `exports/draft.tmp · 2.1 MB` and `exports/render-final.tmp · 840 KB` — the files a rule is
-  //     hiding. No command lists them. IMPLEMENTATION-PLAN.md's capability #2 calls this Phase-1
-  //     work ("match each exclude glob against the index"), but the command does not exist yet and
-  //     the approach has a problem worth recording before someone builds it: the engine's
-  //     selective-sync invariant filters excluded paths out of the local scan, the remote listing
-  //     AND the base index, so an excluded file is never IN the index to be matched. Counting them
-  //     means walking the filesystem, not reading the index.
+  //     hiding. SOURCED SINCE C2, and the paragraph this replaces is why it took a command of its
+  //     own: IMPLEMENTATION-PLAN.md's capability #2 said "match each exclude glob against the
+  //     index", and the engine's selective-sync invariant filters excluded paths out of the local
+  //     scan, the remote listing AND the base index — so an excluded file is never IN the index to
+  //     be matched. The note ended "counting them means walking the filesystem, not reading the
+  //     index", and `skip_rule_usage` is that walk. `samples` carries a size per file because this
+  //     dialog draws `path · size` rows and the walk already stats every file it counts.
   //   · `.cache/session.sock · a socket` and `projects/current → ~/work/q3 · a shortcut` — the
   //     files nothing could sync. These are further out of reach still: `scan_local_files_with_
   //     options` keeps only entries where `file_type.is_file()`, so a socket or a symlink never
@@ -456,6 +526,7 @@ export const ACTIVITY_FIXTURES = {
   // So the fixture carries the rule and not the rows. The same absence is why `7a Activity quiet`
   // cannot draw its `4 files are never synced` band: the count is as unavailable as the list.
   "7a Never synced": {
+    fids: activityFids("neverSynced"),
     status: idleDaemon({
       // `skipped_unsupported: 1` is the closest the wire comes to this dialog's subject, and it is
       // not close: it counts REMOTE files the CLI could not fetch, not local files a rule hides.
@@ -468,6 +539,40 @@ export const ACTIVITY_FIXTURES = {
       }),
     }),
     config: fileConfig({ exclude: ["*.tmp"] }),
-    ui: { dialog: "neverSynced" },
+    // WHAT C2 CHANGED. This block was recorded here as unbuildable — "the command does not exist
+    // yet … counting them means walking the filesystem, not reading the index" — and that is
+    // precisely what `skip_rule_usage` now does. So the never-synced band and the dialog's first
+    // group are live data, and this is the report the command returns for this machine.
+    //
+    // `unique_files`, not `files`: a path matched by two rules is ONE file that is never synced.
+    skipRules: {
+      rules: [
+        {
+          pattern: "*.tmp",
+          files: 2,
+          bytes: 2_940_000,
+          unique_files: 2,
+          unique_bytes: 2_940_000,
+          samples: [
+            { path: "exports/draft.tmp", bytes: 2_100_000 },
+            { path: "exports/render-final.tmp", bytes: 840_000 },
+          ],
+          folder_exists: null,
+          error: null,
+        },
+      ],
+      total_files: 12_480,
+      total_bytes: 41_200_000_000,
+      considered_files: 12_482,
+      unreadable_directories: 0,
+      unreadable_entries: 0,
+    },
+    // A DIALOG FLOATS OVER A BODY, and naming the route is what decides which one. Without it
+    // `activeRoute()` falls through to `main`, so the main screen renders underneath and stamps its
+    // own `data-fid`s — which is harmless only because every slot in this dialog's map is prefixed.
+    // Naming the route makes the thing behind the scrim the screen this dialog is actually opened
+    // from, which is what the design says it is.
+    route: "activity",
+    ui: { tab: "files", dialog: "neverSynced" },
   },
 };
