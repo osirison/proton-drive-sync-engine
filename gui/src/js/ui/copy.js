@@ -601,6 +601,10 @@ export const ACTIVITY = {
     // rehearsal — say the check failed, then quote the daemon exactly, in mono (voice rule 4).
     failed: "Couldn't check that file",
     failedSub: "Nothing has been changed. This is what it said:",
+    // A status this build has no verdict for. `failed` is the honest title — the check ran, and we
+    // still cannot say where the file stands — and the raw value is quoted in mono beneath, because
+    // it is the one thing that makes the report actionable.
+    unknownSub: "The daemon reported a state this version does not know about:",
     history: "This file's history",
     sent: "Sent to Proton Drive",
     keptYours: "Both sides had changed — you kept yours",

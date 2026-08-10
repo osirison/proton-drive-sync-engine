@@ -101,6 +101,14 @@ test("an unrecognised sync_status fails closed — never the settled mark, never
     const v = verdictOf(tracked({ sync_status: unknown }), "14:32");
     assert.notEqual(v.mark, "settled", `mark for ${JSON.stringify(unknown)}`);
     assert.notEqual(v.title, ACTIVITY.lookup.safe, `title for ${JSON.stringify(unknown)}`);
+    // AND IT MUST NOT CLAIM ANY OTHER STATE EITHER. The first version withheld the settled mark and
+    // then said "Changed here, not sent yet" — cautious about the hexagon, specific and possibly
+    // false about the file. A status this build cannot read is a check it cannot report, so it
+    // reports the failure and quotes the value.
+    assert.notEqual(v.title, ACTIVITY.lookup.changed, `title for ${JSON.stringify(unknown)}`);
+    assert.equal(v.title, ACTIVITY.lookup.failed, `title for ${JSON.stringify(unknown)}`);
+    assert.equal(v.mark, null, `mark for ${JSON.stringify(unknown)}`);
+    assert.match(v.error, /sync_status/, `error for ${JSON.stringify(unknown)}`);
   }
 });
 

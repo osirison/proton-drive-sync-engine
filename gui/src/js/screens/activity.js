@@ -135,16 +135,31 @@ export function verdictOf(status, at = null, error = null) {
   if (status.entity_kind === "directory")
     return { key: "folder", mark: "outline", title: ACTIVITY.lookup.folder, sub: ACTIVITY.lookup.folderSub };
 
-  // `Object.hasOwn`, NOT `VERDICTS[status.sync_status]` on its own. The status is a string off the
-  // wire, so `constructor` and `__proto__` reach this lookup and answer with something from
+  // An own-property check, NOT `VERDICTS[status.sync_status]` on its own. The status is a string off
+  // the wire, so `constructor` and `__proto__` reach this lookup and answer with something from
   // Object's prototype — truthy, with no `mark` and no `sub`, so the call below would throw on a
   // reply the daemon could theoretically send. The switch this replaced could not be reached that
   // way; a table can, and that is the one thing a table costs.
-  const found = Object.hasOwn(VERDICTS, status.sync_status) ? VERDICTS[status.sync_status] : null;
-  // An unrecognised `sync_status` is not "fine". `path_sync_status` documents three values and the
-  // engine could grow a fourth; drawing the settled mark for a word this build has never seen would
-  // say a file is safe on no evidence at all. Keeping the table CLOSED is what makes that one line.
-  if (!found) return { key: "unknown", mark: "outline", title: ACTIVITY.lookup.changed, sub: null };
+  //
+  // `hasOwnProperty.call` rather than `Object.hasOwn`: the latter is ES2022 and this file was its
+  // only use in the app. `setup.sh` requires webkit2gtk-4.1, which implies a JSC that has it — so
+  // this is not a fix for a known break, it is declining to raise the runtime floor for one line.
+  const key = status.sync_status;
+  const found = Object.prototype.hasOwnProperty.call(VERDICTS, key) ? VERDICTS[key] : null;
+  // AN UNRECOGNISED STATUS IS A CHECK THAT CANNOT BE REPORTED, not a file that has changed. The
+  // first version of this got the mark right and the words wrong: it withheld the settled hexagon
+  // and then said "Changed here, not sent yet", which is a specific claim about a file whose state
+  // this build cannot read. If the engine grows a fourth value that sentence is simply false, and a
+  // false sentence about someone's file is what the whole screen is built to avoid. So it reports
+  // the failure and quotes the value it did not understand.
+  if (!found)
+    return {
+      key: "unknown",
+      mark: null,
+      title: ACTIVITY.lookup.failed,
+      sub: ACTIVITY.lookup.unknownSub,
+      error: `sync_status: ${JSON.stringify(key)}`,
+    };
   return { key: status.sync_status, mark: found.mark, title: found.title, sub: found.sub(at) };
 }
 

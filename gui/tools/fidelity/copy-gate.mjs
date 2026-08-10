@@ -105,6 +105,7 @@ const NOT_DRAWN = new Map([
   ["ACTIVITY.lookup.folderSub", "no frame looks a directory up"],
   ["ACTIVITY.lookup.failed", "no frame draws a lookup whose command failed"],
   ["ACTIVITY.lookup.failedSub", "no frame draws a lookup whose command failed"],
+  ["ACTIVITY.lookup.unknownSub", "no frame draws a `sync_status` this build does not recognise"],
 ]);
 
 /**
