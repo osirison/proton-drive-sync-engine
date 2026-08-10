@@ -723,7 +723,7 @@ const PLAN_CHECKING_FIDS = {
   //
   // The app follows the prose. Mapping the doors here would assert the drawn mistake and turn a
   // correct screen into a red gate; a known-deviations row would be worse still, since that file's
-  // bar is a MISSING CAPABILITY with an open issue and this is neither. DEVIATIONS §79.
+  // bar is a MISSING CAPABILITY with an open issue and this is neither. DEVIATIONS §77.
 };
 
 /** The three maps a `5a` fixture asks for by view. */

@@ -608,7 +608,7 @@ export const ACTIVITY = {
   },
 
   neverSyncedDialog: {
-    title: (n) => `${count(n)} files are never synced`,
+    title: (n) => `${count(n)} ${plural(n, "file is", "files are")} never synced`,
     sub: "They live in your folder but no copy exists on Proton Drive.",
     ruleHeading: "You told it to skip these",
     ruleSub: (pattern) => `A rule in your settings matches them: ${pattern}`,

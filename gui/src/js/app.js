@@ -356,7 +356,14 @@ document.addEventListener("shell:step", (e) => {
 // input does not exist until that render has run.
 document.addEventListener("shell:focus-lookup", () => {
   if (activeRoute() !== "activity") return;
-  queueMicrotask(() => activityInputRef.node?.focus());
+  queueMicrotask(() => {
+    const node = activityInputRef.node;
+    if (!node) return;
+    node.focus();
+    // To the END of whatever is already there. Focusing a contenteditable leaves the caret at
+    // offset 0, so Ctrl F on a field holding a path would type into the middle of it.
+    putCaret(node, null);
+  });
 });
 
 /**
@@ -649,13 +656,13 @@ function render() {
     // both after the swap is cheaper than the patch path the plan and deletions screens need,
     // because nothing here animates and nothing else here holds state.
     const focused = document.activeElement === activityInputRef.node;
-    const caret = focused ? activityInputRef.node.selectionStart : null;
+    const caret = focused ? caretOffset() : null;
     if (dom.bodyRoute !== active) unmountScreens();
     setBody(renderActivity(activityProps()));
     dom.bodyRoute = active;
     if (focused && activityInputRef.node) {
       activityInputRef.node.focus();
-      if (caret != null) activityInputRef.node.setSelectionRange(caret, caret);
+      putCaret(activityInputRef.node, caret);
     }
   } else if (dom.bodyRoute !== active) {
     unmountScreens();
@@ -1607,7 +1614,33 @@ function clockAt(ui, slot, epochSecs) {
   return ui?.clock?.[slot] ?? clock(epochSecs);
 }
 
-/** Where the lookup `<input>` is, so Ctrl F and a rebuild can both put the caret back in it. */
+/**
+ * The caret's offset in the lookup field, and how to put it back after a rebuild.
+ *
+ * The SELECTION API, not `selectionStart` — the field is a contenteditable span (see
+ * `lookupField`), and `selectionStart` is `undefined` on one, which reads as "no caret" and
+ * silently sends the cursor to the front of whatever someone was typing.
+ */
+function caretOffset() {
+  const sel = window.getSelection();
+  return sel && sel.rangeCount ? sel.getRangeAt(0).startOffset : null;
+}
+
+function putCaret(node, offset) {
+  const text = node.firstChild;
+  const range = document.createRange();
+  // Clamped, and defaulting to the end. A rebuild can shorten the text under the caret, and a
+  // programmatic focus (Ctrl F on a field that already holds a path) wants the end, not the front.
+  const length = text?.length ?? 0;
+  if (text) range.setStart(text, Math.min(offset ?? length, length));
+  else range.setStart(node, 0);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/** Where the lookup field is, so Ctrl F and a rebuild can both put the caret back in it. */
 const activityInputRef = { node: null };
 
 /** What each of this screen's three dialogs draws, and whether it wears a title row at all. */

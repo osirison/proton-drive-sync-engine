@@ -192,28 +192,55 @@ function titleBlock(sub, { paddingTop = "4px", subGap = "6px" } = {}) {
 }
 
 /**
- * The lookup field. A REAL `<input>`, and that is a deliberate departure from the frame's tag.
+ * The lookup field. A `contenteditable` SPAN, and the tag is not a free choice here.
  *
- * The prototype draws `span` + `span` + `span`, because a still image has nothing to type into. The
- * gate records a tag and never compares one — the four shipped screens already rely on it, since
- * every footer door is drawn as a `span` and emitted as a `<button>` — so an input styled to the
- * span's own numbers is measured identically and is the only form that can actually be used. The
- * alternative, a contenteditable dressed as a span, would trade a recorded tag for a worse control.
+ * The prototype draws `span` + `span` + `span`, because a still image has nothing to type into, and
+ * the obvious answer is an `<input>` styled to the span's numbers — the gate records a tag and never
+ * compares one, which is why every footer door is drawn as a `span` and emitted as a `<button>`.
+ *
+ * IT DOES NOT WORK, and the reason is worth writing down so nobody tries it again. Chromium's user-
+ * agent stylesheet sets `overflow: clip !important` on text inputs, and a UA `!important` outranks
+ * an author `!important` in the cascade — so an `<input>` computes `overflow: clip` and the drawn
+ * span computes `visible`, forever, whatever the author writes. Verified rather than assumed. That
+ * is an ASSERTED property, so the tag choice leaks out of "recorded but never compared" into a real
+ * mismatch on this screen's primary control.
+ *
+ * The two alternatives were worse. Excluding `overflow` from the gate would absorb an app decision
+ * into the harness — the width/height exclusions are for things NO app choice controls, which this
+ * is not — and would quietly stop asserting it on every future input. Unmapping the node would
+ * trade one property for all of them: colour, both font states, and the flex sizing that makes the
+ * field's two states differ.
+ *
+ * `contenteditable="plaintext-only"` is WebKit's own (and WebKitGTK is the runtime), keeps the
+ * drawn tag, and types. Its costs are handled at the three places below: the placeholder is a
+ * `::before` rather than text, Enter is swallowed, and newlines are stripped from a paste.
  */
 function lookupField({ value, matches, onInput, onClear, inputRef }) {
-  const input = el("input", {
-    class: "activity-lookup-input",
-    type: "text",
-    value: value ?? "",
-    placeholder: ACTIVITY.lookupPlaceholder,
-    "aria-label": ACTIVITY.lookupPlaceholder,
-    spellcheck: "false",
-    autocomplete: "off",
+  const filled = Boolean(value);
+  const input = el(
+    "span",
+    {
+      // `is-empty` COMPUTED FROM THE VALUE, never from `:empty`. WebKit leaves a stray `<br>` in a
+      // contenteditable the user has cleared, so `:empty` stops matching the moment someone types
+      // and deletes — the placeholder would vanish for good. The body re-renders per keystroke,
+      // which also normalises the `<br>` away.
+      class: `activity-lookup-input${filled ? "" : " is-empty"}`,
+      contenteditable: "plaintext-only",
+      role: "searchbox",
+      "aria-label": ACTIVITY.lookupPlaceholder,
+      "data-placeholder": ACTIVITY.lookupPlaceholder,
+      spellcheck: "false",
+    },
+    value ?? "",
+  );
+  // `plaintext-only` still inserts a newline on Enter and still accepts one from a paste, and a
+  // path with a newline in it is not a path. Both are stopped here rather than in the handler.
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") e.preventDefault();
   });
-  input.addEventListener("input", (e) => onInput?.(e.target.value));
+  input.addEventListener("input", () => onInput?.(input.textContent.replace(/[\r\n]+/g, "")));
   if (inputRef) inputRef.node = input;
 
-  const filled = Boolean(value);
   const field = el(
     "div",
     { class: `activity-lookup${filled ? " is-filled" : ""}` },
@@ -533,18 +560,48 @@ function passRowFor(entry) {
   });
 }
 
-/** `2 sent, 1 brought here · 1 conflict kept` — the counters a pass reported, in the deck's terms. */
+/**
+ * `2 sent, 1 brought here · 1 conflict kept` — the counters a pass reported, in the deck's terms.
+ *
+ * EVERY COUNTER, not the three the frames happen to draw. `PlanSummary` carries fourteen, and the
+ * first version of this handled uploads, downloads and conflicts — which silently dropped the
+ * frame's own `4 brought here · 1 move followed` row, whose `local_moves` rendered nothing. No gate
+ * could see it: the detail span is not individually mapped, assert.mjs does not compare text, and
+ * `.pass-detail` is a fixed 230px so even its box was right. A pass that did work and reports
+ * nothing is exactly the wrong failure for this screen.
+ *
+ * Two clauses, separated by `·`: what MOVED, then what was DECIDED. `1 move followed` is the
+ * frame's own wording; the rest follow it in register and are recorded in DEVIATIONS §77 as chosen
+ * copy the deck can overrule.
+ */
 function detailOf(entry) {
   const s = entry.successful_sync_summary ?? entry.plan_summary;
   if (!s) return null;
-  const moved = [];
-  if (s.uploads) moved.push(`${count(s.uploads)} sent`);
-  if (s.downloads) moved.push(`${count(s.downloads)} brought here`);
-  const extra = [];
-  if (s.conflicts) extra.push(`${count(s.conflicts)} ${plural(s.conflicts, "conflict", "conflicts")} kept`);
-  if (moved.length === 0 && extra.length === 0) return ACTIVITY.passes.nothingToDo;
-  return [moved.join(", "), extra.join(", ")].filter(Boolean).join(" · ");
+  const moved = [
+    s.uploads && `${count(s.uploads)} sent`,
+    s.downloads && `${count(s.downloads)} brought here`,
+    s.local_moves && `${count(s.local_moves)} ${plural(s.local_moves, "move", "moves")} followed`,
+    s.remote_moves && `${count(s.remote_moves)} ${plural(s.remote_moves, "rename", "renames")} sent`,
+    folders(s) && `${count(folders(s))} ${plural(folders(s), "folder", "folders")} made`,
+  ].filter(Boolean);
+  const decided = [
+    s.conflicts && `${count(s.conflicts)} ${plural(s.conflicts, "conflict", "conflicts")} kept`,
+    deletes(s) && `${count(deletes(s))} ${plural(deletes(s), "deletion", "deletions")} applied`,
+    s.skipped_unsupported && `${count(s.skipped_unsupported)} skipped`,
+  ].filter(Boolean);
+  if (moved.length === 0 && decided.length === 0) return ACTIVITY.passes.nothingToDo;
+  return [moved.join(", "), decided.join(", ")].filter(Boolean).join(" · ");
 }
+
+/** Folders made, either side — the two counters describe one thing a user would recognise. */
+const folders = (s) => (s.remote_directories_created ?? 0) + (s.local_directories_created ?? 0);
+/**
+ * Deletions applied, either side. `purges` is NOT counted: it clears an index record and touches
+ * no file, so putting it here would tell someone a pass deleted something when nothing was deleted.
+ * `auto_links` and `type_conflicts` are left out for the same reason — neither moves or removes a
+ * file, and this line is about what happened to files.
+ */
+const deletes = (s) => (s.remote_deletes ?? 0) + (s.local_deletes ?? 0);
 
 function passesTab(props) {
   const { history } = props;

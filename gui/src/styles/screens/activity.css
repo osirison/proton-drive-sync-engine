@@ -57,33 +57,28 @@
   color: var(--text-3);
 }
 
-/* A real <input> wearing the drawn span's numbers — see `lookupField` for why the tag differs.
-   Mono while it holds a path, sans while it holds the prompt: `:placeholder-shown` is what carries
-   that, so the two states need no class and no re-render. */
+/* The drawn span, made editable — see `lookupField` for why this is not an <input>. Mono holding a
+   path, sans holding the prompt; the class comes from the value rather than from `:empty`, which
+   WebKit breaks the first time someone clears the field. */
 .activity-lookup-input {
   flex: 1;
   min-width: 0;
-  padding: 0;
-  border: 0;
   outline: none;
-  /* An input clips by default and the drawn span does not. `overflow` is asserted, so this is the
-     line that makes the two comparable rather than a nicety. */
-  overflow: visible;
-  background: transparent;
   font-family: var(--font-mono);
   font-size: 14px;
   color: var(--text);
 }
-/* Empty, the field IS its prompt: sans, at --text-5. Setting only `::placeholder` leaves the
-   ELEMENT's own colour at --text, which is the value the gate reads — and which also drives the
-   four border colours, since `border: 0` still resolves `border-color` to `currentColor`. */
-.activity-lookup-input:placeholder-shown {
+/* Empty, the field IS its prompt. The ELEMENT's own colour has to change, not just the
+   placeholder's: that is the value the gate reads, and it also drives the four border colours,
+   since an unset `border-color` resolves to `currentColor`. */
+.activity-lookup-input.is-empty {
   font-family: inherit;
   color: var(--text-5);
 }
-.activity-lookup-input::placeholder {
-  color: var(--text-5);
-  opacity: 1;
+/* A pseudo-element, so the placeholder is not part of the field's value — it contributes nothing
+   to `textContent`, which is what the input handler reads. */
+.activity-lookup-input.is-empty::before {
+  content: attr(data-placeholder);
 }
 .activity-lookup-hint {
   padding: 2px 6px;

@@ -94,7 +94,7 @@ const NOT_DRAWN = new Map([
   //
   // `noMatch` is the one sentence here the design DOES specify: `14-behaviour-and-state.md:130`
   // gives it verbatim for `Activity › lookup`, and it is in copy.js for the first time with S5.
-  // The other three are S5's wording, and DEVIATIONS §80 records them as such.
+  // The other three are S5's wording, and DEVIATIONS §77 records them as such.
   ["ACTIVITY.lookup.noMatch", "14-behaviour-and-state.md specifies it; no frame draws a miss"],
   ["ACTIVITY.lookup.noMatchSub", "no frame draws a miss — the lookup matches an exact relative path"],
   ["ACTIVITY.lookup.changed", "no frame draws a `modified` verdict"],

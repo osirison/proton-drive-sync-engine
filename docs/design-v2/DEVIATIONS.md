@@ -2481,3 +2481,124 @@ than one gated deletion) are templates no frame renders, and `NOT_DRAWN` only re
 | S4     | `5a Plan`      | typing `DELETE` authorises the deletion | asked again by S3, or applied unguarded | #227             |
 | S4     | `5a Checking`  | `8,431 of 12,480 files`                 | the line omitted                        | G9 #209, G7 #207 |
 | S4     | `5a Checking`  | a 522px window                          | a 520px column in a 1040 window         | #221             |
+
+### 77. S5 · the activity screen
+
+**This is the screen the daemon says least for, and most of the work was deciding what not to draw.**
+Eight blocks the frames draw have no Phase-1 source, and six of them needed an issue filing before
+this screen could be honest about them. The rule throughout is `IMPLEMENTATION-PLAN.md` §4's — omit
+the clause, never fake it — applied at the scale of whole blocks rather than trailing clauses,
+because on this screen a number is a claim about whether someone's files are safe.
+
+**One block went the other way, and it is the first time that has happened.** The F9 fixture recorded
+the never-synced list as unbuildable and explained exactly why: matching an exclude glob against the
+index cannot work, since the selective-sync invariant filters excluded paths out of the local scan,
+the remote listing _and_ the base index — _"counting them means walking the filesystem, not reading
+the index."_ That is precisely what C2's `skip_rule_usage` shipped one PR earlier. So the band and
+the dialog's first group are live data, and `RuleUsage.samples` gained a size per file (the dialog
+draws `path · size` rows and the walk already stats every file it counts).
+
+**The lookup is an exact relative path, and the frame draws a search.** `7a File lookup` resolves the
+query `spec.md` to `docs/spec.md` with `1 match` beside it; `path_sync_status` opens the index at the
+path it is given, and none of the 23 commands lists or searches local files. So a bare name that is
+not at the sync root misses, and the miss draws `14-behaviour-and-state.md:130`'s own sentence. Two
+consequences: the count is only ever 0 or 1, so the plural arm of `ACTIVITY.matches(n)` is
+unreachable, and the frame's own query is not reproducible by the shipped screen. G17 #234.
+
+**Four of the five lookup verdicts are undrawn, and they are the screen's front door.** `path_sync_
+status` answers `synced`, `modified` or `conflict`, reports `tracked:false`, and marks a directory
+through `entity_kind`. The frames draw `synced`. The other four are reachable from the first thing
+anyone types, so each gets a verdict, a hexagon state and a deck sentence — S5's wording, not the
+deck's, except `noMatch` which `14-behaviour-and-state.md` specifies verbatim. All eight strings are
+exempted in `copy-gate.mjs` with that reason and pinned by `gui/test/activity.test.js`, including the
+arm nobody designed for: an **unrecognised** `sync_status` must never come back as the settled mark
+or the safe words. A fourth value is a thing the engine could grow, and the reassuring answer is the
+dangerous one.
+
+**The lookup field is a `contenteditable` span, and an `<input>` was tried first.** The gate records
+a tag and never compares one — that is why every footer door is drawn as a `span` and emitted as a
+`<button>` — so an input styled to the span's numbers looked like the obvious answer. It is not:
+Chromium's user-agent stylesheet sets `overflow: clip !important` on text inputs, and a UA
+`!important` outranks an author `!important`, so an `<input>` computes `clip` where the drawn span
+computes `visible`, forever. Verified with a probe rather than assumed. `overflow` is an asserted
+property, so the tag choice leaks out of _recorded but never compared_ into a real mismatch on this
+screen's primary control. The two alternatives were worse: excluding `overflow` from the gate would
+absorb an app decision into the harness (the width/height exclusions are for things no app choice
+controls) and would quietly stop asserting it on every future input; unmapping the node would trade
+one property for colour, both font states and the flex sizing that distinguishes the field's two
+states. `contenteditable="plaintext-only"` is WebKit's own, keeps the drawn tag, and types — at the
+cost of a `::before` placeholder, a swallowed Enter, and stripped newlines on paste.
+
+**`5a Checking` draws no lit door, and the app lights one.** `02-shell.md:42` states the rule without
+exception — _"the active one is `#F2F4F7`"_ — and all three S5 windows draw it. `5a Checking` is the
+plan screen, so `Plan a sync` should be lit, and the frame paints all four unlit. S5 is what surfaced
+it, because until now no mapped frame had a door that COULD be lit: `2a` is the root and `3a`/`4a`
+are overlays, whose frames correctly light nothing. The app follows the prose and `door` is
+undeclared in `planFids`. Deliberately NOT a `known-deviations` row: that file's bar is a missing
+capability with an open issue, and this is a drawing mistake. Eight `#221` rows that rode on those
+door nodes were removed with them; `#221` is still recorded on the same frame through `div[1]` and
+`div[1]/div`.
+
+**Every dialog fid slot is prefixed, because a slot name is resolved by NAME.** A dialog floats over
+a body, so both screens render and both call `fid()`. A `hexagon` declared for `7a File pending`'s
+48px mark is stamped by whichever hexagon the screen behind it drew first — the 168px main-screen
+mark, or the quiet tab's 52px settled one — and the result is reported as a size mismatch on a screen
+nobody was looking at. That is the failure `activeRoute`'s own note describes, one layer up. The
+three dialog fixtures also name their route, so the thing behind the scrim is the screen the dialog
+is actually opened from.
+
+**Six defects the frames found by being rendered against, none of which any earlier gate could see:**
+
+- **A mounted dialog could never change.** The dialog layer's identity check on `dialogRoute` was the
+  only thing that rebuilt one, so `6a Details` — eight live counters — froze at whatever the reply
+  held when it opened. Now keyed on a content signature, replacing only the children below the head
+  and carrying focus across by position, so `Copy all` survives a counter moving under it.
+- **`status_history` is oldest-first and the frame draws newest-first.** `daemon.rs` pushes each pass
+  and drains the front. The summary's `recovered` argument reads the LAST entry for the same reason.
+- **`.row-pass.is-failed` is a block that never gave back the flex row's `gap` and `align-items`.**
+  Latent since F7 — `6a Activity passes` is the only frame that draws a failed pass, and nothing
+  asserted it until S5 mapped it.
+- **`.dialog-head-wide`'s shorthand padded the bottom 22px** where `7a Never synced` records none,
+  pushing every row below it down by that much. `.dialog-subtitle` was also missing its `margin-top`
+  and `line-height`.
+- **The lookup sub-line rendered a live clock where the fixture pins a literal.** `clock.js`'s rule
+  says an absolute time is pinned as a string because an epoch formatted as `14:32` moves with the
+  timezone and across midnight; nothing had read `ui.clock` before, so the sentence's width landed
+  wherever the hour put it — green at some hours and red at others.
+- **`detailOf` handled three of fourteen counters,** so the frame's own `4 brought here · 1 move
+followed` row rendered its `local_moves` as nothing. Invisible to every gate: the detail span is
+  not individually mapped, `assert.mjs` does not compare text, `.pass-detail` is a fixed 230px, and
+  the copy gate does not walk `format.js`. A pass that did work and reports nothing is the wrong
+  failure for this screen. The remaining counters are covered in the frame's own register (`1 move
+followed` is drawn); `purges`, `auto_links` and `type_conflicts` are deliberately left out, since
+  none of them moves or removes a file and this line is about what happened to files.
+
+**Seventeen ACTIVITY templates joined the copy gate's `DRAWN` table, and fifteen had never been
+checked by anything.** The whole block's templates were absent while its constants were green, so
+every counted sentence on the busiest screen in the app was unasserted. Two more became templates in
+this commit — `passes.summary` (every number in it is live) and `neverSyncedSub` (the two group
+counts) — and landed in the same commit, which is the rule S1 wrote down the first time a sentence
+left the gate silently by becoming a template. This is the third time it has come up. Four templates
+were also ungrammatical at one (`1 files are never synced`), all four reachable.
+
+**`neverSyncedSub` needed a lower-case cardinal, and `cardinal` was documented as sentence-start
+only.** The drawn sentence capitalises the first clause and lower-cases the second — _"Two match a
+rule you wrote; two can't be synced at all."_ — so it needs both forms in one sentence. A `register`
+argument rather than a caller-side `.toLowerCase()`, since above ten `cardinal` already hands back to
+`count()` and the register only ever touches the spelled forms.
+
+| screen | frame                | drawn                                    | Phase 1                                 | gap          |
+| ------ | -------------------- | ---------------------------------------- | --------------------------------------- | ------------ |
+| S5     | `6a Activity passes` | a twenty-bar duration chart              | the whole card omitted                  | G12 #229     |
+| S5     | `7a Activity quiet`  | `12,480` `files · 41.2 GB`, both sides   | both numeral rows omitted               | G7 #207      |
+| S5     | `7a Activity quiet`  | `next full check in 4m`                  | the sub-line omitted                    | G4 #193      |
+| S5     | `7a Activity quiet`  | `Last things to move`, head + three rows | the block's footer row alone            | G13 #230     |
+| S5     | `7a Activity quiet`  | `4 files are never synced`               | the rule-matched count alone            | G15 #232     |
+| S5     | `7a File lookup`     | `This file's history`, four rows         | the `linked · id` line alone            | G1 #190      |
+| S5     | `7a File lookup`     | the query `spec.md` → `docs/spec.md`     | an exact relative path                  | G17 #234     |
+| S5     | `7a File lookup`     | `received 14:32` on the Proton card      | the clause omitted                      | G16 #233     |
+| S5     | `7a File pending`    | a 3px bar at 41%                         | no track at all (§63)                   | G2 #191, #98 |
+| S5     | `7a Never synced`    | `Can't be synced`, two rows              | the group omitted                       | G15 #232     |
+| S5     | `6a Details`         | `Open the system log`                    | omitted; `Copy all` stays               | G14 #231     |
+| S5     | all three            | `Open folder`, `Open on Proton Drive`    | omitted                                 | G14 #231     |
+| S5     | `5a Checking`        | four unlit doors on the plan screen      | `Plan a sync` lit, per `02-shell.md:42` | —            |
