@@ -103,7 +103,20 @@ export function footerVariantOf(props) {
  *
  * `mark` is `null` where no hexagon belongs: a miss is not a state a file is in.
  */
-export function verdictOf(status, at = null) {
+export function verdictOf(status, at = null, error = null) {
+  // A FAILED CHECK IS NOT A MISS. `path_sync_status` returning nothing because it could not open
+  // the index looks identical to it returning nothing because the path is not there — and saying
+  // "No file by that name in your sync folder" about a file sitting right in front of someone is
+  // the worst answer this screen can give. The daemon's own words are carried through untouched
+  // and quoted in mono at the call site (voice rule 4).
+  if (error)
+    return {
+      key: "failed",
+      mark: null,
+      title: ACTIVITY.lookup.failed,
+      sub: ACTIVITY.lookup.failedSub,
+      error,
+    };
   if (!status || !status.tracked)
     return { key: "miss", mark: null, title: ACTIVITY.lookup.noMatch, sub: ACTIVITY.lookup.noMatchSub };
   if (status.entity_kind === "directory")
@@ -143,25 +156,32 @@ export function verdictOf(status, at = null) {
 /**
  * The rule-matched never-synced files, from `skip_rule_usage`.
  *
- * `unique_files` rather than `files`: a path matched by two rules is one file that is never synced,
- * and summing the per-rule counts would tell someone four files are missing when two are.
+ * `report.total_files` — "distinct files hidden by AT LEAST ONE rule" — and nothing derived from
+ * the per-rule counts. Summing `files` double-counts a path two rules both hide; summing
+ * `unique_files` does the opposite and DROPS it, because that field is `matches == 1` and exists
+ * for a different question entirely (S6's `One rule removed — 4 files will start syncing`, where a
+ * file another rule still hides would not start syncing). A machine whose every excluded file
+ * matches two rules has `unique_files: 0` everywhere, and the band would vanish while the files
+ * stayed unsynced.
+ *
+ * The band asks how many files are never synced. That is a union, and the report already computes
+ * it on a distinct-file basis.
  */
 export function neverSyncedFrom(report) {
-  if (!report) return null;
-  const rules = (report.rules ?? []).filter((r) => r.unique_files > 0);
+  if (!report?.total_files) return null;
+  // `files`, not `unique_files`, for WHICH rules to list: a rule that hides something belongs in
+  // the dialog whether or not another rule hides it too.
+  const rules = (report.rules ?? []).filter((r) => r.files > 0);
   if (rules.length === 0) return null;
-  return {
-    total: rules.reduce((n, r) => n + r.unique_files, 0),
-    rules,
-  };
+  return { total: report.total_files, rules };
 }
 
 /**
  * The passes tab's summary sentence, composed from the history rather than asserted.
  *
  * `recovered` is the ordering fact the sentence depends on: "retried on its own" is true only
- * because a LATER pass succeeded. `entries` arrive newest-first, so the newest entry having no
- * error is the whole test.
+ * because a LATER pass succeeded. `entries` arrive OLDEST-FIRST — `daemon.rs` pushes each pass and
+ * drains the front — so the newest is the LAST one, and its having no error is the whole test.
  */
 export function passesSummaryOf(entries) {
   const total = entries.length;
@@ -450,7 +470,7 @@ function lookupBody(props) {
   // names the pass that last verified the two sides — the frame pins it at the daemon's last sync,
   // one minute after the `edited 14:31` on the card below it. Using the mtime would put the file's
   // own edit where the check belongs and say the two sides matched before they did.
-  const verdict = verdictOf(status, props.agreedAt);
+  const verdict = verdictOf(status, props.agreedAt, lookup.error ?? null);
 
   const hero = el("div", { class: "activity-hero" });
   if (verdict.mark) {
@@ -465,6 +485,13 @@ function lookupBody(props) {
     const sub = el("div", { class: "activity-hero-sub" }, verdict.sub);
     seamMask(sub, { pad: 14, padY: 2, position: false });
     hero.append(fid(sub, "lookupSub"));
+  }
+  // The daemon's exact string, in mono, never paraphrased — the same treatment S4 gives a failed
+  // rehearsal and S5's own failed pass row.
+  if (verdict.error) {
+    const quoted = el("div", { class: "activity-hero-error" }, verdict.error);
+    seamMask(quoted, { pad: 14, padY: 2, position: false });
+    hero.append(quoted);
   }
 
   const seamBlock = el(
@@ -695,8 +722,14 @@ export function renderNeverSyncedBody(props) {
   const rules = never?.rules ?? [];
   const body = [];
 
+  // ONE heading for the group, however many rules are in it. `7a Never synced` draws a single rule
+  // so the frame cannot distinguish "per group" from "per rule" — but `You told it to skip these`
+  // names the GROUP, and repeating it above every rule would read as several groups that happen to
+  // share a title.
+  if (rules.length > 0) {
+    body.push(fid(eyebrow({ tone: "up", text: ACTIVITY.neverSyncedDialog.ruleHeading }), "ruleHeading"));
+  }
   for (const [i, rule] of rules.entries()) {
-    body.push(fid(eyebrow({ tone: "up", text: ACTIVITY.neverSyncedDialog.ruleHeading }), "ruleHeading", i));
     body.push(
       fid(
         el(
@@ -714,11 +747,14 @@ export function renderNeverSyncedBody(props) {
     for (const [j, sample] of (rule.samples ?? []).entries()) {
       body.push(fid(pathRow({ path: sample.path, note: bytes(sample.bytes), mono: true }), "ruleRow", i, j));
     }
+  }
+  // One button too, and for the same reason: it opens the rules tab, which is where every one of
+  // them is edited. N buttons pointing at one destination is N ways to do one thing.
+  if (rules.length > 0) {
     body.push(
       fid(
         smallSecondary(ACTIVITY.neverSyncedDialog.changeRule, props.onChangeRule, { padding: "7px 14px" }),
         "changeRule",
-        i,
       ),
     );
   }

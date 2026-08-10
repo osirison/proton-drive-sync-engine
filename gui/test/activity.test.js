@@ -147,15 +147,49 @@ const rule = (over = {}) => ({
 
 test("no report and no matching rule both mean no band", () => {
   assert.equal(neverSyncedFrom(null), null);
-  assert.equal(neverSyncedFrom({ rules: [] }), null);
+  assert.equal(neverSyncedFrom({ rules: [], total_files: 0 }), null);
   // A rule that matched nothing is not a reason to tell someone files are never synced.
-  assert.equal(neverSyncedFrom({ rules: [rule({ unique_files: 0 })] }), null);
+  assert.equal(neverSyncedFrom({ rules: [rule({ files: 0 })], total_files: 0 }), null);
 });
 
-test("the count is UNIQUE files, so a path two rules match is one file", () => {
-  const report = { rules: [rule(), rule({ pattern: "*.bak", unique_files: 1, files: 3 })] };
-  assert.equal(neverSyncedFrom(report).total, 3);
+// THE COUNT COMES OFF THE REPORT, not off the rules. `total_files` is documented as "distinct files
+// hidden by at least one rule" — the union — and neither per-rule field can stand in for it:
+// `files` double-counts a path two rules both hide, and `unique_files` is `matches == 1` and DROPS
+// it. The first version of this summed `unique_files`, and the first version of this test asserted
+// that it should.
+test("the band's count is the report's union, not a sum of the rules", () => {
+  const report = {
+    rules: [rule({ files: 2, unique_files: 2 }), rule({ pattern: "*.bak", files: 3, unique_files: 1 })],
+    total_files: 4,
+  };
+  assert.equal(neverSyncedFrom(report).total, 4);
   assert.equal(neverSyncedFrom(report).rules.length, 2);
+});
+
+// The failure mode that made summing `unique_files` unsafe rather than merely imprecise: on a
+// machine where every excluded file matches two rules, every `unique_files` is 0 — so the band
+// disappeared entirely while the files stayed unsynced.
+test("files hidden by two rules still raise the band", () => {
+  const report = {
+    rules: [rule({ files: 2, unique_files: 0 }), rule({ pattern: "*.bak", files: 2, unique_files: 0 })],
+    total_files: 2,
+  };
+  assert.equal(neverSyncedFrom(report).total, 2);
+  assert.equal(neverSyncedFrom(report).rules.length, 2);
+});
+
+// A failed command and a path that is not in the index both leave `status` null. Telling someone
+// their file is missing when the CHECK is what failed is the worst answer this screen can give.
+test("a failed lookup says the check failed, and never that the file is not there", () => {
+  const v = verdictOf(null, "14:32", "proton-syncd: index is locked");
+  assert.equal(v.title, ACTIVITY.lookup.failed);
+  assert.notEqual(v.title, ACTIVITY.lookup.noMatch);
+  assert.equal(v.error, "proton-syncd: index is locked");
+  assert.equal(v.mark, null);
+  // The error outranks a reply, because a reply arriving beside an error cannot be trusted either.
+  assert.equal(verdictOf(tracked(), "14:32", "boom").title, ACTIVITY.lookup.failed);
+  // And no error means the ordinary paths are untouched.
+  assert.equal(verdictOf(null, "14:32", null).title, ACTIVITY.lookup.noMatch);
 });
 
 // The `Can't be synced` group has no Phase-1 source (#232), so the live sentence always renders at

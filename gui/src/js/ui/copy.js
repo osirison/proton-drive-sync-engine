@@ -595,6 +595,12 @@ export const ACTIVITY = {
     // lookup matches a relative path exactly, so a bare name that is not at the root misses.
     noMatch: "No file by that name in your sync folder.",
     noMatchSub: "Type the path as it sits inside your sync folder, like docs/spec.md.",
+    // A FAILED CHECK IS NOT A MISS, and conflating the two is the worst answer this screen can
+    // give: "no file by that name" about a file that is sitting right there would tell someone
+    // their file is not being synced when nothing of the sort is known. Same shape as S4's failed
+    // rehearsal — say the check failed, then quote the daemon exactly, in mono (voice rule 4).
+    failed: "Couldn't check that file",
+    failedSub: "Nothing has been changed. This is what it said:",
     history: "This file's history",
     sent: "Sent to Proton Drive",
     keptYours: "Both sides had changed — you kept yours",

@@ -330,8 +330,11 @@ export const ACTIVITY_FIXTURES = {
           error: null,
         },
       ],
-      total_files: 12_480,
-      total_bytes: 41_200_000_000,
+      // DISTINCT FILES HIDDEN BY AT LEAST ONE RULE — the union, which is what the band counts.
+      // Not the size of the tree: that is `considered_files`, "everything the daemon would sync if
+      // there were no rules at all", and the two were transposed here at first.
+      total_files: 2,
+      total_bytes: 2_940_000,
       considered_files: 12_482,
       unreadable_directories: 0,
       unreadable_entries: 0,
@@ -561,8 +564,11 @@ export const ACTIVITY_FIXTURES = {
           error: null,
         },
       ],
-      total_files: 12_480,
-      total_bytes: 41_200_000_000,
+      // DISTINCT FILES HIDDEN BY AT LEAST ONE RULE — the union, which is what the band counts.
+      // Not the size of the tree: that is `considered_files`, "everything the daemon would sync if
+      // there were no rules at all", and the two were transposed here at first.
+      total_files: 2,
+      total_bytes: 2_940_000,
       considered_files: 12_482,
       unreadable_directories: 0,
       unreadable_entries: 0,

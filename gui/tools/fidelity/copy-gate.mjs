@@ -103,6 +103,8 @@ const NOT_DRAWN = new Map([
   ["ACTIVITY.lookup.conflictSub", "no frame draws a `conflict` verdict"],
   ["ACTIVITY.lookup.folder", "no frame looks a directory up"],
   ["ACTIVITY.lookup.folderSub", "no frame looks a directory up"],
+  ["ACTIVITY.lookup.failed", "no frame draws a lookup whose command failed"],
+  ["ACTIVITY.lookup.failedSub", "no frame draws a lookup whose command failed"],
 ]);
 
 /**

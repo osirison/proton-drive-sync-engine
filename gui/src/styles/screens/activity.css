@@ -201,6 +201,15 @@
   color: var(--text-4);
 }
 
+/* The daemon's own string when a lookup could not be made. Mono, dimmer than the verdict above it
+   — it is a quotation, not a sentence the app wrote. */
+.activity-hero-error {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
 .activity-cards {
   display: grid;
   grid-template-columns: 1fr 1fr;

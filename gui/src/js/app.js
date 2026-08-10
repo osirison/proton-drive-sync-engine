@@ -1566,14 +1566,19 @@ async function lookupPath(query) {
   // put the verdict for `doc` under the word `docs/spec.md`.
   activityLookupInFlight = path;
   let status = null;
+  let failure = null;
   try {
     status = await api.pathSyncStatus(path);
   } catch (error) {
     console.error("path_sync_status failed:", error);
+    // KEPT, not swallowed. A caught error and a path that is not in the index both leave `status`
+    // null, and the screen must not tell someone their file is missing when the check is what
+    // failed. The daemon's own words go through untouched, to be quoted in mono.
+    failure = String(error?.message ?? error);
   }
   if (activityLookupInFlight !== path) return;
   activityLookupInFlight = null;
-  activityLookup = { path, status };
+  activityLookup = { path, status, error: failure };
   // THE PENDING DIALOG'S TRIGGER, and it is the only one the data supports. `7a File lookup` and
   // `7a File pending` are the same lookup in two states — a file that is settled, and a file that
   // is moving right now — so looking up the file the daemon is currently transferring is what
@@ -1684,6 +1689,9 @@ function putCaret(node, offset) {
   else range.setStart(node, 0);
   range.collapse(true);
   const sel = window.getSelection();
+  // Guarded for the same reason `caretOffset` is: `getSelection()` answers null in a detached or
+  // sandboxed document, and this one would take the whole render down with it.
+  if (!sel) return;
   sel.removeAllRanges();
   sel.addRange(range);
 }
