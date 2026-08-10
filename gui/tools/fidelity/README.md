@@ -184,14 +184,20 @@ that admits its edges:
 ## State of play
 
 `assert.mjs` reports how many frames carry a `data-fid` and lists the rest every run, so "the gate is
-green" can never be confused with "the gate looked at anything". Today the shell's own chrome is
-mapped for three frames, F6's compact panel for eight more, and S1's main screen for the same three
-the shell already had — **11 of 51, 17,737 assertions** — and 40 frames are waiting for their screens.
+green" can never be confused with "the gate looked at anything". Today the shell's chrome and S1's
+main screen cover three frames, F6's compact panel eight more, S2 three, S3 three and S4 three —
+**20 of 51, 42,876 assertions** — and 31 frames are waiting for their screens.
 
 **S1 moved the assertion count by 5,296 and the frame count by zero**, which is the honest shape of
 what it did: `2a Settled`, `2a Syncing` and `2a Needs you` were already "mapped" on the strength of a
 header and a footer, and now have a hero, a seam, two side labels, a transfer row and an attention
 band mapped as well. A frame counter cannot tell the difference between a screen and a title bar.
+
+**S4 moved both**: three frames and 9,778 assertions (33,098 → 42,876), which is the shape of a screen
+whose largest state is a nine-row list. It also moved the deviation count from 24 to 48 — every one of
+those a Phase-1 capability the daemon does not have, recorded with the issue that closes it rather
+than left to fail. Two thirds of them are one fact: `5a Checking` is a 522px window and the shell's is
+a fixed 1040.
 
 **All 51 have a dataset** (F9), which is a different claim and deliberately kept separate: a fixture
 is what the app is fed, a `data-fid` is what gets compared. `check-fixtures.mjs` proves the first,

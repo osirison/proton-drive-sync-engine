@@ -579,6 +579,153 @@ const DELETION_EMPTY_FIDS = {
   emptySub: "div/div[1]",
 };
 
+// ------------------------------------------------------------------------------ S4 · plan ----
+
+/**
+ * Shell slots for the three `5a` frames — two shapes, not one. `5a Plan` and `5a Plan safe` draw a
+ * chip and the screen's own footer action bar (no doors, hence no `footerNav`/`door` slots).
+ * `5a Checking` draws four doors and no chip; the app draws a chip there anyway (`06-plan.md`
+ * Behaviour keeps `rehearsal · nothing has changed` up for the whole pass), so the slot is left
+ * undeclared rather than compared against a node the frame does not have. DEVIATIONS §76.
+ * No `chipDot` on any of them: the rehearsal chip is text only (`02-shell.md`, "none — text only").
+ */
+const planShell = (chip) => ({
+  header: "header",
+  mark: "header/img",
+  name: "header/span[0]",
+  spacer: "header/span[1]",
+  ...(chip ? { chip: "header/span[2]" } : {}),
+  menu: "header/button",
+});
+
+/**
+ * The seam block both 1040 frames draw, at a different index in each. `s` is the drawn
+ * left-to-right position (0 leaving, 1 arriving), not a direction — the screen decides what goes
+ * where, as with S3's two columns.
+ */
+const planSides = (at) => ({
+  seamBlock: at,
+  seam: `${at}/div[0]`,
+  sides: `${at}/div[1]`,
+  side: (s) => `${at}/div[1]/div[${s}]`,
+  sideLabel: (s) => `${at}/div[1]/div[${s}]/div[0]`,
+  sideCount: (s) => `${at}/div[1]/div[${s}]/div[1]`,
+  sideNumeral: (s) => `${at}/div[1]/div[${s}]/div[1]/span[0]`,
+  sideUnit: (s) => `${at}/div[1]/div[${s}]/div[1]/span[1]`,
+});
+
+/**
+ * `5a Plan` — the plan that would destroy something.
+ *
+ * Two frame slots are deliberately undeclared: `div[2]/div/button` (`Leave it alone`) and
+ * `div[4]/button[0]` (`Run it without the deletion`) both need the filtered apply (G3, #192), and
+ * `06-plan.md` says hide a button rather than fake it — so neither is drawn nor mapped.
+ *
+ * `run` is `button[1]`: with the frame's first button gone the app's button is still the frame's
+ * second, and `button[0]` would compare a primary against a secondary.
+ */
+const PLAN_FIDS = {
+  titleRow: "div[0]",
+  titleText: "div[0]/div",
+  title: "div[0]/div/div[0]",
+  sub: "div[0]/div/div[1]",
+  checkAgain: "div[0]/button",
+
+  ...planSides("div[1]"),
+  sideNote: (s) => `div[1]/div[1]/div[${s}]/div[2]`,
+
+  bandWrap: "div[2]",
+  band: "div[2]/div",
+  bandMark: "div[2]/div/svg",
+  bandMarkPath: (i) => `div[2]/div/svg/path[${i}]`,
+  bandMarkDot: "div[2]/div/svg/circle",
+  bandBody: "div[2]/div/div",
+  bandTitle: "div[2]/div/div/div[0]",
+  bandNote: "div[2]/div/div/div[1]",
+  bandNotePath: "div[2]/div/div/div[1]/span",
+
+  list: "div[3]",
+  listHead: "div[3]/div[0]",
+  listLabel: "div[3]/div[0]/span[0]",
+  listSpacer: "div[3]/div[0]/span[1]",
+  listCount: "div[3]/div[0]/span[2]",
+  rows: "div[3]/div[1]",
+  row: (i) => `div[3]/div[1]/div[${i}]`,
+  rowGlyph: (i) => `div[3]/div[1]/div[${i}]/span[0]`,
+  rowPath: (i) => `div[3]/div[1]/div[${i}]/span[1]`,
+  rowOutcome: (i) => `div[3]/div[1]/div[${i}]/span[2]`,
+
+  bar: "div[4]",
+  gate: "div[4]/div",
+  gateField: "div[4]/div/input",
+  gateWhy: "div[4]/div/span",
+  barSpacer: "div[4]/span",
+  run: "div[4]/button[1]",
+};
+
+/** `5a Plan safe` — the hero, the two file lists, and the bar with both its buttons drawn. */
+const PLAN_SAFE_FIDS = {
+  hero: "div[0]",
+  heroSeam: "div[0]/div[0]",
+  heroMark: "div[0]/svg",
+  heroMarkPath: (i) => `div[0]/svg/path[${i}]`,
+  heroTitle: "div[0]/div[1]",
+  heroSub: "div[0]/div[2]",
+
+  ...planSides("div[1]"),
+  sideList: (s) => `div[1]/div[1]/div[${s}]/div[2]`,
+  sideRow: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]`,
+  sideRowGlyph: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[0]`,
+  sideRowPath: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[1]`,
+  sideRowNote: (s, i) => `div[1]/div[1]/div[${s}]/div[2]/div[${i}]/span[2]`,
+
+  // `tailSpacer`, not `spacer`: `planShell` already declares `spacer` for the header's flex gap and
+  // the two tables spread into one object, so a second `spacer` here wins and `renderHeader` stamps
+  // the header's 0-height gap with this 116px block's key. The collision passes green — the box
+  // comparison is skipped (the ⋯ taints the root's children) and both nodes set only
+  // `flex-grow: 1; flex-basis: 0%`.
+  tailSpacer: "div[2]",
+  bar: "div[3]",
+  checked: "div[3]/span[0]",
+  barSpacer: "div[3]/span[1]",
+  checkAgain: "div[3]/button[0]",
+  run: "div[3]/button[1]",
+};
+
+/**
+ * `5a Checking` — the rehearsal in flight. The mark is the syncing construction with F2's `dryRun`
+ * dash, so it carries a gradient `defs` subtree the other two states have none of.
+ * `div[0]/div[3]` (`8,431 of 12,480 files`) is undeclared: neither half of it has a source
+ * (G9 #209, G7 #207) and the app draws no node for it.
+ */
+const PLAN_CHECKING_FIDS = {
+  checking: "div[0]",
+  checkingSeam: "div[0]/div[0]",
+  checkingMark: "div[0]/svg",
+  checkingMarkDefs: "div[0]/svg/defs",
+  checkingMarkGradient: (i) => `div[0]/svg/defs/lineargradient[${i}]`,
+  checkingMarkStop: (i, j) => `div[0]/svg/defs/lineargradient[${i}]/stop[${j}]`,
+  checkingMarkPath: (i) => `div[0]/svg/path[${i}]`,
+  checkingTitle: "div[0]/div[1]",
+  checkingSub: "div[0]/div[2]",
+  stop: "div[0]/button",
+
+  footerNav: "div[1]",
+  footerBar: "div[1]/div",
+  door: (i) => `div[1]/div/span[${i}]`,
+};
+
+/** The three maps a `5a` fixture asks for by view. */
+export function planFids(view) {
+  const body = {
+    plan: PLAN_FIDS,
+    safe: PLAN_SAFE_FIDS,
+    checking: PLAN_CHECKING_FIDS,
+  }[view];
+  if (!body) throw new Error(`fids: no plan view "${view}"`);
+  return { ...planShell(view !== "checking"), ...body };
+}
+
 /** The three maps a `4a` window fixture asks for by view. (`4a Compact` is F6's; see compactFids.) */
 export function deletionFids(view) {
   const body = {

@@ -204,22 +204,28 @@ const OUTCOMES = {
   download: { plan: "brought to this computer", row: "brought here" },
   create_remote_directory: { plan: "folder created on Proton", row: "folder created on Proton" },
   create_local_directory: { plan: "folder created here", row: "folder created here" },
-  move_remote: { plan: "moved to match Proton", row: "moved to match" },
+  // The two moves are mirrors, not one outcome: `move_local` applies a rename made on Proton to the
+  // local copy (the drawn row); `move_remote` applies a rename made here to Proton, where "to match
+  // Proton" would say the opposite of what happens. No frame draws `move_remote`, so it went
+  // undetected until S4 rendered it. DEVIATIONS §76.
+  // The plan register has to name both ends — `moved on Proton to match` trails off — and says
+  // `this computer`, never a brand or OS name (voice rule 6). The row register stays terse.
+  move_remote: { plan: "moved on Proton to match this computer", row: "moved on Proton" },
   move_local: { plan: "moved to match Proton", row: "moved to match" },
   conflict: { plan: "both copies kept, nothing lost", row: "both copies kept" },
   remote_delete: { plan: "deleted for good on Proton", row: "deleted for good on Proton" },
   skip_unsupported: { plan: "skipped, can't be synced", row: "skipped, can't be synced" },
-};
 
-// FOUR VARIANTS THE ENGINE EMITS AND THIS TABLE HAS NO WORDING FOR: `local_delete`, `purge`,
-// `auto_link`, `type_conflict`. No frame draws an outcome label for any of them, and `13-copy-deck.md`
-// carries none — so the words do not exist yet, and inventing them here would be this module doing
-// design. `outcomeOf` returns null, which is the documented safe answer and renders as no label.
-//
-// Three of the four matter to a screen that is not built yet, and each needs a decision rather than
-// a translation: `local_delete` is the mirror of `remote_delete` (S3/S5), `type_conflict` is the
-// "a folder here, a file there" case S2 already draws its own copy for, and `purge` is index-only
-// cleanup that touches no user data — arguably it should never reach a row at all.
+  // The four F7 left null, chosen by S4 rather than measured: no frame draws an outcome for any of
+  // them and `13-copy-deck.md` carries none. They are here because a screen now draws every row of a
+  // plan, and the fallback is a labelless row — `local_delete` would be the destructive row, tinted,
+  // with no sentence. Each is the narrowest true statement rather than a translation of the engine's
+  // noun, and each is recorded in DEVIATIONS §76 as chosen copy the deck can overrule.
+  local_delete: { plan: "deleted for good on this computer", row: "deleted for good here" },
+  purge: { plan: "record cleared, no file touched", row: "record cleared" },
+  auto_link: { plan: "already matching, linked up", row: "linked up" },
+  type_conflict: { plan: "a folder here, a file there — nothing moves", row: "a folder here, a file there" },
+};
 
 export function outcomeOf(action, register = "row") {
   const entry = OUTCOMES[action];

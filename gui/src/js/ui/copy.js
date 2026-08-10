@@ -443,24 +443,62 @@ export const DELETIONS = {
 
 // -------------------------------------------------------------------------- plan a sync ----
 
+// Eight of these turned from constants into templates. A constant that becomes a template leaves the
+// copy gate silently, so each one is listed in the gate's `DRAWN` table at the arguments its frame
+// draws it at.
 export const PLAN = {
-  title: (n) => `The next sync moves ${count(n)} things`,
-  sub: "One of them can't be undone. Everything here is a rehearsal — nothing has changed yet.",
+  title: (n) => `The next sync moves ${count(n)} ${plural(n, "thing", "things")}`,
+  // `n` is the DESTRUCTIVE count, not the total. At 0 the clause is dropped rather than rendered as
+  // `Zero of them`; the rehearsal sentence stands on its own.
+  sub: (n) =>
+    n > 0
+      ? `${cardinal(n)} of them can't be undone. Everything here is a rehearsal — nothing has changed yet.`
+      : "Everything here is a rehearsal — nothing has changed yet.",
   checkAgain: "Check again",
 
   leaving: "Leaving this computer",
   arriving: "Arriving from Proton",
-  filesAnd: (n, size) => `${count(n)} files, ${bytes(size)}`,
-  plusFolder: "Plus one new folder created on Proton Drive to hold them.",
-  plusRename: "One file you renamed will be renamed here to match.",
+  // The unit only: the frame draws the count as its own 42px span, so `3` and `files, 4.1 MB` are
+  // two nodes — a template holding both would put the numeral in the 14px tier. `size` is a
+  // preformatted string (`4.1 MB`) or null; Phase 1 always passes null, since no dry-run field
+  // carries a byte total (G2, #191), and the clause is omitted rather than faked.
+  sideUnit: (n, size = null) => `${plural(n, "file", "files")}${size ? `, ${size}` : ""}`,
+  plusFolder: (n) =>
+    `Plus ${cardinal(n).toLowerCase()} new ${plural(n, "folder", "folders")} created on Proton Drive to hold them.`,
+  plusRename: (n) =>
+    `${cardinal(n)} ${plural(n, "file", "files")} you renamed will be renamed here to match.`,
+  // The mirrors of the two above: a folder can be created on either side and a rename applied on
+  // either side. No frame draws these two, so they are not in the copy gate (both are templates,
+  // which `NOT_DRAWN` cannot hold); gui/test/plan.test.js pins them.
+  plusFolderHere: (n) =>
+    `Plus ${cardinal(n).toLowerCase()} new ${plural(n, "folder", "folders")} created on this computer to hold them.`,
+  plusRenameThere: (n) =>
+    `${cardinal(n)} ${plural(n, "file", "files")} you renamed will be renamed on Proton Drive to match.`,
 
-  destructiveTitle: "One file gets deleted for good",
-  destructiveBody:
-    "archive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.",
+  // `kind` exists because `plan_sync` emits `RemoteDelete`/`LocalDelete` with
+  // `EntityKind::Directory` for a whole subtree, so the band's subject can be a folder; calling that
+  // a file understates the loss. `thing` is the mixed case, where either noun is wrong half the time.
+  destructiveTitle: (n, kind = "file") =>
+    `${cardinal(n)} ${plural(n, kind, `${kind}s`)} ${plural(n, "gets", "get")} deleted for good`,
+  // The deck draws one sentence, the `remote_delete`; `destructiveLocal` is the same sentence with
+  // the sides swapped, the mirror `05-deletions.md` builds its two columns on. `inside` is appended
+  // rather than folded into the subject so the mono span still wraps the path alone.
+  destructiveRemote: (path, inside = false) =>
+    `${path}${inside ? " and everything inside it" : ""} is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.`,
+  destructiveLocal: (path, inside = false) =>
+    `${path}${inside ? " and everything inside it" : ""} is removed from this computer. It's already gone from Proton Drive, so nothing will bring it back.`,
+  // More than one: no path, because naming them all would run past the band. The tinted rows below
+  // carry the paths.
+  destructiveMany: (n, kind = "file") =>
+    `${count(n)} ${kind}s are removed for good. Nothing will bring them back.`,
   leaveItAlone: "Leave it alone",
 
   everyAction: "Every action, in order",
-  actionSummary: (n) => `${count(n)} actions · 1 conflict kept as both copies`,
+  // The conflict clause is conditional: at 0 it is dropped, not rendered as `0 conflicts`.
+  actionSummary: (n, conflicts = 0) =>
+    conflicts > 0
+      ? `${count(n)} ${plural(n, "action", "actions")} · ${count(conflicts)} ${plural(conflicts, "conflict", "conflicts")} kept as both copies`
+      : `${count(n)} ${plural(n, "action", "actions")}`,
 
   gate: "type DELETE to allow it",
   gateWhy: "Only needed because this plan deletes something.",
@@ -468,7 +506,18 @@ export const PLAN = {
   run: "Run this sync",
 
   safeTitle: "Nothing gets deleted",
-  safeSub: "Five files move, both sides end up with everything. This plan is safe to run.",
+  // `n` is the files that MOVE (uploads + downloads, the two numbers the seam block counts), not the
+  // action count: `5a Plan safe` draws seven actions and says `Five files move`, because a new folder
+  // and a rename are neither arriving nor leaving. The verb agrees as well as the noun, and 0 reads
+  // `No files` — a plan can be entirely a new folder or a rename (the empty plan is `nothing*`).
+  safeSub: (n) =>
+    `${n === 0 ? "No files" : `${cardinal(n)} ${plural(n, "file", "files")}`} ${plural(n, "moves", "move")}, both sides end up with everything. This plan is safe to run.`,
+  // The empty plan: `14-behaviour-and-state.md` routes it to the safe variant ("Plan · Empty:
+  // safe-plan variant"), but no frame draws it, so these two sentences are S4's rather than the
+  // deck's (copy-gate `NOT_DRAWN`). `safeTitle`/`safeSub` cannot be reused: `Nothing gets deleted`
+  // over `No files move` says nothing happened three times.
+  nothingTitle: "Nothing needs to move",
+  nothingSub: "Both sides already match. Running this sync now would change nothing.",
   newFolder: "new folder",
   moved: "moved",
   checkedAgo: (ago) => `Checked ${ago} against both sides.`,
@@ -477,6 +526,14 @@ export const PLAN = {
   checkingSub: "Comparing both sides. Nothing is being touched.",
   checkingProgress: (done, total) => `${count(done)} of ${count(total)} files`,
   stop: "Stop",
+
+  // The failed rehearsal. `14-behaviour-and-state.md`'s empty-and-error table specifies the state in
+  // prose ("dry run failed → show the daemon string, offer `Check again`") and no frame draws it, so
+  // these two are S4's rather than the deck's (copy-gate `NOT_DRAWN`). The title is `checkingTitle`
+  // in the past tense. Neither paraphrases the error (voice rule 4) — they introduce it, and the
+  // daemon's exact string is rendered beneath in mono with no formatter anywhere in the app.
+  failedTitle: "Couldn't work out what would change",
+  failedSub: "Nothing has been touched. This is what it said:",
 };
 
 // ----------------------------------------------------------------------------- activity ----

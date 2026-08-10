@@ -208,6 +208,101 @@
   padding: 13px 2px;
 }
 
+/* ---- the two plan rungs (S4). See rows.js for why the ladder is open and why this one closes
+   itself at the bottom. `border-top: 0` and not a width override: the shorthand resets the style to
+   `none` and the colour to `currentColor`, which is what the frame records for these rows
+   (`rgb(242, 244, 247)`, the inherited text colour, on an edge nobody draws). */
+.row-plan {
+  gap: 13px;
+  padding: 8px 2px;
+  border-top: 0;
+  border-bottom: 1px solid var(--divider);
+}
+.row-side {
+  gap: 11px;
+  padding: 7px 0;
+}
+/* The conflict ring wearing the glyph's 13px slot — 6 + 3.5 + 3.5. */
+.row-plan > .dot,
+.row-side > .dot {
+  margin-inline: 3.5px;
+}
+
+.plan-glyph {
+  flex: none;
+  width: 13px;
+  font-size: 12px;
+  text-align: center;
+}
+.glyph-up {
+  color: var(--up-label);
+}
+.glyph-down {
+  color: var(--down-label);
+}
+.glyph-quiet {
+  color: var(--text-5);
+}
+.glyph-destructive {
+  color: var(--destructive);
+}
+
+.plan-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-outcome {
+  font-size: 12px;
+  color: var(--text-4);
+}
+
+/* Sorted and tinted with the deletions. A `purge` stops here: it destroys no user data, so it takes
+   the grouping background and none of the emphasis. */
+.row-plan.is-tinted {
+  background: var(--destructive-row-bg);
+}
+/* Always drawn together with `is-tinted` (see planActionRow); the background is repeated here so
+   the emphasis can never appear without it. */
+.row-plan.is-destructive {
+  background: var(--destructive-row-bg);
+}
+.row-plan.is-destructive .plan-path {
+  color: var(--text);
+}
+.row-plan.is-destructive .plan-outcome {
+  color: var(--destructive-text);
+}
+
+.side-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A row whose note is a word rather than a size — see planSideRow. */
+.side-path.is-quiet {
+  color: var(--text-3);
+}
+.side-size {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+.side-note {
+  font-size: 11.5px;
+  color: var(--text-5);
+}
+
 .row-label {
   flex: 1;
   min-width: 0;
