@@ -3207,6 +3207,18 @@ would repoint someone's daemon at a folder they never chose); free space is re-a
 changes rather than once per run; `differ(1)` said `1 files differ on both sides`; and focus lands on
 the main screen's own action when the consent dialog closes.
 
+**The consent's promise is enforced rather than asserted.** `pause` resolves with its error inside
+the payload rather than rejecting — the shape §77 records for the status commands — so the single
+fire-and-forget `command(api.pause)` that opened the consent dialog could silently not land, leaving
+`Syncing stays paused until you agree.` beside a checkbox on a daemon that was still syncing. The
+poll now re-asks until the daemon reports itself paused, capped at five attempts.
+
+**One finding was handed on rather than fixed.** `derive_state` falls through to `Idle` for a daemon
+whose last pass failed for any non-auth reason, so the main screen says `Everything is up to date`
+over it — including on the hand-off S7 makes when a first sync fails against a reachable daemon. It
+is the derivation, not any one screen, and nothing in the GUI reads `last_error` at all. Filed as
+**#246**.
+
 **One thing is recorded rather than fixed.** `Nothing gets deleted today` is drawn unconditionally
 while the fact row below it is gated on `destructive_actions`. The planner's bootstrap arm emits no
 `Delete` or `Purge` at all (`plan_bootstrap_entity_action`), so the case needs a pre-existing `.sync`

@@ -939,10 +939,10 @@ function render() {
   // The merge dialog's two moving numbers, patched rather than rebuilt: its mark is the syncing
   // hexagon, and a rebuild restarts both travelling segments from 0% twice a second.
   if (dialogRoute === "firstSync" && dom.dialog) {
-    const reply = store.select.response();
+    const merging = store.select.response();
     updateFirstSync(dom.dialog.querySelector(".dialog"), {
-      pending: remainingOf(reply?.activity ?? null, reply),
-      activity: reply?.activity ?? null,
+      pending: remainingOf(merging?.activity ?? null, merging),
+      activity: merging?.activity ?? null,
     });
   }
 
@@ -2305,6 +2305,7 @@ let onboardingMergeSeq = null; // the daemon's pass counter when the merge start
 let onboardingMergeSeen = false; // has the daemon answered at all since the merge started?
 let onboardingMergeWaits = 0; // polls with no answer before it ever answered
 let onboardingFailure = null; // the merge's reason for failing, until the flow or the daemon moves
+let onboardingPauseTries = 0; // how many times the consent's pause has been asked for
 let onboardingAgreed = false;
 let onboardingStarting = false;
 let onboardingFreeSpace = null;
@@ -2631,6 +2632,7 @@ function resetOnboardingFlow() {
   onboardingFreeSpace = null;
   onboardingFreeSpaceAsked = null;
   onboardingFailure = null;
+  onboardingPauseTries = 0;
   onboardingMergeSeq = null;
   onboardingMergeSeen = false;
   onboardingMergeWaits = 0;
@@ -2660,8 +2662,28 @@ function failOnboardingMerge(reason) {
  * and the consent dialog opens. Leaving without agreeing leaves it paused, which is what the
  * sentence says. §79.
  */
+/** How many polls will re-ask for the pause before the flow stops hammering the socket. */
+const PAUSE_ATTEMPTS = 5;
+
 function advanceOnboardingStage() {
-  if (onboardingStage !== "firstSync" || activeFixture()) return;
+  if (activeFixture()) return;
+  // `Syncing stays paused until you agree.` IS ENFORCED, NOT ASSERTED. `pause` resolves with its
+  // error inside the payload rather than rejecting, so a request that never landed is invisible to
+  // its caller — and the sentence beside the checkbox would be a claim about someone's files that
+  // nothing had checked. The poll re-asks until the daemon says it is paused, then stops.
+  if (onboardingStage === "consent") {
+    const reply = store.select.response();
+    if (!reply || reply.paused) {
+      onboardingPauseTries = 0;
+      return;
+    }
+    if (onboardingPauseTries < PAUSE_ATTEMPTS) {
+      onboardingPauseTries += 1;
+      command(api.pause);
+    }
+    return;
+  }
+  if (onboardingStage !== "firstSync") return;
   const reply = store.select.response();
   // A DAEMON THAT NEVER CAME UP. `start_service` resolving means the unit was asked to start, not
   // that it is running — so a dialog that only ever advances on a reply would sit over an
@@ -2681,7 +2703,7 @@ function advanceOnboardingStage() {
     return;
   }
   onboardingStage = "consent";
-  if (!reply.paused) command(api.pause);
+  onboardingPauseTries = 0;
 }
 
 // ---- data ----
