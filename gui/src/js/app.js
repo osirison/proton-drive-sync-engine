@@ -152,12 +152,18 @@ function navigate(id) {
   if (isOverlay(id)) return openOverlay(id);
   // IMPLEMENTATION-PLAN §3.3's assumption, and on Settings and Plan there is no other way back:
   // clicking the door you are already on returns to the main screen.
+  const was = route;
   route = route === id ? "main" : id;
   // The plan is entered FRESH every time, the way the conflicts screen is: what a rehearsal found
   // ten minutes ago is not what this sync would do, and a screen offering to run a stale plan under
-  // a live `Run this sync` is the one mistake this screen exists to prevent. Leaving discards it for
-  // the same reason.
-  if (route === "plan" || id === "plan") resetPlanScreen();
+  // a live `Run this sync` is the one mistake this screen exists to prevent.
+  //
+  // EITHER DIRECTION, and the first version only did one — which made the comment above true and the
+  // sentence after it false. Leaving matters as much as arriving for two reasons: a rehearsal still
+  // in flight goes on running against a screen nobody is on, and its reply would land in state that
+  // the next visit has to throw away anyway. `resetPlanScreen` bumps the token, so the reply is
+  // dropped where it arrives rather than written and discarded later.
+  if (was === "plan" || route === "plan") resetPlanScreen();
   // A door leaves everything stacked over the old screen behind — both layers, not just the top
   // one. Cleared directly rather than by popping: the door itself keeps focus, so there is no
   // return target to honour.

@@ -473,20 +473,30 @@ export const PLAN = {
   plusRename: (n) =>
     `${cardinal(n)} ${plural(n, "file", "files")} you renamed will be renamed here to match.`,
 
-  destructiveTitle: (n) =>
-    `${cardinal(n)} ${plural(n, "file", "files")} ${plural(n, "gets", "get")} deleted for good`,
+  // `kind` IS NOT DECORATION. `plan_sync` emits `RemoteDelete`/`LocalDelete` with
+  // `EntityKind::Directory` for a whole subtree that went cleanly on one side, so the most
+  // consequential row this band can carry is a FOLDER — and calling it a file understates the loss
+  // by however much is inside it. `thing` is the mixed case, where naming either noun would be wrong
+  // about half the set.
+  destructiveTitle: (n, kind = "file") =>
+    `${cardinal(n)} ${plural(n, kind, `${kind}s`)} ${plural(n, "gets", "get")} deleted for good`,
   // Two directions and a plural, where the deck has one sentence. The drawn one is a `remote_delete`
   // — gone from here already, about to go from Proton — and its mirror is a `local_delete`, which is
   // the same sentence with the sides swapped and the one no frame draws. Neither invents anything:
   // the second is the first read the other way round, which is the same relationship
   // `05-deletions.md` builds its two columns on.
-  destructiveRemote: (path) =>
-    `${path} is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.`,
-  destructiveLocal: (path) =>
-    `${path} is removed from this computer. It's already gone from Proton Drive, so nothing will bring it back.`,
+  // `inside` IS THE FOLDER'S HALF OF THE SAME SENTENCE, and it is the clause S3 emphasises on its own
+  // folder card for the same reason: the path names one thing and the deletion takes everything under
+  // it. Appended rather than folded into the subject so the mono span still wraps the PATH alone —
+  // `and everything inside it` is prose, not a filename.
+  destructiveRemote: (path, inside = false) =>
+    `${path}${inside ? " and everything inside it" : ""} is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.`,
+  destructiveLocal: (path, inside = false) =>
+    `${path}${inside ? " and everything inside it" : ""} is removed from this computer. It's already gone from Proton Drive, so nothing will bring it back.`,
   // More than one, where naming them all would run past the band. It says the number and the
   // consequence and stops — the rows themselves are directly below, tinted, each with its own path.
-  destructiveMany: (n) => `${count(n)} files are removed for good. Nothing will bring them back.`,
+  destructiveMany: (n, kind = "file") =>
+    `${count(n)} ${kind}s are removed for good. Nothing will bring them back.`,
   leaveItAlone: "Leave it alone",
 
   everyAction: "Every action, in order",

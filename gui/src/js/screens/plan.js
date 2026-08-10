@@ -380,6 +380,19 @@ function sideList(model) {
   };
 }
 
+/**
+ * What the band's title should call the things it is about to lose.
+ *
+ * A whole-subtree deletion is a real planned action (`plan_sync` emits `LocalDelete`/`RemoteDelete`
+ * with `EntityKind::Directory` when a directory went cleanly on one side), and it is the largest
+ * loss this screen can describe — so the noun has to agree with it. A set holding both gets
+ * `thing`, because either noun would be wrong about half of it.
+ */
+export function gatedKind(gated = []) {
+  const kinds = new Set(gated.map((row) => (row.entity_kind === "directory" ? "folder" : "file")));
+  return kinds.size === 1 ? [...kinds][0] : "thing";
+}
+
 /** `new folder` / `moved`, or nothing at all for a file whose size Phase 1 cannot report. */
 function noteFor(action) {
   if (action === "create_remote_directory" || action === "create_local_directory") return PLAN.newFolder;
@@ -402,6 +415,7 @@ function noteFor(action) {
 function destructiveBand(model) {
   const gated = model.gated;
   const one = gated.length === 1 ? gated[0] : null;
+  const kind = gatedKind(gated);
   const mark = fid(
     renderHexagon({ size: BAND_MARK, state: "warning", tone: "destructive", flexNone: true }),
     "bandMark",
@@ -413,8 +427,8 @@ function destructiveBand(model) {
     noticeBand({
       tone: "destructive",
       mark,
-      title: PLAN.destructiveTitle(gated.length),
-      note: one ? consequence(one) : [PLAN.destructiveMany(gated.length)],
+      title: PLAN.destructiveTitle(gated.length, kind),
+      note: one ? consequence(one) : [PLAN.destructiveMany(gated.length, kind)],
     }),
     "band",
   );
@@ -439,9 +453,10 @@ function destructiveBand(model) {
  */
 function consequence(row) {
   const template = row.action === "local_delete" ? PLAN.destructiveLocal : PLAN.destructiveRemote;
-  const sentence = template(row.path);
+  const inside = row.entity_kind === "directory";
+  const sentence = template(row.path, inside);
   const MARKER = "\u0001";
-  const at = template(MARKER).indexOf(MARKER);
+  const at = template(MARKER, inside).indexOf(MARKER);
   if (at < 0) return [sentence];
   return [
     sentence.slice(0, at),

@@ -25,6 +25,7 @@ import {
   bodyOf,
   footerKindOf,
   gateSatisfied,
+  gatedKind,
   isDisplayDestructive,
   isGated,
   markOf,
@@ -206,6 +207,33 @@ test("the band names the side the file is being removed from", () => {
 test("the band's title agrees with the number of files in it", () => {
   assert.equal(PLAN.destructiveTitle(1), "One file gets deleted for good");
   assert.equal(PLAN.destructiveTitle(2), "Two files get deleted for good");
+});
+
+test("a whole folder is not called a file", () => {
+  // `plan_sync` emits LocalDelete/RemoteDelete with EntityKind::Directory when a subtree went
+  // cleanly on one side — the largest loss this band can describe, and the one it would understate.
+  const folder = row("photos/2019", "local_delete", { entity_kind: "directory" });
+  const file = row("a.md", "remote_delete");
+  assert.equal(gatedKind([folder]), "folder");
+  assert.equal(gatedKind([file]), "file");
+  assert.equal(gatedKind([folder, file]), "thing");
+  assert.equal(gatedKind([]), "thing");
+  assert.equal(PLAN.destructiveTitle(1, "folder"), "One folder gets deleted for good");
+  assert.equal(PLAN.destructiveTitle(2, "thing"), "Two things get deleted for good");
+  assert.equal(
+    PLAN.destructiveMany(3, "folder"),
+    "3 folders are removed for good. Nothing will bring them back.",
+  );
+});
+
+test("a folder's consequence names what is inside it", () => {
+  assert.equal(
+    PLAN.destructiveLocal("photos/2019", true),
+    "photos/2019 and everything inside it is removed from this computer. It's already gone from " +
+      "Proton Drive, so nothing will bring it back.",
+  );
+  // The clause is appended AFTER the path, so the mono span in the band still wraps the path alone.
+  assert.match(PLAN.destructiveRemote("photos/2019", true), /^photos\/2019 and everything inside it /);
 });
 
 test("the side unit omits a size it was not given", () => {
