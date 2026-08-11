@@ -697,8 +697,9 @@ export function unmetDeviations() {
 //      and hands every frame the whole vocabulary, so `10a Settled` declaring `meta` means the
 //      shape has a meta line, not that this panel does. `check-fixtures.mjs` tolerates exactly this
 //      ("alive somewhere, not alive here") and argues the case at length. Inert, not wrong —
-//      `assert.mjs` filters these out before it gets here, which is why this list is four rows and
-//      not twelve.
+//      `assert.mjs` filters these out before it gets here. Eight of the twelve slots the first
+//      version of this report listed were exactly this, which is why filtering at the source was the
+//      fix rather than allow-listing the noise.
 //   2. The frame draws the node and the app cannot. That is a Phase-1 omission like any other, and
 //      it belongs here, with the issue that closes it.
 //

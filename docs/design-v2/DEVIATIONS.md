@@ -3280,7 +3280,9 @@ blanking half a screen left enough stamps to keep the frame in the mapped set an
 was a finding, while blanking ALL of it dropped the frame into the "screen not built" printout and
 the run stayed green. Measured — making `7a Never synced` stamp nothing gave `35/51 frames mapped,
 66,362 assertions, 0 failures`, exit 0, with 806 assertions gone and the frame's name folded into a
-truncated list. That frame is the one this mechanism exists for.
+truncated list. That frame is the one this mechanism exists for. (Those are this build's numbers, and
+they are a record rather than a standing measurement: §81 stamps five more of that frame's nodes, so
+the same blanking costs 1,101 assertions after it.)
 
 **It did NOT catch the case it was built for, and that was worth stating plainly.** §81 closed that
 half; the rest of this section records the shortfall as it stood, because the way it was found is the

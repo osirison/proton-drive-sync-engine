@@ -386,9 +386,11 @@ for (const entry of index) {
   // `continue` the gate had its own failure inverted: blank HALF a screen and the surviving stamps
   // put the frame in the mapped set, so the missing half is a finding — blank ALL of it and the
   // frame drops to `unmappedFrames`, a printout that says "screen not built", and the run stays
-  // green. Measured rather than reasoned: making `7a Never synced` stamp nothing took the run to
-  // `35/51 frames mapped, 66362 assertions, 0 failures`, exit 0, with 806 assertions gone and the
-  // frame's name folded into a truncated `…` list. That frame is the one this mechanism exists for.
+  // green. Measured rather than reasoned, and RE-measured on this build because #248 stamped five
+  // more of that frame's nodes: making `7a Never synced` stamp nothing takes the run to `35/51 frames
+  // mapped, 67457 assertions, 0 failures`, exit 0, with 1101 assertions gone and the frame's name
+  // folded into a truncated `…` list. (It was 806 when #247 wrote this down.) That frame is the one
+  // this mechanism exists for.
   //
   // Costs nothing today: all 15 unmapped frames are screens with no `fids` map at all, so they
   // declare nothing and produce no observations. It is the frame that HAS a mapping and stamps
