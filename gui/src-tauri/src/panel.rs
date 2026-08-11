@@ -56,7 +56,10 @@ fn remember(at: Option<(i32, i32)>) {
 }
 
 fn anchor() -> Option<(i32, i32)> {
-    let at = (ANCHOR.0.load(Ordering::Relaxed), ANCHOR.1.load(Ordering::Relaxed));
+    let at = (
+        ANCHOR.0.load(Ordering::Relaxed),
+        ANCHOR.1.load(Ordering::Relaxed),
+    );
     // `(0, 0)` is the same "no usable coordinates" sentinel `place` reads it as.
     (at != (0, 0)).then_some(at)
 }
@@ -161,20 +164,24 @@ fn build(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     // no error the day someone adds a stylesheet to one and not the other. app.js reads the
     // parameter and mounts the panel instead of the shell — the same gate the frame preview uses,
     // which also means `?surface=tray` opens the panel in a browser.
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html?surface=tray".into()))
-        .title("Proton Drive Sync")
-        .inner_size(WIDTH, HEIGHT)
-        .resizable(false)
-        .decorations(false)
-        .always_on_top(true)
-        // Out of the taskbar and the window switcher: it is a popover, and one that answers Alt-Tab
-        // is a window the user has to dismiss twice.
-        .skip_taskbar(true)
-        .shadow(false)
-        // Built hidden and shown by the caller once it is positioned. Building it visible paints it
-        // at the default position first, so it visibly jumps to the indicator.
-        .visible(false)
-        .build()
+    WebviewWindowBuilder::new(
+        app,
+        LABEL,
+        WebviewUrl::App("index.html?surface=tray".into()),
+    )
+    .title("Proton Drive Sync")
+    .inner_size(WIDTH, HEIGHT)
+    .resizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    // Out of the taskbar and the window switcher: it is a popover, and one that answers Alt-Tab
+    // is a window the user has to dismiss twice.
+    .skip_taskbar(true)
+    .shadow(false)
+    // Built hidden and shown by the caller once it is positioned. Building it visible paints it
+    // at the default position first, so it visibly jumps to the indicator.
+    .visible(false)
+    .build()
 }
 
 /// Put the panel under the click, inside the screen.
@@ -240,7 +247,11 @@ fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
             let below = cy - origin.y < area.height / 2.0;
             (
                 cx - size.width / 2.0,
-                if below { cy + margin } else { cy - size.height - margin },
+                if below {
+                    cy + margin
+                } else {
+                    cy - size.height - margin
+                },
             )
         }
         None => (

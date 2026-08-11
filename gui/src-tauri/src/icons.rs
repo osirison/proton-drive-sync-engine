@@ -162,7 +162,10 @@ mod tests {
         // protocol has no notion of one. A file that kept it would not move — it would just carry a
         // declaration no icon loader reads. DEVIATIONS §82e.
         for (name, body) in GLYPHS {
-            assert!(!body.contains("animation"), "{name} still carries an animation");
+            assert!(
+                !body.contains("animation"),
+                "{name} still carries an animation"
+            );
         }
     }
 }

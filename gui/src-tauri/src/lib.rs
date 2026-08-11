@@ -73,7 +73,9 @@ pub fn run() {
                 // survives while syncing continues. A real exit is the tray's `Quit`, which since S8
                 // also stops the daemon — that is what its `stops syncing` sub-label promises, and
                 // `Close window · keeps syncing` is this path.
-                tauri::WindowEvent::CloseRequested { api, .. } if window.label() != panel::LABEL => {
+                tauri::WindowEvent::CloseRequested { api, .. }
+                    if window.label() != panel::LABEL =>
+                {
                     api.prevent_close();
                     let _ = window.hide();
                 }
