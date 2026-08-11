@@ -697,8 +697,9 @@ export function unmetDeviations() {
 //      and hands every frame the whole vocabulary, so `10a Settled` declaring `meta` means the
 //      shape has a meta line, not that this panel does. `check-fixtures.mjs` tolerates exactly this
 //      ("alive somewhere, not alive here") and argues the case at length. Inert, not wrong —
-//      `assert.mjs` filters these out before it gets here, which is why this list is four rows and
-//      not twelve.
+//      `assert.mjs` filters these out before it gets here. Eight of the twelve slots the first
+//      version of this report listed were exactly this, which is why filtering at the source was the
+//      fix rather than allow-listing the noise.
 //   2. The frame draws the node and the app cannot. That is a Phase-1 omission like any other, and
 //      it belongs here, with the issue that closes it.
 //
@@ -707,20 +708,27 @@ export function unmetDeviations() {
 // slot (the capability landed, so delete the row), the prototype moved the node and the mapping
 // followed it, the fixture stopped declaring the slot, or the frame left `frames/index.json`.
 //
-// THE PINNED `key` CATCHES EXACTLY ONE OF THOSE — the moved node. That case is still observed, the
-// slot still drawn and unstamped, merely at a different key, so a match on `frame|slot` alone would
-// call it explained and the row would vouch for a node nobody measured. With the pin it lands in
-// `stale` carrying `was`, naming where the node went.
+// A ROW IS ONE NODE — `frame`, `slot` AND `key` together. It reads like bookkeeping and it is the
+// thing that keeps the list honest: since #248 a slot may be a FACTORY covering a run of siblings,
+// so one `(frame, slot)` can be unstamped at four keys for four different reasons. `9a Review`'s
+// `fact` row 0 is #242 and its row 3 would be something else entirely. Matching on `frame|slot`
+// would let the first row's reason silently vouch for all of them.
 //
-// The other three are indistinguishable from this data: each simply stops producing an observation,
-// and all arrive as `was: null`. So the printed line names the causes rather than picking one. (The
-// last is close to unreachable now — a frame carrying a `fids` map that stamps none of it fails as
-// a blank frame in `assert.mjs`, so "no longer mapped" means the frame is gone, not gone quiet.)
+// It is also what catches a moved node. That case is still observed — slot still drawn, still
+// unstamped, merely at a different key — and identity that ignored the key would call it explained
+// and stand behind a node nobody measured. Instead the row goes stale and the new key arrives
+// unexplained, and both fail. Where a stale row and unexplained observations share a frame and a
+// slot, the report lists them (`alsoUnstamped`) — candidates for where the node went, never a
+// conclusion, because a run of siblings can gain a member in the same edit that moves one.
+//
+// The other three causes are indistinguishable from this data: each simply stops producing an
+// observation. So the printed line names them rather than picking one. (The last is close to
+// unreachable now — a frame carrying a `fids` map that stamps none of it fails as a blank frame in
+// `assert.mjs`, so "no longer mapped" means the frame is gone, not gone quiet.)
 //
 // @property frame  the `data-screen-label` exactly as `frames/index.json` carries it
 // @property slot   the fixture's fid slot name, as declared in `fixtures/fids.js`
-// @property key    the node key that slot resolves to, pinned so a re-extraction that moves the
-//                  node invalidates the row instead of quietly absorbing a different one
+// @property key    the ONE node key this row explains — for a factory slot, one row per key
 // @property issue  the issue that closes it
 // @property why    one line, in the same voice as DEVIATIONS.md
 export const KNOWN_UNSTAMPED = [
@@ -757,6 +765,128 @@ export const KNOWN_UNSTAMPED = [
     issue: "#98",
     why: "the fill inside that track — same cause, and it goes with it",
   },
+
+  // `4a Deletions` draws a two-fact strip under each card. `factsOf` builds one fact and only one:
+  // `last edited <month year>` from the index's mtime. Everything else on the strip is a field the
+  // index does not have, so the left card's strip is absent entirely and the right card's is missing
+  // its first span — which is exactly why `cardFact` is keyed by the DRAWN slot and not by position.
+  {
+    frame: "4a Deletions",
+    slot: "cardFacts",
+    key: "div[1]/div[1]/div[0]/div[2]/div[2]",
+    issue: "#208",
+    why: "the folder card's strip, absent rather than partial: its two facts are `last opened Mar 2024` (an atime — the index stores mtime only) and `deleted on Proton 22m ago` (#225), so `factsOf` returns no facts for a directory and the strip is never built",
+  },
+  {
+    frame: "4a Deletions",
+    slot: "cardFact",
+    key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[0]",
+    issue: "#225",
+    why: "`deleted on Proton 22m ago` — `detected_epoch_secs` is re-stamped on every pass, so it is the age of the pass and not of the deletion (DEVIATIONS §75)",
+  },
+  {
+    frame: "4a Deletions",
+    slot: "cardFact",
+    key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[1]",
+    issue: "#208",
+    why: "`last opened Mar 2024` is an access time and `FileRecord` stores a modification time only",
+  },
+  {
+    frame: "4a Deletions",
+    slot: "cardFact",
+    key: "div[1]/div[1]/div[1]/div[2]/div[2]/span[0]",
+    issue: "#225",
+    why: "`deleted here 6m ago` on the local card — the same re-stamped field as the Proton one, which is why this strip draws its second fact and not its first",
+  },
+
+  // `5a Plan safe` puts a size beside every file it is about to move. The rehearsal's rows carry an
+  // action and a path and nothing else, so `noteFor` answers null for a file row and `planSideRow`
+  // draws no note — an em-dash there would be a number the plan does not have.
+  {
+    frame: "5a Plan safe",
+    slot: "sideRowNote",
+    key: "div[1]/div[1]/div[0]/div[2]/div[0]/span[2]",
+    issue: "#191",
+    why: "`1.2 MB` beside `docs/spec.md` — the dry-run report carries no per-file size (DEVIATIONS §76)",
+  },
+  {
+    frame: "5a Plan safe",
+    slot: "sideRowNote",
+    key: "div[1]/div[1]/div[0]/div[2]/div[1]/span[2]",
+    issue: "#191",
+    why: "`2.8 MB` beside `photos/trip/img_0042.jpg` — same cause",
+  },
+  {
+    frame: "5a Plan safe",
+    slot: "sideRowNote",
+    key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[2]",
+    issue: "#191",
+    why: "`96 KB` beside `notes/scratch.md` — same cause",
+  },
+  {
+    frame: "5a Plan safe",
+    slot: "sideRowNote",
+    key: "div[1]/div[1]/div[1]/div[2]/div[0]/span[2]",
+    issue: "#191",
+    why: "`2.4 MB` beside `reports/q3-summary.pdf`, on the arriving side — same cause",
+  },
+  {
+    frame: "5a Plan safe",
+    slot: "sideRowNote",
+    key: "div[1]/div[1]/div[1]/div[2]/div[1]/span[2]",
+    issue: "#191",
+    why: "`184 KB` beside `design/logo.svg` — same cause",
+  },
+
+  // `9a Folders`' remote side is thinner than its local one by exactly two nodes, and neither is a
+  // drawing decision. Its third node — the path — IS drawn, as an `<input>`, and the fixture stops
+  // declaring it rather than recording it here; see `cardPath` in fixtures/fids.js and §79.
+  {
+    frame: "9a Folders",
+    slot: "cardButton",
+    key: "div[1]/div[1]/div[1]/div[1]/button",
+    issue: "#99",
+    why: "`Browse Proton Drive…` has nowhere to go — nothing lists remote folders for a picker, which is why the remote root is typed and the local one is chosen (DEVIATIONS §79)",
+  },
+  {
+    frame: "9a Folders",
+    slot: "sideNote",
+    key: "div[1]/div[1]/div[1]/div[2]",
+    issue: "#241",
+    why: "`Signed in as · 39.1 GB of 500 GB used` — no command reports the account or its quota, so the line is omitted rather than drawn with a blank name (DEVIATIONS §79)",
+  },
+
+  // `9a Review`'s first fact row. The other three are drawn; this one is keyed `at: 0` and never
+  // built, which is what `factsBlock`'s `at` indirection exists for — the app's first row is the
+  // frame's second, and comparing them by position would put a ringed dot against a filled one.
+  {
+    frame: "9a Review",
+    slot: "fact",
+    key: "div[1]/div[1]/div[0]",
+    issue: "#242",
+    why: "`11,798 files already match on both sides` — the dry-run summary counts what the plan will DO and nothing counts what it left alone (DEVIATIONS §79)",
+  },
+  {
+    frame: "9a Review",
+    slot: "factDot",
+    key: "div[1]/div[1]/div[0]/span[0]",
+    issue: "#242",
+    why: "the dot on that row — it goes with it",
+  },
+  {
+    frame: "9a Review",
+    slot: "factLabel",
+    key: "div[1]/div[1]/div[0]/span[1]",
+    issue: "#242",
+    why: "the label on that row — it goes with it",
+  },
+  {
+    frame: "9a Review",
+    slot: "factNote",
+    key: "div[1]/div[1]/div[0]/span[2]",
+    issue: "#242",
+    why: "`left alone`, the note on that row — it goes with it",
+  },
 ];
 
 /**
@@ -773,29 +903,31 @@ export const KNOWN_UNSTAMPED = [
  * @returns recorded    — observations this list explains, for the report
  *          unexplained — observations it does not: a block that renders nothing, with no reason on
  *                        file. The finding this whole mechanism exists to make loud.
- *          stale       — rows no longer observed, or observed at a different key
+ *          stale       — rows whose exact node is no longer observed, each carrying `alsoUnstamped`
+ *                        (every key of the same frame+slot that nothing explains) when there is one
  */
 export function classifyUnstamped(observed) {
-  const rows = new Map(KNOWN_UNSTAMPED.map((r) => [`${r.frame}|${r.slot}`, r]));
+  const id = (r) => `${r.frame}|${r.slot}|${r.key}`;
+  const rows = new Map(KNOWN_UNSTAMPED.map((r) => [id(r), r]));
   const recorded = [];
   const unexplained = [];
   const stale = [];
-  const matched = new Set();
 
   for (const o of observed) {
-    const id = `${o.frame}|${o.slot}`;
-    const row = rows.get(id);
-    if (!row) {
-      unexplained.push(o);
-      continue;
-    }
-    matched.add(id);
-    // The row is for this slot but names a different node. Not "explained at the new key" — the
-    // measurement is what the row is FOR, and a moved node is the case the pin exists to catch.
-    if (row.key !== o.key) stale.push({ ...row, was: o.key });
-    else recorded.push({ ...o, issue: row.issue, why: row.why });
+    const row = rows.get(id(o));
+    if (row) recorded.push({ ...o, issue: row.issue, why: row.why });
+    else unexplained.push(o);
   }
 
-  for (const [id, row] of rows) if (!matched.has(id)) stale.push({ ...row, was: null });
+  const seen = new Set(observed.map(id));
+  for (const [key, row] of rows) {
+    if (seen.has(key)) continue;
+    // CANDIDATES, not a conclusion — and ALL of them, because a factory slot covers a run of
+    // siblings and a run can gain a member in the same edit that moves one. Picking the first would
+    // name an arbitrary one of several as "where the node went". Each is already in `unexplained`
+    // and fails on its own; this only saves the reader from matching the two lists up by eye.
+    const also = unexplained.filter((o) => o.frame === row.frame && o.slot === row.slot).map((o) => o.key);
+    stale.push({ ...row, alsoUnstamped: also.length ? also : null });
+  }
   return { recorded, unexplained, stale };
 }

@@ -3280,24 +3280,130 @@ blanking half a screen left enough stamps to keep the frame in the mapped set an
 was a finding, while blanking ALL of it dropped the frame into the "screen not built" printout and
 the run stayed green. Measured — making `7a Never synced` stamp nothing gave `35/51 frames mapped,
 66,362 assertions, 0 failures`, exit 0, with 806 assertions gone and the frame's name folded into a
-truncated list. That frame is the one this mechanism exists for.
+truncated list. That frame is the one this mechanism exists for. (Those are this build's numbers, and
+they are a record rather than a standing measurement: §81 stamps five more of that frame's nodes, so
+the same blanking costs 1,101 assertions after it.)
 
-**It does NOT yet catch the case it was built for, and that is worth stating plainly.** The intended
-motive was S8: the tray panel reuses the compact panel, whose two progress bars draw today only
-because the fixture hands them `progress: 0.64` and `0.31` as literals — there is no live caller
-yet. The moment S8 wires it to `SyncActivity`, #98 removes the fraction and #211 removes the second
-row.
+**It did NOT catch the case it was built for, and that was worth stating plainly.** §81 closed that
+half; the rest of this section records the shortfall as it stood, because the way it was found is the
+point. The intended motive was S8: the tray panel reuses the compact panel, whose two progress bars
+draw today only because the fixture hands them `progress: 0.64` and `0.31` as literals — there is no
+live caller yet. The moment S8 wires it to `SyncActivity`, #98 removes the fraction and #211 removes
+the second row.
 
-**The gate reads static fid slots only** — 620 of 838, because a factory slot resolves to a
-different key per call — and the compact panel declares `transferTrack`/`transferFill` as factories.
-So that exact regression still passes: setting `progress: null` on both `10a Syncing` transfers gives
-`36/51 frames mapped, 66,936 assertions, 0 failures`, exit 0, with 232 assertions gone and no
-unstamped output at all. Only a total blank of that panel is caught, through its static
-`headline`/`sub`/`hero`.
+**The gate read static fid slots only** — 620 of 838, because a factory slot resolves to a different
+key per call — and the compact panel declares `transferTrack`/`transferFill` as factories. So that
+exact regression passed: setting `progress: null` on both `10a Syncing` transfers gave `36/51 frames
+mapped, 66,936 assertions, 0 failures`, exit 0, with 232 assertions gone and no unstamped output at
+all. Only a total blank of that panel was caught, through its static `headline`/`sub`/`hero`.
 
 Probing factories the way `check-fixtures.mjs` does is tractable, and was measured rather than
 waved away: 33 further findings, 19 of them at index 0 alone, across `7a File lookup`,
-`7a Never synced`, `9a Review` and five more. Each needs the same sorting the twelve got, so it is
-**#248** rather than a clause bolted onto this one. The claim here is the narrower true one: the
-static half is complete and binding, and the half that would have caught S8 is filed with its
+`7a Never synced`, `9a Review` and five more. Each needed the same sorting the twelve got, so it was
+filed as **#248** rather than bolted onto this one. The claim made here was the narrower true one:
+the static half is complete and binding, and the half that would have caught S8 is filed with its
 measurement attached.
+
+## 81. The other 218 slots: 23 nodes nobody was comparing, and 15 nobody had written down
+
+§80 shipped the unstamped gate over static fid slots and said out loud that it did not catch the
+case it was built for. This is that half (#248), and the split it produced is the reason it was
+worth doing separately: of 39 drawn-but-unstamped slots the factory probe found, **23 were nodes the
+app draws and simply never stamped, 15 were real Phase-1 omissions with nothing on file, and one
+was neither.**
+
+### What the probe is
+
+A factory slot (`row: (i) => …`) resolves to a different key per call, so `probeSlot` calls it over a
+10³ index grid and keeps the keys that frame draws. That is stricter than `check-fixtures.mjs`'s
+`value(i, 0, 0)`, on purpose: `sideRowNote(s, i)` is keyed by side **and** row, so a single axis
+reaches only row 0 of each side. The grid finds 39 where one axis finds 33, and all six extra are
+further rows of clusters the single axis already found — it completes findings rather than widening
+them. Two limits remain, both failing safe because the key is simply never produced: an index past
+`PROBE_DEPTH`, and a factory wanting a non-numeric argument. Neither bites today, and both were
+checked rather than assumed — raising the depth from 10 to 30 reaches not one drawn key that 10 does
+not, and every fid factory takes at most three arguments and is keyed by position.
+
+### The 23 that were a mapping gap
+
+Not missing capabilities — nodes the app renders correctly and the gate was blind to, so 1,390
+assertions were not being made:
+
+| Frame                                                     | Slots                                                   | What was unstamped                                       |
+| --------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------- |
+| `3a Conflicts cleared`, `7a Activity quiet`, `7a File lookup` | `hexPath` ×2 each                                       | the hexagon's two paths — S1 and S3 stamp theirs, these three stamped only the `<svg>`, leaving the ring and the tick uncompared |
+| `7a File lookup`                                          | `card`, `cardLabel`, `cardBox`, `cardMeta`, `cardSize`, `cardPath` ×2 | `lookupCard` built the whole two-card block with no `fid` call in it at all |
+| `7a Never synced`                                         | `rulePattern`, `ruleRowPath` ×2, `ruleRowNote` ×2       | the rule's pattern span, and both children of each sample row (the row itself was stamped) |
+
+Stamping them found two real CSS differences that no gate could previously see:
+
+- **`.activity-card-meta`** set `font-family`/`font-size`/`color` on the flex row; the frame records
+  the row inheriting the body's sans 16px and each **span** setting mono 11.5px itself. Identical
+  pixels — the row has no text of its own — but seven assertions on a card that looks exactly right.
+- **`.path-note`** declared `flex: none`; the frame records the default `flex-shrink: 1`. `.path-name`
+  beside it is `flex:1; min-width:0` and truncates, so the note is never the thing asked to give way.
+
+### The 15 that were real, and the one that was neither
+
+Fifteen became `KNOWN_UNSTAMPED` rows, each pinned to the node it explains:
+
+| Frame          | Slots                                   | Why Phase 1 draws nothing                                                             | Issue      |
+| -------------- | --------------------------------------- | -------------------------------------------------------------------------------------- | ---------- |
+| `4a Deletions` | `cardFacts`, `cardFact` ×3              | the folder card's strip is absent entirely (`factsOf` builds no fact for a directory); the file card's first span is `deleted here 6m ago`, a re-stamped field | #208, #225 |
+| `5a Plan safe` | `sideRowNote` ×5                        | a size beside every file the rehearsal will move, and the report carries no per-file size | #191       |
+| `9a Folders`   | `cardButton`, `sideNote`                | `Browse Proton Drive…` has nowhere to go, and no command sees the account or its quota    | #99, #241  |
+| `9a Review`    | `fact`, `factDot`, `factLabel`, `factNote` | `11,798 files already match on both sides` — the summary counts what the plan will DO   | #242       |
+
+The last of the sixteen was neither a gap nor an omission. `9a Folders`' remote `cardPath` **is** drawn — as an
+`<input>`, because the remote root is the editable one — and §79 records why an `<input>` and a drawn
+`<div>` can never agree on `display` or `overflow`. Reporting it as "a block that renders nothing"
+would be false, and recording an excuse for it would put a construction difference in a list reserved
+for missing capabilities. So the fixture stops declaring the slot: `cardPath` returns `null` at
+`s === 1`, the way `rulePattern` returns `null` off-index. **A factory's `null` is how a mapping says
+"no node here".**
+
+### One row is one node
+
+`KNOWN_UNSTAMPED` identity became `frame` + `slot` + `key`. It reads like bookkeeping and it is what
+keeps the list honest: a factory slot covers a run of siblings, so one `(frame, slot)` can be
+unstamped at four keys for four different reasons — `9a Review`'s `fact` row 0 is #242 and its row 3
+would be something else. Matching on `frame|slot` would let the first row's reason silently vouch for
+all of them. It also means a node that moved fails twice — the row goes stale, the new key arrives
+unexplained — instead of being absorbed by a mapping nobody re-checked.
+
+### The one suppression with no rule of its own
+
+Review found the weak point, and it is worth stating rather than leaving to be discovered. Every
+suppression in this subsystem self-invalidates: `KNOWN_DEVIATIONS` fails when an entry stops failing,
+`KNOWN_UNSTAMPED` fails when a row stops being observed, `SETTLED_FRAMES` is cross-checked against
+`index.json` — and that gate's own comment states the rule, *"a hardcoded label list that nothing
+cross-checks is a gate that can switch itself off"*.
+
+Leaving a node **undeclared** has no such rule. `cardPath` returning `null` at `s === 1` is the only
+honest answer available for that node, and nothing targets the null itself. The comparison to
+`rulePattern`'s null does not hold and the first version of this section made it anyway: `rulePattern`
+nulls at indices where **its own node does not exist** (one rule, so no `rulePattern(1)`), while
+`cardPath(1)`'s node is drawn.
+
+The first version of this section then went one claim too far — it said no gate would notice when the
+suppression expired. **Two do, and review measured both.** Stamp the slot and `fid()` null-checks the
+factory rather than its result, so it writes `data-fid="9a Folders:null"`; `assert.mjs` finds no such
+key and reports a `(mapping)` failure, exit 1. Let #99 land and replace the `<input>` with an
+unstamped `<div>` and the **parent** card's exact-pixel `box.h "147 vs 58"` deviation goes stale *and*
+fails, exit 1 — an exact-detail pin on a parent covers a child's construction changing under it.
+
+**Both covers are incidental, and that is the part worth keeping.** Nothing decided this node would
+be caught; it is caught because a neighbour happens to be pinned to the pixel. No rule says which
+undeclared nodes are deliberate, so the next one may have no such neighbour. That is the convention's
+blind spot rather than this slot's, and it is bigger than this section:
+**268 of the 1,452 drawn nodes on mapped frames are claimed by no slot at all — 18%.** Most are
+correct (S4 leaves `5a Checking`'s progress line undeclared, S5 the four history rows, S6 the
+twenty-bar chart), and almost none of those reasons is written where a gate can read it. Sorting 268
+nodes is the same unit of work the twelve and the thirty-nine were, so it is **#250** with the
+measurement attached rather than a clause bolted on here.
+
+### The check that says it worked
+
+The motivating scenario of §80, run against this build: `progress: null` on both `10a Syncing`
+transfers now **exits 1**, naming `transferTrack` and `transferFill` at all four nodes. That claim
+was the one #247 shipped untested, because it was the argument for doing the work.
