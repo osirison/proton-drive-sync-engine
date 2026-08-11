@@ -20,11 +20,11 @@
 //     duration and delay. A wrong easing that parses is invisible here.
 //   · native tray rendering and the desktop's own notification chrome. Neither is a webview.
 
-import { createServer } from "node:http";
-import { readFileSync, statSync } from "node:fs";
-import { dirname, extname, join, normalize, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { serve } from "./serve.mjs";
 import {
   STYLE_PROPS,
   SVG_ATTRS,
@@ -40,7 +40,6 @@ import { OWES_BOX, OWES_FIT } from "./frame-classes.mjs";
 import { isKnown, unmetDeviations, classifyUnstamped, KNOWN_DEVIATIONS } from "./known-deviations.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SRC = resolve(HERE, "..", "..", "src");
 const FRAMES = join(HERE, "frames");
 
 /**
@@ -78,44 +77,6 @@ const SETTLED_FRAMES = new Set([
  * `#0E7490` 0.90, `#BE123C` 0.94. A gap from 0.22 to 0.85 is not a knob to tune.
  */
 const HUE_LIMIT = 0.5;
-
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".woff2": "font/woff2",
-  ".png": "image/png",
-};
-
-// Served rather than opened as file:// because the app is ES modules and a module graph over
-// file:// hits cross-origin rules the real webview never does. Tauri serves gui/src the same way.
-function serve() {
-  return new Promise((ready) => {
-    const server = createServer((req, res) => {
-      const rel = normalize(decodeURIComponent(new URL(req.url, "http://x").pathname)).replace(
-        /^(\.\.[/\\])+/,
-        "",
-      );
-      let file = join(SRC, rel);
-      try {
-        if (statSync(file).isDirectory()) file = join(file, "index.html");
-      } catch {
-        res.writeHead(404).end("not found");
-        return;
-      }
-      try {
-        const body = readFileSync(file);
-        res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" }).end(body);
-      } catch {
-        res.writeHead(404).end("not found");
-      }
-    });
-    server.listen(0, "127.0.0.1", () => ready({ server, port: server.address().port }));
-  });
-}
 
 const { server, port } = await serve();
 const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });

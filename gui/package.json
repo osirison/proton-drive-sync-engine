@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Lint and format tooling for the Tauri frontend in gui/src (served raw — there is no build step).",
+  "description": "Lint and format tooling for the Tauri frontend in gui/src (served raw \u2014 there is no build step).",
   "scripts": {
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
@@ -18,7 +18,9 @@
     "fidelity:extract": "node tools/fidelity/extract.mjs",
     "fidelity:stale": "node tools/fidelity/check-stale.mjs",
     "fidelity:determinism": "node tools/fidelity/check-determinism.mjs",
-    "fonts:sync": "node tools/sync-fonts.mjs"
+    "fonts:sync": "node tools/sync-fonts.mjs",
+    "glyphs": "node tools/render-tray-glyphs.mjs",
+    "glyphs:check": "node tools/render-tray-glyphs.mjs --check"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
