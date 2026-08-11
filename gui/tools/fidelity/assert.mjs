@@ -176,6 +176,10 @@ const PROBE_DEPTH = 10;
  * limit: an index past `PROBE_DEPTH`, and a factory wanting a non-numeric argument (none exist —
  * every fid factory is keyed by position). Both fail SAFE: the key is never produced, so the slot
  * is never reported, and this gate only ever accuses.
+ *
+ * @returns {string[]} deduplicated, and an array in BOTH branches — the guard used to answer `[]`
+ *   where the body answered a `Set`, which iterates the same and would have surprised the first
+ *   caller to reach for `.length`.
  */
 function probeSlot(value) {
   if (typeof value !== "function") return [];
@@ -195,7 +199,7 @@ function probeSlot(value) {
       }
     }
   }
-  return keys;
+  return [...keys];
 }
 
 for (const entry of index) {

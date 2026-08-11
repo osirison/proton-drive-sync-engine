@@ -1260,9 +1260,18 @@ const ONBOARDING_FOLDERS_FIDS = {
   // LOCAL SIDE ONLY, and not because the remote one is missing — the app draws it, as an `<input>`,
   // because the remote root is the editable one (#99). An `<input>` is `inline-block` with
   // `overflow:clip` by UA rule and the frame draws a `<div>`, so the two can never agree on either
-  // property. §79 calls that a construction difference, which is not a missing capability and so has
-  // no place in `KNOWN_UNSTAMPED` — the slot belongs undeclared, the way `rulePattern` is undeclared
-  // off-index. Returning `null` is a factory's way of saying "no node here".
+  // property. §79e settles where that belongs: a construction difference is not a missing capability,
+  // so it is not a `KNOWN_DEVIATIONS` row, and the app DOES render the node, so a `KNOWN_UNSTAMPED`
+  // row would be a lie. Undeclared is the only honest answer, and `null` is how a factory says it.
+  //
+  // NOT THE SAME NULL AS `rulePattern`'s, and the difference is worth being exact about. That one
+  // nulls at indices where its own node does not exist — one rule, so no `rulePattern(1)`. This one
+  // nulls at an index whose node the frame DRAWS. So it is a suppression, and unlike every other
+  // suppression in this subsystem it can never go stale: `KNOWN_DEVIATIONS` fails when an entry stops
+  // failing, `KNOWN_UNSTAMPED` fails when a row stops being observed, `SETTLED_FRAMES` is cross-checked
+  // against `index.json` — a null is checked by nothing. If #99 lands and this becomes a picker over a
+  // `<div>`, nothing here will say so. That is the "leave it undeclared" convention's blind spot rather
+  // than this slot's: 268 of 1,452 drawn nodes on mapped frames are claimed by no slot at all. #250.
   cardPath: (s) => (s === 0 ? `div[1]/div[1]/div[${s}]/div[1]/div[0]` : null),
   cardButton: (s) => `div[1]/div[1]/div[${s}]/div[1]/button`,
   sideNote: (s) => `div[1]/div[1]/div[${s}]/div[2]`,

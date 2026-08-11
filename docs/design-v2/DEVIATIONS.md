@@ -3368,6 +3368,28 @@ would be something else. Matching on `frame|slot` would let the first row's reas
 all of them. It also means a node that moved fails twice — the row goes stale, the new key arrives
 unexplained — instead of being absorbed by a mapping nobody re-checked.
 
+### The one suppression that can never go stale
+
+Review found the weak point, and it is worth stating rather than leaving to be discovered. Every
+suppression in this subsystem self-invalidates: `KNOWN_DEVIATIONS` fails when an entry stops failing,
+`KNOWN_UNSTAMPED` fails when a row stops being observed, `SETTLED_FRAMES` is cross-checked against
+`index.json` — and that gate's own comment states the rule, *"a hardcoded label list that nothing
+cross-checks is a gate that can switch itself off"*.
+
+Leaving a node **undeclared** has no such rule. `cardPath` returning `null` at `s === 1` is the only
+honest answer available for that node — but it is a suppression, and nothing will ever say when it
+expires. The comparison to `rulePattern`'s null does not hold and the first version of this section
+made it anyway: `rulePattern` nulls at indices where **its own node does not exist** (one rule, so no
+`rulePattern(1)`), while `cardPath(1)`'s node is drawn. When #99 lands and the remote root becomes a
+picker over a `<div>`, the slot should be re-declared, and no gate will notice that it wasn't.
+
+That is the convention's blind spot rather than this slot's, and it is bigger than this section:
+**268 of the 1,452 drawn nodes on mapped frames are claimed by no slot at all — 18%.** Most are
+correct (S4 leaves `5a Checking`'s progress line undeclared, S5 the four history rows, S6 the
+twenty-bar chart), and almost none of those reasons is written where a gate can read it. Sorting 268
+nodes is the same unit of work the twelve and the thirty-nine were, so it is **#250** with the
+measurement attached rather than a clause bolted on here.
+
 ### The check that says it worked
 
 The motivating scenario of §80, run against this build: `progress: null` on both `10a Syncing`
