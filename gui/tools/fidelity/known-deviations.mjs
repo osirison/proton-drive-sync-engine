@@ -716,8 +716,9 @@ export function unmetDeviations() {
 // It is also what catches a moved node. That case is still observed — slot still drawn, still
 // unstamped, merely at a different key — and identity that ignored the key would call it explained
 // and stand behind a node nobody measured. Instead the row goes stale and the new key arrives
-// unexplained, and both fail. Where a stale row and an unexplained observation share a frame and a
-// slot, the report says so (`movedTo`); it is a hint for the reader, not a verdict.
+// unexplained, and both fail. Where a stale row and unexplained observations share a frame and a
+// slot, the report lists them (`alsoUnstamped`) — candidates for where the node went, never a
+// conclusion, because a run of siblings can gain a member in the same edit that moves one.
 //
 // The other three causes are indistinguishable from this data: each simply stops producing an
 // observation. So the printed line names them rather than picking one. (The last is close to
@@ -901,8 +902,8 @@ export const KNOWN_UNSTAMPED = [
  * @returns recorded    — observations this list explains, for the report
  *          unexplained — observations it does not: a block that renders nothing, with no reason on
  *                        file. The finding this whole mechanism exists to make loud.
- *          stale       — rows whose exact node is no longer observed, each carrying `movedTo` when
- *                        the same slot IS unstamped elsewhere on that frame
+ *          stale       — rows whose exact node is no longer observed, each carrying `alsoUnstamped`
+ *                        (every key of the same frame+slot that nothing explains) when there is one
  */
 export function classifyUnstamped(observed) {
   const id = (r) => `${r.frame}|${r.slot}|${r.key}`;
@@ -920,11 +921,12 @@ export function classifyUnstamped(observed) {
   const seen = new Set(observed.map(id));
   for (const [key, row] of rows) {
     if (seen.has(key)) continue;
-    // A hint, not a verdict: the same slot is unstamped on the same frame at a key no row explains,
-    // which is what a moved node looks like. That key is ALSO in `unexplained` and fails on its own
-    // — this only saves the reader from matching the two lists up by eye.
-    const moved = unexplained.find((o) => o.frame === row.frame && o.slot === row.slot);
-    stale.push({ ...row, movedTo: moved?.key ?? null });
+    // CANDIDATES, not a conclusion — and ALL of them, because a factory slot covers a run of
+    // siblings and a run can gain a member in the same edit that moves one. Picking the first would
+    // name an arbitrary one of several as "where the node went". Each is already in `unexplained`
+    // and fails on its own; this only saves the reader from matching the two lists up by eye.
+    const also = unexplained.filter((o) => o.frame === row.frame && o.slot === row.slot).map((o) => o.key);
+    stale.push({ ...row, alsoUnstamped: also.length ? also : null });
   }
   return { recorded, unexplained, stale };
 }

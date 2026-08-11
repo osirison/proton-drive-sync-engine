@@ -78,7 +78,7 @@ test("a row nobody observed is stale, and says which kind", () => {
   const { stale, recorded } = classifyUnstamped([]);
   assert.equal(stale.length, KNOWN_UNSTAMPED.length);
   assert.equal(recorded.length, 0);
-  for (const s of stale) assert.equal(s.movedTo, null, "an unobserved row has nowhere to point");
+  for (const s of stale) assert.equal(s.alsoUnstamped, null, "an unobserved row has nothing to point at");
 });
 
 test("the pinned key is what catches a node that moved", () => {
@@ -93,7 +93,21 @@ test("the pinned key is what catches a node that moved", () => {
   assert.equal(unexplained[0].key, "div[9]/div[9]");
   assert.equal(stale.length, KNOWN_UNSTAMPED.length, "the moved row, plus the rows nobody observed");
   const movedRow = stale.find((s) => s.slot === first.slot && s.frame === first.frame);
-  assert.equal(movedRow.movedTo, "div[9]/div[9]", "the report has to name where it went");
+  assert.deepEqual(movedRow.alsoUnstamped, ["div[9]/div[9]"], "the report has to name the candidate");
+});
+
+test("the candidate list names every one, because picking one would be a guess", () => {
+  // A run of siblings can GAIN a member in the same edit that moves one, so "the same slot is also
+  // unstamped over there" can be true of several keys at once and none of them is knowably the
+  // destination. Naming the first would put an arbitrary one on the report as fact.
+  const family = KNOWN_UNSTAMPED.filter((r) => r.frame === "5a Plan safe" && r.slot === "sideRowNote");
+  assert.ok(family.length > 1, "this test needs a slot recorded at more than one key");
+  const { stale } = classifyUnstamped([
+    { ...seen(family[0]), key: "div[9]/moved" },
+    { ...seen(family[0]), key: "div[9]/added" },
+  ]);
+  const row = stale.find((s) => s.key === family[0].key);
+  assert.deepEqual(row.alsoUnstamped, ["div[9]/moved", "div[9]/added"]);
 });
 
 test("a stale row only points at a moved node on its OWN frame and slot", () => {
@@ -102,7 +116,7 @@ test("a stale row only points at a moved node on its OWN frame and slot", () => 
   const [first] = KNOWN_UNSTAMPED;
   const { stale } = classifyUnstamped([{ frame: "4a Deletions", slot: "headline", key: "div[9]" }]);
   const row = stale.find((s) => s.frame === first.frame && s.slot === first.slot);
-  assert.equal(row.movedTo, null);
+  assert.equal(row.alsoUnstamped, null);
 });
 
 test("one recorded slot does not vouch for its siblings", () => {

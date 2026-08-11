@@ -552,10 +552,13 @@ if (stale.length) {
     "\nRecorded unstamped slots that are no longer unstamped — delete them, or re-pin the key:\n",
   );
   for (const u of stale) {
-    // `movedTo` separates the moved node from everything else, and nothing separates the rest: an
-    // observation simply stops arriving. So name the causes instead of picking one.
-    const what = u.movedTo
-      ? `no longer observed at ${u.key}, and the same slot IS unstamped at ${u.movedTo} — the node moved, so re-pin the key`
+    // `alsoUnstamped` narrows the causes without deciding between them: the same slot is unstamped
+    // elsewhere on this frame, which is what a moved node looks like — and also what a run of
+    // siblings gaining a member looks like. Naming the candidates is the honest version; picking one
+    // of several as "where it went" is not. With none, an observation simply stopped arriving and
+    // nothing here can tell the remaining causes apart, so all of them are named.
+    const what = u.alsoUnstamped
+      ? `no longer observed at ${u.key}, and the same slot is unstamped at ${u.alsoUnstamped.join(", ")} — re-pin the key if the node moved there`
       : `no longer observed — stamped now, or the fixture stopped declaring the slot, or the frame left index.json`;
     console.error(`  ${u.frame} · ${u.slot} — ${u.issue}\n      ${what}\n      ${u.why}`);
   }
