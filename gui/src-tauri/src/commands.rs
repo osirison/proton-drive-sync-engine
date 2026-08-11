@@ -985,11 +985,47 @@ pub fn quit_stopping_the_daemon(app: tauri::AppHandle) {
     });
 }
 
-/// The tray panel's rows, dispatched by the id `ui/compact.js`'s `TRAY_MENU` gives them.
+/// What a tray row does, independent of which indicator drew it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayRow {
+    Open,
+    SyncNow,
+    Pause,
+    Resume,
+    CloseWindow,
+    Quit,
+}
+
+/// Every id either indicator may send, in one table.
 ///
-/// ONE ID SPACE FOR BOTH INDICATORS. `tray.rs`'s fallback menu uses the same strings, so `open`
-/// cannot come to mean one thing in a native menu and another in the panel — which is exactly the
-/// drift `ui/copy.js` exists to prevent for the labels, applied to what the labels do.
+/// THIS EXISTS BECAUSE THE COMMENT THAT USED TO SIT HERE WAS FALSE. It claimed "one id space for
+/// both indicators", and three of the seven ids disagreed: the panel sent `syncNow`/`tryAgain`/
+/// `closeWindow` and the fallback menu built `sync_now`/`try_again`/`close_window`, each dispatched
+/// by its own `match` in its own file. Nothing was broken — each handler understood its own menu —
+/// which is exactly what made it worth fixing: two vocabularies that happen to work are a trap for
+/// whoever edits one of them, and the comment promised they were one thing.
+///
+/// So they are one thing now. `ui/compact.js`'s `TRAY_MENU` is the source of the id strings, the
+/// fallback menu in `tray.rs` builds its items from `FALLBACK_IDS` below, and both dispatch through
+/// here. An id this does not know returns `None` and the caller reports it rather than silently
+/// doing nothing.
+pub fn tray_row(id: &str) -> Option<TrayRow> {
+    Some(match id {
+        // `Review them` is the panel's own decision button rather than a menu row, and it goes where
+        // `Open Drive Sync` goes — see the note in `tray_action`.
+        "open" | "review" => TrayRow::Open,
+        // `Try again now` IS a sync: the daemon is unreachable, so the thing to retry is reaching
+        // it, and if it is back the pass it schedules is what the row promises.
+        "syncNow" | "tryAgain" => TrayRow::SyncNow,
+        "pause" => TrayRow::Pause,
+        "resume" => TrayRow::Resume,
+        "closeWindow" => TrayRow::CloseWindow,
+        "quit" => TrayRow::Quit,
+        _ => return None,
+    })
+}
+
+/// The tray panel's rows, dispatched by the id `ui/compact.js`'s `TRAY_MENU` gives them.
 #[tauri::command]
 pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
     // Every row dismisses the panel. It is a popover: leaving it up over the window it just opened
@@ -999,8 +1035,8 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
     // land — the deletions queue against the main screen — and S8 does not split them: the panel is
     // dismissed by then, and a `tray-navigate` to a screen the window may be mid-onboarding on is a
     // second routing question this task does not own. Recorded as DEVIATIONS §82l.
-    let command = match id.as_str() {
-        "open" | "review" => {
+    let command = match tray_row(&id) {
+        Some(TrayRow::Open) => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
@@ -1008,25 +1044,26 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
             }
             ControlCommand::Status
         }
-        // `Try again now` IS a sync: the daemon is unreachable, so the thing to retry is reaching
-        // it — and if it is back, the pass it schedules is what the row promises.
-        "syncNow" | "tryAgain" => ControlCommand::Syncnow,
-        "pause" => ControlCommand::Pause,
-        "resume" => ControlCommand::Resume,
-        "closeWindow" => {
+        Some(TrayRow::SyncNow) => ControlCommand::Syncnow,
+        Some(TrayRow::Pause) => ControlCommand::Pause,
+        Some(TrayRow::Resume) => ControlCommand::Resume,
+        Some(TrayRow::CloseWindow) => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();
             }
             ControlCommand::Status
         }
-        "quit" => {
+        Some(TrayRow::Quit) => {
             quit_stopping_the_daemon(app.clone());
             ControlCommand::Status
         }
         // An unknown id is a frontend that has grown a row this build does not implement. Answer
         // with the status rather than nothing, so the panel still repaints and the row does not read
-        // as a hang.
-        _ => ControlCommand::Status,
+        // as a hang — but say so, because silence here is a menu row that does nothing.
+        None => {
+            eprintln!("tray: no action for row id {id:?}");
+            ControlCommand::Status
+        }
     };
     status_round_trip(app, command).await
 }

@@ -133,7 +133,7 @@ fn fallback_menu(app: &AppHandle, state: DaemonState) -> tauri::Result<Menu<taur
     let quit = MenuItem::with_id(app, "quit", "Quit — stops syncing", true, None::<&str>)?;
     let close = MenuItem::with_id(
         app,
-        "close_window",
+        "closeWindow",
         "Close window — keeps syncing",
         true,
         None::<&str>,
@@ -148,7 +148,7 @@ fn fallback_menu(app: &AppHandle, state: DaemonState) -> tauri::Result<Menu<taur
             Menu::with_items(app, &[&resume, &open, &sep, &quit])
         }
         DaemonState::Unreachable => {
-            let retry = MenuItem::with_id(app, "try_again", "Try again now", true, None::<&str>)?;
+            let retry = MenuItem::with_id(app, "tryAgain", "Try again now", true, None::<&str>)?;
             Menu::with_items(app, &[&retry, &open, &sep, &quit])
         }
         // An expired session and a daemon that has never synced are both fixed in the window, not by
@@ -162,7 +162,7 @@ fn fallback_menu(app: &AppHandle, state: DaemonState) -> tauri::Result<Menu<taur
             Menu::with_items(app, &[&open, &pause, &sep, &close, &quit])
         }
         DaemonState::Idle => {
-            let sync = MenuItem::with_id(app, "sync_now", "Sync now", true, None::<&str>)?;
+            let sync = MenuItem::with_id(app, "syncNow", "Sync now", true, None::<&str>)?;
             let pause = MenuItem::with_id(app, "pause", "Pause syncing", true, None::<&str>)?;
             Menu::with_items(app, &[&open, &sync, &pause, &sep, &close, &quit])
         }
@@ -268,22 +268,27 @@ fn show_window(app: &AppHandle) {
     }
 }
 
-/// The fallback menu's ids. The same id space the panel's rows use, so both indicators mean the same
-/// thing by `open` — `ui/compact.js`'s `TRAY_MENU` is the table, and `commands::tray_action` is
-/// where the panel's copy of these lands.
+/// The fallback menu's rows, dispatched through the SAME table the panel uses.
+///
+/// `commands::tray_row` is that table. Before it there were two: this file matched `sync_now` and
+/// `commands::tray_action` matched `syncNow`, each understanding its own menu perfectly and neither
+/// understanding the other's — while a comment here claimed they were one id space. Nothing was
+/// broken, which is what made it worth fixing rather than leaving: two vocabularies that happen to
+/// work are a trap for whoever edits one of them.
 fn handle_menu_event(app: &AppHandle, id: &str) {
-    match id {
-        "open" => show_window(app),
-        "sync_now" | "try_again" => send_command(app, ControlCommand::Syncnow),
-        "pause" => send_command(app, ControlCommand::Pause),
-        "resume" => send_command(app, ControlCommand::Resume),
-        "close_window" => {
+    use crate::commands::TrayRow;
+    match crate::commands::tray_row(id) {
+        Some(TrayRow::Open) => show_window(app),
+        Some(TrayRow::SyncNow) => send_command(app, ControlCommand::Syncnow),
+        Some(TrayRow::Pause) => send_command(app, ControlCommand::Pause),
+        Some(TrayRow::Resume) => send_command(app, ControlCommand::Resume),
+        Some(TrayRow::CloseWindow) => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();
             }
         }
-        "quit" => crate::commands::quit_stopping_the_daemon(app.clone()),
-        _ => {}
+        Some(TrayRow::Quit) => crate::commands::quit_stopping_the_daemon(app.clone()),
+        None => eprintln!("tray: no action for menu id {id:?}"),
     }
 }
 
@@ -316,5 +321,40 @@ mod tests {
     fn an_unreachable_daemon_reports_no_counters_at_all() {
         let title = title_for(DaemonState::Unreachable, None);
         assert!(!title.contains("pending"), "{title}");
+    }
+
+    #[test]
+    fn both_indicators_speak_one_vocabulary() {
+        // THE BUG THIS PINS shipped and worked: the fallback menu built `sync_now`/`try_again`/
+        // `close_window` and the panel sent `syncNow`/`tryAgain`/`closeWindow`, each dispatched by
+        // its own `match` in its own file. Nothing failed — every handler understood its own menu —
+        // so nothing but a comment claimed they were the same thing, and the comment was wrong.
+        //
+        // These strings are `ui/compact.js`'s `TRAY_MENU` ids. `gui/test/compact.test.js` holds the
+        // JS side of the same contract; this is the half that would otherwise drift silently,
+        // because Rust does not move when a JS table does.
+        for id in [
+            "open",
+            "review",
+            "syncNow",
+            "tryAgain",
+            "pause",
+            "resume",
+            "closeWindow",
+            "quit",
+        ] {
+            assert!(
+                crate::commands::tray_row(id).is_some(),
+                "the panel can send {id:?} and nothing here answers it"
+            );
+        }
+        // And the shapes that are NOT rows: an unknown id must be refused rather than folded into
+        // some default, or a typo in a menu table becomes a row that quietly does the wrong thing.
+        for id in ["sync_now", "close_window", "", "Quit"] {
+            assert!(
+                crate::commands::tray_row(id).is_none(),
+                "{id:?} resolved to an action it should not have"
+            );
+        }
     }
 }
