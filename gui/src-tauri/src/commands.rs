@@ -938,18 +938,111 @@ pub fn close_window(app: tauri::AppHandle) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
 }
 
-/// `Ctrl Q` — end the GUI process, tray included.
+/// `Ctrl Q`, and the tray's `Quit` — **stop the daemon, then end the GUI process.**
 ///
-/// **The daemon keeps running.** That matches the tray's `quit` handler and this crate's existing
-/// behaviour, and it contradicts `10-tray.md` and `14-behaviour-and-state.md`, which both say Quit
-/// "stops syncing" and require the tray to carry that as a sub-label. F4 will not resolve that from
-/// a keyboard shortcut: stopping the daemon is a lifecycle decision with data consequences, it
-/// belongs to S8 (#187) which owns the tray, and a `Ctrl Q` that silently stopped syncing while the
-/// tray item beside it did not would be the more dangerous of the two readings to guess at.
-/// Recorded in DEVIATIONS.md §44.
+/// # This resolves DEVIATIONS §45, which F4 left open and assigned here
+///
+/// `10-tray.md` and `14-behaviour-and-state.md` agree with each other and always did: `Ctrl W`
+/// closes the window *keeps syncing*, `Ctrl Q` quits *stops syncing*, and the tray must carry both
+/// as sub-labels because — 10-tray.md's words — "this is the single worst misunderstanding a tray
+/// app can cause". The shipped build did something else: `app.exit(0)`, ending the GUI while the
+/// daemon carried on, "a separate process and unaffected by either".
+///
+/// F4 declined to settle it from a keyboard shortcut and said why: stopping a sync daemon is a
+/// lifecycle decision with data consequences, and guessing the more destructive of two readings is
+/// the wrong way to reach it. S8 owns the tray, so S8 answers — and the answer is forced, because
+/// S8 is the task that puts `Quit` and `stops syncing` on screen together. Once that sub-label is
+/// drawn there are only two possibilities: the daemon stops, or the app lies about what a button
+/// does in the one place the design says it must not.
+///
+/// So it stops. `Close window · keeps syncing` sits directly above it and is the path for someone
+/// who wants the tray gone and the syncing left alone; both labels are now true.
+///
+/// The shutdown is the daemon's own graceful path — the same `Shutdown` command `proton-sync stop`
+/// and the GUI's restart flow already use, which exits through SIGTERM's route and cancels any
+/// in-flight `proton-drive` invocation. A failure to reach it is deliberately NOT fatal to the quit:
+/// a daemon that is already gone, or wedged, must not leave a user unable to close the app.
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
-    app.exit(0);
+    quit_stopping_the_daemon(app);
+}
+
+/// The body of `quit_app`, callable from the tray's menu handler (which is not a command).
+pub fn quit_stopping_the_daemon(app: tauri::AppHandle) {
+    let socket = {
+        let state = app.state::<Mutex<RuntimePaths>>();
+        let guard = state.lock().unwrap();
+        guard.socket_path.clone()
+    };
+    // On a worker, with the app's exit behind it: the control socket blocks up to DEFAULT_TIMEOUT,
+    // and doing that on the UI thread is the WebKitGTK freeze this crate has already shipped once
+    // (PR #142). The exit follows the attempt either way.
+    std::thread::spawn(move || {
+        if let Err(error) = ipc::command(&socket, ControlCommand::Shutdown, ipc::DEFAULT_TIMEOUT) {
+            eprintln!("quit: could not stop the daemon ({error}); exiting anyway");
+        }
+        app.exit(0);
+    });
+}
+
+/// The tray panel's rows, dispatched by the id `ui/compact.js`'s `TRAY_MENU` gives them.
+///
+/// ONE ID SPACE FOR BOTH INDICATORS. `tray.rs`'s fallback menu uses the same strings, so `open`
+/// cannot come to mean one thing in a native menu and another in the panel — which is exactly the
+/// drift `ui/copy.js` exists to prevent for the labels, applied to what the labels do.
+#[tauri::command]
+pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
+    // Every row dismisses the panel. It is a popover: leaving it up over the window it just opened
+    // is the "lingering after blur" failure by another route.
+    crate::panel::hide(&app);
+    // `Review them` and `Open Drive Sync` both land in the window. They differ in where they should
+    // land — the deletions queue against the main screen — and S8 does not split them: the panel is
+    // dismissed by then, and a `tray-navigate` to a screen the window may be mid-onboarding on is a
+    // second routing question this task does not own. Recorded as DEVIATIONS §82l.
+    let command = match id.as_str() {
+        "open" | "review" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            ControlCommand::Status
+        }
+        // `Try again now` IS a sync: the daemon is unreachable, so the thing to retry is reaching
+        // it — and if it is back, the pass it schedules is what the row promises.
+        "syncNow" | "tryAgain" => ControlCommand::Syncnow,
+        "pause" => ControlCommand::Pause,
+        "resume" => ControlCommand::Resume,
+        "closeWindow" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+            ControlCommand::Status
+        }
+        "quit" => {
+            quit_stopping_the_daemon(app.clone());
+            ControlCommand::Status
+        }
+        // An unknown id is a frontend that has grown a row this build does not implement. Answer
+        // with the status rather than nothing, so the panel still repaints and the row does not read
+        // as a hang.
+        _ => ControlCommand::Status,
+    };
+    status_round_trip(app, command).await
+}
+
+/// The panel measures itself once it knows its state and asks the window to match. The states differ
+/// by 120px between the tallest and the shortest, and Phase 1 omits lines the frames draw, so a
+/// fixed height is either clipped content or a band of empty panel below the menu.
+#[tauri::command]
+pub fn resize_tray_panel(app: tauri::AppHandle, height: f64) {
+    crate::panel::resize(&app, height);
+}
+
+/// Esc, and a click on a row. The blur path is handled in `lib.rs`, on the window event.
+#[tauri::command]
+pub fn hide_tray_panel(app: tauri::AppHandle) {
+    crate::panel::hide(&app);
 }
 
 #[cfg(test)]

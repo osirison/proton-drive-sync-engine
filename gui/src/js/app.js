@@ -25,6 +25,7 @@ import {
 } from "./ui/chrome.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
+import { trayView, renderTrayPanel, updateTrayPanel } from "./screens/tray.js";
 import { ACTIVITY, CHROME, ONBOARDING, SETTINGS } from "./ui/copy.js";
 import { clock, since } from "./ui/format.js";
 import { renderMain, updateMain, unmountMain } from "./screens/main.js";
@@ -297,6 +298,18 @@ function closeOverlay() {
   return true;
 }
 
+/**
+ * Is this window the tray panel? `panel.rs` opens `index.html?surface=tray`.
+ *
+ * Read from the URL rather than asked of Tauri's window label, for one reason that is not
+ * convenience: it works in a browser. Every other design-v2 surface can be opened with `?frame=`
+ * and looked at, and a tray panel that could only be seen by running the packaged app on a desktop
+ * with a status-notifier host would be the one screen in the build nobody could review.
+ */
+function isTraySurface() {
+  return new URLSearchParams(location.search).get("surface") === "tray";
+}
+
 // ---- keyboard map (02-shell.md / 14-behaviour-and-state.md) ----
 
 /**
@@ -309,6 +322,14 @@ function onKeydown(e) {
   const ctrl = e.ctrlKey || e.metaKey;
 
   if (e.key === "Escape") {
+    // The tray panel is a popover and Esc dismisses it — before anything else, because none of the
+    // shell's other Esc targets exist in that window. Blur hides it too (`lib.rs`), but a keyboard
+    // user who never leaves the panel would otherwise have no way out of it at all.
+    if (isTraySurface()) {
+      api.hideTrayPanel();
+      e.preventDefault();
+      return;
+    }
     if (menuOpen) {
       menuOpen = false;
       render();
@@ -474,6 +495,9 @@ const dom = {
   dialogSignature: null, // what the mounted dialog's body was built from — see the layer below
   dialogDetach: null,
   panel: null,
+  // The tray panel (S8). Latched like `panel` and for a harder reason: it holds an animated mark
+  // and a focusable menu, and the poll behind it runs every ~2s.
+  trayPanel: null,
   // The preview's own pages (F9). Latched for the same reason `panel` is, and it is not hypothetical:
   // `render()` returning early does not stop the poll — `main()` starts it unconditionally and
   // `store.subscribe(render)` re-enters here on every reply — so without this the frame index rebuilt
@@ -512,6 +536,61 @@ function mountFramePanel(root) {
   return true;
 }
 
+/**
+ * The tray panel surface (S8) — `index.html?surface=tray`, which is the URL `panel.rs` opens.
+ *
+ * A QUERY PARAMETER RATHER THAN A SECOND HTML FILE. `index.html`'s own comment warns that its
+ * stylesheet chain is easy to forget a link of and that forgetting one is silent — a mark that stops
+ * animating, a seam that snaps. A second copy of that chain is the same trap with a second chance to
+ * fall into it, and the day someone adds a stylesheet to one file and not the other the tray panel
+ * is a blank window with no error. It also means `?surface=tray` opens the panel in a browser, which
+ * is how the states no frame draws were looked at.
+ *
+ * PATCHED, NOT REBUILT, and this is the surface where that matters most: the syncing panel holds an
+ * animated hexagon segment, the poll is ~2s, and a rebuild restarts the animation from 0% and drops
+ * focus out of the menu — in a popover people click through in about a second. `updateTrayPanel`
+ * returns false when the SHAPE changed (a different state, a different row count), which is the
+ * signal to render a fresh one; `ui/compact.js` documents that contract and S8 is its first caller.
+ */
+function mountTrayPanel(root) {
+  if (!isTraySurface()) return false;
+  const view = trayView({
+    daemonState: store.select.daemonState(),
+    response: store.select.response(),
+    conflicts: store.select.conflicts(),
+    deletions: store.select.pendingDeletions(),
+  });
+  if (dom.trayPanel && updateTrayPanel(dom.trayPanel, view)) {
+    reportTrayHeight();
+    return true;
+  }
+  dom.trayPanel = renderTrayPanel(view, (id) => {
+    api.trayAction(id).then((payload) => store.setStatus(payload));
+  });
+  root.replaceChildren(dom.trayPanel);
+  reportTrayHeight();
+  return true;
+}
+
+/**
+ * Tell the window how tall the panel came out.
+ *
+ * The four drawn states span 321.5px to 441.5px and Phase 1 omits lines the frames draw (the offline
+ * panel has no `retrying in 40s`), so no fixed height is right for more than one of them: too short
+ * clips the menu, too tall leaves a band of empty panel under it. Measuring the DOM is the only
+ * source that is right in every state including the ones nothing drew.
+ *
+ * `requestAnimationFrame` because the panel has just been put in the document and has no layout yet
+ * — reading `offsetHeight` in the same tick returns the previous state's height, which is the subtle
+ * version of this bug: the panel is the right size one poll late, every time.
+ */
+function reportTrayHeight() {
+  requestAnimationFrame(() => {
+    const height = dom.trayPanel?.offsetHeight;
+    if (height) api.resizeTrayPanel(height);
+  });
+}
+
 function render() {
   const root = document.getElementById("app-root");
   // The preview's own pages — the frame index, and the diagnostic for a `?frame=` label that has no
@@ -525,6 +604,14 @@ function render() {
     return;
   }
   if (mountFramePanel(root)) return;
+  // THE TRAY PANEL TAKES THE WINDOW, AND IT TAKES IT BEFORE THE ONBOARDING LATCH.
+  //
+  // That order is the whole of the decision. `nextOnboardingLatch` returns true for a fresh machine,
+  // and the takeover is a 1040px, four-step, undismissable surface — drawn inside a 362px borderless
+  // popover it would be an unusable sliver of a wizard with no way out, over a daemon the user was
+  // only glancing at. The tray's own answer for that state is `Nothing has synced yet` with a row
+  // that opens the window, which is where onboarding belongs. See `screens/tray.js`.
+  if (mountTrayPanel(root)) return;
   // The ⋯ menu comes down FIRST, so that for the rest of this pass the only things between the
   // header and the footer are the screen's own blocks — which is the invariant `setBody` is written
   // against. It goes back up at the end. See the note there.
