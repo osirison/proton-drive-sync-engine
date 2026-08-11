@@ -83,34 +83,58 @@ await page.goto(`http://127.0.0.1:${port}/?frame=${encodeURIComponent("10a Glyph
  * gives `rgb(232, 235, 240)`, which is comparable against the token and therefore mappable.
  */
 const marks = await page.evaluate(() => {
+  // A DESCRIPTION, NOT MARKUP. The first version returned `clone.outerHTML` and the files it wrote
+  // did not reproduce on another machine: `glyphs:check` passed here and failed all five on CI.
+  // Serialising an SVG subtree is the browser's decision — whether a namespace is re-declared on the
+  // root, how an empty element is closed, how a number is spelled — and none of that is design.
+  //
+  // So the page returns the tree as data and THIS FILE writes the string, from a fixed attribute
+  // order. What crosses the boundary is what the design decided; the spelling is ours.
+  const KEEP = [
+    "d",
+    "viewBox",
+    "cx",
+    "cy",
+    "r",
+    "fill",
+    "stroke",
+    "stroke-width",
+    "stroke-dasharray",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "opacity",
+  ];
   const out = [];
   for (const svg of document.querySelectorAll(".glyph-cell svg")) {
-    const clone = svg.cloneNode(true);
-    const source = [svg, ...svg.querySelectorAll("*")];
-    const copy = [clone, ...clone.querySelectorAll("*")];
-    source.forEach((node, i) => {
+    const nodes = [];
+    for (const node of [svg, ...svg.querySelectorAll("*")]) {
       const computed = getComputedStyle(node);
-      // Only the two that carry a colour. Everything else — d, stroke-width, dasharray, linecap —
-      // is already a literal in the attribute and is copied untouched by cloneNode.
-      for (const attr of ["stroke", "fill"]) {
-        if (node.hasAttribute(attr)) copy[i].setAttribute(attr, computed[attr]);
+      const attrs = {};
+      for (const name of KEEP) {
+        // The two colour attributes are read as the ENGINE COMPUTED them: the app writes
+        // `stroke="var(--hex-glyph-fg)"`, which means nothing in a standalone file, and
+        // `getComputedStyle` gives `rgb(232, 235, 240)` — comparable against the token, and
+        // therefore mappable onto `currentColor` below.
+        if (name === "stroke" || name === "fill") {
+          if (node.hasAttribute(name)) attrs[name] = computed[name];
+          continue;
+        }
+        // THE PAUSED MARK'S `opacity: .45` IS NOT DECORATION — `10-tray.md` lists it in the
+        // construction table beside the dash, and it is half of what makes that form the paused
+        // one. It arrives via `svg.style`, not an attribute, so it has to be read from the computed
+        // value or it is silently lost (it was, once: the icon came out at full strength and no
+        // longer read as dimmed). Opacity is also the one property that survives recolouring, being
+        // alpha rather than hue.
+        if (name === "opacity") {
+          if (Number(computed.opacity) < 1) attrs.opacity = String(Number(computed.opacity));
+          continue;
+        }
+        if (node.hasAttribute(name)) attrs[name] = node.getAttribute(name);
       }
-      // THE STYLE ATTRIBUTE CARRIES THREE UNRELATED THINGS and only two of them may go. It holds
-      // `width`/`height` (the sheet's 20px, replaced below by the file's own 16), the syncing
-      // segment's `animation` (nothing animates a tray icon), and — on the paused mark alone —
-      // `opacity: .45`, which is not decoration but half of what makes that form the paused one.
-      // `10-tray.md` lists it in the construction table beside the dash. Stripping the attribute
-      // wholesale dropped it, and the icon came out at full strength: a dashed outline that no
-      // longer read as dimmed. Opacity is also the one property that survives recolouring intact,
-      // since it is alpha rather than hue.
-      const opacity = computed.opacity;
-      copy[i].removeAttribute("style");
-      if (opacity !== "" && Number(opacity) < 1) copy[i].setAttribute("opacity", opacity);
-      copy[i].removeAttribute("data-fid");
-      copy[i].removeAttribute("aria-hidden");
-    });
+      nodes.push({ tag: node.tagName.toLowerCase(), attrs });
+    }
     out.push({
-      markup: clone.outerHTML,
+      nodes,
       fg: getComputedStyle(document.documentElement).getPropertyValue("--hex-glyph-fg").trim(),
     });
   }
@@ -135,37 +159,54 @@ function toRgb(hex) {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+/** One element, spelled by us. Attribute order is `KEEP`'s order, so it is the same everywhere. */
+const tag = (node, extra = {}) => {
+  const attrs = { ...node.attrs, ...extra };
+  const pairs = Object.entries(attrs).map(([name, value]) => ` ${name}="${value}"`);
+  return `<${node.tag}${pairs.join("")}/>`;
+};
+
 const files = new Map();
 TRAY_GLYPH_STATES.forEach((state, row) => {
   // The MONO form — the even cell. The colour form exists on the sheet to show what a desktop that
   // allows hue would add; what ships is the one that survives a desktop that does not.
-  const { markup, fg } = marks[row * 2];
+  const { nodes, fg } = marks[row * 2];
   const foreground = toRgb(fg);
-  let svg = markup;
+  const [root, ...children] = nodes;
 
   // Every colour is now an `rgb(...)` literal, and there are exactly two possibilities: the
   // foreground, or the syncing track. Anything else means a form started drawing in a colour this
   // tool does not know how to make symbolic, and guessing would ship an icon with a hardcoded hue.
-  const colours = [...svg.matchAll(/(?:stroke|fill)="(rgb\([^)]*\))"/g)].map((m) => m[1]);
-  const unknown = colours.filter((c) => c !== foreground && c !== "none");
-  const track = [...new Set(unknown)];
+  const track = [
+    ...new Set(
+      children
+        .flatMap((node) => [node.attrs.stroke, node.attrs.fill])
+        .filter((c) => c && c !== "none" && c !== foreground),
+    ),
+  ];
   if (track.length > 1) {
     throw new Error(
       `render-tray-glyphs: the ${state} glyph draws ${track.length} colours that are not the foreground ` +
         `(${track.join(", ")}). A symbolic icon has one colour plus opacity — see the header.`,
     );
   }
-  svg = svg.replaceAll(`"${foreground}"`, '"currentColor"');
-  if (track.length === 1) {
-    // The track keeps its own attribute so the replacement cannot also hit the segment.
-    svg = svg.replaceAll(`stroke="${track[0]}"`, `stroke="currentColor" stroke-opacity="${TRACK_OPACITY}"`);
-  }
 
-  // The sheet renders at 20 (see `fixtures/tray.js`); the file declares 16, which is the size
-  // `10-tray.md` names and the bottom of its range. Neither number is geometry — the viewBox is —
-  // so this is what the desktop starts from before it scales to its own panel height.
-  svg = svg.replace(/^<svg /, '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" ');
-  svg = svg.replace(/\s*(width|height):\s*\d+px;?/g, "");
+  const body = children
+    .map((node) => {
+      const attrs = { class: "ColorScheme-Text", ...node.attrs };
+      for (const name of ["stroke", "fill"]) {
+        if (attrs[name] === foreground) attrs[name] = "currentColor";
+      }
+      // The track becomes the foreground at reduced alpha — see the header. A second literal
+      // colour cannot survive recolouring: it would either clash with whatever the panel chose or
+      // be recoloured to match the segment and disappear.
+      if (track.length === 1 && attrs.stroke === track[0]) {
+        attrs.stroke = "currentColor";
+        attrs["stroke-opacity"] = TRACK_OPACITY;
+      }
+      return tag({ ...node, attrs });
+    })
+    .join("");
 
   // The Breeze stylesheet block. KDE rewrites the declaration inside `#current-color-scheme` to the
   // panel's own text colour, which is what `currentColor` above then resolves to. A desktop that
@@ -175,8 +216,19 @@ TRAY_GLYPH_STATES.forEach((state, row) => {
     '<defs><style type="text/css" id="current-color-scheme">' +
     `.ColorScheme-Text { color: ${fg}; }` +
     "</style></defs>";
-  svg = svg.replace(/^(<svg[^>]*>)/, `$1${style}`);
-  svg = svg.replace(/<(path|circle)\s/g, '<$1 class="ColorScheme-Text" ');
+
+  // The sheet renders at 20 (see `fixtures/tray.js`); the file declares 16, which is the size
+  // `10-tray.md` names and the bottom of its range. Neither number is geometry — the viewBox is —
+  // so this is what the desktop starts from before it scales to its own panel height.
+  const rootAttrs = Object.entries({
+    xmlns: "http://www.w3.org/2000/svg",
+    width: 16,
+    height: 16,
+    ...root.attrs,
+  })
+    .map(([name, value]) => ` ${name}="${value}"`)
+    .join("");
+  const svg = `<svg${rootAttrs}>${style}${body}</svg>`;
 
   const header =
     `<!-- GENERATED by gui/tools/render-tray-glyphs.mjs from the ${state} mark on \`10a Glyph states\`.\n` +
