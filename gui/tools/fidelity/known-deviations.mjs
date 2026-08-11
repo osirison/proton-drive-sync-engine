@@ -677,3 +677,115 @@ export function unmetDeviations() {
     d.props.filter((prop) => !hit.has(`${d.frame}|${d.key}|${prop}`)).map((prop) => ({ ...d, prop })),
   );
 }
+
+// ---- the blocks that render nothing --------------------------------------------------------
+//
+// THE SECOND LIST, AND IT EXISTS BECAUSE THE FIRST ONE CANNOT HOLD THESE. A deviation above is a
+// node the app draws with a value the frame disagrees with — an assertion that fails, absorbed by
+// name. This is the other shape: the frame draws a node and the app draws NOTHING there. No node,
+// no assertion, nothing to absorb; a `KNOWN_DEVIATIONS` row for one of these would never fire, and
+// the rule one screen up (an entry that stops failing fails the build) would reject it on sight.
+//
+// So the difference is invisible to the style gate by construction. `assert.mjs` compares STAMPED
+// nodes, and an omitted block stamps nothing — S5's never-synced dialog rendered an empty body
+// through four separate causes with every gate green. The report it grew afterwards listed the
+// slots a fixture declares that the app never stamped, and that report is what this makes binding.
+//
+// TWO KINDS OF UNSTAMPED SLOT, AND ONLY ONE IS A FINDING:
+//
+//   1. The frame draws no node at that key either. `compactFids` is a factory over four tree shapes
+//      and hands every frame the whole vocabulary, so `10a Settled` declaring `meta` means the
+//      shape has a meta line, not that this panel does. `check-fixtures.mjs` tolerates exactly this
+//      ("alive somewhere, not alive here") and argues the case at length. Inert, not wrong —
+//      `assert.mjs` filters these out before it gets here, which is why this list is four rows and
+//      not twelve.
+//   2. The frame draws the node and the app cannot. That is a Phase-1 omission like any other, and
+//      it belongs here, with the issue that closes it.
+//
+// The staleness rule is the one above, transposed: a row that is no longer observed fails the
+// build. Three things make that happen and all three want a human — the app started stamping the
+// slot (the capability landed, so delete the row), the frame stopped drawing the node (the
+// prototype moved and the mapping with it), or the frame stopped being mapped at all. The pinned
+// `key` is what makes the third detectable rather than silently re-matched against a moved node.
+//
+// @property frame  the `data-screen-label` exactly as `frames/index.json` carries it
+// @property slot   the fixture's fid slot name, as declared in `fixtures/fids.js`
+// @property key    the node key that slot resolves to, pinned so a re-extraction that moves the
+//                  node invalidates the row instead of quietly absorbing a different one
+// @property issue  the issue that closes it
+// @property why    one line, in the same voice as DEVIATIONS.md
+export const KNOWN_UNSTAMPED = [
+  // `2a Syncing` draws a 460×2 track under the in-flight row with the fill at 64%; `2a Needs you`
+  // draws the same track at 82%. One cause, four slots, and it is unreachable by construction
+  // rather than unimplemented: `main.js` computes `bytes_done / bytes_total` and gets `null` on
+  // every transfer the daemon can report. A bar at 0% would read as stalled and a bar at an
+  // invented fraction would be worse, so `transferRow` draws no track at all.
+  {
+    frame: "2a Syncing",
+    slot: "transferTrack",
+    key: "div[1]/div[0]/div[0]/div[1]",
+    issue: "#98",
+    why: "`TransferActivity` carries `bytes_total` on an upload and `bytes_done` on a download and never both, so no percentage exists to draw (DEVIATIONS §63)",
+  },
+  {
+    frame: "2a Syncing",
+    slot: "transferFill",
+    key: "div[1]/div[0]/div[0]/div[1]/div",
+    issue: "#98",
+    why: "the fill inside that track — same cause, and it goes with it",
+  },
+  {
+    frame: "2a Needs you",
+    slot: "transferTrack",
+    key: "div[1]/div[0]/div/div[1]",
+    issue: "#98",
+    why: "the same track on the single-row column, drawn at 82% and unreachable for the same reason",
+  },
+  {
+    frame: "2a Needs you",
+    slot: "transferFill",
+    key: "div[1]/div[0]/div/div[1]/div",
+    issue: "#98",
+    why: "the fill inside that track — same cause, and it goes with it",
+  },
+];
+
+/**
+ * Sort the run's drawn-but-unstamped slots against the list above.
+ *
+ * PURE, and taking the observations as an argument rather than accumulating them in module state
+ * the way `isKnown` does. Two reasons: the classification is a set comparison that reads better in
+ * one place than as a hit-set built a frame at a time, and a pure function is one a test can drive
+ * without depending on what an earlier test happened to call.
+ *
+ * @param observed `{ frame, slot, key }` for every slot a mapped frame DRAWS and the app did not
+ *                 stamp — already filtered of the inert kind by the caller
+ * @returns recorded    — observations this list explains, for the report
+ *          unexplained — observations it does not: a block that renders nothing, with no reason on
+ *                        file. The finding this whole mechanism exists to make loud.
+ *          stale       — rows no longer observed, or observed at a different key
+ */
+export function classifyUnstamped(observed) {
+  const rows = new Map(KNOWN_UNSTAMPED.map((r) => [`${r.frame}|${r.slot}`, r]));
+  const recorded = [];
+  const unexplained = [];
+  const stale = [];
+  const matched = new Set();
+
+  for (const o of observed) {
+    const id = `${o.frame}|${o.slot}`;
+    const row = rows.get(id);
+    if (!row) {
+      unexplained.push(o);
+      continue;
+    }
+    matched.add(id);
+    // The row is for this slot but names a different node. Not "explained at the new key" — the
+    // measurement is what the row is FOR, and a moved node is the case the pin exists to catch.
+    if (row.key !== o.key) stale.push({ ...row, was: o.key });
+    else recorded.push({ ...o, issue: row.issue, why: row.why });
+  }
+
+  for (const [id, row] of rows) if (!matched.has(id)) stale.push({ ...row, was: null });
+  return { recorded, unexplained, stale };
+}

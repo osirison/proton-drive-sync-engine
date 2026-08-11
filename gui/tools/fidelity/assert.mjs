@@ -37,7 +37,7 @@ import {
 } from "./props.mjs";
 import { FIXTURES } from "../../src/js/fixtures/frames.js";
 import { OWES_BOX, OWES_FIT } from "./frame-classes.mjs";
-import { isKnown, unmetDeviations, KNOWN_DEVIATIONS } from "./known-deviations.mjs";
+import { isKnown, unmetDeviations, classifyUnstamped, KNOWN_DEVIATIONS } from "./known-deviations.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = resolve(HERE, "..", "..", "src");
@@ -145,8 +145,8 @@ const record = (row) => (isKnown(row.frame, row.key, row.prop, row.detail) ? dev
 let asserted = 0;
 let mapped = 0;
 const unmappedFrames = [];
-/** Per frame: the slots its fixture declares that the running app never stamped. */
-const deadSlots = [];
+/** `{ frame, slot, key }` for every slot a mapped frame DRAWS and the running app never stamped. */
+const unstamped = [];
 
 for (const entry of index) {
   const frame = JSON.parse(readFileSync(join(FRAMES, entry.file), "utf8"));
@@ -316,14 +316,26 @@ for (const entry of index) {
   // would mean inverting the factory or guessing its arity — and a wrong guess reports a live slot
   // as dead. So factory slots are OUT of this report: `ruleRow`, `kvRow`, `passRow` and `door` are
   // not covered by it, and a screen that stopped rendering its rows would not show up here.
-  const declared = new Set(
-    Object.entries(FIXTURES[frame.label]?.fids ?? {})
-      .filter(([, key]) => typeof key === "string")
-      .map(([slot]) => slot),
+  //
+  // AND THE FRAME HAS TO DRAW THE NODE FOR IT TO BE A FINDING, which is what turns this from a
+  // printout into a gate. Of the twelve slots the first version of this report listed, eight
+  // resolved to a key that exists in NO node of the frame declaring it — `compactFids` is a factory
+  // over four tree shapes and hands every frame the whole vocabulary, so `10a Settled` declaring
+  // `meta` says the shape has a meta line, not that this panel draws one. `check-fixtures.mjs`
+  // tolerates precisely that ("alive somewhere, not alive here") and argues why. Reporting them
+  // here contradicted that gate and gave the list a permanent floor of benign noise, which is where
+  // a real thirteenth entry would have gone to hide.
+  //
+  // What survives the filter is the honest finding: the frame draws a node, the app draws nothing
+  // there. `known-deviations.mjs` sorts those into recorded and unexplained, and an unexplained one
+  // fails the build.
+  const declared = Object.entries(FIXTURES[frame.label]?.fids ?? {}).filter(
+    ([, key]) => typeof key === "string",
   );
   const stampedKeys = new Set(seen.map((s) => s.key));
-  const dead = [...declared].filter((slot) => !stampedKeys.has(FIXTURES[frame.label].fids[slot]));
-  if (dead.length) deadSlots.push({ frame: frame.label, slots: dead });
+  for (const [slot, key] of declared) {
+    if (!stampedKeys.has(key) && expected.has(key)) unstamped.push({ frame: frame.label, slot, key });
+  }
 
   for (const node of seen) {
     const want = expected.get(node.key);
@@ -421,10 +433,14 @@ if (unmappedFrames.length) {
   );
 }
 
-if (deadSlots.length) {
-  console.log("");
-  console.log("Declared fid slots the app never stamped — dead mappings, or a block that renders nothing:");
-  for (const d of deadSlots) console.log(`  ${d.frame}: ${d.slots.join(", ")}`);
+// A block the app cannot draw yet, named and waiting on an issue. Printed like the deviations
+// below and for the same reason: the reader has to be able to see what the gate is NOT comparing.
+const { recorded: recordedUnstamped, unexplained, stale } = classifyUnstamped(unstamped);
+if (recordedUnstamped.length) {
+  console.log(
+    `  ${recordedUnstamped.length} recorded unstamped slot(s) — the frame draws it, Phase 1 cannot:`,
+  );
+  for (const u of recordedUnstamped) console.log(`    ${u.frame} · ${u.slot} (${u.key}) — ${u.issue}`);
 }
 
 // Printed every run, in full, and never folded into the pass count. A recorded deviation is a
@@ -450,6 +466,37 @@ if (unmet.length) {
   console.error(`\nfidelity:assert: ${unmet.length} stale deviation(s) in known-deviations.mjs.`);
 }
 
+// The same clause for the same reason, on the other list. A row here stops being observed when the
+// capability lands, when the prototype moves the node, or when the frame stops being mapped — and
+// all three are a human's call rather than something to infer.
+if (stale.length) {
+  console.error(
+    "\nRecorded unstamped slots that are no longer unstamped — delete them, or re-pin the key:\n",
+  );
+  for (const u of stale) {
+    const what = u.was
+      ? `now drawn at ${u.was}, not ${u.key}`
+      : `no longer observed (stamped now, or the frame is unmapped)`;
+    console.error(`  ${u.frame} · ${u.slot} — ${u.issue}\n      ${what}\n      ${u.why}`);
+  }
+  console.error(`\nfidelity:assert: ${stale.length} stale unstamped row(s) in known-deviations.mjs.`);
+}
+
+// THE TEETH. A frame draws this node, the app renders nothing there, and nothing on file says why.
+// Either build the block or record it with the issue that blocks it — the one thing that must not
+// happen is it going quiet, because a screen can render almost nothing and pass every other gate.
+if (unexplained.length) {
+  console.error("\nBlocks that render nothing, with no reason on file:\n");
+  for (const u of unexplained) {
+    console.error(
+      `  ${u.frame} · ${u.slot} (${u.key})\n      the frame draws this node and the app never stamped it`,
+    );
+  }
+  console.error(
+    `\nfidelity:assert: ${unexplained.length} unexplained unstamped slot(s). Build the block, or add a KNOWN_UNSTAMPED row.`,
+  );
+}
+
 if (failures.length) {
   console.error("");
   // 40 by default so a broken build prints a page rather than a screenful of scrollback.
@@ -465,4 +512,4 @@ if (failures.length) {
   console.error(`\nfidelity:assert: ${failures.length} failure(s).`);
 }
 
-if (failures.length || unmet.length) process.exit(1);
+if (failures.length || unmet.length || stale.length || unexplained.length) process.exit(1);

@@ -9,17 +9,18 @@ npm run fidelity            # style, fit and hue gates, then the copy gate   (ne
 npm run fidelity:fixtures   # the fixture registry gate                      (Node only)
 ```
 
-## The five gates
+## The six gates
 
 | Gate                              | Compares                                                                        | Runs today?                      |
 | --------------------------------- | ------------------------------------------------------------------------------- | -------------------------------- |
 | **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid` |
+| **unstamped** `assert.mjs`        | every node a mapped frame draws and the app renders nothing for                 | yes, on every mapped frame       |
 | **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                              |
 | **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames        |
 | **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 221 + 9 templates       |
 | **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                      |
 
-The first four need a browser and run in the `fidelity` CI job. The last does not, and runs in
+The first five need a browser and run in the `fidelity` CI job. The last does not, and runs in
 `frontend` alongside the linters — a gate that can run in the fifteen-second job should.
 
 ## The hue gate, and the threshold that had to be measured twice (S1)
@@ -55,6 +56,37 @@ every run rather than folded into the pass count.
 **An entry that no longer fails is itself a failure.** That is the clause that stops the list turning
 into somewhere failures go to be forgotten: the day the capability lands, the build fails until the
 row is deleted.
+
+## The blocks that render nothing (S7)
+
+The style gate compares STAMPED nodes, so a block the app does not render stamps nothing and is
+simply not compared — a screen can render almost nothing and stay green. That is not hypothetical:
+S5's `7a Never synced` body rendered empty through four separate causes with every gate passing, and
+it was found by dumping `data-fid` attributes by hand.
+
+So `assert.mjs` also compares the other direction: for each mapped frame, the slots its fixture
+declares against the ones the app actually stamped. A slot that went unstamped **and whose key the
+frame draws** is a block rendering nothing, and it is a failure unless `KNOWN_UNSTAMPED` in
+`known-deviations.mjs` names it with the issue that closes it.
+
+**The "and whose key the frame draws" clause is what makes it a gate rather than a printout.** It
+began as a report, and eight of the twelve lines it printed were noise: `compactFids` is a factory
+over four tree shapes and hands every frame the whole slot vocabulary, so `10a Settled` declaring
+`meta` says the shape has a meta line, not that this panel draws one. `check-fixtures.mjs` tolerates
+exactly that — its rule is "alive somewhere", not "alive here" — and reporting them here both
+contradicted it and gave the list a permanent floor of benign lines for a real entry to hide in.
+Filtering on the frame's own nodes removes all eight, statically and permanently, and what remains
+is four slots that mean what the report says they mean.
+
+These cannot live in `KNOWN_DEVIATIONS`: an unstamped node produces no assertion, so a row there
+would never fire, and the rule one section up would reject it for never failing. The staleness rule
+is the same though, transposed — a `KNOWN_UNSTAMPED` row that is no longer observed fails the build,
+whether because the capability landed, the prototype moved the node, or the frame stopped being
+mapped. The pinned `key` is what tells the second apart from the first.
+
+Its four rows are one cause: `2a Syncing` and `2a Needs you` draw a 2px progress track under the
+in-flight transfer, and `TransferActivity` carries `bytes_total` on an upload and `bytes_done` on a
+download and never both, so no percentage exists to draw (#98, DEVIATIONS §63).
 
 ## The node key, and why it is a path
 

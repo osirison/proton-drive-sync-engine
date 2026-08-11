@@ -2641,9 +2641,12 @@ it is invisible to that gate because the key is real and merely unreached.
 
 A report rather than a failure, for the same reason the unmapped-frames line is one: it is true of
 shipped screens too. `2a Syncing` and `2a Needs you` declare `transferTrack`/`transferFill` for a
-progress bar that is unreachable by construction (§63, #98), and four compact frames declare `meta`
+progress bar that is unreachable by construction (§63, #98), and five compact frames declare `meta`
 and `action` for panel states they do not draw. Listed every run so that "the gate is green" is
 never confused with "the gate looked at anything".
+
+**It is a failure now — see §80**, which sorted those twelve lines and made the residue binding.
+The five compact frames turned out not to be a finding at all.
 
 Acting on S5's own entries took the screen from 49,299 assertions to **51,743**, and the newly
 compared nodes were not all correct: thirteen further mismatches surfaced the moment they were
@@ -3225,3 +3228,52 @@ while the fact row below it is gated on `destructive_actions`. The planner's boo
 index under the chosen local root — re-running setup over an old sync root. The deck has no headline
 for that situation and inventing one is a design decision, not a build one; the enumerated claim is
 gated, and this is the question to put to the design.
+
+## The fidelity harness, between S7 and S8
+
+## 80. The twelve unstamped slots were eight false alarms, four real, and no gate
+
+S5 gave `assert.mjs` a report: per frame, the fid slots a fixture declares that the running app
+never stamped. It exists because the style gate compares STAMPED nodes, so a block that renders
+nothing stamps nothing and is simply not compared — `7a Never synced` rendered an empty body through
+four separate causes with every gate green, and it was found by dumping attributes by hand.
+
+The report printed twelve lines across seven frames and printed them every run without anyone having
+to do anything about them. **Sorted against the frames themselves, they were two entirely different
+things:**
+
+| Slots                                                          | The frame draws the node? | Verdict                    |
+| -------------------------------------------------------------- | ------------------------- | -------------------------- |
+| `meta` / `action` on five compact frames                        | **no**                    | inert — not a finding      |
+| `transferTrack` / `transferFill` on `2a Syncing`, `2a Needs you` | **yes**                   | a block that renders nothing |
+
+**The eight were noise, and worse than noise.** `compactFids` is a factory over four tree shapes and
+hands every frame in a shape the whole slot vocabulary, so `10a Settled` declaring `meta` says the
+SHAPE has a meta line, not that this panel draws one. Each of the eight resolves to a key that
+exists in no node of the frame declaring it. `check-fixtures.mjs` already tolerates precisely this —
+its rule is "alive somewhere", not "alive here", and its header records that requiring per-frame
+resolution flagged 23 of 180 keys with all 23 legitimate. So the report was contradicting the gate
+next door, and giving itself a permanent floor of eight benign lines for a real ninth to hide in.
+
+`assert.mjs` now filters on the frame's own nodes before reporting, which removes all eight
+statically and permanently, and would report a compact `meta` again the day the prototype grows one.
+
+**The four are a Phase-1 omission that had never been written down.** Both frames draw a 460×2 track
+under the in-flight transfer with the fill at 64% and 82%. `main.js` computes it correctly —
+`bytes_done / bytes_total` — and gets `null` every time, because `TransferActivity` carries
+`bytes_total` on an upload and `bytes_done` on a download and never both (§63, #98). `transferRow`
+draws no track rather than a bar at 0%, which would read as stalled, or at an invented fraction,
+which would be worse. Correct behaviour, and invisible to every gate.
+
+**They cannot be `KNOWN_DEVIATIONS` rows.** That list absorbs a failing assertion by name, and an
+unstamped node produces no assertion at all — a row for one would never fire, and the rule that
+keeps that list honest (an entry that stops failing fails the build) would reject it on sight. So
+`KNOWN_UNSTAMPED` is a second list, with the same rule transposed: a row that is no longer observed
+fails the build, whether the capability landed, the prototype moved the node, or the frame stopped
+being mapped. Each row pins the node key, which is what tells the second case apart from the first.
+
+**And an unstamped, drawn, unrecorded slot is now a failure rather than a line of output.** This is
+the whole point of the change: the S8 tray panel reuses the compact panel, whose two progress bars
+currently draw only because the fixture hands them `progress: 0.64` and `0.31` as literals — there
+is no live caller yet. The moment S8 wires it to `SyncActivity`, #98 removes the fraction and #211
+removes the second row, and without this the bars would vanish into a report nobody reads.
