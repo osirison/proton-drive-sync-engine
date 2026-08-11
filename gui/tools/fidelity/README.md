@@ -103,8 +103,8 @@ Its 19 rows are six causes. Four are #98: `2a Syncing` and `2a Needs you` draw a
 under the in-flight transfer, and `TransferActivity` carries `bytes_total` on an upload and
 `bytes_done` on a download and never both, so no percentage exists to draw (DEVIATIONS §63). The rest
 are per-file sizes the rehearsal does not report (#191 ×5), the deletion facts the index cannot
-answer (#208, #225 ×4), the onboarding account line and remote picker (#241, #99), and the count of
-files that already match (#242 ×4).
+answer (#208 ×2, #225 ×2), the onboarding account line and remote picker (#241, #99), and the count
+of files that already match (#242 ×4).
 
 **Factory slots are probed, not skipped** — the half #247 shipped without (#248). A factory
 (`row: (i) => …`) resolves to a different key per call, so it cannot be read off the map; `probeSlot`
@@ -121,8 +121,10 @@ green. It does not pass this — `progress: null` on both `10a Syncing` transfer
 all four nodes.
 
 Two things the probe still cannot reach, and both fail **safe** — the key is never produced, so the
-slot is never reported: an index past `PROBE_DEPTH` (10, more rows than any frame draws), and a
-factory wanting a non-numeric argument (none exist; every fid factory is keyed by position).
+slot is never reported: an index past `PROBE_DEPTH`, and a factory wanting a non-numeric argument.
+Neither bites today, and both were checked rather than assumed: raising the depth to 30 reaches not
+one drawn key that 10 does not, and every fid factory takes at most three arguments and is keyed by
+position.
 
 ## The node key, and why it is a path
 

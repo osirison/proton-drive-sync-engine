@@ -3317,7 +3317,9 @@ A factory slot (`row: (i) => …`) resolves to a different key per call, so `pro
 reaches only row 0 of each side. The grid finds 39 where one axis finds 33, and all six extra are
 further rows of clusters the single axis already found — it completes findings rather than widening
 them. Two limits remain, both failing safe because the key is simply never produced: an index past
-10, and a factory wanting a non-numeric argument (none exist).
+`PROBE_DEPTH`, and a factory wanting a non-numeric argument. Neither bites today, and both were
+checked rather than assumed — raising the depth from 10 to 30 reaches not one drawn key that 10 does
+not, and every fid factory takes at most three arguments and is keyed by position.
 
 ### The 23 that were a mapping gap
 

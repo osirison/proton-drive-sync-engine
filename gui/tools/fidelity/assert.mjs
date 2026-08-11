@@ -155,7 +155,10 @@ const blankFrames = [];
  */
 const unstamped = [];
 
-/** How far each index axis is probed below. Ten rows is more than any frame draws. */
+/**
+ * How far each index axis is probed below. Measured, not chosen: raising it to 30 reaches not one
+ * drawn key that 10 does not, across every factory slot of every mapped frame.
+ */
 const PROBE_DEPTH = 10;
 
 /**
