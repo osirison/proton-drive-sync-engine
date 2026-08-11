@@ -2645,7 +2645,7 @@ progress bar that is unreachable by construction (§63, #98), and five compact f
 and `action` for panel states they do not draw. Listed every run so that "the gate is green" is
 never confused with "the gate looked at anything".
 
-**It is a failure now — see §80**, which sorted those twelve lines and made the residue binding.
+**It is a failure now — see §80**, which sorted those twelve slots and made the residue binding.
 The five compact frames turned out not to be a finding at all.
 
 Acting on S5's own entries took the screen from 49,299 assertions to **51,743**, and the newly
@@ -3238,9 +3238,9 @@ never stamped. It exists because the style gate compares STAMPED nodes, so a blo
 nothing stamps nothing and is simply not compared — `7a Never synced` rendered an empty body through
 four separate causes with every gate green, and it was found by dumping attributes by hand.
 
-The report printed twelve lines across seven frames and printed them every run without anyone having
-to do anything about them. **Sorted against the frames themselves, they were two entirely different
-things:**
+The report named twelve slots across seven frames — one printed line per frame, slots joined on it —
+every run, without anyone having to do anything about them. **Sorted against the frames themselves,
+they were two entirely different things:**
 
 | Slots                                                          | The frame draws the node? | Verdict                    |
 | -------------------------------------------------------------- | ------------------------- | -------------------------- |
@@ -3272,8 +3272,30 @@ keeps that list honest (an entry that stops failing fails the build) would rejec
 fails the build, whether the capability landed, the prototype moved the node, or the frame stopped
 being mapped. Each row pins the node key, which is what tells the second case apart from the first.
 
-**And an unstamped, drawn, unrecorded slot is now a failure rather than a line of output.** This is
-the whole point of the change: the S8 tray panel reuses the compact panel, whose two progress bars
-currently draw only because the fixture hands them `progress: 0.64` and `0.31` as literals — there
-is no live caller yet. The moment S8 wires it to `SyncActivity`, #98 removes the fraction and #211
-removes the second row, and without this the bars would vanish into a report nobody reads.
+**And an unstamped, drawn, unrecorded slot is now a failure rather than a line of output.** It also
+runs BEFORE the unmapped-frame bail-out, which is where the gate had its own failure inverted:
+blanking half a screen left enough stamps to keep the frame in the mapped set and the missing half
+was a finding, while blanking ALL of it dropped the frame into the "screen not built" printout and
+the run stayed green. Measured — making `7a Never synced` stamp nothing gave `35/51 frames mapped,
+66,362 assertions, 0 failures`, exit 0, with 806 assertions gone and the frame's name folded into a
+truncated list. That frame is the one this mechanism exists for.
+
+**It does NOT yet catch the case it was built for, and that is worth stating plainly.** The intended
+motive was S8: the tray panel reuses the compact panel, whose two progress bars draw today only
+because the fixture hands them `progress: 0.64` and `0.31` as literals — there is no live caller
+yet. The moment S8 wires it to `SyncActivity`, #98 removes the fraction and #211 removes the second
+row.
+
+**The gate reads static fid slots only** — 620 of 838, because a factory slot resolves to a
+different key per call — and the compact panel declares `transferTrack`/`transferFill` as factories.
+So that exact regression still passes: setting `progress: null` on both `10a Syncing` transfers gives
+`36/51 frames mapped, 66,936 assertions, 0 failures`, exit 0, with 232 assertions gone and no
+unstamped output at all. Only a total blank of that panel is caught, through its static
+`headline`/`sub`/`hero`.
+
+Probing factories the way `check-fixtures.mjs` does is tractable, and was measured rather than
+waved away: 33 further findings, 19 of them at index 0 alone, across `7a File lookup`,
+`7a Never synced`, `9a Review` and five more. Each needs the same sorting the twelve got, so it is
+**#248** rather than a clause bolted onto this one. The claim here is the narrower true one: the
+static half is complete and binding, and the half that would have caught S8 is filed with its
+measurement attached.

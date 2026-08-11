@@ -14,7 +14,7 @@ npm run fidelity:fixtures   # the fixture registry gate                      (No
 | Gate                              | Compares                                                                        | Runs today?                      |
 | --------------------------------- | ------------------------------------------------------------------------------- | -------------------------------- |
 | **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid` |
-| **unstamped** `assert.mjs`        | every node a mapped frame draws and the app renders nothing for                 | yes, on every mapped frame       |
+| **unstamped** `assert.mjs`        | a frame's statically-declared fid slots against the ones the app stamped        | yes, 620 of 838 slots (#248)     |
 | **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                              |
 | **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames        |
 | **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 221 + 9 templates       |
@@ -64,13 +64,20 @@ simply not compared — a screen can render almost nothing and stay green. That 
 S5's `7a Never synced` body rendered empty through four separate causes with every gate passing, and
 it was found by dumping `data-fid` attributes by hand.
 
-So `assert.mjs` also compares the other direction: for each mapped frame, the slots its fixture
-declares against the ones the app actually stamped. A slot that went unstamped **and whose key the
-frame draws** is a block rendering nothing, and it is a failure unless `KNOWN_UNSTAMPED` in
+So `assert.mjs` also compares the other direction: for each frame, the slots its fixture declares
+against the ones the app actually stamped. A slot that went unstamped **and whose key the frame
+draws** is a block rendering nothing, and it is a failure unless `KNOWN_UNSTAMPED` in
 `known-deviations.mjs` names it with the issue that closes it.
 
+**Every frame, not every _mapped_ frame** — the check runs before the unmapped-frame bail-out, and
+that ordering is the check. Below it the gate's own failure was inverted: blank half a screen and
+the surviving stamps keep the frame in the mapped set, so the missing half is a finding; blank all
+of it and the frame drops to the "screen not built" printout and the run goes green. Making
+`7a Never synced` stamp nothing gave `35/51 frames mapped, 66362 assertions, 0 failures`, exit 0 —
+806 assertions gone, on the frame this mechanism was built for.
+
 **The "and whose key the frame draws" clause is what makes it a gate rather than a printout.** It
-began as a report, and eight of the twelve lines it printed were noise: `compactFids` is a factory
+began as a report, and eight of the twelve slots it named were noise: `compactFids` is a factory
 over four tree shapes and hands every frame the whole slot vocabulary, so `10a Settled` declaring
 `meta` says the shape has a meta line, not that this panel draws one. `check-fixtures.mjs` tolerates
 exactly that — its rule is "alive somewhere", not "alive here" — and reporting them here both
@@ -87,6 +94,16 @@ mapped. The pinned `key` is what tells the second apart from the first.
 Its four rows are one cause: `2a Syncing` and `2a Needs you` draw a 2px progress track under the
 in-flight transfer, and `TransferActivity` carries `bytes_total` on an upload and `bytes_done` on a
 download and never both, so no percentage exists to draw (#98, DEVIATIONS §63).
+
+**It reads STATIC slots only — 620 of 838 — and the missing 218 are the repeated blocks.** A factory
+slot (`row: (i) => …`) resolves to a different key per call, so deciding whether it was reached
+means guessing its arity, and a wrong guess reports a live slot as dead. The shortfall is not evenly
+spread: a factory slot is by definition a block drawn many times, which is exactly what a screen
+renders none of. It is why this does not yet catch the case it was built for — the compact panel
+declares `transferTrack`/`transferFill` as factories, so S8 wiring the tray panel to `SyncActivity`
+still passes green (`progress: null` on both `10a Syncing` transfers: 66936 assertions, 0 failures,
+232 gone silently). Probing them the way `check-fixtures.mjs` does surfaces 33 further findings, 19
+at index 0 alone; each wants the same sorting the twelve got, so it is **#248**.
 
 ## The node key, and why it is a path
 

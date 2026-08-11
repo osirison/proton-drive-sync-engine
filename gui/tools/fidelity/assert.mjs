@@ -295,12 +295,6 @@ for (const entry of index) {
     [...COLOUR_ATTRS],
   );
 
-  if (!seen.length) {
-    unmappedFrames.push(frame.label);
-    continue;
-  }
-  mapped++;
-
   // A DECLARED SLOT THE APP NEVER STAMPS IS DEAD, and this is the check that would have caught S5's
   // never-synced dialog rendering an empty body while every gate stayed green. `check-fixtures.mjs`
   // already fails on a declared slot whose KEY exists in no frame — the complement, a slot whose key
@@ -317,6 +311,18 @@ for (const entry of index) {
   // as dead. So factory slots are OUT of this report: `ruleRow`, `kvRow`, `passRow` and `door` are
   // not covered by it, and a screen that stopped rendering its rows would not show up here.
   //
+  // 620 slots are static and 218 are factories, so this covers 74% of the mapping and the shortfall
+  // is not evenly spread — a repeated block is exactly what a screen renders none of. The compact
+  // panel's `transferTrack`/`transferFill` are factories, so the S8 case this was built for (wiring
+  // the tray panel to `SyncActivity`, whose #98 gap removes the progress fraction) is NOT caught
+  // here; only a total blank of that panel is, through its static `headline`/`sub`/`hero`.
+  //
+  // Probing the way `check-fixtures.mjs` does — call the factory for i = 0…9 and keep the keys the
+  // frame draws — is tractable and was measured rather than dismissed: it surfaces 33 further
+  // findings, 19 of them at index 0 alone, across `7a File lookup`, `7a Never synced`, `9a Review`
+  // and five more. Every one needs the same sorting the twelve got, so it is #248 rather than a
+  // clause bolted on here. Recorded with its number so the limit is checkable instead of folklore.
+  //
   // AND THE FRAME HAS TO DRAW THE NODE FOR IT TO BE A FINDING, which is what turns this from a
   // printout into a gate. Of the twelve slots the first version of this report listed, eight
   // resolved to a key that exists in NO node of the frame declaring it — `compactFids` is a factory
@@ -329,6 +335,18 @@ for (const entry of index) {
   // What survives the filter is the honest finding: the frame draws a node, the app draws nothing
   // there. `known-deviations.mjs` sorts those into recorded and unexplained, and an unexplained one
   // fails the build.
+  //
+  // RUN BEFORE THE UNMAPPED-FRAME BAIL-OUT, and that ordering is the whole check. Below the
+  // `continue` the gate had its own failure inverted: blank HALF a screen and the surviving stamps
+  // put the frame in the mapped set, so the missing half is a finding — blank ALL of it and the
+  // frame drops to `unmappedFrames`, a printout that says "screen not built", and the run stays
+  // green. Measured rather than reasoned: making `7a Never synced` stamp nothing took the run to
+  // `35/51 frames mapped, 66362 assertions, 0 failures`, exit 0, with 806 assertions gone and the
+  // frame's name folded into a truncated `…` list. That frame is the one this mechanism exists for.
+  //
+  // Costs nothing today: all 15 unmapped frames are screens with no `fids` map at all, so they
+  // declare nothing and produce no observations. It is the frame that HAS a mapping and stamps
+  // none of it that this now catches.
   const declared = Object.entries(FIXTURES[frame.label]?.fids ?? {}).filter(
     ([, key]) => typeof key === "string",
   );
@@ -336,6 +354,12 @@ for (const entry of index) {
   for (const [slot, key] of declared) {
     if (!stampedKeys.has(key) && expected.has(key)) unstamped.push({ frame: frame.label, slot, key });
   }
+
+  if (!seen.length) {
+    unmappedFrames.push(frame.label);
+    continue;
+  }
+  mapped++;
 
   for (const node of seen) {
     const want = expected.get(node.key);
