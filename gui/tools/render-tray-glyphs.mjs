@@ -70,6 +70,16 @@ const { server, port } = await serve();
 const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
 const page = await browser.newPage();
 await page.setViewport({ width: 700, height: 700, deviceScaleFactor: 1 });
+// PIN THE THEME, or the files are not reproducible. `--hex-glyph-fg` has a value in each theme —
+// `10-tray.md` supplies both ("the glyph inverts to #14161A") — so an unpinned
+// `prefers-color-scheme` decides what goes in the `#current-color-scheme` block. Headless Chromium's
+// default is not the same on every machine: this passed here and failed all five on CI, which is
+// what an unpinned media query looks like from the outside. `assert.mjs` pins the same feature for
+// the same reason, and `fixtures/preview.js` has the long version of the argument.
+//
+// DARK, because that is the sheet the gate compares and the value only ever survives on a desktop
+// that does not know the Breeze convention — every one that does overwrites it.
+await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "dark" }]);
 await page.goto(`http://127.0.0.1:${port}/?frame=${encodeURIComponent("10a Glyph states")}`, {
   waitUntil: "networkidle0",
 });
