@@ -2639,14 +2639,16 @@ stamped. `check-fixtures.mjs` already fails on the complement (a declared slot w
 no frame — how the dead `hexRect`/`hexNumeral` declarations were found); this is the other half, and
 it is invisible to that gate because the key is real and merely unreached.
 
-A report rather than a failure, for the same reason the unmapped-frames line is one: it is true of
-shipped screens too. `2a Syncing` and `2a Needs you` declare `transferTrack`/`transferFill` for a
-progress bar that is unreachable by construction (§63, #98), and five compact frames declare `meta`
-and `action` for panel states they do not draw. Listed every run so that "the gate is green" is
-never confused with "the gate looked at anything".
+**S5 made it a report rather than a failure — §80 overturned that, and the rest of this paragraph
+is the argument it overturned.** The reasoning was the one behind the unmapped-frames line: it is
+true of shipped screens too. `2a Syncing` and `2a Needs you` declare `transferTrack`/`transferFill`
+for a progress bar that is unreachable by construction (§63, #98), and five compact frames declare
+`meta` and `action` for panel states they do not draw. Listed every run so that "the gate is green"
+is never confused with "the gate looked at anything".
 
-**It is a failure now — see §80**, which sorted those twelve slots and made the residue binding.
-The five compact frames turned out not to be a finding at all.
+What §80 found is that those two halves are not alike: the five compact frames were never a finding
+at all — their frames draw no such node — while the progress bar is a real omission that belongs on
+a list with an issue against it. Sorting them is what let the residue become binding.
 
 Acting on S5's own entries took the screen from 49,299 assertions to **51,743**, and the newly
 compared nodes were not all correct: thirteen further mismatches surfaced the moment they were
