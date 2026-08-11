@@ -87,8 +87,23 @@ pub fn run() {
                 // forbids. Taking focus from an explicit click is not stealing it; the thing being
                 // ruled out is a panel that raises itself over someone's work unbidden, and nothing
                 // here opens except on `Activate`.
-                tauri::WindowEvent::Focused(false) if window.label() == panel::LABEL => {
-                    let _ = window.hide();
+                //
+                // A BLUR ONLY MEANS SOMETHING IF THE WINDOW EVER HAD FOCUS, and the first version
+                // did not check: driving `Activate` over the bus showed the panel and hid it again
+                // in the same breath, because the compositor's focus-stealing prevention handed
+                // focus straight back to whatever had it and the resulting `Focused(false)` was
+                // indistinguishable from the user clicking away. The panel existed, unmapped,
+                // looking exactly like a panel that had never opened.
+                //
+                // So `hide` waits for a blur that follows a focus. When the compositor never grants
+                // focus at all the panel stays up, which is the right way round to be wrong: Esc,
+                // any menu row, and a second click on the indicator all still dismiss it.
+                tauri::WindowEvent::Focused(focused) if window.label() == panel::LABEL => {
+                    if *focused {
+                        panel::mark_focused();
+                    } else if panel::take_focused() {
+                        let _ = window.hide();
+                    }
                 }
                 _ => {}
             }

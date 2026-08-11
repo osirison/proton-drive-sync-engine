@@ -61,8 +61,23 @@ struct Shown {
 fn title_for(state: DaemonState, response: Option<&ControlResponse>) -> String {
     match state {
         DaemonState::Running => {
-            let pending = response.map(|r| r.pending_changes).unwrap_or(0);
-            format!("Proton Drive Sync — syncing ({pending} pending)")
+            // NOT `pending_changes` ALONE, and the live daemon proved it within a minute of this
+            // shipping: the tray read `syncing (0 pending)` during a real pass. `pending_changes` is
+            // the filesystem-watch queue, so a pass driven entirely by Proton — a second device
+            // uploading, the first reconcile after a restart — carries an empty queue while
+            // downloading. The plan knows: `uploads + downloads` is what the pass will move.
+            //
+            // The same trap S1 documents on the headline (`Syncing 0 changes` with a literal 0
+            // inside the mark), reached by a different route. The panel and the tray title now
+            // answer with the same number.
+            let moving = response
+                .and_then(|r| r.last_plan_summary.as_ref())
+                .map(|s| s.uploads + s.downloads);
+            let queued = response.map(|r| r.pending_changes);
+            match moving.or(queued) {
+                Some(n) => format!("Proton Drive Sync — syncing ({n} changes)"),
+                None => "Proton Drive Sync — syncing".into(),
+            }
         }
         DaemonState::Idle => "Proton Drive Sync — up to date".into(),
         DaemonState::Paused => "Proton Drive Sync — paused".into(),

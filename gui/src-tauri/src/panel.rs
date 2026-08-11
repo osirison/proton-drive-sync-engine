@@ -26,9 +26,50 @@
 //! makes it open UPWARD on a bottom panel — the ordinary case on KDE, and the one a fixed
 //! top-right rule gets wrong on every Plasma desktop.
 
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
+use tauri::{AppHandle, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const LABEL: &str = "tray-panel";
+
+/// Has the panel held focus since it was last shown?
+///
+/// See the `Focused` arm in `lib.rs` for what this is defending against: a compositor that refuses
+/// the focus we asked for emits a blur the moment we show, and hiding on it makes the panel look
+/// like it never opened. An `AtomicBool` rather than window state because both writers are on the
+/// event loop and the read has to be cheap enough to sit in a window-event match arm.
+static HAD_FOCUS: AtomicBool = AtomicBool::new(false);
+
+/// The click the panel is currently anchored to, so a resize can re-place against it.
+///
+/// The panel opens at the tallest state's height and the webview corrects it on first paint — and
+/// on a BOTTOM panel the correction moves the window: it is positioned by its top-left, so losing
+/// 125px of height leaves the same top edge and a 125px gap between the panel and the tray it is
+/// supposed to be hanging from. Re-placing against the original click closes it. Two `i32`s rather
+/// than a mutex because both writers are the event loop.
+static ANCHOR: (AtomicI32, AtomicI32) = (AtomicI32::new(0), AtomicI32::new(0));
+
+fn remember(at: Option<(i32, i32)>) {
+    let (x, y) = at.unwrap_or((0, 0));
+    ANCHOR.0.store(x, Ordering::Relaxed);
+    ANCHOR.1.store(y, Ordering::Relaxed);
+}
+
+fn anchor() -> Option<(i32, i32)> {
+    let at = (ANCHOR.0.load(Ordering::Relaxed), ANCHOR.1.load(Ordering::Relaxed));
+    // `(0, 0)` is the same "no usable coordinates" sentinel `place` reads it as.
+    (at != (0, 0)).then_some(at)
+}
+
+/// The panel took focus. Called from the `Focused(true)` event.
+pub fn mark_focused() {
+    HAD_FOCUS.store(true, Ordering::Relaxed);
+}
+
+/// Did it have focus, and clear the flag. `true` means this blur is a real "the user looked away".
+pub fn take_focused() -> bool {
+    HAD_FOCUS.swap(false, Ordering::Relaxed)
+}
 
 /// 362, not 360. The panel does not opt into `border-box` and `base.css` opts the app in globally,
 /// so a panel written at its nominal width comes out 2px narrower than every frame it is compared
@@ -57,29 +98,44 @@ pub fn toggle(app: &AppHandle, at: Option<(i32, i32)>) {
             // own flag: the window also hides itself on blur and on Esc, and a second source of
             // truth about whether it is up would disagree with the compositor sooner or later.
             if window.is_visible().unwrap_or(false) {
+                take_focused();
                 let _ = window.hide();
                 return;
             }
-            place(&window, at);
-            let _ = window.show();
-            let _ = window.set_focus();
+            take_focused();
+            show_at(&window, at);
             return;
         }
         match build(&app) {
-            Ok(window) => {
-                place(&window, at);
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            Ok(window) => show_at(&window, at),
             Err(error) => eprintln!("tray: cannot open the panel window: {error}"),
         }
     });
+}
+
+/// Position, show, and position again.
+///
+/// THE SECOND `place` IS THE ONE THAT WORKS, and the first is not redundant. On X11 a position set
+/// on an unmapped window is advisory: the window manager places the window when it maps it and is
+/// free to ignore what was asked for, which KWin does — the panel came up dead centre at exactly
+/// `(screen - width) / 2`, the giveaway that nothing had positioned it at all.
+///
+/// So the position is applied again once the window is mapped, which is the call that lands. The
+/// first one stays because a compositor that DOES honour it never shows the panel at the wrong
+/// place even for a frame, and on the ones that do not it costs a no-op.
+fn show_at(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
+    remember(at);
+    place(window, at);
+    let _ = window.show();
+    place(window, at);
+    let _ = window.set_focus();
 }
 
 /// Hide it, from anywhere.
 pub fn hide(app: &AppHandle) {
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
+        take_focused();
         if let Some(window) = app.get_webview_window(LABEL) {
             let _ = window.hide();
         }
@@ -92,6 +148,9 @@ pub fn resize(app: &AppHandle, height: f64) {
     let _ = app.clone().run_on_main_thread(move || {
         if let Some(window) = app.get_webview_window(LABEL) {
             let _ = window.set_size(LogicalSize::new(WIDTH, height.max(1.0)));
+            // The window shrank around a fixed top-left; put it back against the click it opened
+            // from, or it hangs in space above the tray.
+            place(&window, anchor());
         }
     });
 }
@@ -125,18 +184,46 @@ fn build(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
 /// ordinary KDE case, and the spec's fixed `top:40px` would have put it at the wrong end of the
 /// screen on every one of them.
 fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
-    let Ok(monitor) = window.current_monitor() else {
+    // A WINDOW THAT HAS NEVER BEEN SHOWN HAS NO CURRENT MONITOR, and the first version returned
+    // early on that — silently, so the panel kept whatever position the window manager had given it.
+    // On this desktop that was dead centre, at exactly `(3840 − 724) / 2`, which is the tell: a
+    // centred popover is not a positioning bug, it is the absence of positioning.
+    //
+    // The panel is built hidden on purpose (showing it first would paint it at the default position
+    // and then jump), so this is the ordinary path rather than an edge case: it is what happens
+    // every time the panel opens for the first time in a session.
+    let monitor = match window.current_monitor() {
+        Ok(Some(monitor)) => Some(monitor),
+        _ => window.primary_monitor().ok().flatten(),
+    };
+    let Some(monitor) = monitor else {
+        eprintln!("tray: no monitor to place the panel against; leaving it where it is");
         return;
     };
-    let Some(monitor) = monitor else { return };
+    // EVERYTHING HERE IS IN PHYSICAL PIXELS, because that is what the host sends.
+    //
+    // Measured, and it is not what the first version assumed. On this 3840×2160 display at scale 2,
+    // a click on the indicator arrived as `Activate(3192, 2112)` — physical coordinates, not the
+    // 1920×1080 logical space Tauri's `LogicalPosition` works in. Treating them as logical put the
+    // panel in the middle of the screen: the arithmetic was right and the units were not, which is
+    // the failure that looks like a positioning bug and is a conversion bug.
+    //
+    // `monitor.position()`, `monitor.size()` and `outer_size()` are all physical already, so working
+    // in that space means the click needs no conversion at all — and a conversion that is not
+    // performed cannot be performed in the wrong direction.
+    let area = monitor.size();
+    let origin = monitor.position();
     let scale = monitor.scale_factor();
-    let area = monitor.size().to_logical::<f64>(scale);
-    let origin = monitor.position().to_logical::<f64>(scale);
+    let fallback = LogicalSize::new(WIDTH, HEIGHT).to_physical::<f64>(scale);
     let size = window
         .outer_size()
-        .map(|s| s.to_logical::<f64>(scale))
-        .unwrap_or(LogicalSize::new(WIDTH, HEIGHT));
-    let margin = 8.0;
+        .map(|s| tauri::PhysicalSize::new(s.width as f64, s.height as f64))
+        .unwrap_or(fallback);
+    let (area, origin) = (
+        tauri::PhysicalSize::new(area.width as f64, area.height as f64),
+        tauri::PhysicalPosition::new(origin.x as f64, origin.y as f64),
+    );
+    let margin = 8.0 * scale;
 
     // `(0, 0)` is how a host says it does not know where the pointer was — GNOME's extension is the
     // documented case. It is also a legitimate corner click, and treating a real corner click as
@@ -162,7 +249,12 @@ fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
         ),
     };
 
-    let x = x.clamp(origin.x + margin, origin.x + area.width - size.width - margin);
-    let y = y.clamp(origin.y + margin, origin.y + area.height - size.height - margin);
-    let _ = window.set_position(LogicalPosition::new(x, y));
+    // `max` before `clamp`: on a display shorter than the panel the upper bound goes below the
+    // lower one and `clamp` panics. Not hypothetical at the tallest state on a 768px laptop screen
+    // once the panel is 442 physical at scale 2.
+    let max_x = (origin.x + area.width - size.width - margin).max(origin.x + margin);
+    let max_y = (origin.y + area.height - size.height - margin).max(origin.y + margin);
+    let x = x.clamp(origin.x + margin, max_x);
+    let y = y.clamp(origin.y + margin, max_y);
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
