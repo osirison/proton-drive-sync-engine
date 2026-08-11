@@ -118,6 +118,15 @@
   white-space: nowrap;
 }
 
+/* Onboarding's `step N of 2`: the same slot, none of the pill. `white-space` is the one thing it
+   keeps — a step counter that wraps has broken the header. */
+.chip-step {
+  flex: 0 1 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .chip-dot {
   width: 6px;
   height: 6px;

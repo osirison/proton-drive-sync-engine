@@ -111,6 +111,44 @@ export const ROUTES = {
   // The onboarding takeover is an overlay in the routing sense — it covers everything — but it is
   // not opened by the user and cannot be dismissed with Esc. It is entered by the latch below.
   onboarding: { kind: "overlay", takeover: true, footer: "actionBar", task: "S7", issue: 186 },
+
+  // The flow's three dialogs. None is opened by the user and none is closable, so app.js drives all
+  // three from its own onboarding state rather than through `openOverlay`/`closeOverlay` — Esc
+  // cannot reach them, which is the difference from every other dialog in the table.
+  //
+  // `9a First sync` is the one 600 that does NOT opt into border-box, so it is drawn 602×542 (§48a).
+  // It has a footer of its own, so no padding on the surface. `9a Consent` and `9a CLI missing` both
+  // do opt in and both pad the surface, so both are exactly 600 and content-sized.
+  firstSync: {
+    kind: "overlay",
+    presentation: "dialog",
+    closable: false,
+    tone: "quiet",
+    size: [602, 542],
+    task: "S7",
+    issue: 186,
+  },
+  consent: {
+    kind: "overlay",
+    presentation: "dialog",
+    closable: false,
+    tone: "quiet",
+    size: [600, null],
+    padding: "30px 30px 24px",
+    task: "S7",
+    issue: 186,
+  },
+  // Crimson-edged, like `8a Save refused` — a missing precondition is not a destructive act.
+  cliMissing: {
+    kind: "overlay",
+    presentation: "dialog",
+    closable: false,
+    tone: "refusal",
+    size: [600, null],
+    padding: "24px 26px 22px",
+    task: "S7",
+    issue: 186,
+  },
 };
 
 /**

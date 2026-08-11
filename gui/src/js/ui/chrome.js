@@ -74,7 +74,16 @@ export function statusChip(variant, text) {
   // reply — so the chip and its dot were silently unasserted on every mapped frame that has one,
   // including S2's since it shipped. Silently: assert.mjs walks the app's stamped nodes, so a node
   // that stops being stamped stops being compared rather than failing.
-  const chip = fid(el("span", { class: `chip chip-${variant}`, "data-variant": variant }), "chip");
+  // `step` IS NOT A PILL. Every other variant is a bordered, padded, flex chip; `9a Folders` and
+  // `9a Review` draw `step 1 of 2` as bare mono text in the same slot — no padding, no radius, no
+  // flex. So it takes its own class rather than `.chip` plus four resets.
+  const chip = fid(
+    el("span", {
+      class: variant === "step" ? "chip-step" : `chip chip-${variant}`,
+      "data-variant": variant,
+    }),
+    "chip",
+  );
   if (spec.border) chip.style.border = `1px solid ${spec.border}`;
   chip.style.color = spec.text;
   if (spec.dot) {
@@ -165,7 +174,9 @@ export function updateHeader(
   header.querySelector(".app-mark").classList.toggle("is-quiet", quiet);
   header.querySelector(".app-name").classList.toggle("is-quiet", quiet);
 
-  const current = header.querySelector(".chip");
+  // `[data-variant]`, not `.chip` — the `step` variant is not a pill and carries no `.chip` class,
+  // so a class selector finds nothing on onboarding and the whole patch path throws.
+  const current = header.querySelector("[data-variant]");
   if (current.dataset.variant === chip) {
     const text = current.querySelector(".chip-text");
     if (text.textContent !== chipText) text.textContent = chipText;

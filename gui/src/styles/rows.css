@@ -22,6 +22,13 @@
 .dot-destructive {
   background: var(--destructive);
 }
+/* The two directional fills — `9a Folders`' 8px side markers, beside their eyebrow. */
+.dot-up {
+  background: var(--up-label);
+}
+.dot-down {
+  background: var(--down-label);
+}
 /* An outline, never a fill: crimson that is waiting on you rather than crimson that is happening.
    The width is set inline because it tracks the size — see rows.js. */
 .dot-decision {

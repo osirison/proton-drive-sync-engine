@@ -233,18 +233,22 @@
    ONLY checkbox drawn in any of the 51 frames. The first version of this block was written from the
    general control conventions instead and disagreed with it in six places; bands.js building the
    consent panel is what surfaced them, because the panel came out 2.5px short. */
+/* NO `font-size` AND NO `color` on the wrapper. `9a Consent` draws the box and the sentence as
+   siblings, and only the sentence carries the 13px/--text-bright pair — an inherited one lands on
+   the box too, where the frame has the row's own 16px/--text. */
 .checkbox {
+  position: relative;
   display: inline-flex;
   align-items: flex-start;
   gap: 11px;
   cursor: pointer;
-  font-size: 13px;
-  color: var(--text-bright);
 }
 /* 1.5, not `normal`. The label is the sentence someone is agreeing to and it wraps; `normal` closes
    the leading and is what made the panel measure short. */
 .checkbox-label {
+  font-size: 13px;
   line-height: 1.5;
+  color: var(--text-bright);
 }
 /* Visually hidden rather than `display:none`: a hidden input is not focusable, and this one carries
    the real checked state and the keyboard interaction. */
@@ -271,9 +275,15 @@
   border: 1px solid var(--text-5);
   border-radius: var(--r-5);
   background: transparent;
-  position: relative;
 }
+/* `position` IS ON THE CHECKED RULE, not on the box, and the split is the whole point: the tick
+   below is `position:absolute` and is the box's own generated child, so the box has to be its
+   containing block — but `9a Consent` draws this box UNCHECKED and `static`, and `position` is an
+   asserted property. Scoping it to the state that needs it is exact in the drawn state and correct
+   in the one no frame draws. (The wrapper's own `position:relative` is for the visually-hidden
+   input beside the box, which is a different need and does not substitute for this.) */
 .checkbox-input:checked + .checkbox-box {
+  position: relative;
   background: var(--text);
   border-color: var(--text);
 }

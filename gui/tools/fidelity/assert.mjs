@@ -452,10 +452,16 @@ if (unmet.length) {
 
 if (failures.length) {
   console.error("");
-  for (const f of failures.slice(0, 40)) {
+  // 40 by default so a broken build prints a page rather than a screenful of scrollback.
+  // `FIDELITY_SHOW=200` is for developing a screen, where the first forty are all one cause.
+  // Anything that is not a positive number falls back rather than silencing the report: `Number("")`
+  // is 0 and `Number("x")` is NaN, and both would print nothing while the count still said dozens.
+  const asked = Number(process.env.FIDELITY_SHOW);
+  const SHOW = Number.isFinite(asked) && asked > 0 ? asked : 40;
+  for (const f of failures.slice(0, SHOW)) {
     console.error(`  ${f.frame} · ${f.key || "(root)"} · ${f.prop}\n      ${f.detail}`);
   }
-  if (failures.length > 40) console.error(`  … and ${failures.length - 40} more`);
+  if (failures.length > SHOW) console.error(`  … and ${failures.length - SHOW} more`);
   console.error(`\nfidelity:assert: ${failures.length} failure(s).`);
 }
 
