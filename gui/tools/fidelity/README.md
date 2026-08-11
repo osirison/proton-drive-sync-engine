@@ -99,7 +99,7 @@ mapped. A row is one NODE — `frame`, `slot` **and** `key` — so a factory slo
 never vouches for the rest of its run, and a node that moved fails twice (the row goes stale, the new
 key arrives unexplained) instead of being quietly absorbed.
 
-Its 19 rows are six causes. Four are #98: `2a Syncing` and `2a Needs you` draw a 2px progress track
+Its 19 rows name seven issues. Four are #98: `2a Syncing` and `2a Needs you` draw a 2px progress track
 under the in-flight transfer, and `TransferActivity` carries `bytes_total` on an upload and
 `bytes_done` on a download and never both, so no percentage exists to draw (DEVIATIONS §63). The rest
 are per-file sizes the rehearsal does not report (#191 ×5), the deletion facts the index cannot

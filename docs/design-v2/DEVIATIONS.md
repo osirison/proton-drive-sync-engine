@@ -3307,7 +3307,8 @@ measurement attached.
 §80 shipped the unstamped gate over static fid slots and said out loud that it did not catch the
 case it was built for. This is that half (#248), and the split it produced is the reason it was
 worth doing separately: of 39 drawn-but-unstamped slots the factory probe found, **23 were nodes the
-app draws and simply never stamped, and 16 were real Phase-1 omissions with nothing on file.**
+app draws and simply never stamped, 15 were real Phase-1 omissions with nothing on file, and one
+was neither.**
 
 ### What the probe is
 
@@ -3340,7 +3341,7 @@ Stamping them found two real CSS differences that no gate could previously see:
 - **`.path-note`** declared `flex: none`; the frame records the default `flex-shrink: 1`. `.path-name`
   beside it is `flex:1; min-width:0` and truncates, so the note is never the thing asked to give way.
 
-### The 16 that were real, and one that was neither
+### The 15 that were real, and the one that was neither
 
 Fifteen became `KNOWN_UNSTAMPED` rows, each pinned to the node it explains:
 
@@ -3351,7 +3352,7 @@ Fifteen became `KNOWN_UNSTAMPED` rows, each pinned to the node it explains:
 | `9a Folders`   | `cardButton`, `sideNote`                | `Browse Proton Drive…` has nowhere to go, and no command sees the account or its quota    | #99, #241  |
 | `9a Review`    | `fact`, `factDot`, `factLabel`, `factNote` | `11,798 files already match on both sides` — the summary counts what the plan will DO   | #242       |
 
-The sixteenth was neither a gap nor an omission. `9a Folders`' remote `cardPath` **is** drawn — as an
+The last of the sixteen was neither a gap nor an omission. `9a Folders`' remote `cardPath` **is** drawn — as an
 `<input>`, because the remote root is the editable one — and §79 records why an `<input>` and a drawn
 `<div>` can never agree on `display` or `overflow`. Reporting it as "a block that renders nothing"
 would be false, and recording an excuse for it would put a construction difference in a list reserved
