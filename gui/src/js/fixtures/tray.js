@@ -18,7 +18,7 @@
 // contract asks a specimen for. Nothing else belongs in them.
 
 import { MAIN, TRAY } from "../ui/copy.js";
-import { compactFids } from "./fids.js";
+import { compactFids, glyphFids } from "./fids.js";
 
 export const TRAY_FIXTURES = {
   // The swatch sheet behind `10-tray.md` §"The glyph": two columns (`mono`, `colour`) × five rows,
@@ -27,8 +27,20 @@ export const TRAY_FIXTURES = {
   // per instance rather than a constant.
   "10a Glyph states": {
     specimen: {
-      note: "the five 16px tray glyphs, mono and colour, drawn by ui/hexagon.js (F2) and shipped as symbolic SVGs by S8; the swatch card and its captions are the sheet, not product",
+      note: "the five tray glyphs, mono and colour, drawn by ui/hexagon.js (F2) and shipped as symbolic SVGs by S8; the swatch card and its captions are the sheet, not product",
     },
+    // The five forms IN THE ORDER THE SHEET LAYS THEM DOWN THE PAGE, which is what `glyphFids` needs
+    // to key each cell — and which is ground truth about the drawing rather than about the
+    // component. `ui/hexagon.js` names the same five in `TRAY_GLYPH_STATES`; the two are asserted
+    // equal in `gui/test/tray.test.js` rather than one importing the other, because a fixture module
+    // may not reach into `ui/` (see the header of frames.js) and because they are answers to two
+    // different questions that happen to coincide.
+    glyphs: ["settled", "syncing", "needsYou", "paused", "unreachable"],
+    // 20, not the 16 the issue's title says. `10-tray.md` gives a RANGE ("rendered 15–20px") and all
+    // ten marks on this sheet are drawn at exactly 20 — the range is what the desktop may scale the
+    // SVG to, 20 is what the design measured. DEVIATIONS §82b.
+    glyphSize: 20,
+    fids: glyphFids(["settled", "syncing", "needsYou", "paused", "unreachable"]),
   },
 
   // The GNOME top bar with our indicator open. The panel inside it is `ui/compact.js` in its

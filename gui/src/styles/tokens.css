@@ -334,6 +334,12 @@
   --hex-settled-check: #e8ebf0;
   --hex-syncing-track: #191c21; /* inert track; carries fill:var(--surface) to mask the seam */
   --hex-glyph-track: #2a2e36; /* tray glyph's syncing track — NOT --seam, which shares the hex */
+  /* The tray glyph's own outline. NOT --hex-settled-track: that is the dark ring the in-window
+     settled mark draws its check inside, and at 20px the outline IS the mark — drawn at that
+     value it is a near-invisible grey on a dark panel. 10a Glyph states draws all five forms'
+     monochrome column at this colour, and 10-tray.md gives the light-panel value itself
+     ("the glyph inverts to #14161A with the same five forms"). DEVIATIONS §82a. */
+  --hex-glyph-fg: #e8ebf0;
   --hex-paused-track: #2e323a;
   --hex-paused-bars: #99a2ae;
   --hex-numeral: #f2f4f7;
@@ -484,6 +490,7 @@
     --hex-settled-check: #14161a;
     --hex-syncing-track: #e4e1db;
     --hex-glyph-track: #e4e1db;
+    --hex-glyph-fg: #14161a;
     --hex-paused-track: #c7cbd2;
     --hex-paused-bars: #4b5563;
     --hex-numeral: #14161a;
@@ -620,6 +627,7 @@
   --hex-settled-check: #14161a;
   --hex-syncing-track: #e4e1db;
   --hex-glyph-track: #e4e1db;
+  --hex-glyph-fg: #14161a;
   --hex-paused-track: #c7cbd2;
   --hex-paused-bars: #4b5563;
   --hex-numeral: #14161a;

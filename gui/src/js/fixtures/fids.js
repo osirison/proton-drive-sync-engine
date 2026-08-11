@@ -312,6 +312,56 @@ export function compactFids({ state, tail, tailAt, buttons = 0, rows = [] }) {
   return map;
 }
 
+// ------------------------------------------------------------- S8 · the tray glyph sheet ----
+
+/**
+ * The ten marks on `10a Glyph states`, and why this is NOT `hexFids` at a smaller size.
+ *
+ * `hexFids` describes the in-window mark, and both of its assumptions are wrong at glyph size:
+ *
+ *   · PATH COUNTS DIFFER. `HEX_PATHS` says settled is 2 paths (an outline plus the check inside it)
+ *     and syncing is 3 (a track and two travelling segments). The glyph draws settled as 1 — there
+ *     is no check below 20px — and syncing as 2, because a single segment is what reads at icon
+ *     size. Reusing the table keys the settled glyph's only path as `path[0]`, which is a node the
+ *     frame does not have: the prototype indexes a tag only when it has siblings of that tag.
+ *   · THE GRADIENT IS NOT INDEXED. The in-window syncing mark carries two `<linearGradient>`s, so
+ *     `hexFids` writes `lineargradient[i]`. The glyph carries exactly one, and the frame keys it
+ *     `defs/lineargradient` with no index at all.
+ *
+ * Both would have failed as a wrong key rather than as a missing node, which is the failure mode
+ * `check-fixtures.mjs` exists to make loud — but only after the sheet was built and stamped.
+ *
+ * THE SHEET AROUND THEM IS NOT MAPPED, and that is the specimen rule rather than an omission:
+ * `frame-classes.mjs` classifies this frame `specimen` and its `SPECIMEN_ARTEFACT` entry says "the
+ * tray glyphs themselves; the card behind them is a swatch sheet". The 52px grid cells, the column
+ * headers, the four hairlines and the five captions are the sheet explaining the marks, and the app
+ * has no obligation to reproduce a page of design documentation.
+ */
+const GLYPH_PATHS = { settled: 1, syncing: 2, needsYou: 1, paused: 1, unreachable: 2 };
+
+/**
+ * @param states the five forms in the order the sheet lays them down the page. Passed rather than
+ *   hard-coded so the fixture and `ui/hexagon.js` name the same five in the same order, and a
+ *   sixth form (which `10-tray.md` forbids) cannot be mapped without someone editing this list.
+ */
+export function glyphFids(states) {
+  const map = {};
+  // The grid runs header, then per state: a full-width rule, the mono cell, the colour cell, the
+  // caption. So a state's two marks are at 4 + 4r and 5 + 4r — 4,5 · 8,9 · 12,13 · 16,17 · 20,21.
+  const cell = (i) => `div[0]/div[${4 + 4 * Math.floor(i / 2) + (i % 2)}]`;
+  const svg = (i) => `${cell(i)}/svg`;
+  const form = (i) => states[Math.floor(i / 2)];
+
+  map.glyph = svg;
+  // Indexed only for the two forms that draw two paths, exactly as the prototype keys them.
+  map.glyphPath = (i, j) => `${svg(i)}/path${GLYPH_PATHS[form(i)] > 1 ? `[${j}]` : ""}`;
+  map.glyphCircle = (i) => `${svg(i)}/circle`;
+  map.glyphDefs = (i) => `${svg(i)}/defs`;
+  map.glyphGradient = (i) => `${svg(i)}/defs/lineargradient`;
+  map.glyphStop = (i, j) => `${svg(i)}/defs/lineargradient/stop[${j}]`;
+  return map;
+}
+
 // ------------------------------------------------------------------------- S2 · conflicts ----
 
 /**

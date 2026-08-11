@@ -13,8 +13,9 @@
 // None of this ships to a user: the packaged app has no address bar, and every entry point below
 // returns early when its parameter is absent. Same discipline as `fid()`.
 
-import { FIXTURES } from "./frames.js";
+import { FIXTURES, activeFixture, fid } from "./frames.js";
 import { el } from "../ui/el.js";
+import { trayGlyph } from "../ui/hexagon.js";
 
 const params = () => new URLSearchParams(typeof location === "undefined" ? "" : location.search);
 
@@ -96,11 +97,133 @@ const INDEX_CSS = `
 .preview-index a { color: inherit; }
 `;
 
+/**
+ * The glyph sheet's own furniture (S8). Separate from `INDEX_CSS` because it is not the index, and
+ * held to one rule the index is not: NOTHING HERE MAY SET A FONT OR A COLOUR THAT THE GLYPH CELLS
+ * INHERIT.
+ *
+ * `base.css` sets exactly `font-family` and `color` on <body> and deliberately leaves `font-size`,
+ * `line-height` and `letter-spacing` at the UA defaults, because the prototype's page sets exactly
+ * those two — which is what makes an inherited value comparable at all. The gate records
+ * `font-size: 16px`, `line-height: normal`, `text-align: start` and `color: rgb(242, 244, 247)` on
+ * every one of the ten `<svg>` nodes, none of which the marks set themselves. So a `font-size` on
+ * the grid, or a `text-align`, would fail ten nodes at once with a diff that points at the mark and
+ * blames the wrong thing. The captions may style themselves; they are siblings, not ancestors.
+ */
+const GLYPH_CSS = `
+.glyph-sheet { width: 560px; padding: 24px 26px; box-sizing: border-box; }
+.glyph-grid { display: grid; grid-template-columns: 52px 52px 366px; align-items: center; gap: 0 18px; }
+.glyph-rule { grid-column: 1 / -1; height: 1px; background: currentColor; opacity: .08; }
+.glyph-cell { display: flex; justify-content: center; }
+.glyph-head { font-size: 9.5px; text-transform: uppercase; letter-spacing: .14em; opacity: .5; }
+.glyph-caption { padding: 14px 0; }
+.glyph-caption b { display: block; font-size: 13px; font-weight: 600; }
+.glyph-caption span { display: block; font-size: 12.5px; line-height: 1.5; opacity: .6; }
+.glyph-foot { font-size: 12px; line-height: 1.6; opacity: .55; padding-top: 18px; max-width: 62ch; }
+`;
+
 /** `?frame=<label>` for this frame, plus the theme the light set wants. See `previewTheme`. */
 function href(label) {
   const query = new URLSearchParams({ frame: label });
   if (setOf(label) === "12a") query.set("theme", "light");
   return `?${query}`;
+}
+
+/**
+ * What each form is doing, for the human half of the pairing. Sheet prose, not product copy — it is
+ * `10-tray.md`'s own "Notes" paragraph split per row, and it is why these are not in `ui/copy.js`
+ * and not gated by `copy-gate.mjs`: nothing in the app ever renders them.
+ */
+const GLYPH_CAPTIONS = {
+  settled: ["Up to date", "Hollow outline. The resting shape everything else is measured against."],
+  syncing: ["Syncing", "A segment travels the edge. Motion reads at 16px where a colour shift doesn't."],
+  needsYou: [
+    "Needs you",
+    "Filled centre — the only state that adds mass, so it's noticeable without being alarming.",
+  ],
+  paused: ["Paused", "Dashed and dimmed — the outline is interrupted, which is exactly what's happening."],
+  unreachable: [
+    "Can't reach Proton",
+    "Struck through. Nothing is syncing and nothing is lost — it's waiting.",
+  ],
+};
+
+/**
+ * Stamp one mark's nodes. The shape differs per form — one path or two, a circle, a defs subtree —
+ * so this reads what was drawn rather than being told, which is also what makes it honest: a form
+ * that stopped emitting its circle stamps one fewer node and the gate reports the absence.
+ */
+function stampGlyph(svg, i) {
+  fid(svg, "glyph", i);
+  svg.querySelectorAll("path").forEach((path, j) => fid(path, "glyphPath", i, j));
+  const circle = svg.querySelector("circle");
+  if (circle) fid(circle, "glyphCircle", i);
+  const defs = svg.querySelector("defs");
+  if (!defs) return svg;
+  fid(defs, "glyphDefs", i);
+  const gradient = defs.querySelector("linearGradient");
+  if (gradient) {
+    fid(gradient, "glyphGradient", i);
+    gradient.querySelectorAll("stop").forEach((stop, j) => fid(stop, "glyphStop", i, j));
+  }
+  return svg;
+}
+
+/**
+ * `10a Glyph states` — the swatch sheet (S8).
+ *
+ * A SPECIMEN, so only the ten marks are product: `frame-classes.mjs` says so and its
+ * `SPECIMEN_ARTEFACT` entry ("the tray glyphs themselves; the card behind them is a swatch sheet")
+ * is what the harness asserts through. The grid, the rules and the captions exist here for two
+ * reasons that are not "to be compared": a person opening `?frame=10a Glyph states` should see the
+ * sheet the design drew, and — the load-bearing one — the marks' fid keys are positions inside that
+ * grid (`div[0]/div[4]`, `div[0]/div[5]`, …). Drop the rule and the caption cells and every mark
+ * after the first row lands on the wrong key, silently, because the neighbouring cell also holds an
+ * `<svg>` with the same tag name.
+ *
+ * The two columns are the whole argument of the design: the LEFT one is every form at a single
+ * colour. If a state is only distinguishable on the right, it is not a tray glyph.
+ */
+function renderGlyphSheet(root, label) {
+  const fixture = activeFixture();
+  const states = fixture?.glyphs ?? [];
+  const size = fixture?.glyphSize ?? 20;
+
+  const cells = [
+    el("div", { class: "glyph-head" }, "mono"),
+    el("div", { class: "glyph-head" }, "colour"),
+    el("div", { class: "glyph-head" }, "what it means"),
+  ];
+  states.forEach((state, row) => {
+    const [name, note] = GLYPH_CAPTIONS[state] ?? [state, ""];
+    cells.push(el("div", { class: "glyph-rule" }));
+    // Mono first, then colour — the order the sheet reads, and the order `glyphFids` keys.
+    for (const mono of [true, false]) {
+      cells.push(
+        el(
+          "div",
+          { class: "glyph-cell" },
+          stampGlyph(trayGlyph({ state, mono, size }), row * 2 + (mono ? 0 : 1)),
+        ),
+      );
+    }
+    cells.push(el("div", { class: "glyph-caption" }, el("b", {}, name), el("span", {}, note)));
+  });
+
+  root.replaceChildren(
+    el(
+      "div",
+      { class: "glyph-sheet" },
+      el("div", { class: "glyph-grid" }, ...cells),
+      el(
+        "div",
+        { class: "glyph-foot" },
+        "Every state is distinguishable in one colour, at 16px, on a light or dark panel. " +
+          "Colour repeats the message for people who can use it.",
+      ),
+      el("div", { class: "glyph-foot" }, `${label} · ${states.length} forms, mono and colour`),
+    ),
+  );
 }
 
 /**
@@ -199,10 +322,20 @@ function renderUnknown(root, label) {
 export function mountPreview(root) {
   const query = params();
   const label = query.get("frame");
-  const claim = query.has("frames") ? renderIndex : label != null && !FIXTURES[label] ? renderUnknown : null;
+  const claim = query.has("frames")
+    ? renderIndex
+    : label != null && !FIXTURES[label]
+      ? renderUnknown
+      : // A specimen sheet is a third claim on the window, and it is claimed the same way the other
+        // two are: by the fixture saying so. `glyphs` is what says so — the sheet is the only frame
+        // whose product is a set of marks rather than a screen, so there is nothing for the shell or
+        // for `mountFramePanel` to draw and both would fall through to the generic mock.
+        FIXTURES[label]?.glyphs
+        ? renderGlyphSheet
+        : null;
   if (!claim) return false;
   if (!document.getElementById("preview-css")) {
-    document.head.append(el("style", { id: "preview-css" }, INDEX_CSS));
+    document.head.append(el("style", { id: "preview-css" }, INDEX_CSS + GLYPH_CSS));
   }
   claim(root, label);
   return true;
