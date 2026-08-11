@@ -703,10 +703,19 @@ export function unmetDeviations() {
 //      it belongs here, with the issue that closes it.
 //
 // The staleness rule is the one above, transposed: a row that is no longer observed fails the
-// build. Three things make that happen and all three want a human — the app started stamping the
-// slot (the capability landed, so delete the row), the frame stopped drawing the node (the
-// prototype moved and the mapping with it), or the frame stopped being mapped at all. The pinned
-// `key` is what makes the third detectable rather than silently re-matched against a moved node.
+// build. Four things make that happen and every one wants a human: the app started stamping the
+// slot (the capability landed, so delete the row), the prototype moved the node and the mapping
+// followed it, the fixture stopped declaring the slot, or the frame left `frames/index.json`.
+//
+// THE PINNED `key` CATCHES EXACTLY ONE OF THOSE — the moved node. That case is still observed, the
+// slot still drawn and unstamped, merely at a different key, so a match on `frame|slot` alone would
+// call it explained and the row would vouch for a node nobody measured. With the pin it lands in
+// `stale` carrying `was`, naming where the node went.
+//
+// The other three are indistinguishable from this data: each simply stops producing an observation,
+// and all arrive as `was: null`. So the printed line names the causes rather than picking one. (The
+// last is close to unreachable now — a frame carrying a `fids` map that stamps none of it fails as
+// a blank frame in `assert.mjs`, so "no longer mapped" means the frame is gone, not gone quiet.)
 //
 // @property frame  the `data-screen-label` exactly as `frames/index.json` carries it
 // @property slot   the fixture's fid slot name, as declared in `fixtures/fids.js`

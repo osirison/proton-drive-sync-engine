@@ -517,9 +517,11 @@ if (stale.length) {
     "\nRecorded unstamped slots that are no longer unstamped — delete them, or re-pin the key:\n",
   );
   for (const u of stale) {
+    // `was` separates the moved node from everything else, and nothing separates the rest: an
+    // observation simply stops arriving. So name the causes instead of picking one.
     const what = u.was
       ? `now drawn at ${u.was}, not ${u.key}`
-      : `no longer observed (stamped now, or the frame is unmapped)`;
+      : `no longer observed — stamped now, or the fixture stopped declaring the slot, or the frame left index.json`;
     console.error(`  ${u.frame} · ${u.slot} — ${u.issue}\n      ${what}\n      ${u.why}`);
   }
   console.error(`\nfidelity:assert: ${stale.length} stale unstamped row(s) in known-deviations.mjs.`);
