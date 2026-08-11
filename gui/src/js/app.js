@@ -13,7 +13,7 @@
 
 import { api } from "./api.js";
 import * as store from "./store.js";
-import { ROUTES, FOOTER_ORDER, isOverlay, isDialog, resolveRoute, nextOnboardingLatch } from "./routes.js";
+import { ROUTES, FOOTER_ORDER, isOverlay, isDialog, nextOnboardingLatch } from "./routes.js";
 import { el } from "./ui/el.js";
 import {
   renderHeader,
@@ -2866,10 +2866,12 @@ function main() {
   // window.__TAURI__ here.
   api.onTrayNavigate((id) => {
     if (typeof id !== "string") return;
-    // tray.rs is Rust and does not move when this table does — it still emits the v1 `history`.
-    const target = resolveRoute(id);
-    if (ROUTES[target]) navigate(target);
-    else console.warn(`tray-navigate: no route for "${id}" — add an alias in routes.js`);
+    // Nothing emits this today: S8's tray acts through `commands::tray_action` rather than asking
+    // the shell to navigate, and the alias table that used to translate its one dead id went with
+    // it. The listener stays because the event is a seam a later task may want, and an id with no
+    // route now says so instead of being quietly rewritten into a different screen.
+    if (ROUTES[id]) navigate(id);
+    else console.warn(`tray-navigate: no route for "${id}"`);
   });
 }
 

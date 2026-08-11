@@ -37,7 +37,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 const TRAY_ID: &str = "proton-sync-tray";
 
@@ -285,18 +285,6 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
         "quit" => crate::commands::quit_stopping_the_daemon(app.clone()),
         _ => {}
     }
-}
-
-/// Show the window and ask the frontend to switch screens.
-///
-/// `activity`, not `history`. design-v2 has no History screen — its two jobs moved into Activity —
-/// and `routes.js` was carrying a `ROUTE_ALIASES` table whose only purpose was to catch the dead id
-/// this function used to emit. S8 owns the tray, so the emit is fixed at the source and the alias
-/// table goes with it.
-#[allow(dead_code)]
-fn navigate(app: &AppHandle, tab: &str) {
-    show_window(app);
-    let _ = app.emit("tray-navigate", tab);
 }
 
 fn send_command(app: &AppHandle, command: ControlCommand) {
