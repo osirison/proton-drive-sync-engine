@@ -234,6 +234,12 @@
 .activity-card-meta {
   display: flex;
   gap: 14px;
+}
+/* ON THE SPANS, NOT THE ROW. Identical pixels either way — the row has no text of its own — but the
+   frame records the row inheriting the body's sans 16px and each span setting mono 11.5px itself,
+   and the row is a mapped node (#248), so inheriting the type down from it fails seven assertions
+   on a card that looks exactly right. */
+.activity-card-meta > span {
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--text-3);

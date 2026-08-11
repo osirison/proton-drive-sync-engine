@@ -1257,7 +1257,13 @@ const ONBOARDING_FOLDERS_FIDS = {
   sideDot: (s) => `div[1]/div[1]/div[${s}]/div[0]/span[${s === 0 ? 0 : 1}]`,
   sideEyebrow: (s) => `div[1]/div[1]/div[${s}]/div[0]/span[${s === 0 ? 1 : 0}]`,
   card: (s) => `div[1]/div[1]/div[${s}]/div[1]`,
-  cardPath: (s) => `div[1]/div[1]/div[${s}]/div[1]/div[0]`,
+  // LOCAL SIDE ONLY, and not because the remote one is missing — the app draws it, as an `<input>`,
+  // because the remote root is the editable one (#99). An `<input>` is `inline-block` with
+  // `overflow:clip` by UA rule and the frame draws a `<div>`, so the two can never agree on either
+  // property. §79 calls that a construction difference, which is not a missing capability and so has
+  // no place in `KNOWN_UNSTAMPED` — the slot belongs undeclared, the way `rulePattern` is undeclared
+  // off-index. Returning `null` is a factory's way of saying "no node here".
+  cardPath: (s) => (s === 0 ? `div[1]/div[1]/div[${s}]/div[1]/div[0]` : null),
   cardButton: (s) => `div[1]/div[1]/div[${s}]/div[1]/button`,
   sideNote: (s) => `div[1]/div[1]/div[${s}]/div[2]`,
   skipPanel: "div[1]/div[2]",

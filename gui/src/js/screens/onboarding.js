@@ -111,7 +111,8 @@ function folderSide(props, s) {
   // exists for one (S6 settled the same asymmetry on `8a Settings`). #99.
   // UNMAPPED on the remote side, deliberately: an `<input>` is `inline-block` with `overflow:clip`
   // by UA rule and the frame draws a `<div>`, so the two can never agree on either — a construction
-  // difference, which is not what `known-deviations.mjs` is for. §79.
+  // difference, which is not what `known-deviations.mjs` is for. §79. The fixture's `cardPath`
+  // returns `null` at `s === 1` to say so, which is what keeps the unstamped gate off it (#248).
   const path = local
     ? fid(el("div", { class: "ob-card-path" }, props.local || ""), "cardPath", s)
     : textInput({

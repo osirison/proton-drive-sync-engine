@@ -155,6 +155,46 @@ const blankFrames = [];
  */
 const unstamped = [];
 
+/** How far each index axis is probed below. Ten rows is more than any frame draws. */
+const PROBE_DEPTH = 10;
+
+/**
+ * Every node key a factory fid slot can produce, over a numeric index grid.
+ *
+ * `check-fixtures.mjs` probes `value(i, 0, 0)` for i = 0…9, which answers the question IT asks —
+ * "does this slot resolve in ANY frame that declares it". This one is per frame and stricter, so it
+ * probes the whole 10³ grid: `sideRowNote(s, i)` is keyed by side AND row, and a single-axis probe
+ * reaches only row 0 of each side. Measured: the grid finds 39 drawn-but-unstamped slots where the
+ * single axis finds 33, and all six extra are further rows of clusters the axis already found — so
+ * it completes findings rather than widening them. Three axes because S3's fact strip is keyed by
+ * column, then card, then fact; arguments a shorter factory ignores cost nothing.
+ *
+ * TWO THINGS IT STILL CANNOT REACH, stated rather than solved, the way #247 stated the static-only
+ * limit: an index past `PROBE_DEPTH`, and a factory wanting a non-numeric argument (none exist —
+ * every fid factory is keyed by position). Both fail SAFE: the key is never produced, so the slot
+ * is never reported, and this gate only ever accuses.
+ */
+function probeSlot(value) {
+  if (typeof value !== "function") return [];
+  const keys = new Set();
+  for (let a = 0; a < PROBE_DEPTH; a++) {
+    for (let b = 0; b < PROBE_DEPTH; b++) {
+      for (let c = 0; c < PROBE_DEPTH; c++) {
+        let key;
+        try {
+          key = value(a, b, c);
+        } catch {
+          continue; // a factory wanting arguments this grid cannot guess — the other cells cover it
+        }
+        // A factory says "no node here" by returning null — `rulePattern` does it off-index. That
+        // is the factory's own way of leaving a slot undeclared, and it is not a finding.
+        if (typeof key === "string") keys.add(key);
+      }
+    }
+  }
+  return keys;
+}
+
 for (const entry of index) {
   const frame = JSON.parse(readFileSync(join(FRAMES, entry.file), "utf8"));
   const expected = new Map(frame.nodes.map((n) => [n.key, n]));
@@ -312,23 +352,15 @@ for (const entry of index) {
   // removed for exactly this reason. So this is that convention made enforceable rather than a new
   // rule. A slot deliberately left for a state this frame does not draw belongs undeclared, the way
   // S4 leaves `5a Checking`'s progress line and `5a Plan`'s two G3 buttons undeclared.
-  // STATIC KEYS ONLY, and that is a real limit rather than an implementation detail. A factory slot
-  // (`row: (i) => …`) resolves to a different key per call, so deciding whether it was "reached"
-  // would mean inverting the factory or guessing its arity — and a wrong guess reports a live slot
-  // as dead. So factory slots are OUT of this report: `ruleRow`, `kvRow`, `passRow` and `door` are
-  // not covered by it, and a screen that stopped rendering its rows would not show up here.
-  //
-  // 620 slots are static and 218 are factories, so this covers 74% of the mapping and the shortfall
-  // is not evenly spread — a repeated block is exactly what a screen renders none of. The compact
-  // panel's `transferTrack`/`transferFill` are factories, so the S8 case this was built for (wiring
-  // the tray panel to `SyncActivity`, whose #98 gap removes the progress fraction) is NOT caught
-  // here; only a total blank of that panel is, through its static `headline`/`sub`/`hero`.
-  //
-  // Probing the way `check-fixtures.mjs` does — call the factory for i = 0…9 and keep the keys the
-  // frame draws — is tractable and was measured rather than dismissed: it surfaces 33 further
-  // findings, 19 of them at index 0 alone, across `7a File lookup`, `7a Never synced`, `9a Review`
-  // and five more. Every one needs the same sorting the twelve got, so it is #248 rather than a
-  // clause bolted on here. Recorded with its number so the limit is checkable instead of folklore.
+  // FACTORY SLOTS TOO, which is the half #247 shipped without and #248 closed. A factory slot
+  // (`row: (i) => …`) resolves to a different key per call, so it cannot be read off the map the way
+  // a static one can — it has to be PROBED, and `probeSlot` argues the grid it probes over and the
+  // two things that grid still cannot reach. Leaving them out was not free: 218 of 838 slots are
+  // factories, and a factory slot is by definition a repeated block — a row, a card, a fact, a path
+  // — which is exactly the kind of thing a screen renders none of. It was also why #247 did not
+  // catch the case it was built for: the compact panel declares `transferTrack`/`transferFill` as
+  // factories, so the S8 regression (wiring the tray panel to `SyncActivity`, whose #98 gap removes
+  // the progress fraction) passed it. It does not pass this.
   //
   // AND THE FRAME HAS TO DRAW THE NODE FOR IT TO BE A FINDING, which is what turns this from a
   // printout into a gate. Of the twelve slots the first version of this report listed, eight
@@ -354,12 +386,11 @@ for (const entry of index) {
   // Costs nothing today: all 15 unmapped frames are screens with no `fids` map at all, so they
   // declare nothing and produce no observations. It is the frame that HAS a mapping and stamps
   // none of it that this now catches.
-  const declared = Object.entries(FIXTURES[frame.label]?.fids ?? {}).filter(
-    ([, key]) => typeof key === "string",
-  );
   const stampedKeys = new Set(seen.map((s) => s.key));
-  for (const [slot, key] of declared) {
-    if (!stampedKeys.has(key) && expected.has(key)) unstamped.push({ frame: frame.label, slot, key });
+  for (const [slot, value] of Object.entries(FIXTURES[frame.label]?.fids ?? {})) {
+    for (const key of typeof value === "string" ? [value] : probeSlot(value)) {
+      if (!stampedKeys.has(key) && expected.has(key)) unstamped.push({ frame: frame.label, slot, key });
+    }
   }
 
   if (!seen.length) {
@@ -369,10 +400,11 @@ for (const entry of index) {
     // of it is a built screen rendering nothing, which is a failure however loudly its slots also
     // report. Separated so the informational line cannot describe the second as the first.
     //
-    // A failure in its own right rather than left to the slot check, because the slot check reads
-    // static keys only: a frame whose mapping is all factory slots would stamp nothing, report
-    // nothing, and read as "not built" (#248). Zero frames are in that state today — all 36 with a
-    // `fids` map stamp something — so this costs nothing and closes the hole in advance.
+    // A failure in its own right rather than left to the slot check, and it stays that way now that
+    // the slot check covers factories too: a mapping whose every key sits past `PROBE_DEPTH`, or
+    // behind a non-numeric argument, would stamp nothing and report nothing. Zero frames are in that
+    // state — all 36 with a `fids` map stamp something — so this costs nothing and states the case
+    // the probe cannot.
     if (Object.keys(FIXTURES[frame.label]?.fids ?? {}).length) blankFrames.push(frame.label);
     else unmappedFrames.push(frame.label);
     continue;
@@ -517,10 +549,10 @@ if (stale.length) {
     "\nRecorded unstamped slots that are no longer unstamped — delete them, or re-pin the key:\n",
   );
   for (const u of stale) {
-    // `was` separates the moved node from everything else, and nothing separates the rest: an
+    // `movedTo` separates the moved node from everything else, and nothing separates the rest: an
     // observation simply stops arriving. So name the causes instead of picking one.
-    const what = u.was
-      ? `now drawn at ${u.was}, not ${u.key}`
+    const what = u.movedTo
+      ? `no longer observed at ${u.key}, and the same slot IS unstamped at ${u.movedTo} — the node moved, so re-pin the key`
       : `no longer observed — stamped now, or the fixture stopped declaring the slot, or the frame left index.json`;
     console.error(`  ${u.frame} · ${u.slot} — ${u.issue}\n      ${what}\n      ${u.why}`);
   }

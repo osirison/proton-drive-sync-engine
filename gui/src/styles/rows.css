@@ -404,8 +404,10 @@
 .path-name.is-dim {
   color: var(--text-3);
 }
+/* No `flex: none`. `.path-name` beside it is `flex:1; min-width:0` and truncates, so the note is
+   never the thing asked to give way — and the frame records it at the default `flex-shrink:1`,
+   which the note itself is a mapped node of since #248. */
 .path-note {
-  flex: none;
   font-size: 11.5px;
   color: var(--text-5);
 }

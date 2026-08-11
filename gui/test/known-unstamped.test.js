@@ -27,11 +27,29 @@ test("every row is a complete row", () => {
   }
 });
 
-test("no two rows claim the same slot", () => {
-  // The classifier keys on `frame|slot`, so a duplicate would sit in the map unreachable and its
-  // staleness would never be reported.
-  const ids = KNOWN_UNSTAMPED.map((r) => `${r.frame}|${r.slot}`);
+test("no two rows claim the same node", () => {
+  // The classifier keys on `frame|slot|key`, so a duplicate would sit in the map unreachable and its
+  // staleness would never be reported. The KEY is in that identity because a factory slot covers a
+  // run of siblings — `9a Review`'s `fact` is four nodes and could be four different reasons — so
+  // `frame|slot` repeats legitimately and only the triple is unique.
+  const ids = KNOWN_UNSTAMPED.map((r) => `${r.frame}|${r.slot}|${r.key}`);
   assert.equal(new Set(ids).size, ids.length);
+});
+
+test("one key of a factory slot does not vouch for the rest of it", () => {
+  // The reason identity is the triple. `5a Plan safe` has five `sideRowNote` rows: record one, and
+  // the other four must still be findings rather than absorbed by the shared slot name.
+  const family = KNOWN_UNSTAMPED.filter((r) => r.frame === "5a Plan safe" && r.slot === "sideRowNote");
+  assert.ok(family.length > 1, "this test needs a slot recorded at more than one key");
+  const { recorded, stale } = classifyUnstamped([seen(family[0])]);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].key, family[0].key);
+  for (const sibling of family.slice(1)) {
+    assert.ok(
+      stale.some((s) => s.key === sibling.key),
+      `${sibling.key} was absorbed by a sibling's row`,
+    );
+  }
 });
 
 test("a recorded slot is explained, not a failure", () => {
@@ -60,26 +78,37 @@ test("a row nobody observed is stale, and says which kind", () => {
   const { stale, recorded } = classifyUnstamped([]);
   assert.equal(stale.length, KNOWN_UNSTAMPED.length);
   assert.equal(recorded.length, 0);
-  for (const s of stale) assert.equal(s.was, null, "an unobserved row has no observed key");
+  for (const s of stale) assert.equal(s.movedTo, null, "an unobserved row has nowhere to point");
 });
 
 test("the pinned key is what catches a node that moved", () => {
-  // The frame still draws nothing here and the slot is still unstamped, so a match on `frame|slot`
-  // alone would call this explained. It is not: the mapping now names a different node, and whether
-  // the recorded reason still applies to THAT node is a human's call.
+  // The frame still draws nothing here and the slot is still unstamped, so identity that ignored the
+  // key would call this explained and stand behind a node nobody measured. Instead it fails twice —
+  // the row goes stale and the new key arrives unexplained — and the stale line points at the new key
+  // so the reader does not have to match the two lists up by eye.
   const [first] = KNOWN_UNSTAMPED;
-  const moved = [{ ...seen(first), key: "div[9]/div[9]" }];
-  const { recorded, unexplained, stale } = classifyUnstamped(moved);
+  const { recorded, unexplained, stale } = classifyUnstamped([{ ...seen(first), key: "div[9]/div[9]" }]);
   assert.deepEqual(recorded, []);
-  assert.deepEqual(unexplained, [], "a moved node is stale, not unexplained — one finding, not two");
+  assert.equal(unexplained.length, 1, "the node it moved to is a finding in its own right");
+  assert.equal(unexplained[0].key, "div[9]/div[9]");
   assert.equal(stale.length, KNOWN_UNSTAMPED.length, "the moved row, plus the rows nobody observed");
   const movedRow = stale.find((s) => s.slot === first.slot && s.frame === first.frame);
-  assert.equal(movedRow.was, "div[9]/div[9]", "the report has to name where it went");
+  assert.equal(movedRow.movedTo, "div[9]/div[9]", "the report has to name where it went");
+});
+
+test("a stale row only points at a moved node on its OWN frame and slot", () => {
+  // The hint is a convenience and must not become a wrong claim. An unexplained finding elsewhere is
+  // not where this row's node went.
+  const [first] = KNOWN_UNSTAMPED;
+  const { stale } = classifyUnstamped([{ frame: "4a Deletions", slot: "headline", key: "div[9]" }]);
+  const row = stale.find((s) => s.frame === first.frame && s.slot === first.slot);
+  assert.equal(row.movedTo, null);
 });
 
 test("one recorded slot does not vouch for its siblings", () => {
-  // Four rows, one cause (#98), and it would be easy to write a classifier that passes the lot once
-  // any of them matches. The track landing without the fill is a real state and has to be visible.
+  // Rows cluster by cause — four on #98, five on #191, four on #242 — and it would be easy to write
+  // a classifier that passes a whole cluster once any of it matches. The track landing without the
+  // fill is a real state and has to be visible.
   const [first, ...rest] = all();
   const { recorded, stale } = classifyUnstamped([first]);
   assert.equal(recorded.length, 1);

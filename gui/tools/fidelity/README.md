@@ -14,7 +14,7 @@ npm run fidelity:fixtures   # the fixture registry gate                         
 | Gate                              | Compares                                                                        | Runs today?                      |
 | --------------------------------- | ------------------------------------------------------------------------------- | -------------------------------- |
 | **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid` |
-| **unstamped** `assert.mjs`        | a frame's statically-declared fid slots against the ones the app stamped        | yes, 620 of 838 slots (#248)     |
+| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, all 838 slots               |
 | **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                              |
 | **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames        |
 | **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 221 + 9 templates       |
@@ -79,8 +79,8 @@ of it and the frame drops to the "screen not built" printout and the run goes gr
 That printout is split for the same reason. A frame with **no `fids` map** is a screen nobody has
 written yet, and stays an informational line. A frame that **has** a mapping and stamped none of it
 is a built screen rendering nothing, and is its own failure — separately from whatever its slots
-report, because the slot check reads static keys only and a mapping made entirely of factory slots
-would otherwise stamp nothing, report nothing, and read as "not built" (#248).
+report, because a mapping whose every key sits past the probe's reach would otherwise stamp nothing,
+report nothing, and read as "not built".
 
 **The "and whose key the frame draws" clause is what makes it a gate rather than a printout.** It
 began as a report, and eight of the twelve slots it named were noise: `compactFids` is a factory
@@ -95,21 +95,34 @@ These cannot live in `KNOWN_DEVIATIONS`: an unstamped node produces no assertion
 would never fire, and the rule one section up would reject it for never failing. The staleness rule
 is the same though, transposed — a `KNOWN_UNSTAMPED` row that is no longer observed fails the build,
 whether because the capability landed, the prototype moved the node, or the frame stopped being
-mapped. The pinned `key` is what tells the second apart from the first.
+mapped. A row is one NODE — `frame`, `slot` **and** `key` — so a factory slot recorded at one key
+never vouches for the rest of its run, and a node that moved fails twice (the row goes stale, the new
+key arrives unexplained) instead of being quietly absorbed.
 
-Its four rows are one cause: `2a Syncing` and `2a Needs you` draw a 2px progress track under the
-in-flight transfer, and `TransferActivity` carries `bytes_total` on an upload and `bytes_done` on a
-download and never both, so no percentage exists to draw (#98, DEVIATIONS §63).
+Its 19 rows are six causes. Four are #98: `2a Syncing` and `2a Needs you` draw a 2px progress track
+under the in-flight transfer, and `TransferActivity` carries `bytes_total` on an upload and
+`bytes_done` on a download and never both, so no percentage exists to draw (DEVIATIONS §63). The rest
+are per-file sizes the rehearsal does not report (#191 ×5), the deletion facts the index cannot
+answer (#208, #225 ×4), the onboarding account line and remote picker (#241, #99), and the count of
+files that already match (#242 ×4).
 
-**It reads STATIC slots only — 620 of 838 — and the missing 218 are the repeated blocks.** A factory
-slot (`row: (i) => …`) resolves to a different key per call, so deciding whether it was reached
-means guessing its arity, and a wrong guess reports a live slot as dead. The shortfall is not evenly
-spread: a factory slot is by definition a block drawn many times, which is exactly what a screen
-renders none of. It is why this does not yet catch the case it was built for — the compact panel
-declares `transferTrack`/`transferFill` as factories, so S8 wiring the tray panel to `SyncActivity`
-still passes green (`progress: null` on both `10a Syncing` transfers: 66936 assertions, 0 failures,
-232 gone silently). Probing them the way `check-fixtures.mjs` does surfaces 33 further findings, 19
-at index 0 alone; each wants the same sorting the twelve got, so it is **#248**.
+**Factory slots are probed, not skipped** — the half #247 shipped without (#248). A factory
+(`row: (i) => …`) resolves to a different key per call, so it cannot be read off the map; `probeSlot`
+calls it over a 10³ index grid and keeps the keys the frame draws. That is stricter than
+`check-fixtures.mjs`'s single-axis probe on purpose: `sideRowNote(s, i)` is keyed by side **and** row,
+and one axis reaches only row 0 of each side. Measured — the grid finds 39 drawn-but-unstamped slots
+where one axis finds 33, and all six extra are further rows of clusters the one axis already found.
+
+Leaving factories out was not free. 218 of 838 slots are factories, and a factory slot is by
+definition a repeated block — a row, a card, a fact, a path — which is exactly what a screen renders
+none of. It was also why #247 did not catch the case it was built for: the compact panel declares
+`transferTrack`/`transferFill` as factories, so S8 wiring the tray panel to `SyncActivity` passed it
+green. It does not pass this — `progress: null` on both `10a Syncing` transfers now exits 1 naming
+all four nodes.
+
+Two things the probe still cannot reach, and both fail **safe** — the key is never produced, so the
+slot is never reported: an index past `PROBE_DEPTH` (10, more rows than any frame draws), and a
+factory wanting a non-numeric argument (none exist; every fid factory is keyed by position).
 
 ## The node key, and why it is a path
 

@@ -562,8 +562,12 @@ function clearedBody({ settled, onBack }) {
   // centring shell around a column would be a node with no key beneath it. conflicts.css does the
   // centring with `margin: 0 auto` for exactly that reason.
   const body = fid(el("div", { class: "cf-cleared" }), "cleared");
+  const mark = fid(renderHexagon({ size: CLEARED_SIZE, state: "settled" }), "hexagon");
+  // The mark's own two paths, the way S1 and S3 stamp theirs. The `<svg>` alone leaves the ring and
+  // the tick — the geometry, the stroke and the fill — uncompared (#248).
+  for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "hexPath", i);
   body.append(
-    fid(renderHexagon({ size: CLEARED_SIZE, state: "settled" }), "hexagon"),
+    mark,
     fid(el("div", { class: "cf-cleared-title" }, CONFLICTS.clearedTitle), "clearedTitle"),
     fid(el("div", { class: "cf-cleared-sub" }, CONFLICTS.clearedSub(settled)), "clearedSub"),
     fid(

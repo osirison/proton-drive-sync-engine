@@ -438,6 +438,7 @@ function quietBody(props) {
   const verdict = props.agreed
     ? (() => {
         const mark = renderHexagon({ size: SEAM_MARK, state: "settled", masked: true });
+        for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "hexPath", i);
         const agree = el("div", { class: "activity-agree" }, ACTIVITY.agree);
         // `position:false` matters: the frame records this label as STATIC. The mask's default
         // writes `position:relative`, an asserted property, and would fail on the one node it is
@@ -485,29 +486,50 @@ function quietBody(props) {
 function lookupCard(which, { size, root, relative, meta }) {
   const up = which === "local";
   const abs = root ? `${root.replace(/\/$/, "")}/${relative}` : null;
-  return el(
-    "div",
-    { class: `activity-card activity-card-${which}` },
-    eyebrow({
-      tone: up ? "up" : "down",
-      text: up ? MAIN.sideLocal : MAIN.sideRemote,
-      align: up ? "start" : "end",
-    }),
+  // The side's own index, which is what the fixture keys every slot below on — `local` is drawn
+  // first in both frames. Positional, not a lookup, because the caller draws the pair in order.
+  const s = up ? 0 : 1;
+  const sizeSpan = fid(el("span", {}, bytes(size)), "cardSize", s);
+  const metaRow = fid(
     el(
       "div",
-      { class: "activity-card-box" },
-      el(
-        "div",
-        { class: "activity-card-meta" },
-        el("span", {}, bytes(size)),
-        // `edited HH:MM` only on the LOCAL side. `EmblemStatus.mtime` is `record.mtime`, the local
-        // modification time; the reply carries no remote-side timestamp at all, so the frame's
-        // `received 14:32` has nothing behind it (G16) and the clause is omitted rather than
-        // filled with the local time wearing a remote label.
-        meta ? el("span", {}, meta) : null,
-      ),
-      el("div", { class: "activity-card-path" }, abs ?? dash(null)),
+      { class: "activity-card-meta" },
+      sizeSpan,
+      // `edited HH:MM` only on the LOCAL side. `EmblemStatus.mtime` is `record.mtime`, the local
+      // modification time; the reply carries no remote-side timestamp at all, so the frame's
+      // `received 14:32` has nothing behind it (G16) and the clause is omitted rather than
+      // filled with the local time wearing a remote label.
+      meta ? el("span", {}, meta) : null,
     ),
+    "cardMeta",
+    s,
+  );
+  return fid(
+    el(
+      "div",
+      { class: `activity-card activity-card-${which}` },
+      fid(
+        eyebrow({
+          tone: up ? "up" : "down",
+          text: up ? MAIN.sideLocal : MAIN.sideRemote,
+          align: up ? "start" : "end",
+        }),
+        "cardLabel",
+        s,
+      ),
+      fid(
+        el(
+          "div",
+          { class: "activity-card-box" },
+          metaRow,
+          fid(el("div", { class: "activity-card-path" }, abs ?? dash(null)), "cardPath", s),
+        ),
+        "cardBox",
+        s,
+      ),
+    ),
+    "card",
+    s,
   );
 }
 
@@ -522,7 +544,9 @@ function lookupBody(props) {
 
   const hero = el("div", { class: "activity-hero" });
   if (verdict.mark) {
-    hero.append(fid(renderHexagon({ size: SEAM_MARK, state: verdict.mark, masked: true }), "hexagon"));
+    const mark = fid(renderHexagon({ size: SEAM_MARK, state: verdict.mark, masked: true }), "hexagon");
+    for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "hexPath", i);
+    hero.append(mark);
   }
   const path = el("div", { class: "activity-hero-path" }, lookup.path);
   const title = el("div", { class: "activity-hero-title" }, verdict.title);
@@ -825,13 +849,14 @@ export function renderNeverSyncedBody(props) {
     body.push(fid(eyebrow({ tone: "up", text: ACTIVITY.neverSyncedDialog.ruleHeading }), "ruleHeading"));
   }
   for (const [i, rule] of rules.entries()) {
+    const pattern = fid(el("span", { class: "activity-rule-pattern" }, rule.pattern), "rulePattern", i);
     body.push(
       fid(
         el(
           "div",
           { class: "activity-rule-sub" },
           `${ACTIVITY.neverSyncedDialog.ruleSub("").trimEnd()} `,
-          el("span", { class: "activity-rule-pattern" }, rule.pattern),
+          pattern,
         ),
         "ruleSub",
         i,
@@ -844,6 +869,8 @@ export function renderNeverSyncedBody(props) {
       // The first row of each rule clears its sentence by 11px; the rest sit on the row rhythm.
       if (j === 0) row.style.marginTop = "11px";
       body.push(fid(row, "ruleRow", i, j));
+      fid(row.children[0], "ruleRowPath", i, j);
+      fid(row.children[1], "ruleRowNote", i, j);
     }
   }
   // One button too, and for the same reason: it opens the rules tab, which is where every one of
