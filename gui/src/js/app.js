@@ -545,6 +545,13 @@ function render() {
   // redraw step 2, with its stale plan, behind the merge dialog. `nextOnboardingLatch` stays pure;
   // this is the caller knowing something the daemon state cannot say.
   const wasOnboarding = onboardingLatch;
+  // EXACTLY `nextOnboardingLatch`'s RELEASE SET, and `firstRun` is left out on purpose: the latch
+  // treats it as an ENTRY trigger, not a release, and `counters_unknown()` groups it with
+  // `unreachable` in both gui-core and store.js. Leaving the failure latched there changes nothing —
+  // `nextOnboardingLatch` returns true for `firstRun` anyway, so both arms of the ternary below
+  // agree — and it clears on the first state that is actually a hand-off. (A failed pass cannot
+  // derive to `firstRun` within one daemon process in any case: `record_status_history` runs on the
+  // same pass, and `firstRun` requires an empty history.)
   const reachable = st === "idle" || st === "running" || st === "paused" || st === "authExpired";
   // A merge that failed against a daemon that then came up is not onboarding's problem any more.
   if (onboardingFailure && reachable) onboardingFailure = null;
