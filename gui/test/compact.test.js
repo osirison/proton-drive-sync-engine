@@ -23,7 +23,13 @@ const rowsOf = (state) => TRAY_MENU[state].filter((row) => !row.separator);
 const labels = (state) => rowsOf(state).map((row) => row.label);
 
 test("every state the panel has is a state the tray menu has", () => {
-  assert.deepEqual(Object.keys(TRAY_MENU).sort(), [...STATES].sort());
+  // S8 ADDED A SIXTH KEY, and it is not a sixth panel form — `10-tray.md` allows no sixth form and
+  // `ui/hexagon.js` refuses to draw one. `deferToWindow` is the row set for the two daemon states
+  // that share the struck hexagon with `unreachable` and share none of its actions: an expired
+  // Proton session and a daemon that has never synced. Both are fixed in the window, not by
+  // `Try again now`. So the panel is keyed by form and the menu by cause, and the two key sets are
+  // deliberately no longer identical — see the note on `deferToWindow` in ui/compact.js.
+  assert.deepEqual(Object.keys(TRAY_MENU).sort(), [...STATES, "deferToWindow"].sort());
 });
 
 test("Close window and Quit keep their sub-labels wherever they appear", () => {

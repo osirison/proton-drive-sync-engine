@@ -35,10 +35,17 @@ test("the sheet's row order and the component's forms are the same five, in the 
   assert.deepEqual(SHEET.glyphs, TRAY_GLYPH_STATES);
 });
 
-test("the five forms are the five states the tray menu knows", () => {
+test("every glyph form has menu rows behind it", () => {
   // The panel, the menu and the glyph are three surfaces describing one moment. If the glyph can be
-  // in a state the menu has no rows for, the tray can draw a mark it cannot offer an action for.
-  assert.deepEqual([...TRAY_GLYPH_STATES].sort(), Object.keys(TRAY_MENU).sort());
+  // in a state the menu has no rows for, the tray can draw a mark it cannot offer an action for —
+  // and `trayMenu` throws on an unknown key, so it would do it by crashing the tray window.
+  //
+  // A SUBSET, not an equality: `TRAY_MENU` also carries `deferToWindow`, which is a row set rather
+  // than a form (see ui/compact.js). The direction that matters is this one — every form must have
+  // rows; a row set with no form of its own is how the menu says more than the mark can.
+  for (const state of TRAY_GLYPH_STATES) {
+    assert.ok(TRAY_MENU[state], `no tray menu rows for the ${state} glyph`);
+  }
 });
 
 test("a sixth form is refused, and the refusal says why", () => {

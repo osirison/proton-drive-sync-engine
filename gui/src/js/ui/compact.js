@@ -596,6 +596,25 @@ export const TRAY_MENU = {
     { separator: true },
     { id: "quit", label: TRAY.quit, sub: TRAY.quitSub },
   ],
+  /**
+   * A SIXTH ROW SET FOR TWO STATES THE TABLE IN `10-tray.md` DOES NOT LIST, and the reason it exists
+   * rather than reusing `unreachable` is one row: `Try again now`.
+   *
+   * An expired Proton session and a daemon that has never synced are both states where nothing is
+   * moving and where the thing that fixes them is in the window — signing in again, or choosing the
+   * two folders. Retrying a sync does neither. Offering it would be a label that does not do what it
+   * says, which is the one property `10-tray.md` asks of this menu ("neither confirms anything — the
+   * labels say what each does").
+   *
+   * So the panel takes the FORM (both draw the struck hexagon, per `11-notifications.md`'s grouping)
+   * and the menu takes the CAUSE. `Close window` is absent for the reason it is absent from paused
+   * and can't-reach: with nothing syncing, "keeps syncing" would be a lie. DEVIATIONS §82g.
+   */
+  deferToWindow: [
+    { id: "open", label: TRAY.open },
+    { separator: true },
+    { id: "quit", label: TRAY.quit, sub: TRAY.quitSub },
+  ],
 };
 
 /**

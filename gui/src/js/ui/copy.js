@@ -969,6 +969,20 @@ export const TRAY = {
   quit: "Quit",
   quitSub: "stops syncing",
 
+  /**
+   * The two sentences for a reachable daemon that has never synced — a state NO FRAME DRAWS and the
+   * deck has no words for, because in the window it is unreachable: `app.js` intercepts `firstRun`
+   * with the onboarding takeover before the main screen renders. The tray has no takeover, so it is
+   * the one surface that must say something, and the alternative was `Everything is up to date` over
+   * a daemon that has never copied a file.
+   *
+   * Written rather than measured, therefore, and kept as close to what already exists as possible:
+   * the v1 tray shipped `Nothing synced yet` as a disabled menu item, and the second line points at
+   * the two folders `ONBOARDING.foldersTitle` asks about. DEVIATIONS §82g.
+   */
+  nothingSyncedYet: "Nothing has synced yet",
+  nothingSyncedYetSub: "Open Drive Sync to choose your two folders.",
+
   unreachableTitle: "Can't reach Proton Drive",
   /**
    * `n == null` DROPS THE SECOND SENTENCE rather than rendering the count, and this is the one place
