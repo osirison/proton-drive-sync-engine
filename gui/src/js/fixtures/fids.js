@@ -1266,12 +1266,13 @@ const ONBOARDING_FOLDERS_FIDS = {
   //
   // NOT THE SAME NULL AS `rulePattern`'s, and the difference is worth being exact about. That one
   // nulls at indices where its own node does not exist — one rule, so no `rulePattern(1)`. This one
-  // nulls at an index whose node the frame DRAWS. So it is a suppression, and unlike every other
-  // suppression in this subsystem it can never go stale: `KNOWN_DEVIATIONS` fails when an entry stops
-  // failing, `KNOWN_UNSTAMPED` fails when a row stops being observed, `SETTLED_FRAMES` is cross-checked
-  // against `index.json` — a null is checked by nothing. If #99 lands and this becomes a picker over a
-  // `<div>`, nothing here will say so. That is the "leave it undeclared" convention's blind spot rather
-  // than this slot's: 268 of 1,452 drawn nodes on mapped frames are claimed by no slot at all. #250.
+  // nulls at an index whose node the frame DRAWS, so it is a suppression rather than an absence, and
+  // nothing targets the null itself. It is caught ANYWAY, by two paths, and both were measured rather
+  // than assumed: stamp this slot and `fid()` writes `data-fid="9a Folders:null"`, which assert.mjs
+  // reports as a `(mapping)` failure — exit 1; let #99 land and replace the `<input>` with an
+  // unstamped `<div>` and the PARENT card's exact-pixel `box.h "147 vs 58"` row goes stale AND fails
+  // — exit 1. That the cover is incidental is the point: 268 of 1,452 drawn nodes on mapped frames
+  // are claimed by no slot, and no rule says which of them are deliberate. #250.
   cardPath: (s) => (s === 0 ? `div[1]/div[1]/div[${s}]/div[1]/div[0]` : null),
   cardButton: (s) => `div[1]/div[1]/div[${s}]/div[1]/button`,
   sideNote: (s) => `div[1]/div[1]/div[${s}]/div[2]`,

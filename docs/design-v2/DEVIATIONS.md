@@ -3380,12 +3380,22 @@ suppression in this subsystem self-invalidates: `KNOWN_DEVIATIONS` fails when an
 cross-checks is a gate that can switch itself off"*.
 
 Leaving a node **undeclared** has no such rule. `cardPath` returning `null` at `s === 1` is the only
-honest answer available for that node — but it is a suppression, and nothing will ever say when it
-expires. The comparison to `rulePattern`'s null does not hold and the first version of this section
-made it anyway: `rulePattern` nulls at indices where **its own node does not exist** (one rule, so no
-`rulePattern(1)`), while `cardPath(1)`'s node is drawn. When #99 lands and the remote root becomes a
-picker over a `<div>`, the slot should be re-declared, and no gate will notice that it wasn't.
+honest answer available for that node, and nothing targets the null itself. The comparison to
+`rulePattern`'s null does not hold and the first version of this section made it anyway: `rulePattern`
+nulls at indices where **its own node does not exist** (one rule, so no `rulePattern(1)`), while
+`cardPath(1)`'s node is drawn.
 
+The first version of this section then went one claim too far — it said no gate would notice when the
+suppression expired. **Two do, and review measured both.** Stamp the slot and `fid()` null-checks the
+factory rather than its result, so it writes `data-fid="9a Folders:null"`; `assert.mjs` finds no such
+key and reports a `(mapping)` failure, exit 1. Let #99 land and replace the `<input>` with an
+unstamped `<div>` and the **parent** card's exact-pixel `box.h "147 vs 58"` deviation goes stale *and*
+fails, exit 1 — an exact-detail pin on a parent covers a child's construction changing under it.
+
+Both covers are incidental, which is the part worth keeping.
+
+What survives is narrower and still worth filing: **no rule says which undeclared nodes are
+deliberate**, so this one is covered by accident rather than by design, and the next one may not be.
 That is the convention's blind spot rather than this slot's, and it is bigger than this section:
 **268 of the 1,452 drawn nodes on mapped frames are claimed by no slot at all — 18%.** Most are
 correct (S4 leaves `5a Checking`'s progress line undeclared, S5 the four history rows, S6 the
