@@ -3371,7 +3371,7 @@ would be something else. Matching on `frame|slot` would let the first row's reas
 all of them. It also means a node that moved fails twice — the row goes stale, the new key arrives
 unexplained — instead of being absorbed by a mapping nobody re-checked.
 
-### The one suppression that can never go stale
+### The one suppression with no rule of its own
 
 Review found the weak point, and it is worth stating rather than leaving to be discovered. Every
 suppression in this subsystem self-invalidates: `KNOWN_DEVIATIONS` fails when an entry stops failing,
@@ -3392,11 +3392,10 @@ key and reports a `(mapping)` failure, exit 1. Let #99 land and replace the `<in
 unstamped `<div>` and the **parent** card's exact-pixel `box.h "147 vs 58"` deviation goes stale *and*
 fails, exit 1 — an exact-detail pin on a parent covers a child's construction changing under it.
 
-Both covers are incidental, which is the part worth keeping.
-
-What survives is narrower and still worth filing: **no rule says which undeclared nodes are
-deliberate**, so this one is covered by accident rather than by design, and the next one may not be.
-That is the convention's blind spot rather than this slot's, and it is bigger than this section:
+**Both covers are incidental, and that is the part worth keeping.** Nothing decided this node would
+be caught; it is caught because a neighbour happens to be pinned to the pixel. No rule says which
+undeclared nodes are deliberate, so the next one may have no such neighbour. That is the convention's
+blind spot rather than this slot's, and it is bigger than this section:
 **268 of the 1,452 drawn nodes on mapped frames are claimed by no slot at all — 18%.** Most are
 correct (S4 leaves `5a Checking`'s progress line undeclared, S5 the four history rows, S6 the
 twenty-bar chart), and almost none of those reasons is written where a gate can read it. Sorting 268
