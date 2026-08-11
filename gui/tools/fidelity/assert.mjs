@@ -145,7 +145,12 @@ const record = (row) => (isKnown(row.frame, row.key, row.prop, row.detail) ? dev
 let asserted = 0;
 let mapped = 0;
 const unmappedFrames = [];
-/** `{ frame, slot, key }` for every slot a mapped frame DRAWS and the running app never stamped. */
+/**
+ * `{ frame, slot, key }` for every slot a frame DRAWS and the running app never stamped.
+ *
+ * EVERY frame, not every mapped one: collected above the unmapped-frame bail-out, so a screen that
+ * stamps nothing at all lands here rather than in the non-failing "screen not built" list.
+ */
 const unstamped = [];
 
 for (const entry of index) {

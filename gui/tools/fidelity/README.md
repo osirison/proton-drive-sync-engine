@@ -1,12 +1,12 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Five gates over the 51 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Six gates over the 51 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
 npm run fidelity:extract    # regenerate frames/*.json from the prototype
-npm run fidelity            # style, fit and hue gates, then the copy gate   (needs Chromium)
-npm run fidelity:fixtures   # the fixture registry gate                      (Node only)
+npm run fidelity            # style, unstamped, fit and hue, then the copy gate   (needs Chromium)
+npm run fidelity:fixtures   # the fixture registry gate                           (Node only)
 ```
 
 ## The six gates

@@ -758,8 +758,9 @@ export const KNOWN_UNSTAMPED = [
  * one place than as a hit-set built a frame at a time, and a pure function is one a test can drive
  * without depending on what an earlier test happened to call.
  *
- * @param observed `{ frame, slot, key }` for every slot a mapped frame DRAWS and the app did not
- *                 stamp — already filtered of the inert kind by the caller
+ * @param observed `{ frame, slot, key }` for every slot a frame DRAWS and the app did not stamp —
+ *                 already filtered of the inert kind by the caller, and covering frames that
+ *                 stamped NOTHING, which is the case the gate exists for
  * @returns recorded    — observations this list explains, for the report
  *          unexplained — observations it does not: a block that renders nothing, with no reason on
  *                        file. The finding this whole mechanism exists to make loud.
