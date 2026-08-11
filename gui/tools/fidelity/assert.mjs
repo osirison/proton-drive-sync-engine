@@ -145,6 +145,8 @@ const record = (row) => (isKnown(row.frame, row.key, row.prop, row.detail) ? dev
 let asserted = 0;
 let mapped = 0;
 const unmappedFrames = [];
+/** Frames that DO carry a `fids` map and stamped none of it — built, and rendering nothing. */
+const blankFrames = [];
 /**
  * `{ frame, slot, key }` for every slot a frame DRAWS and the running app never stamped.
  *
@@ -361,7 +363,18 @@ for (const entry of index) {
   }
 
   if (!seen.length) {
-    unmappedFrames.push(frame.label);
+    // TWO DIFFERENT THINGS LAND HERE, and calling both "screen not built" is the same comforting
+    // mislabel this whole gate exists to remove. A frame with no `fids` map is a screen nobody has
+    // written yet — the true state of most of S8–S11. A frame that HAS a mapping and stamped none
+    // of it is a built screen rendering nothing, which is a failure however loudly its slots also
+    // report. Separated so the informational line cannot describe the second as the first.
+    //
+    // A failure in its own right rather than left to the slot check, because the slot check reads
+    // static keys only: a frame whose mapping is all factory slots would stamp nothing, report
+    // nothing, and read as "not built" (#248). Zero frames are in that state today — all 36 with a
+    // `fids` map stamp something — so this costs nothing and closes the hole in advance.
+    if (Object.keys(FIXTURES[frame.label]?.fids ?? {}).length) blankFrames.push(frame.label);
+    else unmappedFrames.push(frame.label);
     continue;
   }
   mapped++;
@@ -454,9 +467,10 @@ console.log(
   `fidelity:assert — ${mapped}/${index.length} frames mapped, ${asserted} assertions, ${failures.length} failures`,
 );
 if (unmappedFrames.length) {
-  // Not a failure: a frame with no `data-fid` anywhere is a screen nobody has built yet, which is
-  // the true state of S1–S11. Listed every run so "the gate is green" never gets confused with
-  // "the gate looked at anything".
+  // Not a failure: a frame with no `fids` map is a screen nobody has built yet, which is the true
+  // state of most of S8–S11. Listed every run so "the gate is green" never gets confused with "the
+  // gate looked at anything". A frame that HAS a mapping and stamped none of it is NOT in this
+  // list — it is a failure, reported below.
   console.log(
     `  ${unmappedFrames.length} frames carry no data-fid yet (screen not built): ${unmappedFrames.slice(0, 6).join(", ")}${unmappedFrames.length > 6 ? ", …" : ""}`,
   );
@@ -511,6 +525,14 @@ if (stale.length) {
   console.error(`\nfidelity:assert: ${stale.length} stale unstamped row(s) in known-deviations.mjs.`);
 }
 
+// A mapped screen that rendered NOTHING. Its slots normally report it too, but this is the case
+// that must never be filed under "screen not built", so it is stated on its own terms.
+if (blankFrames.length) {
+  console.error("\nFrames with a fid mapping that stamped none of it — built, and rendering nothing:\n");
+  for (const label of blankFrames) console.error(`  ${label}`);
+  console.error(`\nfidelity:assert: ${blankFrames.length} frame(s) rendered nothing.`);
+}
+
 // THE TEETH. A frame draws this node, the app renders nothing there, and nothing on file says why.
 // Either build the block or record it with the issue that blocks it — the one thing that must not
 // happen is it going quiet, because a screen can render almost nothing and pass every other gate.
@@ -541,4 +563,5 @@ if (failures.length) {
   console.error(`\nfidelity:assert: ${failures.length} failure(s).`);
 }
 
-if (failures.length || unmet.length || stale.length || unexplained.length) process.exit(1);
+if (failures.length || unmet.length || stale.length || unexplained.length || blankFrames.length)
+  process.exit(1);

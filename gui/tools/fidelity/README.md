@@ -76,6 +76,12 @@ of it and the frame drops to the "screen not built" printout and the run goes gr
 `7a Never synced` stamp nothing gave `35/51 frames mapped, 66362 assertions, 0 failures`, exit 0 —
 806 assertions gone, on the frame this mechanism was built for.
 
+That printout is split for the same reason. A frame with **no `fids` map** is a screen nobody has
+written yet, and stays an informational line. A frame that **has** a mapping and stamped none of it
+is a built screen rendering nothing, and is its own failure — separately from whatever its slots
+report, because the slot check reads static keys only and a mapping made entirely of factory slots
+would otherwise stamp nothing, report nothing, and read as "not built" (#248).
+
 **The "and whose key the frame draws" clause is what makes it a gate rather than a printout.** It
 began as a report, and eight of the twelve slots it named were noise: `compactFids` is a factory
 over four tree shapes and hands every frame the whole slot vocabulary, so `10a Settled` declaring
