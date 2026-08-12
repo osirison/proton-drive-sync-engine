@@ -13,6 +13,10 @@ Unix-only today: control-plane IPC uses Unix domain sockets (`#[cfg(unix)]` guar
 
 ## Commands
 
+Before running an unfamiliar build, deployment, or CLI command in this repo, grep
+`docs/agent-notes/` for the command name. Those notes record preconditions that are not documented
+anywhere else — without this line they are write-only.
+
 ```bash
 cargo build --workspace --all-targets
 
