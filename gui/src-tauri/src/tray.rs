@@ -33,6 +33,8 @@ use crate::config_path::RuntimePaths;
 use gui_core::ipc;
 use gui_core::state::{derive_state, DaemonState};
 use gui_core::wire::{ControlCommand, ControlResponse};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -168,6 +170,7 @@ fn fallback_menu(app: &AppHandle, state: DaemonState) -> tauri::Result<Menu<taur
 fn spawn_poll(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut shown: Option<Shown> = None;
+        let mut tick: u64 = 0;
         loop {
             let socket = {
                 let state = app.state::<Mutex<RuntimePaths>>();
@@ -198,9 +201,26 @@ fn spawn_poll(app: AppHandle) {
                 title: title_for(state, response.as_ref()),
                 state,
             };
-            if shown.as_ref() != Some(&next) {
-                update(&app, state, &next).await;
-                shown = Some(next);
+            // **A tick is only "shown" once something has shown it.** Two reasons it might not have
+            // been, and the second one is a bug this file shipped: the indicator may never have come
+            // up. `Sni::start` runs only when `update` does, and `update` ran only on a state change
+            // — so a session where this app and the panel start together and this one wins the race
+            // registered nothing, fell back to the text menu, and stayed there for as long as an
+            // idle daemon stayed idle.
+            //
+            // Retried on a 30-second cadence rather than every tick, because `Sni::start` opens a
+            // fresh D-Bus connection: fast enough that a panel starting late is a blip, cheap enough
+            // that a session which will never have a host is not paying for one every two seconds.
+            tick = tick.wrapping_add(1);
+            let retry_indicator = tick.is_multiple_of(15) && !indicator_is_up(&app).await;
+            if shown.as_ref() != Some(&next) || retry_indicator {
+                if update(&app, state, &next).await {
+                    shown = Some(next);
+                } else {
+                    // Left unset on purpose: the next tick re-attempts this exact state rather than
+                    // waiting for the daemon to change into another one.
+                    shown = None;
+                }
             }
             tokio::time::sleep(POLL_INTERVAL).await;
         }
@@ -219,27 +239,57 @@ fn glyph_for(_state: DaemonState) -> &'static str {
     "proton-sync"
 }
 
+/// Is there an indicator carrying the state right now? The retry above turns on this.
 #[cfg(target_os = "linux")]
-async fn update(app: &AppHandle, state: DaemonState, next: &Shown) {
+async fn indicator_is_up(app: &AppHandle) -> bool {
+    app.state::<crate::sni::SniState>().lock().await.is_some()
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn indicator_is_up(app: &AppHandle) -> bool {
+    app.tray_by_id(TRAY_ID).is_some()
+}
+
+/// Push a state to whichever indicator exists, bringing one up if none does. `true` when the state
+/// reached something.
+#[cfg(target_os = "linux")]
+async fn update(app: &AppHandle, state: DaemonState, next: &Shown) -> bool {
     let rows = crate::tray_menu::rows_for(state);
     let sni = app.state::<crate::sni::SniState>();
     let mut guard = sni.lock().await;
     if let Some(item) = guard.as_ref() {
         if let Err(error) = item.update(next.icon, &next.title, rows).await {
             eprintln!("tray: could not update the indicator: {error}");
+            return false;
         }
-        return;
+        return true;
     }
-    // First tick, or a session with no host. Try to come up; fall back if there is nothing to
-    // register with.
+    // First tick, a session with no host, or a host that had not started yet when this app did.
+    // Retried every tick until one of them succeeds — see the call site.
     match crate::sni::Sni::start(app.clone(), next.icon.to_string(), next.title.clone(), rows).await
     {
         Ok(item) => {
             eprintln!("tray: registered a status-notifier item");
             *guard = Some(item);
+            drop(guard);
+            // THE FALLBACK HAS TO GO, or a session that started before its panel shows TWO
+            // indicators for one app — and the surviving text menu is the stale one, because
+            // `install_fallback` is never reached again once the item is up.
+            let app = app.clone();
+            let _ = app.clone().run_on_main_thread(move || {
+                if app.tray_by_id(TRAY_ID).is_some() {
+                    app.remove_tray_by_id(TRAY_ID);
+                    eprintln!("tray: removed the fallback text menu");
+                }
+            });
+            true
         }
         Err(error) => {
-            eprintln!("tray: no status-notifier host ({error}); falling back to a text menu");
+            // Once. This retries every two seconds now, and a bare window manager would otherwise
+            // write this line 30 times a minute for the life of the session.
+            if !NO_HOST_REPORTED.swap(true, Ordering::Relaxed) {
+                eprintln!("tray: no status-notifier host ({error}); falling back to a text menu");
+            }
             drop(guard);
             let app = app.clone();
             let _ = app.clone().run_on_main_thread(move || {
@@ -247,16 +297,27 @@ async fn update(app: &AppHandle, state: DaemonState, next: &Shown) {
                     eprintln!("tray: the fallback tray failed too: {error}");
                 }
             });
+            // The fallback DID take the state, and saying otherwise would re-run this every tick
+            // for a session that is working as well as it can.
+            true
         }
     }
 }
 
+/// Whether the "no status-notifier host" line has been written. See `update`.
+#[cfg(target_os = "linux")]
+static NO_HOST_REPORTED: AtomicBool = AtomicBool::new(false);
+
 #[cfg(not(target_os = "linux"))]
-async fn update(app: &AppHandle, state: DaemonState, _next: &Shown) {
+async fn update(app: &AppHandle, state: DaemonState, _next: &Shown) -> bool {
     let app = app.clone();
-    let _ = app.clone().run_on_main_thread(move || {
-        let _ = install_fallback(&app, state);
-    });
+    app.clone()
+        .run_on_main_thread(move || {
+            if let Err(error) = install_fallback(&app, state) {
+                eprintln!("tray: the fallback tray failed: {error}");
+            }
+        })
+        .is_ok()
 }
 
 fn show_window(app: &AppHandle) {

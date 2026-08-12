@@ -3850,11 +3850,23 @@ empty menu with the rows still on the wire.
 
 **b. The numeric id is the ACTION, not the position, and that is a correctness fix rather than a
 style.** dbusmenu names a row with an `i32`, and a host draws the layout it holds until it is told
-otherwise — while these rows change with the daemon's state, on a two-second poll. With positional
-ids, a menu opened while the daemon was idle and clicked after it paused would send "third row",
-which in the paused set is `Quit`: a click on `Pause syncing` that stops the daemon. The id travels
-with the row instead, so a stale menu performs what its label promised or nothing at all, and
-`Event` resolves against every row set rather than the one currently published.
+otherwise — while these rows change with the daemon's state, on a two-second poll. So with
+positional ids a click arrives as whatever now stands where the pointer was, and the worst of those
+collisions is the pair `10-tray.md` cares most about: **`Close window — keeps syncing` and `Quit —
+stops syncing` occupy the same position in different states.** `Close window` is 5th in the settled
+set and 4th while syncing; `Quit` is 5th while syncing and 4th while paused. A menu opened on an
+idle daemon and clicked once a pass had started would have stopped the daemon — on the row whose
+entire job is to promise that it will not — and settled→syncing happens on every pass.
+
+The id travels with the row instead, so a stale menu performs what its label promised or nothing at
+all, and `Event` resolves against every row set rather than the one currently published.
+
+*The first draft of this section named a different pair — a stale `Pause syncing` click landing on
+`Quit` — and it was wrong: the paused set's third row is the separator, so that click would have hit
+nothing. The claim is now a test that walks all five sets and computes the collisions
+(`positions_collide_and_the_worst_pair_is_the_one_10_tray_md_names`), and it fails with an
+instruction to fix the prose if the pair it names ever stops colliding. A rationale nobody can check
+is a rationale that rots.*
 
 **c. `AboutToShow` always answers `true`.** The return means *you need to refresh before drawing*.
 libdbusmenuqt honours it by re-reading the layout; answering `false` draws the cached copy, which for
@@ -3868,11 +3880,21 @@ whole layout rather than patching properties, and nothing here asks a host to op
 program's behalf. A signal is matched by name on the bus, not found by introspection, so declaring
 one that is never emitted buys nothing and reads as a capability.
 
-**e. One table now, for three menus.** `#252` asked that the dbusmenu layout not become a third copy
-of rows that already exist in `ui/compact.js`'s `TRAY_MENU` and again in `tray.rs`'s fallback. It is
-`tray_menu.rs`: five row sets keyed by state, the ids `commands::tray_row` already dispatches, and
-the em-dash fold of §82k in one place. The doc comment in `commands.rs` promising a `FALLBACK_IDS`
-table "below" — a table that was never written — describes what exists now.
+**e. One table now, for three menus — and the third is in another language, so it is compared rather
+than shared.** `#252` asked that the dbusmenu layout not become a third copy of rows that already
+exist in `ui/compact.js`'s `TRAY_MENU` and again in `tray.rs`'s fallback. Two of the three are now
+one `tray_menu.rs`: five row sets keyed by state, the ids `commands::tray_row` already dispatches,
+and the em-dash fold of §82k in one place. The doc comment in `commands.rs` promising a
+`FALLBACK_IDS` table "below" — a table that was never written — describes what exists now.
+
+The panel's is a JS literal and cannot be the same object, which for one draft of this section made
+"one table for three menus" an overstatement: nothing compared row MEMBERSHIP or ORDER across the
+language boundary, only the seven label strings, so adding a row to `TRAY_MENU.paused` alone would
+have given a left click and a right click two different menus for one daemon with every gate in both
+languages green. `the_panel_and_the_native_menus_draw_the_same_rows_in_the_same_order` parses
+`TRAY_MENU` and compares all six of its sets, separators included, against `rows_for` — including
+`needsYou`, which has no Rust counterpart because S1's derivation folds it into the idle state, and
+whose being *identical to settled* is itself the invariant §82g rests on.
 
 **f. The fallback menu never followed the daemon.** Found while giving it the shared table:
 `install_fallback` returned early whenever the tray already existed, so its rows were whatever the
@@ -3887,12 +3909,45 @@ the same words in a language that gate cannot read. `the_labels_are_the_copy_dec
 `TRAY` block out of `ui/copy.js` and compares — including composing the folded label from the parsed
 parts, so the fold itself is not written down twice.
 
-**h. What a live session proved, and what it did not.** With the app running under Plasma 6.7:
+**h. Four defects an adversarial review found, three of them in the tray S8 shipped.** Every gate was
+green with all four present, which is the fifth time this project has recorded that sentence.
+
+1. **`EventGroup`'s out-arg is `idErrors` — the ids that could NOT be handled** — and this returned
+   every id it was sent, with a doc comment stating the inverted meaning as its justification. A host
+   that batches (libdbusmenu-glib's client prefers `EventGroup` for a server advertising `Version >=
+   3`, which this does) would have been told every working click failed. The name is in the XML
+   libdbusmenu-glib compiles in, read on this machine rather than from the specification:
+   `<arg type="ai" name="idErrors" direction="out">`.
+2. **`live` gated the state, not just the signals** (`sni.rs`, S8). While a status-notifier host was
+   away — plasmashell restarts on any panel-settings change — `update` returned early without
+   writing the icon, the title or the rows, while the poll recorded the tick as shown. The host came
+   back, read the item on registration, and got the state from *before* it left, with nothing to
+   correct it until the daemon changed state again. The signals are the only part worth skipping when
+   nothing is listening; the state is what a returning host reads.
+3. **The indicator was never retried** (`tray.rs`, S8). `Sni::start` ran only from `update`, and
+   `update` ran only on a state change — so a session where this app and the panel start together and
+   this one wins registered nothing, fell back to the text menu, and stayed there for as long as an
+   idle daemon stayed idle. Retried on a 30-second cadence now, and the fallback tray is removed when
+   the item comes up, because two indicators for one app is worse than either.
+4. **A right click used to dismiss a stuck panel.** `lib.rs` documents the state where a compositor
+   refuses the panel the focus it asked for, so no blur ever arrives to hide it — and the way out was
+   a second click on the indicator, which reached `ContextMenu` and toggled it shut. With a menu
+   published, that click goes to the host instead. `AboutToShow` dismisses the panel, which is what
+   the host is about to draw over anyway.
+
+**i. What a live session proved, and what it did not.** With the app running under Plasma 6.7:
 plasmashell called `GetLayout(0, 1, [])` on the menu path **unprompted**, seconds after the item
 registered — the importer exists, which is the whole question. `AboutToShow` answered, a synthetic
 `Event(id, "clicked", …)` hid and showed the window through the same handler the fallback menu uses,
 an unknown id was reported rather than silently swallowed, and pausing the daemon *from the menu*
 moved the published rows to the paused set at the next revision with `LayoutUpdated` emitted and
-honoured. What remains unproven is the pointer itself: no human right-clicked the indicator, so that
-Plasma renders these rows and delivers a real click through `Event` is inference from its own
-importer's source — the same size of gap S8 recorded, and the same one click closes it.
+honoured within a millisecond.
+
+What is NOT proven is the pointer. A synthetic `Activate` still opens the panel with `Menu`
+published, but that exercises an unchanged handler and would pass whatever a host decided to send —
+so *that a real left click still reaches `Activate`* rests on Plasma's `StatusNotifierItem.qml`, and
+that Plasma renders these rows on a right click rests on its importer's source. Reading a host's
+code is better evidence than reading a specification and it is not the same as watching it happen.
+Two clicks close both gaps, and neither has been made. GNOME with the AppIndicator extension —
+`10-tray.md` names it alongside Plasma — is a second host with a second importer and no session here
+to try it on.

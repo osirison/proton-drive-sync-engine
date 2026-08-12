@@ -19,9 +19,16 @@
 //!
 //! dbusmenu identifies a row by an `i32`, and a host holds the layout it was given until it is told
 //! otherwise. The rows here change with the daemon's state, so a menu that opened before a state
-//! change is still on screen with the ids it was built from — and if those ids were positions, a
-//! click on the `Pause syncing` the user is looking at would arrive as whatever now sits third in
-//! the new list. On the settled→paused change that is `Quit`.
+//! change is still on screen with the ids it was built from — and if those ids were positions, the
+//! click would arrive as whatever now stands where the user pressed.
+//!
+//! The worst of those collisions is the pair `10-tray.md` cares most about: **`Close window — keeps
+//! syncing` and `Quit — stops syncing` stand in the same place in different states.** `Close window`
+//! is 5th while settled and 4th while syncing; `Quit` is 5th while syncing and 4th while paused. So
+//! a menu opened on an idle daemon and clicked once a pass had started would have stopped the
+//! daemon, on the row whose whole job is to say that it will not — and settled→syncing happens on
+//! every pass. (`positions_collide_and_the_worst_pair_is_the_one_10_tray_md_names` walks all five
+//! sets and fails if that stops being true, because it is the reason for this design.)
 //!
 //! So the id travels with the row. A stale menu dispatches the action its label promised, or none.
 
@@ -202,9 +209,9 @@ mod tests {
     #[test]
     fn an_id_means_the_same_action_in_every_state() {
         // THE STALE-MENU RACE. A host keeps the layout it was given until `LayoutUpdated` reaches
-        // it; the poll changes the rows every two seconds. If `3` were "third row" rather than
-        // "pause", a click on the `Pause syncing` still on screen would arrive after a
-        // settled→paused change as the third row of the paused set, which is `Quit`.
+        // it; the poll changes the rows every two seconds. An id that meant a POSITION would
+        // therefore mean a different row than the one under the pointer — see the test below for
+        // which pair that costs most.
         let mut action: HashMap<i32, &'static str> = HashMap::new();
         for state in ALL_STATES {
             for entry in rows_for(*state) {
@@ -217,6 +224,43 @@ mod tests {
         // And the other direction: one action, one number, or the same row is two rows to a host.
         let ids: HashSet<_> = action.values().collect();
         assert_eq!(ids.len(), action.len(), "an action has two ids");
+    }
+
+    #[test]
+    fn positions_collide_and_the_worst_pair_is_the_one_10_tray_md_names() {
+        // THE MEASUREMENT BEHIND THE DESIGN, rather than a sentence asserting it. Walk every pair of
+        // sets and every position, and collect the places where the same position carries a
+        // different action — those are the mis-dispatches a positional id would produce.
+        //
+        // The first version of this comment named the wrong pair (it said a stale `Pause syncing`
+        // click would land on `Quit`; the paused set's third row is the separator, so it would have
+        // landed on nothing). The real worst case is worse, which is why the test computes it.
+        let mut collisions = Vec::new();
+        for a in ALL_STATES {
+            for b in ALL_STATES {
+                let (left, right) = (rows_for(*a), rows_for(*b));
+                for index in 0..left.len().min(right.len()) {
+                    if let (Entry::Row { id: x, .. }, Entry::Row { id: y, .. }) =
+                        (left[index], right[index])
+                    {
+                        if x != y {
+                            collisions.push((x, y));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            !collisions.is_empty(),
+            "no position ever changes meaning, so this design has no reason to exist"
+        );
+        assert!(
+            collisions.contains(&("closeWindow", "quit")),
+            "`Close window — keeps syncing` and `Quit — stops syncing` no longer share a position. \
+             That is the example the module header and DEVIATIONS §89b give for why an id is an \
+             action; fix the prose to name whichever pair collides now, rather than this test. \
+             Collisions found: {collisions:?}"
+        );
     }
 
     #[test]
@@ -320,6 +364,87 @@ mod tests {
             deck.insert(key.to_string(), value.to_string());
         }
         deck
+    }
+
+    /// `ui/compact.js`'s `TRAY_MENU`, parsed into `key -> [row id | "—"]`. Comment lines are skipped
+    /// rather than matched around: the block carries a twelve-line doc comment above `deferToWindow`.
+    fn panel_menu() -> HashMap<String, Vec<String>> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/js/ui/compact.js");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read the panel's menu at {}: {e}", path.display()));
+        let block = source
+            .split_once("export const TRAY_MENU = {")
+            .expect("ui/compact.js has no TRAY_MENU")
+            .1
+            .split_once("\n};")
+            .expect("the TRAY_MENU block never closes")
+            .0;
+
+        let mut sets: HashMap<String, Vec<String>> = HashMap::new();
+        let mut current: Option<String> = None;
+        for line in block.lines() {
+            let line = line.trim();
+            if line.starts_with('*') || line.starts_with("//") || line.starts_with("/*") {
+                continue;
+            }
+            if let Some(key) = line.strip_suffix(": [") {
+                current = Some(key.to_string());
+                sets.insert(key.to_string(), Vec::new());
+            } else if line == "]," {
+                current = None;
+            } else if let Some(key) = current.as_ref() {
+                let rows = sets.get_mut(key).expect("the key was just inserted");
+                if line.starts_with("{ separator: true }") {
+                    rows.push("—".to_string());
+                } else if let Some(rest) = line.strip_prefix("{ id: \"") {
+                    rows.push(
+                        rest.split_once('"')
+                            .expect("an id opens and closes")
+                            .0
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        sets
+    }
+
+    #[test]
+    fn the_panel_and_the_native_menus_draw_the_same_rows_in_the_same_order() {
+        // WHAT "ONE TABLE FOR THREE MENUS" ACTUALLY MEANS, checked rather than claimed. The panel's
+        // rows are a JS literal and these are a Rust const, and they cannot be one object — so the
+        // only thing that can keep them one menu is a comparison. Without this, adding a row to
+        // `TRAY_MENU.paused` and not here gives a left click and a right click different menus for
+        // the same daemon, and every gate in both languages stays green.
+        //
+        // `needsYou` has no Rust counterpart: S1's derivation folds it into the idle state, and the
+        // panel's needs-you list IS the settled list — which is itself an invariant worth holding.
+        let panel = panel_menu();
+        assert_eq!(panel.len(), 6, "the panel's row sets: {:?}", panel.keys());
+
+        let ours = |state: DaemonState| -> Vec<String> {
+            rows_for(state)
+                .iter()
+                .map(|entry| match entry {
+                    Entry::Row { id, .. } => (*id).to_string(),
+                    Entry::Separator => "—".to_string(),
+                })
+                .collect()
+        };
+        for (key, state) in [
+            ("settled", DaemonState::Idle),
+            ("needsYou", DaemonState::Idle),
+            ("syncing", DaemonState::Running),
+            ("paused", DaemonState::Paused),
+            ("unreachable", DaemonState::Unreachable),
+            ("deferToWindow", DaemonState::AuthExpired),
+        ] {
+            let theirs = panel
+                .get(key)
+                .unwrap_or_else(|| panic!("ui/compact.js's TRAY_MENU has no {key:?}"));
+            assert!(!theirs.is_empty(), "{key} parsed as an empty menu");
+            assert_eq!(*theirs, ours(state), "{key} against {state:?}");
+        }
     }
 
     #[test]

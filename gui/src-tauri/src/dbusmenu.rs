@@ -97,6 +97,31 @@ pub struct TrayMenu {
 }
 
 impl TrayMenu {
+    /// Act on one event, and say whether it was acted on. `false` is the `idErrors` answer.
+    ///
+    /// A `clicked` on an id no row set has ever carried is the only failure: an event name this does
+    /// not know is a host narrating (`opened`, `closed`, `hovered`) and is handled by ignoring it,
+    /// which is not an error to report back.
+    fn dispatch(&self, id: i32, event_id: &str) -> bool {
+        if event_id != "clicked" {
+            return true;
+        }
+        // Looked up across EVERY row set rather than the one currently published: see
+        // `tray_menu::action_for_dbus_id`. The menu on screen may predate the last poll.
+        let Some(action) = tray_menu::action_for_dbus_id(id) else {
+            eprintln!("tray: the native menu sent an unknown row id {id}");
+            return false;
+        };
+        // ONTO THE MAIN THREAD. This runs on the D-Bus task, and the actions behind these rows show
+        // and hide GTK windows — which off the main loop is undefined behaviour that presents as
+        // nothing happening at all (`panel.rs`'s header, and the same hop `panel::toggle` makes).
+        let app = self.app.clone();
+        let _ = app
+            .clone()
+            .run_on_main_thread(move || crate::tray::handle_menu_event(&app, action));
+        true
+    }
+
     pub fn new(app: AppHandle, rows: &'static [Entry]) -> Self {
         Self {
             rows,
@@ -129,6 +154,28 @@ fn properties(entry: &Entry) -> HashMap<String, Value<'static>> {
     props
 }
 
+/// The root's properties, in one place: `layout` puts them on the wire and `GetGroupProperties` /
+/// `GetProperty` answer for the same node, and a host that got two different answers for id 0 would
+/// draw the menu or not depending on which it asked.
+fn root_properties() -> HashMap<String, Value<'static>> {
+    // WITHOUT THIS THE MENU IS EMPTY. `children-display` is how a node says it has a submenu at all;
+    // an importer that does not see it has no reason to read the children it was just handed.
+    HashMap::from([("children-display".to_string(), Value::from("submenu"))])
+}
+
+/// What a property means when this menu does not set it — the specification's own defaults, and the
+/// reason a row can be two keys long.
+fn default_property(name: &str) -> Option<Value<'static>> {
+    Some(match name {
+        "type" => Value::from("standard"),
+        "label" => Value::from(""),
+        "enabled" | "visible" => Value::from(true),
+        "children-display" | "icon-name" | "toggle-type" => Value::from(""),
+        "toggle-state" => Value::from(-1i32),
+        _ => return None,
+    })
+}
+
 fn to_owned(props: HashMap<String, Value<'static>>) -> zbus::Result<HashMap<String, OwnedValue>> {
     props
         .into_iter()
@@ -153,12 +200,25 @@ fn child(entry: &Entry) -> zbus::Result<OwnedValue> {
 /// shell around this, so the shape a host will read can be tested without a bus, a session, or a
 /// desktop.
 fn layout(rows: &[Entry]) -> zbus::Result<Item> {
-    let mut root = HashMap::new();
-    // WITHOUT THIS THE MENU IS EMPTY. `children-display` is how a node says it has a submenu at all;
-    // an importer that does not see it has no reason to read the children it was just handed.
-    root.insert("children-display".to_string(), Value::from("submenu"));
     let children = rows.iter().map(child).collect::<zbus::Result<Vec<_>>>()?;
-    Ok((0, to_owned(root)?, children))
+    Ok((0, to_owned(root_properties())?, children))
+}
+
+/// The `GetGroupProperties` answer, pure. An empty `ids` means every item — **including the root**,
+/// which is not a row and is the one node carrying `children-display`.
+fn group_properties(
+    rows: &[Entry],
+    ids: &[i32],
+) -> zbus::Result<Vec<(i32, HashMap<String, OwnedValue>)>> {
+    let wanted = |id: i32| ids.is_empty() || ids.contains(&id);
+    let mut out = Vec::with_capacity(rows.len() + 1);
+    if wanted(0) {
+        out.push((0, to_owned(root_properties())?));
+    }
+    for entry in rows.iter().filter(|entry| wanted(entry.dbus_id())) {
+        out.push((entry.dbus_id(), to_owned(properties(entry))?));
+    }
+    Ok(out)
 }
 
 /// One row, childless, for a host that asks about a leaf by id.
@@ -201,33 +261,48 @@ impl TrayMenu {
     }
 
     /// Properties for a set of ids. Asked by hosts that refresh a menu without re-reading its shape.
+    ///
+    /// **The root is in the answer.** An empty id list means every item, and id 0 is an item — it is
+    /// the one carrying `children-display`, without which a host draws an empty menu. It is not in
+    /// `rows` (it is synthesised in `layout`), so a filter over `rows` alone silently omits the one
+    /// property the menu cannot be read without.
     fn get_group_properties(
         &self,
         ids: Vec<i32>,
         _property_names: Vec<String>,
     ) -> zbus::fdo::Result<Vec<(i32, HashMap<String, OwnedValue>)>> {
-        self.rows
-            .iter()
-            // An empty id list means every item, per the specification — and an importer that sends
-            // one and receives nothing shows a menu of blank rows.
-            .filter(|entry| ids.is_empty() || ids.contains(&entry.dbus_id()))
-            .map(|entry| {
-                to_owned(properties(entry))
-                    .map(|props| (entry.dbus_id(), props))
-                    .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
-            })
-            .collect()
+        group_properties(self.rows, &ids)
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
+    /// One property of one item.
+    ///
+    /// **A property this menu does not set is not a property the item does not have.** `properties`
+    /// emits `label` or `type` and nothing else, because everything omitted takes its specified
+    /// default — so answering `GetProperty(6, "enabled")` with an error would tell a host that a row
+    /// it is drawing has no enabled state, when the answer is `true`. The defaults are answered
+    /// here; an id the menu has never drawn is still an error, because there is no row to describe.
     fn get_property(&self, id: i32, name: String) -> zbus::fdo::Result<OwnedValue> {
-        let entry = self
-            .rows
-            .iter()
-            .find(|entry| entry.dbus_id() == id)
-            .ok_or_else(|| zbus::fdo::Error::InvalidArgs(format!("no menu row with id {id}")))?;
-        let value = properties(entry)
-            .remove(&name)
-            .ok_or_else(|| zbus::fdo::Error::InvalidArgs(format!("row {id} has no {name:?}")))?;
+        let set = if id == 0 {
+            root_properties()
+        } else {
+            let entry = self
+                .rows
+                .iter()
+                .find(|entry| entry.dbus_id() == id)
+                .ok_or_else(|| {
+                    zbus::fdo::Error::InvalidArgs(format!("no menu row with id {id}"))
+                })?;
+            properties(entry)
+        };
+        let value = match set.get(&name) {
+            Some(value) => value.try_clone().map_err(|error: zbus::zvariant::Error| {
+                zbus::fdo::Error::Failed(error.to_string())
+            })?,
+            None => default_property(&name).ok_or_else(|| {
+                zbus::fdo::Error::InvalidArgs(format!("{name:?} is not a dbusmenu property"))
+            })?,
+        };
         OwnedValue::try_from(value).map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
@@ -236,34 +311,33 @@ impl TrayMenu {
     /// Only `clicked` does anything. The other three are the host narrating; a tray that acted on
     /// `hovered` would run a sync because a pointer crossed a row.
     fn event(&self, id: i32, event_id: &str, _data: Value<'_>, _timestamp: u32) {
-        if event_id != "clicked" {
-            return;
-        }
-        // Looked up across EVERY row set rather than the one currently published: see
-        // `tray_menu::action_for_dbus_id`. The menu on screen may predate the last poll.
-        let Some(action) = tray_menu::action_for_dbus_id(id) else {
-            eprintln!("tray: the native menu sent an unknown row id {id}");
-            return;
-        };
-        // ONTO THE MAIN THREAD. This runs on the D-Bus task, and the actions behind these rows show
-        // and hide GTK windows — which off the main loop is undefined behaviour that presents as
-        // nothing happening at all (`panel.rs`'s header, and the same hop `panel::toggle` makes).
-        let app = self.app.clone();
-        let _ = app
-            .clone()
-            .run_on_main_thread(move || crate::tray::handle_menu_event(&app, action));
+        self.dispatch(id, event_id);
     }
 
-    /// The group form of `Event`. Answers with the ids it handled, which is all of them: every id is
-    /// either dispatched or reported above, and a host that is told an event was unhandled has no
-    /// second thing to try.
+    /// The group form of `Event`, whose out-arg is **`idErrors` — the ids that could NOT be
+    /// handled**, not the ids that were.
+    ///
+    /// THIS RETURNED EVERY ID, which says the opposite of what it meant: a host reading the
+    /// canonical name would have been told that every click in the batch failed. The name is in the
+    /// interface XML libdbusmenu-glib compiles in (`<arg type="ai" name="idErrors" direction="out">`)
+    /// and `Version = 3` — which this publishes — is what switches a client into event grouping.
+    ///
+    /// Ids are dispatched at most once each. One D-Bus message asking for the same row ten thousand
+    /// times is a message any process on the session bus can send, and every `clicked` behind these
+    /// rows spawns a thread to talk to the daemon.
     fn event_group(&self, events: Vec<(i32, String, Value<'_>, u32)>) -> Vec<i32> {
-        let mut handled = Vec::with_capacity(events.len());
-        for (id, event_id, data, timestamp) in events {
-            self.event(id, &event_id, data, timestamp);
-            handled.push(id);
+        let mut seen = Vec::new();
+        let mut errors = Vec::new();
+        for (id, event_id, _data, _timestamp) in events {
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            if !self.dispatch(id, &event_id) {
+                errors.push(id);
+            }
         }
-        handled
+        errors
     }
 
     /// Asked immediately before a host draws the menu. `true` means "re-read the layout first".
@@ -271,12 +345,21 @@ impl TrayMenu {
     /// ALWAYS TRUE. The rows are a function of the daemon's state and the poll behind them runs
     /// every two seconds; a host that draws its cached copy shows `Pause syncing` on a daemon that
     /// paused a moment ago, which is the one thing `10-tray.md` asks these rows not to do.
+    ///
+    /// **It also dismisses the panel**, which is not a side effect but the point: before #252 a right
+    /// click reached `ContextMenu` and toggled the panel shut, and that was the way out of the one
+    /// state `lib.rs` documents as unrecoverable-by-blur — a compositor that refuses the panel the
+    /// focus it asked for, so no blur ever arrives to hide it. With a menu published, the right click
+    /// goes to the host instead, and the menu would open over a panel that will not leave.
     fn about_to_show(&self, _id: i32) -> bool {
+        crate::panel::hide(&self.app);
         true
     }
 
-    /// The group form. Returns (updated, removed) — everything asked about needs a refresh, for the
-    /// reason above, and nothing is ever removed.
+    /// The group form. Its out-args are `updatesNeeded` and **`idErrors`** — not "removed". Every id
+    /// asked about needs an update, for the reason above, and none of them is an error: an id this
+    /// menu no longer draws is a host holding a stale layout, which the refresh it is about to make
+    /// is what fixes.
     fn about_to_show_group(&self, ids: Vec<i32>) -> (Vec<i32>, Vec<i32>) {
         (ids, Vec::new())
     }
@@ -322,7 +405,10 @@ impl TrayMenu {
 ///
 /// A no-op when the rows have not changed: `LayoutUpdated` makes a host re-read the menu, and doing
 /// that every two seconds is a round trip per tick for a menu nobody has opened.
-pub async fn set_rows(conn: &Connection, rows: &'static [Entry]) -> zbus::Result<()> {
+///
+/// `live` gates the SIGNAL alone — the rows are always published, because a host that comes back
+/// reads the layout rather than being told about it. See `Sni::update`.
+pub async fn set_rows(conn: &Connection, rows: &'static [Entry], live: bool) -> zbus::Result<()> {
     let iface = conn
         .object_server()
         .interface::<_, TrayMenu>(MENU_PATH)
@@ -333,9 +419,15 @@ pub async fn set_rows(conn: &Connection, rows: &'static [Entry]) -> zbus::Result
             return Ok(());
         }
         menu.rows = rows;
-        menu.revision = menu.revision.wrapping_add(1);
+        // Wrapping is not a real case at one increment per state change, but a revision that went
+        // backwards would be read as older than the one a host holds. Skipping 0 keeps every
+        // revision this ever publishes greater than the "nothing fetched yet" a host starts with.
+        menu.revision = menu.revision.wrapping_add(1).max(1);
         menu.revision
     };
+    if !live {
+        return Ok(());
+    }
     // Parent 0: the root's children are what changed, which is the whole menu.
     TrayMenu::layout_updated(iface.signal_emitter(), revision, 0).await
 }
@@ -464,23 +556,94 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_a_stale_menu_still_means_what_its_label_said() {
-        // The reason the ids are actions. A menu built while the daemon was idle is on screen when
-        // the daemon pauses; the user clicks the third row, `Pause syncing`. With positional ids
-        // that arrives as the paused set's third row, which is `Quit`.
-        let idle = tray_menu::rows_for(DaemonState::Idle);
-        let pause = idle[2];
-        assert!(matches!(pause, Entry::Row { id, .. } if id == "pause"));
+    fn a_group_refresh_of_everything_includes_the_root() {
+        // THE ROOT IS AN ITEM. A host that refreshes with `GetGroupProperties([], [])` after a
+        // LayoutUpdated and gets rows but no id 0 has just lost `children-display`, which is the one
+        // property the difference between a menu and an empty menu turns on. Id 0 is not in `rows` —
+        // it is synthesised — so a filter over the rows alone drops it silently.
+        let rows = tray_menu::rows_for(DaemonState::Idle);
+        let all = group_properties(rows, &[]).expect("builds");
+        assert_eq!(all.len(), rows.len() + 1, "the root is missing");
+        assert_eq!(all[0].0, 0);
         assert_eq!(
-            tray_menu::action_for_dbus_id(pause.dbus_id()),
-            Some("pause")
+            string_prop(&all[0].1, "children-display").as_deref(),
+            Some("submenu")
         );
 
-        let paused_third = tray_menu::rows_for(DaemonState::Paused)[2];
-        assert_ne!(
-            paused_third.dbus_id(),
-            pause.dbus_id(),
-            "the two sets' third rows share an id, so position and action agree by accident"
+        // And a specific list answers that list, root included when asked for by id.
+        let some = group_properties(rows, &[0, 7]).expect("builds");
+        assert_eq!(
+            some.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![0, 7]
         );
+        let just_a_row = group_properties(rows, &[7]).expect("builds");
+        assert_eq!(just_a_row.len(), 1, "id 0 arrived unasked for");
+    }
+
+    #[test]
+    fn a_property_this_menu_leaves_out_answers_with_its_default() {
+        // `properties` sets `label` or `type` and nothing else, because everything else has a
+        // specified default. Answering an error for `enabled` would tell a host that a row it is
+        // drawing has no enabled state; the answer is `true`.
+        assert_eq!(default_property("enabled"), Some(Value::from(true)));
+        assert_eq!(default_property("visible"), Some(Value::from(true)));
+        assert_eq!(default_property("type"), Some(Value::from("standard")));
+        // And a name that is not a dbusmenu property at all is still an error rather than a
+        // confident empty string.
+        assert!(default_property("proton-sync-invented-this").is_none());
+    }
+
+    #[test]
+    fn the_root_answers_the_same_thing_however_it_is_asked() {
+        // Three call paths reach id 0 — GetLayout, GetGroupProperties, GetProperty — and a host that
+        // got `submenu` from one and nothing from another would draw the menu or not depending on
+        // which one it happened to use.
+        let rows = tray_menu::rows_for(DaemonState::Paused);
+        let from_layout = layout(rows).expect("builds").1;
+        let from_group = group_properties(rows, &[0]).expect("builds")[0].1.clone();
+        assert_eq!(
+            string_prop(&from_layout, "children-display"),
+            string_prop(&from_group, "children-display")
+        );
+    }
+
+    #[test]
+    fn an_id_no_menu_has_ever_drawn_is_not_an_action() {
+        // What `EventGroup` reports as an `idErrors` entry, and what `Event` logs rather than
+        // silently swallowing. The separator is in here on purpose: it is a row on the wire and NOT
+        // an action, so a host that somehow clicked it must not resolve to one.
+        assert_eq!(tray_menu::action_for_dbus_id(42), None);
+        assert_eq!(tray_menu::action_for_dbus_id(0), None);
+        assert_eq!(
+            tray_menu::action_for_dbus_id(tray_menu::SEPARATOR_ID),
+            None,
+            "a separator resolved to an action"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_stale_menu_still_means_what_its_label_said() {
+        // The reason the ids are actions, seen from the host's side.
+        // `tray_menu::positions_collide_and_the_worst_pair_is_the_one_10_tray_md_names` establishes
+        // the collision itself: `Close window — keeps syncing` stands where `Quit — stops syncing`
+        // will stand once a pass starts. This is what saves the click — the id the host was handed
+        // for the row under the pointer still resolves to that row after the layout has moved on.
+        let settled = tray_menu::rows_for(DaemonState::Idle);
+        let position = settled
+            .iter()
+            .position(|entry| matches!(entry, Entry::Row { id, .. } if *id == "closeWindow"))
+            .expect("the settled menu can close the window");
+        let close = settled[position];
+
+        let syncing = tray_menu::rows_for(DaemonState::Running);
+        assert!(
+            matches!(syncing[position], Entry::Row { id, .. } if id == "quit"),
+            "the collision this test is built on has moved; see the tray_menu test that computes it"
+        );
+        assert_eq!(
+            tray_menu::action_for_dbus_id(close.dbus_id()),
+            Some("closeWindow")
+        );
+        assert_ne!(close.dbus_id(), syncing[position].dbus_id());
     }
 }

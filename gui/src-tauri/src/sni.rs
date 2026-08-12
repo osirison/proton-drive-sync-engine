@@ -163,8 +163,15 @@ impl TrayItem {
     ///
     /// The property means "this item is only a menu; prefer showing it, or sending `ContextMenu`,
     /// over `Activate`". libappindicator's items are menus in exactly that sense, which is why a
-    /// left click on one opens a menu on every desktop. Saying `false` — and publishing no `Menu`
-    /// object path, as xembedsniproxy does not — is what asks the host for the click itself.
+    /// left click on one opens a menu on every desktop. Saying `false` is what asks the host for the
+    /// click itself.
+    ///
+    /// **It is the whole of that ask, and the `Menu` path above does not weaken it.** S8 published
+    /// no menu at all — the xembedsniproxy shape — and this comment used to credit the absence of
+    /// one for the click, which would have made #252 look like a trade: a native right-click menu
+    /// bought with the left click that opens the panel. It is not. Plasma's applet reads exactly one
+    /// property here (`if (model.ItemIsMenu) openContextMenu else activate`), and the item published
+    /// by this build has been left-clicked with a `Menu` on it.
     #[zbus(property)]
     fn item_is_menu(&self) -> bool {
         false
@@ -240,19 +247,29 @@ impl Sni {
     /// Both halves are no-ops when nothing changed — a host that is told its icon changed will
     /// reload it, and one told its layout changed will re-read the menu; doing either every two
     /// seconds is a flickering tray icon and a round trip per tick for a menu nobody has opened.
+    /// **What `live` gates is the SIGNALS, not the state.** It used to gate the whole function, and
+    /// that was a stale tray after every plasmashell restart: the poll marks a tick as shown whatever
+    /// happened here, so a state change landing inside the outage was written nowhere — and when the
+    /// host came back and read the item, it read the glyph, the title and the rows from *before* it
+    /// went away, with nothing to correct them until the daemon changed state again. A host reads
+    /// properties on registration; what it must find there is the truth. Emitting into a bus with no
+    /// host is the only part that is pointless, so that is the only part skipped.
     pub async fn update(
         &self,
         icon: &str,
         title: &str,
         rows: &'static [crate::tray_menu::Entry],
     ) -> zbus::Result<()> {
-        if !self.live.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        // The menu first, and unconditionally: the glyph and the rows change together, and the
-        // early return below is on the icon alone.
-        crate::dbusmenu::set_rows(&self.conn, rows).await?;
+        let live = self.live.load(Ordering::Relaxed);
+        // Both halves run even when one fails: a menu-path error must not cost the glyph, and the
+        // caller is told about the first thing that went wrong.
+        let menu = crate::dbusmenu::set_rows(&self.conn, rows, live).await;
 
+        let item = self.set_icon(icon, title, live).await;
+        menu.and(item)
+    }
+
+    async fn set_icon(&self, icon: &str, title: &str, live: bool) -> zbus::Result<()> {
         let iface = self
             .conn
             .object_server()
@@ -265,6 +282,9 @@ impl Sni {
             }
             item.icon = icon.to_string();
             item.title = title.to_string();
+        }
+        if !live {
+            return Ok(());
         }
         // Both the property change and the SNI-specific signal: hosts differ about which they
         // listen to, and emitting one is how an icon silently stops updating on somebody's desktop.
