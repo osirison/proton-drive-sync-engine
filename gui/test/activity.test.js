@@ -22,6 +22,7 @@ import {
   elideId,
   normaliseQuery,
   failureLabel,
+  UNREACHABLE_NEEDLES,
 } from "../src/js/screens/activity.js";
 import { ACTIVITY } from "../src/js/ui/copy.js";
 import { cardinal } from "../src/js/ui/format.js";
@@ -343,4 +344,15 @@ test("an absent error falls to the neutral label rather than throwing", () => {
 test("the match is case-insensitive", () => {
   assert.equal(failureLabel("CONNECTION TIMED OUT"), ACTIVITY.passes.unreachable);
   assert.equal(failureLabel("Network Is Unreachable"), ACTIVITY.passes.unreachable);
+});
+
+// A COUNT IS A CLAIM, and this branch already got one wrong: the list comment said "all three" of
+// four errors, caught in review. DEVIATIONS §93 and the PR body both say NINE phrases, so the number
+// is pinned here rather than left as prose that ages. Growing the list is fine; growing it without
+// touching the sentence that quotes it is not.
+test("the needle list is the nine phrases the write-up claims", () => {
+  assert.equal(UNREACHABLE_NEEDLES.length, 9);
+  // Lower-case, because the match lower-cases the message and not the needle — an upper-case entry
+  // here would silently never fire.
+  for (const needle of UNREACHABLE_NEEDLES) assert.equal(needle, needle.toLowerCase(), needle);
 });

@@ -681,9 +681,14 @@ export function elideId(protonId) {
  * `Couldn't reach Proton Drive` over a full disk, which is the bug #258 is about. So the default is
  * the neutral label and every entry here has to be transport vocabulary that a local failure has no
  * reason to use. `no space left on device`, `os error 2`, `session expired` and `permission denied`
- * all miss, and all three are failures with Proton perfectly reachable.
+ * all miss, and all four are failures with Proton perfectly reachable — the last of them reached it
+ * and was refused, which is the case an auth-shaped split would have got backwards.
+ *
+ * The five in `activity.test.js` are the binding version of that sentence; this list is four of them
+ * because a comment is not a test, and the day a needle starts matching one of them it is the test
+ * that says so.
  */
-const UNREACHABLE_NEEDLES = [
+export const UNREACHABLE_NEEDLES = [
   "timed out",
   "timeout",
   "connection",
