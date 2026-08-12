@@ -3964,3 +3964,127 @@ GNOME did nothing at all.** Publishing the menu turns that dead click into an op
 the double click on `Activate` untouched, so the panel does not become less reachable there either —
 it was never on the single click to begin with. Read, not run; the two clicks above are still owed,
 and on that desktop it is three.
+
+---
+
+## A pass that failed (#246)
+
+## 90. The seventh state, and the four places that were quietly answering `idle`
+
+`derive_state` checked `paused`, then an auth-shaped `last_error`, then `syncing`, then never-synced,
+then `pending_changes > 0` — and fell through to `Idle`. Every one of those is a state the daemon is
+*in*; a daemon whose last pass failed for any non-auth reason is in none of them. So a remote list
+that timed out, a `proton-drive` binary that was not on the `PATH`, a transfer that errored — all of
+them drew **`Everything is up to date`**, which is the app's strongest all-clear and the one state
+where it can be false.
+
+The daemon had always said so. `reconcile_blocking` sets `self.last_error` on the failing arm and
+`record_status_history` writes it into the history; the reply carries the string; `proton-sync`'s CLI
+prints it. A grep for `last_error` across `gui/src/js` found one reader, and it was S7's merge
+watcher. This was never a missing capability — it was a field nothing on the window read.
+
+**Not a screen's bug, so not a screen's fix.** §67a is the same shape one state over and was fixed in
+`heroStateOf` alone, because `authExpired` was already a `DaemonState` and only S1 was dropping it.
+Here the derivation itself was short a state, so the fix is a seventh variant and the surfaces
+collapse it the way they collapse the other six.
+
+### 90a. Where it ranks, and why each neighbour is load-bearing
+
+Three placements, each of which is a different wrong screen if moved:
+
+- **After `syncing`.** `last_error` is cleared only by a pass that SUCCEEDS, so it outlives the
+  failure it describes and is still set while the next pass runs. Read before `syncing`, a daemon
+  that is actively retrying would be pinned to its last bad pass for the length of the retry.
+- **After `FirstRun`.** A machine that has never synced still gets the onboarding takeover. Only
+  reachable if the history sidecar is missing — `record_status_history` runs on both arms of a pass,
+  so a failed first pass leaves a non-empty history and is `Failed` rather than `FirstRun` — but when
+  both could apply the wizard is the better answer.
+- **Before `pending_changes`.** A failure with a queue behind it is still a failure; the queue is why
+  it matters, not a reason to call it `Running`. This one has a second copy in `heroStateOf`, which
+  calls a non-empty queue `syncing` on its own — so a fix in `derive_state` alone would have replaced
+  `Everything is up to date` with `Syncing 5 changes`, which is the same false all-clear one word
+  further on. Both orderings are pinned, in both languages.
+
+### 90b. Three other surfaces were answering `idle` for the same reason
+
+Found by asking what else keys on the state rather than by testing the screen:
+
+- **The header chip** (`chipFor`) has an arm per state and a fall-through, and the fall-through is
+  `idle`. It would have read `idle` in the corner of a window whose hero said the last sync did not
+  finish. It reads `sync failed` — the daemon's own word for it (`record_status_history`), and S5's
+  word for the same pass in its list.
+- **The tray panel** (`screens/tray.js`) has a `default` arm and the default is the settled copy, so
+  the tray would have said `Up to date` while the window said otherwise. The panel takes the struck
+  form and the failed sentence; the menu takes `unreachable`'s rows, because this is the one struck
+  state where `Try again now` is unambiguously a working control — the daemon is ANSWERING, so
+  `syncnow` reaches it. Same table, same reasoning, in `tray_menu.rs` for the two native menus.
+- **The onboarding latch** (`routes.js`) releases on a list of reachable states, and `failed` had to
+  join it. This is the half that inverts: before the state existed, a failed first pass derived to
+  `idle`, released the latch, and handed off to the false all-clear — the bug. Adding the state
+  without adding it here would have fixed the sentence and trapped somebody in a two-step wizard that
+  cannot put `proton-drive` back on the `PATH`.
+
+`counters_unknown()` stays false, unlike `Unreachable` and `FirstRun`: the reply is the daemon's own
+and its numbers are real. Blanking them to em-dashes would claim not to know things it just said.
+
+### 90c. The daemon's string is a block BELOW the hero, and that is not a styling choice
+
+`14-behaviour-and-state.md`'s testing checklist ends on _"Daemon error strings shown verbatim, never
+paraphrased"_ and its error table gives the shape for the rehearsal that could not run (§76, §79f).
+This is the same treatment for the pass. But the hero is a fixed 394px block that CENTRES its column
+— that is the property the whole screen rests on, and checklist item 2 is _"hexagon does not move
+between states of the same screen"_ — so a fourth line inside it moves the mark by half a line in one
+state and no other. The quote goes in the block below, where the transfer columns go while syncing
+and the `flex:1` spacer goes otherwise; the hero's own four children are unchanged.
+
+Measured at 1040×764, headless, against `settled` and `paused` as the reference: the mark's box is
+`top:82 left:436` in all seven renderings, including a 10 KB error and a 10 KB error with no
+whitespace in it.
+
+**The cap is `max-height:100%`, not a number, and the number is what the measurement caught.** The
+three sibling blocks (`.pl-failed-error`, `.ob-working-error`, `.pass-error`) can afford a fixed cap;
+this region cannot, because an attention band appearing under it takes the space away — 268px becomes
+123px with one conflict and one deletion waiting. A fixed 132px there overflowed the region by 9px,
+which the wrapper's `overflow:hidden` then cut off: the box lost its bottom border and the last line
+of a string that nothing could scroll to. A decision and a failed pass are both ordinary and they
+coexist by design (_"needs-decision is additive, not exclusive"_), so that state is not a corner.
+With the percentage and 16/24px of wrapper padding: 10 KB ends at y=690 against a footer at y=714,
+scrolls inside its own box, and the band case clips nothing.
+
+**A failed pass with no string falls back to the spacer**, rather than drawing an empty quotation.
+Nothing sets `failed` without a string — `derive_state` keys on it — but the screen takes its props
+from a caller and #247 is the standing lesson that a block rendering nothing passes every gate.
+
+### 90d. The copy is S1's, and it does not borrow the two sentences that nearly fit
+
+`The last sync didn't finish` / `Nothing is lost. 4 changes are waiting and will go on the next try.`
+Both exempted in `copy-gate.mjs`; no `2a` frame draws this state.
+
+- **Not `Can't reach Proton Drive`** (the deck's one sentence for this family, `TRAY.unreachableTitle`).
+  It is already spoken by a different state, and it is a claim we cannot make: a pass can fail with
+  Proton perfectly reachable — a full disk, a binary that moved. The quoted string underneath would
+  contradict the headline over it.
+- **Not S4's `Nothing has been touched`**, which is true of a rehearsal and false of a pass: the
+  engine's checkpoint commits mean a half-finished pass DID move files. What it never does is record
+  a side effect that did not happen, and the failed action re-plans. So the promise is about loss.
+- **`0` drops the count clause**, on `TRAY.unreachableBody`'s rule but for a different reason: here
+  the number is known and genuinely zero (a pass driven from Proton's side has an empty watch queue),
+  and `0 changes are waiting` reads as an all-clear in the one place that must not give one.
+
+### 90e. Two gates that were counting states by hand, and now read them off the enum
+
+Both are the same shape as the bug: a list that could not notice something new.
+
+- **`tray-view.test.js`** enumerated the six daemon states as a string literal, so a seventh added on
+  the Rust side would have been tested by nothing — and `trayMenu` THROWS on a key it does not know,
+  which in a borderless panel with no devtools is a tray that silently stops opening. It now reads
+  the variants out of `gui-core/src/state.rs` and lowers them the way `serde(rename_all)` does.
+- **`icons.rs`**'s glyph test enumerated them too. It walks `tray_menu::ALL_STATES` instead, and that
+  const is now pinned by a match over the enum — the only construction available in Rust that a later
+  author cannot satisfy by doing nothing.
+
+And one gate audited against itself: `copy-gate.mjs`'s `NOT_DRAWN` is a `continue` before the lookup,
+so an exemption that names nothing is never contradicted — its own header says as much and stopped
+there. `MAIN.failedSub` was nearly added to it, which would have excused a TEMPLATE the walk never
+collects while still subtracting one from the printed total. Exemptions are now checked to name a
+string the gate would otherwise look at; the 45 that were already there all do.

@@ -68,6 +68,13 @@ export function heroStateOf({ daemonState, syncing, waiting, pending = 0 }) {
   // carry it — "we must actually hand off to the main screen's Re-authenticate action rather than
   // trap the user in the wizard" — so a fall-through is a broken hand-off, not just a missing state.
   if (daemonState === "authExpired") return "authExpired";
+  // BEFORE the `pending` fall-through below, which is the second half of #246: `derive_state` used
+  // to answer `idle` for a daemon whose last pass failed, and even once it stopped, this function
+  // would have answered `syncing` for the same daemon the moment anything was queued behind the
+  // failure. Both draw a sentence that is not true. A pass actually in flight never reaches here as
+  // `failed` — `derive_state` ranks `syncing` above the failure it may be retrying — so this arm
+  // cannot hide live work.
+  if (daemonState === "failed") return "failed";
   if (daemonState === "paused") return "paused";
   // `pending` AS WELL AS `syncing`, and leaving it out put two contradictory sentences in one
   // window. A filesystem-watch event only accumulates `pending_changes`; it never starts a reconcile
@@ -143,6 +150,9 @@ export function mainView(props = {}) {
     summary,
     activity,
     lastSync: response?.last_sync_epoch_secs ?? null,
+    // The daemon's own account of why the last pass failed, carried down to the block that quotes
+    // it. Never formatted, never truncated, never joined to a sentence of ours (voice rule 4).
+    error: response?.last_error ?? null,
     // "The count in the hexagon is transfers, not decisions" — the decisions are in the chip and the
     // band. `null` renders no numeral at all rather than a zero.
     numeral: hero === "syncing" ? changes : hero === "decision" ? waiting : null,
@@ -192,6 +202,8 @@ function headlineOf(v) {
       return TRAY.unreachableTitle;
     case "authExpired":
       return MAIN.authExpired;
+    case "failed":
+      return MAIN.failed;
     case "decision":
       return MAIN.compact.needYou(v.waiting);
     default:
@@ -226,6 +238,12 @@ function subOf(v) {
       return TRAY.unreachableBody(v.pending);
     case "authExpired":
       return MAIN.authExpiredSub(v.pending);
+    case "failed":
+      // The reassurance only. The daemon's string is a BLOCK below the hero, not a clause here:
+      // the hero is a fixed 394px centring column, so a second line in it moves the hexagon — the
+      // one thing `03-main-screen.md` says this screen must never do — and an error can be any
+      // length at all. See `failedBlock`.
+      return MAIN.failedSub(v.pending);
     default:
       return MAIN.settledSubTime(since(v.lastSync));
   }
@@ -249,6 +267,10 @@ function subTextOf(v) {
  * `authExpired` shares the struck mark with `unreachable`, which is the design's own grouping:
  * `11-notifications.md` puts "an outage, expired session, or full disk" behind one struck `#FF3B3B`
  * icon. Both mean *Proton is out of reach*; only the sentence underneath differs.
+ *
+ * `failed` is the third of that trio — a full disk IS a failed pass — and
+ * `14-behaviour-and-state.md`'s state diagram already says where it goes: "unreachable is entered
+ * after a failed pass and retry". The mark is the same; the sentence and the quoted string differ.
  */
 const MARK_STATE = {
   syncing: "syncing",
@@ -256,6 +278,7 @@ const MARK_STATE = {
   paused: "paused",
   unreachable: "unreachable",
   authExpired: "unreachable",
+  failed: "unreachable",
   settled: "settled",
 };
 
@@ -300,12 +323,16 @@ function heroActions(v, handlers) {
   const buttons = [];
   if (v.hero === "paused") {
     buttons.push(action(MAIN.resume, "secondaryOutlined", handlers.onResume));
-  } else if (v.hero === "unreachable" || v.hero === "authExpired") {
+  } else if (v.hero === "unreachable" || v.hero === "authExpired" || v.hero === "failed") {
     // `Try again now` and not `11a Outage`'s `Sign in`: NOTHING IN THE COMMAND SURFACE SIGNS IN.
     // Re-authentication is `proton-drive login` in a terminal — the daemon reuses that CLI's keyring
     // session — so a `Sign in` button here would be a control with no action behind it, which is
     // worse than the honest one. Retrying is exactly right once the user has signed in elsewhere.
     // DEVIATIONS §67.
+    //
+    // On `failed` it is the one of the three that unambiguously does something: the daemon is
+    // answering, so `syncnow` reaches it and runs the pass that failed. `Pause` is dropped with the
+    // other two — nothing is moving to pause.
     buttons.push(action(TRAY.tryAgain, "secondaryOutlined", handlers.onSyncNow));
   } else {
     if (v.hero !== "syncing") buttons.push(action(MAIN.syncNow, "secondaryOutlined", handlers.onSyncNow));
@@ -392,10 +419,27 @@ export function renderMain(props = {}) {
 
   const columns = el("div", { class: "main-columns" });
   const spacer = el("div", { class: "main-spacer" });
+  const failed = el("div", { class: "main-failed" });
   const bandWrap = el("div", { class: "main-band-wrap" });
 
-  view = { v, handlers, hero, mark, headline, sub, glow, seam, sides, actions, columns, spacer, bandWrap };
+  view = {
+    v,
+    handlers,
+    hero,
+    mark,
+    headline,
+    sub,
+    glow,
+    seam,
+    sides,
+    actions,
+    columns,
+    spacer,
+    failed,
+    bandWrap,
+  };
   fillColumns(v);
+  fillFailed(v);
   fillBand(v, handlers);
   stampFids(v);
   return blocksOf(v);
@@ -455,6 +499,7 @@ export function updateMain(props = {}) {
   view.v = next;
   view.handlers = handlers;
   fillColumns(next);
+  fillFailed(next);
   fillBand(next, handlers, bandShowing(next) && !bandShowing(prev));
   stampFids(next);
   return blocksOf(next);
@@ -471,11 +516,23 @@ export function unmountMain() {
 const bandShowing = (v) => v.waiting > 0;
 const seamSiteOf = (v) => (bandShowing(v) ? "mainHeroAttention" : "mainHero");
 
+/**
+ * Which block fills the space under the hero — and it is a THREE-way answer, not two.
+ *
+ * The middle block is what holds the window open to its full height, so exactly one of these is
+ * always present: the transfer columns while syncing, the daemon's quoted string on a failed pass,
+ * and an empty `flex:1` spacer otherwise. A failed pass with no string to quote (nothing sets
+ * `failed` without one, but the screen takes its props from a caller and not from `derive_state`)
+ * falls back to the spacer rather than drawing an empty box — the failure mode #247 exists for.
+ */
 function blocksOf(v) {
-  const blocks = [view.hero, v.hero === "syncing" ? view.columns : view.spacer];
+  const middle = v.hero === "syncing" ? view.columns : quotingError(v) ? view.failed : view.spacer;
+  const blocks = [view.hero, middle];
   if (bandShowing(v)) blocks.push(view.bandWrap);
   return blocks;
 }
+
+const quotingError = (v) => v.hero === "failed" && Boolean(v.error);
 
 /** Only write when it changed: an unchanged assignment still invalidates layout for the whole line. */
 function setText(node, text) {
@@ -614,6 +671,36 @@ function fillColumns(v) {
 
 // The two columns are always both drawn, even when one is empty: the grid's 1fr 1fr is what puts the
 // seam between them, and a single child would centre one column across the whole width.
+
+/**
+ * The daemon's exact string, quoted, in the block below the hero (#246).
+ *
+ * NOT A LINE IN THE HERO, and the reason is the property the whole screen is built on: the hero is
+ * a fixed 394px block that CENTRES its column, so a fourth line in it moves the hexagon by half a
+ * line — "the hexagon does not move between states of the same screen", checklist item 2. Down here
+ * the block is `flex:1` in the space the spacer would have held, and nothing above it shifts.
+ *
+ * Same treatment the string gets on three other screens — `.pl-failed-error` (S4's failed
+ * rehearsal), `.ob-working-error` (S7's failed first sync) and `.pass-error` (S5's failed pass):
+ * mono, on `--surface`, so it reads as a quotation rather than as more of our sentence. Voice rule
+ * 4 — never paraphrase a daemon error. It passes through no formatter at all.
+ *
+ * The height is CAPPED and it scrolls, which is `.ob-working-error`'s lesson rather than
+ * `.pl-failed-error`'s: a daemon that fails with a long stderr grows this block until it paints
+ * over the footer (DEVIATIONS §79f, measured at 10 KB). Rebuilt only when the string changes, on
+ * the ~2s poll's own rule — a `replaceChildren` here would drop a selection mid-drag, and this is
+ * the one block on the screen whose text somebody has a reason to select and copy.
+ */
+function fillFailed(v) {
+  const sig = quotingError(v) ? v.error : "";
+  if (view.failedSig === sig) return;
+  view.failedSig = sig;
+  if (!quotingError(v)) {
+    view.failed.replaceChildren();
+    return;
+  }
+  view.failed.replaceChildren(el("div", { class: "main-failed-error" }, v.error));
+}
 
 /**
  * The band, and the one animation on this screen that must not exist on a first render.

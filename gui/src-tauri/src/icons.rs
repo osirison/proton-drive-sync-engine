@@ -53,18 +53,23 @@ const GLYPHS: &[(&str, &str)] = &[
 ///
 /// **The same five and no more.** `10-tray.md`: "Only five forms exist. A solid filled hexagon is
 /// not a state — it was drawn that way by mistake during design and corrected." The frontend's
-/// `TRAY_GLYPH_STATES` names the same five, and `derive_state`'s six variants collapse onto them
+/// `TRAY_GLYPH_STATES` names the same five, and `derive_state`'s seven variants collapse onto them
 /// here exactly as `screens/tray.js` collapses them for the panel: an expired session shares the
 /// struck mark with an unreachable daemon (11-notifications.md puts an outage and an expired session
 /// behind one icon), and a daemon that has never synced wears the needs-you form rather than the
 /// settled one, because it has not synced anything.
+///
+/// A failed pass joins the struck pair for the same reason the other two are together:
+/// `11-notifications.md` puts "an outage, expired session, or full disk" behind ONE icon, and a
+/// failed pass is the third of those. `14-behaviour-and-state.md` says as much in its own state
+/// diagram — "unreachable is entered after a failed pass and retry".
 pub fn glyph_for(state: gui_core::state::DaemonState) -> &'static str {
     use gui_core::state::DaemonState::*;
     match state {
         Running => "proton-sync-syncing-symbolic",
         Idle => "proton-sync-uptodate-symbolic",
         Paused => "proton-sync-paused-symbolic",
-        AuthExpired | Unreachable => "proton-sync-offline-symbolic",
+        AuthExpired | Unreachable | Failed => "proton-sync-offline-symbolic",
         FirstRun => "proton-sync-attention-symbolic",
     }
 }
@@ -111,15 +116,12 @@ mod tests {
     fn every_daemon_state_has_a_glyph_that_ships() {
         // A name with no file behind it is a blank tray icon — the failure mode with no error
         // message anywhere, in the one surface of the app nobody inspects.
+        //
+        // Walks `tray_menu::ALL_STATES` rather than a list of its own: this test's whole value is
+        // that it covers a variant added later, and a hand-written copy of the enum covers exactly
+        // the variants that already existed when it was written.
         let shipped: Vec<&str> = GLYPHS.iter().map(|(name, _)| *name).collect();
-        for state in [
-            DaemonState::Running,
-            DaemonState::Idle,
-            DaemonState::Paused,
-            DaemonState::AuthExpired,
-            DaemonState::Unreachable,
-            DaemonState::FirstRun,
-        ] {
+        for state in crate::tray_menu::ALL_STATES.iter().copied() {
             assert!(
                 shipped.contains(&glyph_for(state)),
                 "{state:?} maps to {}, which is not one of the five files",

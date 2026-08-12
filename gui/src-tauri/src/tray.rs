@@ -98,6 +98,10 @@ fn title_for(state: DaemonState, response: Option<&ControlResponse>) -> String {
         // absolute: unknown is never zero.
         DaemonState::FirstRun => "Proton Drive Sync — nothing synced yet".into(),
         DaemonState::Unreachable => "Proton Drive Sync — daemon unreachable".into(),
+        // The daemon IS answering, so this is not "unreachable" — its last pass failed. The title
+        // is a one-line hover label and the daemon's own string can be any length, so the string
+        // itself stays in the window, where there is a block sized to hold it (#246).
+        DaemonState::Failed => "Proton Drive Sync — last sync failed".into(),
     }
 }
 

@@ -8,7 +8,7 @@
 use crate::ipc::IpcError;
 use crate::wire::ControlResponse;
 
-/// The six reachable UI states (design §6). `Running` is primarily the daemon's own `syncing`
+/// The seven reachable UI states (design §6). `Running` is primarily the daemon's own `syncing`
 /// flag (a reconcile pass is in flight); `pending_changes > 0` is kept as a secondary signal so
 /// replies from older daemons (whose `syncing` deserializes to `false`) still derive usefully.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -23,6 +23,16 @@ pub enum DaemonState {
     /// The last error looks like a Proton sign-in expiry (E6 workaround: pattern-match until the
     /// daemon classifies auth state itself). Design: "Proton sign-in expired".
     AuthExpired,
+    /// The daemon is reachable and its last pass FAILED for some other reason — a remote list that
+    /// timed out, a `proton-drive` binary that is not on `PATH`, a transfer that errored.
+    ///
+    /// This state exists because its absence was a false all-clear (#246): every branch below is a
+    /// state the daemon is *in*, and a daemon whose last pass failed is in none of them, so it fell
+    /// through to `Idle` and every surface drew `Everything is up to date` over a sync that did not
+    /// happen. `reconcile_blocking` records the reason and the reply carries it; nothing read it.
+    ///
+    /// The reply itself is trustworthy — the counters are the daemon's own and are NOT blanked.
+    Failed,
     /// The socket could not be reached, or the reply could not be trusted. Counters must render as
     /// em-dashes and the ledger as explicitly empty — never zeroes.
     Unreachable,
@@ -88,6 +98,20 @@ pub fn derive_state(reply: Result<&ControlResponse, &IpcError>) -> DaemonState {
     }
     if response.last_sync_epoch_secs.is_none() && response.status_history.is_empty() {
         return DaemonState::FirstRun;
+    }
+    // AFTER `syncing` and `FirstRun`, BEFORE the queue and the settled fall-through, and every one
+    // of those three placements is load-bearing (#246):
+    //
+    //   · after `syncing`, because a retry already in flight is the newer fact — `last_error` is
+    //     only cleared when a pass SUCCEEDS (`reconcile_blocking`), so it outlives the failure it
+    //     describes and would otherwise pin a working daemon to its last bad pass;
+    //   · after `FirstRun`, so a machine that has never synced still gets the onboarding takeover.
+    //     Reachable in practice only if the history sidecar is missing, since `record_status_history`
+    //     runs on both arms of a pass — but the wizard is the better answer when both could apply;
+    //   · before `pending_changes`, because a failure with a queue behind it is still a failure. The
+    //     queue is why it matters, not a reason to call it `Running`.
+    if response.last_error.is_some() {
+        return DaemonState::Failed;
     }
     if response.pending_changes > 0 {
         DaemonState::Running
@@ -174,6 +198,63 @@ mod tests {
         r.last_sync_epoch_secs = None;
         r.status_history = vec![];
         assert_eq!(derive_state(Ok(&r)), DaemonState::Running);
+    }
+
+    #[test]
+    fn a_failed_pass_is_not_idle() {
+        // #246. The bug: every branch is a state the daemon is IN, a failed pass is none of them,
+        // and the fall-through drew `Everything is up to date` over it.
+        let mut r = response();
+        r.last_error =
+            Some("proton-drive list failed: No such file or directory (os error 2)".into());
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Failed);
+        assert_ne!(derive_state(Ok(&r)), DaemonState::Idle);
+        // Counters stay KNOWN, unlike unreachable and first-run: the reply is the daemon's own.
+        assert!(!DaemonState::Failed.counters_unknown());
+    }
+
+    #[test]
+    fn a_retry_in_flight_outranks_the_failure_it_is_retrying() {
+        // `last_error` is cleared only by a SUCCESSFUL pass, so it is still set while the next one
+        // runs. Reading it there would pin a working daemon to its last bad pass.
+        let mut r = response();
+        r.last_error = Some("remote list timed out".into());
+        r.syncing = true;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Running);
+    }
+
+    #[test]
+    fn a_queue_behind_a_failure_does_not_make_it_running() {
+        // The other order — `pending_changes` first — reads a failed pass with work waiting as
+        // `Syncing 4 changes`, which is the same false all-clear one word further on.
+        let mut r = response();
+        r.last_error = Some("upload failed: disk quota exceeded".into());
+        r.pending_changes = 4;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Failed);
+    }
+
+    #[test]
+    fn paused_and_auth_still_outrank_a_failure() {
+        let mut r = response();
+        r.last_error = Some("remote list timed out".into());
+        r.paused = true;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Paused);
+        r.paused = false;
+        // An auth-shaped failure is a failure too; the specific state wins because it has a
+        // specific sentence and a specific menu.
+        r.last_error = Some("401 Unauthorized".into());
+        assert_eq!(derive_state(Ok(&r)), DaemonState::AuthExpired);
+    }
+
+    #[test]
+    fn a_machine_that_has_never_synced_still_reaches_the_wizard() {
+        // `FirstRun` is checked first so the onboarding takeover survives a daemon that has both
+        // never synced and just failed.
+        let mut r = response();
+        r.last_sync_epoch_secs = None;
+        r.status_history = vec![];
+        r.last_error = Some("proton-drive: command not found".into());
+        assert_eq!(derive_state(Ok(&r)), DaemonState::FirstRun);
     }
 
     #[test]

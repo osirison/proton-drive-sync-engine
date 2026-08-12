@@ -19,7 +19,7 @@ import { nextOnboardingLatch } from "../src/js/routes.js";
 const latch = nextOnboardingLatch;
 
 test("any reachable daemon state releases the latch, whatever we were doing", () => {
-  for (const state of ["idle", "running", "paused", "authExpired"]) {
+  for (const state of ["idle", "running", "paused", "authExpired", "failed"]) {
     assert.equal(latch(true, state, false, true, true), false, `${state} should release`);
     assert.equal(latch(false, state, false, true, true), false, `${state} should stay released`);
   }
@@ -28,6 +28,15 @@ test("any reachable daemon state releases the latch, whatever we were doing", ()
 test("authExpired releases rather than trapping the user in a wizard that cannot fix it", () => {
   // Onboarding cannot re-authenticate the Proton CLI; the main screen has the action that can.
   assert.equal(latch(true, "authExpired", true, true, true), false);
+});
+
+test("a failed first sync releases too — the wizard cannot fix a daemon error", () => {
+  // #246 in the direction that is easy to get backwards. Before the `failed` state existed, a failed
+  // first pass derived to `idle`, released the latch, and handed off to a main screen saying
+  // `Everything is up to date` — the bug. Adding the state and NOT adding it here would have fixed
+  // the sentence and trapped the user in two steps that cannot put `proton-drive` back on the PATH.
+  assert.equal(latch(true, "failed", true, true, true), false);
+  assert.equal(latch(true, "failed", false, true, true), false, "nor with no pair written yet");
 });
 
 test("firstRun always enters — the canonical signal", () => {

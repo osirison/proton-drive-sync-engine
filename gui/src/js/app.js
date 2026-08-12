@@ -153,9 +153,9 @@ function toggleTheme() {
  * band whose second row says `Two deletions are waiting on you`. Deletions still win when they are
  * ALONE, which is what `4a Deletions` draws. §64.
  *
- * `paused`, `unreachable` and `authExpired` have NO drawn chip anywhere in the prototype. They take
- * the quiet form with their own text rather than an invented colour — the hexagon and the main
- * screen carry those states, which is where the design puts them.
+ * `paused`, `unreachable`, `authExpired` and `failed` have NO drawn chip anywhere in the prototype.
+ * They take the quiet form with their own text rather than an invented colour — the hexagon and the
+ * main screen carry those states, which is where the design puts them.
  */
 function chipFor() {
   // `step 1 of 2` / `step 2 of 2` — the one chip in the app that is not daemon-derived. Keyed off
@@ -188,6 +188,11 @@ function chipFor() {
   if (state === "paused") return { variant: "idle", text: "paused" };
   if (state === "unreachable") return { variant: "idle", text: "unreachable" };
   if (state === "authExpired") return { variant: "idle", text: "sign-in expired" };
+  // #246 at 11px. Without this arm a failed pass falls through to `idle` HERE too — the chip is a
+  // second derivation of the same question, and it would have gone on saying `idle` in the corner
+  // of a window whose hero says the last sync didn't finish. The daemon's own word for it, which is
+  // what `record_status_history` writes ("sync failed") and what S5's passes list draws.
+  if (state === "failed") return { variant: "idle", text: "sync failed" };
   if (state === "firstRun") return { variant: "idle", text: "first run" };
   return { variant: "idle", text: "idle" };
 }

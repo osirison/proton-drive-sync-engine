@@ -31,6 +31,53 @@
   min-height: 0;
 }
 
+/* The block the spacer becomes when the last pass failed (#246) — the daemon's own string, quoted.
+   `overflow:hidden` on the wrapper and a capped, scrolling child: between them nothing a daemon can
+   put in `last_error` reaches the footer. The wrapper takes the same `flex:1; min-height:0` as the
+   spacer it replaces, so the hero above it does not move by a pixel. */
+.main-failed {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  /* The 16px above is `.pl-failed-error`'s own gap from the sentence over it. The 24px below is what
+     keeps a full-height quote off the footer: the child's `max-height:100%` resolves against this
+     box's CONTENT height, so the padding is what the box can never grow into. Measured at 10 KB —
+     the quote ends at 690 with the footer at 714. */
+  padding: 16px 40px 24px;
+}
+
+/* `.ob-working-error`'s block, at this screen's width. Mono and on `--surface` so it reads as a
+   quotation (voice rule 4: the exact string, never paraphrased); a capped height with
+   `overflow:auto` because a failure with a long stderr would otherwise grow until it painted over
+   the footer, and `overflow-wrap:anywhere` because one naming an unbroken path would grow it
+   sideways.
+
+   THE CAP IS `100%` AND NOT A NUMBER, which the other three blocks can afford and this one cannot:
+   its region is `flex:1`, so an attention band appearing under it takes the space away — measured
+   at 123px with one conflict and one deletion waiting. A fixed 132px there overflowed the region by
+   9px, which `overflow:hidden` above then cut off: the box lost its bottom border and the last line
+   of a string nothing could scroll to. Both a decision and a failed pass are ordinary, and they
+   coexist by design ("needs-decision is additive, not exclusive"). */
+.main-failed-error {
+  max-width: 520px;
+  max-height: 100%;
+  overflow: auto;
+  padding: 9px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-9);
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ------------------------------------------------------------------------------ the mark ---- */
 
 /* `position:relative` on every hero element, in all three frames — it is what stacks them over the

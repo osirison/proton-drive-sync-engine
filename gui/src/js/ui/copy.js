@@ -94,6 +94,37 @@ export const MAIN = {
   authExpired: "Proton Drive is asking you to sign in again",
   authExpiredSub: (n) => `${count(n)} ${plural(n, "change is", "changes are")} waiting — nothing is lost.`,
 
+  /**
+   * The hero for a pass that FAILED for any non-auth reason — #246, and no frame draws it either.
+   *
+   * It is the sibling of `PLAN.failedTitle`/`failedSub`: `14-behaviour-and-state.md`'s error table
+   * specifies a failed rehearsal in prose — "show the daemon string" — and its testing checklist
+   * ends on "Daemon error strings shown verbatim, never paraphrased". This is that treatment for
+   * the pass rather than the rehearsal, so the two sentences here are S1's own and the third line
+   * is the daemon's, quoted (voice rule 4).
+   *
+   * `didn't finish` RATHER THAN `failed`, and rather than the deck's `Can't reach Proton Drive`.
+   * The first is voice rule 1 — what happened to the files, not what the daemon did. The second is
+   * a claim we cannot make: `unreachable` means the app cannot reach the DAEMON, and a pass can
+   * fail with Proton perfectly reachable (a full disk, a `proton-drive` binary that moved). The
+   * quoted string underneath says which, and it says it in the daemon's words.
+   *
+   * `n == null` drops the count clause on `TRAY.unreachableBody`'s rule, and so does `0` — here
+   * that is not "unknown", it is a genuinely empty watch queue, and `0 changes are waiting` sounds
+   * like an all-clear in the one place that must not give one. The reassurance survives both.
+   *
+   * "Nothing is lost" IS TRUE OF A FAILED PASS, which is worth stating because the engine's own
+   * checkpoint commits mean a half-finished pass DID move some files: what it never does is record
+   * a side effect that did not happen, and the failed action re-plans next pass. So the promise is
+   * about loss, not about inaction — which is why this does not borrow S4's `Nothing has been
+   * touched`, a sentence that is true of a rehearsal and false of a pass.
+   */
+  failed: "The last sync didn't finish",
+  failedSub: (n) =>
+    n
+      ? `Nothing is lost. ${count(n)} ${plural(n, "change is", "changes are")} waiting and will go on the next try.`
+      : "Nothing is lost.",
+
   sideLocal: "This computer",
   sideRemote: "Proton Drive",
   sideRemoteCompact: "Proton",

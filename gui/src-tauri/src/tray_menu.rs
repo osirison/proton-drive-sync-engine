@@ -147,7 +147,10 @@ pub fn rows_for(state: DaemonState) -> &'static [Entry] {
         DaemonState::Idle => SETTLED,
         DaemonState::Running => SYNCING,
         DaemonState::Paused => PAUSED,
-        DaemonState::Unreachable => UNREACHABLE,
+        // `Try again now`, and this is the one struck state where that row is unambiguously the
+        // right one: the daemon is ANSWERING, so a retry reaches it. The panel groups this with
+        // `authExpired` by form and the menu parts them by cause, exactly as the two above.
+        DaemonState::Unreachable | DaemonState::Failed => UNREACHABLE,
         DaemonState::AuthExpired | DaemonState::FirstRun => DEFER_TO_WINDOW,
     }
 }
@@ -171,6 +174,9 @@ pub fn action_for_dbus_id(dbus_id: i32) -> Option<&'static str> {
 }
 
 /// Every state, for the tests and for anything that has to walk the whole table.
+///
+/// `action_for_dbus_id` walks it to answer a click, so a variant missing here is a row whose id
+/// resolves to nothing — pinned by `all_states_lists_every_variant` below.
 pub const ALL_STATES: &[DaemonState] = &[
     DaemonState::Idle,
     DaemonState::Running,
@@ -178,6 +184,7 @@ pub const ALL_STATES: &[DaemonState] = &[
     DaemonState::Unreachable,
     DaemonState::AuthExpired,
     DaemonState::FirstRun,
+    DaemonState::Failed,
 ];
 
 #[cfg(test)]
@@ -187,6 +194,48 @@ mod tests {
 
     fn rows(state: DaemonState) -> Vec<Entry> {
         rows_for(state).to_vec()
+    }
+
+    /// The enum as a chain: every variant names the next one and the last names `None`.
+    ///
+    /// A `Vec<DaemonState>` built by hand would be the third hand-written copy of the enum in this
+    /// file. This one is a MATCH, so a variant added to `DaemonState` stops it compiling — which is
+    /// the only construction available here that a later author cannot satisfy by doing nothing.
+    fn chain() -> Vec<DaemonState> {
+        fn next(state: DaemonState) -> Option<DaemonState> {
+            match state {
+                DaemonState::Idle => Some(DaemonState::Running),
+                DaemonState::Running => Some(DaemonState::Paused),
+                DaemonState::Paused => Some(DaemonState::Unreachable),
+                DaemonState::Unreachable => Some(DaemonState::AuthExpired),
+                DaemonState::AuthExpired => Some(DaemonState::FirstRun),
+                DaemonState::FirstRun => Some(DaemonState::Failed),
+                DaemonState::Failed => None,
+            }
+        }
+        let mut all = vec![DaemonState::Idle];
+        while let Some(state) = next(*all.last().expect("seeded")) {
+            all.push(state);
+        }
+        all
+    }
+
+    #[test]
+    fn all_states_lists_every_variant() {
+        // `ALL_STATES` is a hand-written copy of an enum, and three tests plus `action_for_dbus_id`
+        // walk it. A state missing from it has untested rows and an id the click lookup cannot
+        // resolve — a menu row that does nothing when pressed, on the surface nobody inspects.
+        for state in chain() {
+            assert!(
+                ALL_STATES.contains(&state),
+                "{state:?} is a DaemonState variant that ALL_STATES does not list"
+            );
+        }
+        assert_eq!(
+            ALL_STATES.len(),
+            chain().len(),
+            "ALL_STATES lists something twice, or something the enum no longer has"
+        );
     }
 
     #[test]
