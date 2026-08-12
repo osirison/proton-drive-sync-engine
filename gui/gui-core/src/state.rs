@@ -258,6 +258,20 @@ mod tests {
     }
 
     #[test]
+    fn the_wire_name_is_what_the_webview_switches_on() {
+        // The webview keys on this string in five places (the two tray tables, `chipFor`,
+        // `heroStateOf`, the onboarding latch) and `trayMenu` THROWS on a key it does not know, so
+        // the serialized name is an interface and not an implementation detail. `tray-view.test.js`
+        // derives its state list from this enum by lowering the first letter, which is only correct
+        // while `rename_all = "camelCase"` agrees — this is where the two meet.
+        let name = |state: DaemonState| serde_json::to_string(&state).expect("serializes");
+        assert_eq!(name(DaemonState::Failed), "\"failed\"");
+        assert_eq!(name(DaemonState::AuthExpired), "\"authExpired\"");
+        assert_eq!(name(DaemonState::FirstRun), "\"firstRun\"");
+        assert_eq!(name(DaemonState::Idle), "\"idle\"");
+    }
+
+    #[test]
     fn auth_matcher_avoids_false_positives() {
         assert!(looks_like_auth_error("401 Unauthorized"));
         assert!(looks_like_auth_error(
