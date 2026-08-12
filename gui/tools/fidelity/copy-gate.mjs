@@ -23,18 +23,25 @@ const FRAMES = join(HERE, "frames");
 // Strings the deck carries that are deliberately NOT drawn in any frame, with the reason. Anything
 // not on this list must appear, or the gate fails.
 const NOT_DRAWN = new Map([
-  // 11-notifications.md quotes all four notification bodies; their frames are the 11a set, which the
-  // extractor records — but the deck's own Tray section duplicates strings that only ever render in
-  // a native menu, which is not a webview and has no DOM to extract.
-  ["TRAY.open", "native tray menu — no DOM"],
-  ["TRAY.syncNow", "native tray menu — no DOM"],
-  ["TRAY.pause", "native tray menu — no DOM"],
-  ["TRAY.resume", "native tray menu — no DOM"],
-  ["TRAY.tryAgain", "native tray menu — no DOM"],
-  ["TRAY.closeWindow", "native tray menu — no DOM"],
-  ["TRAY.closeWindowSub", "native tray menu — no DOM"],
-  ["TRAY.quit", "native tray menu — no DOM"],
-  ["TRAY.quitSub", "native tray menu — no DOM"],
+  // NINE TRAY STRINGS WERE EXEMPT HERE AND SHOULD NEVER HAVE BEEN. The reason given was "native tray
+  // menu — no DOM", and it was wrong twice over: the tray panel `10-tray.md` specifies is a webview
+  // and not a native menu, and — the part that needed no design decision to notice — all nine are
+  // drawn, in frames this gate already reads. `Open Drive Sync`, `Sync now`, `Pause syncing`,
+  // `Close window`/`keeps syncing` and `Quit`/`stops syncing` are in `10a Settled`; `Resume syncing`
+  // is in `10a Paused`; `Try again now` is in `10a Offline`.
+  //
+  // They passed the moment the exemption was lifted, so nothing was hidden — but nine of the deck's
+  // strings had been outside the gate since F8, including the two sub-labels `10-tray.md` calls the
+  // single worst misunderstanding a tray app can cause. `NOT_DRAWN` is a `continue` before the
+  // lookup, so an entry here is never checked against the frames even to confirm it is absent;
+  // an exemption that is wrong stays wrong silently. S8 removed all nine.
+  //
+  // The two below are the genuine article — a state no frame draws, written rather than measured.
+  // `app.js` hides `firstRun` behind the onboarding takeover, so the window never renders it; the
+  // tray has no takeover and would otherwise say `Everything is up to date` about a daemon that has
+  // never copied a file. See the note in ui/copy.js and DEVIATIONS §82g.
+  ["TRAY.nothingSyncedYet", "no frame draws a tray panel for a daemon that has never synced"],
+  ["TRAY.nothingSyncedYetSub", "no frame draws a tray panel for a daemon that has never synced"],
   // The deck's Activity section carries this under "Quiet:", and its only frame is `6a Quiet` —
   // one of the two demoted tide-chart Activity frames that IMPLEMENTATION-PLAN §1.2 puts out of
   // scope. So the deck outlived the drawing. Kept in copy.js because 14-behaviour-and-state.md's
@@ -408,7 +415,7 @@ for (const [shown, text, label] of drawnChecks) {
 console.log(
   `fidelity:copy — ${found.length}/${strings.length - NOT_DRAWN.size + drawnChecks.length} drawn strings matched ` +
     `(${drawnChecks.length} of them templates rendered at the arguments their own frame draws), ` +
-    `${NOT_DRAWN.size} exempt (native tray), ${missing.length} missing`,
+    `${NOT_DRAWN.size} exempt (no frame draws them), ${missing.length} missing`,
 );
 
 if (templateErrors.length) {

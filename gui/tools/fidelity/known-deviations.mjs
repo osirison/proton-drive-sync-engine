@@ -37,6 +37,61 @@
  * @property why    one line, in the same voice as DEVIATIONS.md
  */
 export const KNOWN_DEVIATIONS = [
+  // ---- S8 · the tray panel, drawn floating over a desktop ----
+  //
+  // `10a In situ` is the only frame that draws the panel WHERE IT ACTUALLY LIVES: over a wallpaper,
+  // not on the prototype's own page. Two facts follow from that, and neither is reproducible by the
+  // panel's DOM, because in the shipped app the panel IS the window.
+  {
+    frame: "10a In situ",
+    key: "div[1]",
+    props: ["position"],
+    detail: "absolute vs static",
+    issue: "#187",
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+  },
+  {
+    frame: "10a In situ",
+    key: "div[1]",
+    props: ["top"],
+    detail: "40px vs auto",
+    issue: "#187",
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+  },
+  {
+    frame: "10a In situ",
+    key: "div[1]",
+    props: ["right"],
+    detail: "16px vs auto",
+    issue: "#187",
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+  },
+  {
+    frame: "10a In situ",
+    key: "div[1]",
+    props: ["bottom"],
+    detail: "38.5px vs auto",
+    issue: "#187",
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+  },
+  {
+    frame: "10a In situ",
+    key: "div[1]",
+    props: ["left"],
+    detail: "662px vs auto",
+    issue: "#187",
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+  },
+
+  {
+    frame: "10a In situ",
+    key: "div[1]",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgba(255, 255, 255, 0.1) vs rgba(255, 107, 107, 0.3)",
+    issue: "#187",
+    why: "FOUR FRAMES AGAINST ONE, and DEVIATIONS §58d already ruled on it with only the four in view. `10-tray.md` asks the tray form for `border:1px solid rgba(255,255,255,.1)` because it floats over the desktop rather than over the app surface — and this is the one frame drawn that way, so it is the one that shows it. The four standalone `10a` panels all draw `#23262D` like every other compact panel, and they are gated. The app cannot be both. Keeping the four means the attention edge (`rgba(255,107,107,.3)`, measured on three needs-you frames) survives here, which is also the more useful of the two: it is the panel saying something is waiting on you. Recorded rather than resolved — the tie is the design's to break",
+  },
+
   {
     frame: "2a Settled",
     key: "div[0]/div[2]",

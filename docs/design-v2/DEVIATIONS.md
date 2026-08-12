@@ -3407,3 +3407,137 @@ measurement attached rather than a clause bolted on here.
 The motivating scenario of §80, run against this build: `progress: null` on both `10a Syncing`
 transfers now **exits 1**, naming `transferTrack` and `transferFill` at all four nodes. That claim
 was the one #247 shipped untested, because it was the argument for doing the work.
+
+---
+
+## The system tray (S8)
+
+## 82. The tray protocol could not deliver the tray, and five other things the frames do not say
+
+`10-tray.md`'s whole interaction is *left click opens the compact panel*. `IMPLEMENTATION-PLAN.md` §6
+flagged the rendering half of that as the architectural risk ("libayatana-appindicator cannot render
+a hexagon and a seam") and told S8 to prototype before estimating. The prototype found something
+worse than a rendering limit: **there is no click**.
+
+`tray-icon-0.24.1/src/platform_impl/gtk/` contains no reference to `TrayIconEvent`. Not a disabled
+path, not a feature flag — no code that emits one. Introspecting the item the shipped app was
+publishing confirms it from the other side: it exposes `Scroll` and `SecondaryActivate` and **no
+`Activate` and no `ContextMenu`**, so a host has nothing to call even if it wanted to. Two paths in
+`tray.rs` were therefore dead on Linux and read as working code: the `Click` handler ("left click
+toggles the window into view", which never happened), and every `set_tooltip` — literally `Ok(())`
+with the argument dropped, so a status string was built every five seconds and discarded.
+
+The resolution is to speak `org.kde.StatusNotifierItem` directly, modelled on **xembedsniproxy** —
+KDE's own X11 bridge, whose published item is `Activate` + `ContextMenu` with `ItemIsMenu = false`
+and no `Menu` object at all. Copying a shape Plasma itself ships is better evidence about what a host
+honours than any paragraph of the spec. Measured on a live session before a line was written: the
+item registered, was read, and a left click arrived as `Activate(3192, 2112)` — with the click's
+screen coordinates, which also disposes of §6's second sub-risk (the indicator's position is not
+queryable: `rect()` returns `None`).
+
+**a. `--hex-glyph-fg` is a new token, and the tray glyph is the first thing to need it.** F2 wrote
+the `family: "tray"` branch of `renderHexagon` in anticipation and nothing had ever passed the flag.
+Drawn for the first time, settled and paused stroked `--hex-settled-track` / `--hex-paused-track` —
+the dark ring the in-window mark draws a check or a pair of bars *inside*. At 20px the outline IS the
+mark, so the glyph came out a near-invisible grey on a dark panel. All ten marks on `10a Glyph
+states` stroke at the foreground colour or at their tone; not one is a track. `10-tray.md` supplies
+the light value itself ("the glyph inverts to `#14161A` with the same five forms").
+
+**b. The sheet draws 20px, not 16.** The issue title and the doc's own table say 16; `10-tray.md`
+gives a range ("rendered `15–20px`") and all ten marks on `10a Glyph states` measure exactly 20. The
+range is what a desktop may scale the SVG to; 20 is what the design measured. The shipped SVG files
+declare 16 — the bottom of the range — because that is a starting size for a scalable icon, not
+geometry: the geometry is the `viewBox`.
+
+**c. `mono` was a one-line flag and is now the property the set is built on.** It reached only the
+syncing track, so the monochrome column drew needs-you in crimson and can't-reach in red — the exact
+thing `10-tray.md` forbids ("state is carried by fill, not hue"). Disabling the fix now fails
+precisely five nodes: the syncing segment, the needs-you path and circle, and both of can't-reach's
+paths. Settled and paused are unaffected, because they have no hue to lose — which is the design's
+own claim about why those two forms are shaped the way they are, confirmed by a gate.
+
+**d. The syncing track becomes `currentColor` at 0.18 opacity.** A recoloured symbolic icon has
+exactly one colour, so the track's `#3E454E` cannot survive as a literal: it would either clash with
+whatever the panel chose or be recoloured to match the segment and vanish. 0.18 is the alpha that
+reproduces `#3E454E` over the `#191C21` the sheet draws on, computed per channel (0.16 / 0.19 / 0.20
+— the two colours are not the same hue) and averaged. The icon keeps the drawing's *ratio* between
+track and segment whatever colour the desktop picks.
+
+**e. The tray's syncing glyph does not move.** `renderHexagon` puts `animation:hexup 2.4s linear
+infinite` in a style attribute; there is no CSS engine behind a tray icon and the SNI protocol has no
+notion of an animated one. The segment ships frozen where the sheet draws it, and the motion
+`10-tray.md` asks for lives in the panel, which is a real webview. Animating by swapping icons on a
+timer was considered and rejected: it is a D-Bus signal and a file write per frame, and the doc's own
+rule is that the glyph updates "from the daemon's status stream, not a timer".
+
+**f. The panel's state is S1's derivation, imported.** `screens/tray.js` calls `heroStateOf` from
+`screens/main.js` rather than deciding again. The window and the tray are two views of one moment,
+and someone who opens both and reads two different sentences has been told the app does not know what
+is happening. Every rule in that function was paid for once — unreachable outranking everything,
+`pending > 0` reading as syncing even when `syncing` is false, `authExpired` not falling through to a
+false all-clear — and a second copy would relitigate all of them badly.
+
+**g. Two states reach the tray that never reach the main screen, and no frame draws either.**
+`app.js` intercepts `firstRun` with the onboarding takeover, so S1's derivation has no branch for it
+at all and falls through to `settled` — `Up to date`, on a daemon that has never copied a file. The
+tray has no takeover to hide behind. It draws the needs-you mark with no numeral (a `0` would present
+an empty queue as a decision) and two sentences the deck does not have: `Nothing has synced yet` /
+`Open Drive Sync to choose your two folders.` Written rather than measured, and kept close to what
+exists — the v1 tray shipped `Nothing synced yet` as a disabled menu item.
+
+`authExpired` keeps the struck mark it shares with `unreachable` (`11-notifications.md` puts an
+outage and an expired session behind one icon) but **not its menu**. `Try again now` retries a sync,
+which is not what an expired session needs, and `10-tray.md` asks exactly one thing of these rows —
+that the label says what it does. So the panel is keyed by FORM and the menu by CAUSE, and
+`deferToWindow` is a sixth *row set* rather than a sixth *form*. There is no sixth form.
+
+**h. `retrying in 40s · last reached 13:58` is omitted.** Nothing in the reply says when the next
+attempt is, and an unreachable daemon is not answering to be asked. Omitted rather than filled, per
+`14-behaviour-and-state.md`'s rule for a missing capability — the same call S1 makes on the settled
+sub-line's file count (#207).
+
+**i. The glyph updates on a 2s poll, not a stream.** `10-tray.md` asks for "the daemon's status
+stream, not a timer". There is no stream: the control socket answers questions and does not push,
+which is **#101 (E4)**, explicitly deferred. Two seconds matches the window's own cadence so the two
+surfaces never disagree by more than one tick.
+
+**j. Right-click opens the panel, not a native menu.** `10-tray.md` gives right-click to the menu
+alone by KDE convention. Delivering that needs `com.canonical.dbusmenu` — a second protocol with its
+own layout-revision model, and an S8-sized task by itself. The panel contains every row that menu
+would have, and a right click that produced nothing would read as a broken tray rather than as a
+deliberate absence. Filed as a follow-up.
+
+**k. The fallback menu folds the sub-labels into the label.** A session with no status-notifier host
+gets the Tauri tray, because no indicator is worse than a text menu. A GTK menu item is a single
+string, so `Close window` and `Quit` cannot carry the second baseline-aligned span the panel draws —
+they carry `Close window — keeps syncing` and `Quit — stops syncing` instead. What they must not do
+is lose the words, which is what the v1 build got right and for the same reason.
+
+**l. `Review them` lands in the window, not on the deletions queue.** The two rows share a
+destination. Routing `review` to a specific screen is a second question — the window may be mid-flow
+— and the panel is dismissed by then either way.
+
+**m. §45 is settled: `Quit` stops the daemon.** That section was left **Open** and assigned here.
+S8 is the task that puts `Quit` and `stops syncing` on screen together, and after that there are two
+options: the daemon stops, or the app prints a false label in the one place `10-tray.md` says it must
+not ("the single worst misunderstanding a tray app can cause"). It stops, through the daemon's own
+graceful `Shutdown`. `Close window · keeps syncing` sits directly above it and is unchanged. A
+failure to reach the daemon is deliberately not fatal to the quit: a wedged daemon must not leave
+someone unable to close the app.
+
+### Four bugs only a real desktop could find
+
+Every one of these compiles, renders, and passes every gate in the build.
+
+1. **The click is in physical pixels.** `Activate(3192, 2112)` on a 3840×2160 display at scale 2 is
+   not the 1920×1080 space `LogicalPosition` works in. The arithmetic was right and the units were
+   not, so the panel opened in the middle of the screen.
+2. **A window that has never been shown has no current monitor.** `place` returned early on that,
+   silently, leaving the window manager's placement — dead centre, at exactly `(3840 − 724) / 2`. A
+   centred popover is not a positioning bug; it is the absence of positioning.
+3. **On X11 a position set before mapping is advisory.** KWin ignored it. The position is applied
+   again after `show`, which is the call that lands.
+4. **A blur only means something if the window ever had focus.** Focus-stealing prevention handed
+   focus straight back, and the resulting `Focused(false)` was indistinguishable from the user
+   clicking away — so the panel showed and hid in the same breath, looking exactly like a panel that
+   never opened.

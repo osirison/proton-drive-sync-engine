@@ -171,21 +171,19 @@ export const isOverlay = (id) => ROUTES[id]?.kind === "overlay";
 export const isDialog = (id) => ROUTES[id]?.presentation === "dialog";
 
 /**
- * v1 route ids that outlived the screens they named, and where they land now.
+ * THERE ARE NO ROUTE ALIASES ANY MORE, and this note is the record of why there were.
  *
- * `tray.rs` emits three ids over the `tray-navigate` event, and it is Rust — it does not move when
- * the frontend's route table does. `settings` and `conflicts` still resolve; `history` does not,
- * because design-v2 has no History screen. Its two jobs both moved into Activity: `6a Activity
- * passes` is the pass history and `7a File lookup` carries a file's own. Without this the tray's
- * "View journal" item silently does nothing.
+ * `tray.rs` used to emit three ids over `tray-navigate` — `settings`, `conflicts` and `history` —
+ * and the third named a screen design-v2 does not have: its two jobs moved into Activity (`6a
+ * Activity passes` is the pass history, `7a File lookup` a file's own). Rust does not move when this
+ * table does, so `ROUTE_ALIASES` existed to catch that one dead id and keep "View journal" from
+ * silently doing nothing.
  *
- * S8 (#187) rebuilds the tray and can delete this — but only by changing what tray.rs emits, and a
- * tray that emits a dead id is not something the frontend can be trusted to notice on its own.
+ * S8 rebuilt the tray, which is the condition this file set for removing it: "only by changing what
+ * tray.rs emits". The new tray emits nothing at all — its rows act directly through
+ * `commands::tray_action` rather than asking the shell to navigate — so there is no legacy id left
+ * to translate, and an alias table with no aliases is a lookup that can only ever be wrong later.
  */
-export const ROUTE_ALIASES = { history: "activity" };
-
-/** Resolve an id that may be a legacy alias. Unknown ids come back unchanged, for the caller to reject. */
-export const resolveRoute = (id) => ROUTE_ALIASES[id] ?? id;
 
 // ------------------------------------------------------------------ onboarding routing (S7) ----
 

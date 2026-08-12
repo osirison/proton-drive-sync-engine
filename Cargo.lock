@@ -3002,6 +3002,7 @@ dependencies = [
 name = "proton-sync-gui"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "proton-sync-gui-core",
  "serde",
  "serde_json",
@@ -3010,6 +3011,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tempfile",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]
@@ -4288,6 +4291,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -5572,6 +5576,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",

@@ -18,7 +18,7 @@
 // contract asks a specimen for. Nothing else belongs in them.
 
 import { MAIN, TRAY } from "../ui/copy.js";
-import { compactFids } from "./fids.js";
+import { compactFids, glyphFids, without } from "./fids.js";
 
 export const TRAY_FIXTURES = {
   // The swatch sheet behind `10-tray.md` §"The glyph": two columns (`mono`, `colour`) × five rows,
@@ -27,8 +27,20 @@ export const TRAY_FIXTURES = {
   // per instance rather than a constant.
   "10a Glyph states": {
     specimen: {
-      note: "the five 16px tray glyphs, mono and colour, drawn by ui/hexagon.js (F2) and shipped as symbolic SVGs by S8; the swatch card and its captions are the sheet, not product",
+      note: "the five tray glyphs, mono and colour, drawn by ui/hexagon.js (F2) and shipped as symbolic SVGs by S8; the swatch card and its captions are the sheet, not product",
     },
+    // The five forms IN THE ORDER THE SHEET LAYS THEM DOWN THE PAGE, which is what `glyphFids` needs
+    // to key each cell — and which is ground truth about the drawing rather than about the
+    // component. `ui/hexagon.js` names the same five in `TRAY_GLYPH_STATES`; the two are asserted
+    // equal in `gui/test/tray.test.js` rather than one importing the other, because a fixture module
+    // may not reach into `ui/` (see the header of frames.js) and because they are answers to two
+    // different questions that happen to coincide.
+    glyphs: ["settled", "syncing", "needsYou", "paused", "unreachable"],
+    // 20, not the 16 the issue's title says. `10-tray.md` gives a RANGE ("rendered 15–20px") and all
+    // ten marks on this sheet are drawn at exactly 20 — the range is what the desktop may scale the
+    // SVG to, 20 is what the design measured. DEVIATIONS §82b.
+    glyphSize: 20,
+    fids: glyphFids(["settled", "syncing", "needsYou", "paused", "unreachable"]),
   },
 
   // The GNOME top bar with our indicator open. The panel inside it is `ui/compact.js` in its
@@ -41,6 +53,42 @@ export const TRAY_FIXTURES = {
   "10a In situ": {
     specimen: {
       note: "the tray panel (ui/compact.js, needs-you + menu) positioned under the indicator by S8; the 32px bar, the clock and the status cluster are a desktop mock and are never asserted",
+    },
+    // S8 SUPPLIED THE ARGUMENTS THE NOTE ABOVE SAID IT WOULD. This is the combination no other
+    // fixture carries: `2a Compact needs you` is the same state with a footer instead of the menu,
+    // and the four `10a` panels are the menu with the other four states. So the gap the F9 note
+    // recorded was real, and closing it needed the screen that owns the panel to exist.
+    //
+    // THE TOP BAR IS NOT MAPPED, and that is the specimen rule rather than an oversight.
+    // `frame-classes.mjs` says the artefact here is "the compact panel over a desktop mock — assert
+    // the panel, not the wallpaper". The bar does contain one piece of product — the 16px needs-you
+    // glyph at `div[0]/span[3]/span[0]/svg`, our own indicator — but its construction is already
+    // compared ten ways over on `10a Glyph states`, and claiming it here would quietly widen
+    // `SPECIMEN_ARTEFACT` to mean something it does not say.
+    // `meta` is dropped: this panel draws a headline, two sentences and a button, and no quieter
+    // third line. The four unprefixed `10a` panels can declare it because the shared key resolves on
+    // `10a Offline`, the one frame that draws one; a prefixed map has no sibling to resolve against.
+    fids: without(
+      compactFids({
+        state: "needsYou",
+        tail: "menu",
+        tailAt: 1,
+        // The panel is `div[1]`: `div[0]` is the GNOME top bar. Without this every key is off by a
+        // level, and NOT loudly — `div[0]/svg` exists in this frame too (it is the indicator glyph),
+        // so the 72px hero mark would have been compared against a 16px icon.
+        prefix: "div[1]",
+      }),
+      "meta",
+    ),
+    panel: {
+      state: "needsYou",
+      family: "tray",
+      headline: MAIN.compact.needYou(3),
+      count: 3,
+      // Two sentences that must break where the design put them, not where 362px happens to wrap.
+      sub: [MAIN.compact.conflictLine, MAIN.compact.deletionLine],
+      action: { label: MAIN.compact.review },
+      menu: true,
     },
   },
 

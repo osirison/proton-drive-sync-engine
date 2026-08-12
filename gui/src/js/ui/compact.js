@@ -64,7 +64,12 @@ const STATES = ["settled", "syncing", "needsYou", "paused", "unreachable", "dele
 const HERO_PAD = {
   settled: { panel: "28px 22px 22px", tray: "26px 22px 20px" },
   syncing: { panel: "22px 20px 16px", tray: "22px 20px 14px" },
-  needsYou: { panel: "28px 22px 20px" },
+  // The tray's needs-you hero is 2px tighter at the top than the panel's — measured on
+  // `10a In situ`, which is the only frame that draws this state in the tray family. Before it was
+  // mapped this fell back to the panel's 28 and nothing could see the difference, which is exactly
+  // the hazard the note above describes: "Ranges cannot be interpolated; the table below is the
+  // source", and a fallback is an interpolation with one data point.
+  needsYou: { panel: "28px 22px 20px", tray: "26px 22px 20px" },
   deletions: { panel: "24px 20px 18px" },
   paused: { tray: "26px 22px 20px" },
   unreachable: { tray: "26px 22px 20px" },
@@ -109,7 +114,18 @@ function heroMark(state, family, count) {
       return renderHexagon({ ...common, state: "syncing", masked: true, numeral: count });
     case "needsYou":
     case "deletions":
-      return renderHexagon({ ...common, state: "needsNumeral", tone: "decision", numeral: count });
+      return renderHexagon({
+        ...common,
+        state: "needsNumeral",
+        tone: "decision",
+        numeral: count,
+        // The tray panel's count sits ONE USER UNIT lower than the window's — 70 against the 69 in
+        // `NUMERAL[72].needs`. Measured on `10a In situ`; `2a Compact needs you` draws the same
+        // 72px mark at 69. One unit on a 120 viewBox is 0.6px at this size, which is precisely the
+        // kind of difference that is invisible to review and loud to a gate, and it is why the
+        // number is read off the frame rather than shared.
+        ...(family === "tray" && state === "needsYou" ? { numeralY: 70 } : {}),
+      });
     case "paused":
       return renderHexagon({ ...common, state: "paused" });
     case "unreachable":
@@ -592,6 +608,25 @@ export const TRAY_MENU = {
   ],
   unreachable: [
     { id: "tryAgain", label: TRAY.tryAgain },
+    { id: "open", label: TRAY.open },
+    { separator: true },
+    { id: "quit", label: TRAY.quit, sub: TRAY.quitSub },
+  ],
+  /**
+   * A SIXTH ROW SET FOR TWO STATES THE TABLE IN `10-tray.md` DOES NOT LIST, and the reason it exists
+   * rather than reusing `unreachable` is one row: `Try again now`.
+   *
+   * An expired Proton session and a daemon that has never synced are both states where nothing is
+   * moving and where the thing that fixes them is in the window — signing in again, or choosing the
+   * two folders. Retrying a sync does neither. Offering it would be a label that does not do what it
+   * says, which is the one property `10-tray.md` asks of this menu ("neither confirms anything — the
+   * labels say what each does").
+   *
+   * So the panel takes the FORM (both draw the struck hexagon, per `11-notifications.md`'s grouping)
+   * and the menu takes the CAUSE. `Close window` is absent for the reason it is absent from paused
+   * and can't-reach: with nothing syncing, "keeps syncing" would be a lie. DEVIATIONS §82g.
+   */
+  deferToWindow: [
     { id: "open", label: TRAY.open },
     { separator: true },
     { id: "quit", label: TRAY.quit, sub: TRAY.quitSub },

@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ROUTES, FOOTER_ORDER, isOverlay, isDialog, ROUTE_ALIASES, resolveRoute } from "../src/js/routes.js";
+import { ROUTES, FOOTER_ORDER, isOverlay, isDialog } from "../src/js/routes.js";
 
 test("the four doors, in this order, and no others", () => {
   // Hard-coded rather than derived: deriving it from ROUTES would let a reordering of the object
@@ -69,25 +69,21 @@ test("only onboarding is a takeover, and it is not dismissible", () => {
   );
 });
 
-test("the tray's legacy ids resolve to routes that exist", () => {
-  // tray.rs emits exactly three: settings, conflicts, and history. The first two still resolve on
-  // their own; `history` does not, because design-v2 has no History screen — its two jobs moved
-  // into Activity. Without the alias the tray's "View journal" silently does nothing.
-  for (const emitted of ["settings", "conflicts", "history"]) {
-    assert.ok(ROUTES[resolveRoute(emitted)], `tray emits "${emitted}" and nothing resolves it`);
+test("the tray no longer asks the shell to navigate, so there is nothing left to alias", () => {
+  // WHAT THIS REPLACES. Three tests used to guard `ROUTE_ALIASES`: that the tray's three emitted ids
+  // all resolved, that `history` resolved to `activity`, and that every alias pointed at a real
+  // route. They existed because `tray.rs` is Rust and did not move when this table did — it emitted
+  // a `history` id for a screen design-v2 deleted.
+  //
+  // S8 rebuilt the tray and its rows act through `commands::tray_action` directly, so nothing emits
+  // `tray-navigate` at all and the alias table is gone. What is worth asserting now is the property
+  // that made the aliases necessary: an id the shell cannot route must not be silently rewritten
+  // into a different screen. `app.js` warns and does nothing, which is why there is no resolver to
+  // test — and this test fails the moment someone reintroduces one without a route behind it.
+  assert.equal(ROUTES.history, undefined, "design-v2 has no History screen");
+  for (const id of ["settings", "conflicts", "activity"]) {
+    assert.ok(ROUTES[id], `${id} is a route the tray or a notification may still want`);
   }
-  assert.equal(resolveRoute("history"), "activity");
-});
-
-test("every alias points at a route that exists", () => {
-  for (const [from, to] of Object.entries(ROUTE_ALIASES)) {
-    assert.ok(ROUTES[to], `alias ${from} -> ${to}, which is not a route`);
-    assert.ok(!ROUTES[from], `${from} is an alias AND a route — the alias would never be reached`);
-  }
-});
-
-test("an unknown id passes through unchanged, for the caller to reject", () => {
-  assert.equal(resolveRoute("somethingElse"), "somethingElse");
 });
 
 // ---- the dialog/screen split (F5) ----

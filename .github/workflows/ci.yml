@@ -135,3 +135,11 @@ jobs:
       # were found.
       - name: Extraction is deterministic
         run: npm run fidelity:determinism
+      # The five symbolic SVGs the tray hands the desktop are GENERATED from the marks on
+      # `10a Glyph states` — the same nodes the style gate compares — so that the icon on a panel and
+      # the drawing in the gate cannot be two different hexagons. Checked in (a tray icon is a
+      # reviewable artefact, and the app reads them at runtime), so they can go stale the moment
+      # ui/hexagon.js changes and nothing else would notice: the icon lives in the one surface of the
+      # app nobody inspects. Here rather than in `frontend` because it needs the same Chromium.
+      - name: Tray glyphs match what the app draws
+        run: npm run glyphs:check

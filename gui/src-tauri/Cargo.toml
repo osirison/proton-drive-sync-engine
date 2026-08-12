@@ -16,9 +16,28 @@ tauri-build = { version = "2", features = [] }
 gui_core = { package = "proton-sync-gui-core", path = "../gui-core" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-notification = "2"
+# Tauri's own async runtime IS tokio; naming it directly is what lets the tray poll sleep and the
+# SNI item hold an async mutex without spinning up a second one.
+tokio = { version = "1", features = ["sync", "time", "rt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2.7.2"
+
+# The tray (S8). `tray-icon`'s Linux backend is libappindicator, which is menu-only: its GTK
+# platform_impl contains no `TrayIconEvent` at all, so a left click produces no event a program can
+# see, `set_tooltip` is `Ok(())` with the argument discarded, and `rect()` returns `None`. The live
+# item it publishes has no `Activate` method on the bus to call. So the design's whole interaction —
+# left click opens the panel — is not reachable through it, and `src/sni.rs` speaks the protocol
+# directly instead.
+#
+# NOT A NEW DEPENDENCY: zbus 5 is already compiled into this tree via tauri-plugin-notification →
+# notify-rust. `default-features = false` + `tokio` so it shares Tauri's reactor rather than pulling
+# in async-io and running a second one.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+# `StreamExt`, for the NameOwnerChanged stream that re-registers the item when the host restarts.
+# zbus re-exports `futures_core` (the Stream trait) but not the extension trait that gives it `next`.
+futures-util = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 # `test` gives us `tauri::test::mock_builder`, so the socket commands can be driven headlessly

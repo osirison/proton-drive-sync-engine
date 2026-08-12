@@ -256,6 +256,30 @@ export function renderHexagon(opts = {}) {
   } = opts;
 
   const maskFill = masked ? "var(--surface)" : null;
+
+  /**
+   * THE TRAY GLYPH IS A DIFFERENT DRAWING, not the in-window mark shrunk, and `family: "tray"` is
+   * what says so. S8 is its first caller — F2 wrote the syncing branch below in anticipation and
+   * nothing had ever passed the flag, so this is the first time the difference is drawn.
+   *
+   * At 20px the outline IS the mark: there is no check inside it and no numeral over it, so it has
+   * to be the FOREGROUND colour. The in-window settled and paused marks stroke their outline with
+   * `--hex-settled-track`/`--hex-paused-track` — the dark ring a check or a pair of bars sits
+   * inside — and a glyph drawn at that value is a near-invisible grey on a dark panel. All ten
+   * marks on `10a Glyph states` stroke at `--hex-glyph-fg` or at their tone; not one is a track
+   * colour. DEVIATIONS §82a.
+   */
+  const glyph = family === "tray";
+  const glyphFg = "var(--hex-glyph-fg)";
+  /**
+   * The monochrome column of the sheet — every form at one colour.
+   *
+   * This is the property `10-tray.md` calls load-bearing ("state is carried by fill, not hue"): a
+   * tray icon may be forced single-colour by the desktop, so each form has to survive losing its
+   * hue. `mono` is therefore only meaningful on the glyph; in the window the tone IS the message
+   * and there is nothing to fall back to.
+   */
+  const toned = (colour) => (glyph && mono ? glyphFg : colour);
   const svgStyle = [`width:${size}px`, `height:${size}px`, flexNone ? "flex:none" : null, style]
     .filter(Boolean)
     .join(";");
@@ -264,7 +288,9 @@ export function renderHexagon(opts = {}) {
   const children = [];
   switch (state) {
     case "settled": {
-      children.push(body(strokeWidth, "var(--hex-settled-track)", maskFill));
+      // Both columns of the sheet draw this one at `--hex-glyph-fg`, so it does not go through
+      // `toned` — there is no hue to lose, which is the whole of the "Up to date" form.
+      children.push(body(strokeWidth, glyph ? glyphFg : "var(--hex-settled-track)", maskFill));
       // Dropped below 20px: the tray settled glyph is a bare outline, and so is the 13px bullet.
       // Reusing the panel construction there ships a checkmark that is not in the design.
       if (size > 20) {
@@ -303,12 +329,20 @@ export function renderHexagon(opts = {}) {
           : "var(--hex-syncing-track)";
 
       children.push(
-        svgEl("defs", {}, gradient(upId, "up"), twoWay ? gradient(dnId, "down") : null),
+        // NO DEFS AT ALL in the monochrome form, rather than defs nothing references. `10a Glyph
+        // states` draws the mono syncing glyph as two paths and the colour one as defs + two paths,
+        // and the gate compares node for node — an unreferenced `<defs>` is a node the drawing does
+        // not have.
+        glyph && mono
+          ? null
+          : svgEl("defs", {}, gradient(upId, "up"), twoWay ? gradient(dnId, "down") : null),
         body(strokeWidth, track, maskFill),
         svgEl("path", {
           d: HEX_PATH,
           fill: "none",
-          stroke: `url(#${upId})`,
+          // The travelling segment is the one mark in the set whose colour form is a GRADIENT, so
+          // the monochrome fallback is not a paler version of it — it is a flat foreground stroke.
+          stroke: toned(`url(#${upId})`),
           "stroke-width": strokeWidth,
           "stroke-dasharray": dash,
           "stroke-linecap": "round",
@@ -341,8 +375,10 @@ export function renderHexagon(opts = {}) {
 
     case "needsDot":
       children.push(
-        body(strokeWidth, TONE[tone].stroke, maskFill),
-        svgEl("circle", { cx: 60, cy: 60, r: dotRadius, fill: TONE[tone].stroke }),
+        body(strokeWidth, toned(TONE[tone].stroke), maskFill),
+        // The filled centre is what `10-tray.md` means by adding MASS rather than a badge, and it
+        // is why this form survives the monochrome column: the shape changes, not just the hue.
+        svgEl("circle", { cx: 60, cy: 60, r: dotRadius, fill: toned(TONE[tone].stroke) }),
       );
       break;
 
@@ -354,7 +390,9 @@ export function renderHexagon(opts = {}) {
         svgEl("path", {
           d: HEX_PATH,
           fill: "none",
-          stroke: "var(--hex-paused-track)",
+          // Like settled: both columns draw it at the foreground colour. The state is carried by
+          // the interrupted outline and the .45 opacity above, which is what survives losing hue.
+          stroke: glyph ? glyphFg : "var(--hex-paused-track)",
           "stroke-width": strokeWidth,
           "stroke-linejoin": "round",
           "stroke-dasharray": size <= 20 ? "24 24" : "14 12",
@@ -372,11 +410,11 @@ export function renderHexagon(opts = {}) {
 
     case "unreachable":
       children.push(
-        body(strokeWidth, "var(--destructive)", maskFill),
+        body(strokeWidth, toned("var(--destructive)"), maskFill),
         // No fill and no stroke-linejoin, matching the frames exactly.
         svgEl("path", {
           d: strikePath,
-          stroke: "var(--destructive)",
+          stroke: toned("var(--destructive)"),
           "stroke-width": strokeWidth,
           "stroke-linecap": "round",
         }),
@@ -439,6 +477,60 @@ export function renderHexagon(opts = {}) {
   }
 
   return svg;
+}
+
+// ------------------------------------------------------------------ the tray glyph ----
+
+/**
+ * THE FIVE FORMS, and there are five (`10-tray.md`: "Only five forms exist. A solid filled hexagon
+ * is not a state — it was drawn that way by mistake during design and corrected").
+ *
+ * In the order `10a Glyph states` lays them down the sheet, which is also the order they are worth
+ * reading in: the resting shape, then the one that moves, then the one that adds mass, then the two
+ * that say nothing is moving.
+ *
+ * Each entry is the ARGUMENTS that make that form, not a second drawing of it. The whole point is
+ * that S8 has one geometry source: the specimen sheet, the panel and the SVG files the desktop
+ * loads all come through `renderHexagon` from this table, so a form cannot be right in the app and
+ * wrong in the icon the tray actually shows.
+ */
+export const TRAY_GLYPH_STATES = ["settled", "syncing", "needsYou", "paused", "unreachable"];
+
+const GLYPH_FORM = {
+  settled: { state: "settled" },
+  // ONE segment, not two. `renderHexagon` defaults `direction` to "both" and pushes a second
+  // animated path with its own gradient; `10a Glyph states` draws the syncing glyph as a track and
+  // a single travelling segment, with one `<linearGradient>` in its defs. At 16px two segments
+  // chasing each other read as noise rather than as motion, which is the same reason the dash is
+  // 70 230 here and 62 238 in the window.
+  syncing: { state: "syncing", direction: "up" },
+  // `needsDot`, not `needsNumeral`: a count does not survive being shrunk to 16px, and the design
+  // replaces it with mass. `dotRadius` falls out of the size (17 at ≤20px), so it is not passed.
+  needsYou: { state: "needsDot", tone: "decision" },
+  paused: { state: "paused" },
+  unreachable: { state: "unreachable" },
+};
+
+/**
+ * One tray glyph.
+ *
+ * `size` defaults to 20 because that is what the sheet draws — `10-tray.md` says "rendered 15–20px",
+ * a range, and `10a Glyph states` renders every one of the ten at exactly 20. The range is what the
+ * desktop may do with the SVG; 20 is what the design measured.
+ *
+ * `mono` picks the sheet's left column: every form at one colour, which is what a desktop that
+ * forces its tray icons monochrome will show. It is not a degraded version — all five forms are
+ * distinguishable in it, and that is the property the whole set is built to have.
+ */
+export function trayGlyph({ state, mono = false, size = 20 } = {}) {
+  const form = GLYPH_FORM[state];
+  if (!form) {
+    throw new Error(
+      `hexagon: "${state}" is not one of the five tray glyphs (${TRAY_GLYPH_STATES.join(", ")}). ` +
+        "10-tray.md is explicit that only five forms exist — a sixth is a drawing mistake, not a state.",
+    );
+  }
+  return renderHexagon({ ...form, size, family: "tray", mono });
 }
 
 /**

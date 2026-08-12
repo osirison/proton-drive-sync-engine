@@ -49,10 +49,18 @@ export const api = {
   checkCli: () => invoke("check_cli"),
   skipRuleUsage: (patterns, include) => invoke("skip_rule_usage", { patterns, include: include ?? null }),
   // F4's Ctrl W / Ctrl Q. Both go through the same backend paths the tray menu uses, so the
-  // shortcut and the menu item cannot drift apart. Note quitting does NOT stop the daemon — see
-  // the comment on `quit_app` in commands.rs.
+  // shortcut and the menu item cannot drift apart.
+  //
+  // SINCE S8, QUITTING STOPS THE DAEMON. It did not, and the sub-label `10-tray.md` requires beside
+  // `Quit` says "stops syncing" — so the moment S8 drew that label, the app either had to keep the
+  // promise or print a false one in the place the design says matters most. `Close window · keeps
+  // syncing` is the other path and is unchanged. DEVIATIONS §45 (was open, now settled) and §82m.
   closeWindow: () => invoke("close_window"),
   quitApp: () => invoke("quit_app"),
+  // The tray panel (S8). One id space with the native fallback menu — see `tray_action`.
+  trayAction: (id) => invoke("tray_action", { id }),
+  resizeTrayPanel: (height) => invoke("resize_tray_panel", { height }),
+  hideTrayPanel: () => invoke("hide_tray_panel"),
   // Subscribe to the backend's `tray-navigate` event (tray menu → tab switch). Routed through the
   // facade so screens/shell never touch `window.__TAURI__` directly; a no-op in browser preview.
   onTrayNavigate: (cb) => {
