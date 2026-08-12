@@ -3776,13 +3776,26 @@ trigger.** What reviewed these was reading the daemon's own source for what `las
 reading the freedesktop specification for what a server emits and in what order, and running
 `decide` in sequence rather than once.
 
-**And one was caught by Copilot's SECOND pass, in the code written to answer its first** — which is
-the pattern this project has recorded before. The markup escaping added above defaulted to "the
-server does not parse markup" and only turned on when `GetCapabilities` said otherwise; that call is
-a round trip and can fail, so a transient bus error would have sent a user-chosen path into a parser
-that does. Unknown means escape now: an over-escaped `&amp;` in a path on a server we could not ask
-is not the same size of mistake as markup injection into a banner. It arrived as a *suppressed*
-comment, which is the half of a Copilot review that has to be expanded by hand.
+**Copilot took five passes over this branch, and its last three findings were all in code written to
+answer the pass before** — the pattern this project has recorded twice already, and every one of
+them arrived *suppressed*, which is the half of a Copilot review that has to be expanded by hand.
+
+- **Pass 2.** The markup escaping added above defaulted to "the server does not parse markup" and
+  only turned on when `GetCapabilities` said otherwise. That call is a round trip and can fail, so a
+  transient bus error would have sent a user-chosen path into a parser that does. Unknown means
+  escape now: an over-escaped `&amp;` in a path on a server we could not ask is not the same size of
+  mistake as markup injection into a banner.
+- **Pass 3.** `show` was given a deadline because it runs under the state mutex and a server that
+  accepts a call and never answers holds that mutex for the life of the process — and
+  `capabilities` runs on the same locked path, at connect, with no deadline at all. The same bug at
+  the only other place it can happen, left behind by the commit that fixed the first one. `close`
+  had it too; there is one `DBUS_DEADLINE` and all three use it.
+- **Pass 3, and it does not hold.** `typeof null === "object"` does pass `loadNotifierState`'s
+  guard, but object spread of `null` is a no-op by specification: `{ said: null }` resolves to
+  `said: {}`, which is the empty state that function would have returned anyway, and nothing throws.
+  Reproduced across six shapes before answering. Recorded as a comment on the guard rather than
+  applied — a finding's premise is not its consequence.
+- **Passes 4 and 5** generated nothing.
 
 Two were caught by Copilot's first pass and are the same shape from a third direction: `payloadFor`
 sent no `app`, which `NotifyPayload` requires with no default — so serde refused every payload and
