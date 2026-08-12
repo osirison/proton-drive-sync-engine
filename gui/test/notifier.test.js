@@ -245,3 +245,88 @@ test("the three policy values are the ones the Rust side stores", () => {
     assert.match(rust, new RegExp(`"${id}"`), `gui_prefs.rs does not know "${id}"`);
   }
 });
+
+test("a daemon that is simply down still gets the outage banner", () => {
+  // AN UNREACHABLE DAEMON SENDS NO REPLY, so `response` is null on every tick and there is nothing
+  // live to measure "nothing has synced for a day" against — which would have made the trigger
+  // silent for the one outage most worth naming. The last epoch seen is remembered instead.
+  const seen = decide({ state: emptyState(), view: view(), policy: "only_when_needed", nowMs: NOW_MS });
+  assert.equal(seen.state.lastSeenSync, NOW_SECS - 60);
+
+  const down = decide({
+    state: { ...seen.state, sawUnsynced: true, said: { firstSync: "first" } },
+    view: { daemonState: "unreachable", response: null, conflicts: [] },
+    policy: "only_when_needed",
+    nowMs: (NOW_SECS + OUTAGE_AFTER_SECS) * 1000,
+  });
+  assert.equal(down.event?.kind, "outage");
+  assert.equal(down.event.cause, "unreachable");
+  // …and the count is dropped rather than rendered as zero, because there is no reply to count.
+  assert.equal(down.event.changes, null);
+});
+
+test("a deliberate pause is not an outage", () => {
+  // `pause and resume` is one of the twelve categories that stay silent on purpose, and a folder
+  // paused over a long weekend crosses the day threshold on its own.
+  const day = { response: { last_sync_epoch_secs: NOW_SECS - OUTAGE_AFTER_SECS, paused: true } };
+  assert.equal(tick(day).event, null);
+  assert.equal(tick({ ...day, daemonState: "paused" }).event, null);
+  // The same age, not paused, still interrupts — or the test above would pass on a broken trigger.
+  assert.equal(
+    tick({ response: { last_sync_epoch_secs: NOW_SECS - OUTAGE_AFTER_SECS } }).event?.kind,
+    "outage",
+  );
+});
+
+test("a banner whose subject is gone comes down, and can be said again", () => {
+  const first = tick({ conflicts: [{ path: "notes/todo.txt" }] });
+  assert.equal(first.event.kind, "conflict");
+
+  // Resolved in the window: nothing to say, and the live banner is asked to close.
+  const cleared = decide({
+    state: first.state,
+    view: view(),
+    policy: "only_when_needed",
+    nowMs: NOW_MS + COALESCE_MS * 2,
+  });
+  assert.equal(cleared.event, null);
+  assert.equal(cleared.resolved, true);
+  assert.equal(cleared.state.said.conflict, undefined, "the signature outlived its queue");
+
+  // The identical conflict on another day is a new thing to say, not a repeat.
+  const again = decide({
+    state: cleared.state,
+    view: view({ conflicts: [{ path: "notes/todo.txt" }] }),
+    policy: "only_when_needed",
+    nowMs: NOW_MS + COALESCE_MS * 4,
+  });
+  assert.equal(again.event?.kind, "conflict");
+});
+
+test("the first sync is not un-said when it stops being current", () => {
+  // Every other kind forgets its signature once its queue empties. `firstSync` may not: "once, at
+  // the end of a long wait" is once, and it has no queue to empty.
+  const watched = decide({
+    state: emptyState(),
+    view: view({ response: { last_sync_epoch_secs: null } }),
+    policy: "only_when_needed",
+    nowMs: NOW_MS,
+  });
+  const done = decide({
+    state: watched.state,
+    view: view(),
+    policy: "only_when_needed",
+    nowMs: NOW_MS + 60_000,
+  });
+  assert.equal(done.event?.kind, "firstSync");
+  const later = decide({
+    state: done.state,
+    view: view(),
+    policy: "only_when_needed",
+    nowMs: NOW_MS + COALESCE_MS * 100,
+  });
+  assert.equal(later.event, null);
+  assert.equal(later.state.said.firstSync, "first");
+  // …and it does not ask for a banner to be closed either: nothing is waiting on it.
+  assert.equal(later.resolved, false);
+});

@@ -2919,7 +2919,7 @@ async function refreshNotifyPolicy() {
  * the four triggers see one consistent picture rather than two ticks of one.
  */
 function evaluateNotifications() {
-  const { event, state } = decide({
+  const { event, state, resolved } = decide({
     state: notifierState,
     view: {
       response: store.select.response(),
@@ -2939,7 +2939,13 @@ function evaluateNotifications() {
   } catch (_) {
     /* a full or disabled storage costs a repeated banner, nothing more */
   }
-  if (!event) return;
+  if (!event) {
+    // The banner's subject is gone — the deletion was approved, the conflict resolved, the daemon
+    // came back. A persistent banner (Plasma advertises `persistence`) would otherwise sit there
+    // asking about something already decided, and its buttons would act on an empty queue.
+    if (resolved) api.closeNotification().catch((error) => console.error("close_notification:", error));
+    return;
+  }
   api.sendNotification(payloadFor(bannerFor(event))).catch((error) => {
     // A desktop with no notification server, or one that refused. Not fatal and not retried: the
     // same event is still in the window, and a retry loop against a server that is not there would
@@ -3038,10 +3044,16 @@ async function poll() {
   }
   // Pending deletions ride on the status reply itself — no second IPC round trip per tick.
   if (payload?.response) store.setPendingDeletions(payload.response.pending_deletions ?? []);
-  // LAST, and after the conflict scan above, so the four triggers see one consistent picture. A
-  // frame preview never notifies: `?frame=` is a fixture, and a design surface that raised a real
-  // desktop banner would be the preview reaching outside the window.
-  if (!activeFixture()) evaluateNotifications();
+  // LAST, and after the conflict scan above, so the four triggers see one consistent picture.
+  //
+  // TWO EXCLUSIONS, AND THE SECOND IS THE ONE THAT BITES. A frame preview never notifies: `?frame=`
+  // is a fixture, and a design surface raising a real desktop banner would be the preview reaching
+  // outside the window. And THE TRAY PANEL IS A SECOND WEBVIEW RUNNING THIS FILE
+  // (`index.html?surface=tray`, `panel.rs`) — it calls `main()`, so it polls, and without this it
+  // would evaluate the same triggers against its own copy of the state, race the main window on the
+  // same localStorage key and send a second time. `replaces_id` would stop them stacking and
+  // nothing would stop the banner re-popping every time the panel is opened.
+  if (!activeFixture() && !isTraySurface()) evaluateNotifications();
   scheduleNextPoll();
 }
 
@@ -3063,7 +3075,10 @@ function main() {
 
   // Tray menu items ask the shell to navigate. Routed through the api facade — no direct
   // window.__TAURI__ here.
-  api.onNotificationAction(onNotificationAction);
+  // MAIN WINDOW ONLY. `app.emit` broadcasts to every webview, so the tray panel — which runs this
+  // same file — would run the handler a second time for one click: two deny sweeps over the queue,
+  // and a `navigate()` that moves the panel's own route to a screen it cannot draw.
+  if (!isTraySurface()) api.onNotificationAction(onNotificationAction);
 
   api.onTrayNavigate((id) => {
     if (typeof id !== "string") return;

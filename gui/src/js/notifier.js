@@ -53,6 +53,15 @@ export const emptyState = () => ({
    * process (or a previous one, through storage) actually watched the transition.
    */
   sawUnsynced: false,
+  /**
+   * The newest `last_sync_epoch_secs` this GUI has seen.
+   *
+   * AN UNREACHABLE DAEMON SENDS NO REPLY AT ALL, so `response` is null on every tick and the outage
+   * trigger — which is a claim about how long it has been — would have had nothing to measure
+   * against for the one outage most worth naming: a daemon that died a day ago. Remembered here
+   * instead, and used only when the live reply cannot answer.
+   */
+  lastSeenSync: null,
 });
 
 /**
@@ -76,7 +85,7 @@ const sig = (parts) => parts.slice().sort().join("\u0000");
  *
  * `nowSecs` is passed rather than read so the outage threshold is testable at a boundary.
  */
-export function candidates({ response, conflicts = [], daemonState = null }, nowSecs) {
+export function candidates({ response, conflicts = [], daemonState = null, lastSeenSync = null }, nowSecs) {
   const out = [];
   const deletions = (response?.pending_deletions ?? []).filter(isPermanent);
   if (deletions.length) {
@@ -97,8 +106,14 @@ export function candidates({ response, conflicts = [], daemonState = null }, now
     const paths = conflicts.map((c) => String(c.path ?? c.original ?? c));
     out.push({ kind: "conflict", paths, signature: sig(paths) });
   }
-  const lastSync = response?.last_sync_epoch_secs ?? null;
-  if (lastSync != null && nowSecs - lastSync >= OUTAGE_AFTER_SECS) {
+  // The live answer, then the remembered one. `?? null` on the whole thing, not on the first half:
+  // a reachable daemon that has never synced answers `null` and means it, and that is `firstRun`
+  // rather than an outage.
+  const lastSync = response ? response.last_sync_epoch_secs : lastSeenSync;
+  // A DELIBERATE PAUSE IS NOT AN OUTAGE. `pause and resume` is one of the twelve categories that
+  // stay silent on purpose, and a folder paused over a weekend crosses the day threshold on its own.
+  const paused = daemonState === "paused" || response?.paused === true;
+  if (!paused && lastSync != null && nowSecs - lastSync >= OUTAGE_AFTER_SECS) {
     out.push({
       kind: "outage",
       changes: response?.pending_changes ?? null,
@@ -122,8 +137,9 @@ export function candidates({ response, conflicts = [], daemonState = null }, now
 /**
  * Decide what to show, if anything, and what to remember.
  *
- * Returns `{ event, state }` — `event` is null when nothing should interrupt, and `state` is always
- * the state to keep (it advances `sawUnsynced` even on a silent tick).
+ * Returns `{ event, state, resolved }` — `event` is null when nothing should interrupt, `resolved`
+ * asks for the live banner to be taken down because its subject is gone, and `state` is always the
+ * state to keep (it advances `sawUnsynced` and `lastSeenSync` even on a silent tick).
  */
 export function decide({ state, view, policy = "only_when_needed", nowMs }) {
   const nowSecs = Math.floor(nowMs / 1000);
@@ -136,9 +152,27 @@ export function decide({ state, view, policy = "only_when_needed", nowMs }) {
     ...state,
     said: { ...state.said },
     sawUnsynced: state.sawUnsynced || (Boolean(view?.response) && lastSync == null),
+    lastSeenSync: lastSync ?? state.lastSeenSync ?? null,
   };
 
-  for (const candidate of candidates(view ?? {}, nowSecs)) {
+  const list = candidates({ ...(view ?? {}), lastSeenSync: state.lastSeenSync }, nowSecs);
+  const present = new Set(list.map((c) => c.kind));
+
+  // FORGETTING IS PART OF THE RULE. What we said about a kind is remembered so the same queue does
+  // not repeat; once that queue is empty there is nothing left to repeat, and holding the signature
+  // would silence the identical set if it ever came back — a conflict resolved on Monday and made
+  // again on Tuesday is a new thing to say. `firstSync` is the exception, because "once, ever" is
+  // its whole specification.
+  for (const kind of Object.keys(next.said)) {
+    if (kind !== "firstSync" && !present.has(kind)) delete next.said[kind];
+  }
+
+  // The live banner is about something that no longer exists — approved, resolved, or synced. It
+  // comes down rather than sitting there as a question nobody can answer any more.
+  const resolved = Boolean(state.lastKind) && state.lastKind !== "firstSync" && !present.has(state.lastKind);
+  if (resolved) next.lastKind = null;
+
+  for (const candidate of list) {
     if (!allowed.has(candidate.kind)) continue;
     // Fires once, ever, and only where this install watched the wait end.
     if (candidate.kind === "firstSync" && !next.sawUnsynced) continue;
@@ -149,12 +183,13 @@ export function decide({ state, view, policy = "only_when_needed", nowMs }) {
     // conflict banner went up five seconds ago, is the wrong way round.
     const withinWindow = nowMs - state.lastAt < COALESCE_MS;
     const moreSerious = SEVERITY[candidate.kind] > (SEVERITY[state.lastKind] ?? -1);
-    if (withinWindow && !moreSerious) return { event: null, state: next };
+    if (withinWindow && !moreSerious) return { event: null, state: next, resolved };
 
     next.said[candidate.kind] = candidate.signature;
     next.lastAt = nowMs;
     next.lastKind = candidate.kind;
-    return { event: candidate, state: next };
+    // A banner that replaces the one that resolved does not also need it taken down.
+    return { event: candidate, state: next, resolved: false };
   }
-  return { event: null, state: next };
+  return { event: null, state: next, resolved };
 }
