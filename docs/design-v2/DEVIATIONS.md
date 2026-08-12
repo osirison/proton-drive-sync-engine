@@ -4289,6 +4289,12 @@ as 1.00:1 **in both themes**. And it read every SVG node with a `fill`, so 21 he
 colour behind them is that node's entire job. **61 findings became 35 became 0**, and 26 of the 61
 were the gate accusing the design of its own bugs: 21 masks and 5 stacked tints.
 
+**And the wildcard did not blunt the style gate**, which is the thing a reader should want checked
+before believing 51/51. Moving a DECLARED light value by two hundredths of an alpha —
+`--decision-card-border` from `.28` to `.30`, a value `12a Deletions light` draws — fails that frame
+on exactly four assertions. 628 comparisons are declined; the ones the frame actually makes are as
+exact as they were.
+
 **What it does not cover, stated rather than implied:** strokes. A glyph whose stroke is mapped to
 the wrong end of its ramp is invisible here, because a track like `--hex-syncing-track` is drawn a
 shade off the surface on purpose and a legibility gate has no opinion about a track. `assert.mjs`

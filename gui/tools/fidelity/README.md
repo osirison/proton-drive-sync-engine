@@ -258,6 +258,14 @@ that admits its edges:
 - **A stroke's light value on an undrawn screen.** The contrast gate reads text; a hexagon track is
   drawn a shade off the surface on purpose and a legibility gate has no opinion about one. Strokes
   ARE compared exactly on the eight light frames that exist.
+- **The `⋯` menu's theme toggle, as a toggle.** Both gates pin the scheme through
+  `emulateMediaFeatures` and clear `localStorage` first, deliberately — a gate that stamped
+  `data-theme` itself would exercise `tokens.css`'s second light block and leave the media half
+  untested, which is `fixtures/preview.js`'s argument for keeping `?theme=` a separate parameter. So
+  CI drives the media path and nothing drives the attribute path. What stands behind it instead is
+  `check-tokens.mjs` asserting the two light declarations are identical and that neither theme is
+  missing a token the other has — the drift that would actually hurt. The click itself is covered by
+  a person opening `?theme=light`.
 - **Whether an animation looks right.** Only the declaration is comparable — name, duration, delay,
   timing function. A wrong easing that parses is invisible here.
 - **Native tray rendering.** Not a webview; it has no DOM. The tray strings are exempted in
