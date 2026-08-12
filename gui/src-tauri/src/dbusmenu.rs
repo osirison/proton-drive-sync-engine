@@ -121,11 +121,21 @@ impl TrayMenu {
         // ONTO THE MAIN THREAD. This runs on the D-Bus task, and the actions behind these rows show
         // and hide GTK windows — which off the main loop is undefined behaviour that presents as
         // nothing happening at all (`panel.rs`'s header, and the same hop `panel::toggle` makes).
+        //
+        // The hop's own failure — the event loop gone, which is the app on its way out — is an
+        // `idErrors` answer too, and was being discarded. "Handled" has to mean the work was
+        // scheduled, not that a row was recognised.
         let app = self.app.clone();
-        let _ = app
+        match app
             .clone()
-            .run_on_main_thread(move || crate::tray::handle_menu_event(&app, action));
-        true
+            .run_on_main_thread(move || crate::tray::handle_menu_event(&app, action))
+        {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("tray: could not run {action:?} on the main thread: {error}");
+                false
+            }
+        }
     }
 
     pub fn new(app: AppHandle, rows: &'static [Entry]) -> Self {
@@ -337,14 +347,17 @@ impl TrayMenu {
     /// Ids are dispatched at most once each. One D-Bus message asking for the same row ten thousand
     /// times is a message any process on the session bus can send, and every `clicked` behind these
     /// rows spawns a thread to talk to the daemon.
+    ///
+    /// A `HashSet` rather than a `Vec`, because the first version of that guard was `Vec::contains`
+    /// in the loop — quadratic in exactly the input the paragraph above says to expect, which is
+    /// spending the CPU it was written to save.
     fn event_group(&self, events: Vec<(i32, String, Value<'_>, u32)>) -> Vec<i32> {
-        let mut seen = Vec::new();
+        let mut seen = std::collections::HashSet::with_capacity(events.len());
         let mut errors = Vec::new();
         for (id, event_id, _data, _timestamp) in events {
-            if seen.contains(&id) {
+            if !seen.insert(id) {
                 continue;
             }
-            seen.push(id);
             if !self.dispatch(id, &event_id) {
                 errors.push(id);
             }

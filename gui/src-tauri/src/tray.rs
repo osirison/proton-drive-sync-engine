@@ -307,14 +307,24 @@ async fn update(app: &AppHandle, state: DaemonState, next: &Shown) -> bool {
             }
             drop(guard);
             let app = app.clone();
-            let _ = app.clone().run_on_main_thread(move || {
-                if let Err(error) = install_fallback(&app, state) {
-                    eprintln!("tray: the fallback tray failed too: {error}");
-                }
-            });
-            // The fallback DID take the state, and saying otherwise would re-run this every tick
-            // for a session that is working as well as it can.
-            true
+            // The fallback DID take the state — provided the hop reached the event loop. Returning
+            // `true` unconditionally here would record a tick as shown on a menu that was never
+            // built; returning it when the hop succeeded is what is knowable from this side, since
+            // `install_fallback`'s own failure happens on the other thread and logs there. That one
+            // is covered too: `indicator_is_up` stays false while there is no SNI item, so the
+            // 30-second retry comes back around.
+            let scheduled = app
+                .clone()
+                .run_on_main_thread(move || {
+                    if let Err(error) = install_fallback(&app, state) {
+                        eprintln!("tray: the fallback tray failed too: {error}");
+                    }
+                })
+                .is_ok();
+            if !scheduled {
+                eprintln!("tray: could not reach the event loop to build the fallback menu");
+            }
+            scheduled
         }
     }
 }
