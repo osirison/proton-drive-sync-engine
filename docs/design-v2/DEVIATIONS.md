@@ -3629,9 +3629,14 @@ failed send is logged, once, and the same event is still in the window and on th
 Filed as a follow-up. The renderer is not dead code in the meantime: it is what the five `11a`
 frames are asserted against.
 
-**`replaces_id` is tracked, not assumed.** Passing a stale id to a server that has forgotten it is
-server-defined behaviour, and most create a new banner — which is the stacking it exists to prevent.
-A `NotificationClosed` for our id clears it and the next banner is a fresh one. `ActionInvoked` is
+**`replaces_id` is tracked, not assumed.** Measured on the same session rather than read off the
+spec: `Notify` with `replaces_id: 0` returned `26`, a second `Notify` with `replaces_id: 26` returned
+**`26`** — replaced in place, not stacked — and a `replaces_id` the server had never issued
+(`999999`) came back as `999999`, so Plasma takes an arbitrary id rather than allocating around it.
+The spec does not require any of that (it says only that the returned value equals `replaces_id`),
+and a server that allocates a fresh id for one it has forgotten would stack the banner this rule
+exists to prevent. So the live id is tracked: a `NotificationClosed` for ours clears it and the next
+banner starts from `0`. `ActionInvoked` is
 broadcast to every listener on the bus, so the id is matched against ours before anything runs;
 without that, clicking `Discard` in another application's banner would fire one of ours.
 
@@ -3645,8 +3650,17 @@ build. `notifier.js` is pure and `ui/notification.js` builds the banner; `notify
 user-visible text at all, not even the app name.
 
 The window is **hidden, not closed** (`lib.rs`'s `CloseRequested` arm calls `window.hide()`), so the
-poll behind this survives the tray. Its cadence drops from 2s to 10s when unfocused, which is well
-inside every threshold here — the shortest is a 30-second coalescing window.
+webview and its poll outlive the tray click. Its cadence drops from 2s to 10s when unfocused
+(`scheduleNextPoll` keys on `document.hasFocus()`), which is well inside every threshold here — the
+shortest is the 30-second coalescing window.
+
+**One thing here is not verified and cannot be from a headless check: whether WebKitGTK throttles or
+suspends a hidden window's timers.** The engine throttles a non-visible page and the documented
+floor is 1s, which the 10s cadence already clears — but "throttled to 1s" and "suspended until shown"
+are different answers and only a run on a real desktop with the window hidden distinguishes them. If
+it turns out to be suspension, the fix is not a shorter interval: the triggers move to the Rust poll
+in `tray.rs`, which runs regardless, and the copy has to move or be gated across the two languages
+(§85 is the argument for why it is here). Worth a live check before Phase 1 closes.
 
 ### 85a. Two rules the design states and one it does not
 
