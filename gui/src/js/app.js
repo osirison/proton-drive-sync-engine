@@ -13,7 +13,14 @@
 
 import { api } from "./api.js";
 import * as store from "./store.js";
-import { ROUTES, FOOTER_ORDER, isOverlay, isDialog, nextOnboardingLatch } from "./routes.js";
+import {
+  ROUTES,
+  FOOTER_ORDER,
+  isOverlay,
+  isDialog,
+  nextOnboardingLatch,
+  releasesOnboarding,
+} from "./routes.js";
 import { el } from "./ui/el.js";
 import {
   renderHeader,
@@ -191,7 +198,11 @@ function chipFor() {
   // #246 at 11px. Without this arm a failed pass falls through to `idle` HERE too — the chip is a
   // second derivation of the same question, and it would have gone on saying `idle` in the corner
   // of a window whose hero says the last sync didn't finish. The daemon's own word for it, which is
-  // what `record_status_history` writes ("sync failed") and what S5's passes list draws.
+  // what `record_status_history` writes as the pass's message ("sync failed", src/daemon.rs).
+  //
+  // NOT S5's words for the same pass: `passRowFor` labels every failed row `Couldn't reach Proton
+  // Drive`, which §90d rules out for this state precisely because a pass can fail with Proton
+  // perfectly reachable. That is a pre-existing S5 wording and not this chip's business (#258).
   if (state === "failed") return { variant: "idle", text: "sync failed" };
   if (state === "firstRun") return { variant: "idle", text: "first run" };
   return { variant: "idle", text: "idle" };
@@ -662,14 +673,20 @@ function render() {
   // redraw step 2, with its stale plan, behind the merge dialog. `nextOnboardingLatch` stays pure;
   // this is the caller knowing something the daemon state cannot say.
   const wasOnboarding = onboardingLatch;
-  // EXACTLY `nextOnboardingLatch`'s RELEASE SET, and `firstRun` is left out on purpose: the latch
-  // treats it as an ENTRY trigger, not a release, and `counters_unknown()` groups it with
-  // `unreachable` in both gui-core and store.js. Leaving the failure latched there changes nothing —
-  // `nextOnboardingLatch` returns true for `firstRun` anyway, so both arms of the ternary below
-  // agree — and it clears on the first state that is actually a hand-off. (A failed pass cannot
-  // derive to `firstRun` within one daemon process in any case: `record_status_history` runs on the
-  // same pass, and `firstRun` requires an empty history.)
-  const reachable = st === "idle" || st === "running" || st === "paused" || st === "authExpired";
+  // `nextOnboardingLatch`'s RELEASE SET, ASKED FOR RATHER THAN RESTATED. This line used to be a
+  // second copy of that list, and the copy was not a duplicated screen — it was a KILL SWITCH for
+  // the original: `onboardingFailure` short-circuits the ternary below, so any state the two lists
+  // disagreed about made the release arm in `routes.js` dead code on exactly its own path. Adding
+  // `failed` there and not here latched the wizard shut on a failed first sync, which is the
+  // opposite of what that arm is for, and three comments claimed otherwise while it did. #246.
+  //
+  // `firstRun` is left out of the set on purpose: the latch treats it as an ENTRY trigger, not a
+  // release, and `counters_unknown()` groups it with `unreachable` in both gui-core and store.js.
+  // Leaving the failure latched there changes nothing — `nextOnboardingLatch` returns true for
+  // `firstRun` anyway, so both arms of the ternary agree. (A failed pass cannot derive to `firstRun`
+  // within one daemon process in any case: `record_status_history` runs on the same pass, and
+  // `firstRun` requires an empty history.)
+  const reachable = releasesOnboarding(st);
   // A merge that failed against a daemon that then came up is not onboarding's problem any more.
   if (onboardingFailure && reachable) onboardingFailure = null;
   onboardingLatch =

@@ -256,6 +256,13 @@ export function updateTrayPanel(node, view) {
   if (!node) return false;
   return updateCompactPanel(node, {
     state: view.state,
+    // THE MENU IS PART OF WHAT IS ON SCREEN, and passing only `state` made a patch blind to it.
+    // Three hero states share the `unreachable` PANEL form and two of them want different ROWS
+    // (`MENU_STATE` above), so `failed` → `authExpired` between two polls patched the headline to
+    // `Proton Drive is asking you to sign in again` over a menu still offering `Try again now` —
+    // the row that cannot do what the sentence above it asks. Built without handlers because only
+    // the ids are compared; a mismatch returns false and the caller renders a fresh panel. #246.
+    menu: trayMenu(view.menuState),
     headline: view.headline,
     sub: Array.isArray(view.sub) ? undefined : (view.sub ?? undefined),
     meta: view.meta ?? undefined,

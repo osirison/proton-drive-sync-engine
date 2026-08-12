@@ -484,6 +484,15 @@ export function renderCompactPanel(opts = {}) {
         // `2a Compact needs you`, `4a Compact` and `12a Compact needs light`, all three at .3 alpha.
         (state === "needsYou" || state === "deletions" ? " is-attention" : ""),
       "data-state": state,
+      // THE MENU'S OWN IDENTITY, because `data-state` is not it. The panel FORM and the menu ROWS
+      // are two mappings of one daemon state and they are deliberately not the same mapping
+      // (`screens/tray.js`: "the panel takes the form and the menu takes the cause"), so three
+      // states share the struck form while two of them want different rows. A patch gated on the
+      // form alone therefore rewrites the sentence over rows built for a different cause — an
+      // expired session under `Try again now`, which is precisely the row `MENU_STATE`'s own
+      // comment forbids. Derived from the rows rather than passed alongside them: an id list read
+      // off what was drawn cannot drift from it. Found by review, #246.
+      "data-menu": menu ? menuSignature(menu) : null,
     },
     hero,
     rows,
@@ -520,8 +529,11 @@ export function renderCompactPanel(opts = {}) {
  */
 export function updateCompactPanel(node, opts = {}) {
   if (!node) return false;
-  const { state, headline: headlineText, sub, meta, count, transfers, footer } = opts;
+  const { state, headline: headlineText, sub, meta, count, transfers, footer, menu } = opts;
   if (state && node.dataset.state !== state) return false;
+  // The rows are NOT patched — `trayMenu`'s handlers are bound at build time — so a different menu
+  // is a shape change like any other, and the caller renders a fresh panel. See `data-menu`.
+  if (menu && node.dataset.menu !== menuSignature(menu)) return false;
 
   const rows = node.querySelectorAll(".transfer-row");
   if (transfers && transfers.length !== rows.length) return false;
@@ -640,6 +652,24 @@ export const TRAY_MENU = {
  * a caller that has to supply five objects of callbacks will get one of them wrong on the state it
  * tests least — which, for a tray, is `unreachable`.
  */
+/**
+ * What a menu IS, as a string: its row ids in order, separators included.
+ *
+ * Ids and not labels — two sets can draw the same words for different actions, and the id is what
+ * the click dispatches on. `JSON.stringify` for the same reason `screens/main.js` uses it for its
+ * lists: any separator character is a wrong answer when the parts are arbitrary strings.
+ *
+ * WHICH IS WHY THE SEPARATOR IS `null` AND NOT `"|"`. It was `"|"` for one commit, and that is the
+ * sentence above being written and then not followed: a row id of `|` would have collided with a
+ * separator. No id is `|` today, so nothing was broken — but the whole reason this is not a `join`
+ * is that no character is safe, and picking one anyway inside the encoding that exists to avoid it
+ * is the argument losing to the habit. `null` cannot be an id, and JSON keeps the two distinct.
+ * Caught by Copilot on #259.
+ */
+export function menuSignature(rows) {
+  return JSON.stringify(rows.map((row) => (row.separator ? null : row.id)));
+}
+
 export function trayMenu(state, onSelect = null) {
   const rows = TRAY_MENU[state];
   if (!rows) {

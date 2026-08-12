@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { trayView } from "../src/js/screens/tray.js";
-import { TRAY_MENU } from "../src/js/ui/compact.js";
+import { TRAY_MENU, menuSignature } from "../src/js/ui/compact.js";
 import { MAIN, TRAY } from "../src/js/ui/copy.js";
 
 /**
@@ -111,6 +111,29 @@ test("a failed pass with an empty queue keeps the reassurance and drops the coun
   // queue is genuinely empty on a pass driven from Proton's side. The reassurance survives alone.
   const view = trayView({ daemonState: "failed", response: reply({ pending_changes: 0 }) });
   assert.equal(view.sub, "Nothing is lost.");
+});
+
+test("the panel form does not identify the menu, so a patch cannot be gated on it alone", () => {
+  // The desync `data-menu` exists for. `updateCompactPanel` rejects a patch on `data-state`, which
+  // is the panel FORM — and the form and the rows are deliberately two different mappings of one
+  // daemon state ("the panel takes the form and the menu takes the cause"). Three hero states share
+  // the struck form; two of them want different rows. So `failed` → `authExpired` between two polls
+  // patched `Proton Drive is asking you to sign in again` over a menu still offering `Try again
+  // now` — the row MENU_STATE's own comment forbids. DEVIATIONS §90f, found by review.
+  const failed = trayView({ daemonState: "failed", response: reply({ last_error: "os error 2" }) });
+  const expired = trayView({ daemonState: "authExpired", response: reply() });
+  assert.equal(failed.state, expired.state, "the premise: one form");
+  assert.notEqual(failed.menuState, expired.menuState, "and two menus");
+  // Which is what the signature has to separate, since the form cannot.
+  assert.notEqual(menuSignature(TRAY_MENU[failed.menuState]), menuSignature(TRAY_MENU[expired.menuState]));
+  // Ids, not labels: a click dispatches on the id, and two sets can draw the same words.
+  assert.match(menuSignature(TRAY_MENU[failed.menuState]), /tryAgain/);
+  assert.doesNotMatch(menuSignature(TRAY_MENU[expired.menuState]), /tryAgain/);
+  // Separators count — a set that lost one is a different menu, and every id would still match.
+  assert.notEqual(
+    menuSignature(TRAY_MENU.settled),
+    menuSignature(TRAY_MENU.settled.filter((r) => !r.separator)),
+  );
 });
 
 test("an unreachable daemon drops the count clause rather than claiming zero", () => {
