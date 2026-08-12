@@ -188,7 +188,8 @@ pub struct Notifier {
     /// branches, and clearing the attribution on close would therefore drop the click about half
     /// the time — including the click that keeps someone's files.
     last: Option<(u32, String)>,
-    /// Whether the server parses markup in a body. Read once, at connect.
+    /// Whether to assume the server parses markup in a body. Read once, at connect — and `true`
+    /// until it is, which is the direction that fails safe. See [`assume_markup`].
     markup: bool,
 }
 
@@ -204,7 +205,7 @@ impl Notifier {
             connection,
             live: 0,
             last: None,
-            markup: false,
+            markup: assume_markup(None),
         })
     }
 
@@ -218,7 +219,7 @@ impl Notifier {
 
     /// Record what the server said it can do. Read once, at connect.
     pub fn note_capabilities(&mut self, caps: &[String]) {
-        self.markup = caps.iter().any(|c| c == "body-markup");
+        self.markup = assume_markup(Some(caps));
     }
 
     /// Show one banner, replacing ours if one is still up.
@@ -331,14 +332,29 @@ fn icon_path(name: &str) -> String {
     }
 }
 
+/// Whether to escape the body, from what the server said it can do — or from not knowing.
+///
+/// UNKNOWN MEANS ESCAPE. `GetCapabilities` is a round trip and can fail: a transient bus error, a
+/// server mid-restart, a minimal server that answers `Notify` and not this. Defaulting to "does not
+/// parse markup" would send a user-chosen path into a parser that does, and the two failures are
+/// not the same size — an unescaped `<b>` in a filename is markup injection into a banner, while an
+/// over-escaped one is a visible `&amp;` in a path on a server we could not ask. Fail towards the
+/// second. Found by Copilot's second pass, in code written to answer its first.
+#[cfg(target_os = "linux")]
+pub fn assume_markup(caps: Option<&[String]>) -> bool {
+    match caps {
+        Some(caps) => caps.iter().any(|c| c == "body-markup"),
+        None => true,
+    }
+}
+
 /// The three characters a `body-markup` server parses.
 ///
 /// The deletion banner's body carries a PATH, which is the one part of any of these sentences a
 /// person chooses. A file called `<b>` would render as markup on Plasma (which advertises
-/// `body-markup`) and can break the parse outright on a stricter one. Escaped only where the server
-/// says it parses markup: on a server that does not, `&amp;` is what would be shown.
+/// `body-markup`) and can break the parse outright on a stricter one.
 #[cfg(target_os = "linux")]
-fn escape_markup(body: &str) -> String {
+pub fn escape_markup(body: &str) -> String {
     body.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -396,4 +412,30 @@ async fn spawn_signal_listener(app: AppHandle, connection: Connection) -> zbus::
         *state.lock().await = None;
     });
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::{assume_markup, escape_markup};
+
+    #[test]
+    fn an_unreadable_capability_list_escapes() {
+        // The failure this exists for: `GetCapabilities` can fail while `Notify` works, and the
+        // body carries a path the user chose.
+        assert!(assume_markup(None));
+        assert!(assume_markup(Some(&["body".into(), "body-markup".into()])));
+        // Only an explicit answer that lacks it turns escaping off.
+        assert!(!assume_markup(Some(&["body".into(), "actions".into()])));
+        assert!(!assume_markup(Some(&[])));
+    }
+
+    #[test]
+    fn a_path_cannot_open_a_tag() {
+        assert_eq!(
+            escape_markup("photos/<b>2019</b> & more"),
+            "photos/&lt;b&gt;2019&lt;/b&gt; &amp; more"
+        );
+        // The ampersand goes FIRST, or the entities it introduces would be escaped again.
+        assert_eq!(escape_markup("a & <b"), "a &amp; &lt;b");
+    }
 }

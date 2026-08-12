@@ -3776,6 +3776,14 @@ trigger.** What reviewed these was reading the daemon's own source for what `las
 reading the freedesktop specification for what a server emits and in what order, and running
 `decide` in sequence rather than once.
 
+**And one was caught by Copilot's SECOND pass, in the code written to answer its first** — which is
+the pattern this project has recorded before. The markup escaping added above defaulted to "the
+server does not parse markup" and only turned on when `GetCapabilities` said otherwise; that call is
+a round trip and can fail, so a transient bus error would have sent a user-chosen path into a parser
+that does. Unknown means escape now: an over-escaped `&amp;` in a path on a server we could not ask
+is not the same size of mistake as markup injection into a banner. It arrived as a *suppressed*
+comment, which is the half of a Copilot review that has to be expanded by hand.
+
 Two were caught by Copilot's first pass and are the same shape from a third direction: `payloadFor`
 sent no `app`, which `NotifyPayload` requires with no default — so serde refused every payload and
 no banner would ever have arrived — and a `#[cfg]` bound to one statement left a Linux-only type
