@@ -50,10 +50,16 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// What the tray is showing. Compared before every update so a poll that changes nothing does
 /// nothing: telling a host its icon changed makes it reload, and doing that twice a second is a
 /// tray icon that flickers for no reason.
+///
+/// **`state` is in here because the MENU depends on it and the other two fields do not.** An expired
+/// session and an unreachable daemon already share a glyph, so a change between them moves only the
+/// title — and if a future title ever stopped distinguishing them, the rows would silently stop
+/// updating with nothing to point at. What is compared has to be everything the update depends on.
 #[derive(Clone, PartialEq, Eq)]
 struct Shown {
     icon: &'static str,
     title: String,
+    state: DaemonState,
 }
 
 /// The label a host shows beside or under the icon. The v1 build computed one of these every five
@@ -104,69 +110,59 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
 /// The Tauri tray, for a session with no status-notifier host. Built only when `sni.rs` could not
 /// register — two indicators for one app is worse than a plain one.
+///
+/// **The rows follow the state on every tick**, which they did not before #252: this returned early
+/// whenever the tray already existed, so the fallback menu was whatever the FIRST poll decided and
+/// stayed that way for the life of the process. A session that started while the daemon was down
+/// offered `Try again now` and never `Pause syncing`, on the one desktop with no panel to correct
+/// it. The SNI item never had the bug — it has always been re-fed by `update` — which is why the
+/// text menu is the copy that quietly went stale.
 fn install_fallback(app: &AppHandle, state: DaemonState) -> tauri::Result<()> {
-    if app.tray_by_id(TRAY_ID).is_some() {
-        return Ok(());
-    }
     let menu = fallback_menu(app, state)?;
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        return tray.set_menu(Some(menu));
+    }
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().ok_or_else(|| {
             tauri::Error::AssetNotFound("no default window icon for the fallback tray".into())
         })?)
         .menu(&menu)
-        // No `on_tray_icon_event`. The GTK backend emits none — that is the fact this whole task
-        // turned on, and a handler here would be the same dead code S8 deleted.
+        // No `on_tray_icon_event`. The GTK backend emits none — that is the fact S8 turned on, and
+        // a handler here would be the same dead code it deleted.
         .on_menu_event(|app, event| handle_menu_event(app, event.id().as_ref()))
         .build(app)?;
     Ok(())
 }
 
-/// The fallback's rows — `10-tray.md`'s own labels, so the two indicators say the same words.
+/// The fallback's rows, built from `tray_menu` — the same table the native right-click menu (#252)
+/// is built from, so the three surfaces cannot drift into three menus.
 ///
-/// The sub-labels are FOLDED INTO THE LABEL with an em-dash. A GTK menu item is a single string;
-/// `Close window` and `Quit` carry a second baseline-aligned span in the panel and cannot here. What
-/// they must not do is lose the words: 10-tray.md calls this "the single worst misunderstanding a
-/// tray app can cause", and the v1 build spelled it out for the same reason. DEVIATIONS §82k.
+/// The sub-labels are FOLDED INTO THE LABEL with an em-dash, in `Entry::folded_label`. A GTK menu
+/// item is a single string; `Close window` and `Quit` carry a second baseline-aligned span in the
+/// panel and cannot here. What they must not do is lose the words: 10-tray.md calls this "the single
+/// worst misunderstanding a tray app can cause", and the v1 build spelled it out for the same
+/// reason. DEVIATIONS §82k.
 fn fallback_menu(app: &AppHandle, state: DaemonState) -> tauri::Result<Menu<tauri::Wry>> {
-    let open = MenuItem::with_id(app, "open", "Open Drive Sync", true, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit — stops syncing", true, None::<&str>)?;
-    let close = MenuItem::with_id(
-        app,
-        "closeWindow",
-        "Close window — keeps syncing",
-        true,
-        None::<&str>,
-    )?;
-
-    // The two states that are not moving files lead with the row that fixes them and drop
-    // `Close window` entirely: with nothing syncing, "keeps syncing" would be a lie. Same table as
-    // `TRAY_MENU` in ui/compact.js.
-    match state {
-        DaemonState::Paused => {
-            let resume = MenuItem::with_id(app, "resume", "Resume syncing", true, None::<&str>)?;
-            Menu::with_items(app, &[&resume, &open, &sep, &quit])
-        }
-        DaemonState::Unreachable => {
-            let retry = MenuItem::with_id(app, "tryAgain", "Try again now", true, None::<&str>)?;
-            Menu::with_items(app, &[&retry, &open, &sep, &quit])
-        }
-        // An expired session and a daemon that has never synced are both fixed in the window, not by
-        // retrying a sync — the `deferToWindow` rows in ui/compact.js, for the same reason.
-        DaemonState::AuthExpired | DaemonState::FirstRun => {
-            Menu::with_items(app, &[&open, &sep, &quit])
-        }
-        DaemonState::Running => {
-            // `Sync now` is absent while syncing, because it would do nothing.
-            let pause = MenuItem::with_id(app, "pause", "Pause syncing", true, None::<&str>)?;
-            Menu::with_items(app, &[&open, &pause, &sep, &close, &quit])
-        }
-        DaemonState::Idle => {
-            let sync = MenuItem::with_id(app, "syncNow", "Sync now", true, None::<&str>)?;
-            let pause = MenuItem::with_id(app, "pause", "Pause syncing", true, None::<&str>)?;
-            Menu::with_items(app, &[&open, &sync, &pause, &sep, &close, &quit])
+    // The items have to outlive the borrows handed to `with_items`, so they are built first and
+    // referenced after — a GTK menu item is a live object, not a description of one.
+    let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = Vec::new();
+    for entry in crate::tray_menu::rows_for(state) {
+        match entry {
+            crate::tray_menu::Entry::Separator => {
+                items.push(Box::new(PredefinedMenuItem::separator(app)?))
+            }
+            crate::tray_menu::Entry::Row { id, .. } => items.push(Box::new(MenuItem::with_id(
+                app,
+                *id,
+                entry.folded_label(),
+                true,
+                None::<&str>,
+            )?)),
         }
     }
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+        items.iter().map(|item| item.as_ref()).collect();
+    Menu::with_items(app, &refs)
 }
 
 fn spawn_poll(app: AppHandle) {
@@ -200,6 +196,7 @@ fn spawn_poll(app: AppHandle) {
             let next = Shown {
                 icon: glyph_for(state),
                 title: title_for(state, response.as_ref()),
+                state,
             };
             if shown.as_ref() != Some(&next) {
                 update(&app, state, &next).await;
@@ -224,17 +221,19 @@ fn glyph_for(_state: DaemonState) -> &'static str {
 
 #[cfg(target_os = "linux")]
 async fn update(app: &AppHandle, state: DaemonState, next: &Shown) {
+    let rows = crate::tray_menu::rows_for(state);
     let sni = app.state::<crate::sni::SniState>();
     let mut guard = sni.lock().await;
     if let Some(item) = guard.as_ref() {
-        if let Err(error) = item.set_icon(next.icon, &next.title).await {
+        if let Err(error) = item.update(next.icon, &next.title, rows).await {
             eprintln!("tray: could not update the indicator: {error}");
         }
         return;
     }
     // First tick, or a session with no host. Try to come up; fall back if there is nothing to
     // register with.
-    match crate::sni::Sni::start(app.clone(), next.icon.to_string(), next.title.clone()).await {
+    match crate::sni::Sni::start(app.clone(), next.icon.to_string(), next.title.clone(), rows).await
+    {
         Ok(item) => {
             eprintln!("tray: registered a status-notifier item");
             *guard = Some(item);
@@ -268,14 +267,17 @@ fn show_window(app: &AppHandle) {
     }
 }
 
-/// The fallback menu's rows, dispatched through the SAME table the panel uses.
+/// A row was chosen, on either native menu — the fallback's, or the dbusmenu's (#252) — dispatched
+/// through the SAME table the panel uses.
 ///
 /// `commands::tray_row` is that table. Before it there were two: this file matched `sync_now` and
 /// `commands::tray_action` matched `syncNow`, each understanding its own menu perfectly and neither
 /// understanding the other's — while a comment here claimed they were one id space. Nothing was
 /// broken, which is what made it worth fixing rather than leaving: two vocabularies that happen to
 /// work are a trap for whoever edits one of them.
-fn handle_menu_event(app: &AppHandle, id: &str) {
+///
+/// **Callers must already be on the main thread.** Both window paths below are GTK calls.
+pub fn handle_menu_event(app: &AppHandle, id: &str) {
     use crate::commands::TrayRow;
     match crate::commands::tray_row(id) {
         Some(TrayRow::Open) => show_window(app),
