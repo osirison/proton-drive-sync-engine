@@ -151,6 +151,11 @@ export const EVENT_KINDS = Object.keys(BUILDERS);
 /** Flatten a spec for a notification server: no markup, no segments. */
 export function payloadFor(spec) {
   return {
+    // The notification server's application name. `NotifyPayload` requires it and nothing in either
+    // language checks the other's shape, so its absence was not a wrong banner — it was serde
+    // refusing the whole payload and every banner failing to arrive. `notification.test.js` reads
+    // the struct now.
+    app: NOTIFY.app,
     kind: spec.kind,
     summary: spec.title,
     body: spec.body.map((part) => part.text ?? part.mono).join(""),

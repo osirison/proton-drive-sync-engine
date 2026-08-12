@@ -65,10 +65,16 @@ pub fn run() {
             commands::hide_tray_panel,
         ])
         .setup(|app| {
+            // Both are Linux-only types, and `#[cfg]` binds to ONE statement — the notifier's line
+            // was outside the attribute above it and would have failed to compile off Linux.
             #[cfg(target_os = "linux")]
-            app.manage::<sni::SniState>(std::sync::Arc::new(tokio::sync::Mutex::new(None)));
-            // The notification connection is made on first send (S9), so this starts empty.
-            app.manage::<notify::NotifierState>(std::sync::Arc::new(tokio::sync::Mutex::new(None)));
+            {
+                app.manage::<sni::SniState>(std::sync::Arc::new(tokio::sync::Mutex::new(None)));
+                // The notification connection is made on first send (S9), so this starts empty.
+                app.manage::<notify::NotifierState>(std::sync::Arc::new(tokio::sync::Mutex::new(
+                    None,
+                )));
+            }
             tray::setup(app.handle())?;
             Ok(())
         })

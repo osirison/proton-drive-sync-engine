@@ -19,6 +19,7 @@ import {
   payloadFor,
 } from "../src/js/ui/notification.js";
 import { DELETIONS, NOTIFY } from "../src/js/ui/copy.js";
+import { readFileSync } from "node:fs";
 
 /** One event of each kind, at the data the frames draw. */
 const EVENTS = {
@@ -125,4 +126,23 @@ test("a payload names a tray glyph, so the banner and the indicator agree", () =
 test("an unknown event is a throw, not an empty banner", () => {
   assert.throws(() => bannerFor({ kind: "nothing-like-this" }), /unknown event/);
   assert.throws(() => bannerFor(null), /unknown event/);
+});
+
+test("a payload carries every field the Rust struct requires", () => {
+  // TWO LANGUAGES, ONE STRUCT, AND NOTHING BETWEEN THEM. `NotifyPayload` is `serde::Deserialize`
+  // with no `#[serde(default)]` anywhere, so a missing field is not a wrong banner — it is serde
+  // refusing the payload and `send_notification` returning an error for every event, for ever.
+  // `app` was missing and every gate in this repo was green.
+  const rust = readFileSync(new URL("../src-tauri/src/notify.rs", import.meta.url), "utf8");
+  const struct = rust.slice(rust.indexOf("pub struct NotifyPayload"));
+  const fields = [...struct.slice(0, struct.indexOf("}")).matchAll(/pub (\w+):/g)].map((m) => m[1]);
+  assert.ok(fields.length >= 5, `parsed ${fields.length} fields — did the struct move?`);
+  const payload = payloadFor(bannerFor(EVENTS.deletion));
+  for (const field of fields) {
+    assert.ok(payload[field] != null, `payloadFor sends no \`${field}\``);
+  }
+  // And the other way: a field the struct does not declare is dropped by serde, silently.
+  for (const key of Object.keys(payload)) {
+    assert.ok(fields.includes(key), `payloadFor sends \`${key}\`, which NotifyPayload does not take`);
+  }
 });
