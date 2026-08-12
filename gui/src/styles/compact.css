@@ -1,0 +1,269 @@
+/* The 360px compact panel (F6) — see js/ui/compact.js for what each piece is and where it is drawn.
+ *
+ * Every value here was measured out of the eight in-scope dark frames and the three `12a` light
+ * twins. What lives in the module instead of here is what MOVES per state: the hero's padding, the
+ * headline's size and the gap above it. Six frames draw six different hero paddings, so a class per
+ * value would be six classes that mean "the number the frame drew", which is what an inline style
+ * already says.
+ */
+
+/* --------------------------------------------------------------------------------- the shell -- */
+
+/* 362px, NOT the 360 in `02-shell.md` and `01-foundations.md` §4. The prototype does not opt this
+   node into `box-sizing:border-box` and base.css opts the whole app in, so a panel written at its
+   nominal width comes out 2px narrower than every frame that draws it. DEVIATIONS.md §19 and §48.
+   Written here rather than as `content-box` on the panel so the one exception is stated once, in
+   the place someone comparing it against the doc will look. */
+.compact-panel {
+  width: 362px;
+  border: 1px solid var(--border-chrome);
+  border-radius: var(--r-14);
+  background: var(--surface);
+  /* Load-bearing, not tidiness: the footer rule and the menu section run to the panel's edge and
+     would cross the 14px corner radius without it. Every drawn panel declares it. */
+  overflow: hidden;
+  box-shadow: var(--shadow-tray-panel);
+}
+
+/* The edge answers the state. Measured at .3 alpha on `2a Compact needs you`, `4a Compact` AND
+   `12a Compact needs light` — the one attention value that is drawn in both themes. */
+.compact-panel.is-attention {
+  border-color: var(--compact-attention-border);
+}
+
+/* --------------------------------------------------------------------------------- the hero -- */
+
+/* The centred-column hero, which is five of the six states.
+   `flex-direction` and `align-items` compute whatever the display is, so they belong to the column
+   modifier rather than to `.compact-hero` — declared on the base class they would still read as
+   `column`/`center` on the seamed hero, which is a block, and the gate compares both. */
+.compact-hero.is-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* The syncing hero is a block: it holds the absolutely-positioned seam, the two side labels across
+   the full width, and only then a centred column. `position` is what the seam is measured against —
+   the hairline runs from 14px below the hero's top to 8px above its bottom (6px in the tray), which
+   is a fact about THIS box. */
+.compact-hero.is-seamed {
+  position: relative;
+}
+
+/* The centred column inside it. `position:relative` is the third part of the seam mask (seam.js
+   rule 3): the seam paints with the positioned descendants, so the headline's opaque background is
+   not enough on its own — something between it and the seam's containing block has to be
+   positioned. This wrapper is that something, for the headline and the mark both. */
+.compact-hero-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 8px;
+  position: relative;
+}
+
+/* `THIS COMPUTER` and `PROTON`, one at each end. 9.5px at `.14em` is the 1.33px the frames measure;
+   written as an em so it survives a size change. */
+.compact-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.compact-label-local {
+  color: var(--up-label);
+}
+.compact-label-remote {
+  color: var(--down-label);
+}
+
+/* Size and the gap above are per state and set inline — see the module. No line-height: the frames
+   leave it at `normal`, and setting one here would change the headline's height by a pixel or two
+   at every size, which is a box the fidelity gate compares. */
+.compact-headline {
+  font-weight: 600;
+}
+
+/* Two sub-lines that are not one shape with a font swap. The prose form wraps inside the panel,
+   sets its own 1.5 line-height (the frames record 18.75px at 12.5px) and is CENTRED — two or three
+   lines of reassurance under a centred mark, which 10-tray.md asks for in as many words. */
+.compact-sub {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-4);
+  text-align: center;
+}
+/* The mono form gives back both. It is one line of metadata, and the frames leave it aligned to the
+   start and at `normal` — the gate treats `normal` as a wildcard so the STYLE would pass either way,
+   but the measured height would not: 1.5 at 11.5px is 17.25px against the 15px drawn. */
+.compact-sub.is-mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: normal;
+  color: var(--text-5);
+  text-align: start;
+}
+
+/* `retrying in 40s · last reached 13:58`. Only the can't-reach panel draws it, and it comes AFTER
+   the reassurance — voice rule 3, and the reason this line is a third tier rather than part of the
+   sentence above it. */
+.compact-meta {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* Full width in both places it appears. In the hero it also carries the gap above it; in the
+   deletion queue the block around it supplies the inset instead. */
+.compact-action-btn {
+  width: 100%;
+}
+.compact-hero .compact-action-btn {
+  margin-top: 16px;
+}
+
+/* The five-property `.compact-panel .btn` reset that used to sit here is gone, and its finding moved
+   INTO `.btn` (controls.css) rather than being deleted: F6 measured that the panel's buttons are
+   plain `<button>`s and not the shared builder's flex box, and S1's census found the same of all 175
+   drawn buttons. It was never a property of this panel. */
+
+/* -------------------------------------------------------------------------------- the lists -- */
+
+/* One geometry, two lists: the syncing panel's transfer rows and the deletion queue's rows. Named
+   for the slot rather than for its contents, because both frames draw exactly this box. */
+.compact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 14px 12px;
+}
+.compact-action {
+  padding: 0 14px 12px;
+}
+
+/* A deletion at panel scale. NOT rows.js's deletion card shrunk — no facts strip, no typed-DELETE
+   gate, no second button, and a radius of 10 against the card's 14. The tints step one notch down
+   from the 1040 screen's (DEVIATIONS.md §52a); tone and density are independent axes. */
+.compact-deletion {
+  padding: 11px 13px;
+  border: 1px solid;
+  border-radius: var(--r-10);
+}
+.compact-deletion-permanent {
+  border-color: var(--compact-permanent-border);
+  background: var(--compact-permanent-bg);
+}
+.compact-deletion-recoverable {
+  border-color: var(--compact-recoverable-border);
+  background: var(--compact-recoverable-bg);
+}
+
+.compact-deletion-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+/* The path, and the brightest text in the row: it is the thing you are deciding about. All three
+   overflow declarations are needed and none of them is asserted by the gate — a path that should
+   ellipsis and instead wraps to two lines passes every automated check. */
+.compact-deletion-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-deletion-note {
+  margin-top: 5px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------------------- the footer -- */
+
+.compact-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--divider);
+}
+/* 10.5px — the smallest type in the design, and it is metadata: `12,480 files`, `14s ago`,
+   `syncing continues`. Never anything you need. */
+.compact-status {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-5);
+}
+.compact-spacer {
+  flex: 1;
+}
+
+/* --------------------------------------------------------------------------------- the menu -- */
+
+/* What the tray gets instead of the two buttons (10-tray.md). Padding 6px, so a hovered row's
+   8px radius sits inside the panel's 14px one without touching it. */
+.compact-menu {
+  padding: 6px;
+  border-top: 1px solid var(--divider);
+}
+
+.compact-menu-row {
+  display: block;
+  width: 100%;
+  padding: 9px 13px;
+  border: none;
+  border-radius: var(--r-8);
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  /* A <button> defaults to `text-align:center` in the UA sheet where the frames' rows inherit
+     `start`. Same correction .door needs, for the same reason. */
+  text-align: start;
+  cursor: pointer;
+  transition: background var(--t-press) var(--ease);
+}
+
+/* The two rows with a sub-label. Baseline-aligned rather than centred, so `Close window` and
+   `keeps syncing` sit on one line of type even though they are different sizes. */
+.compact-menu-row.has-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* The first row is the default action and is drawn as though hovered in every panel; hovering any
+   row gives it the same fill. */
+.compact-menu-row.is-first,
+.compact-menu-row:hover {
+  background: var(--panel-raised);
+}
+
+/* `keeps syncing` / `stops syncing` — 10-tray.md calls these the single worst misunderstanding a
+   tray app can cause. They are quieter than the label and they are not optional. */
+.compact-menu-sub {
+  font-size: 11.5px;
+  color: var(--text-5);
+}
+
+.compact-menu-sep {
+  height: 1px;
+  margin: 5px 10px;
+  background: var(--divider);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-menu-row {
+    transition: none;
+  }
+}

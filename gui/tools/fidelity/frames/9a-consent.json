@@ -1,0 +1,540 @@
+{
+  "label": "9a Consent",
+  "kind": "dialog",
+  "width": 600,
+  "height": 481.69,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "fullText": "Both sides now match12,480 files, 41.2 GB. Nothing was deleted, and 2 files are waiting for you to pick a version.One thing to agree to before it runs on its ownFrom now on, deleting a file on either side deletes it on the other. You'll be asked before each one — and you can change that in Settings — but this is how the two folders stay identical.I understand deletions travel both ways.Syncing stays paused until you agree.Start syncing",
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 600,
+        "h": 481.69
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "padding-top": "30px",
+        "padding-right": "30px",
+        "padding-bottom": "24px",
+        "padding-left": "30px",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "fullText": "Both sides now match12,480 files, 41.2 GB. Nothing was deleted, and 2 files are waiting for you to pick a version.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 538,
+        "h": 178.19
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "flex-direction": "column",
+        "align-items": "center"
+      }
+    },
+    {
+      "key": "div[0]/svg",
+      "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 76,
+        "h": 76
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "overflow": "hidden"
+      },
+      "svgAttrs": {
+        "viewBox": "0 0 120 120"
+      }
+    },
+    {
+      "key": "div[0]/svg/path[0]",
+      "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 54.59,
+        "h": 64.09
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "inline"
+      },
+      "svgAttrs": {
+        "d": "M60 9.4 L103.1 33.8 L103.1 86.3 L60 110.6 L16.9 86.3 L16.9 33.8 Z",
+        "stroke": "#2E323A",
+        "stroke-width": "4.6",
+        "stroke-linejoin": "round",
+        "fill": "none"
+      }
+    },
+    {
+      "key": "div[0]/svg/path[1]",
+      "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 14.57,
+        "h": 10.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "inline"
+      },
+      "svgAttrs": {
+        "d": "M49 60 L57 68 L72 52",
+        "stroke": "#E8EBF0",
+        "stroke-width": "4.6",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+        "fill": "none"
+      }
+    },
+    {
+      "key": "div[0]/div[0]",
+      "tag": "div",
+      "text": "Both sides now match",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 234.75,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "24px",
+        "font-weight": "600",
+        "letter-spacing": "-0.6px",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "20px"
+      }
+    },
+    {
+      "key": "div[0]/div[1]",
+      "tag": "div",
+      "text": "12,480 files, 41.2 GB. Nothing was deleted, and 2 files are waiting for you to pick a version.",
+      "box": {
+        "w": 538,
+        "h": 43.19
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "21.6px",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "margin-top": "10px"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "fullText": "One thing to agree to before it runs on its ownFrom now on, deleting a file on either side deletes it on the other. You'll be asked before each one — and you can change that in Settings — but this is how the two folders stay identical.I understand deletions travel both ways.",
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 538,
+        "h": 167.5
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgba(255, 107, 107, 0.04)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgba(255, 107, 107, 0.3)",
+        "border-right-color": "rgba(255, 107, 107, 0.3)",
+        "border-bottom-color": "rgba(255, 107, 107, 0.3)",
+        "border-left-color": "rgba(255, 107, 107, 0.3)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "16px",
+        "padding-right": "18px",
+        "padding-bottom": "16px",
+        "padding-left": "18px",
+        "margin-top": "24px"
+      }
+    },
+    {
+      "key": "div[1]/div[0]",
+      "tag": "div",
+      "text": "One thing to agree to before it runs on its own",
+      "box": {
+        "w": 500,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(255, 156, 156)",
+        "border-top-color": "rgb(255, 156, 156)",
+        "border-right-color": "rgb(255, 156, 156)",
+        "border-bottom-color": "rgb(255, 156, 156)",
+        "border-left-color": "rgb(255, 156, 156)"
+      }
+    },
+    {
+      "key": "div[1]/div[1]",
+      "tag": "div",
+      "text": "From now on, deleting a file on either side deletes it on the other. You'll be asked before each one — and you can change that in Settings — but this is how the two folders stay identical.",
+      "box": {
+        "w": 500,
+        "h": 60
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "20px",
+        "text-align": "start",
+        "color": "rgb(201, 208, 218)",
+        "border-top-color": "rgb(201, 208, 218)",
+        "border-right-color": "rgb(201, 208, 218)",
+        "border-bottom-color": "rgb(201, 208, 218)",
+        "border-left-color": "rgb(201, 208, 218)",
+        "margin-top": "8px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]",
+      "tag": "div",
+      "fullText": "I understand deletions travel both ways.",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 500,
+        "h": 33.5
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgba(255, 107, 107, 0.16)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "13px",
+        "margin-top": "14px",
+        "display": "flex",
+        "align-items": "flex-start",
+        "gap": "11px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/span[0]",
+      "tag": "span",
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 17,
+        "h": 17
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "5px",
+        "border-top-right-radius": "5px",
+        "border-bottom-right-radius": "5px",
+        "border-bottom-left-radius": "5px",
+        "margin-top": "1px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/span[1]",
+      "tag": "span",
+      "text": "I understand deletions travel both ways.",
+      "box": {
+        "w": 234.02,
+        "h": 19.5
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "19.5px",
+        "text-align": "start",
+        "color": "rgb(232, 235, 240)",
+        "border-top-color": "rgb(232, 235, 240)",
+        "border-right-color": "rgb(232, 235, 240)",
+        "border-bottom-color": "rgb(232, 235, 240)",
+        "border-left-color": "rgb(232, 235, 240)"
+      }
+    },
+    {
+      "key": "div[2]",
+      "tag": "div",
+      "fullText": "Syncing stays paused until you agree.Start syncing",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 538,
+        "h": 38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "18px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[2]/span[0]",
+      "tag": "span",
+      "text": "Syncing stays paused until you agree.",
+      "box": {
+        "w": 203.84,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[2]/span[1]",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 184.7,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/button",
+      "tag": "button",
+      "text": "Start syncing",
+      "box": {
+        "w": 125.45,
+        "h": 38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(109, 119, 131)",
+        "background-color": "rgb(42, 46, 54)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "22px",
+        "padding-bottom": "11px",
+        "padding-left": "22px"
+      }
+    }
+  ]
+}

@@ -1,0 +1,2426 @@
+{
+  "label": "8a Settings",
+  "kind": "window",
+  "width": 1042,
+  "height": 766,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "fullText": "Proton Drive Syncidle⋯SettingsChanges here take effect on the next sync. Nothing is written until you save.FoldersWhat to skipDeletionsAdvancedThe pair being kept in stepThis computerChoose…12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.Proton DriveFolder on your Proton Drive. Must already exist.How often it checksNotice changes the moment they happenProton tells the app when something changes on another device, so it syncs within seconds.event_driven_reconcileCompare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.WeeklyMonthlyEveryMonTueWedThuFriSatSunat−03:00＋full_scan_schedule · weekly sun 03:00Run one nowFull sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.Sweep nowSaving writes only what you changed. Your comments and anything the app doesn't understand are left alone.Discard changesSave",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 1042,
+        "h": 766
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "display": "flex",
+        "flex-direction": "column",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "header",
+      "tag": "header",
+      "fullText": "Proton Drive Syncidle⋯",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 52
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "20px",
+        "padding-left": "20px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "header/img",
+      "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 20,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "opacity": "0.75",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "overflow": "clip"
+      }
+    },
+    {
+      "key": "header/span[0]",
+      "tag": "span",
+      "text": "Proton Drive Sync",
+      "box": {
+        "w": 107.52,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "600",
+        "letter-spacing": "-0.13px",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)"
+      }
+    },
+    {
+      "key": "header/span[1]",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 731.08,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "header/span[2]",
+      "tag": "span",
+      "text": "idle",
+      "box": {
+        "w": 63.41,
+        "h": 24
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)",
+        "border-top-left-radius": "99px",
+        "border-top-right-radius": "99px",
+        "border-bottom-right-radius": "99px",
+        "border-bottom-left-radius": "99px",
+        "padding-top": "5px",
+        "padding-right": "12px",
+        "padding-bottom": "5px",
+        "padding-left": "12px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "7px"
+      }
+    },
+    {
+      "key": "header/span[2]/span",
+      "tag": "span",
+      "box": {
+        "w": 6,
+        "h": 6
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(98, 107, 120)",
+        "background-color": "rgb(46, 50, 58)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%"
+      }
+    },
+    {
+      "key": "header/button",
+      "tag": "button",
+      "text": "⋯",
+      "unbundled": true,
+      "box": {
+        "w": 30,
+        "h": 30
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "15px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "1px",
+        "padding-right": "6px",
+        "padding-bottom": "1px",
+        "padding-left": "6px"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "fullText": "SettingsChanges here take effect on the next sync. Nothing is written until you save.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 58
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-top": "4px",
+        "padding-right": "32px",
+        "padding-left": "32px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[0]/div[0]",
+      "tag": "div",
+      "text": "Settings",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 32
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "26px",
+        "font-weight": "600",
+        "letter-spacing": "-0.65px",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[0]/div[1]",
+      "tag": "div",
+      "text": "Changes here take effect on the next sync. Nothing is written until you save.",
+      "box": {
+        "w": 976,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-top": "6px"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "fullText": "FoldersWhat to skipDeletionsAdvanced",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 31
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "32px",
+        "padding-left": "32px",
+        "margin-top": "20px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "8px"
+      }
+    },
+    {
+      "key": "div[1]/button[0]",
+      "tag": "button",
+      "text": "Folders",
+      "box": {
+        "w": 75.72,
+        "h": 31
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(10, 11, 13)",
+        "background-color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(46, 50, 58)",
+        "border-right-color": "rgb(46, 50, 58)",
+        "border-bottom-color": "rgb(46, 50, 58)",
+        "border-left-color": "rgb(46, 50, 58)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "99px",
+        "border-top-right-radius": "99px",
+        "border-bottom-right-radius": "99px",
+        "border-bottom-left-radius": "99px",
+        "padding-top": "7px",
+        "padding-right": "15px",
+        "padding-bottom": "7px",
+        "padding-left": "15px"
+      }
+    },
+    {
+      "key": "div[1]/button[1]",
+      "tag": "button",
+      "text": "What to skip",
+      "box": {
+        "w": 104.27,
+        "h": 31
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "99px",
+        "border-top-right-radius": "99px",
+        "border-bottom-right-radius": "99px",
+        "border-bottom-left-radius": "99px",
+        "padding-top": "7px",
+        "padding-right": "15px",
+        "padding-bottom": "7px",
+        "padding-left": "15px"
+      }
+    },
+    {
+      "key": "div[1]/button[2]",
+      "tag": "button",
+      "text": "Deletions",
+      "box": {
+        "w": 86.75,
+        "h": 31
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "99px",
+        "border-top-right-radius": "99px",
+        "border-bottom-right-radius": "99px",
+        "border-bottom-left-radius": "99px",
+        "padding-top": "7px",
+        "padding-right": "15px",
+        "padding-bottom": "7px",
+        "padding-left": "15px"
+      }
+    },
+    {
+      "key": "div[1]/button[3]",
+      "tag": "button",
+      "text": "Advanced",
+      "box": {
+        "w": 90.13,
+        "h": 31
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "99px",
+        "border-top-right-radius": "99px",
+        "border-bottom-right-radius": "99px",
+        "border-bottom-left-radius": "99px",
+        "padding-top": "7px",
+        "padding-right": "15px",
+        "padding-bottom": "7px",
+        "padding-left": "15px"
+      }
+    },
+    {
+      "key": "div[2]",
+      "tag": "div",
+      "fullText": "The pair being kept in stepThis computerChoose…12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.Proton DriveFolder on your Proton Drive. Must already exist.How often it checksNotice changes the moment they happenProton tells the app when something changes on another device, so it syncs within seconds.event_driven_reconcileCompare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.WeeklyMonthlyEveryMonTueWedThuFriSatSunat−03:00＋full_scan_schedule · weekly sun 03:00Run one nowFull sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.Sweep now",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 512
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "32px",
+        "padding-left": "32px",
+        "margin-top": "22px",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "position": "relative",
+        "top": "0px",
+        "right": "0px",
+        "bottom": "0px",
+        "left": "0px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]",
+      "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1,
+        "h": 86
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-image": "linear-gradient(rgb(10, 11, 13), rgb(42, 46, 54) 26%, rgb(42, 46, 54) 74%, rgb(10, 11, 13))",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "position": "absolute",
+        "top": "44px",
+        "right": "519px",
+        "bottom": "382px",
+        "left": "520px"
+      }
+    },
+    {
+      "key": "div[2]/div[1]",
+      "tag": "div",
+      "text": "The pair being kept in step",
+      "box": {
+        "w": 976,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)"
+      }
+    },
+    {
+      "key": "div[2]/div[2]",
+      "tag": "div",
+      "fullText": "This computerChoose…12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.Proton DriveFolder on your Proton Drive. Must already exist.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 109
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "16px",
+        "display": "grid",
+        "grid-template-columns": "488px 488px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]",
+      "tag": "div",
+      "fullText": "This computerChoose…12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 488,
+        "h": 109
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "30px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]/div[0]",
+      "tag": "div",
+      "text": "This computer",
+      "box": {
+        "w": 458,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(255, 159, 28)",
+        "border-top-color": "rgb(255, 159, 28)",
+        "border-right-color": "rgb(255, 159, 28)",
+        "border-bottom-color": "rgb(255, 159, 28)",
+        "border-left-color": "rgb(255, 159, 28)"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]/div[1]",
+      "tag": "div",
+      "fullText": "Choose…",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 458,
+        "h": 41
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "11px",
+        "display": "flex",
+        "gap": "9px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]/div[1]/input",
+      "tag": "input",
+      "attrs": {
+        "value": "~/ProtonDrive"
+      },
+      "box": {
+        "w": 364.8,
+        "h": 41
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(13, 14, 17)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "13px",
+        "padding-bottom": "11px",
+        "padding-left": "13px",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "overflow": "clip"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]/div[1]/button",
+      "tag": "button",
+      "text": "Choose…",
+      "box": {
+        "w": 84.2,
+        "h": 41
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "15px",
+        "padding-bottom": "11px",
+        "padding-left": "15px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[0]/div[2]",
+      "tag": "div",
+      "text": "12,480 files, 41.2 GB in here today. Changing it starts a fresh merge — nothing gets deleted.",
+      "box": {
+        "w": 458,
+        "h": 36
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "margin-top": "8px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[1]",
+      "tag": "div",
+      "fullText": "Proton DriveFolder on your Proton Drive. Must already exist.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 488,
+        "h": 109
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-left": "30px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[1]/div[0]",
+      "tag": "div",
+      "text": "Proton Drive",
+      "box": {
+        "w": 458,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "right",
+        "color": "rgb(34, 211, 238)",
+        "border-top-color": "rgb(34, 211, 238)",
+        "border-right-color": "rgb(34, 211, 238)",
+        "border-bottom-color": "rgb(34, 211, 238)",
+        "border-left-color": "rgb(34, 211, 238)"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[1]/div[1]",
+      "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 458,
+        "h": 41
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "11px"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[1]/div[1]/input",
+      "tag": "input",
+      "attrs": {
+        "value": "/Drive/RemoteFolder"
+      },
+      "box": {
+        "w": 458,
+        "h": 41
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "right",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(13, 14, 17)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "13px",
+        "padding-bottom": "11px",
+        "padding-left": "13px",
+        "display": "inline-block",
+        "overflow": "clip"
+      }
+    },
+    {
+      "key": "div[2]/div[2]/div[1]/div[2]",
+      "tag": "div",
+      "text": "Folder on your Proton Drive. Must already exist.",
+      "box": {
+        "w": 458,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "right",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "margin-top": "8px"
+      }
+    },
+    {
+      "key": "div[2]/div[3]",
+      "tag": "div",
+      "text": "How often it checks",
+      "box": {
+        "w": 976,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)",
+        "margin-top": "20px"
+      }
+    },
+    {
+      "key": "div[2]/div[4]",
+      "tag": "div",
+      "fullText": "Notice changes the moment they happenProton tells the app when something changes on another device, so it syncs within seconds.event_driven_reconcile",
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 89.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(13, 14, 17)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "13px",
+        "padding-right": "18px",
+        "padding-bottom": "13px",
+        "padding-left": "18px",
+        "margin-top": "11px",
+        "display": "flex",
+        "align-items": "flex-start",
+        "gap": "18px"
+      }
+    },
+    {
+      "key": "div[2]/div[4]/div[0]",
+      "tag": "div",
+      "fullText": "Notice changes the moment they happenProton tells the app when something changes on another device, so it syncs within seconds.event_driven_reconcile",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 876,
+        "h": 61.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/div[4]/div[0]/div[0]",
+      "tag": "div",
+      "text": "Notice changes the moment they happen",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 876,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[2]/div[4]/div[0]/div[1]",
+      "tag": "div",
+      "text": "Proton tells the app when something changes on another device, so it syncs within seconds.",
+      "box": {
+        "w": 876,
+        "h": 18.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.125px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "margin-top": "4px"
+      }
+    },
+    {
+      "key": "div[2]/div[4]/div[0]/div[2]",
+      "tag": "div",
+      "text": "event_driven_reconcile",
+      "box": {
+        "w": 876,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "margin-top": "7px"
+      }
+    },
+    {
+      "key": "div[2]/div[4]/div[1]",
+      "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 44,
+        "h": 26
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-left-radius": "99px",
+        "border-top-right-radius": "99px",
+        "border-bottom-right-radius": "99px",
+        "border-bottom-left-radius": "99px",
+        "flex-shrink": "0",
+        "position": "relative",
+        "top": "0px",
+        "right": "0px",
+        "bottom": "0px",
+        "left": "0px"
+      }
+    },
+    {
+      "key": "div[2]/div[4]/div[1]/span",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 20,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%",
+        "position": "absolute",
+        "top": "3px",
+        "right": "3px",
+        "bottom": "3px",
+        "left": "21px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]",
+      "tag": "div",
+      "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.WeeklyMonthlyEveryMonTueWedThuFriSatSunat−03:00＋full_scan_schedule · weekly sun 03:00",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 120.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(13, 14, 17)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "13px",
+        "padding-right": "18px",
+        "padding-bottom": "13px",
+        "padding-left": "18px",
+        "margin-top": "9px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[0]",
+      "tag": "div",
+      "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.WeeklyMonthly",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 938,
+        "h": 40.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "align-items": "flex-start",
+        "gap": "20px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[0]/div[0]",
+      "tag": "div",
+      "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 762.88,
+        "h": 40.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[0]/div[0]/div[0]",
+      "tag": "div",
+      "text": "Compare everything, top to bottom",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 762.88,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[0]/div[0]/div[1]",
+      "tag": "div",
+      "text": "A full check of all 12,480 files as a safety net. It's slow, so it runs on a schedule rather than constantly.",
+      "box": {
+        "w": 762.88,
+        "h": 18.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.125px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "margin-top": "4px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[0]/div[1]",
+      "tag": "div",
+      "fullText": "WeeklyMonthly",
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 155.13,
+        "h": 35
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "3px",
+        "padding-right": "3px",
+        "padding-bottom": "3px",
+        "padding-left": "3px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "gap": "3px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[0]/div[1]/button[0]",
+      "tag": "button",
+      "text": "Weekly",
+      "box": {
+        "w": 70.34,
+        "h": 27
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(10, 11, 13)",
+        "background-color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(10, 11, 13)",
+        "border-right-color": "rgb(10, 11, 13)",
+        "border-bottom-color": "rgb(10, 11, 13)",
+        "border-left-color": "rgb(10, 11, 13)",
+        "border-top-left-radius": "7px",
+        "border-top-right-radius": "7px",
+        "border-bottom-right-radius": "7px",
+        "border-bottom-left-radius": "7px",
+        "padding-top": "6px",
+        "padding-right": "14px",
+        "padding-bottom": "6px",
+        "padding-left": "14px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[0]/div[1]/button[1]",
+      "tag": "button",
+      "text": "Monthly",
+      "box": {
+        "w": 73.78,
+        "h": 27
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "border-top-left-radius": "7px",
+        "border-top-right-radius": "7px",
+        "border-bottom-right-radius": "7px",
+        "border-bottom-left-radius": "7px",
+        "padding-top": "6px",
+        "padding-right": "14px",
+        "padding-bottom": "6px",
+        "padding-left": "14px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]",
+      "tag": "div",
+      "fullText": "EveryMonTueWedThuFriSatSunat−03:00＋full_scan_schedule · weekly sun 03:00",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 938,
+        "h": 41
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "11px",
+        "margin-top": "11px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "10px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/span[0]",
+      "tag": "span",
+      "text": "Every",
+      "box": {
+        "w": 32.03,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[0]",
+      "tag": "div",
+      "fullText": "MonTueWedThuFriSatSun",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 324,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "flex-shrink": "0",
+        "gap": "5px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[0]/button[0]",
+      "tag": "button",
+      "text": "Mon",
+      "box": {
+        "w": 42,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-bottom": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[0]/button[1]",
+      "tag": "button",
+      "text": "Tue",
+      "box": {
+        "w": 42,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-bottom": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[0]/button[2]",
+      "tag": "button",
+      "text": "Wed",
+      "box": {
+        "w": 42,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-bottom": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[0]/button[3]",
+      "tag": "button",
+      "text": "Thu",
+      "box": {
+        "w": 42,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-bottom": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[0]/button[4]",
+      "tag": "button",
+      "text": "Fri",
+      "box": {
+        "w": 42,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-bottom": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[0]/button[5]",
+      "tag": "button",
+      "text": "Sat",
+      "box": {
+        "w": 42,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-bottom": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[0]/button[6]",
+      "tag": "button",
+      "text": "Sun",
+      "box": {
+        "w": 42,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(10, 11, 13)",
+        "background-color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(46, 50, 58)",
+        "border-right-color": "rgb(46, 50, 58)",
+        "border-bottom-color": "rgb(46, 50, 58)",
+        "border-left-color": "rgb(46, 50, 58)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-bottom": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/span[1]",
+      "tag": "span",
+      "text": "at",
+      "box": {
+        "w": 11.2,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-left": "4px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[1]",
+      "tag": "div",
+      "fullText": "−03:00＋",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 116,
+        "h": 28
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[1]/button[0]",
+      "tag": "button",
+      "text": "−",
+      "box": {
+        "w": 28,
+        "h": 28
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "1px",
+        "padding-right": "6px",
+        "padding-bottom": "1px",
+        "padding-left": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[1]/span",
+      "tag": "span",
+      "text": "03:00",
+      "box": {
+        "w": 48,
+        "h": 17
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/div[1]/button[1]",
+      "tag": "button",
+      "text": "＋",
+      "unbundled": true,
+      "box": {
+        "w": 28,
+        "h": 28
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "1px",
+        "padding-right": "6px",
+        "padding-bottom": "1px",
+        "padding-left": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/span[2]",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 156.56,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/div[5]/div[1]/span[3]",
+      "tag": "span",
+      "text": "full_scan_schedule · weekly sun 03:00",
+      "box": {
+        "w": 244.2,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]/div[6]",
+      "tag": "div",
+      "text": "Run one now",
+      "box": {
+        "w": 976,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)",
+        "margin-top": "18px"
+      }
+    },
+    {
+      "key": "div[2]/div[7]",
+      "tag": "div",
+      "fullText": "Full sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.Sweep now",
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 68.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(13, 14, 17)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "13px",
+        "padding-right": "18px",
+        "padding-bottom": "13px",
+        "padding-left": "18px",
+        "margin-top": "11px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "18px"
+      }
+    },
+    {
+      "key": "div[2]/div[7]/div",
+      "tag": "div",
+      "fullText": "Full sweep nowTakes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 808.05,
+        "h": 40.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/div[7]/div/div[0]",
+      "tag": "div",
+      "text": "Full sweep now",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 808.05,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[2]/div[7]/div/div[1]",
+      "tag": "div",
+      "text": "Takes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.",
+      "box": {
+        "w": 808.05,
+        "h": 18.13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.125px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "margin-top": "4px"
+      }
+    },
+    {
+      "key": "div[2]/div[7]/button",
+      "tag": "button",
+      "text": "Sweep now",
+      "box": {
+        "w": 111.95,
+        "h": 38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(232, 235, 240)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(46, 50, 58)",
+        "border-right-color": "rgb(46, 50, 58)",
+        "border-bottom-color": "rgb(46, 50, 58)",
+        "border-left-color": "rgb(46, 50, 58)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "10px",
+        "padding-right": "20px",
+        "padding-bottom": "10px",
+        "padding-left": "20px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[3]",
+      "tag": "div",
+      "fullText": "Saving writes only what you changed. Your comments and anything the app doesn't understand are left alone.Discard changesSave",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 69
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "14px",
+        "padding-right": "32px",
+        "padding-bottom": "14px",
+        "padding-left": "32px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[3]/span[0]",
+      "tag": "span",
+      "text": "Saving writes only what you changed. Your comments and anything the app doesn't understand are left alone.",
+      "box": {
+        "w": 430,
+        "h": 36
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[3]/span[1]",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 295.66,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[3]/button[0]",
+      "tag": "button",
+      "text": "Discard changes",
+      "box": {
+        "w": 141,
+        "h": 40
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "20px",
+        "padding-bottom": "11px",
+        "padding-left": "20px"
+      }
+    },
+    {
+      "key": "div[3]/button[1]",
+      "tag": "button",
+      "text": "Save",
+      "box": {
+        "w": 73.34,
+        "h": 38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(109, 119, 131)",
+        "background-color": "rgb(42, 46, 54)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "22px",
+        "padding-bottom": "11px",
+        "padding-left": "22px"
+      }
+    }
+  ]
+}

@@ -9,3 +9,7 @@ package-lock.json
 # checkout and fail for every developer who has actually built the GUI.
 src-tauri/
 gui-core/
+
+# Generated ground truth (tools/fidelity/extract.mjs). 1.8MB of JSON; prettier owns nothing here
+# and format-checking it just makes `npm run check` slow. Regenerate, do not hand-edit.
+tools/fidelity/frames/

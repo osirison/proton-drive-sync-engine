@@ -1,0 +1,214 @@
+/* The deletions screen (S3) — `4a Deletions`, `4a Armed`, `4a Empty`, and `12a Deletions light`.
+ *
+ * The CARDS are not here. `rows.css` owns everything from `.deletion` down, because F5 measured and
+ * built them before this screen existed; this file owns only what a screen owns — the three blocks
+ * between the header and the footer, and the two bodies that replace them.
+ *
+ * Every number is read off `frames/4a-deletions.json` and `frames/4a-armed.json` rather than off
+ * `05-deletions.md`, per IMPLEMENTATION-PLAN §1.3 rule 2. Where the two disagree the frame is cited.
+ */
+
+/* ------------------------------------------------------------------- the queue: the title ---- */
+
+/* `flex: none` and not `flex-shrink: 0` alone: the block must neither grow into the body's space
+   nor be squeezed by it. The frame records `flex-shrink: 0` because that is all a static block
+   needs when nothing else competes; six blocks across S1 and S2 taught that the app's version needs
+   the whole shorthand, and `flex: none` computes to the same `flex-shrink: 0` the frame carries. */
+.dl-title-row {
+  flex: none;
+  padding: 6px 32px 0;
+}
+.dl-title {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+.dl-sub {
+  margin-top: 7px;
+  font-size: 13.5px;
+  color: var(--text-4);
+}
+
+/* -------------------------------------------------------------------- the queue: the body ---- */
+
+/* `position: relative` is the seam's containing block, and the 32px padding is what puts the two
+   488px columns at 976 inside a 1040 window. */
+.dl-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin-top: 26px;
+  padding: 0 32px;
+}
+
+/* Two fixed halves, NOT `1fr 1fr`, and the difference is load-bearing on this screen: a column
+   holding a long path would otherwise widen and move the cards off the seam, which is the one
+   alignment the design cannot lose. 488 + 488 = 976, and the 30px inset either side of the seam is
+   `.deletion-start`/`.deletion-end` in rows.css. */
+.dl-columns {
+  display: grid;
+  grid-template-columns: 488px 488px;
+  height: 100%;
+  min-height: 0;
+}
+
+/* A QUEUE IS NOT A FIXED DATASET, and the window is 764px that cannot grow. `4a Deletions` draws
+   one card per column and fills 528px exactly; eight in one column is 2,365px of content in a
+   window that does not scroll, so the last seven and the four doors are simply unreachable.
+   `02-shell.md` calls this "a real bug found twice during this design" and F4 wrote the discipline
+   down in `.content-region`: a list that can genuinely exceed its space opts into scrolling.
+
+   OPTED INTO PER RENDER, not always, because one card per column is the drawn arrangement and it
+   does fit — a screen showing what the frame shows should behave as the frame does, scrollbar
+   included. `screens/deletions.js` adds the class when any column holds more than one card. The
+   seam does not move with it: it is positioned against `.dl-body`, which is the window's spine
+   rather than the list's. */
+.dl-columns.is-scrollable {
+  overflow-y: auto;
+  /* AND THE COLUMNS STOP BEING FIXED. `.dl-body`'s content box is exactly 976px and the drawn grid
+     is exactly 488+488 — so on any engine whose scrollbar takes layout width, adding one pushes the
+     recoverable column past the right edge and the window grows a horizontal scrollbar too. The
+     drawn arrangement keeps its measured 488s (this class is not on it); a crowded queue gives the
+     scrollbar its width out of the two halves, which stay equal to each other and on the seam.
+     `minmax(0, 1fr)` rather than `1fr`, or a long unbroken path would push a column wide again. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+/* ------------------------------------------------------------------ the queue: the footer ---- */
+
+.dl-queue-footer {
+  flex: none;
+  padding: 0 32px 14px;
+}
+.dl-footer-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dl-footer-note {
+  font-size: 12px;
+  color: var(--text-5);
+}
+.dl-spacer {
+  flex: 1;
+}
+
+/* ------------------------------------------------------------------------- the armed body ---- */
+
+/* A full-window takeover, centred both ways — and a body swap rather than a dialog, so it keeps the
+   header and the four doors (DEVIATIONS §57). The bottom padding is 30 against no top padding: the
+   block is centred, so the asymmetry lifts the whole group slightly above the optical middle. */
+.dl-armed {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 40px 30px;
+}
+.dl-armed-title {
+  margin-top: 26px;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  text-align: center;
+}
+.dl-armed-body {
+  max-width: 520px;
+  margin-top: 12px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-2);
+  text-align: center;
+}
+/* The path, in mono, one tier smaller than the sentence around it — the deck's two-tier rule
+   (plain sentences for people, mono for anything the daemon owns) inside one line. */
+.dl-armed-body .mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.dl-armed-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+/* THE WORD BOX IS NOT AN INPUT. You typed it on the card; this restates it, with a caret so the
+   restatement reads as the same act rather than as a label. Its border is the strongest crimson in
+   the app after the button beside it. */
+.dl-armed-word {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 15px;
+  border: 1px solid var(--destructive-armed-border);
+  border-radius: var(--r-10);
+  background: var(--destructive-input-bg);
+}
+.dl-armed-word-text {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: var(--text);
+}
+.dl-armed-caret {
+  width: 1.5px;
+  height: 15px;
+  background: var(--decision);
+  animation: blip 1.1s ease-in-out infinite;
+}
+/* §7: no `blip` under reduced motion — and the bar STAYS, for `.chip-dot-blip`'s reason. It is what
+   marks the word as something you typed rather than a label the app printed, so removing it would
+   delete information rather than movement. base.css's block reaches transitions only. */
+@media (prefers-reduced-motion: reduce) {
+  .dl-armed-caret {
+    animation: none;
+  }
+}
+
+.dl-armed-keep {
+  margin-top: 12px;
+}
+.dl-armed-cancel {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------------- the empty body ---- */
+
+/* DRAWN AS A 522px WINDOW, AND THE SHELL'S IS A FIXED 1040. `4a Empty` is a standalone surface with
+   no header and no doors; the app routes deletions as a full-window screen, so this renders as a
+   centred 520 column — the closest the window can get. The difference is recorded rather than
+   faked: #221, DEVIATIONS §75, and the same answer S2 gave `3a Conflicts cleared`.
+   Flat, with no inner wrapper, because the frame's body is one block and the mapping is positional. */
+.dl-empty {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 520px;
+  margin: 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 40px;
+}
+.dl-empty-title {
+  margin-top: 20px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+.dl-empty-sub {
+  max-width: 320px;
+  margin-top: 9px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-4);
+  text-align: center;
+}

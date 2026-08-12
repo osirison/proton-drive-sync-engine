@@ -1,0 +1,160 @@
+/* Settings › Notifications (S9) — `11a Rules` on the left, `11a Settings` on the right.
+ *
+ * Both are crops, so neither frame's own width is a fact about the app (frame-classes.mjs). What the
+ * pair DOES say is their ratio — 600 to 520 — and the first card's copy says which side is which:
+ * "The four events on the left". */
+
+.settings-notify {
+  display: grid;
+  grid-template-columns: 600fr 520fr;
+  gap: 26px;
+  /* `stretch`, so the left column can be told how tall it is and scroll inside that. `start` sizes
+     it to its content, which is 210px more than the window has. */
+  align-items: stretch;
+  min-height: 0;
+  height: 100%;
+}
+
+/* The reference sheet is taller than the window: 974px against 764 with it at its natural height.
+   A wrapper, not `overflow` on the panel — the panel's box is what `11a Rules` describes. */
+.notify-rules-scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ------------------------------------------------------------------------- the rules panel -- */
+
+/* An emphasis card (r-14), not a content panel (r-13): `11a Rules` draws 14. */
+.notify-rules {
+  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-14);
+  padding: 24px 26px;
+}
+
+.notify-rules-eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--destructive-text);
+}
+
+/* The silent half's eyebrow is the label tier — the section that is NOT an alarm. */
+.notify-rules-eyebrow.is-silent {
+  color: var(--text-label);
+  margin-top: 26px;
+}
+
+/* The rule above each row, including the first: the eyebrow's own margin-bottom is 11px of it. */
+.notify-rule {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+/* Under the eyebrow, not `:first-of-type` — the eyebrow is a div too, so it IS the first of type and
+   the rule never matched. */
+.notify-rules-eyebrow + .notify-rule {
+  margin-top: 11px;
+}
+
+/* Three forms for four rows, and the form IS the claim: filled red is irreversible, a crimson ring
+   is a decision, filled inert is the one good-news trigger. Same vocabulary as the deletions
+   column headers and the attention band. */
+.notify-rule-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-dot);
+  flex: none;
+  margin-top: 5px;
+  box-sizing: border-box;
+}
+.notify-rule-dot.is-irreversible {
+  background: var(--destructive);
+}
+.notify-rule-dot.is-decision {
+  border: 2px solid var(--decision);
+}
+.notify-rule-dot.is-settled {
+  background: var(--dot-inert);
+}
+
+.notify-rule-text {
+  flex: 1;
+  min-width: 0;
+}
+.notify-rule-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.notify-rule-why {
+  font-size: 12px;
+  color: var(--text-4);
+  margin-top: 3px;
+  line-height: 1.5;
+}
+
+.notify-silent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 13px;
+}
+
+/* A pill that is not a control: no hover, no cursor. These are twelve things the app will not say. */
+.notify-silent-chip {
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 5px 11px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+}
+
+.notify-rules-note {
+  font-size: 12px;
+  color: var(--text-4);
+  margin-top: 14px;
+  line-height: 1.55;
+}
+
+.notify-rules-link {
+  color: var(--text-3);
+  text-decoration: none;
+}
+.notify-rules-link:hover {
+  text-decoration: underline;
+}
+
+/* .05 fill on the .30 border — a fifth crimson alpha pair, measured off this frame (DEVIATIONS §52a
+   already carries the row). It is tinted like a band and is not one: nothing here is actionable. */
+.notify-hard-rule {
+  margin-top: 24px;
+  padding: 14px 16px;
+  border-radius: var(--r-12);
+  border: 1px solid var(--destructive-card-border);
+  background: var(--destructive-row-bg);
+}
+.notify-hard-rule-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--destructive-text);
+}
+.notify-hard-rule-body {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 6px;
+  line-height: 1.55;
+}
+
+/* ------------------------------------------------------------------------ the policy column -- */
+
+/* Two values that differ from the deletions tab's, both measured off `11a Settings`: the cards sit
+   18px under the sub-line rather than 20, and the key line 16px under them rather than 7. */
+.notify-policy .settings-cards {
+  margin-top: 18px;
+}
+.notify-policy .settings-key {
+  margin-top: 16px;
+}

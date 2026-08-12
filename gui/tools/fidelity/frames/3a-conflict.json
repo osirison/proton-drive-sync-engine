@@ -1,0 +1,2254 @@
+{
+  "label": "3a Conflict",
+  "kind": "window",
+  "width": 1042,
+  "height": 766,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "fullText": "Proton Drive Sync3 waiting⋯You both changed this fileNothing has been lost — both versions are still here, and syncing carries on around this.1 of 3‹›3notes/todo.txta plain text file · last agreed 3 hours agoYour version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41See the exact differences→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.Discarding a version can't be undone from here.Decide laterActivityPlan a syncSettingsDetails",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 1042,
+        "h": 766
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "display": "flex",
+        "flex-direction": "column",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "header",
+      "tag": "header",
+      "fullText": "Proton Drive Sync3 waiting⋯",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 52
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "20px",
+        "padding-left": "20px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "header/img",
+      "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 20,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "overflow": "clip"
+      }
+    },
+    {
+      "key": "header/span[0]",
+      "tag": "span",
+      "text": "Proton Drive Sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 107.52,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "600",
+        "letter-spacing": "-0.13px",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "header/span[1]",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 696.08,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "header/span[2]",
+      "tag": "span",
+      "text": "3 waiting",
+      "box": {
+        "w": 98.41,
+        "h": 26
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(255, 156, 156)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgba(255, 107, 107, 0.35)",
+        "border-right-color": "rgba(255, 107, 107, 0.35)",
+        "border-bottom-color": "rgba(255, 107, 107, 0.35)",
+        "border-left-color": "rgba(255, 107, 107, 0.35)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "99px",
+        "border-top-right-radius": "99px",
+        "border-bottom-right-radius": "99px",
+        "border-bottom-left-radius": "99px",
+        "padding-top": "5px",
+        "padding-right": "12px",
+        "padding-bottom": "5px",
+        "padding-left": "12px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "7px"
+      }
+    },
+    {
+      "key": "header/span[2]/span",
+      "tag": "span",
+      "box": {
+        "w": 6,
+        "h": 6
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(255, 156, 156)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(255, 107, 107)",
+        "border-right-color": "rgb(255, 107, 107)",
+        "border-bottom-color": "rgb(255, 107, 107)",
+        "border-left-color": "rgb(255, 107, 107)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%"
+      }
+    },
+    {
+      "key": "header/button",
+      "tag": "button",
+      "text": "⋯",
+      "unbundled": true,
+      "box": {
+        "w": 30,
+        "h": 30
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "15px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "1px",
+        "padding-right": "6px",
+        "padding-bottom": "1px",
+        "padding-left": "6px"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "fullText": "You both changed this fileNothing has been lost — both versions are still here, and syncing carries on around this.1 of 3‹›",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 61
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-top": "6px",
+        "padding-right": "32px",
+        "padding-left": "32px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "flex-end",
+        "gap": "16px"
+      }
+    },
+    {
+      "key": "div[0]/div[0]",
+      "tag": "div",
+      "fullText": "You both changed this fileNothing has been lost — both versions are still here, and syncing carries on around this.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 842.59,
+        "h": 55
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[0]/div[0]/div[0]",
+      "tag": "div",
+      "text": "You both changed this file",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 842.59,
+        "h": 32
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "26px",
+        "font-weight": "600",
+        "letter-spacing": "-0.65px",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[0]/div[0]/div[1]",
+      "tag": "div",
+      "text": "Nothing has been lost — both versions are still here, and syncing carries on around this.",
+      "box": {
+        "w": 842.59,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-top": "7px"
+      }
+    },
+    {
+      "key": "div[0]/div[1]",
+      "tag": "div",
+      "fullText": "1 of 3‹›",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 117.41,
+        "h": 34
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-bottom": "4px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "8px"
+      }
+    },
+    {
+      "key": "div[0]/div[1]/span",
+      "tag": "span",
+      "text": "1 of 3",
+      "box": {
+        "w": 41.41,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)"
+      }
+    },
+    {
+      "key": "div[0]/div[1]/button[0]",
+      "tag": "button",
+      "text": "‹",
+      "box": {
+        "w": 30,
+        "h": 30
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(78, 86, 97)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "1px",
+        "padding-right": "6px",
+        "padding-bottom": "1px",
+        "padding-left": "6px"
+      }
+    },
+    {
+      "key": "div[0]/div[1]/button[1]",
+      "tag": "button",
+      "text": "›",
+      "box": {
+        "w": 30,
+        "h": 30
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "1px",
+        "padding-right": "6px",
+        "padding-bottom": "1px",
+        "padding-left": "6px"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "fullText": "3notes/todo.txta plain text file · last agreed 3 hours agoYour version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41See the exact differences",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 425
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "32px",
+        "padding-left": "32px",
+        "margin-top": "26px",
+        "display": "flex",
+        "flex-direction": "column",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "position": "relative",
+        "top": "0px",
+        "right": "0px",
+        "bottom": "0px",
+        "left": "0px"
+      }
+    },
+    {
+      "key": "div[1]/div[0]",
+      "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1,
+        "h": 361
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-image": "linear-gradient(rgb(10, 11, 13), rgb(42, 46, 54) 12%, rgb(42, 46, 54) 88%, rgb(10, 11, 13))",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "position": "absolute",
+        "top": "56px",
+        "right": "519px",
+        "bottom": "8px",
+        "left": "520px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]",
+      "tag": "div",
+      "fullText": "3notes/todo.txta plain text file · last agreed 3 hours ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 99
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "flex-direction": "column",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "position": "relative",
+        "top": "0px",
+        "right": "0px",
+        "bottom": "0px",
+        "left": "0px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/svg",
+      "tag": "svg",
+      "fullText": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 44,
+        "h": 44
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "overflow": "hidden"
+      },
+      "svgAttrs": {
+        "viewBox": "0 0 120 120"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/svg/path",
+      "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 31.61,
+        "h": 37.11
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "inline"
+      },
+      "svgAttrs": {
+        "d": "M60 9.4 L103.1 33.8 L103.1 86.3 L60 110.6 L16.9 86.3 L16.9 33.8 Z",
+        "stroke": "#FF6B6B",
+        "stroke-width": "5",
+        "stroke-linejoin": "round",
+        "fill": "#0A0B0D"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/svg/text",
+      "tag": "text",
+      "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 6.61,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "30px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      },
+      "svgAttrs": {
+        "x": "60",
+        "y": "72",
+        "text-anchor": "middle"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[0]",
+      "tag": "div",
+      "text": "notes/todo.txt",
+      "box": {
+        "w": 154.02,
+        "h": 19
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "15px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "14px",
+        "padding-left": "14px",
+        "margin-top": "12px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/div[1]",
+      "tag": "div",
+      "text": "a plain text file · last agreed 3 hours ago",
+      "box": {
+        "w": 324.7,
+        "h": 19
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "padding-top": "2px",
+        "padding-right": "14px",
+        "padding-bottom": "2px",
+        "padding-left": "14px",
+        "margin-top": "5px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]",
+      "tag": "div",
+      "fullText": "Your version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 165.73
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "26px",
+        "display": "grid",
+        "grid-template-columns": "488px 488px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]",
+      "tag": "div",
+      "fullText": "Your version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 488,
+        "h": 165.73
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "30px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[0]",
+      "tag": "div",
+      "text": "Your version · this computer",
+      "box": {
+        "w": 458,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(255, 159, 28)",
+        "border-top-color": "rgb(255, 159, 28)",
+        "border-right-color": "rgb(255, 159, 28)",
+        "border-bottom-color": "rgb(255, 159, 28)",
+        "border-left-color": "rgb(255, 159, 28)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[1]",
+      "tag": "div",
+      "fullText": "You added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38",
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 458,
+        "h": 141.73
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "16px",
+        "padding-right": "18px",
+        "padding-bottom": "16px",
+        "padding-left": "18px",
+        "margin-top": "11px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[1]/div[0]",
+      "tag": "div",
+      "text": "You added a line, 5 minutes ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 420,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[1]/div[1]",
+      "tag": "div",
+      "text": "Yours has where Proton's has something else, and is otherwise the same.",
+      "fullText": "Yours has buy milk where Proton's has something else, and is otherwise the same.",
+      "box": {
+        "w": 420,
+        "h": 40.73
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "20.15px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "margin-top": "7px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[1]/div[1]/span",
+      "tag": "span",
+      "text": "buy milk",
+      "box": {
+        "w": 57.61,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.6px",
+        "text-align": "start",
+        "color": "rgb(232, 235, 240)",
+        "border-top-color": "rgb(232, 235, 240)",
+        "border-right-color": "rgb(232, 235, 240)",
+        "border-bottom-color": "rgb(232, 235, 240)",
+        "border-left-color": "rgb(232, 235, 240)",
+        "display": "inline"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[1]/div[2]",
+      "tag": "div",
+      "fullText": "41 bytes4 linesedited 14:38",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 420,
+        "h": 28
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "13px",
+        "margin-top": "14px",
+        "display": "flex",
+        "gap": "14px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[1]/div[2]/span[0]",
+      "tag": "span",
+      "text": "41 bytes",
+      "box": {
+        "w": 52.81,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[1]/div[2]/span[1]",
+      "tag": "span",
+      "text": "4 lines",
+      "box": {
+        "w": 46.2,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[0]/div[1]/div[2]/span[2]",
+      "tag": "span",
+      "text": "edited 14:38",
+      "box": {
+        "w": 79.2,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]",
+      "tag": "div",
+      "fullText": "Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 488,
+        "h": 165.73
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-left": "30px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[0]",
+      "tag": "div",
+      "text": "Proton's version · from another device",
+      "box": {
+        "w": 458,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "right",
+        "color": "rgb(34, 211, 238)",
+        "border-top-color": "rgb(34, 211, 238)",
+        "border-right-color": "rgb(34, 211, 238)",
+        "border-bottom-color": "rgb(34, 211, 238)",
+        "border-left-color": "rgb(34, 211, 238)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[1]",
+      "tag": "div",
+      "fullText": "Changed a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41",
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 458,
+        "h": 121.59
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "16px",
+        "padding-right": "18px",
+        "padding-bottom": "16px",
+        "padding-left": "18px",
+        "margin-top": "11px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[1]/div[0]",
+      "tag": "div",
+      "text": "Changed a line and added one, 2 minutes ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 420,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[1]/div[1]",
+      "tag": "div",
+      "text": "Proton's has and an extra line at the end.",
+      "fullText": "Proton's has buy oat milk and an extra line at the end.",
+      "box": {
+        "w": 420,
+        "h": 20.59
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "20.15px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "margin-top": "7px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[1]/div[1]/span",
+      "tag": "span",
+      "text": "buy oat milk",
+      "box": {
+        "w": 86.41,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.6px",
+        "text-align": "start",
+        "color": "rgb(232, 235, 240)",
+        "border-top-color": "rgb(232, 235, 240)",
+        "border-right-color": "rgb(232, 235, 240)",
+        "border-bottom-color": "rgb(232, 235, 240)",
+        "border-left-color": "rgb(232, 235, 240)",
+        "display": "inline"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[1]/div[2]",
+      "tag": "div",
+      "fullText": "44 bytes5 linesedited 14:41",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 420,
+        "h": 28
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "13px",
+        "margin-top": "14px",
+        "display": "flex",
+        "gap": "14px"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[1]/div[2]/span[0]",
+      "tag": "span",
+      "text": "44 bytes",
+      "box": {
+        "w": 52.81,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[1]/div[2]/span[1]",
+      "tag": "span",
+      "text": "5 lines",
+      "box": {
+        "w": 46.2,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]/div[1]/div[1]/div[2]/span[2]",
+      "tag": "span",
+      "text": "edited 14:41",
+      "box": {
+        "w": 79.2,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[1]/div[3]",
+      "tag": "div",
+      "fullText": "See the exact differences",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 33
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "22px",
+        "position": "relative",
+        "top": "0px",
+        "right": "0px",
+        "bottom": "0px",
+        "left": "0px"
+      }
+    },
+    {
+      "key": "div[1]/div[3]/button",
+      "tag": "button",
+      "text": "See the exact differences",
+      "box": {
+        "w": 178.69,
+        "h": 33
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "9px",
+        "border-top-right-radius": "9px",
+        "border-bottom-right-radius": "9px",
+        "border-bottom-left-radius": "9px",
+        "padding-top": "8px",
+        "padding-right": "16px",
+        "padding-bottom": "8px",
+        "padding-left": "16px",
+        "display": "inline-block"
+      }
+    },
+    {
+      "key": "div[2]",
+      "tag": "div",
+      "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.Discarding a version can't be undone from here.Decide later",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 150
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "32px",
+        "padding-bottom": "16px",
+        "padding-left": "32px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]/div[0]",
+      "tag": "div",
+      "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 90
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "grid",
+        "gap": "12px",
+        "grid-template-columns": "317.328px 317.328px 317.344px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[0]",
+      "tag": "button",
+      "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 317.33,
+        "h": 90
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(0, 0, 0)",
+        "background-color": "rgba(255, 107, 107, 0.07)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgba(255, 107, 107, 0.4)",
+        "border-right-color": "rgba(255, 107, 107, 0.4)",
+        "border-bottom-color": "rgba(255, 107, 107, 0.4)",
+        "border-left-color": "rgba(255, 107, 107, 0.4)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "15px",
+        "padding-right": "17px",
+        "padding-bottom": "15px",
+        "padding-left": "17px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[0]/div[0]",
+      "tag": "div",
+      "fullText": "→Keep mine",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 281.33,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(0, 0, 0)",
+        "border-top-color": "rgb(0, 0, 0)",
+        "border-right-color": "rgb(0, 0, 0)",
+        "border-bottom-color": "rgb(0, 0, 0)",
+        "border-left-color": "rgb(0, 0, 0)",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "9px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[0]/div[0]/span[0]",
+      "tag": "span",
+      "text": "→",
+      "unbundled": true,
+      "box": {
+        "w": 12,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(255, 159, 28)",
+        "border-top-color": "rgb(255, 159, 28)",
+        "border-right-color": "rgb(255, 159, 28)",
+        "border-bottom-color": "rgb(255, 159, 28)",
+        "border-left-color": "rgb(255, 159, 28)"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[0]/div[0]/span[1]",
+      "tag": "span",
+      "text": "Keep mine",
+      "box": {
+        "w": 67.45,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(255, 156, 156)",
+        "border-top-color": "rgb(255, 156, 156)",
+        "border-right-color": "rgb(255, 156, 156)",
+        "border-bottom-color": "rgb(255, 156, 156)",
+        "border-left-color": "rgb(255, 156, 156)"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[0]/div[1]",
+      "tag": "div",
+      "text": "Your version goes to Proton Drive. Proton's version is discarded.",
+      "box": {
+        "w": 281.33,
+        "h": 36
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "left",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "margin-top": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[1]",
+      "tag": "button",
+      "fullText": "⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 317.33,
+        "h": 90
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(0, 0, 0)",
+        "background-color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(46, 50, 58)",
+        "border-right-color": "rgb(46, 50, 58)",
+        "border-bottom-color": "rgb(46, 50, 58)",
+        "border-left-color": "rgb(46, 50, 58)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "15px",
+        "padding-right": "17px",
+        "padding-bottom": "15px",
+        "padding-left": "17px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[1]/div[0]",
+      "tag": "div",
+      "fullText": "⇄Keep both",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 281.33,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(0, 0, 0)",
+        "border-top-color": "rgb(0, 0, 0)",
+        "border-right-color": "rgb(0, 0, 0)",
+        "border-bottom-color": "rgb(0, 0, 0)",
+        "border-left-color": "rgb(0, 0, 0)",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "9px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[1]/div[0]/span[0]",
+      "tag": "span",
+      "text": "⇄",
+      "unbundled": true,
+      "box": {
+        "w": 10.06,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(10, 11, 13)",
+        "border-top-color": "rgb(10, 11, 13)",
+        "border-right-color": "rgb(10, 11, 13)",
+        "border-bottom-color": "rgb(10, 11, 13)",
+        "border-left-color": "rgb(10, 11, 13)"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[1]/div[0]/span[1]",
+      "tag": "span",
+      "text": "Keep both",
+      "box": {
+        "w": 65.44,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(10, 11, 13)",
+        "border-top-color": "rgb(10, 11, 13)",
+        "border-right-color": "rgb(10, 11, 13)",
+        "border-bottom-color": "rgb(10, 11, 13)",
+        "border-left-color": "rgb(10, 11, 13)"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[1]/div[1]",
+      "tag": "div",
+      "text": "Nothing is lost. Proton's copy lands beside yours as .",
+      "fullText": "Nothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.",
+      "box": {
+        "w": 281.33,
+        "h": 36
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "left",
+        "color": "rgb(62, 69, 78)",
+        "border-top-color": "rgb(62, 69, 78)",
+        "border-right-color": "rgb(62, 69, 78)",
+        "border-bottom-color": "rgb(62, 69, 78)",
+        "border-left-color": "rgb(62, 69, 78)",
+        "margin-top": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[1]/div[1]/span",
+      "tag": "span",
+      "text": "todo.proton-cloud.txt",
+      "box": {
+        "w": 138.61,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "16.5px",
+        "text-align": "left",
+        "color": "rgb(62, 69, 78)",
+        "border-top-color": "rgb(62, 69, 78)",
+        "border-right-color": "rgb(62, 69, 78)",
+        "border-bottom-color": "rgb(62, 69, 78)",
+        "border-left-color": "rgb(62, 69, 78)",
+        "display": "inline"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[2]",
+      "tag": "button",
+      "fullText": "←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 317.34,
+        "h": 90
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(0, 0, 0)",
+        "background-color": "rgba(255, 107, 107, 0.07)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgba(255, 107, 107, 0.4)",
+        "border-right-color": "rgba(255, 107, 107, 0.4)",
+        "border-bottom-color": "rgba(255, 107, 107, 0.4)",
+        "border-left-color": "rgba(255, 107, 107, 0.4)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "padding-top": "15px",
+        "padding-right": "17px",
+        "padding-bottom": "15px",
+        "padding-left": "17px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[2]/div[0]",
+      "tag": "div",
+      "fullText": "←Use Proton's",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 281.34,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(0, 0, 0)",
+        "border-top-color": "rgb(0, 0, 0)",
+        "border-right-color": "rgb(0, 0, 0)",
+        "border-bottom-color": "rgb(0, 0, 0)",
+        "border-left-color": "rgb(0, 0, 0)",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "9px"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[2]/div[0]/span[0]",
+      "tag": "span",
+      "text": "←",
+      "unbundled": true,
+      "box": {
+        "w": 12,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(34, 211, 238)",
+        "border-top-color": "rgb(34, 211, 238)",
+        "border-right-color": "rgb(34, 211, 238)",
+        "border-bottom-color": "rgb(34, 211, 238)",
+        "border-left-color": "rgb(34, 211, 238)"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[2]/div[0]/span[1]",
+      "tag": "span",
+      "text": "Use Proton's",
+      "box": {
+        "w": 78.41,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.5px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(255, 156, 156)",
+        "border-top-color": "rgb(255, 156, 156)",
+        "border-right-color": "rgb(255, 156, 156)",
+        "border-bottom-color": "rgb(255, 156, 156)",
+        "border-left-color": "rgb(255, 156, 156)"
+      }
+    },
+    {
+      "key": "div[2]/div[0]/button[2]/div[1]",
+      "tag": "div",
+      "text": "Proton's version replaces the file on this computer. Yours is discarded.",
+      "box": {
+        "w": 281.34,
+        "h": 36
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "left",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)",
+        "margin-top": "6px"
+      }
+    },
+    {
+      "key": "div[2]/div[1]",
+      "tag": "div",
+      "fullText": "Discarding a version can't be undone from here.Decide later",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 976,
+        "h": 33
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "11px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "10px"
+      }
+    },
+    {
+      "key": "div[2]/div[1]/span[0]",
+      "tag": "span",
+      "text": "Discarding a version can't be undone from here.",
+      "box": {
+        "w": 259.63,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)"
+      }
+    },
+    {
+      "key": "div[2]/div[1]/span[1]",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 595.45,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/div[1]/button",
+      "tag": "button",
+      "text": "Decide later",
+      "box": {
+        "w": 100.92,
+        "h": 33
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "9px",
+        "border-top-right-radius": "9px",
+        "border-bottom-right-radius": "9px",
+        "border-bottom-left-radius": "9px",
+        "padding-top": "8px",
+        "padding-right": "15px",
+        "padding-bottom": "8px",
+        "padding-left": "15px"
+      }
+    },
+    {
+      "key": "div[3]",
+      "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 1040,
+        "h": 50
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "40px",
+        "padding-bottom": "18px",
+        "padding-left": "40px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[3]/div",
+      "tag": "div",
+      "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 960,
+        "h": 32
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "15px",
+        "display": "flex",
+        "align-items": "center",
+        "justify-content": "center",
+        "gap": "34px"
+      }
+    },
+    {
+      "key": "div[3]/div/span[0]",
+      "tag": "span",
+      "text": "Activity",
+      "box": {
+        "w": 45.61,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)"
+      }
+    },
+    {
+      "key": "div[3]/div/span[1]",
+      "tag": "span",
+      "text": "Plan a sync",
+      "box": {
+        "w": 66.14,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)"
+      }
+    },
+    {
+      "key": "div[3]/div/span[2]",
+      "tag": "span",
+      "text": "Settings",
+      "box": {
+        "w": 50.11,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)"
+      }
+    },
+    {
+      "key": "div[3]/div/span[3]",
+      "tag": "span",
+      "text": "Details",
+      "box": {
+        "w": 41.2,
+        "h": 16
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)"
+      }
+    }
+  ]
+}

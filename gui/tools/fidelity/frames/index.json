@@ -1,0 +1,308 @@
+[
+  {
+    "label": "10a Glyph states",
+    "kind": "specimen",
+    "file": "10a-glyph-states.json",
+    "nodes": 66
+  },
+  {
+    "label": "10a In situ",
+    "kind": "specimen",
+    "file": "10a-in-situ.json",
+    "nodes": 34
+  },
+  {
+    "label": "10a Offline",
+    "kind": "compact",
+    "file": "10a-offline.json",
+    "nodes": 15
+  },
+  {
+    "label": "10a Paused",
+    "kind": "compact",
+    "file": "10a-paused.json",
+    "nodes": 15
+  },
+  {
+    "label": "10a Settled",
+    "kind": "compact",
+    "file": "10a-settled.json",
+    "nodes": 18
+  },
+  {
+    "label": "10a Syncing",
+    "kind": "compact",
+    "file": "10a-syncing.json",
+    "nodes": 41
+  },
+  {
+    "label": "11a Grouped",
+    "kind": "notification",
+    "file": "11a-grouped.json",
+    "nodes": 15
+  },
+  {
+    "label": "11a In situ",
+    "kind": "specimen",
+    "file": "11a-in-situ.json",
+    "nodes": 58
+  },
+  {
+    "label": "11a Outage",
+    "kind": "notification",
+    "file": "11a-outage.json",
+    "nodes": 15
+  },
+  {
+    "label": "11a Rules",
+    "kind": "crop",
+    "file": "11a-rules.json",
+    "nodes": 41
+  },
+  {
+    "label": "11a Settings",
+    "kind": "crop",
+    "file": "11a-settings.json",
+    "nodes": 21
+  },
+  {
+    "label": "12a Compact needs light",
+    "kind": "compact",
+    "file": "12a-compact-needs-light.json",
+    "nodes": 13
+  },
+  {
+    "label": "12a Compact settled light",
+    "kind": "compact",
+    "file": "12a-compact-settled-light.json",
+    "nodes": 12
+  },
+  {
+    "label": "12a Compact syncing light",
+    "kind": "compact",
+    "file": "12a-compact-syncing-light.json",
+    "nodes": 36
+  },
+  {
+    "label": "12a Conflict light",
+    "kind": "window",
+    "file": "12a-conflict-light.json",
+    "nodes": 75
+  },
+  {
+    "label": "12a Deletions light",
+    "kind": "window",
+    "file": "12a-deletions-light.json",
+    "nodes": 63
+  },
+  {
+    "label": "12a Settled light",
+    "kind": "window",
+    "file": "12a-settled-light.json",
+    "nodes": 26
+  },
+  {
+    "label": "12a Syncing light",
+    "kind": "window",
+    "file": "12a-syncing-light.json",
+    "nodes": 60
+  },
+  {
+    "label": "12a Tray light",
+    "kind": "specimen",
+    "file": "12a-tray-light.json",
+    "nodes": 12
+  },
+  {
+    "label": "2a Compact needs you",
+    "kind": "compact",
+    "file": "2a-compact-needs-you.json",
+    "nodes": 13
+  },
+  {
+    "label": "2a Compact settled",
+    "kind": "compact",
+    "file": "2a-compact-settled.json",
+    "nodes": 12
+  },
+  {
+    "label": "2a Compact syncing",
+    "kind": "compact",
+    "file": "2a-compact-syncing.json",
+    "nodes": 36
+  },
+  {
+    "label": "2a Needs you",
+    "kind": "window",
+    "file": "2a-needs-you.json",
+    "nodes": 69
+  },
+  {
+    "label": "2a Settled",
+    "kind": "window",
+    "file": "2a-settled.json",
+    "nodes": 26
+  },
+  {
+    "label": "2a Syncing",
+    "kind": "window",
+    "file": "2a-syncing.json",
+    "nodes": 60
+  },
+  {
+    "label": "3a Conflict",
+    "kind": "window",
+    "file": "3a-conflict.json",
+    "nodes": 75
+  },
+  {
+    "label": "3a Conflict diff",
+    "kind": "window",
+    "file": "3a-conflict-diff.json",
+    "nodes": 81
+  },
+  {
+    "label": "3a Conflicts cleared",
+    "kind": "dialog",
+    "file": "3a-conflicts-cleared.json",
+    "nodes": 19
+  },
+  {
+    "label": "4a Armed",
+    "kind": "window",
+    "file": "4a-armed.json",
+    "nodes": 29
+  },
+  {
+    "label": "4a Compact",
+    "kind": "compact",
+    "file": "4a-compact.json",
+    "nodes": 23
+  },
+  {
+    "label": "4a Deletions",
+    "kind": "window",
+    "file": "4a-deletions.json",
+    "nodes": 63
+  },
+  {
+    "label": "4a Empty",
+    "kind": "dialog",
+    "file": "4a-empty.json",
+    "nodes": 7
+  },
+  {
+    "label": "5a Checking",
+    "kind": "dialog",
+    "file": "5a-checking.json",
+    "nodes": 29
+  },
+  {
+    "label": "5a Plan",
+    "kind": "window",
+    "file": "5a-plan.json",
+    "nodes": 87
+  },
+  {
+    "label": "5a Plan safe",
+    "kind": "window",
+    "file": "5a-plan-safe.json",
+    "nodes": 63
+  },
+  {
+    "label": "6a Activity passes",
+    "kind": "window",
+    "file": "6a-activity-passes.json",
+    "nodes": 86
+  },
+  {
+    "label": "6a Details",
+    "kind": "dialog",
+    "file": "6a-details.json",
+    "nodes": 32
+  },
+  {
+    "label": "7a Activity quiet",
+    "kind": "window",
+    "file": "7a-activity-quiet.json",
+    "nodes": 75
+  },
+  {
+    "label": "7a File lookup",
+    "kind": "window",
+    "file": "7a-file-lookup.json",
+    "nodes": 67
+  },
+  {
+    "label": "7a File pending",
+    "kind": "dialog",
+    "file": "7a-file-pending.json",
+    "nodes": 18
+  },
+  {
+    "label": "7a Never synced",
+    "kind": "dialog",
+    "file": "7a-never-synced.json",
+    "nodes": 29
+  },
+  {
+    "label": "8a Deletions tab",
+    "kind": "crop",
+    "file": "8a-deletions-tab.json",
+    "nodes": 21
+  },
+  {
+    "label": "8a Save refused",
+    "kind": "dialog",
+    "file": "8a-save-refused.json",
+    "nodes": 13
+  },
+  {
+    "label": "8a Schedule monthly",
+    "kind": "crop",
+    "file": "8a-schedule-monthly.json",
+    "nodes": 39
+  },
+  {
+    "label": "8a Settings",
+    "kind": "window",
+    "file": "8a-settings.json",
+    "nodes": 75
+  },
+  {
+    "label": "8a Skip rules",
+    "kind": "window",
+    "file": "8a-skip-rules.json",
+    "nodes": 56
+  },
+  {
+    "label": "9a CLI missing",
+    "kind": "dialog",
+    "file": "9a-cli-missing.json",
+    "nodes": 16
+  },
+  {
+    "label": "9a Consent",
+    "kind": "dialog",
+    "file": "9a-consent.json",
+    "nodes": 17
+  },
+  {
+    "label": "9a First sync",
+    "kind": "dialog",
+    "file": "9a-first-sync.json",
+    "nodes": 31
+  },
+  {
+    "label": "9a Folders",
+    "kind": "window",
+    "file": "9a-folders.json",
+    "nodes": 43
+  },
+  {
+    "label": "9a Review",
+    "kind": "window",
+    "file": "9a-review.json",
+    "nodes": 53
+  }
+]

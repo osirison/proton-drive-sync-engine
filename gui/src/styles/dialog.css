@@ -1,0 +1,173 @@
+/* The dialog layer (F5) — see js/ui/dialog.js, which explains what F4 already owns and why there is
+ * no Escape handling in this module.
+ */
+
+/* Fixed rather than absolute: the window is a fixed 1040x764 and the scrim must cover the header
+   too, which is a sibling and not an ancestor. */
+.dialog-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  /* min-height:0 on a flex column is what lets an inner scroll region actually scroll instead of
+     growing the dialog past its own height. Every fixed-height frame here has one. */
+  min-height: 0;
+  max-height: calc(100% - 32px);
+  border: 1px solid var(--dialog-border);
+  border-radius: var(--r-12);
+  background: var(--surface);
+  box-shadow: var(--shadow-dialog);
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------------- head ---- */
+
+.dialog-head {
+  display: flex;
+  align-items: flex-start;
+  flex: none;
+}
+/* The two rungs track the width family, not anything semantic: 520 gets the tighter one. */
+/* `align-items: baseline` and NO padding-bottom — both measured off `6a Details`, the only mapped
+   frame that draws this rung. The shorthand's 20px bottom padded a head the frame gives none, the
+   same defect the wide rung carried. */
+.dialog-head-compact {
+  gap: 10px;
+  padding: 20px 22px 0;
+  align-items: baseline;
+}
+/* NO padding-bottom. `7a Never synced` records 22px top and 24px each side and nothing at the
+   foot — its 69.38px height is 47.38 of content plus the 22 above it, and the shorthand's 22px
+   bottom pushed every row below it down by that much. The wide rung is drawn by exactly one frame
+   and `6a Details` / `8a Save refused` both take the compact one, so this is safe to correct. */
+.dialog-head-wide {
+  gap: 12px;
+  padding: 22px 24px 0;
+}
+
+.dialog-headings {
+  flex: 1;
+  min-width: 0;
+}
+/* `flex: 1` only when the title IS the flex child. Under a sub-line it sits inside
+   `.dialog-headings`, which takes the flex — and `7a Never synced` records the title there at the
+   initial `flex-grow: 0` / `flex-basis: auto`. */
+.dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.dialog-head > .dialog-title {
+  flex: 1;
+  min-width: 0;
+}
+.dialog-head-wide .dialog-title {
+  font-size: 18px;
+  letter-spacing: -0.36px;
+}
+.dialog-subtitle {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-4);
+}
+
+/* Per rung, not per class: `7a Never synced` records `flex-shrink: 0` on its ✕ and `6a Details`
+   records the initial `1`. Two frames, two answers. */
+.dialog-head-wide .dialog-close {
+  flex: none;
+}
+
+/* A FIXED SQUARE, which is a robustness fix rather than a cosmetic one. `✕` (U+2715) is outside the
+   bundled subsets, so its advance width comes from whatever the machine has installed — and left to
+   size itself the button was 1.94px narrower here than on the prototype's machine. That difference
+   does not stay in the button: `.dialog-headings` is `flex: 1` beside it, so the title and the
+   sub-line under it inherit the error, and `boxComparability` cannot see it (its taint reaches a
+   node's parent, and these sit two levels below the flex container that holds the glyph).
+   26x26 is the drawn size; pinning it makes the head's layout independent of the font. */
+.dialog-close {
+  width: 26px;
+  height: 26px;
+}
+
+/* The scrolling middle and the ruled foot. Neither existed before S5, because the four dialogs
+   built until now put a placeholder where their body goes; `7a Never synced` and `6a Details`
+   both draw the pair, so it is built once here rather than twice in the screen. */
+/* WHAT REPEATS IS HERE; WHAT DIFFERS IS INLINE. The two dialogs that draw these agree on the
+   border, the flex roles and nothing else — `7a Never synced`'s body overflows visibly and its foot
+   is `center`/12px, `6a Details` clips and its foot is `normal`/8px. `gap`, `align-items` and
+   `overflow` are all asserted, so putting a majority value here quietly fails the other frame. */
+.dialog-body {
+  flex: 1;
+  min-width: 0;
+}
+.dialog-foot {
+  display: flex;
+  flex: none;
+  border-top: 1px solid var(--divider);
+}
+
+/* NO RING ON THE SURFACE ITSELF. `dialog()` gives it `tabindex="-1"` so the focus trap has
+   somewhere to put focus when a dialog holds no control — which `7a File pending` does not, since
+   its one button needs an opener command that does not exist (#231). Left to the browser that
+   draws a ring around the whole 600px panel, which reads as an error state. Nothing is lost: -1
+   keeps the surface out of the Tab order, so no keyboard user can land on it by tabbing, and every
+   control inside keeps its own ring.
+
+   `:not(:focus-visible)` rather than a bare `:focus`: the global ring in base.css is already
+   `:focus-visible`-only, and `.dialog:focus` outranks it on specificity — so the blunt form would
+   have suppressed a ring the browser had decided WAS keyboard-driven, which is the one case it
+   should survive. */
+.dialog:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* --------------------------------------------------------------------------------- motion ---- */
+
+/* --t-appear, the duration 01-foundations.md §7 gives for "a panel or band appearing". A transform
+   rather than a size change so nothing reflows mid-animation, and 6px rather than a slide, because
+   the dialog is arriving in front of the screen and not from an edge of it.
+
+   base.css already reduces every transition-duration to 0.01ms under prefers-reduced-motion, but an
+   ANIMATION is not a transition and that rule does not reach this one — so it is answered here.
+   DEVIATIONS §30's rule 1: the dialog still appears, it just stops moving to do it. */
+@keyframes dialog-appear {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* The scrim only fades. Sharing dialog-appear would translate the whole layer, which slides the
+   darkening off the top edge of the window for the length of the animation. */
+@keyframes scrim-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.dialog {
+  animation: dialog-appear var(--t-appear) var(--ease);
+}
+.dialog-scrim {
+  animation: scrim-appear var(--t-appear) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog,
+  .dialog-scrim {
+    animation: none;
+  }
+}

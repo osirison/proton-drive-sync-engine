@@ -4,9 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Proton Drive Sync</title>
+    <!-- F4 deleted legacy-tokens.css, app.css and components.css along with the v1 screens they
+         styled. What is left is the design-v2 stack, in dependency order: tokens, then the reset and
+         @font-face, then one stylesheet per foundation primitive. Each of the last three carries
+         rules that cannot be inline — @keyframes and media queries — and each needs its own <link>
+         here. Forgetting one is silent: the mark stops animating, or the seam snaps instead of
+         fading, with no error and nothing for lint or CI to catch. -->
     <link rel="stylesheet" href="styles/tokens.css" />
-    <link rel="stylesheet" href="styles/app.css" />
-    <link rel="stylesheet" href="styles/components.css" />
+    <link rel="stylesheet" href="styles/base.css" />
+    <link rel="stylesheet" href="styles/shell.css" />
+    <link rel="stylesheet" href="styles/controls.css" />
+    <link rel="stylesheet" href="styles/rows.css" />
+    <link rel="stylesheet" href="styles/bands.css" />
+    <link rel="stylesheet" href="styles/dialog.css" />
+    <link rel="stylesheet" href="styles/hexagon.css" />
+    <link rel="stylesheet" href="styles/seam.css" />
+    <link rel="stylesheet" href="styles/compact.css" />
+    <link rel="stylesheet" href="styles/notification.css" />
+    <!-- Screens come after the primitives, so a screen rule can override a component's — the seam
+         mask on the main screen's headline is exactly that. One file per S-task. -->
+    <link rel="stylesheet" href="styles/screens/main.css" />
+    <link rel="stylesheet" href="styles/screens/conflicts.css" />
+    <link rel="stylesheet" href="styles/screens/deletions.css" />
+    <link rel="stylesheet" href="styles/screens/plan.css" />
+    <link rel="stylesheet" href="styles/screens/activity.css" />
+    <link rel="stylesheet" href="styles/screens/settings.css" />
+    <link rel="stylesheet" href="styles/screens/onboarding.css" />
+    <link rel="stylesheet" href="styles/screens/notifications.css" />
   </head>
   <body>
     <div id="app-root"></div>

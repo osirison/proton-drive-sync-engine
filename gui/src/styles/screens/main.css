@@ -1,0 +1,277 @@
+/*
+ * The main screen (S1). `03-main-screen.md`, and every number below read off `2a Settled`,
+ * `2a Syncing` and `2a Needs you` rather than the prose — the two disagree in four places, recorded
+ * in DEVIATIONS.md §63–§67.
+ *
+ * The first stylesheet under `styles/screens/`, which IMPLEMENTATION-PLAN §3.4 asks for and F1–F6
+ * had no screen to open. Linked from index.html after the primitives, so a screen rule can override
+ * a component's — the seam mask is exactly that.
+ *
+ * THE ONE RULE THE WHOLE FILE EXISTS FOR: `.main-hero` is a FIXED 394px block that centres its
+ * contents. Every state puts the 168px mark on the same pixels, so settled → syncing → paused is a
+ * crossfade and never a jump. Size the hero to its content and the hexagon moves by a line's height
+ * every time the sub-line changes, which is the design's single most visible failure mode and a
+ * line item on its own acceptance checklist.
+ */
+
+.main-hero {
+  flex: none;
+  height: 394px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The empty block below a settled hero. `flex:1` with nothing in it is the design: the hero holds
+   its height and the footer stays at the bottom, so the mark sits where it sits. */
+.main-spacer {
+  flex: 1;
+  min-height: 0;
+}
+
+/* The block the spacer becomes when the last pass failed (#246) — the daemon's own string, quoted.
+   `overflow:hidden` on the wrapper and a capped, scrolling child: between them nothing a daemon can
+   put in `last_error` reaches the footer. The wrapper takes the same `flex:1; min-height:0` as the
+   spacer it replaces, so the hero above it does not move by a pixel. */
+.main-failed {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  /* The 16px above is `.pl-failed-error`'s own gap from the sentence over it. The 24px below is what
+     keeps a full-height quote off the footer: the child's `max-height:100%` resolves against this
+     box's CONTENT height, so the padding is what the box can never grow into. Measured at 10 KB —
+     the quote ends at 690 with the footer at 714. */
+  padding: 16px 40px 24px;
+}
+
+/* `.ob-working-error`'s block, at this screen's width. Mono and on `--surface` so it reads as a
+   quotation (voice rule 4: the exact string, never paraphrased); a capped height with
+   `overflow:auto` because a failure with a long stderr would otherwise grow until it painted over
+   the footer, and `overflow-wrap:anywhere` because one naming an unbroken path would grow it
+   sideways.
+
+   THE CAP IS `100%` AND NOT A NUMBER, which the other three blocks can afford and this one cannot:
+   its region is `flex:1`, so an attention band appearing under it takes the space away — measured
+   at 123px with one conflict and one deletion waiting. A fixed 132px there overflowed the region by
+   9px, which `overflow:hidden` above then cut off: the box lost its bottom border and the last line
+   of a string nothing could scroll to. Both a decision and a failed pass are ordinary, and they
+   coexist by design ("needs-decision is additive, not exclusive"). */
+.main-failed-error {
+  max-width: 520px;
+  max-height: 100%;
+  overflow: auto;
+  padding: 9px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-9);
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------------------ the mark ---- */
+
+/* `position:relative` on every hero element, in all three frames — it is what stacks them over the
+   glow, which is `position:absolute` and would otherwise paint on top of the mark. */
+.main-mark,
+.main-headline,
+.main-sub,
+.main-actions {
+  position: relative;
+}
+
+/*
+ * The 480×480 breathing glow behind a settled mark.
+ *
+ * `hexagon.css` owns the keyframe and says so in its own comment — "S1 places the div; F2 owns the
+ * animation" — and its reduced-motion block already pins `.hex-glow` to the keyframe's own 0.45
+ * rather than letting it snap back to a BRIGHTER opacity:1. So the class name is not a choice.
+ *
+ * No width/height/inset: an absolutely positioned child of a centring flex container takes its
+ * static position from where it would have been, which is dead centre. The frame's `top:-43px;
+ * left:280px` are the USED values of that, not authored ones.
+ */
+.hex-glow {
+  position: absolute;
+  width: 480px;
+  height: 480px;
+  border-radius: var(--r-dot);
+  background: var(--glow-settled);
+  animation: breathe 7s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/*
+ * The 220ms state crossfade (`14-behaviour-and-state.md`: "Hexagon crossfades to syncing 220ms. It
+ * does not move or rescale.")
+ *
+ * A TRANSITION, NOT AN ANIMATION, and the difference is load-bearing rather than stylistic:
+ * `animation-name`, `-duration`, `-delay`, `-timing-function` and `-iteration-count` are all
+ * asserted by the fidelity gate, so a fade declared as an animation sits on the mark AT REST and
+ * fails every frame that maps one. A transition is invisible to a gate that reads a static tree,
+ * which is the correct footing for something that only exists between two states.
+ */
+.main-mark {
+  transition: opacity var(--t-appear) var(--ease);
+}
+
+.main-mark.is-entering {
+  position: absolute;
+  opacity: 0;
+}
+
+/* ------------------------------------------------------------------------------ the copy ---- */
+
+.main-headline {
+  margin-top: 30px;
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.main-sub {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-4);
+}
+
+.main-actions {
+  margin-top: 28px;
+  display: flex;
+  gap: 10px;
+}
+
+/* --------------------------------------------------------------------------- the two sides ---- */
+
+/*
+ * The seam's two headings, pinned to the top corners of the hero rather than sitting above the
+ * columns — so they name the two SIDES of the line, not the two lists. `01-foundations.md` §5 rule
+ * 4: direction is carried by position first and colour second, and these are the position.
+ *
+ * They are also what a screen reader gets instead of the seam, which is `aria-hidden`.
+ */
+.main-side {
+  position: absolute;
+  top: 16px;
+}
+.main-side-local {
+  left: 32px;
+}
+.main-side-remote {
+  right: 32px;
+  text-align: right;
+}
+
+.main-side-path {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-4);
+}
+
+/* --------------------------------------------------------------------- the transfer columns ---- */
+
+/*
+ * `1fr 1fr` with 32px of side padding puts the gap dead centre at 520px, which is where the seam is
+ * — the two are not independently positioned, and a padding change here moves the line off the gap.
+ *
+ * `align-content:start` is what keeps a two-row column 88px tall instead of stretching it over the
+ * whole 195px grid. It is NOT one of the gate's asserted properties, so nothing would have caught
+ * it: the failure shows up as a wrong `box` on the column, one level down.
+ */
+.main-columns {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-content: start;
+  margin-top: 34px;
+  padding: 0 32px;
+}
+
+.main-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 26px of clearance on the seam side only, in both columns — the rows stop short of the line rather
+   than being centred inside their half. */
+.main-column-left {
+  padding-right: 26px;
+}
+.main-column-right {
+  padding-left: 26px;
+}
+
+.main-more {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------------ the attention band ---- */
+
+/*
+ * The band's wrapper, between the columns and the footer. `flex:none` because it is the one block on
+ * this screen that must never be squeezed: it is the reason the screen has a colour at all.
+ *
+ * The seam stops above it — `seam.js`'s `mainHeroAttention` site, 36px shorter than `mainHero` —
+ * which is rule 2, and `auditSeams` reports a violation if a later change lets the line run into it.
+ */
+.main-band-wrap {
+  flex: none;
+  padding: 0 32px 18px;
+}
+
+/*
+ * `220ms ease-out`, sliding up from the bottom: "New decision arrives → attention band slides in
+ * from the bottom 220ms ease-out".
+ *
+ * A CLASS THE SCREEN ADDS AND REMOVES, never a rule on the wrapper itself, and the reason is the
+ * gate rather than taste. `assert.mjs` seeks every animation to 0 and pauses it there, so a
+ * one-shot `band-in` declared unconditionally would be measured at its FIRST keyframe: `opacity:0`
+ * on a node the frame records at 1, plus three animation-* properties the frame does not have. The
+ * screen adds `is-entering` only when a decision ARRIVES on a mounted screen — which is what the
+ * design's sentence actually says — so a first render, and therefore every gate run, has no class
+ * and no animation at all. `.main-mark.is-entering` is the same shape one block up.
+ */
+.main-band-wrap.is-entering {
+  animation: band-in var(--t-appear) var(--ease);
+}
+
+@keyframes band-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * §7: "no slide-ins — opacity only", and the mark's crossfade goes with them. The hexagon still
+ * CHANGES; it just stops being a fade, which is the preference read correctly — reduced motion is
+ * about movement, not about hiding a state boundary the design uses to carry meaning.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .main-mark {
+    transition: none;
+  }
+  .main-band-wrap.is-entering {
+    animation: none;
+  }
+}

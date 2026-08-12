@@ -1,0 +1,377 @@
+{
+  "label": "12a Tray light",
+  "kind": "specimen",
+  "width": 360,
+  "height": 137.78,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "fullText": "Activities▲◐▮The glyph inverts to near-black and keeps its five forms. Because state is carried by fill rather than hue, nothing has to be re-specified for a light panel.",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 360,
+        "h": 137.78
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(14, 15, 18)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "padding-top": "18px",
+        "padding-right": "20px",
+        "padding-bottom": "18px",
+        "padding-left": "20px"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "fullText": "Activities▲◐▮",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 318,
+        "h": 30
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(237, 235, 231)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-left-radius": "7px",
+        "border-top-right-radius": "7px",
+        "border-bottom-right-radius": "7px",
+        "border-bottom-left-radius": "7px",
+        "padding-right": "11px",
+        "padding-left": "11px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "11px"
+      }
+    },
+    {
+      "key": "div[0]/span[0]",
+      "tag": "span",
+      "text": "Activities",
+      "box": {
+        "w": 44.63,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(75, 85, 99)",
+        "border-top-color": "rgb(75, 85, 99)",
+        "border-right-color": "rgb(75, 85, 99)",
+        "border-bottom-color": "rgb(75, 85, 99)",
+        "border-left-color": "rgb(75, 85, 99)"
+      }
+    },
+    {
+      "key": "div[0]/span[1]",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 150.91,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[0]/span[2]",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 24,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgba(20, 22, 26, 0.09)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-left-radius": "5px",
+        "border-top-right-radius": "5px",
+        "border-bottom-right-radius": "5px",
+        "border-bottom-left-radius": "5px",
+        "padding-top": "3px",
+        "padding-right": "5px",
+        "padding-bottom": "3px",
+        "padding-left": "5px",
+        "display": "flex",
+        "align-items": "center"
+      }
+    },
+    {
+      "key": "div[0]/span[2]/svg",
+      "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 14,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "overflow": "hidden"
+      },
+      "svgAttrs": {
+        "viewBox": "0 0 120 120"
+      }
+    },
+    {
+      "key": "div[0]/span[2]/svg/path",
+      "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 10.06,
+        "h": 11.81
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "inline"
+      },
+      "svgAttrs": {
+        "d": "M60 9.4 L103.1 33.8 L103.1 86.3 L60 110.6 L16.9 86.3 L16.9 33.8 Z",
+        "stroke": "#14161A",
+        "stroke-width": "9",
+        "stroke-linejoin": "round",
+        "fill": "none"
+      }
+    },
+    {
+      "key": "div[0]/span[2]/svg/circle",
+      "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 3.97,
+        "h": 3.97
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "inline"
+      },
+      "svgAttrs": {
+        "fill": "#14161A",
+        "cx": "60",
+        "cy": "60",
+        "r": "17"
+      }
+    },
+    {
+      "key": "div[0]/span[3]",
+      "tag": "span",
+      "text": "▲",
+      "unbundled": true,
+      "box": {
+        "w": 9.91,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(75, 85, 99)",
+        "border-top-color": "rgb(75, 85, 99)",
+        "border-right-color": "rgb(75, 85, 99)",
+        "border-bottom-color": "rgb(75, 85, 99)",
+        "border-left-color": "rgb(75, 85, 99)"
+      }
+    },
+    {
+      "key": "div[0]/span[4]",
+      "tag": "span",
+      "text": "◐",
+      "unbundled": true,
+      "box": {
+        "w": 6.05,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(75, 85, 99)",
+        "border-top-color": "rgb(75, 85, 99)",
+        "border-right-color": "rgb(75, 85, 99)",
+        "border-bottom-color": "rgb(75, 85, 99)",
+        "border-left-color": "rgb(75, 85, 99)"
+      }
+    },
+    {
+      "key": "div[0]/span[5]",
+      "tag": "span",
+      "text": "▮",
+      "unbundled": true,
+      "box": {
+        "w": 5.52,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(75, 85, 99)",
+        "border-top-color": "rgb(75, 85, 99)",
+        "border-right-color": "rgb(75, 85, 99)",
+        "border-bottom-color": "rgb(75, 85, 99)",
+        "border-left-color": "rgb(75, 85, 99)"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "text": "The glyph inverts to near-black and keeps its five forms. Because state is carried by fill rather than hue, nothing has to be re-specified for a light panel.",
+      "box": {
+        "w": 318,
+        "h": 55.78
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18.6px",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "margin-top": "14px"
+      }
+    }
+  ]
+}

@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - master
-      - 'copilot/**'
+      - "copilot/**"
   pull_request:
 
 permissions:
@@ -72,3 +72,77 @@ jobs:
         run: npm run format:check
       - name: Lint
         run: npm run lint
+      # Invisible characters — a NUL, a no-break space, a zero-width joiner. S3 shipped a literal
+      # NUL inside a template string and every gate stayed green while git reclassified the whole
+      # 600-line screen as a binary blob: no diff, no blame, no grep. See gui/tools/check-sources.mjs.
+      - name: Sources
+        run: npm run sources:check
+      # Three things no linter can see, all invisible until someone opens the app in the affected
+      # theme: the two copies of the light palette agreeing (plain CSS cannot share one declaration
+      # list between a media query and a selector), every themed token having a value in both
+      # themes, and no raw colour outside tokens.css. See gui/tools/check-tokens.mjs.
+      - name: Tokens
+        run: npm run tokens:check
+      # The fixture registry (F9): every in-scope frame has a dataset, of the shape its frame class
+      # implies, and every `fids` key names a node that exists in that frame. It lives here rather
+      # than in `fidelity` because it needs no browser — and the stale-key check it does is one
+      # assert.mjs can only make for nodes a built screen actually stamps, at runtime.
+      - name: Fixtures
+        run: npm run fidelity:fixtures
+      # `node --test`, no framework and no dependency — it is in the Node 22 this job already
+      # installs. The frontend is mostly DOM composition that a unit test cannot say much about;
+      # what is here is the logic that is pure, load-bearing and not re-derivable from reading it.
+      # nextOnboardingLatch is the first: it is why onboarding is reachable on a fresh machine, and
+      # every branch of it is a bug that shipped once already.
+      - name: Test
+        run: npm test
+
+  # The fidelity gate (F8). Its own job rather than a step in `frontend`, for one reason: it needs a
+  # Chromium download, and `frontend` is a 15-second lint job that many PRs depend on. Keeping them
+  # apart means a dependency bump does not wait on a browser.
+  #
+  # Deliberately NOT path-filtered, for the same reason `frontend` is not: this is intended to become
+  # a required check, and a required check that is path-filtered never reports on PRs outside its
+  # filter — they sit forever on "Expected — waiting for status to be reported".
+  fidelity:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      # The style and fit gates against every frame the app maps, then the copy gate over all 339
+      # drawn strings in ui/copy.js (it said 224 — that was S4's count, and five screens have landed
+      # since), then the contrast gate, which reads every text node in BOTH themes because the seven
+      # screens with no drawn light frame have no other check (S10).
+      # See gui/tools/fidelity/README.md for what all of them cannot cover.
+      - name: Fidelity
+        run: npm run fidelity
+      # The fixtures are checked in so a prototype change is a reviewable diff. If regenerating them
+      # produces one, they are stale — the prototype moved and nobody re-extracted.
+      # Re-extracts to a temp directory and compares with the SAME tolerances the gate uses, rather
+      # than `git diff`. Sub-pixel text layout is not byte-identical across platforms even with the
+      # same font files, so a byte comparison here reports the runner, not staleness — the mistake
+      # that had already cost this PR a round of phantom failures.
+      - name: Fixtures are up to date
+        run: npm run fidelity:stale
+      # Two extractions on ONE machine must produce identical bytes. Cheaper than discovering an
+      # unpinned input by watching a developer and a runner disagree, which is how the previous four
+      # were found.
+      - name: Extraction is deterministic
+        run: npm run fidelity:determinism
+      # The five symbolic SVGs the tray hands the desktop are GENERATED from the marks on
+      # `10a Glyph states` — the same nodes the style gate compares — so that the icon on a panel and
+      # the drawing in the gate cannot be two different hexagons. Checked in (a tray icon is a
+      # reviewable artefact, and the app reads them at runtime), so they can go stale the moment
+      # ui/hexagon.js changes and nothing else would notice: the icon lives in the one surface of the
+      # app nobody inspects. Here rather than in `frontend` because it needs the same Chromium.
+      - name: Tray glyphs match what the app draws
+        run: npm run glyphs:check

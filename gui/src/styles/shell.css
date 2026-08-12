@@ -1,0 +1,346 @@
+/*
+ * The shell (F4): header, status chip, ⋯ menu, footer nav, footer action bar, content region.
+ * `02-shell.md`, and every number below measured out of the drawn 1040 frames rather than read off
+ * the prose — the two disagree in five places, recorded in DEVIATIONS.md §40–§45.
+ *
+ * This file replaces app.css, which is deleted in the same commit. It is NOT the design-v2
+ * `components.css` of IMPLEMENTATION-PLAN §3.4 — that file is F5's, and the v1 file of the same
+ * name goes with app.css here. Same collision hexagon.css and seam.css were kept out of; see
+ * DEVIATIONS.md §31.
+ */
+
+/* The window. The frames put header, the screen's own blocks and the footer as SIBLINGS of the
+   1040×764 root, so the shell mounts them that way too — no wrapper element, so a screen's `flex:1`
+   block is a direct flex child exactly as drawn. */
+#app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+}
+
+/* A surface whose whole content is ONE compact panel — the tray window (S8) and the `?frame=`
+   preview of a compact frame. Both are added by `panelSurface()` in app.js; read the comment there
+   for what this defends against. Short version: the panel measures itself and, in the tray window,
+   that measurement becomes the window's height — so a `height:100vh` root shrinks the panel to
+   whatever the window already is, and the window can then never grow. `flex:none` on the panel
+   would fix it too and is not available: the fidelity gate compares `flex-shrink` against the drawn
+   node, which is 1. So the container gives up its height instead. */
+#app-root.is-panel-surface {
+  height: auto;
+}
+
+/* ---------------------------------------------------------------------------- the header ---- */
+
+/* 52px, and NO bottom border — the header floats on the surface. The v1 build had a 1px rule and a
+   filled bar; both are gone, and re-adding either is the most likely way to make this read as the
+   old app. */
+.shell-header {
+  flex: none;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+}
+
+.app-mark {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+/* Sized to the mark exactly: any padding here would move the header's 12px gaps. */
+/* A BUTTON THAT MUST NOT LOOK LIKE ONE. The mark is bare on every frame; F4 wraps it in a button so
+   it can be a home affordance, and three UA button defaults then land on the `<img>` inside it —
+   `font-size: 13.3333px`, `text-align: center`, and a `color` of `buttontext`, which under the
+   app's `color-scheme: dark` is WHITE where the frame inherits #F2F4F7. None of them is visible on
+   an image, and all three are compared: the first mapped overlay screen (S2) found them on all
+   three of its frames at once. Inherited rather than restated, so the header stays the one place
+   that decides. */
+.app-home {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+}
+
+.app-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+/* Dimmed together, and driven by the status chip rather than by a per-screen judgement: measured,
+   every idle frame dims both and every non-idle frame dims neither. The mark's two values are the
+   `.65–.75` the doc gives as a range — it is a light/dark split, not a range. */
+.app-mark {
+  opacity: 1;
+}
+.app-mark.is-quiet {
+  opacity: var(--app-mark-quiet);
+}
+.app-name.is-quiet {
+  color: var(--text-3);
+}
+
+.shell-spacer {
+  flex: 1;
+}
+
+.menu-btn {
+  /* `flex-shrink` stays at its initial 1, as the frames draw it. `flex:none` would be the reflex
+     here and it is a fidelity failure: the button has a fixed width, so nothing shrinks it anyway. */
+  flex: 0 1 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-label);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--t-press) var(--ease);
+}
+.menu-btn:hover {
+  background: var(--panel-raised);
+}
+
+/* ------------------------------------------------------------------------ the status chip ---- */
+
+.chip {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Onboarding's `step N of 2`: the same slot, none of the pill. `white-space` is the one thing it
+   keeps — a step counter that wraps has broken the header. */
+.chip-step {
+  flex: 0 1 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-dot);
+  /* `flex-shrink` left at 1, as drawn. The dot has a fixed width inside a chip that never runs out
+     of room, so `flex:none` changes nothing visible and fails the gate. */
+  flex: 0 1 auto;
+  box-sizing: border-box;
+}
+
+/*
+ * `blip` lands here, not in hexagon.css: DEVIATIONS.md §29 established that it never touches a
+ * hexagon in any frame — it drives this 6px dot and (F5) a 1.5×15px text caret. Exactly the
+ * prototype's own keyframes. The three drawn instances are all `1.6s`; the one `1.1s` is the caret.
+ */
+@keyframes blip {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(1.5);
+  }
+}
+
+.chip-dot-blip {
+  animation: blip 1.6s ease-in-out infinite;
+}
+
+/* §7: no `blip` under reduced motion. The dot stays — it is the syncing state's colour, and
+   removing it would delete information rather than movement. */
+@media (prefers-reduced-motion: reduce) {
+  .chip-dot-blip {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------------- the footer nav ---- */
+
+/* `padding-bottom` and the bar's `padding-top` are set inline per variant (four are drawn); the
+   rest is invariant across all thirteen frames that have doors. */
+.footer-nav {
+  flex: none;
+  padding: 0 40px;
+}
+
+.footer-nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 34px;
+  border-top: 1px solid var(--divider);
+}
+
+.door {
+  /* `start`, as the frames draw it. A <button> defaults to `text-align:center` in the UA sheet
+     where the frames' <span> doors inherit `start`, so this has to be said explicitly. It is
+     invisible either way — the bar centres them with `justify-content` — which is exactly why only
+     a gate would ever notice. */
+  text-align: start;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-4);
+  padding: 0;
+  transition: color var(--t-press) var(--ease);
+}
+.door:hover {
+  color: var(--text-2);
+}
+.door.is-active {
+  color: var(--text);
+}
+
+/* The optional line beneath: the folder pair, or today's byte totals, or nothing. "Never anything
+   you need" — so it is not a fallback slot for status. */
+.footer-line {
+  margin-top: 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-label);
+}
+
+/* ------------------------------------------------------------------ the footer action bar ---- */
+
+.footer-action-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 32px;
+  border-top: 1px solid var(--divider);
+}
+
+.bar-consequence {
+  font-size: 12px;
+  color: var(--text-5);
+}
+
+/* `#FF9F1C` when the pending change has a cost — `8a Skip rules`' "2 files, 3.1 GB will start
+   syncing" is the drawn instance. */
+.bar-consequence.tone-cost {
+  color: var(--up-label);
+}
+
+/* ---------------------------------------------------------------------- the content region ---- */
+
+/*
+ * ⚠️ `overflow` is the discipline `02-shell.md` calls "a real bug found twice during this design":
+ * `overflow:visible` on a `flex:1` child lets content paint over the footer.
+ *
+ * The frames take the doc's OTHER option — 21 of the 22 in-scope 1040 frames leave the content
+ * `visible` and size it to fit, and only `6a Activity passes` sets `hidden`. This class takes the
+ * first option instead, because sizing-to-fit is a property of a fixed dataset and the app's data
+ * is not fixed: one long filename is all it takes. Clipping is the recoverable failure; painting
+ * over the footer is not. A list that can genuinely exceed its space opts into `.is-scrollable`.
+ */
+.content-region {
+  flex: 1;
+  min-height: 0;
+  padding: 0 32px;
+  overflow: hidden;
+}
+
+.content-region.is-scrollable {
+  overflow-y: auto;
+}
+
+/* ------------------------------------------------------------------------------ the ⋯ menu ---- */
+
+/* NO FRAME DRAWS THIS MENU OPEN. `02-shell.md` says only that the theme toggle moves into it, so
+   everything here is prose-normative and unverified — the same footing as the seam's 320ms
+   transition (DEVIATIONS.md §38). Recorded as §45. */
+.menu-popover {
+  position: absolute;
+  top: 46px;
+  right: 20px;
+  z-index: 20;
+  min-width: 180px;
+  padding: 6px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-12);
+  box-shadow: var(--shadow-dialog);
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--r-7);
+  background: none;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: var(--panel-alt);
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------------------- placeholder ---- */
+
+/* Every screen between F4 and its own S-task. Deliberately plain: it is scaffolding, and dressing
+   it up makes it harder to see which screens are still missing. */
+.screen-placeholder {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 32px;
+  text-align: center;
+}
+.screen-placeholder h2 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--text);
+  margin: 0;
+}
+.screen-placeholder p {
+  font-size: 13.5px;
+  color: var(--text-4);
+  margin: 0;
+  max-width: 460px;
+  line-height: 1.6;
+}
+.screen-placeholder .issue {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-5);
+  padding: 3px 8px;
+}

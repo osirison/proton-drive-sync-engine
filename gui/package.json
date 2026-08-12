@@ -3,19 +3,34 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Lint and format tooling for the Tauri frontend in gui/src (served raw — there is no build step).",
+  "description": "Lint and format tooling for the Tauri frontend in gui/src (served raw \u2014 there is no build step).",
   "scripts": {
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run format:check && npm run lint"
+    "test": "node --test test/*.test.js",
+    "check": "npm run format:check && npm run lint && npm run sources:check && npm run tokens:check && npm run fidelity:fixtures && npm test",
+    "sources:check": "node tools/check-sources.mjs",
+    "tokens:check": "node tools/check-tokens.mjs",
+    "fidelity:fixtures": "node tools/fidelity/check-fixtures.mjs",
+    "fidelity": "node tools/fidelity/assert.mjs && node tools/fidelity/copy-gate.mjs && node tools/fidelity/check-contrast.mjs",
+    "fidelity:contrast": "node tools/fidelity/check-contrast.mjs",
+    "fidelity:extract": "node tools/fidelity/extract.mjs",
+    "fidelity:stale": "node tools/fidelity/check-stale.mjs",
+    "fidelity:determinism": "node tools/fidelity/check-determinism.mjs",
+    "fonts:sync": "node tools/sync-fonts.mjs",
+    "glyphs": "node tools/render-tray-glyphs.mjs",
+    "glyphs:check": "node tools/render-tray-glyphs.mjs --check"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/instrument-sans": "5.3.0",
     "eslint": "10.8.0",
     "eslint-plugin-import-x": "4.17.1",
     "globals": "17.9.0",
-    "prettier": "3.9.6"
+    "prettier": "3.9.6",
+    "puppeteer": "^25.5.0"
   }
 }

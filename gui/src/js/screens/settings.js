@@ -1,738 +1,1232 @@
-// Settings screen (S6, #87). Own ONLY this file. Read via `ctx.api.readConfig()`, save via
-// `ctx.api.writeConfig(update)` (only changed fields; the writer preserves comments/daemon-only keys
-// and is rejected if the daemon parser would refuse it). Selective sync v1 = raw include/exclude
-// globs (see the note on `selectiveSyncSection` below for why the folder-tree view isn't here yet).
-// Do not edit screens.js, app.js, or other screen modules.
+// The settings screen (S6) — what syncs, how often, and how much say you get. `08-settings.md`.
+//
+// FOUR TABS AND FIVE FRAMES, AND ONLY THREE OF THE TABS ARE DRAWN. `8a Settings` is Folders,
+// `8a Skip rules` is What to skip, `8a Deletions tab` is Deletions (a 600px re-render, not a cut-out
+// of the window — see `fids.js`), `8a Schedule monthly` is one panel of Folders in its other state,
+// and `8a Save refused` is a dialog over any of them. Advanced is specified in prose and drawn
+// nowhere.
+//
+// EVERY CONTROL HERE WRITES SOMETHING, and that is the line this screen is built along. The old
+// screen was the config file with labels; this one says what each setting does to your files and
+// puts the key underneath in mono. A control that cannot write is not drawn — the same call
+// #224 and #227 record, and this screen would have been the third and fourth place to make it.
+//
+// WHAT THE FRAMES DRAW THAT PHASE 1 CANNOT, with the issue that closes each:
+//
+//   · the whole full-sweep SCHEDULE — Weekly/Monthly, seven day chips, a time stepper and
+//     `full_scan_schedule · weekly sun 03:00` (G4 #193). There is no such key, no scheduler and no
+//     command. `IMPLEMENTATION-PLAN.md` §4 says to present `scan_interval` in plain language inside
+//     the same panel shell, so the panel keeps its shell and changes its subject — and its TITLE
+//     with it, because `Compare everything, top to bottom` over a timer that (with live updates on)
+//     runs an incremental pass would be a false claim about what happens to someone's files. This
+//     is the largest single deviation in the design-v2 build. DEVIATIONS §78.
+//   · `12,480 files, 41.2 GB in here today` under the local folder, and `A full check of all 12,480
+//     files` in the panel above (G7 #207). `skip_rule_usage` counts files and not bytes, so half of
+//     it would still be missing; both clauses go and the sentences that remain are the ones that
+//     say what changing the setting does.
+//   · `Takes about 4 minutes … Last one 2 days ago` under `Full sweep now` (G24 #238) — no per-pass
+//     duration exists, and nothing records which past pass was a full sweep.
+//   · `added 14 Jul` on a rule — a TOML array of globs carries no per-entry timestamps. Not a
+//     missing command: an absent fact, and the fixture pins it as a literal that nothing reads.
+//   · the unsyncable panel — `Two more files can't be synced no matter what` and `See them`
+//     (G19 #232). The files it counts never enter the index, and `See them` would open the one
+//     group `7a Never synced` already omits for the same reason.
+//   · `That folder doesn't exist on Proton Drive` and `Create it on Proton Drive` on the refusal
+//     (G22 #236). `write_config` validates TOML and never contacts Proton Drive, so it cannot know.
+//   · four of Advanced's six settings (G23 #237): the socket path, the log level, the conflict
+//     suffix and *Reset the index* have no key and no command between them.
+//
+// AND TWO THINGS THE SCREEN GAINED RATHER THAN LOST. `Sweep now` is `ControlCommand::Resync`, which
+// the daemon has had since #160 and no command exposed; `Choose…` is a real folder picker. Both are
+// recorded in `commands.rs`'s module note, because a screen adding to the command surface is the
+// exception and not the rule.
 
-import { el, dash } from "../components.js";
+import { el } from "../ui/el.js";
+import { MAIN, NOTIFY, SETTINGS } from "../ui/copy.js";
+import { button, pillTabs, radioCard, setButtonKind, stepper, textInput, toggle } from "../ui/controls.js";
+import { eyebrow, splitEmphasis } from "../ui/rows.js";
+import { renderSeam } from "../ui/seam.js";
+import { renderHexagon } from "../ui/hexagon.js";
+import { fid } from "../fixtures/frames.js";
 
-// ---- module-level form state -------------------------------------------------------------
-// Kept here (not in the shared store) per the F1 pattern: this screen owns a draft that must
-// survive the shell's 2s poll re-render without being clobbered by a fresh `readConfig()` on every
-// paint. `loaded` gates the one-time fetch; `original` is the last-known-persisted baseline used
-// both to diff for the save payload and to detect the "did the user touch a root" case.
-let loaded = false;
-let loading = false;
-let loadError = null;
-let meta = null; // display-only, never diffed/sent: { path, exists }
-let original = null; // normalized draft baseline (see `toDraft`), refreshed on load/successful save
-let form = null; // editable draft: local_root, remote_root, scan_interval_secs, events_driven,
-// include, exclude, proton_cli, proton_timeout_secs, proton_list_attempts,
-// delete_approval_remote, delete_approval_local
+/**
+ * The tabs, in the drawn order. The index is the frame's `div[1]/button[i]`.
+ *
+ * A FIFTH PILL THE 8a FRAMES DO NOT DRAW (S9). `08-settings.md` enumerates four and
+ * `11-notifications.md` specifies a settings surface with no home; the `11a Settings` frame's own
+ * caption calls it "the settings tab", `14-behaviour-and-state.md`'s fallback row calls the section
+ * "Notifications", and the `11a Settings` card is drawn with the same chrome as the `8a Deletions
+ * tab` crop — same background, border, radius, padding and presentation shadow. So it is a tab.
+ *
+ * It costs the gate nothing: the drawn pill row is 1040 wide and left-aligned, so a fifth pill moves
+ * none of the four boxes `8a Settings` asserts. DEVIATIONS §83.
+ */
+const TABS = [
+  { id: "folders", label: SETTINGS.tabs.folders },
+  { id: "skip", label: SETTINGS.tabs.skip },
+  { id: "deletions", label: SETTINGS.tabs.deletions },
+  { id: "notifications", label: NOTIFY.settings.tab },
+  { id: "advanced", label: SETTINGS.tabs.advanced },
+];
 
-let saving = false;
-let saveError = null;
-let saveNotice = null; // { text, rootChanged } set after a successful save
-let prefilledFromDaemon = false; // roots adopted from the running daemon (config file had none)
+/**
+ * The three `notify_policy` values, in the order the cards are drawn.
+ *
+ * GUI-LOCAL, not a daemon key (IMPLEMENTATION-PLAN row 6). The daemon parses its config with
+ * `deny_unknown_fields`, so writing `notify_policy` into `proton-sync.toml` would stop it starting —
+ * it lives in the GUI's own `gui.toml` beside it. `never` must not change engine behaviour: the
+ * deletion queue still holds, because nothing here is passed to the daemon at all.
+ */
+export const NOTIFY_POLICIES = [
+  { id: "only_when_needed" },
+  { id: "only_permanent_deletions" },
+  { id: "never" },
+];
 
-// Restart-daemon flow (the post-save prompt and the Service-section button share it): the daemon
-// only reads its config at startup, so after a save the screen offers a one-click restart via
-// the `restart_service` command (graceful IPC shutdown → wait → systemd/direct start).
-let restarting = false;
-let restartError = null;
-let restartDone = false; // a restart succeeded since the last save
+/** `Choose…`, `Add` — a filled secondary at input height. */
+const inputButton = (label, onClick, padding) =>
+  button({ kind: "secondaryFilled", label, onClick, padding, radius: "var(--r-10)", fontSize: "12.5px" });
 
-// Transient text-buffers for the "add a pattern" inputs — not part of the diffed draft, cleared
-// once the pattern is committed into form.include / form.exclude.
-let newIncludeText = "";
-let newExcludeText = "";
+/** `Remove` — the quietest button on the screen, and the only one that stages a loss. */
+const rowButton = (label, onClick) =>
+  button({ kind: "secondary", label, onClick, padding: "6px 13px", radius: "var(--r-8)", fontSize: "12px" });
 
-// DOM refs captured during the current `paint()`, used to update Save-button/dirty-note/root-warning
-// state directly on every keystroke instead of rebuilding (and re-focusing) the whole form — see
-// `refreshDerived`.
-let refs = {};
-
-const TEXT_FIELDS = ["local_root", "remote_root", "proton_cli"];
-const NUMBER_FIELDS = ["scan_interval_secs", "proton_timeout_secs", "proton_list_attempts"];
-const BOOL_FIELDS = ["events_driven", "delete_approval_remote", "delete_approval_local"];
-const LIST_FIELDS = ["include", "exclude"];
-
-const inputStyle =
-  "width:100%;box-sizing:border-box;padding:8px 10px;border-radius:var(--radius-control);" +
-  "border:1px solid var(--border);background:var(--row);color:var(--text-1);" +
-  "font-family:var(--font-mono);font-size:var(--fs-control)";
-
-// `read_config`'s bool fields are `Option<bool>` on the Rust side — a raw config file that never
-// set the key comes back `null`, not the engine's actual resolved runtime default. Falling back to
-// `false` there would misrepresent a security-relevant guard (delete-approval) as off when the
-// daemon treats it as on. These mirror the documented defaults (CLAUDE.md / src/config.rs): both
-// delete-approval directions default true, and events-driven reconcile is on by default.
-const BOOL_DEFAULTS = { events_driven: true, delete_approval_remote: true, delete_approval_local: true };
-
-function toDraft(cfg) {
-  const draft = {};
-  for (const k of TEXT_FIELDS) draft[k] = cfg[k];
-  for (const k of NUMBER_FIELDS) draft[k] = cfg[k];
-  for (const k of BOOL_FIELDS) draft[k] = cfg[k] == null ? BOOL_DEFAULTS[k] : cfg[k];
-  for (const k of LIST_FIELDS) draft[k] = Array.isArray(cfg[k]) ? [...cfg[k]] : [];
-  return draft;
+/** The stepper's two buttons, named so a repeated press keeps the keyboard on the one being used. */
+function namedSteps(node) {
+  const [minus, plus] = node.querySelectorAll(".btn");
+  focusable(minus, "interval-down");
+  focusable(plus, "interval-up");
+  return node;
 }
 
-function arraysEqual(a, b) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
+/**
+ * Name a control so focus can find it again.
+ *
+ * THIS SCREEN IS A FORM AND IT IS REBUILT TWICE A SECOND. Every handler here ends in a render and
+ * the status poll rebuilds the body anyway, so a control that is focused when that happens is
+ * removed from the document and the keyboard lands on `<body>`: Tab restarts at the top, Space does
+ * nothing, and there are twenty-one such controls on this screen against five text fields. The
+ * review measured it — `focused before: radio: Never ask` / `after poll: BODY`.
+ *
+ * `data-sfocus` is matched by scanning rather than by a selector, so an id may contain anything a
+ * skip pattern can. `data-focus-key` is a SELECTOR (`focusKeyOf` in app.js hands it to
+ * `querySelector`), so only ids that are safe inside one carry it — that is what lets a dialog
+ * opened over this screen put focus back on the field it was opened from.
+ */
+function focusable(node, id) {
+  if (!node) return node;
+  node.dataset.sfocus = id;
+  if (/^[a-z0-9:_-]+$/i.test(id)) node.dataset.focusKey = `[data-sfocus="${id}"]`;
+  return node;
 }
 
-/** Only the fields that actually differ from `original` — this is exactly the `writeConfig`
- * payload, so it's both the dirty-check and the save-diff in one place. Number fields need no
- * special blank/NaN handling here: `textInput`'s onInput already guarantees `form[k]` is always
- * either a valid finite number or exactly `original[k]` (see the number branch there), so a plain
- * equality diff can never disagree with what's actually shown in the field. */
-function buildUpdate() {
-  const update = {};
-  for (const k of [...TEXT_FIELDS, ...NUMBER_FIELDS, ...BOOL_FIELDS]) {
-    if (form[k] !== original[k]) update[k] = form[k];
+// ------------------------------------------------------------------------------ the model ----
+
+/**
+ * The three deletion policies, in the order the cards are drawn, and what each one writes.
+ *
+ * BOTH BOOLEANS, ALWAYS. `remote` gates the recoverable direction (a file leaving this computer
+ * lands in Proton's Trash) and `local` the permanent one, and a write that set only one of them
+ * could leave a pair no card describes. DEVIATIONS §68.
+ */
+export const POLICIES = [
+  { id: "ask_every_time", remote: true, local: true },
+  { id: "only_permanent", remote: false, local: true },
+  { id: "never", remote: false, local: false },
+];
+
+/**
+ * Which card is selected, or `null` for the fourth combination.
+ *
+ * `remote: true, local: false` — ask before sending a delete to Proton's Trash, but wipe local files
+ * for good without asking — is reachable by hand-editing the config and is a live safety policy with
+ * no card. **It draws no selection rather than the nearest one**: coercing it would mean the next
+ * save silently rewrote a setting nobody touched, in the one screen built not to do that. §68.
+ *
+ * Read off the two booleans and not off `deletion_policy`, which `read_config` derives from exactly
+ * these two — one source, not two that can disagree. An absent key means `true`, which is what stops
+ * an empty config drawing as `Never ask` on a machine that is in fact asking about everything.
+ */
+export function policyOf(config) {
+  if (!config) return null;
+  const remote = config.delete_approval_remote ?? true;
+  const local = config.delete_approval_local ?? true;
+  return POLICIES.find((p) => p.remote === remote && p.local === local)?.id ?? null;
+}
+
+/**
+ * What a rule's two lines say. The whole point of the tab is here: an active rule names what it is
+ * hiding, a stale one says it is safe to remove, and nothing in between claims either.
+ *
+ * §69a left this to S6 and the frame gives two of the five answers. The discriminator is the rule's
+ * FOLDER ANCHOR plus whether the samples are the whole set:
+ *
+ *   · a bare glob (`*.tmp`, `folder_exists: null`) makes no claim about a folder, so it names the
+ *     files — but only when `samples` holds all of them. The command caps samples at four
+ *     (`MAX_SAMPLES`), and a list of four under `Skipping 50 files right now` reads as the full set.
+ *   · anything anchored at a folder describes itself by size, which is what `video-raw/**` draws.
+ *
+ * AND `safe to remove` IS NEVER SAID OF A RULE THAT IS HIDING SOMETHING. It needs both halves —
+ * nothing matched AND the folder is known gone (§69b) — because removing a rule that still matches
+ * files starts syncing them, and this is the sentence someone acts on without checking.
+ */
+export function ruleEffect(rule) {
+  // NOT MEASURED IS NOT MEASURED ZERO, and this is the branch the review caught reading the other
+  // way. `skip_rule_usage` walks the local tree, is fired unawaited on every visit, and can fail —
+  // so for the length of the walk, and permanently after an error, the report has nothing to say
+  // about a rule that may be hiding forty gigabytes. `rule.files ?? 0` turned that into
+  // `Matching nothing`, which is this project's own "unknown is never zero" rule broken on the one
+  // sentence that invites someone to delete a rule.
+  if (!rule) return null;
+  // The walk could not evaluate this pattern. Its own words, in mono (voice rule 4) — and no
+  // counts, because a rule that could not be checked has none.
+  if (rule.error) return { effect: SETTINGS.ruleUnchecked, detail: rule.error, dim: false };
+  // A row the report never answered for. `files` absent — not zero — is what says so.
+  if (rule.files == null) return { effect: SETTINGS.ruleChecking, detail: null, dim: false };
+  const files = rule.files;
+  if (files > 0) {
+    const named = rule.folder_exists == null && (rule.samples ?? []).length === files;
+    return {
+      effect: named ? SETTINGS.skippingNow(files) : SETTINGS.skippingSize(files, rule.bytes ?? 0),
+      detail: named
+        ? rule.samples.map((s) => s.path).join(", ")
+        : rule.folder_exists === true
+          ? SETTINGS.ruleFolderHere
+          : null,
+      dim: false,
+    };
   }
-  for (const k of LIST_FIELDS) {
-    if (!arraysEqual(form[k], original[k])) update[k] = [...form[k]];
+  if (rule.folder_exists === false) {
+    return { effect: SETTINGS.matchingNothing, detail: SETTINGS.staleRule, dim: true };
+  }
+  // Matching nothing with its folder still there, or with no folder to have an opinion about. Idle,
+  // not stale — and NOT dimmed: the row is doing its job on files that are not there today.
+  return {
+    effect: SETTINGS.matchingNothing,
+    detail: rule.folder_exists === true ? SETTINGS.ruleFolderHere : null,
+    dim: false,
+  };
+}
+
+/**
+ * `hiding 4 files, 3.1 GB in total`, or the hedged form when the walk could not read everything.
+ *
+ * `skip_rules.rs` carries `unreadable_directories`/`unreadable_entries` for exactly this: with
+ * either above zero every number on the tab is a floor, and the tab must not present a floor as a
+ * fact. Undrawn — no frame has an unreadable folder in it.
+ */
+export function totalLine(report) {
+  if (!report) return null;
+  const partial = (report.unreadable_directories ?? 0) > 0 || (report.unreadable_entries ?? 0) > 0;
+  const line = partial ? SETTINGS.hidingFloor : SETTINGS.hidingTotal;
+  return line(report.total_files ?? 0, report.total_bytes ?? 0);
+}
+
+/**
+ * The footer's amber cost line — `One rule removed — 2 files, 3.1 GB will start syncing.`
+ *
+ * `unique_files`/`unique_bytes`, NOT `files`/`bytes`: removing a rule only starts syncing the files
+ * no OTHER rule still hides, and `will start syncing` is a promise about what happens next. The two
+ * agree on the drawn frame because its three rules do not overlap, which is exactly why the
+ * distinction has to be in the code rather than discovered by whoever first writes two that do.
+ *
+ * One rule only, because the sentence says `One rule removed`. Remove two and the neutral note
+ * stands: a wrong number is worse than no number, and the deck has no plural form to reach for.
+ */
+export function removalCost(saved, staged, report) {
+  if (!saved || !staged) return null;
+  const gone = saved.filter((p) => !staged.includes(p));
+  if (gone.length !== 1) return null;
+  const rule = (report?.rules ?? []).find((r) => r.pattern === gone[0]);
+  // AMBER MEANS A COST, so a removal that has none keeps the neutral note. `08-settings.md` is
+  // explicit — the line appears "when a pending change has a cost" — and removing a rule that is
+  // hiding nothing is the commonest safe edit on this tab: it is what `safe to remove` invites.
+  // `One rule removed — 0 files, 0 B will start syncing.` is both true and a false alarm.
+  if (!rule || (rule.unique_files ?? 0) === 0) return null;
+  return SETTINGS.ruleRemovedCost(rule.unique_files, rule.unique_bytes ?? 0);
+}
+
+/**
+ * The `ConfigUpdate` for a save: the fields that CHANGED, and nothing else.
+ *
+ * `Saving writes only what you changed` is a wire contract and not just footer copy. `write_config`
+ * edits the TOML in place, so a field sent as `Some` is a key written — send everything and a save
+ * materialises `proton_timeout_secs = 60` in a file that never had the line, which is the opposite
+ * of what the note promises. Only the diff goes.
+ *
+ * Arrays compare by content: `exclude` is staged as a new array on every edit, so identity would
+ * report a change that removing and re-adding the same rule did not make.
+ */
+export const ABSENT_DEFAULTS = {
+  // `src/config.rs` resolves this to 300 when the file is silent, and `timerPanel` draws that —
+  // so stepping the timer up and back down to what it already said must not stage a change.
+  scan_interval_secs: 300,
+  events_driven: true,
+  delete_approval_remote: true,
+  delete_approval_local: true,
+  deletion_policy: "ask_every_time",
+};
+
+export function configUpdate(config, edits) {
+  const same = (a, b) =>
+    Array.isArray(a) && Array.isArray(b) ? a.length === b.length && a.every((v, i) => v === b[i]) : a === b;
+  const update = {};
+  for (const [key, value] of Object.entries(edits ?? {})) {
+    // AN ABSENT KEY IS ITS DEFAULT, not a difference from it. `read_config` returns `null` for a
+    // key the file does not have and the screen draws the daemon's default in its place — so on a
+    // fresh config, clicking the card that is already selected staged `true` against `null` and
+    // marked the screen dirty, and saving materialised two keys the file never had. That is the
+    // opposite of what the footer promises. Only the keys whose drawn value comes from a default
+    // are listed: everything else is drawn empty when absent, and setting it IS a change.
+    const current = config?.[key] ?? (key in ABSENT_DEFAULTS ? ABSENT_DEFAULTS[key] : config?.[key]);
+    if (!same(value, current)) update[key] = value;
   }
   return update;
 }
 
-function computeDirty() {
-  return Object.keys(buildUpdate()).length > 0;
+/** Anything staged that the loaded config does not already say. */
+export const isDirty = (config, edits) => Object.keys(configUpdate(config, edits)).length > 0;
+
+/**
+ * The daemon's reason, without the sentence `write_config` wraps it in.
+ *
+ * `ConfigError::Display` produces `config would be rejected by the daemon: <reason>` and the frame
+ * draws the bare reason in its mono box. Voice rule 4 says the daemon's words are quoted exactly —
+ * which is what makes the prefix worth removing rather than leaving: the prefix is the GUI's
+ * sentence about the daemon's words, and the dialog's own body already says it.
+ */
+export function refusalReason(message) {
+  if (!message) return null;
+  const at = message.indexOf(": ");
+  return message.startsWith("config would be rejected by the daemon") && at >= 0
+    ? message.slice(at + 2)
+    : message;
 }
 
-function isRootDirty() {
-  return form.local_root !== original.local_root || form.remote_root !== original.remote_root;
+/**
+ * `scan_interval_secs`, in the plain language `IMPLEMENTATION-PLAN.md` §4 asks for.
+ *
+ * Whole minutes read as minutes; anything else reads in seconds rather than rounding. A config
+ * written by hand at 90s must not draw as `2 min` — the stepper would then write 120 for a value
+ * nobody touched, which is the same silent rewrite `policyOf` refuses one block up.
+ */
+export function intervalLabel(secs) {
+  const n = Number(secs);
+  if (!Number.isFinite(n) || n <= 0) return SETTINGS.timerSeconds(0);
+  return n % 60 === 0 ? SETTINGS.timerUnit(n / 60) : SETTINGS.timerSeconds(n);
 }
 
-function messageOf(e) {
-  return e && e.message ? e.message : String(e);
-}
+/** One minute a step, and never below one: a zero interval is a daemon in a spin loop. */
+export const MIN_INTERVAL_SECS = 60;
+export const MAX_INTERVAL_SECS = 7200;
+export const stepInterval = (secs, delta) =>
+  Math.min(MAX_INTERVAL_SECS, Math.max(MIN_INTERVAL_SECS, Number(secs || 0) + delta * 60));
 
-/** Surgical update after a field edit: toggle the Save/Discard buttons, the "unsaved changes"
- * note, and the root-change warning WITHOUT rebuilding the DOM — a full `paint()` on every
- * keystroke would recreate the focused `<input>` and drop focus/cursor mid-type. Structural edits
- * (toggle a switch, add/remove a glob, load/save complete) still go through `paint()`. */
-function refreshDerived() {
-  const dirty = computeDirty();
-  if (refs.saveBtn) refs.saveBtn.disabled = !dirty || saving;
-  if (refs.discardBtn) refs.discardBtn.disabled = !dirty || saving;
-  if (refs.dirtyNote) refs.dirtyNote.style.display = dirty ? "" : "none";
-  if (refs.rootWarning) refs.rootWarning.style.display = isRootDirty() ? "" : "none";
-  // A stale SUCCESS notice reads oddly next to "Unsaved changes" once the user edits again after a
-  // save, so hide it surgically (no repaint, no focus loss) once dirty. A FAILURE banner must stay
-  // visible while dirty — the form is dirty precisely *because* the save failed and the draft was
-  // deliberately left unsaved (see `handleSave`'s catch), so hiding the error the instant it appears
-  // would mean the user never gets to read why. Only the success path auto-hides on further edits;
-  // `saveNotice`/`saveError` themselves are cleared for real at the start of the next `handleSave`.
-  if (refs.statusBox) {
-    const hideStaleSuccess = dirty && !!saveNotice && !saveError;
-    refs.statusBox.style.display = hideStaleSuccess ? "none" : "";
-  }
-}
+// ------------------------------------------------------------------------ shared furniture ----
 
-// ---- small builders -------------------------------------------------------------------------
+/** A settings panel: the bordered, padded box every group on this screen sits in. */
+const panel = (cls, children) => el("div", { class: `settings-panel ${cls}` }, children);
 
-function sectionTitle(text) {
-  return el("div", { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:12px" }, text);
-}
-
-function fieldRow(label, hint, control) {
-  return el(
+/** A panel's title and its 12.5px sub-line. The sub is omitted, never blank — §4's rule. */
+const panelText = (title, sub) =>
+  el(
     "div",
-    { style: "margin-bottom:12px" },
-    el(
-      "label",
-      {
-        class: "mono",
-        style:
-          "display:block;font-size:var(--fs-label);text-transform:uppercase;" +
-          "letter-spacing:var(--tracking-label);color:var(--muted);margin-bottom:4px",
-      },
-      label,
-    ),
-    control,
-    hint
-      ? el(
-          "div",
-          { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:4px" },
-          hint,
-        )
-      : null,
+    { class: "settings-panel-text" },
+    el("div", { class: "settings-panel-title" }, title),
+    sub ? el("div", { class: "settings-panel-sub" }, sub) : null,
   );
-}
 
-function textInput(container, ctx, key, kind, opts = {}) {
-  const props = {
-    type: kind,
-    value: form[key],
-    style: inputStyle,
-    onInput: (e) => {
-      if (kind === "number") {
-        const str = e.target.value.trim();
-        const n = Number(str);
-        if (str === "" || !Number.isFinite(n)) {
-          // A blank/unparseable number can't be sent — `writeConfig`'s field is a plain integer,
-          // not an Option-of-maybe-invalid-string — so there is no "valid but different" state to
-          // hold here. Reverting BOTH `form[key]` and what the input actually displays to the
-          // baseline keeps the dirty computation and the visible value from ever disagreeing about
-          // whether this field changed (they're now, by construction, always the same fact).
-          form[key] = original[key];
-          e.target.value = original[key] == null ? "" : String(original[key]);
-        } else {
-          form[key] = n;
-        }
-      } else {
-        form[key] = e.target.value;
-      }
-      refreshDerived();
-    },
-  };
-  if (kind === "number") {
-    props.min = opts.min ?? "1";
-    props.step = "1";
-  }
-  return el("input", props);
-}
+/** The mono key line under a control. Not deck copy — it is the config key, verbatim. §68. */
+const keyLine = (text) => el("div", { class: "settings-key" }, text);
 
-function toggleRow(container, ctx, key, label, description) {
-  return el(
-    "div",
-    { style: "display:flex;align-items:flex-start;gap:10px;margin-bottom:12px" },
-    el("input", {
-      type: "checkbox",
-      checked: !!form[key],
-      style: "margin-top:3px;flex:none",
-      onChange: (e) => {
-        form[key] = e.target.checked;
-        paint(container, ctx);
-      },
+// -------------------------------------------------------------------------- tab 1 · folders ----
+
+/**
+ * One side of the folder pair.
+ *
+ * The two sides are NOT mirrors: the left has a `Choose…` button and the right does not, because a
+ * remote folder cannot be browsed for — `list_remote` reads a path and no picker exists for one.
+ * The right side's input carries the whole width and right-aligns its text instead, which is what
+ * makes the pair read as two ends of one line rather than as two fields.
+ */
+function pairSide(props, side) {
+  const local = side === 0;
+  const { config, handlers } = props;
+  const input = fid(
+    textInput({
+      value: (local ? config.local_root : config.remote_root) ?? "",
+      mono: true,
+      class: local ? "input is-mono" : "input is-mono settings-pair-input-remote",
+      "aria-label": local ? MAIN.sideLocal : MAIN.sideRemote,
+      // The caret survives the 2s rebuild by NAME — app.js finds the field again through this.
+      "data-field": local ? "local_root" : "remote_root",
+      "data-sfocus": local ? "field:local_root" : "field:remote_root",
+      "data-focus-key": local ? '[data-sfocus="field:local_root"]' : '[data-sfocus="field:remote_root"]',
+      onInput: (e) => handlers.onRoot?.(local ? "local_root" : "remote_root", e.target.value),
     }),
+    "pairSideInput",
+    side,
+  );
+  // ONE NODE, TWO SHAPES. The left row is a flex pair (field + `Choose…`); the right is a plain
+  // block holding one field, and `display`/`gap` are both asserted — so a shared flex row fails the
+  // frame on the side that has no button to sit beside.
+  const row = fid(
     el(
       "div",
-      {},
-      el("div", { style: "font-size:var(--fs-body)" }, label),
-      description
-        ? el(
-            "div",
-            { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:2px" },
-            description,
+      { class: local ? "settings-pair-row" : "settings-pair-row-single" },
+      input,
+      local
+        ? focusable(
+            fid(
+              inputButton(SETTINGS.choose, () => handlers.onChoose?.(), "11px 15px"),
+              "pairChoose",
+            ),
+            "choose",
           )
         : null,
     ),
+    "pairSideRow",
+    side,
   );
-}
-
-function bufferFor(key) {
-  return key === "include" ? newIncludeText : newExcludeText;
-}
-function setBuffer(key, value) {
-  if (key === "include") newIncludeText = value;
-  else newExcludeText = value;
-}
-
-function addPattern(container, ctx, key) {
-  const text = bufferFor(key).trim();
-  if (!text) return;
-  if (!form[key].includes(text)) form[key].push(text);
-  setBuffer(key, "");
-  paint(container, ctx);
-}
-
-function patternListEditor(container, ctx, key, label) {
-  const list = form[key];
-  const rows = list.map((pattern, idx) =>
+  return fid(
     el(
       "div",
-      {
-        style:
-          "display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-soft)",
-      },
-      el(
-        "span",
-        { class: "mono", style: "flex:1;font-size:var(--fs-control);word-break:break-all" },
-        pattern,
+      { class: `settings-pair-side settings-pair-side-${local ? "local" : "remote"}` },
+      fid(
+        eyebrow({
+          tone: local ? "up" : "down",
+          text: local ? MAIN.sideLocal : MAIN.sideRemote,
+          align: local ? "start" : "end",
+        }),
+        "pairSideLabel",
+        side,
       ),
-      el(
-        "button",
-        {
-          class: "btn",
-          style: "padding:3px 9px;font-size:11px",
-          onClick: () => {
-            form[key].splice(idx, 1);
-            paint(container, ctx);
-          },
-        },
-        "Remove",
-      ),
-    ),
-  );
-
-  return el(
-    "div",
-    {},
-    el(
-      "div",
-      {
-        class: "mono",
-        style:
-          "font-size:var(--fs-label);text-transform:uppercase;letter-spacing:var(--tracking-label);" +
-          "color:var(--muted);margin-bottom:6px",
-      },
-      `${label} (${list.length})`,
-    ),
-    list.length
-      ? el("div", {}, rows)
-      : el(
-          "div",
-          { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-bottom:4px" },
-          "No patterns.",
-        ),
-    el(
-      "div",
-      { style: "display:flex;gap:8px;margin-top:8px" },
-      el("input", {
-        type: "text",
-        placeholder: key === "include" ? "e.g. docs/**" : "e.g. *.tmp",
-        style: `${inputStyle};flex:1`,
-        value: bufferFor(key),
-        onInput: (e) => setBuffer(key, e.target.value),
-        onKeydown: (e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            addPattern(container, ctx, key);
-          }
-        },
-      }),
-      el("button", { class: "btn", onClick: () => addPattern(container, ctx, key) }, "Add"),
-    ),
-  );
-}
-
-// ---- sections ---------------------------------------------------------------------------------
-
-function foldersSection(container, ctx) {
-  const rootWarning = el(
-    "div",
-    {
-      class: "dir-destructive",
-      style: `margin-top:6px;font-size:var(--fs-meta);font-weight:600;${isRootDirty() ? "" : "display:none"}`,
-    },
-    "Changing a root re-bootstraps the index from scratch. Before you restart the daemon, preview " +
-      "the dry-run plan on the Plan tab and confirm it looks right — restarting is a manual step " +
-      "this screen doesn't perform, so nothing here can force that check for you.",
-    el(
-      "div",
-      { style: "margin-top:6px" },
-      el("button", { class: "btn", onClick: () => ctx.actions.setTab("plan") }, "Preview plan"),
-    ),
-  );
-  refs.rootWarning = rootWarning;
-
-  return el(
-    "div",
-    { class: "card", style: "margin-bottom:14px" },
-    sectionTitle("Folders"),
-    prefilledFromDaemon
-      ? el(
-          "div",
-          { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:10px" },
-          "Pre-filled from the running daemon — this config file doesn't set a folder pair yet. " +
-            "Save to adopt it.",
-        )
-      : null,
-    fieldRow("Local root", null, textInput(container, ctx, "local_root", "text")),
-    fieldRow(
-      "Remote root",
-      "Path on Proton Drive, e.g. /Drive/RemoteFolder",
-      textInput(container, ctx, "remote_root", "text"),
-    ),
-    rootWarning,
-  );
-}
-
-function scheduleSection(container, ctx) {
-  return el(
-    "div",
-    { class: "card", style: "margin-bottom:14px" },
-    sectionTitle("Schedule"),
-    fieldRow(
-      "Scan interval (seconds)",
-      "Periodic full-scan fallback interval.",
-      textInput(container, ctx, "scan_interval_secs", "number", { min: "1" }),
-    ),
-    toggleRow(
-      container,
-      ctx,
-      "events_driven",
-      "Event-driven reconcile",
-      "Use Proton's volume-events stream for fast incremental reconcile between full scans. Off " +
-        "restores the byte-identical snapshot-only path.",
-    ),
-  );
-}
-
-// v1 ships only the raw include/exclude glob-list editors below. The design's folder-tree view
-// (checking a folder writes an exclude glob, design §3.6 / handoff options 5a+1k) is a real
-// planned enhancement, not cut for scope reasons alone — it needs a local-directory listing that
-// the daemon doesn't expose over IPC today (`read_config` only returns the resolved glob arrays,
-// not a directory tree to check boxes against), so it's deferred rather than faked here.
-function selectiveSyncSection(container, ctx) {
-  return el(
-    "div",
-    { class: "card", style: "margin-bottom:14px" },
-    sectionTitle("Selective sync"),
-    el(
-      "div",
-      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:12px" },
-      "Glob patterns matched against paths relative to the sync root. Exclude always beats include " +
-        'when a path matches both. ".sync/" (the engine\'s own state directory) is always ignored, ' +
-        "regardless of these lists.",
-    ),
-    patternListEditor(container, ctx, "include", "Include"),
-    el("div", { style: "height:14px" }),
-    patternListEditor(container, ctx, "exclude", "Exclude"),
-  );
-}
-
-function cliSection(container, ctx) {
-  return el(
-    "div",
-    { class: "card", style: "margin-bottom:14px" },
-    sectionTitle("CLI"),
-    fieldRow(
-      "proton-drive executable",
-      "Path, or a bare command resolved via PATH.",
-      textInput(container, ctx, "proton_cli", "text"),
-    ),
-    fieldRow(
-      "Command timeout (seconds)",
-      null,
-      textInput(container, ctx, "proton_timeout_secs", "number", { min: "1" }),
-    ),
-    fieldRow(
-      "List retry attempts",
-      "Read-only remote listings retry on failure; uploads/downloads/deletes never do.",
-      textInput(container, ctx, "proton_list_attempts", "number", { min: "1" }),
-    ),
-  );
-}
-
-function deleteApprovalSection(container, ctx) {
-  return el(
-    "div",
-    { class: "card", style: "margin-bottom:14px" },
-    sectionTitle("Delete approval"),
-    el(
-      "div",
-      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:8px" },
-      "When on, the daemon withholds a matching deletion until you approve it on the Deletions " +
-        "screen instead of applying it automatically. Both default to on (protected).",
-    ),
-    toggleRow(
-      container,
-      ctx,
-      "delete_approval_remote",
-      "Guard remote deletes",
-      "Require approval before removing a file on Proton Drive because it was deleted locally.",
-    ),
-    toggleRow(
-      container,
-      ctx,
-      "delete_approval_local",
-      "Guard local deletes",
-      "Require approval before removing a local file because it was deleted on Proton Drive.",
-    ),
-  );
-}
-
-function serviceSection(container, ctx) {
-  const path = meta?.path;
-  const exists = meta?.exists;
-  return el(
-    "div",
-    { class: "card", style: "margin-bottom:14px" },
-    sectionTitle("Service"),
-    fieldRow(
-      "Config file",
-      exists === false ? "Doesn't exist yet — saving will create it." : null,
-      el("div", { class: "mono", style: "font-size:var(--fs-control);word-break:break-all" }, dash(path)),
-    ),
-    el(
-      "div",
-      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" },
-      "Saving writes this file only — the running daemon keeps its already-loaded config until " +
-        "it's restarted.",
-    ),
-    el(
-      "div",
-      { style: "display:flex;gap:10px;align-items:center;margin-top:8px" },
-      restartButton(container, ctx),
-      el("span", { class: "cmd-hint mono", style: "margin-top:0" }, "systemctl --user restart proton-syncd"),
-    ),
-  );
-}
-
-/// The restart button used by both the post-save prompt and the Service section.
-function restartButton(container, ctx, extraStyle = "") {
-  return el(
-    "button",
-    {
-      class: "btn primary",
-      style: extraStyle,
-      disabled: restarting,
-      onClick: () => handleRestart(container, ctx),
-    },
-    restarting ? "Restarting…" : "Restart daemon now",
-  );
-}
-
-function statusBanners(container, ctx) {
-  const nodes = [];
-  if (saveError) {
-    nodes.push(
-      el(
-        "div",
-        { class: "card dir-destructive", style: "margin-bottom:14px;font-weight:600" },
-        `Couldn't save: ${saveError}`,
-      ),
-    );
-  }
-  if (saveNotice) {
-    nodes.push(
-      el(
-        "div",
-        { class: "card", style: "margin-bottom:14px" },
+      row,
+      fid(
         el(
           "div",
-          { style: "font-weight:600" },
-          restartDone ? "Daemon restarted — the new settings are live." : saveNotice.text,
+          { class: "settings-pair-note" },
+          local ? SETTINGS.pairLocalNoteUnknown : SETTINGS.pairRemoteNote,
         ),
-        saveNotice.rootChanged && !restartDone
-          ? el(
-              "div",
-              { class: "dir-destructive", style: "margin-top:8px;font-weight:600" },
-              "You changed a sync root — restarting will re-bootstrap the index from scratch. Preview " +
-                "the dry-run plan on the Plan tab and confirm it looks right before you restart.",
-            )
-          : null,
-        restartError
-          ? el(
-              "div",
-              { class: "dir-destructive", style: "margin-top:8px;font-weight:600" },
-              `Couldn't restart the daemon: ${restartError}`,
-            )
-          : null,
-        !restartDone
-          ? el(
-              "div",
-              { style: "display:flex;gap:8px;margin-top:10px;align-items:center" },
-              saveNotice.rootChanged
-                ? el("button", { class: "btn", onClick: () => ctx.actions.setTab("plan") }, "Preview plan")
-                : null,
-              restartButton(container, ctx),
-            )
-          : null,
-        !restartDone ? el("div", { class: "cmd-hint mono" }, "systemctl --user restart proton-syncd") : null,
-      ),
-    );
-  }
-  return nodes;
-}
-
-function footerBar(container, ctx) {
-  const dirty = computeDirty();
-
-  const dirtyNote = el(
-    "span",
-    {
-      class: "mono",
-      style: `font-size:var(--fs-meta);color:var(--muted);margin-right:auto;${dirty ? "" : "display:none"}`,
-    },
-    "Unsaved changes",
-  );
-  refs.dirtyNote = dirtyNote;
-
-  const discardBtn = el(
-    "button",
-    {
-      class: "btn",
-      disabled: !dirty || saving,
-      onClick: () => {
-        form = toDraft(original);
-        saveError = null;
-        paint(container, ctx);
-      },
-    },
-    "Discard changes",
-  );
-  refs.discardBtn = discardBtn;
-
-  const saveBtn = el(
-    "button",
-    { class: "btn primary", disabled: !dirty || saving, onClick: () => handleSave(container, ctx) },
-    saving ? "Saving…" : "Save changes",
-  );
-  refs.saveBtn = saveBtn;
-
-  return el(
-    "div",
-    { class: "card", style: "display:flex;align-items:center;gap:12px" },
-    dirtyNote,
-    discardBtn,
-    saveBtn,
-  );
-}
-
-// ---- load / save --------------------------------------------------------------------------
-
-function startLoad(container, ctx) {
-  loading = true;
-  loadError = null;
-  paint(container, ctx);
-  ctx.api
-    .readConfig()
-    .then((cfg) => {
-      meta = { path: cfg.path, exists: cfg.exists };
-      original = toDraft(cfg);
-      form = toDraft(cfg);
-      // Config file has no folder pair but a live daemon reports one (started with flags or a
-      // different config): pre-fill the DRAFT with the daemon's roots. The baseline stays what
-      // the file really contains, so the form is dirty and Save adopts the pair into the file.
-      const live = ctx.select.response()?.config ?? null;
-      prefilledFromDaemon = false;
-      if (live && !form.local_root && !form.remote_root) {
-        form.local_root = live.local_root || null;
-        form.remote_root = live.remote_root || null;
-        prefilledFromDaemon = !!(form.local_root || form.remote_root);
-      }
-      loaded = true;
-      loading = false;
-      paint(container, ctx);
-    })
-    .catch((e) => {
-      loadError = messageOf(e);
-      loading = false;
-      paint(container, ctx);
-    });
-}
-
-async function handleSave(container, ctx) {
-  const update = buildUpdate();
-  if (Object.keys(update).length === 0) return;
-  saving = true;
-  saveError = null;
-  saveNotice = null;
-  paint(container, ctx);
-  try {
-    await ctx.api.writeConfig(update);
-    const rootChanged = "local_root" in update || "remote_root" in update;
-    // Promote the saved draft to the new baseline (merge only the sent keys, so untouched fields —
-    // and the daemon-only keys this screen never reads at all — are left alone). Dirty resets
-    // naturally since `form` now equals `original` on every field this screen tracks.
-    original = { ...original, ...update };
-    if (meta) meta.exists = true;
-    saveNotice = {
-      text: "Saved. Restart the daemon to apply the new settings.",
-      rootChanged,
-    };
-    // A fresh save supersedes any earlier restart outcome — the daemon is stale again.
-    restartDone = false;
-    restartError = null;
-  } catch (e) {
-    // Do NOT touch `original`/`form` here — the draft stays exactly as the user left it, and stays
-    // dirty, so Save remains enabled and no edits are lost.
-    saveError = messageOf(e);
-  } finally {
-    saving = false;
-    paint(container, ctx);
-  }
-}
-
-async function handleRestart(container, ctx) {
-  if (restarting) return;
-  restarting = true;
-  restartError = null;
-  paint(container, ctx);
-  try {
-    await ctx.api.restartService();
-    restartDone = true;
-  } catch (e) {
-    restartError = messageOf(e);
-  } finally {
-    restarting = false;
-    paint(container, ctx);
-  }
-}
-
-// ---- paint ----------------------------------------------------------------------------------
-
-function paint(container, ctx) {
-  refs = {};
-
-  if (!loaded) {
-    container.replaceChildren(
-      loadError
-        ? el(
-            "div",
-            { class: "card dir-destructive" },
-            el("div", {}, `Couldn't load configuration: ${loadError}`),
-            el(
-              "button",
-              { class: "btn", style: "margin-top:10px", onClick: () => startLoad(container, ctx) },
-              "Retry",
-            ),
-          )
-        : el("div", { class: "card mono" }, "Loading configuration…"),
-    );
-    return;
-  }
-
-  const statusBox = el("div", {}, ...statusBanners(container, ctx));
-  refs.statusBox = statusBox;
-
-  const children = [
-    el(
-      "div",
-      { style: "margin-bottom:14px" },
-      el("div", { style: "font-size:var(--fs-section);font-weight:600" }, "Settings"),
-      el(
-        "div",
-        { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-top:4px" },
-        "Edits the daemon's config file directly. Save writes only the fields you changed here — " +
-          "comments and daemon-only keys are preserved, and the write is rejected if the daemon's " +
-          "own parser would refuse the result.",
+        "pairSideNote",
+        side,
       ),
     ),
-    statusBox,
-    foldersSection(container, ctx),
-    scheduleSection(container, ctx),
-    selectiveSyncSection(container, ctx),
-    cliSection(container, ctx),
-    deleteApprovalSection(container, ctx),
-    serviceSection(container, ctx),
-    footerBar(container, ctx),
-  ];
-
-  container.replaceChildren(...children);
-  refreshDerived();
+    "pairSide",
+    side,
+  );
 }
 
-export function renderSettings(container, ctx) {
-  if (!loaded) {
-    // First-ever attempt (no error yet, not already in flight): kick off `readConfig()`. A load
-    // FAILURE must NOT retry itself on the shell's 2s poll — only the explicit Retry button (in the
-    // error card `paint()` renders below) re-triggers `startLoad`. Without this guard, the poll
-    // would re-invoke `renderSettings` every 2s while `loaded` stays false, hammering a broken
-    // daemon/config path with repeated `readConfig()` calls and flickering the error card in place
-    // of letting the user actually read it.
-    if (!loading && !loadError) {
-      startLoad(container, ctx);
-      return;
-    }
-    paint(container, ctx); // loading spinner, or the error card — both static, no network call
-    return;
+/**
+ * The live-updates panel — the one control on this screen that maps to its key with nothing lost.
+ *
+ * The key line reads `events_driven`, which is the engine's key; the frame draws
+ * `event_driven_reconcile`, which does not exist. `14-behaviour-and-state.md:25` says so in as many
+ * words, so this is the prototype being wrong rather than the app being unable — the node is left
+ * unmapped rather than absorbed as a deviation, which is the call `5a Checking`'s unlit doors got.
+ */
+function livePanel(props) {
+  const { config, handlers } = props;
+  const on = config.events_driven !== false;
+  const knob = toggle({
+    on,
+    label: SETTINGS.eventsDriven,
+    onChange: (next) => handlers.onEvents?.(next),
+  });
+  focusable(knob, "events");
+  fid(knob.querySelector(".toggle-knob"), "liveKnob");
+  return fid(
+    panel("settings-panel-row", [
+      fid(
+        el(
+          "div",
+          { class: "settings-panel-body" },
+          fid(el("div", { class: "settings-panel-title" }, SETTINGS.eventsDriven), "liveTitle"),
+          fid(el("div", { class: "settings-panel-sub" }, SETTINGS.eventsDrivenSub), "liveSub"),
+          keyLine("events_driven"),
+        ),
+        "liveBody",
+      ),
+      fid(knob, "liveToggle"),
+    ]),
+    "livePanel",
+  );
+}
+
+/**
+ * The second cadence panel, on its Phase-1 subject.
+ *
+ * WHAT THE FRAME DRAWS HERE IS A SCHEDULE FOR THE FULL SWEEP, and there is no such thing to draw
+ * (G4 #193). What the config does carry is `scan_interval_secs` — how often the daemon looks at
+ * all, which is a different question with an honest answer, and the one §4 says to present in plain
+ * language. So the shell, the head row and the divided control row are the frame's; the subject,
+ * the title and what the row holds are Phase 1's.
+ *
+ * The head row keeps its shape with one child where the frame has two: the Weekly/Monthly control
+ * is the schedule's, and there is no schedule.
+ */
+function timerPanel(props) {
+  const { config, handlers } = props;
+  const secs = config.scan_interval_secs ?? 300;
+  return fid(
+    panel("settings-panel-block", [
+      fid(
+        el(
+          "div",
+          { class: "settings-panel-head" },
+          fid(
+            el(
+              "div",
+              { class: "settings-panel-text" },
+              fid(el("div", { class: "settings-panel-title" }, SETTINGS.timer), "timerTitle"),
+              fid(el("div", { class: "settings-panel-sub" }, SETTINGS.timerSub), "timerSub"),
+            ),
+            "timerText",
+          ),
+        ),
+        "timerHead",
+      ),
+      el(
+        "div",
+        { class: "settings-panel-control" },
+        el("span", { class: "settings-control-label" }, SETTINGS.every),
+        namedSteps(
+          stepper({
+            value: secs,
+            format: intervalLabel,
+            min: MIN_INTERVAL_SECS,
+            max: MAX_INTERVAL_SECS,
+            onStep: (delta) => handlers.onInterval?.(stepInterval(secs, delta)),
+          }),
+        ),
+        el("span", { class: "settings-spacer" }),
+        keyLine("scan_interval_secs"),
+      ),
+    ]),
+    "timerPanel",
+  );
+}
+
+/**
+ * `Full sweep now` — `ControlCommand::Resync`, which latches the next pass to a full-tree walk and
+ * schedules it. `sync_now` is NOT this: under the default config it runs an incremental pass, which
+ * is the thing this panel offers an alternative to.
+ *
+ * Disabled while a pass is running, because asking for a sweep during one does nothing visible and
+ * this project has already filed a button with no click feedback once (PR #140).
+ */
+function sweepPanel(props) {
+  const { handlers, syncing } = props;
+  const sweep = fid(
+    button({
+      kind: "primarySoft",
+      label: SETTINGS.sweepNow,
+      onClick: () => handlers.onSweep?.(),
+      padding: "10px 20px",
+      radius: "var(--r-10)",
+      fontSize: "13px",
+    }),
+    "runButton",
+  );
+  focusable(sweep, "sweep");
+  if (syncing) {
+    setButtonKind(sweep, "primaryDisabled");
+    sweep.disabled = true;
   }
-  // The shell re-invokes every screen's render on its 2s status poll. A full `paint()` here would
-  // `replaceChildren` the whole form — including whatever `<input>` currently has focus — and pop
-  // the cursor out to <body> mid-keystroke. Our own edit handlers already keep the form correct
-  // without a full repaint (`refreshDerived`) or repaint deliberately on a discrete action (toggle,
-  // add/remove pattern); skip only this externally-triggered repaint while focus is inside our form.
-  if (container.contains && document.activeElement && container.contains(document.activeElement)) {
-    return;
+  return fid(
+    panel("settings-panel-row settings-panel-centred", [
+      fid(
+        el(
+          "div",
+          { class: "settings-panel-body" },
+          fid(el("div", { class: "settings-panel-title" }, SETTINGS.fullSweep), "runTitle"),
+          fid(el("div", { class: "settings-panel-sub" }, SETTINGS.fullSweepNoteUnknown), "runNote"),
+        ),
+        "runBody",
+      ),
+      sweep,
+    ]),
+    "runPanel",
+  );
+}
+
+/** An eyebrow with the drawn spacing above it. `eyebrow()` takes no class, so it is added after. */
+function sectionLabel(text, cls) {
+  const node = eyebrow({ text });
+  node.classList.add(cls);
+  return node;
+}
+
+function foldersTab(props) {
+  return [
+    // The seam spans the two inputs and nothing else — `settingsPair` is 44px down and 86px tall,
+    // sized explicitly rather than pinned to a block, because a full-width rule sits below it.
+    fid(renderSeam({ site: "settingsPair" }), "seam"),
+    fid(eyebrow({ text: SETTINGS.pairTitle }), "pairLabel"),
+    fid(el("div", { class: "settings-pair" }, pairSide(props, 0), pairSide(props, 1)), "pairGrid"),
+    fid(sectionLabel(SETTINGS.cadenceTitle, "settings-label-cadence"), "cadenceLabel"),
+    livePanel(props),
+    timerPanel(props),
+    fid(sectionLabel(SETTINGS.runOne, "settings-label-run"), "runLabel"),
+    sweepPanel(props),
+  ];
+}
+
+// ------------------------------------------------------------------------ tab 2 · what to skip ----
+
+function ruleRow(props, rule, i, pending) {
+  // A rule added but not saved has nothing measured about it — the report was taken against the
+  // config on disk. It says so rather than borrowing a neighbour's numbers or drawing zeros.
+  const effect = pending ? { effect: SETTINGS.ruleNotSaved, detail: null, dim: false } : ruleEffect(rule);
+  return fid(
+    el(
+      "div",
+      { class: "settings-rule" + (effect.dim ? " is-stale" : "") },
+      fid(el("span", { class: "settings-rule-pattern" }, rule.pattern), "rulePattern", i),
+      fid(
+        el(
+          "div",
+          { class: "settings-rule-body" },
+          fid(el("div", { class: "settings-rule-effect" }, effect.effect), "ruleEffect", i),
+          effect.detail
+            ? fid(el("div", { class: "settings-rule-detail" }, effect.detail), "ruleDetail", i)
+            : null,
+        ),
+        "ruleBody",
+        i,
+      ),
+      focusable(
+        fid(
+          rowButton(SETTINGS.remove, () => props.handlers.onRemoveRule?.(rule.pattern)),
+          "ruleRemove",
+          i,
+        ),
+        `remove:${rule.pattern}`,
+      ),
+    ),
+    "rule",
+    i,
+  );
+}
+
+/**
+ * The rules list.
+ *
+ * EVERYTHING ABOVE THE FOOTER IS THE SAVED CONFIG; THE FOOTER IS THE STAGED EDIT. That reading is
+ * the frame's own — `8a Skip rules` draws `video-raw/**` at full opacity while its footer says that
+ * rule was removed, AND counts it inside `hiding 4 files, 3.1 GB in total`. Two independent signals
+ * agree, and they have to: the counts were measured against the config on disk, so a list that
+ * dropped the row while the total still counted it would be a screen disagreeing with itself. The
+ * fixture recorded this as S6's call to make and it is made here.
+ *
+ * A STAGED ADDITION IS THE ONE EXCEPTION, and it is not really one: an added rule has no measured
+ * row to leave alone, so it appears with `Not saved yet` where its counts would be. Without it,
+ * `Add` would look like a control that does nothing — the removal at least turns the footer amber.
+ */
+function rulesBlock(props) {
+  const { saved, config, skip, handlers, drafts } = props;
+  const savedRules = saved?.exclude ?? [];
+  const added = (config.exclude ?? []).filter((p) => !savedRules.includes(p));
+  const rules = [...savedRules, ...added];
+  const byPattern = new Map((skip?.rules ?? []).map((r) => [r.pattern, r]));
+  const total = totalLine(skip);
+  return fid(
+    el(
+      "div",
+      { class: "settings-rules" },
+      fid(
+        el(
+          "div",
+          { class: "settings-rules-head" },
+          fid(eyebrow({ text: SETTINGS.yourRules }), "rulesLabel"),
+          fid(el("span", { class: "settings-spacer" }), "rulesSpacer"),
+          // Omitted rather than zeroed while the walk is in flight: `hiding 0 files` is a claim, and
+          // for the first second of every visit it would be the wrong one.
+          total ? fid(el("span", { class: "settings-rules-total" }, total), "rulesTotal") : null,
+        ),
+        "rulesHead",
+      ),
+      // A NODE THE FRAME DOES NOT HAVE, and the one place this screen adds one. The window is fixed
+      // at 764px and cannot grow, so a config with a dozen exclude rules pushes the add row and the
+      // `.sync` note straight through the footer — `02-shell.md` calls that "a real bug found twice
+      // during this design". The frames leave every node here `overflow: visible` and `overflow` is
+      // an asserted property, so the scroll cannot go on any of them; it goes on a wrapper instead,
+      // which is invisible to the gate because nothing stamps it. Rows keep their own keys.
+      //
+      // A CAP RATHER THAN A SCROLL WAS THE OTHER OPTION and it is the wrong one here. `+n more` is
+      // right for the main screen's transfer rows, which are a report; these rows each carry the
+      // only `Remove` button that rule will ever have, so hiding the twelfth would make it
+      // unremovable from the screen that exists to remove it.
+      el(
+        "div",
+        // Named so its position survives the ~2s rebuild — see `keepScroll` in app.js.
+        { class: "settings-rules-scroll", "data-scroll": "skip-rules" },
+        rules.map((pattern, i) =>
+          ruleRow(props, byPattern.get(pattern) ?? { pattern }, i, !savedRules.includes(pattern)),
+        ),
+      ),
+      fid(
+        el(
+          "div",
+          { class: "settings-add" },
+          fid(
+            textInput({
+              value: drafts?.exclude ?? "",
+              placeholder: SETTINGS.addRulePlaceholder,
+              mono: true,
+              "data-field": "draft-exclude",
+              "data-sfocus": "field:draft-exclude",
+              "data-focus-key": '[data-sfocus="field:draft-exclude"]',
+              onInput: (e) => handlers.onDraft?.("exclude", e.target.value),
+              onKeydown: (e) => {
+                if (e.key === "Enter") handlers.onAddRule?.();
+              },
+            }),
+            "addInput",
+          ),
+          focusable(
+            fid(
+              inputButton(SETTINGS.add, () => handlers.onAddRule?.(), "11px 18px"),
+              "addButton",
+            ),
+            "add:exclude",
+          ),
+        ),
+        "addRow",
+      ),
+    ),
+    "rules",
+  );
+}
+
+function skipTab(props) {
+  // `.sync` is set brighter inside its own sentence, which makes the note one node with an inline
+  // child rather than two — `splitEmphasis` keeps the sentence whole so the copy gate still finds it.
+  const [before, name, after] = splitEmphasis(SETTINGS.dotSyncNote, ".sync");
+  return [
+    fid(el("div", { class: "settings-skip-intro" }, SETTINGS.skipIntro), "skipIntro"),
+    rulesBlock(props),
+    fid(
+      el(
+        "div",
+        { class: "settings-skip-tail" },
+        fid(
+          el(
+            "div",
+            { class: "settings-dotsync" },
+            before,
+            fid(el("span", { class: "settings-dotsync-name" }, name), "dotSyncName"),
+            after,
+          ),
+          "dotSyncNote",
+        ),
+      ),
+      "tail",
+    ),
+  ];
+}
+
+// ------------------------------------------------------------------------ tab 3 · deletions ----
+
+const POLICY_COPY = {
+  ask_every_time: { title: SETTINGS.askEvery, body: SETTINGS.askEverySub, note: SETTINGS.recommended },
+  only_permanent: { title: SETTINGS.askPermanent, body: SETTINGS.askPermanentSub },
+  never: { title: SETTINGS.askNever, body: SETTINGS.askNeverSub, tone: "destructive" },
+};
+
+function deletionsTab(props) {
+  const { config, handlers, loaded } = props;
+  // NO CARD UNTIL THE FILE HAS BEEN READ. `policyOf({})` answers `ask_every_time`, which is the
+  // daemon's default and a true statement about an EMPTY config — and a lie about one that could
+  // not be parsed, or one that simply has not come back yet. This is the screen's most consequential
+  // control; it does not guess.
+  const selected = loaded ? policyOf(config) : null;
+  return [
+    fid(el("div", { class: "settings-section-title" }, SETTINGS.deletionsTitle), "deletionsTitle"),
+    fid(el("div", { class: "settings-section-sub" }, SETTINGS.deletionsSub), "deletionsSub"),
+    fid(
+      el(
+        "div",
+        { class: "settings-cards", role: "radiogroup", "aria-label": SETTINGS.deletionsTitle },
+        POLICIES.map((policy, i) => {
+          const copy = POLICY_COPY[policy.id];
+          const card = fid(
+            radioCard({
+              selected: selected === policy.id,
+              title: copy.title,
+              note: copy.note ?? null,
+              body: copy.body,
+              tone: copy.tone ?? null,
+              onSelect: () => handlers.onPolicy?.(policy),
+            }),
+            "card",
+            i,
+          );
+          focusable(card, `policy:${policy.id}`);
+          fid(card.querySelector(".radio-head"), "cardHead", i);
+          fid(card.querySelector(".radio-ring"), "cardRing", i);
+          fid(card.querySelector(".radio-title"), "cardTitle", i);
+          fid(card.querySelector(".radio-text"), "cardBody", i);
+          if (copy.note) fid(card.querySelector(".radio-note"), "cardBadge");
+          return card;
+        }),
+      ),
+      "cards",
+    ),
+    // Shipped as drawn. `deletion_policy` is not a key the daemon has — it is a name for the two
+    // `[delete_approval]` booleans, and G5 (#194) would mint the real one. §68 made this call for
+    // the label and the opposite one for `events_driven`, and the difference is which side is
+    // wrong: there the frame names a key that does not exist where one does, here it names the
+    // policy the pair expresses, which is what a person choosing between three cards is setting.
+    keyLine("deletion_policy · applies to both directions"),
+  ];
+}
+
+// -------------------------------------------------------------------- tab 4 · notifications ----
+
+/** The dot beside each rule row. Three forms, and `11a Rules` draws the third one quiet. */
+const RULE_DOTS = ["irreversible", "decision", "settled", "irreversible"];
+
+/**
+ * `11a Rules` — the reference sheet. No daemon data behind it: the content IS the policy, so it
+ * renders from `NOTIFY.rules` and never changes.
+ *
+ * The Activity link is a real route change, not decoration — it is the door the sentence names.
+ */
+function rulesPanel(handlers) {
+  const rows = NOTIFY.rules.interrupts.map((rule, i) =>
+    fid(
+      el(
+        "div",
+        { class: "notify-rule" },
+        fid(el("span", { class: `notify-rule-dot is-${RULE_DOTS[i]}` }), "ruleDot", i),
+        el(
+          "div",
+          { class: "notify-rule-text" },
+          fid(el("div", { class: "notify-rule-title" }, rule.title), "ruleTitle", i),
+          fid(el("div", { class: "notify-rule-why" }, rule.why), "ruleWhy", i),
+        ),
+      ),
+      "rule",
+      i,
+    ),
+  );
+  rows.forEach((row, i) => fid(row.querySelector(".notify-rule-text"), "ruleBody", i));
+
+  // A link is keyboard-reachable, so it needs a name like every other control on this screen: the
+  // body is rebuilt on the ~2s poll and focus would otherwise land on `<body>` inside two ticks.
+  const link = focusable(
+    el(
+      "a",
+      {
+        class: "notify-rules-link",
+        href: "#",
+        onClick: (e) => {
+          e.preventDefault();
+          handlers?.onRoute?.("activity");
+        },
+      },
+      NOTIFY.rules.activityLink,
+    ),
+    "notify-activity",
+  );
+
+  return fid(
+    el(
+      "div",
+      { class: "notify-rules" },
+      fid(el("div", { class: "notify-rules-eyebrow" }, NOTIFY.rules.interruptsTitle), "interruptsTitle"),
+      ...rows,
+      fid(el("div", { class: "notify-rules-eyebrow is-silent" }, NOTIFY.rules.silentTitle), "silentTitle"),
+      fid(
+        el(
+          "div",
+          { class: "notify-silent" },
+          ...NOTIFY.rules.silent.map((word, i) =>
+            fid(el("span", { class: "notify-silent-chip" }, word), "silentChip", i),
+          ),
+        ),
+        "silent",
+      ),
+      fid(
+        el(
+          "div",
+          { class: "notify-rules-note" },
+          NOTIFY.rules.activityBefore,
+          fid(link, "activityLink"),
+          NOTIFY.rules.activityAfter,
+        ),
+        "activityNote",
+      ),
+      fid(
+        el(
+          "div",
+          { class: "notify-hard-rule" },
+          fid(el("div", { class: "notify-hard-rule-title" }, NOTIFY.rules.hardRuleTitle), "hardRuleTitle"),
+          fid(el("div", { class: "notify-hard-rule-body" }, NOTIFY.rules.hardRuleBody), "hardRuleBody"),
+        ),
+        "hardRule",
+      ),
+    ),
+    "rulesRoot",
+  );
+}
+
+/**
+ * `11a Settings` — the `notify_policy` cards, the deletions tab's pattern at a different subject.
+ *
+ * No "until the file has been read" guard, and that asymmetry with `deletionsTab` is deliberate: the
+ * deletion policy describes what the DAEMON does with files and must not be guessed at, while this
+ * one is the GUI's own preference with a defined default. An unreadable `gui.toml` means the default
+ * is in force, which is exactly what the first card says.
+ */
+function notifyPolicyColumn(props) {
+  const { notifyPolicy, handlers } = props;
+  const selected = notifyPolicy ?? NOTIFY_POLICIES[0].id;
+  return fid(
+    el(
+      "div",
+      { class: "notify-policy" },
+      fid(el("div", { class: "settings-section-title" }, NOTIFY.settings.title), "policyTitle"),
+      fid(el("div", { class: "settings-section-sub" }, NOTIFY.settings.sub), "policySub"),
+      fid(
+        el(
+          "div",
+          { class: "settings-cards", role: "radiogroup", "aria-label": NOTIFY.settings.title },
+          NOTIFY_POLICIES.map((policy, i) => {
+            const copy = NOTIFY.settings.choices[i];
+            const card = fid(
+              radioCard({
+                selected: selected === policy.id,
+                title: copy.label,
+                note: i === 0 ? NOTIFY.settings.badge : null,
+                body: copy.sub,
+                onSelect: () => handlers?.onNotifyPolicy?.(policy.id),
+              }),
+              "card",
+              i,
+            );
+            focusable(card, `notify:${policy.id}`);
+            fid(card.querySelector(".radio-head"), "cardHead", i);
+            fid(card.querySelector(".radio-ring"), "cardRing", i);
+            fid(card.querySelector(".radio-title"), "cardTitle", i);
+            fid(card.querySelector(".radio-text"), "cardBody", i);
+            if (i === 0) fid(card.querySelector(".radio-note"), "cardBadge");
+            return card;
+          }),
+        ),
+        "cards",
+      ),
+      fid(keyLine(NOTIFY.settings.key), "policyKey"),
+    ),
+    "policyRoot",
+  );
+}
+
+/**
+ * The tab: the rules on the left, the choice on the right — which is what the first card's copy says.
+ *
+ * THE RULES PANEL SCROLLS, and it is the one thing here no gate could have caught. `11a Rules` is
+ * 633px tall at the 600px it is drawn and neither crop is a window, so nothing in the harness
+ * renders this tab at 1040×764. Measured instead: the window came out 974px against 764, a 210px
+ * overflow that would have painted through the footer.
+ *
+ * A WRAPPER rather than `overflow` on the panel, for `.settings-rules-scroll`'s reason: the panel's
+ * own box is what `11a Rules` describes, and a scroll declared on it would put a property of the
+ * app's layout on the node the gate compares.
+ */
+function notificationsTab(props) {
+  return [
+    el(
+      "div",
+      { class: "settings-notify" },
+      el("div", { class: "notify-rules-scroll", "data-scroll": "notify-rules" }, rulesPanel(props.handlers)),
+      notifyPolicyColumn(props),
+    ),
+  ];
+}
+
+// ------------------------------------------------------------------------- tab 5 · advanced ----
+
+/**
+ * Not drawn anywhere. `08-settings.md` names six things this tab holds; two of them round-trip
+ * through `ConfigUpdate` and four have no key and no command (G23 #237), so the tab says which four
+ * rather than leaving someone to look for them.
+ *
+ * Same panel pattern as the cadence panels, because it is the same kind of thing: a plain-language
+ * title, a sentence about what it does to your files, and the key underneath in mono.
+ */
+function advancedTab(props) {
+  const { config, handlers, drafts } = props;
+  const include = config.include ?? [];
+  return [
+    panel("settings-panel-block", [
+      panelText(SETTINGS.includeTitle, SETTINGS.includeSub),
+      keyLine("include"),
+      el(
+        "div",
+        { class: "settings-panel-control settings-panel-list" },
+        include.length === 0
+          ? el("div", { class: "settings-rule-detail" }, SETTINGS.includeEmpty)
+          : include.map((pattern) =>
+              el(
+                "div",
+                { class: "settings-rule settings-rule-plain" },
+                el("span", { class: "settings-rule-pattern" }, pattern),
+                el("div", { class: "settings-rule-body" }),
+                focusable(
+                  rowButton(SETTINGS.remove, () => handlers.onRemoveInclude?.(pattern)),
+                  `include:${pattern}`,
+                ),
+              ),
+            ),
+      ),
+      el(
+        "div",
+        { class: "settings-add" },
+        textInput({
+          value: drafts?.include ?? "",
+          placeholder: SETTINGS.addIncludePlaceholder,
+          mono: true,
+          "data-field": "draft-include",
+          "data-sfocus": "field:draft-include",
+          "data-focus-key": '[data-sfocus="field:draft-include"]',
+          onInput: (e) => handlers.onDraft?.("include", e.target.value),
+          onKeydown: (e) => {
+            if (e.key === "Enter") handlers.onAddInclude?.();
+          },
+        }),
+        focusable(
+          inputButton(SETTINGS.add, () => handlers.onAddInclude?.(), "11px 18px"),
+          "add:include",
+        ),
+      ),
+    ]),
+    panel("settings-panel-block", [
+      panelText(SETTINGS.cliTitle, SETTINGS.cliSub),
+      keyLine("proton_cli"),
+      el(
+        "div",
+        { class: "settings-panel-control" },
+        textInput({
+          value: config.proton_cli ?? "",
+          // THE DAEMON'S DEFAULT, AS A PLACEHOLDER. An absent key draws the field empty, which
+          // reads as "nothing is set" when `proton-drive` is in fact what runs — the same
+          // absent-is-not-empty confusion `ABSENT_DEFAULTS` fixes for the keys that DO draw their
+          // default. A placeholder says it without staging anything. Not deck copy: it is a program
+          // name, like the mono key lines §68 keeps out of `copy.js`.
+          placeholder: "proton-drive",
+          mono: true,
+          "data-field": "proton_cli",
+          "data-sfocus": "field:proton_cli",
+          "data-focus-key": '[data-sfocus="field:proton_cli"]',
+          "aria-label": SETTINGS.cliTitle,
+          onInput: (e) => handlers.onField?.("proton_cli", e.target.value),
+        }),
+      ),
+    ]),
+    panel("settings-panel-block", [
+      panelText(SETTINGS.configFileTitle, null),
+      el(
+        "div",
+        { class: "settings-key settings-config-path" },
+        config.exists === false ? SETTINGS.configFileMissing : (config.path ?? SETTINGS.configFileMissing),
+      ),
+    ]),
+    el("div", { class: "settings-advanced-note" }, SETTINGS.advancedMissing),
+  ];
+}
+
+// --------------------------------------------------------------------------------- the body ----
+
+const TAB_BODIES = {
+  folders: foldersTab,
+  skip: skipTab,
+  deletions: deletionsTab,
+  notifications: notificationsTab,
+  advanced: advancedTab,
+};
+
+/** The screen: a title block, the four pills, and whichever tab is showing. */
+export function renderSettings(props = {}) {
+  const tab = props.tab ?? "folders";
+  const body = TAB_BODIES[tab] ?? TAB_BODIES.folders;
+  // ABOVE EVERY TAB, when the file behind them could not be read. `read_config` rejects an
+  // unparseable or unreadable config and the screen would otherwise draw it as an empty, valid one:
+  // blank folders, live updates on, a timer at five minutes and a deletion policy card selected.
+  // Every control below this line is describing a file nobody could open, so the line says so.
+  const unreadable = props.configError
+    ? el("div", { class: "settings-unreadable" }, SETTINGS.configUnreadable(props.configError))
+    : null;
+  const titleBlock = fid(
+    el(
+      "div",
+      { class: "settings-title-block" },
+      fid(el("div", { class: "settings-title" }, SETTINGS.title), "title"),
+      fid(el("div", { class: "settings-sub" }, SETTINGS.sub), "sub"),
+    ),
+    "titleBlock",
+  );
+  const tabs = pillTabs({
+    items: TABS,
+    active: tab,
+    onSelect: (id) => props.handlers?.onTab?.(id),
+  });
+  tabs.classList.add("settings-tabs");
+  fid(tabs, "tabs");
+  // BY THE TAB'S OWN ID, not by its position. The fifth pill sits fourth (Advanced is the technical
+  // drawer and stays last), so a positional key would compare `Notifications` against the frame's
+  // `Advanced` and report a width difference between two different words. `settingsFids`' `tab`
+  // answers `undefined` for a tab no frame draws, and `fid` then stamps nothing.
+  for (const [i, node] of [...tabs.children].entries())
+    focusable(fid(node, "tab", TABS[i].id), `tab:${TABS[i].id}`);
+  return [
+    titleBlock,
+    tabs,
+    fid(el("div", { class: `settings-content settings-content-${tab}` }, unreadable, body(props)), "content"),
+  ];
+}
+
+/**
+ * The footer action bar, which on this screen REPLACES the four doors.
+ *
+ * Its own builder rather than `renderActionBar`'s defaults because the note is one node in two
+ * moods — the neutral saving promise, or the amber line naming what a staged change costs — and
+ * because `Save` is built live and then disabled. A button born `primaryDisabled` attaches no
+ * click listener (`button()` drops it), so arming it later would paint a live control that does
+ * nothing; the same trap S4 records.
+ */
+export function renderSettingsBar(props = {}) {
+  const { cost, dirty, saving, justSaved, handlers } = props;
+  const note = fid(
+    el("span", { class: `bar-consequence settings-bar-note${cost ? " tone-cost" : ""}` }, barNoteOf(props)),
+    "barNote",
+  );
+  // THE SECOND SLOT IS `Discard changes` UNTIL THERE IS NOTHING TO DISCARD. A save that landed
+  // leaves the daemon running the old config — the engine has no reload path, no SIGHUP and no
+  // watcher (§68) — so the one useful action in that moment is a restart, and the slot the drawn
+  // bar gives to discarding is free exactly then. Undrawn: no frame draws a settled save.
+  const restarting = Boolean(justSaved) && !dirty;
+  const discard = fid(
+    button({
+      kind: "secondary",
+      label: restarting ? SETTINGS.restart : SETTINGS.discard,
+      onClick: () => (restarting ? handlers?.onRestart?.() : handlers?.onDiscard?.()),
+      padding: "11px 20px",
+      radius: "var(--r-10)",
+      fontSize: "13px",
+    }),
+    "discard",
+  );
+  const save = fid(
+    button({
+      kind: "primary",
+      size: "bar",
+      label: props.saveLabel ?? SETTINGS.save,
+      onClick: () => handlers?.onSave?.(),
+    }),
+    "save",
+  );
+  if (!dirty || saving) {
+    setButtonKind(save, "primaryDisabled");
+    save.disabled = true;
   }
-  paint(container, ctx);
+  const bar = el(
+    "div",
+    { class: "footer-action-bar settings-bar" },
+    note,
+    fid(el("span", { class: "shell-spacer" }), "barSpacer"),
+    discard,
+    save,
+  );
+  bar.dataset.shape = settingsBarShape(props);
+  return fid(bar, "bar");
+}
+
+/**
+ * The bar's left-hand sentence: what just happened, the cost of a staged change, the state a save
+ * left behind, or the standing promise about what saving writes — in that order.
+ */
+export function barNoteOf({ notice = null, cost = null, note = null } = {}) {
+  // `notice` FIRST. It is the only one of the three that is about something that just happened —
+  // a sweep that did not start, a restart that failed — and a cost line is standing information
+  // about a change that has not been made yet. Reporting the cost over the failure would put the
+  // silence back one layer up.
+  return notice ?? cost ?? note ?? SETTINGS.saveNote;
+}
+
+/**
+ * Everything the bar draws, as one string — so app.js can leave an unchanged bar alone without
+ * diffing it. The NOTE ITSELF is in it, not just whether there is one: the cost line carries two
+ * live numbers, and a shape that said only `cost` would freeze the first pair it was built with.
+ */
+export const settingsBarShape = (props = {}) =>
+  [
+    props.dirty ? "dirty" : "clean",
+    props.saving ? "saving" : "idle",
+    props.justSaved ? "saved" : "unsaved",
+    barNoteOf(props),
+  ].join("|");
+
+// ------------------------------------------------------------------------- the save refused ----
+
+/**
+ * `8a Save refused` — the dialog's contents. No title row and no ✕: it asks you to fix one thing,
+ * and a dismiss in the corner would be a second answer to a question with one.
+ *
+ * TWO THINGS THE FRAME DRAWS THAT PHASE 1 CANNOT (G22 #236). `write_config` refuses on
+ * `ConfigDoc::validate`, a serde/TOML check that never contacts Proton Drive — so it cannot say a
+ * remote folder is missing, and `Create it on Proton Drive` has no command behind it. What is left
+ * is the sentence `08-settings.md` calls the important one, which is true of every refusal: nothing
+ * was saved, and the old settings are still running.
+ */
+function refusedMark() {
+  const mark = fid(renderHexagon({ size: 34, state: "warning", flexNone: true }), "refusedMark");
+  for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "refusedMarkPath", i);
+  fid(mark.querySelector("circle"), "refusedMarkDot");
+  return mark;
+}
+
+export function renderSaveRefused(props = {}) {
+  const reason = refusalReason(props.error);
+  return el(
+    "div",
+    { class: "settings-refused" },
+    fid(
+      el(
+        "div",
+        { class: "settings-refused-row" },
+        refusedMark(),
+        fid(
+          el(
+            "div",
+            { class: "settings-refused-text" },
+            fid(el("div", { class: "settings-refused-title" }, SETTINGS.refusedTitleUnknown), "refusedTitle"),
+            fid(el("div", { class: "settings-refused-body" }, SETTINGS.refusedBodyUnknown), "refusedBody"),
+            reason ? fid(el("div", { class: "settings-refused-reason" }, reason), "refusedReason") : null,
+            fid(
+              el(
+                "div",
+                { class: "settings-refused-actions" },
+                fid(
+                  button({
+                    kind: "primarySoft",
+                    label: SETTINGS.refusedBack,
+                    onClick: () => props.onBack?.(),
+                    padding: "9px 16px",
+                    radius: "var(--r-9)",
+                    fontSize: "12.5px",
+                  }),
+                  "refusedBack",
+                ),
+              ),
+              "refusedActions",
+            ),
+          ),
+          "refusedText",
+        ),
+      ),
+      "refusedRow",
+    ),
+  );
 }

@@ -1,0 +1,112 @@
+/* The notification banner (S9) — see js/ui/notification.js.
+ *
+ * Every value measured from the five `11a` frames. The banner carries no width of its own: the three
+ * `11a In situ` banners fill a 372px column and `11a Outage`/`11a Grouped` are drawn at 520, so the
+ * chrome around it decides. `renderBanner` writes the number when it has one.
+ *
+ * This is the app's own chrome, used where the desktop provides none. Where a notification server
+ * exists — GNOME, KDE, everything this app targets — the desktop draws the banner from the payload
+ * `payloadFor` builds, and none of this is on screen. */
+
+.notify-banner {
+  background: var(--notify-bg);
+  border: 1px solid var(--notify-border);
+  border-radius: var(--r-16);
+  padding: 15px 17px;
+  box-shadow: var(--shadow-banner);
+}
+
+.notify-head {
+  display: flex;
+  gap: 13px;
+}
+
+/* min-width:0 is load-bearing, not tidiness: without it a long path in the title refuses to wrap
+   and the banner grows past the column the desktop gave it. */
+.notify-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Baseline, not centre: the app name is 12px sans and the time 11px mono, and the frames sit them
+   on one baseline rather than centring two different cap heights. */
+.notify-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.notify-app {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.notify-spacer {
+  flex: 1;
+}
+
+.notify-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+.notify-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 5px;
+}
+
+.notify-body {
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+/* "or #99A2AE when nothing is wrong" (11-notifications.md §Banner spec) — only the first-sync
+   banner, and the one place in the app where a tier is chosen by whether the news is good. */
+.notify-body.is-quiet {
+  color: var(--text-3);
+}
+
+/* 12px inside a 12.5px sentence: mono runs wide, and the frame steps it down half a point. */
+.notify-path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.notify-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* Not controls.js's kinds. The primary here is a raised hairline, not the white fill `btn-primary`
+   paints — a banner never carries the app's loudest button, because the loudest thing it offers is
+   still only "keep". */
+.notify-action {
+  flex: 1;
+  padding: 8px;
+  border-radius: var(--r-9);
+  border: 1px solid var(--notify-action-2-border);
+  background: transparent;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.notify-action.is-primary {
+  border-color: var(--notify-action-border);
+  background: var(--notify-action-bg);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.notify-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

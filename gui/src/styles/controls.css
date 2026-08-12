@@ -1,0 +1,442 @@
+/*
+ * Controls (F5) — the interactive states, and the structure the inline styles do not carry.
+ *
+ * ui/controls.js sets colour, radius, padding and weight inline, because those are the measured
+ * per-kind values and the fidelity gate compares them node by node. What lives here is everything a
+ * style attribute cannot express: `:hover`, `:active`, `:focus-visible`, `:disabled`, and the
+ * pseudo-elements the toggle and checkbox are built from.
+ *
+ * The interactive states come from `14-behaviour-and-state.md` §"Interactive states" and are a
+ * SURFACE STEP, not an opacity change: hover moves a surface up one level (#0D0E11 → #101216) and a
+ * border up one (#23262D → #2E323A). Dimming instead would collide with the disabled kinds, which
+ * are their own fill.
+ */
+
+/* The kind's colours arrive as custom properties from ui/controls.js — see the note there for why
+   they cannot be plain inline `background`/`color`.
+ *
+ * NO `display`, AND THAT IS THE MEASUREMENT RATHER THAN AN OMISSION. Censused across the 51 frames,
+ * all 175 drawn buttons are `block` (165) or `inline-block` (10) and not one is flex — the split is
+ * simply whether the button's parent is a flex container, which blockifies it. A `<button>`'s UA
+ * default is `inline-block`, so saying nothing here reproduces both groups exactly, while the
+ * `inline-flex` this rule used to carry fails every button the gate is ever pointed at.
+ *
+ * F6 found it first and fixed it inside `.compact-panel .btn`, which was right about the values and
+ * one scope too narrow: the panel is not special, it was just the only place with a mapped button.
+ * S1 mapped three more and got the identical four failures. That override is now gone.
+ *
+ * `line-height` goes with them for the same reason: the frames leave it `normal`, and although the
+ * gate treats a prototype-side `normal` as a wildcard, the BOX it produces is compared — 1.2 draws
+ * the compact panel's buttons 0.4px short, which lands on the panel's own height. Two-line buttons
+ * are unaffected: `.btn-sub` is its own block. */
+.btn {
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--btn-fg);
+  background: var(--btn-bg);
+  /* `solid` for all but one kind. `primaryChoice` in LIGHT has no border at all — not a transparent
+     one — and the difference is visible: `none` computes a 0px width, which inside a border-box
+     hands 2px back to the content and is exactly the 281.33 → 283.33 the two frames measure. */
+  border: 1px var(--btn-border-style, solid) var(--btn-border);
+  transition:
+    background var(--t-press) var(--ease),
+    border-color var(--t-press) var(--ease);
+}
+
+/* §"Interactive states": hover steps the SURFACE up one level and the BORDER up one, 140ms ease-out.
+   The text is left alone — brightening it would wash out a primary, which is the one thing on the
+   screen that is deliberately maximum contrast. */
+.btn:hover:not(:disabled) {
+  background: var(--btn-bg-hover);
+  border-color: var(--btn-border-hover);
+}
+
+/* Press steps up once more, and has NO TRANSFORM. A button that moves under the cursor is a
+   convention from another design language; here the only things that move are two hexagon
+   segments. */
+.btn:active:not(:disabled) {
+  background: var(--btn-bg-active);
+  transform: none;
+}
+
+/* Disabled has its own fill and text (the `*Disabled` kinds), so it needs no dimming — and must
+   not respond to hover at all. */
+.btn:disabled {
+  cursor: default;
+}
+.btn:disabled:hover {
+  background: var(--btn-bg);
+  border-color: var(--btn-border);
+}
+
+/* The sub-label inside a primary — `Keep both`'s consequence sentence. A quieter tier ON the fill,
+   which is why it is --btn-primary-quiet-text and not a disabled colour (DEVIATIONS §12). */
+.btn-sub {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--btn-sub-fg, var(--btn-primary-quiet-text));
+  margin-top: 3px;
+}
+
+/* ---- the choice button (`3a Conflict`) ----
+   Three of them, side by side, each a glyphed row over a consequence sentence. The element paints
+   no text — see KIND.decisionChoice — so every colour below lands on a span, and the element keeps
+   the UA's own button colour in both themes.
+
+   `text-align` is here rather than in `.btn` because a button's UA default is `center` and every
+   other button in the app wants it. This is the only left-aligned one. */
+.btn-choice {
+  text-align: left;
+}
+.btn-choice-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.btn-glyph {
+  font-size: 12px;
+  color: var(--btn-glyph-fg);
+}
+.btn-choice-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--btn-label-fg);
+}
+/* Taller and looser than the `.btn-sub` above it, and the ONE sub-label allowed to wrap: `.btn`
+   sets `nowrap` for every other button, and this sentence is drawn on two lines in all six frames
+   that carry it. */
+.btn-choice-sub {
+  font-size: 12px;
+  line-height: 18px;
+  margin-top: 6px;
+  white-space: normal;
+}
+/* The sidecar filename inside `Keep both`'s sentence — the design puts every path in mono, and this
+   one sits INSIDE prose, so it steps down a half-size rather than matching the sentence around it. */
+.btn-choice-sub code,
+.btn-choice-sub .mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16.5px;
+}
+
+/* NO focus rule for buttons, inputs, toggles or radio cards: base.css already applies the 2px ring
+   at 2px offset to every `:focus-visible` element, and repeating it here would be a second place to
+   keep in step. The checkbox is the one exception — its real <input> is visually hidden, so the
+   global rule would ring nothing a user can see; the ring has to move to the box that stands in for
+   it. */
+.checkbox-input:focus-visible + .checkbox-box {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------------------- inputs ---- */
+
+.input {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--r-9);
+  padding: 9px 12px;
+  transition:
+    border-color var(--t-press) var(--ease),
+    background var(--t-press) var(--ease);
+}
+.input.is-mono {
+  font-family: var(--font-mono);
+}
+.input::placeholder {
+  color: var(--text-5);
+}
+.input:hover {
+  border-color: var(--border-strong);
+}
+
+/* The typed-DELETE gate. Mono, because the word is a literal to be reproduced exactly — the same
+   reason every daemon string in this design is mono, and why it takes the BRIGHTEST text tier
+   rather than `.input`'s `--text-2`: what you type here has to read as the literal it is.
+
+   NEITHER CENTRED NOR CAPPED, and it was both until S3 rendered one. `4a Deletions` draws the field
+   flexing to 330px and `5a Plan` draws it 190 wide, both left-aligned in `#F2F4F7` — so a 160px cap
+   was narrower than either drawn instance and the centring matched neither. F5 wrote them before a
+   screen existed to check them against; the width belongs to the site (rows.css gives this one
+   `flex: 1`), which is why there is no width here at all. */
+.delete-gate {
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------------------------ toggles ---- */
+
+/* 44×26 with a 26px knob track. Two states, nothing between. */
+/* Measured off `8a Settings`, which draws the only toggle in the design — and draws it as a plain
+   `div`, so a `<button>` has to put back what the UA stylesheet takes: `font`, `color` and
+   `text-align` are all asserted properties and a button sets its own. NO BORDER at any point: the
+   drawn track is a fill and nothing else. */
+.toggle {
+  flex: none;
+  width: 44px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--panel-alt);
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+  position: relative;
+  transition:
+    background var(--t-press) var(--ease),
+    border-color var(--t-press) var(--ease);
+}
+.toggle.is-on {
+  background: var(--text);
+}
+
+/* `left` rather than a transform, because the knob's POSITION is what the frame records — an
+   absolutely-positioned node reports used values for `left` and `right`, and a transform moves the
+   pixels while leaving both where they started. 21px is 44 − 20 − 3. */
+.toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-dot);
+  background: var(--text-4);
+  transition:
+    left var(--t-press) var(--ease),
+    background var(--t-press) var(--ease);
+}
+.toggle.is-on .toggle-knob {
+  left: 21px;
+  background: var(--surface);
+}
+
+/* Reduced motion: the knob still moves, because its POSITION is the state — removing the transition
+   makes it jump, which is correct, rather than removing the movement, which would delete the
+   information. Same reasoning as the paused hexagon's dasharray in DEVIATIONS §30. */
+@media (prefers-reduced-motion: reduce) {
+  .toggle-knob {
+    transition: none;
+  }
+}
+
+/* ----------------------------------------------------------------------------- checkbox ---- */
+
+/* Every value here comes off `9a Consent`'s `I understand deletions travel both ways.`, which is the
+   ONLY checkbox drawn in any of the 51 frames. The first version of this block was written from the
+   general control conventions instead and disagreed with it in six places; bands.js building the
+   consent panel is what surfaced them, because the panel came out 2.5px short. */
+/* NO `font-size` AND NO `color` on the wrapper. `9a Consent` draws the box and the sentence as
+   siblings, and only the sentence carries the 13px/--text-bright pair — an inherited one lands on
+   the box too, where the frame has the row's own 16px/--text. */
+.checkbox {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 11px;
+  cursor: pointer;
+}
+/* 1.5, not `normal`. The label is the sentence someone is agreeing to and it wraps; `normal` closes
+   the leading and is what made the panel measure short. */
+.checkbox-label {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-bright);
+}
+/* Visually hidden rather than `display:none`: a hidden input is not focusable, and this one carries
+   the real checked state and the keyboard interaction. */
+.checkbox-input {
+  position: absolute;
+  opacity: 0;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  cursor: pointer;
+}
+/* `--text-5`, NOT `--line-inert`. The unselected radio ring is `--line-inert` (#3E454E) and this
+   measures #6D7783 — a checkbox you have not ticked yet is drawn brighter than an unselected radio,
+   because it is the thing standing between you and continuing.
+
+   Transparent, not `--panel-alt`: the box sits on the consent panel's crimson tint and a filled one
+   would punch a dark hole in it. `margin-top:1px` aligns it to the first line of a label that wraps,
+   rather than to the middle of both. */
+.checkbox-box {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  border: 1px solid var(--text-5);
+  border-radius: var(--r-5);
+  background: transparent;
+}
+/* `position` IS ON THE CHECKED RULE, not on the box, and the split is the whole point: the tick
+   below is `position:absolute` and is the box's own generated child, so the box has to be its
+   containing block — but `9a Consent` draws this box UNCHECKED and `static`, and `position` is an
+   asserted property. Scoping it to the state that needs it is exact in the drawn state and correct
+   in the one no frame draws. (The wrapper's own `position:relative` is for the visually-hidden
+   input beside the box, which is a different need and does not substitute for this.) */
+.checkbox-input:checked + .checkbox-box {
+  position: relative;
+  background: var(--text);
+  border-color: var(--text);
+}
+.checkbox-input:checked + .checkbox-box::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--surface);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* -------------------------------------------------------------------- tabs, chips, stepper ---- */
+
+.pill-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Measured off `8a Settings`' seven day chips: 42px wide at a 5px gap, not the pill row's 44/8.
+   S6 does not render them — the schedule they belong to is G4 (#193) — so these are the numbers
+   waiting for whoever builds it, not numbers any gate checks. */
+.day-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.day-chips .btn {
+  width: 42px;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 28×28, both of them. `SIZE.icon` sets radius, padding and font-size and no box, so the two glyphs
+   sized themselves off their own metrics — `−` came out 20.91×20 against `＋`'s 27×21, visibly
+   different from each other and 8px short of the drawn square. Nothing could see it: the stepper is
+   not mapped (the schedule it belongs to is G4), so the box gate never looks. */
+.stepper .btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+.stepper-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+  min-width: 48px;
+  text-align: center;
+}
+
+/* -------------------------------------------------------------------------- radio cards ---- */
+
+/* Every value below is measured off `8a Deletions tab`, which is the only frame that draws one.
+   The card itself is a plain block: the flex row is the HEAD, not the card. See `radioCard`. */
+.radio-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-12);
+  background: var(--panel);
+  cursor: pointer;
+  transition:
+    background var(--t-press) var(--ease),
+    border-color var(--t-press) var(--ease);
+}
+.radio-card:hover {
+  border-color: var(--border-strong);
+}
+/* §"Interactive states": selected is the border AND the surface step AND the ring dot — all three,
+   because the ring alone is a 4px signal on a 13px row. */
+.radio-card.is-selected {
+  border-color: var(--border-strong);
+  background: var(--panel-raised);
+}
+/* The Deletions tab's "Never ask" card is tinted destructive: there is no gate on the control, so
+   the card itself has to carry the weight. Its own tint pair rather than --destructive-bg/-border,
+   which are .06/.38 where this card measures .04/.30 — the same per-site alpha step §52a records
+   for the bands. */
+.radio-card.tone-destructive {
+  border-color: var(--destructive-card-border);
+  background: var(--destructive-card-bg);
+}
+
+.radio-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.radio-ring {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: var(--r-dot);
+  /* 1px, not the 1.5px `08-settings.md` prose gives it: the frame draws 1px, and a measured frame
+     outranks prose (§40, §78). DEVIATIONS §12 tokenised the colour as --line-inert. */
+  border: 1px solid var(--line-inert);
+}
+/* No `::after`: the drawn dot IS the border. A 15px box with a 4px ring leaves a 7px well of the
+   card's own surface, which is why the selected ring reads as filled on the raised card and would
+   read as a hole on a lighter one. */
+.radio-ring.is-selected {
+  border: 4px solid var(--text);
+}
+/* The unselected ring on the destructive card is not the neutral inert line — it is tinted with
+   the card, at the one opaque value the frame carries.
+
+   `:not(.is-selected)` IS LOAD-BEARING. Without it this rule is three classes to the selected
+   rule's two, so it won the cascade on `border-color` and drew the SELECTED `Never ask` dot in
+   #6B3A3A instead of white — a state no frame draws (`8a Deletions tab` selects the first card),
+   so nothing could have compared it. */
+.radio-card.tone-destructive .radio-ring:not(.is-selected) {
+  border-color: var(--destructive-ring);
+}
+
+.radio-title {
+  flex: 1;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.radio-card.is-selected .radio-title {
+  color: var(--text);
+}
+.radio-card.tone-destructive .radio-title {
+  color: var(--destructive-text);
+}
+.radio-note {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-5);
+  padding: 2px 7px;
+}
+/* 26px is the ring plus the head row's gap: the body lines up with the title, not with the ring. */
+.radio-text {
+  font-size: 12.5px;
+  color: var(--text-4);
+  line-height: 1.55;
+  margin-top: 8px;
+  padding-left: 26px;
+}
+.radio-card.is-selected .radio-text {
+  color: var(--text-3);
+}
+.radio-card.tone-destructive .radio-text {
+  color: var(--text-2);
+}

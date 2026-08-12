@@ -1,815 +1,739 @@
-// Onboarding flow (S8, #89). First-run FULL-WINDOW TAKEOVER — not a normal SCREENS entry. Invoked
-// directly by app.js's one hook when `store.select.daemonState() === "firstRun"`, in place of
-// whatever tab is active. Own ONLY this file (+ the one surgical hook in app.js). Same pattern as
-// settings.js/plan.js: module-level step/loading/error state + a local `paint()` that rebuilds into
-// `container` — the shell's 2 s poll re-invokes `renderOnboarding` on every store change, so this
-// module's own state (not the store) is authoritative for where the user is in the 4-step flow.
+// The onboarding takeover (S7) — two steps and three surfaces around them. `09-onboarding.md`.
 //
-// The 4 steps (design §3.8, options 1f/1g): 1 verify the proton-drive CLI, 2 choose the folder
-// pair, 3 review the dry-run plan, 4 start the service. Safety-critical copy requirement: say
-// plainly that the FIRST pass is a non-destructive merge, while still requiring an explicit
-// acknowledgement that deletions later propagate BOTH ways — nothing reaches "start service"
-// without that checkbox AND a completed plan review (see `isReviewed`/step 3 gate below).
+// Two steps live in the takeover body (`9a Folders`, `9a Review`); `9a CLI missing`, `9a First sync`
+// and `9a Consent` are dialogs, and app.js drives which one is open. The takeover has no footer nav,
+// so both steps carry an action bar with the window's own 18px bottom margin.
+//
+// Phase 1 omissions, each in DEVIATIONS §79 with its issue: every per-side file count and byte total
+// (#240), the account line (#241), `Needs 38.4 GB free` (#206 — C4 answers the other half), the
+// already-matching count (#242), the ETA (#229), the split progress bar (#243), the merged totals
+// (#207), the install command box (#218), and four buttons with no destination — three of them
+// #244 (`Add skip rules`, `See all N actions`, `Installation help`, the last also #231) and
+// `Browse Proton Drive…`, which is #99.
 
-import { el, dash, directionForAction } from "../components.js";
-import { setStatus } from "../store.js";
+import { el } from "../ui/el.js";
+import { MAIN, ONBOARDING, PLAN } from "../ui/copy.js";
+import { count, since } from "../ui/format.js";
+import { renderHexagon, updateHexagon } from "../ui/hexagon.js";
+import { renderSeam, seamMask } from "../ui/seam.js";
+import { button, textInput, checkbox, setButtonKind } from "../ui/controls.js";
+import { consentPanel, warnGlyph } from "../ui/bands.js";
+import { renderActionBar } from "../ui/chrome.js";
+import { dot, eyebrow } from "../ui/rows.js";
+import { fid } from "../fixtures/frames.js";
 
-// ---- module-level state (survives the shell's re-render loop; see header note) -----------------
-let step = 1; // 1 CLI check, 2 folders, 3 review plan, 4 start service
+/** The marks, at the five sizes this flow draws them. 80 is two-valued in `strokeForSize`. */
+const REVIEW_MARK = 80;
+const REVIEW_MARK_STROKE = 4.6;
+const FACT_MARK = 13;
+const MERGE_MARK = 116;
+const CONSENT_MARK = 76;
+const CLI_MARK = 34;
 
-let lastContainer = null;
-let lastCtx = null;
+// ------------------------------------------------------------------------------- the model ----
 
-// Step 1: CLI presence/auth check.
-// status: "idle" | "checking" | "ok" | "authExpired" | "unknown" ("unknown" = couldn't positively
-// verify — the user is told so honestly and allowed to continue with a warning, per the task brief).
-let cli = { status: "idle", message: null };
-
-// Step 2: folder-pair draft (loaded from read_config, written back on Next).
-let cfgLoaded = false;
-let cfgLoading = false;
-let cfgLoadError = null;
-let cfgMeta = null; // { path, exists }, display-only
-let draft = { local_root: "", remote_root: "" };
-let saving = false;
-let saveError = null;
-
-// Step 3: dry-run review. status: "idle" | "running" | "done".
-let dryRun = { status: "idle", payload: null, error: null, unavailable: false, note: null };
-let ack = false; // the explicit "deletions propagate both ways" acknowledgement checkbox
-
-// Step 4: start service.
-let recheck = { status: "idle", state: null, error: null };
-
-function messageOf(e) {
-  return e && e.message ? e.message : String(e);
+/**
+ * What the flow is showing. `checking` outranks a payload for the same reason `5a Checking` does:
+ * the plan on screen is the old one.
+ */
+export function bodyOf({ step = "folders", dryRun = null, checking = false, error = null } = {}) {
+  if (step !== "review") return "folders";
+  if (checking) return "checking";
+  if (error) return "failed";
+  return dryRun ? "review" : "checking";
 }
 
-// A completed, non-errored dry-run attempt — success OR an honest "unavailable" note both count as
-// "reviewed" (the user saw what there was to see); a real failure does not, so it can't be used to
-// unlock the acknowledgement checkbox.
-function isReviewed() {
-  return dryRun.status === "done" && !dryRun.error;
+/**
+ * `See all 471 actions` against a 474-row plan: `SkipUnsupported` IS a plan row, so `total` counts
+ * it and the button names what will actually happen. Reading `total` straight draws 474.
+ */
+export function actionsThatHappen(summary) {
+  if (!summary) return null;
+  return Math.max(0, (summary.total ?? 0) - (summary.skipped_unsupported ?? 0));
 }
 
-// ---- step 1: CLI check ---------------------------------------------------------------------
-
-async function runCliCheck() {
-  const ctx = lastCtx;
-  cli = { status: "checking", message: null };
-  paint();
-
-  let status;
-  try {
-    status = await ctx.api.getStatus();
-  } catch (_) {
-    status = null;
-  }
-  const state = status?.state ?? null;
-
-  if (state === "authExpired") {
-    cli = {
-      status: "authExpired",
-      message: status?.response?.last_error || status?.error || "The proton-drive sign-in looks expired.",
-    };
-    paint();
-    return;
-  }
-  if (state && state !== "unreachable") {
-    cli = { status: "ok", message: "Daemon reachable and responding — no Proton sign-in errors reported." };
-    paint();
-    return;
-  }
-
-  // Daemon unreachable (or the mock, which has no real daemon or CLI at all): a probe here would
-  // either be meaningless (mock) or need a real CLI/session to mean anything, so say so honestly
-  // rather than fabricate a "verified" result.
-  if (ctx.api.isMock()) {
-    cli = {
-      status: "unknown",
-      message:
-        "Browser-preview mode has no real daemon or CLI to check. You can continue here to see the " +
-        "flow, but run inside the Tauri app for a real verification.",
-    };
-    paint();
-    return;
-  }
-
-  // The daemon's control socket isn't reachable, but `list_remote` shells `proton-drive` directly
-  // (bypassing the daemon) — a real, independent check of whether the CLI itself is present and
-  // authenticated even before anything is running.
-  try {
-    await ctx.api.listRemote();
-    cli = {
-      status: "ok",
-      message:
-        "The sync daemon isn't running yet, but the proton-drive CLI itself responded — it looks " +
-        "present and authenticated.",
-    };
-  } catch (e) {
-    cli = {
-      status: "unknown",
-      message:
-        `Couldn't confirm the CLI is authenticated (${messageOf(e)}). You can continue, but ` +
-        'run "proton-drive login" first if the next steps fail.',
-    };
-  }
-  paint();
+/**
+ * Has the merge finished, and did it work?
+ *
+ * `waiting` · `failed` · `done`, from one status reply plus what the flow remembers. Pure, because
+ * every arm of it is a claim about someone's files: `done` opens a dialog that says `Both sides now
+ * match` and `Nothing was deleted`.
+ *
+ * A COMPLETED PASS IS NOT A SUCCESSFUL ONE. `reconcile_blocking` bumps `reconcile_seq` either way —
+ * "the attempt is complete (recorded either way)", src/daemon.rs — and records the reason in
+ * `last_error`, so the counter alone would call a failed first sync a finished merge.
+ *
+ * @param reply    the daemon's `response`, or null when it has not answered
+ * @param mergeSeq `reconcile_seq` when the merge was started, or null if it had not answered then
+ */
+export function mergeOutcomeOf(reply, mergeSeq = null) {
+  if (!reply || reply.syncing) return "waiting";
+  const seq = reply.reconcile_seq ?? 0;
+  // THE COUNTER, NOT `last_sync_epoch_secs`, on both arms. `self.last_sync` is set inside the Ok
+  // path of `reconcile_blocking_inner` (src/daemon.rs) — a pass that FAILS never sets it — while the
+  // counter advances either way. Testing the timestamp left a failed first sync on a machine that
+  // had never synced reporting `waiting` forever, with the merge dialog claiming progress and no way
+  // out of it.
+  const completed = mergeSeq != null ? seq > mergeSeq : seq > 0 || Boolean(reply.last_sync_epoch_secs);
+  if (!completed) return "waiting";
+  return reply.last_error ? "failed" : "done";
 }
 
-function step1Glyph(status) {
-  if (status === "ok") return { icon: "✓", color: "var(--download-text)" };
-  if (status === "authExpired") return { icon: "✕", color: "var(--danger-text)" };
-  if (status === "unknown") return { icon: "▲", color: "var(--warn-text)" };
-  return { icon: "…", color: "var(--muted)" };
+/** Can step 1 proceed? Both roots must be non-empty — the daemon has no folder pair otherwise. */
+export function pairReady({ local = "", remote = "" } = {}) {
+  return Boolean(String(local).trim() && String(remote).trim());
 }
 
-function step1Headline(status) {
-  if (status === "ok") return "The CLI looks good";
-  if (status === "authExpired") return "Proton sign-in expired";
-  if (status === "unknown") return "Couldn't fully verify";
-  return "Checking the proton-drive CLI…";
-}
+// -------------------------------------------------------------------- step 1 · which folders ----
 
-function renderStep1() {
-  const { icon, color } = step1Glyph(cli.status);
-  const checking = cli.status === "checking";
+/** One side of the pair. The two are not mirrors: only the local side has a picker. */
+function folderSide(props, s) {
+  const local = s === 0;
+  const side = fid(el("div", { class: `ob-side${local ? "" : " is-remote"}` }), "side", s);
 
-  const card = el(
-    "div",
-    { class: "card status-card" },
-    el(
-      "div",
-      { style: `font-size:28px;line-height:1;width:40px;text-align:center;flex:none;color:${color}` },
-      icon,
-    ),
-    el(
-      "div",
-      { style: "flex:1;min-width:0" },
-      el("div", { class: "headline" }, step1Headline(cli.status)),
-      el("div", { class: "mono subline" }, cli.message || "Calling get_status()…"),
-    ),
-    el(
-      "div",
-      { class: "actions" },
-      el(
-        "button",
-        { class: "btn", disabled: checking, onClick: () => runCliCheck() },
-        checking ? "Checking…" : "Re-check",
-      ),
-      cli.status === "authExpired" ? el("div", { class: "cmd-hint mono" }, "proton-drive login") : null,
-    ),
-  );
-
-  const canProceed = cli.status === "ok" || cli.status === "unknown";
-  const hint =
-    cli.status === "unknown"
-      ? "Continuing without a confirmed check — you'll see the real picture once the dry-run plan runs in step 3."
-      : cli.status === "authExpired"
-        ? 'Sign in with "proton-drive login", then re-check.'
-        : "";
-
-  return [
-    card,
-    footerNav({
-      backDisabled: true,
-      hint,
-      nextLabel: "Next",
-      nextDisabled: !canProceed,
-      onNext: () => {
-        step = 2;
-        if (!cfgLoaded && !cfgLoading && !cfgLoadError) startLoad();
-        else paint();
-      },
-    }),
-  ];
-}
-
-// ---- step 2: folder pair ---------------------------------------------------------------------
-
-const inputStyle =
-  "width:100%;box-sizing:border-box;padding:8px 10px;border-radius:var(--radius-control);" +
-  "border:1px solid var(--border);background:var(--row);color:var(--text-1);" +
-  "font-family:var(--font-mono);font-size:var(--fs-control)";
-
-function startLoad() {
-  const ctx = lastCtx;
-  cfgLoading = true;
-  cfgLoadError = null;
-  paint();
-  ctx.api
-    .readConfig()
-    .then((cfg) => {
-      cfgMeta = { path: cfg.path, exists: cfg.exists };
-      draft = { local_root: cfg.local_root || "", remote_root: cfg.remote_root || "" };
-      cfgLoaded = true;
-      cfgLoading = false;
-      paint();
-    })
-    .catch((e) => {
-      cfgLoadError = messageOf(e);
-      cfgLoading = false;
-      paint();
-    });
-}
-
-function canProceedFolders() {
-  return draft.local_root.trim() !== "" && draft.remote_root.trim() !== "";
-}
-
-// DOM refs captured during the current step-2 `renderStep2()`, used to patch the Next button and
-// the required-fields hint directly on every keystroke — see `folderField`'s `onInput`. Without
-// this, typing would leave both stuck at their initial (disabled/shown) state: `renderOnboarding`
-// deliberately skips the shell's poll-triggered full repaint while an `<input>` here has focus (so
-// the cursor doesn't get yanked mid-keystroke), and nothing else would ever re-run `canProceedFolders()`.
-let folderRefs = {};
-
-function refreshFolderDerived() {
-  const ok = canProceedFolders();
-  if (folderRefs.nextBtn) folderRefs.nextBtn.disabled = !ok || saving;
-  if (folderRefs.hint) folderRefs.hint.textContent = ok ? "" : "Both fields are required.";
-}
-
-async function goToReview() {
-  if (!canProceedFolders() || saving) return;
-  const ctx = lastCtx;
-  saving = true;
-  saveError = null;
-  paint();
-  try {
-    await ctx.api.writeConfig({ local_root: draft.local_root.trim(), remote_root: draft.remote_root.trim() });
-    if (cfgMeta) cfgMeta.exists = true;
-    saving = false;
-    step = 3;
-    // A fresh folder pair invalidates any previously reviewed plan — require a fresh review and a
-    // fresh acknowledgement rather than carrying over a stale one (mirrors plan.js's own DELETE-gate
-    // reset when a fresh plan comes in).
-    dryRun = { status: "idle", payload: null, error: null, unavailable: false, note: null };
-    ack = false;
-    paint();
-    runDryRunCheck();
-  } catch (e) {
-    saving = false;
-    saveError = messageOf(e);
-    paint();
-  }
-}
-
-function folderField(label, hint, key) {
-  return el(
-    "div",
-    { style: "margin-bottom:12px" },
-    el(
-      "label",
-      {
-        class: "mono",
-        style:
-          "display:block;font-size:var(--fs-label);text-transform:uppercase;" +
-          "letter-spacing:var(--tracking-label);color:var(--muted);margin-bottom:4px",
-      },
-      label,
-    ),
-    el("input", {
-      type: "text",
-      value: draft[key],
-      style: inputStyle,
-      onInput: (e) => {
-        draft[key] = e.target.value;
-        refreshFolderDerived();
-      },
-    }),
-    hint
-      ? el(
-          "div",
-          { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted-2);margin-top:4px" },
-          hint,
-        )
-      : null,
-  );
-}
-
-function renderStep2() {
-  folderRefs = {};
-  if (!cfgLoaded) {
-    const body = cfgLoadError
-      ? el(
-          "div",
-          { class: "card dir-destructive" },
-          el("div", {}, `Couldn't load configuration: ${cfgLoadError}`),
-          el("button", { class: "btn", style: "margin-top:10px", onClick: () => startLoad() }, "Retry"),
-        )
-      : el("div", { class: "card ledger-empty" }, "Loading configuration…");
-    return [
-      body,
-      footerNav({
-        onBack: () => {
-          step = 1;
-          paint();
-        },
-        nextDisabled: true,
-      }),
-    ];
-  }
-
-  const card = el(
-    "div",
-    { class: "card" },
-    el(
-      "div",
-      { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" },
-      "Choose the folder pair",
-    ),
-    el(
-      "div",
-      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:14px" },
-      "The local folder and the Proton Drive folder that stay in sync. You can change these later on the Settings screen.",
-    ),
-    folderField("Local root", "A folder on this computer, e.g. ~/ProtonDrive", "local_root"),
-    folderField("Remote root", "Path on Proton Drive, e.g. /Drive/RemoteFolder", "remote_root"),
-    saveError
-      ? el(
-          "div",
-          { class: "dir-destructive", style: "font-weight:600;margin-top:4px" },
-          `Couldn't save: ${saveError}`,
-        )
-      : null,
-  );
-
-  // Built inline (not via the shared `footerNav`) so the Next button and hint can be captured into
-  // `folderRefs` and patched directly by `refreshFolderDerived` on every keystroke, instead of only
-  // updating on the next full repaint (see the comment on `folderRefs`).
-  const hintSpan = el(
-    "span",
-    { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-right:auto" },
-    canProceedFolders() ? "" : "Both fields are required.",
-  );
-  folderRefs.hint = hintSpan;
-  const nextBtn = el(
-    "button",
-    { class: "btn primary", disabled: !canProceedFolders() || saving, onClick: () => goToReview() },
-    saving ? "Saving…" : "Next",
-  );
-  folderRefs.nextBtn = nextBtn;
-  const footer = el(
-    "div",
-    { class: "card", style: "display:flex;align-items:center;gap:12px" },
-    hintSpan,
-    el(
-      "button",
-      {
-        class: "btn",
-        onClick: () => {
-          step = 1;
-          paint();
-        },
-      },
-      "Back",
-    ),
-    nextBtn,
-  );
-
-  return [card, footer];
-}
-
-// ---- step 3: review the dry-run plan -----------------------------------------------------------
-
-async function runDryRunCheck() {
-  const ctx = lastCtx;
-  dryRun = { status: "running", payload: dryRun.payload, error: null, unavailable: false, note: null };
-  paint();
-  try {
-    const result = await ctx.api.runDryRun();
-    if (!result || !result.report) {
-      dryRun = {
-        status: "done",
-        payload: null,
-        error: null,
-        unavailable: true,
-        note: ctx.api.isMock()
-          ? "Dry-run preview isn't available in browser-preview mode — the mock doesn't implement run_dry_run. Run inside the Tauri app to see a real plan."
-          : "The daemon returned no plan report.",
-      };
-    } else {
-      dryRun = { status: "done", payload: result, error: null, unavailable: false, note: null };
-    }
-  } catch (e) {
-    dryRun = { status: "done", payload: null, error: messageOf(e), unavailable: false, note: null };
-  }
-  ack = false; // a fresh review always requires a fresh acknowledgement
-  paint();
-}
-
-const SUMMARY_TILES = [
-  { field: "uploads", label: "Uploads", cls: "dir-upload" },
-  { field: "downloads", label: "Downloads", cls: "dir-download" },
-  { field: "conflicts", label: "Conflicts", cls: "dir-neutral" },
-  { field: "skipped_unsupported", label: "Skipped", cls: "dir-neutral" },
-  { field: "destructive_actions", label: "Destructive", cls: "dir-destructive" },
-];
-
-function summaryTiles(summary) {
-  return el(
-    "div",
-    { class: "stat-strip", style: "grid-template-columns:repeat(5, minmax(0,1fr))" },
-    SUMMARY_TILES.map((spec) =>
-      el(
-        "div",
-        { class: "stat-tile" },
-        el("div", { class: `value ${spec.cls}` }, dash(summary ? summary[spec.field] : null)),
-        el("div", { class: "name" }, spec.label),
-        el("div", { class: "field mono" }, spec.field),
-      ),
-    ),
-  );
-}
-
-// Mirrors plan.js's own DIR_CLASS mapping (components.js's `dirClass` isn't exported): "conflict"
-// reads as amber (dir-upload), same as everywhere else the ledger renders a direction color.
-const DIR_CLASS = {
-  upload: "dir-upload",
-  download: "dir-download",
-  destructive: "dir-destructive",
-  conflict: "dir-upload",
-  neutral: "dir-neutral",
-};
-
-function planRow(row) {
-  const dir = directionForAction(row.action);
-  const cls = DIR_CLASS[dir] || "dir-neutral";
-  const extra = row.destination_path
-    ? `→ ${row.destination_path}`
-    : row.conflict_path
-      ? `→ ${row.conflict_path}`
-      : "";
-  return el(
-    "div",
-    {
-      style:
-        "display:flex;gap:14px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--border-soft)",
-    },
-    el("span", { class: `mono ${cls}`, style: "width:104px;flex:none;font-weight:600" }, row.action),
+  const label = fid(el("div", { class: "ob-side-label" }), "sideLabel", s);
+  const mark = fid(dot({ tone: local ? "up" : "down", size: 8 }), "sideDot", s);
+  // A `<span>`, not `eyebrow()`'s `<div>`: the frame draws both label rows' text inline, and
+  // `display` is asserted. The class carries the type; the tag carries the box.
+  const label2 = fid(
     el(
       "span",
-      {
-        class: "mono",
-        style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap",
-      },
-      row.path,
-      extra ? el("span", { style: "color:var(--muted-2);margin-left:6px" }, extra) : null,
+      { class: `eyebrow eyebrow-${local ? "up" : "down"} eyebrow-start` },
+      local ? MAIN.sideLocal : MAIN.sideRemote,
     ),
-    el("span", { class: "mono", style: "width:72px;flex:none;color:var(--muted)" }, dash(row.entity_kind)),
+    "sideEyebrow",
+    s,
   );
-}
+  label.append(...(local ? [mark, label2] : [label2, mark]));
 
-function riskBanner(payload) {
-  const filesAtRisk = payload?.files_at_risk ?? [];
-  if (!payload?.requires_delete_gate && filesAtRisk.length === 0) return null;
-  const named =
-    filesAtRisk.length <= 3
-      ? filesAtRisk.join(", ")
-      : `${filesAtRisk.slice(0, 3).join(", ")}, and ${filesAtRisk.length - 3} more`;
-  return el(
-    "div",
-    { class: "card dir-destructive", style: "font-weight:600" },
-    `Unexpected on a first pass: this plan includes ${filesAtRisk.length || "some"} deletion(s)${named ? ` — ${named}` : ""}. ` +
-      "Review carefully before continuing; the first sync is supposed to only merge, never delete.",
-  );
-}
-
-function ackRow() {
-  const enabled = isReviewed();
-  return el(
-    "label",
-    { style: "display:flex;align-items:flex-start;gap:10px;cursor:pointer" },
-    el("input", {
-      type: "checkbox",
-      checked: ack,
-      disabled: !enabled,
-      style: "margin-top:3px;flex:none",
-      onChange: (e) => {
-        ack = e.target.checked;
-        paint();
-      },
-    }),
-    el(
-      "div",
-      {},
-      el(
-        "div",
-        { class: "dir-destructive", style: "font-size:var(--fs-body);font-weight:600" },
-        "I understand that once syncing is running, deletions propagate in both directions — deleting a file on either side deletes it on the other.",
-      ),
-      !enabled
-        ? el(
-            "div",
-            { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-top:4px" },
-            "Run the dry-run review below first.",
-          )
-        : null,
-    ),
-  );
-}
-
-function renderStep3() {
-  const nodes = [
-    el(
-      "div",
-      { class: "card" },
-      el(
-        "div",
-        { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" },
-        "Review what the first sync will do",
-      ),
-      el(
-        "div",
-        { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" },
-        "proton-syncd --dry-run · shells the daemon, index read-only · nothing changes until you start syncing",
-      ),
-    ),
-  ];
-
-  if (dryRun.status === "running" && !dryRun.payload) {
-    nodes.push(
-      el(
-        "div",
-        { class: "card ledger-empty" },
-        "Running proton-syncd --dry-run… this shells the daemon and can take a while.",
+  const card = fid(el("div", { class: "ob-card" }), "card", s);
+  // The remote path is EDITABLE and the local one is not: `list_remote` reads a path and no picker
+  // exists for one (S6 settled the same asymmetry on `8a Settings`). #99.
+  // UNMAPPED on the remote side, deliberately: an `<input>` is `inline-block` with `overflow:clip`
+  // by UA rule and the frame draws a `<div>`, so the two can never agree on either — a construction
+  // difference, which is not what `known-deviations.mjs` is for. §79. The fixture's `cardPath`
+  // returns `null` at `s === 1` to say so, which is what keeps the unstamped gate off it (#248).
+  const path = local
+    ? fid(el("div", { class: "ob-card-path" }, props.local || ""), "cardPath", s)
+    : textInput({
+        value: props.remote ?? "",
+        mono: true,
+        class: "input is-mono ob-card-input",
+        "aria-label": MAIN.sideRemote,
+        "data-field": "remote_root",
+        onInput: (e) => props.handlers?.onRoot?.("remote", e.target.value),
+      });
+  card.append(path);
+  // The stats row and the account line are omitted, not blanked: nothing counts the files or bytes
+  // under a candidate folder on either side (#240), and no command sees an account (#241).
+  if (local) {
+    card.append(
+      fid(
+        button({
+          kind: "secondaryOutlined",
+          size: "standard",
+          label: ONBOARDING.chooseLocal,
+          padding: "10px",
+          class: "ob-card-button",
+          onClick: () => props.handlers?.onChooseLocal?.(),
+        }),
+        "cardButton",
+        s,
       ),
     );
-  } else if (dryRun.error) {
-    nodes.push(
-      el(
-        "div",
-        { class: "card dir-destructive", style: "display:flex;align-items:center;gap:14px;flex-wrap:wrap" },
-        el("div", { style: "flex:1;min-width:0" }, dryRun.error),
-        el("button", { class: "btn", onClick: () => runDryRunCheck() }, "Retry"),
-      ),
-    );
-  } else if (dryRun.unavailable) {
-    nodes.push(
-      el(
-        "div",
-        { class: "card" },
-        el("div", { class: "ledger-empty" }, dryRun.note),
-        el(
-          "button",
-          { class: "btn", style: "margin-top:8px", onClick: () => runDryRunCheck() },
-          "Re-run dry run",
-        ),
-      ),
-    );
-  } else if (dryRun.payload) {
-    const { report, files_at_risk, requires_delete_gate } = dryRun.payload;
-    const summary = report?.summary ?? null;
-    const plan = report?.plan ?? [];
-    const risk = riskBanner({ files_at_risk, requires_delete_gate });
-    if (risk) nodes.push(risk);
-    nodes.push(summaryTiles(summary));
-    nodes.push(
-      el(
-        "div",
-        { class: "card", style: "padding:0;overflow:hidden" },
-        el(
-          "div",
-          {
-            class: "mono",
-            style:
-              "padding:8px 12px;font-size:var(--fs-meta);color:var(--faint);border-bottom:1px solid var(--border);display:flex",
-          },
-          el("span", {}, `${plan.length} planned action(s)`),
-        ),
-        el(
-          "div",
-          { class: "scroll-y", style: "max-height:32vh" },
-          plan.length === 0
-            ? el("div", { class: "ledger-empty" }, "Nothing to do — the plan is empty.")
-            : plan.map(planRow),
-        ),
-        el(
-          "div",
-          { style: "padding:8px 12px;display:flex" },
-          el("button", { class: "btn", onClick: () => runDryRunCheck() }, "Re-run dry run"),
-        ),
-      ),
-    );
-  } else {
-    nodes.push(el("div", { class: "card ledger-empty" }, "Preparing the dry-run preview…"));
   }
+  side.append(label, card);
+  // `Browse Proton Drive…` is the remote side's button and has nowhere to go, so the side's helper
+  // is the only thing under its card.
+  if (local) {
+    side.append(fid(el("div", { class: "ob-side-note" }, ONBOARDING.emptyIsFine), "sideNote", s));
+  }
+  return side;
+}
 
-  nodes.push(el("div", { class: "card" }, ackRow()));
-
-  const canStart = isReviewed() && ack;
-  const hint = !isReviewed()
-    ? "Waiting on the dry-run review."
-    : !ack
-      ? "Check the acknowledgement above to continue."
-      : "";
-
-  nodes.push(
-    footerNav({
-      onBack: () => {
-        step = 2;
-        paint();
-      },
-      hint,
-      nextLabel: "Continue to start service",
-      nextDisabled: !canStart,
-      // Disabled buttons don't fire clicks, but re-check the gate here too — belt-and-suspenders on
-      // the one safety-critical transition, matching plan.js's own `applyPlan` convention of never
-      // trusting the disabled attribute alone for a destructive/gated action.
-      onNext: () => {
-        if (!isReviewed() || !ack) return;
-        step = 4;
-        paint();
-      },
-    }),
+function foldersBody(props) {
+  const title = fid(
+    el(
+      "div",
+      { class: "ob-title-block" },
+      fid(el("div", { class: "ob-title" }, ONBOARDING.foldersTitle), "title"),
+      fid(el("div", { class: "ob-sub" }, ONBOARDING.foldersSub), "sub"),
+    ),
+    "titleBlock",
   );
 
+  const block = fid(el("div", { class: "ob-folders" }), "foldersBlock");
+  block.append(fid(renderSeam({ site: "onboardingFolders" }), "seam"));
+  const grid = fid(el("div", { class: "ob-grid" }), "grid");
+  grid.append(folderSide(props, 0), folderSide(props, 1));
+  block.append(grid);
+
+  // The skip prompt keeps its sentence and loses its button: there is no skip-rules editor inside a
+  // takeover that cannot be dismissed, and leaving for Settings is a one-way door on a machine with
+  // no daemon (#244). The sentence's "or any time later in Settings" is the half that works today.
+  const skip = fid(el("div", { class: "ob-skip" }), "skipPanel");
+  skip.append(
+    fid(warnGlyph(), "skipGlyph"),
+    fid(el("div", { class: "ob-skip-text" }, ONBOARDING.skipHint), "skipText"),
+  );
+  block.append(skip);
+  return [title, block];
+}
+
+// ----------------------------------------------------------------- step 2 · nothing deleted ----
+
+/** One of the two counts. `size` is #191/#206 — the unit line drops its byte clause. */
+function countSide(props, s, summary) {
+  const up = s === 0;
+  const side = fid(el("div", { class: `ob-count-side${up ? "" : " is-remote"}` }), "countSide", s);
+  side.append(
+    fid(
+      eyebrow({
+        tone: up ? "up" : "down",
+        text: up ? ONBOARDING.goingUp : ONBOARDING.comingDown,
+        align: up ? "start" : "end",
+      }),
+      "countEyebrow",
+      s,
+    ),
+  );
+  const files = (up ? summary?.uploads : summary?.downloads) ?? null;
+  side.append(
+    fid(
+      el(
+        "div",
+        { class: "ob-count-row" },
+        fid(el("span", { class: "ob-numeral" }, count(files)), "countNumeral", s),
+        fid(el("span", { class: "ob-count-unit" }, ONBOARDING.sideUnit(files, null)), "countUnit", s),
+      ),
+      "countRow",
+      s,
+    ),
+  );
+  // Up: the sentence. Down: the free-space line, with only the half C4 answers — `Needs 38.4 GB
+  // free` needs a byte total no level of the dry-run surface carries (#206).
+  const note = up
+    ? ONBOARDING.goingUpSub
+    : props.freeSpace?.available != null
+      ? ONBOARDING.freeSpaceHave(props.freeSpace.available)
+      : null;
+  if (note) side.append(fid(el("div", { class: "ob-count-note" }, note), "countNote", s));
+  return side;
+}
+
+/**
+ * The four fact rows, in the frame's order, minus the ones with no source.
+ *
+ * The last row is the point of the screen — zero destructive actions as a positive fact — so it is
+ * drawn only when the plan really has none. A plan that would delete something cannot say this, and
+ * no frame draws that state.
+ */
+export function factRows(summary) {
+  const rows = [];
+  // `11,798 files already match on both sides` counts files the plan does NOT act on; `PlanSummary`
+  // has no such field, by construction rather than omission. #242.
+  if (summary?.conflicts) {
+    rows.push({
+      at: 1,
+      tone: "decision",
+      label: ONBOARDING.differ(summary.conflicts),
+      note: ONBOARDING.differSub,
+      noteTone: "decision",
+    });
+  }
+  if (summary?.skipped_unsupported) {
+    rows.push({
+      at: 2,
+      tone: "inert",
+      // The drawn sentence names the kinds (`a socket and two shortcuts`) and nothing enumerates
+      // them — the files never enter the index (#232). The count is the half that is true.
+      label: ONBOARDING.cannotSyncPlain(summary.skipped_unsupported),
+      note: ONBOARDING.skipped,
+      dim: true,
+    });
+  }
+  if (summary && !summary.destructive_actions) {
+    rows.push({ at: 3, tone: "hexagon", label: ONBOARDING.nothingDeleted, note: ONBOARDING.eitherSide });
+  }
+  return rows;
+}
+
+function factsBlock(summary) {
+  const rows = factRows(summary);
+  if (!rows.length) return null;
+  const block = fid(el("div", { class: "ob-facts" }), "facts");
+  // KEYED BY THE ROW IT STANDS FOR, not by its position here: row 0 is omitted (#242), so the app's
+  // first row is the frame's second and an app-order index compares a ringed dot against a filled
+  // one. `at` is the drawn index; `i` is only "is this the last one drawn".
+  for (const [i, row] of rows.entries()) {
+    const at = row.at;
+    const node = fid(el("div", { class: "ob-fact" + (i === rows.length - 1 ? " is-last" : "") }), "fact", at);
+    if (row.tone === "hexagon") {
+      const mark = fid(
+        renderHexagon({ size: FACT_MARK, state: "outline", flexNone: true, class: "ob-fact-mark" }),
+        "factMark",
+        at,
+      );
+      fid(mark.querySelector("path"), "factMarkPath", at);
+      node.append(mark);
+    } else {
+      node.append(fid(dot({ tone: row.tone, size: 6 }), "factDot", at));
+    }
+    node.append(
+      fid(el("span", { class: "ob-fact-label" + (row.dim ? " is-dim" : "") }, row.label), "factLabel", at),
+      fid(
+        el("span", { class: `ob-fact-note${row.noteTone ? ` tone-${row.noteTone}` : ""}` }, row.note),
+        "factNote",
+        at,
+      ),
+    );
+    block.append(node);
+  }
+  return block;
+}
+
+function reviewBody(props) {
+  const summary = props.dryRun?.report?.summary ?? null;
+
+  const hero = fid(el("div", { class: "ob-hero" }), "hero");
+  hero.append(fid(renderSeam({ site: "onboardingReview" }), "heroSeam"));
+  const mark = fid(
+    renderHexagon({
+      size: REVIEW_MARK,
+      state: "settled",
+      strokeWidth: REVIEW_MARK_STROKE,
+      masked: true,
+      class: "ob-hero-mark",
+    }),
+    "heroMark",
+  );
+  for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "heroMarkPath", i);
+  const title = fid(el("div", { class: "ob-hero-title" }, ONBOARDING.reviewTitle), "heroTitle");
+  const sub = fid(el("div", { class: "ob-hero-sub" }, ONBOARDING.reviewSub), "heroSub");
+  seamMask(title, { pad: 18 });
+  seamMask(sub, { pad: 18, padY: 2 });
+  hero.append(mark, title, sub);
+
+  const body = fid(el("div", { class: "ob-review" }), "body");
+  const counts = fid(el("div", { class: "ob-counts" }), "counts");
+  counts.append(countSide(props, 0, summary), countSide(props, 1, summary));
+  body.append(counts);
+  const facts = factsBlock(summary);
+  if (facts) body.append(facts);
+  // `See all N actions` has nowhere to open — the plan screen is a door the takeover covers (#244) —
+  // so the row is its timing line alone. `about 25 minutes to finish` is #229.
+  if (props.checkedAt != null) {
+    body.append(
+      fid(
+        el(
+          "div",
+          { class: "ob-timing" },
+          fid(
+            el("span", { class: "ob-timing-text" }, ONBOARDING.workedOutPlain(since(props.checkedAt))),
+            "timingText",
+          ),
+        ),
+        "timing",
+      ),
+    );
+  }
+  return [hero, body];
+}
+
+/**
+ * The rehearsal in flight, and the rehearsal that failed. Neither is drawn: `5a Checking` and S4's
+ * failed body are the shapes, borrowed with their copy, because a takeover with a blank middle is
+ * where a machine with no `proton-syncd` on its PATH would otherwise land.
+ */
+function checkingBody() {
+  const body = fid(el("div", { class: "ob-working" }), "working");
+  const mark = renderHexagon({ size: MERGE_MARK, state: "syncing", dryRun: true, class: "ob-working-mark" });
+  body.append(
+    mark,
+    el("div", { class: "ob-working-title" }, PLAN.checkingTitle),
+    el("div", { class: "ob-working-sub" }, PLAN.checkingSub),
+  );
+  return [body];
+}
+
+function failedBody(error) {
+  const body = fid(el("div", { class: "ob-working" }), "working");
+  body.append(
+    renderHexagon({ size: REVIEW_MARK, state: "warning", tone: "decision", strokeWidth: REVIEW_MARK_STROKE }),
+    el("div", { class: "ob-working-title" }, PLAN.failedTitle),
+    el("div", { class: "ob-working-sub" }, PLAN.failedSub),
+    el("div", { class: "ob-working-error mono" }, error),
+  );
+  return [body];
+}
+
+// -------------------------------------------------------------------------------- the screen ----
+
+/** What the last render was built from, so a poll can decide whether to build at all. */
+let view = null;
+
+/**
+ * Everything the body draws, and nothing else.
+ *
+ * The two typed roots are absent on purpose: step 1 holds a live `<input>`, and rebuilding it on the
+ * ~2s poll would move the caret to the end of whatever someone was typing. Step 2 has no field, so
+ * its relative time is free to be in here.
+ */
+function signatureOf(props) {
+  const body = bodyOf(props);
+  // The LOCAL path is in here and the remote one is not, and the asymmetry is the point: the local
+  // path is text the picker replaces (so it must rebuild) and the remote one is the field's own
+  // value (so it must not).
+  if (body === "folders") return JSON.stringify(["folders", props.local]);
+  if (body === "checking") return "checking";
+  if (body === "failed") return JSON.stringify(["failed", props.error]);
+  const s = props.dryRun?.report?.summary ?? null;
+  return JSON.stringify([
+    "review",
+    s && [s.uploads, s.downloads, s.conflicts, s.skipped_unsupported, s.destructive_actions],
+    props.freeSpace?.available ?? null,
+    props.checkedAt == null ? null : since(props.checkedAt),
+  ]);
+}
+
+/** The takeover body, as window-root siblings — the seam's `left:50%` resolves against the window. */
+export function renderOnboarding(props = {}) {
+  const nodes = (() => {
+    switch (bodyOf(props)) {
+      case "checking":
+        return checkingBody();
+      case "failed":
+        return failedBody(props.error);
+      case "review":
+        return reviewBody(props);
+      default:
+        return foldersBody(props);
+    }
+  })();
+  view = { sig: signatureOf(props), nodes };
   return nodes;
 }
 
-// ---- step 4: start service ---------------------------------------------------------------------
+/** The poll's path: rebuild only when something the body draws has moved, else `null`. */
+export function updateOnboarding(props = {}) {
+  if (!view) return null;
+  if (signatureOf(props) === view.sig) return null;
+  return renderOnboarding(props);
+}
 
-async function recheckNow() {
-  const ctx = lastCtx;
-  recheck = { status: "checking", state: null, error: null };
-  paint();
-  try {
-    const result = await ctx.api.getStatus();
-    // Publish app-wide so the pill/footer/nav reflect it immediately, and — the actual point of this
-    // step — so the shell hands off out of onboarding the moment the daemon state moves past
-    // "firstRun", without waiting for the next background poll tick.
-    setStatus(result);
-    recheck = { status: "done", state: result?.state ?? null, error: null };
-  } catch (e) {
-    recheck = { status: "done", state: null, error: messageOf(e) };
+/** Drop the cached view — the next mount builds from scratch. */
+export function unmountOnboarding() {
+  view = null;
+}
+
+/** What a rebuild of the footer bar would change, as opposed to what leaving it alone can carry. */
+export function onboardingBarShape(props = {}) {
+  return `${bodyOf(props)}|${pairReady(props)}`;
+}
+
+/** The footer action bar. Per-STATE, like the plan screen's: the two steps do not share one. */
+export function renderOnboardingBar(props = {}) {
+  const body = bodyOf(props);
+  const handlers = props.handlers ?? {};
+  if (body === "folders") {
+    const ready = pairReady(props);
+    const next = fid(
+      button({
+        kind: "primary",
+        size: "bar",
+        label: ONBOARDING.seeWhatHappens,
+        padding: "11px 24px",
+        onClick: () => handlers.onNext?.(),
+      }),
+      "barPrimary",
+    );
+    // Built live and then repainted: `button()` attaches no listener when the kind is a disabled
+    // one, so a button born `primaryDisabled` and later armed paints live and does nothing.
+    if (!ready) setButtonKind(next, "primaryDisabled");
+    const bar = renderActionBar({
+      consequence: fid(
+        el("span", { class: "bar-consequence tone-quiet" }, ONBOARDING.nothingUntilApproved),
+        "barText",
+      ),
+      primary: next,
+      bottom: 18,
+    });
+    fid(bar.querySelector(".shell-spacer"), "barSpacer");
+    return fid(bar, "bar");
   }
-  paint();
+  if (body !== "review") {
+    // Checking and failed: `Back` is the only way out of a rehearsal that has not answered, and the
+    // failed body's `Check again` is the loud one because there is no plan to run.
+    const bar = renderActionBar({
+      consequence: fid(back(handlers), "barBack"),
+      primary:
+        body === "failed"
+          ? fid(
+              button({
+                kind: "primary",
+                size: "bar",
+                label: PLAN.checkAgain,
+                padding: "11px 22px",
+                onClick: () => handlers.onCheck?.(),
+              }),
+              "barPrimary",
+            )
+          : null,
+      bottom: 18,
+    });
+    fid(bar.querySelector(".shell-spacer"), "barSpacer");
+    return fid(bar, "bar");
+  }
+  const bar = renderActionBar({
+    consequence: fid(back(handlers), "barBack"),
+    primary: fid(
+      button({
+        kind: "primary",
+        size: "bar",
+        label: ONBOARDING.start,
+        padding: "11px 24px",
+        onClick: () => handlers.onStart?.(),
+      }),
+      "barPrimary",
+    ),
+    bottom: 18,
+  });
+  fid(bar.querySelector(".shell-spacer"), "barSpacer");
+  return fid(bar, "bar");
 }
 
-function renderStep4() {
-  const card = el(
-    "div",
-    { class: "card" },
-    el(
-      "div",
-      { style: "font-size:var(--fs-section);font-weight:600;margin-bottom:6px" },
-      "Start the service",
-    ),
-    el(
-      "div",
-      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-bottom:12px" },
-      "Nothing has synced yet. Start the daemon to run the first pass you just reviewed:",
-    ),
-    el(
-      "div",
-      {
-        class: "mono",
-        style:
-          "font-size:var(--fs-body);padding:10px 12px;background:var(--row);border-radius:var(--radius-control)",
-      },
-      "systemctl --user start proton-syncd",
-    ),
-    el(
-      "div",
-      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-top:10px" },
-      "This screen switches over automatically once the daemon reports its first sync — no need to close it.",
-    ),
+/** Every bar path goes through here so `dataset.shape` cannot be set on one and missed on another. */
+export function renderOnboardingFooter(props = {}) {
+  const bar = renderOnboardingBar(props);
+  bar.dataset.shape = onboardingBarShape(props);
+  return bar;
+}
+
+function back(handlers) {
+  return button({
+    kind: "quietOutlined",
+    size: "bar",
+    label: ONBOARDING.back,
+    padding: "11px 18px",
+    onClick: () => handlers.onBack?.(),
+  });
+}
+
+// ------------------------------------------------------------------------------- the dialogs ----
+
+/**
+ * `9a First sync` — the merge in flight, 602×542 with its own footer.
+ *
+ * The split progress bar and its two labels are omitted: `SyncActivity` counts actions, not
+ * directions, so nothing reports a per-direction split within a pass (#243). `about 17 minutes left`
+ * is #229.
+ */
+export function renderFirstSync(props = {}) {
+  const activity = props.activity ?? null;
+  const body = fid(el("div", { class: "ob-merge" }), "mergeBody");
+  body.append(fid(renderSeam({ site: "firstSync" }), "mergeSeam"));
+  body.append(
+    fid(el("div", { class: "ob-merge-label is-left tone-up" }, MAIN.sideLocal), "mergeLabelLeft"),
+    fid(el("div", { class: "ob-merge-label is-right tone-down" }, MAIN.sideRemote), "mergeLabelRight"),
   );
-
-  const statusLine = (() => {
-    if (recheck.status === "checking") return "Checking…";
-    if (recheck.status === "idle") return "";
-    if (recheck.error) return `Couldn't reach the daemon: ${recheck.error}`;
-    if (recheck.state && recheck.state !== "firstRun")
-      return `Connected — state: ${recheck.state}. Handing off…`;
-    return "Still first run — waiting for the first sync to complete.";
-  })();
-
-  const checkCard = el(
-    "div",
-    { class: "card", style: "display:flex;align-items:center;gap:14px;flex-wrap:wrap" },
-    el(
-      "span",
-      { class: "mono", style: "flex:1;min-width:0;font-size:var(--fs-meta);color:var(--muted)" },
-      statusLine || "Not checked yet.",
-    ),
-    el(
-      "button",
-      { class: "btn primary", disabled: recheck.status === "checking", onClick: () => recheckNow() },
-      recheck.status === "checking" ? "Checking…" : "Check status now",
-    ),
-  );
-
-  return [
-    card,
-    checkCard,
-    footerNav({
-      onBack: () => {
-        step = 3;
-        paint();
-      },
+  const mark = fid(
+    renderHexagon({
+      size: MERGE_MARK,
+      state: "syncing",
+      masked: true,
+      numeral: props.pending ?? null,
+      class: "ob-merge-mark",
     }),
-  ];
-}
-
-// ---- shared chrome (stepper header, safety banner, back/next footer) ----------------------------
-
-const STEP_LABELS = ["CLI check", "Folders", "Review plan", "Start service"];
-
-function stepperHeader() {
-  const segments = STEP_LABELS.map((label, idx) => {
-    const n = idx + 1;
-    const done = n < step;
-    const active = n === step;
-    const barColor = done || active ? "var(--upload-fill)" : "var(--border)";
-    const textColor = active ? "var(--upload-text)" : done ? "var(--muted)" : "var(--muted-2)";
-    return el(
-      "div",
-      { style: "flex:1;min-width:0" },
-      el("div", { style: `height:3px;border-radius:2px;background:${barColor}` }),
+    "mergeMark",
+  );
+  fid(mark.querySelector("defs"), "mergeMarkDefs");
+  for (const [i, node] of [...mark.querySelectorAll("linearGradient")].entries()) {
+    fid(node, "mergeMarkGradient", i);
+    for (const [j, stop] of [...node.querySelectorAll("stop")].entries()) fid(stop, "mergeMarkStop", i, j);
+  }
+  for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "mergeMarkPath", i);
+  fid(mark.querySelector("text"), "mergeNumeral");
+  const title = fid(el("div", { class: "ob-merge-title" }, ONBOARDING.progressTitle), "mergeTitle");
+  seamMask(title, { pad: 16 });
+  body.append(mark, title);
+  // `159 of 471 done` is the one part of this screen the command surface already answers.
+  if (activity?.action_total != null) {
+    const sub = fid(
       el(
         "div",
-        { class: "mono", style: `font-size:10px;color:${textColor};margin-top:7px` },
-        `${n} · ${label}`,
+        { class: "ob-merge-sub" },
+        ONBOARDING.progressDone(activity.action_index ?? 0, activity.action_total),
       ),
+      "mergeSub",
     );
-  });
+    seamMask(sub, { pad: 14, padY: 2 });
+    body.append(sub);
+  }
+  const close = fid(el("div", { class: "ob-merge-close" }, ONBOARDING.canClose), "mergeClose");
+  seamMask(close, { pad: 14, padY: 2 });
+  body.append(close);
 
-  return el(
-    "div",
-    { class: "card" },
+  const foot = fid(el("div", { class: "ob-merge-foot" }), "mergeFoot");
+  // The sentence is about the plan the person approved, so with no plan in hand there is nothing to
+  // claim and the node goes rather than rendering empty.
+  const footText = mergeFooterText(props);
+  // FILTERED, never `append(null)`: `Element.append` stringifies its argument, so a null child is
+  // inserted as the literal text "null" — the bug app.js's own note on `replaceChildren` records,
+  // and the style gate cannot see a stray text node.
+  const footChildren = [
+    footText ? fid(el("span", { class: "ob-merge-foot-text" }, footText), "mergeFootText") : null,
+    fid(el("span", { class: "shell-spacer" }), "mergeFootSpacer"),
+    fid(
+      button({
+        kind: "quietOutlined",
+        size: "standard",
+        label: MAIN.pause,
+        padding: "8px 15px",
+        onClick: () => props.handlers?.onPause?.(),
+      }),
+      "mergeFootButton",
+    ),
+  ].filter(Boolean);
+  foot.append(...footChildren);
+  return [body, foot];
+}
+
+/**
+ * What a REBUILD of the merge dialog would change — and deliberately not the two numbers that move.
+ *
+ * The dialog layer replaces the surface's children when this string moves, and the mark inside it is
+ * the syncing hexagon: `replaceChildren` restarts both travelling segments from 0%, which is the
+ * failure `updateHexagon` exists to prevent and which a per-action counter in here would cause on
+ * every poll. So the shape is what is in the signature and the numbers are patched by
+ * `updateFirstSync`.
+ */
+export function firstSyncShape(props = {}) {
+  return JSON.stringify([props.activity?.action_total != null, mergeFooterText(props)]);
+}
+
+/** Patch the two moving values in place, leaving the mark and its animations alone. */
+export function updateFirstSync(surface, props = {}) {
+  if (!surface) return;
+  updateHexagon(surface.querySelector(".ob-merge-mark"), { numeral: props.pending ?? null });
+  const sub = surface.querySelector(".ob-merge-sub");
+  const activity = props.activity ?? null;
+  if (sub && activity?.action_total != null) {
+    const text = ONBOARDING.progressDone(activity.action_index ?? 0, activity.action_total);
+    if (sub.textContent !== text) sub.textContent = text;
+  }
+}
+
+/**
+ * `nothing deleted · 2 conflicts kept as copies`, from the plan the person approved rather than from
+ * a live scan: the sentence is about THIS merge, and the reviewed plan is what described it.
+ */
+export function mergeFooterText({ summary = null } = {}) {
+  if (!summary) return "";
+  const parts = [];
+  if (!summary.destructive_actions) parts.push(ONBOARDING.nothingDeletedShort);
+  if (summary.conflicts) parts.push(ONBOARDING.conflictsKept(summary.conflicts));
+  return parts.join(" · ");
+}
+
+/**
+ * `9a Consent` — the promise, after the merge.
+ *
+ * `12,480 files, 41.2 GB` is #207: no command reports index-wide totals, so the sub-line keeps the
+ * clause that is true and drops the one that is not.
+ */
+export function renderConsent(props = {}) {
+  const agreed = Boolean(props.agreed);
+  const head = fid(el("div", { class: "ob-done" }), "doneHead");
+  const mark = fid(renderHexagon({ size: CONSENT_MARK, state: "settled" }), "doneMark");
+  for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "doneMarkPath", i);
+  head.append(
+    mark,
+    fid(el("div", { class: "ob-done-title" }, ONBOARDING.doneTitle), "doneTitle"),
+    fid(el("div", { class: "ob-done-sub" }, ONBOARDING.doneSubPhase1(props.conflicts ?? 0)), "doneSub"),
+  );
+
+  const box = checkbox({
+    checked: agreed,
+    label: ONBOARDING.consentCheckbox,
+    onChange: (on) => props.handlers?.onAgree?.(on),
+  });
+  const panel = fid(
+    consentPanel({ title: ONBOARDING.consentTitle, body: ONBOARDING.consentBody, footer: box }),
+    "consentPanel",
+  );
+  fid(panel.querySelector(".band-consent-title"), "consentTitle");
+  fid(panel.querySelector(".band-consent-body"), "consentBody");
+  fid(panel.querySelector(".band-consent-footer"), "consentFooter");
+  fid(panel.querySelector(".checkbox-box"), "consentBox");
+  fid(panel.querySelector(".checkbox-label"), "consentLabel");
+
+  const start = fid(
+    button({
+      kind: "primary",
+      size: "bar",
+      label: ONBOARDING.consentStart,
+      onClick: () => props.handlers?.onStartSyncing?.(),
+    }),
+    "doneFootButton",
+  );
+  if (!agreed) setButtonKind(start, "primaryDisabled");
+  const foot = fid(
     el(
       "div",
-      { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:12px" },
-      el("div", { style: "font-size:var(--fs-section);font-weight:600" }, "Set up Proton Drive Sync"),
+      { class: "ob-done-foot" },
+      fid(el("span", { class: "ob-done-foot-text" }, ONBOARDING.consentPaused), "doneFootText"),
+      fid(el("span", { class: "shell-spacer" }), "doneFootSpacer"),
+      start,
+    ),
+    "doneFoot",
+  );
+  return [head, panel, foot];
+}
+
+/**
+ * `9a CLI missing` — the precondition that only appears when it fails.
+ *
+ * The command box goes: every command in `CLI_INSTALL_COMMANDS` names a package that is in no
+ * distribution's repository, by this project's own documentation, so there is nothing true to put in
+ * it (#218). `Installation help` goes with it — nothing in the command surface opens a URL (#231),
+ * and a takeover has nowhere to send it anyway (#244).
+ */
+export function renderCliMissing(props = {}) {
+  const distro = props.cli?.distro ?? null;
+  const row = fid(el("div", { class: "ob-cli" }), "cliRow");
+  const mark = fid(
+    renderHexagon({
+      size: CLI_MARK,
+      state: "warning",
+      tone: "decision",
+      flexNone: true,
+      class: "ob-cli-mark",
+    }),
+    "cliMark",
+  );
+  for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "cliMarkPath", i);
+  fid(mark.querySelector("circle"), "cliMarkDot");
+  const col = fid(el("div", { class: "ob-cli-col" }), "cliCol");
+  col.append(
+    fid(el("div", { class: "ob-cli-title" }, ONBOARDING.cliMissingTitle), "cliTitle"),
+    fid(el("div", { class: "ob-cli-body" }, ONBOARDING.cliMissingBody(distro)), "cliBody"),
+    fid(
       el(
-        "span",
-        { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted)" },
-        `step ${step} of 4`,
+        "div",
+        { class: "ob-cli-buttons" },
+        fid(
+          button({
+            kind: "primarySoft",
+            size: "standard",
+            label: ONBOARDING.checkAgain,
+            onClick: () => props.handlers?.onCheckCli?.(),
+          }),
+          "cliCheckAgain",
+        ),
       ),
-    ),
-    el("div", { style: "display:flex;gap:8px" }, segments),
-  );
-}
-
-function safetyBanner() {
-  return el(
-    "div",
-    { class: "safety-banner", style: "border-radius:var(--radius-card);border:1px solid var(--warn-border)" },
-    el("span", { class: "glyph" }, "▲"),
-    el(
-      "span",
-      {},
-      "The first sync is a non-destructive merge: local-only files upload, remote-only files download, matching files link automatically, and anything that differs is kept as both copies. Nothing is deleted on this first pass.",
+      "cliButtons",
     ),
   );
-}
-
-function footerNav({
-  backDisabled = false,
-  onBack,
-  hint = "",
-  nextLabel = "Next",
-  nextDisabled = true,
-  onNext,
-} = {}) {
-  return el(
-    "div",
-    { class: "card", style: "display:flex;align-items:center;gap:12px" },
-    el(
-      "span",
-      { class: "mono", style: "font-size:var(--fs-meta);color:var(--muted);margin-right:auto" },
-      hint,
-    ),
-    el("button", { class: "btn", disabled: backDisabled, onClick: onBack }, "Back"),
-    onNext
-      ? el("button", { class: "btn primary", disabled: nextDisabled, onClick: onNext }, nextLabel)
-      : null,
-  );
-}
-
-// ---- paint / mount --------------------------------------------------------------------------
-
-function paint() {
-  if (!lastContainer) return;
-  const body =
-    step === 1 ? renderStep1() : step === 2 ? renderStep2() : step === 3 ? renderStep3() : renderStep4();
-  lastContainer.replaceChildren(stepperHeader(), safetyBanner(), ...body);
-}
-
-export function renderOnboarding(container, ctx) {
-  lastContainer = container;
-  lastCtx = ctx;
-
-  if (cli.status === "idle") runCliCheck();
-  if (step >= 2 && !cfgLoaded && !cfgLoading && !cfgLoadError) startLoad();
-
-  // The shell re-invokes this on every 2 s poll tick. A full repaint would `replaceChildren` the
-  // whole step body — including whatever `<input>` currently has focus in step 2's folder fields —
-  // and pop the cursor out mid-keystroke (same concern/fix as settings.js). Our own `onInput`
-  // handlers already keep `draft` in sync without a repaint; skip only this externally-triggered one.
-  if (container.contains && document.activeElement && container.contains(document.activeElement)) return;
-
-  paint();
+  row.append(mark, col);
+  return [row];
 }

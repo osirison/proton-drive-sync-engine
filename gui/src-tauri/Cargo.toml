@@ -15,9 +15,37 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 gui_core = { package = "proton-sync-gui-core", path = "../gui-core" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
-tauri-plugin-notification = "2"
+# Tauri's own async runtime IS tokio; naming it directly is what lets the tray poll sleep and the
+# SNI item hold an async mutex without spinning up a second one.
+tokio = { version = "1", features = ["sync", "time", "rt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-dialog = "2.7.2"
+
+# The tray (S8). `tray-icon`'s Linux backend is libappindicator, which is menu-only: its GTK
+# platform_impl contains no `TrayIconEvent` at all, so a left click produces no event a program can
+# see, `set_tooltip` is `Ok(())` with the argument discarded, and `rect()` returns `None`. The live
+# item it publishes has no `Activate` method on the bus to call. So the design's whole interaction —
+# left click opens the panel — is not reachable through it, and `src/sni.rs` speaks the protocol
+# directly instead.
+#
+# The tray item (S8) and the notification banners (S9). `default-features = false` + `tokio` so it
+# shares Tauri's reactor rather than pulling in async-io and running a second one.
+#
+# S9 REMOVED `tauri-plugin-notification`, which used to bring zbus in transitively (via notify-rust)
+# and which no code calls any more: its desktop path cannot set an action button or a `replaces_id`,
+# and both are load-bearing in `11-notifications.md`. See `src/notify.rs`.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+# `StreamExt`, for the NameOwnerChanged stream that re-registers the item when the host restarts.
+# zbus re-exports `futures_core` (the Stream trait) but not the extension trait that gives it `next`.
+futures-util = { version = "0.3", default-features = false }
+# `src/focus.rs`. NEITHER IS A NEW BUILD: Tauri already compiles both — `gtk` through
+# `tray-icon`/`libappindicator` and `gdkx11` through `wry` — and `WebviewWindow::gtk_window()` hands
+# back a `gtk::ApplicationWindow`, so the versions have to be the ones Tauri resolved or the types
+# are two different types with one name. Pinned to the same 0.18 line for that reason.
+gtk = "0.18"
+gdkx11 = "0.18"
 
 [dev-dependencies]
 # `test` gives us `tauri::test::mock_builder`, so the socket commands can be driven headlessly

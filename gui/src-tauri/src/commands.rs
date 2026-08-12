@@ -1,6 +1,29 @@
-//! The **fixed** Tauri command surface. Every command is a thin wrapper over `gui-core`; screens
-//! are frontend-only and never add to this list, `generate_handler!`, or `Cargo.toml`. That is what
+//! The Tauri command surface. Every command is a thin wrapper over `gui-core`; **screens** are
+//! frontend-only and never add to this list, `generate_handler!`, or `Cargo.toml`. That is what
 //! keeps the parallel screen tasks (S1–S11) collision-free.
+//!
+//! The **capability** tasks (C1–C6) are the sanctioned exception, and are how the list grows: a
+//! screen that needs something the daemon does not expose files a C-item, and the C-item adds the
+//! command before the screen is built. `free_space`, `check_cli` and `skip_rule_usage` arrived that
+//! way. The rule that matters is the one about parallel screen work, not a freeze.
+//!
+//! **S6 added two, and they are recorded here rather than smuggled in.** `resync` and
+//! `choose_folder` are the two controls on `8a Settings` that no existing command answers —
+//! `Sweep now` is a full-tree walk (`Syncnow` is not one) and `Choose…` is a folder picker. Neither
+//! was worth a C-item by the time S6 found them: both are five lines over machinery that already
+//! exists (`ControlCommand::Resync` has shipped in the daemon since #160), the alternative was two
+//! more dead buttons of the kind #224/#227 already record, and S6 is the last screen in flight, so
+//! the collision the rule protects against cannot happen. A screen that needs *data* still files a
+//! C-item — that is the case the rule is really about, and `skip_rule_usage` is why.
+//!
+//! **A command that touches the filesystem, a subprocess or a socket must be `async` and do its
+//! work in `spawn_blocking`.** A synchronous one runs on the GTK main loop, and WebKitGTK aborts
+//! the whole process when that loop stalls (#142/#143). `read_config`, `write_config`,
+//! `resolve_conflict`, `read_conflict_pair` and `path_sync_status` predate the rule and are still
+//! synchronous — `path_sync_status` in particular can hold the loop for its full 3s index busy
+//! timeout. They are bounded enough to have survived; anything unbounded is not, and none of the
+//! commands added since is synchronous. S9's two `notify_policy` commands were, for one commit, and
+//! the review that caught them is the reason this sentence is checkable at all.
 
 use crate::config_path::RuntimePaths;
 use gui_core::conflicts::{self, Conflict, Resolution};
@@ -10,7 +33,6 @@ use gui_core::{config_io, index_read, ipc, plan};
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Manager, State};
-use tauri_plugin_notification::NotificationExt;
 
 type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
 
@@ -138,6 +160,21 @@ pub async fn sync_now(app: tauri::AppHandle) -> StatusPayload {
     status_round_trip(app, ControlCommand::Syncnow).await
 }
 
+/// Settings › *Sweep now* — the full-tree comparison, not an ordinary pass.
+///
+/// `Resync` and `Syncnow` both schedule a reconcile; the difference is what that reconcile IS. A
+/// `Syncnow` under the default config is an incremental, event-driven pass, which is precisely the
+/// thing `Compare everything, top to bottom` is offering an alternative to. `Resync` latches the
+/// next pass to a full-tree walk (`ControlShared.force_full_walk`, consumed once), so this is the
+/// only command in the surface that answers the button.
+///
+/// An older daemon that predates the variant rejects it as an unknown command — the reply carries
+/// the error and the button reports it, rather than silently doing an ordinary sync.
+#[tauri::command]
+pub async fn resync(app: tauri::AppHandle) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Resync).await
+}
+
 /// The shared body of `approve`/`deny`: a path-argument round trip folded into a `StatusPayload`.
 /// Generic over the runtime so a `tauri::test` mock app can drive it headlessly (see tests).
 async fn approval_round_trip<R: tauri::Runtime>(
@@ -190,6 +227,14 @@ pub struct ConfigPayload {
     proton_list_attempts: Option<i64>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
+    /// The same two booleans as the Settings → Deletions radio (C1, #174).
+    ///
+    /// Carried **alongside** them, not instead of them: the raw pair is what the Advanced view and
+    /// the config text show, while the policy is what a radio group can bind to. Deriving it in the
+    /// frontend instead would be a second place that has to know an absent key means `true` — and
+    /// that defaulting is precisely what stops an empty config drawing as `Never ask` on a machine
+    /// that is in fact asking about everything.
+    deletion_policy: config_io::DeletionPolicy,
 }
 
 #[tauri::command]
@@ -212,6 +257,7 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
         proton_list_attempts: doc.get_int("proton_list_attempts"),
         delete_approval_remote: doc.get_delete_approval("remote"),
         delete_approval_local: doc.get_delete_approval("local"),
+        deletion_policy: doc.get_deletion_policy(),
     })
 }
 
@@ -230,6 +276,9 @@ pub struct ConfigUpdate {
     proton_list_attempts: Option<i64>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
+    /// Applied AFTER the two raw booleans, so a screen that sends both cannot end up half-written:
+    /// the policy always sets both directions, which is what makes a radio selection unambiguous.
+    deletion_policy: Option<config_io::DeletionPolicy>,
 }
 
 #[tauri::command]
@@ -269,6 +318,9 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     if let Some(v) = update.delete_approval_local {
         doc.set_delete_approval("local", v);
     }
+    if let Some(v) = update.deletion_policy {
+        doc.set_deletion_policy(v);
+    }
     doc.save(&path).map_err(|e| e.to_string())?;
     // Re-resolve in case local_root / socket / db changed, but keep the daemon-reported live
     // config — the daemon is still running with it until restarted. (Saving still requires a
@@ -280,6 +332,50 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     resolved.daemon_db_path = paths.daemon_db_path.take();
     *paths = resolved;
     Ok(())
+}
+
+/// Settings › Folders' `Choose…` — the native folder picker, behind the same facade as everything
+/// else, so `api.js` stays the frontend's only backend surface and no capability JSON grants the
+/// webview a file dialog of its own.
+///
+/// `start` seeds the dialog at the value currently in the field; a path that no longer exists is
+/// passed anyway and the picker falls back to its own default rather than failing.
+///
+/// `Ok(None)` IS A DISMISSED PICKER AND `Err` IS A BROKEN ONE, and the two must not be the same
+/// answer. The first version returned `Option<String>` and folded a join/panic error into `None`
+/// with `unwrap_or(None)` — so a picker that could not open at all was indistinguishable from one
+/// somebody closed, and the button reported nothing either way. That is the silence S6's review
+/// found on `Sweep now`, one file over.
+///
+/// BLOCKING, ON A BLOCKING THREAD. The plugin marshals the dialog onto the GTK main thread itself
+/// and `blocking_pick_folder` waits for it — waiting on the main loop from the main loop is the
+/// WebKitGTK abort of #142/#143, and an async command's body runs on the async runtime, not the
+/// main loop. `spawn_blocking` states that rather than relying on it.
+#[tauri::command]
+pub async fn choose_folder(
+    app: tauri::AppHandle,
+    start: Option<String>,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let mut builder = app.dialog().file();
+        if let Some(dir) = start.filter(|s| !s.is_empty()) {
+            builder = builder.set_directory(dir);
+        }
+        // `into_path()` FAILS INTO `Err`, NOT INTO `None`. It errors on a `FilePath` that is a URI
+        // rather than a path — a portal backend, not the `gtk3` one this build links — and folding
+        // that into `None` would have made an unusable selection read as a cancellation, which is
+        // the contract this function's own doc comment had just finished promising it does not do.
+        match builder.blocking_pick_folder() {
+            None => Ok(None),
+            Some(folder) => folder
+                .into_path()
+                .map(|path| Some(path.display().to_string()))
+                .map_err(|e| format!("that folder is not a path this app can use: {e}")),
+        }
+    })
+    .await
+    .unwrap_or_else(|join_error| Err(format!("folder picker task failed: {join_error}")))
 }
 
 /// The dry-run plan plus the derived safety facts the Plan-preview screen needs.
@@ -613,19 +709,476 @@ pub async fn restart_service(state: Paths<'_>) -> Result<String, String> {
         .map_err(|error| format!("restart task failed: {error}"))?
 }
 
+// ------------------------------------------------------------------ notifications (S9) ----
+
+/// Show one banner, replacing whichever of ours is still on screen.
+///
+/// **Linux only, and silent everywhere else.** The whole app is Linux-only (the engine's IPC is
+/// Unix-socket) but the notification path is the one that would panic rather than degrade, so the
+/// off-Linux arm answers `Ok` with nothing shown: a notification is an addition to the window, and
+/// no build target should fail to compile over one.
 #[tauri::command]
-pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
+pub async fn send_notification(
+    app: tauri::AppHandle,
+    payload: crate::notify::NotifyPayload,
+) -> Result<(), String> {
+    crate::notify::send(app, payload).await
+}
+
+/// Take our banner down. Used when the thing it was about resolved itself.
+#[tauri::command]
+pub async fn close_notification(app: tauri::AppHandle) -> Result<(), String> {
+    crate::notify::close(app).await
+}
+
+/// The GUI-local `notify_policy` (C6). Never sent to the daemon — see `gui_core::gui_prefs`.
+///
+/// `AppHandle` rather than `Paths<'_>`, and `spawn_blocking` rather than a read on the spot: both
+/// are this module's own rules. A synchronous command runs on the GTK main loop and WebKitGTK aborts
+/// the process when that loop stalls (#142/#143), and an async command taking a borrowed `State<'_>`
+/// is forced to return `Result` — so the handle is owned and the state is taken inside.
+#[tauri::command]
+pub async fn read_notify_policy(app: tauri::AppHandle) -> Result<String, String> {
+    let config_path = {
+        let state = app.state::<Mutex<RuntimePaths>>();
+        let paths = state.lock().unwrap();
+        paths.config_path.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gui_core::gui_prefs::load_notify_policy(&gui_core::gui_prefs::gui_prefs_path(&config_path))
+            .as_str()
+            .to_string()
+    })
+    .await
+    .map_err(|error| format!("read_notify_policy did not complete: {error}"))
+}
+
+/// Refuses an unknown token rather than defaulting: a write is a person choosing, and silently
+/// storing something else would be the screen answering a question it was not asked.
+#[tauri::command]
+pub async fn write_notify_policy(app: tauri::AppHandle, policy: String) -> Result<(), String> {
+    let parsed = gui_core::gui_prefs::NotifyPolicy::parse(&policy)
+        .ok_or_else(|| format!("unknown notify_policy \"{policy}\""))?;
+    let config_path = {
+        let state = app.state::<Mutex<RuntimePaths>>();
+        let paths = state.lock().unwrap();
+        paths.config_path.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gui_core::gui_prefs::store_notify_policy(
+            &gui_core::gui_prefs::gui_prefs_path(&config_path),
+            parsed,
+        )
         .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|error| format!("write_notify_policy did not complete: {error}"))?
+}
+
+// ------------------------------------------------------- the Phase-1 capability commands ----
+
+/// Room on the filesystem the sync folder lives on (C4, #177).
+///
+/// `path` prices a folder the config has not been written for yet — onboarding step 1 offers a pair
+/// before anything is saved, so the screen must be able to ask about a proposal. Omitted, it uses
+/// the configured local root.
+///
+/// **Only half of `9a Review`'s sentence.** `Needs 38.4 GB free` cannot be computed: no level of
+/// the dry-run surface carries a file size (G6, #206). See `gui_core::free_space` and DEVIATIONS.
+///
+/// Async because a hung network or FUSE mount makes `statvfs` block indefinitely, and the sync
+/// folder being on such a mount is exactly the case where the number matters.
+#[tauri::command]
+pub async fn free_space(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<gui_core::free_space::FreeSpace, String> {
+    let target = match path {
+        // A path typed into the folder picker gets the same `~` expansion the config values get —
+        // the picker is a text field, and `~/ProtonDrive` is what someone types.
+        Some(path) => config_io::expand_config_path(path, "path"),
+        None => app
+            .state::<Mutex<RuntimePaths>>()
+            .lock()
+            .unwrap()
+            .effective_local_root()
+            .ok_or_else(|| "local_root is not configured".to_string())?,
+    };
+    tauri::async_runtime::spawn_blocking(move || gui_core::free_space::for_path(&target))
+        .await
+        .map_err(|error| format!("free-space task failed: {error}"))?
+}
+
+/// Whether the `proton-drive` CLI is installed, and which distribution this is (C5, #178).
+///
+/// Two facts in one reply because they are drawn on one dialog and answered at one moment. The
+/// screen only ever appears when `installed` is false — the CLI check is otherwise a silent
+/// precondition, which is what let onboarding drop from four steps to two.
+///
+/// **Never cached.** This backs both the silent precondition and the `Check again` button, and the
+/// user is expected to install the tool between two calls.
+///
+/// `installed` is *presence*, not health: a CLI that is installed but logged out is `true`. Sending
+/// an authenticated-but-failing user to an install screen would answer a question they do not have.
+/// The probe uses the **configured** `proton_cli`, which may be an absolute path (#158's boot-PATH
+/// fix), so a tool that is installed and merely off the launcher's PATH is not reported missing.
+#[derive(serde::Serialize)]
+pub struct CliPresence {
+    installed: bool,
+    distro: Option<gui_core::distro::Distro>,
+}
+
+/// How long the CLI probe waits before giving up on it. Generous for a `--version`, short enough
+/// that onboarding does not appear to have died.
+const CLI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[tauri::command]
+pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
+    let proton_cli = app
+        .state::<Mutex<RuntimePaths>>()
+        .lock()
+        .unwrap()
+        .proton_cli
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || CliPresence {
+        installed: probe_cli(&proton_cli),
+        distro: gui_core::distro::detect_here(),
+    })
+    .await
+    // A failed join is not "no CLI and no distribution" — but this command cannot reject (the
+    // screen must render), so it degrades to the state that shows the install dialog, which is the
+    // safe direction: it tells the user to check something rather than assuming it is fine.
+    .unwrap_or(CliPresence {
+        installed: false,
+        distro: None,
+    })
+}
+
+/// Is the CLI there? Bounded by [`CLI_PROBE_TIMEOUT`], because nothing else in this command is.
+///
+/// **A probe that never returns is the failure mode this screen cannot have.** `check_cli` is the
+/// silent precondition *and* the `Check again` button, so a `proton_cli` that hangs — a stale
+/// keyring prompt, a wedged network mount holding the binary, an absolute path pointing at a FIFO —
+/// would park a `spawn_blocking` thread forever, leave the JS promise unresolved, and let every
+/// press of `Check again` park another. `Command::status()` on its own has no timeout, which is why
+/// this polls instead.
+///
+/// **A successful spawn IS the answer**, and the exit status is deliberately ignored. `installed`
+/// means the executable is there, and a `proton-drive` that exits non-zero on `--version` — a
+/// wrapper script, a missing shared library, a broken install — is present and broken, not absent.
+/// Routing that user to an install screen would answer a question they do not have, which is the
+/// same mistake as doing it for a CLI that is merely logged out. Only a failed spawn (`ENOENT`, not
+/// executable) is "isn't installed".
+///
+/// So the wait exists purely to **reap**: an unwaited child stays a zombie for the life of the GUI,
+/// and `Check again` can be pressed repeatedly.
+fn probe_cli(proton_cli: &str) -> bool {
+    let mut child = match Command::new(proton_cli)
+        .arg("--version")
+        // **stdin is nulled, not inherited.** `Command::status()`/`spawn()` inherit stdin by
+        // default, while every other subprocess here uses `.output()` (which pipes it) — so this
+        // was the one place a CLI that reads stdin before exiting could block on the GUI's own
+        // terminal, forever, with no keyboard attached to answer it. Null makes that an immediate
+        // EOF.
+        .stdin(std::process::Stdio::null())
+        // Null rather than inherited, so a chatty CLI can neither fill a pipe nobody drains nor
+        // print into the GUI's own stdout.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+
+    let deadline = std::time::Instant::now() + CLI_PROBE_TIMEOUT;
+    loop {
+        // `Err` here means the child is unwaitable — still not a statement about presence.
+        if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// What each skip rule is hiding right now (C2, #175).
+///
+/// `patterns` is the rule set **currently on screen**, not the saved config: `8a Skip rules` is
+/// drawn mid-edit with a pending removal, and the Add row prices a pattern before it is saved.
+///
+/// **Pass `include` whenever the config has any**, from the same `read_config` reply the tab is
+/// already showing. Omitting it does not fail — it silently widens every count to files the include
+/// list already keeps out of the sync, so a rule is credited with hiding something it is not, and
+/// `will start syncing` promises files that would not. The Advanced tab owns those globs; this
+/// command only needs to know they exist.
+///
+/// Async and unbounded — this walks the whole local tree (metadata only, no hashing). Running it on
+/// the GTK main loop would freeze the window for the length of the walk.
+#[tauri::command]
+pub async fn skip_rule_usage(
+    app: tauri::AppHandle,
+    patterns: Vec<String>,
+    include: Option<Vec<String>>,
+) -> Result<gui_core::skip_rules::SkipRuleReport, String> {
+    let (local_root, db_path) = {
+        let paths = app.state::<Mutex<RuntimePaths>>();
+        let paths = paths.lock().unwrap();
+        (paths.effective_local_root(), paths.effective_db_path())
+    };
+    // Two different "no" answers, and only one of them makes a rule safe to remove.
+    //
+    // `is not configured` is the easy one. The dangerous one is a root that IS configured and is
+    // not there — an unmounted external drive, a literal `~/ProtonDrive` because `HOME` was unset,
+    // a folder the user moved. `measure` would happily walk nothing, and every rule would come back
+    // `files: 0` with `folder_exists: Some(false)`, which the tab draws as **`Matching nothing · no
+    // such folder here any more — safe to remove`** on every rule at once. Removing them would then
+    // start syncing everything they were hiding, the moment the drive came back.
+    let local_root = local_root.ok_or_else(|| "local_root is not configured".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if !local_root.is_dir() {
+            return Err(format!(
+                "the sync folder {} is not there right now",
+                local_root.display()
+            ));
+        }
+        gui_core::skip_rules::measure(
+            &local_root,
+            &patterns,
+            &include.unwrap_or_default(),
+            &daemon_ignored_paths(db_path.as_ref()),
+        )
+    })
+    .await
+    .map_err(|error| format!("skip-rule scan failed: {error}"))?
+}
+
+/// The state files the daemon keeps out of its own scan, so a relocated index inside the sync root
+/// is not reported as user data some rule is hiding.
+///
+/// Mirrors `scan_options_from_config`: the index plus its two JSON sidecars. (`ScanOptions::new`
+/// expands SQLite's own `-journal`/`-wal`/`-shm` siblings, and a top-level `.sync/` and the download
+/// scratch directory are handled by `should_ignore_path`, so this is the remainder.)
+fn daemon_ignored_paths(db_path: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let Some(db_path) = db_path else {
+        return Vec::new();
+    };
+    // `with_extension`, exactly as `status_history_path`/`metrics_path` in the daemon do it — so the
+    // sidecars REPLACE the `.db` (`sync_index.status.json`) rather than extending it. Appending
+    // would name two files that never exist, leaving the two that do inside the walk, where they
+    // would be counted as user data some rule is hiding.
+    vec![
+        db_path.clone(),
+        db_path.with_extension("status.json"),
+        db_path.with_extension("metrics.json"),
+    ]
+}
+
+/// `Ctrl W` — hide the window to the tray. Deliberately the SAME path as the tray's
+/// `Close window (keeps syncing in the tray)` item and as the window-manager close button
+/// (`on_window_event` in lib.rs prevents the close and hides): three ways to do one thing, and a
+/// keyboard shortcut that did something subtly different would be the worst of the three.
+///
+/// Synchronous on purpose. The rule that GUI commands must be `async` + `spawn_blocking` is about
+/// commands that shell out, walk the filesystem, or do a socket round trip — one of those blocking
+/// the WebKitGTK main loop is what aborted the process in #142. `hide()` does none of that.
+#[tauri::command]
+pub fn close_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "no main window".to_string())?;
+    window.hide().map_err(|e| e.to_string())
+}
+
+/// `Ctrl Q`, and the tray's `Quit` — **stop the daemon, then end the GUI process.**
+///
+/// # This resolves DEVIATIONS §45, which F4 left open and assigned here
+///
+/// `10-tray.md` and `14-behaviour-and-state.md` agree with each other and always did: `Ctrl W`
+/// closes the window *keeps syncing*, `Ctrl Q` quits *stops syncing*, and the tray must carry both
+/// as sub-labels because — 10-tray.md's words — "this is the single worst misunderstanding a tray
+/// app can cause". The shipped build did something else: `app.exit(0)`, ending the GUI while the
+/// daemon carried on, "a separate process and unaffected by either".
+///
+/// F4 declined to settle it from a keyboard shortcut and said why: stopping a sync daemon is a
+/// lifecycle decision with data consequences, and guessing the more destructive of two readings is
+/// the wrong way to reach it. S8 owns the tray, so S8 answers — and the answer is forced, because
+/// S8 is the task that puts `Quit` and `stops syncing` on screen together. Once that sub-label is
+/// drawn there are only two possibilities: the daemon stops, or the app lies about what a button
+/// does in the one place the design says it must not.
+///
+/// So it stops. `Close window · keeps syncing` sits directly above it and is the path for someone
+/// who wants the tray gone and the syncing left alone; both labels are now true.
+///
+/// The shutdown is the daemon's own graceful path — the same `Shutdown` command `proton-sync stop`
+/// and the GUI's restart flow already use, which exits through SIGTERM's route and cancels any
+/// in-flight `proton-drive` invocation. A failure to reach it is deliberately NOT fatal to the quit:
+/// a daemon that is already gone, or wedged, must not leave a user unable to close the app.
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    quit_stopping_the_daemon(app);
+}
+
+/// The body of `quit_app`, callable from the tray's menu handler (which is not a command).
+pub fn quit_stopping_the_daemon(app: tauri::AppHandle) {
+    let socket = {
+        let state = app.state::<Mutex<RuntimePaths>>();
+        let guard = state.lock().unwrap();
+        guard.socket_path.clone()
+    };
+    // On a worker, with the app's exit behind it: the control socket blocks up to DEFAULT_TIMEOUT,
+    // and doing that on the UI thread is the WebKitGTK freeze this crate has already shipped once
+    // (PR #142). The exit follows the attempt either way.
+    std::thread::spawn(move || {
+        if let Err(error) = ipc::command(&socket, ControlCommand::Shutdown, ipc::DEFAULT_TIMEOUT) {
+            eprintln!("quit: could not stop the daemon ({error}); exiting anyway");
+        }
+        app.exit(0);
+    });
+}
+
+/// What a tray row does, independent of which indicator drew it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayRow {
+    Open,
+    SyncNow,
+    Pause,
+    Resume,
+    CloseWindow,
+    Quit,
+}
+
+/// Every id either indicator may send, in one table.
+///
+/// THIS EXISTS BECAUSE THE COMMENT THAT USED TO SIT HERE WAS FALSE. It claimed "one id space for
+/// both indicators", and three of the seven ids disagreed: the panel sent `syncNow`/`tryAgain`/
+/// `closeWindow` and the fallback menu built `sync_now`/`try_again`/`close_window`, each dispatched
+/// by its own `match` in its own file. Nothing was broken — each handler understood its own menu —
+/// which is exactly what made it worth fixing: two vocabularies that happen to work are a trap for
+/// whoever edits one of them, and the comment promised they were one thing.
+///
+/// So they are one thing now. `ui/compact.js`'s `TRAY_MENU` is the source of the id strings, both
+/// native menus build their rows from `tray_menu::rows_for` — which carries the same ids — and all
+/// three dispatch through here. An id this does not know returns `None` and the caller reports it
+/// rather than silently doing nothing.
+///
+/// (The comment this replaces pointed at a `FALLBACK_IDS` table "below" that was never written: the
+/// fallback menu spelled its rows out by hand. #252 gave it the table the comment described.)
+pub fn tray_row(id: &str) -> Option<TrayRow> {
+    Some(match id {
+        // `Review them` is the panel's own decision button rather than a menu row, and it goes where
+        // `Open Drive Sync` goes — see the note in `tray_action`.
+        "open" | "review" => TrayRow::Open,
+        // `Try again now` IS a sync: the daemon is unreachable, so the thing to retry is reaching
+        // it, and if it is back the pass it schedules is what the row promises.
+        "syncNow" | "tryAgain" => TrayRow::SyncNow,
+        "pause" => TrayRow::Pause,
+        "resume" => TrayRow::Resume,
+        "closeWindow" => TrayRow::CloseWindow,
+        "quit" => TrayRow::Quit,
+        _ => return None,
+    })
+}
+
+/// The tray panel's rows, dispatched by the id `ui/compact.js`'s `TRAY_MENU` gives them.
+#[tauri::command]
+pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
+    // Every row dismisses the panel. It is a popover: leaving it up over the window it just opened
+    // is the "lingering after blur" failure by another route.
+    crate::panel::hide(&app);
+    // `Review them` and `Open Drive Sync` both land in the window. They differ in where they should
+    // land — the deletions queue against the main screen — and S8 does not split them: the panel is
+    // dismissed by then, and a `tray-navigate` to a screen the window may be mid-onboarding on is a
+    // second routing question this task does not own. Recorded as DEVIATIONS §82l.
+    let command = match tray_row(&id) {
+        Some(TrayRow::Open) => {
+            // `tray::show_window`, not a second copy of it. This WAS the second copy, and it is how
+            // the raise fix landed on one of the two paths: the native menus' row raised the window
+            // and the panel's own row — this one — left it exactly where it was. §92b.
+            crate::tray::show_window(&app);
+            ControlCommand::Status
+        }
+        Some(TrayRow::SyncNow) => ControlCommand::Syncnow,
+        Some(TrayRow::Pause) => ControlCommand::Pause,
+        Some(TrayRow::Resume) => ControlCommand::Resume,
+        Some(TrayRow::CloseWindow) => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+            ControlCommand::Status
+        }
+        Some(TrayRow::Quit) => {
+            quit_stopping_the_daemon(app.clone());
+            ControlCommand::Status
+        }
+        // An unknown id is a frontend that has grown a row this build does not implement. Answer
+        // with the status rather than nothing, so the panel still repaints and the row does not read
+        // as a hang — but say so, because silence here is a menu row that does nothing.
+        None => {
+            eprintln!("tray: no action for row id {id:?}");
+            ControlCommand::Status
+        }
+    };
+    status_round_trip(app, command).await
+}
+
+/// The panel measures itself once it knows its state and asks the window to match. The states differ
+/// by 120px between the tallest and the shortest, and Phase 1 omits lines the frames draw, so a
+/// fixed height is either clipped content or a band of empty panel below the menu.
+#[tauri::command]
+pub fn resize_tray_panel(app: tauri::AppHandle, height: f64) {
+    crate::panel::resize(&app, height);
+}
+
+/// Esc, and a click on a row. The blur path is handled in `lib.rs`, on the window event.
+#[tauri::command]
+pub fn hide_tray_panel(app: tauri::AppHandle) {
+    crate::panel::hide(&app);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::strip_ansi;
+    use super::{daemon_ignored_paths, probe_cli, strip_ansi};
+
+    #[test]
+    fn a_missing_binary_is_the_only_thing_that_reads_as_not_installed() {
+        assert!(
+            !probe_cli("proton-drive-that-is-definitely-not-installed-xyzzy"),
+            "a failed spawn is the real 'isn't installed'"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_present_binary_that_exits_non_zero_is_still_present() {
+        // `installed` is presence, not health. A wrapper script, a missing shared library, or a
+        // `--version` this tool does not implement all exit non-zero — and routing that user to an
+        // install screen answers a question they do not have. `/bin/false` stands in for all three.
+        assert!(probe_cli("/bin/false"));
+        assert!(probe_cli("/bin/true"));
+    }
+
+    #[test]
+    fn the_ignored_set_matches_the_daemons_when_there_is_an_index_and_is_empty_when_there_is_not() {
+        assert!(daemon_ignored_paths(None).is_empty());
+        let db = std::path::PathBuf::from("/x/.sync/sync_index.db");
+        let ignored = daemon_ignored_paths(Some(&db));
+        // The sidecars REPLACE the `.db`, because `status_history_path`/`metrics_path` in the
+        // daemon are `with_extension`. Appending would name two files that never exist and leave
+        // the two that do inside the walk, counted as user data some rule is hiding.
+        assert_eq!(
+            ignored,
+            vec![
+                db.clone(),
+                std::path::PathBuf::from("/x/.sync/sync_index.status.json"),
+                std::path::PathBuf::from("/x/.sync/sync_index.metrics.json"),
+            ]
+        );
+    }
 
     #[test]
     fn strip_ansi_removes_color_sequences_and_keeps_text() {

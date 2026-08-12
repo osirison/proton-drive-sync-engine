@@ -1,0 +1,430 @@
+/* Settings (S6) — `8a Settings`, `8a Skip rules`, `8a Deletions tab`, `8a Save refused`.
+ *
+ * Every value here is measured off those frames. Where a value is the Phase-1 substitute for a
+ * block the design draws and the engine cannot answer, the rule says so and names the issue —
+ * `screens/settings.js`'s module note carries the full list.
+ *
+ * The title block, the pill row and the action bar are shared by all four tabs; the content region
+ * changes its layout per tab, which is why `.settings-content` carries a modifier. `8a Settings`
+ * draws it `position:relative` (it holds the absolutely-positioned seam) and `8a Skip rules` draws
+ * it `display:flex; flex-direction:column` (its tail is pushed down by `margin-top:auto`). Both are
+ * asserted properties, so one class cannot be both.
+ */
+
+/* -------------------------------------------------------------------------- the title block ---- */
+
+.settings-title-block {
+  flex: none;
+  padding: 4px 32px 0;
+}
+.settings-title {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--text);
+}
+.settings-sub {
+  margin-top: 6px;
+  font-size: 13.5px;
+  color: var(--text-4);
+}
+
+.settings-tabs {
+  flex: none;
+  margin-top: 20px;
+  padding: 0 32px;
+}
+
+/* The two section labels below the pair carry the spacing; the first has none — it sits directly
+   under the content region's own top margin. */
+.settings-label-cadence {
+  margin-top: 20px;
+}
+.settings-label-run {
+  margin-top: 18px;
+}
+
+/* ------------------------------------------------------------------------ the content region ---- */
+
+.settings-content {
+  flex: 1;
+  margin-top: 22px;
+  padding: 0 32px;
+}
+/* The folder pair's seam is absolutely positioned inside this block. */
+.settings-content-folders {
+  position: relative;
+}
+/* The skip tab pushes its tail to the bottom with `margin-top:auto`, which needs a column. */
+.settings-content-skip,
+.settings-content-advanced {
+  display: flex;
+  flex-direction: column;
+}
+/* Deletions is drawn as a 600px re-render whose own card is not in the window (see fids.js), but
+   its key line is pushed to the bottom the same way the skip tab's tail is. */
+.settings-content-deletions {
+  display: flex;
+  flex-direction: column;
+}
+/* The notifications tab is the one whose content is taller than the region it lives in, so it is the
+   one that has to be told how tall the region is. `overflow:hidden` is the shell's own discipline
+   (`02-shell.md`, "a real bug found twice during this design"): clipping is recoverable, painting
+   over the footer is not. The scroller inside it is `.notify-rules-scroll`. */
+.settings-content-notifications {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-spacer {
+  flex: 1;
+}
+
+/* The config file could not be read. Amber rather than crimson: nothing is at risk and nothing has
+   been changed — the screen simply cannot answer for the file, which is the same register the
+   never-synced band uses. */
+.settings-unreadable {
+  margin-bottom: 16px;
+  padding: 11px 14px;
+  border: 1px solid var(--warn-band-border);
+  border-radius: var(--r-11);
+  background: var(--warn-band-bg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* --------------------------------------------------------------------------- tab 1 · folders ---- */
+
+/* Two fixed 488px columns rather than `1fr 1fr`: the seam is positioned at `left:50%` and the two
+   inner paddings (30px each, facing the seam) are what set the gutter. */
+.settings-pair {
+  display: grid;
+  grid-template-columns: 488px 488px;
+  margin-top: 16px;
+}
+.settings-pair-side-local {
+  padding-right: 30px;
+}
+.settings-pair-side-remote {
+  padding-left: 30px;
+}
+
+.settings-pair-row {
+  display: flex;
+  gap: 9px;
+  margin-top: 11px;
+}
+.settings-pair-row .input {
+  flex: 1;
+}
+.settings-pair-row-single {
+  margin-top: 11px;
+}
+/* The pair is the brightest field in the app: it is the one setting the whole product is about. */
+.settings-pair-row .input,
+.settings-pair-row-single .input {
+  padding: 11px 13px;
+  border-radius: var(--r-10);
+  background: var(--panel);
+  font-size: 13px;
+  color: var(--text);
+}
+/* The remote side has no browse button, so its field takes the whole width and right-aligns —
+   which is what makes the pair read as the two ends of one line. */
+.settings-pair-input-remote {
+  display: inline-block;
+  width: 100%;
+  text-align: right;
+}
+.settings-pair-note {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-5);
+}
+.settings-pair-side-remote .settings-pair-note {
+  text-align: right;
+}
+
+/* ------------------------------------------------------------------------------- the panels ---- */
+
+.settings-panel {
+  margin-top: 11px;
+  padding: 13px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-13);
+  background: var(--panel);
+}
+/* A panel whose control sits beside its text (the toggle, `Sweep now`). */
+.settings-panel-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+}
+.settings-panel-centred {
+  align-items: center;
+}
+.settings-panel-body,
+.settings-panel-text {
+  flex: 1;
+}
+.settings-panel-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+/* The second cadence panel sits 9px under the first, not 11px. */
+.settings-panel-block + .settings-panel-block,
+.settings-panel-row + .settings-panel-block {
+  margin-top: 9px;
+}
+
+.settings-panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-panel-sub {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.settings-key {
+  font-family: var(--font-mono);
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* The divided row under a panel's head. The frame's is the schedule's day/time row; Phase 1 puts
+   the `scan_interval_secs` stepper in it (G4 #193). */
+.settings-panel-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--divider);
+}
+.settings-panel-control .settings-key {
+  margin-top: 0;
+}
+.settings-control-label {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--text-4);
+}
+
+/* ---------------------------------------------------------------------- tab 2 · what to skip ---- */
+
+.settings-skip-intro {
+  max-width: 640px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+.settings-rules {
+  margin-top: 20px;
+}
+.settings-rules-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.settings-rules-total {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+/* FIVE ROWS, THEN IT SCROLLS. A row is 59px (13 + 32 + 13 + its 1px rule), and the space between
+   the list head and the add row in a 764px window is about 325px — so five rows fit and a sixth
+   would start pushing the tail through the footer. The three drawn rules are well inside it, so the
+   frame is unaffected; see `rulesBlock` for why this is a wrapper rather than a rule on the list. */
+.settings-rules-scroll {
+  max-height: 295px;
+  overflow-y: auto;
+}
+
+.settings-rule {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 2px;
+  border-top: 1px solid var(--divider);
+}
+/* The head row sets the first rule's own top rule 11px below it — and the rule is the FIRST ROW's
+   margin, not the scroller's, because that is the node the frame records it on. */
+.settings-rules-scroll > .settings-rule:first-child {
+  margin-top: 11px;
+}
+/* A rule matching nothing whose folder is gone. The one dimmed row in the design, and it is dimmed
+   because it is safe to remove — not because it is inactive. */
+.settings-rule.is-stale {
+  opacity: 0.62;
+}
+.settings-rule-pattern {
+  font-family: var(--font-mono);
+  flex: none;
+  width: 180px;
+  font-size: 13px;
+  color: var(--text);
+}
+.settings-rule.is-stale .settings-rule-pattern {
+  color: var(--text-2);
+}
+.settings-rule-body {
+  flex: 1;
+}
+/* `Remove`, and `Sweep now` in its panel: both sit beside a flexing body and neither may be
+   squeezed by it. `flex-shrink` is asserted, and a button's default is 1. */
+.settings-rule > .btn,
+.settings-panel-row > .btn {
+  flex: none;
+}
+.settings-rule-effect {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.settings-rule.is-stale .settings-rule-effect {
+  color: var(--text-3);
+}
+.settings-rule-detail {
+  font-family: var(--font-mono);
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-5);
+}
+
+.settings-add {
+  display: flex;
+  gap: 9px;
+  margin-top: 16px;
+}
+.settings-add .input {
+  flex: 1;
+  padding: 11px 13px;
+  border-radius: var(--r-10);
+  background: var(--panel);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+/* `margin-top:auto` is what the frame's 85.8px measures — the tail is pushed to the bottom of the
+   content column, not spaced from the block above it. */
+.settings-skip-tail {
+  margin-top: auto;
+  padding-top: 20px;
+}
+.settings-dotsync {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+.settings-dotsync-name {
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------------- tab 3 · deletions ---- */
+
+.settings-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.settings-section-sub {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-4);
+}
+.settings-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 20px;
+}
+.settings-content-deletions .settings-key {
+  margin-top: auto;
+  padding-top: 16px;
+}
+
+/* -------------------------------------------------------------------------- tab 4 · advanced ---- */
+
+/* Not drawn anywhere: the same panel pattern as the cadence panels, because it is the same kind of
+   thing. Only the two settings `ConfigUpdate` round-trips are here; the other four are G23 (#237). */
+.settings-panel-list .settings-rule-plain {
+  border-top: 0;
+  padding: 6px 0;
+}
+/* The include list on Advanced, for the same reason and inside a shorter panel. */
+.settings-panel-list {
+  display: block;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.settings-panel-block .settings-add {
+  margin-top: 11px;
+}
+.settings-config-path {
+  margin-top: 4px;
+  word-break: break-all;
+}
+.settings-advanced-note {
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------------- the footer bar ---- */
+
+/* `max-width` and the 18px line are the bar note's own, not every action bar's: this is the only
+   consequence line in the design that wraps to two lines. */
+.settings-bar-note {
+  max-width: 430px;
+  line-height: 18px;
+}
+
+/* ------------------------------------------------------------------------ the save refusal ---- */
+
+.settings-refused-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.settings-refused-row > svg {
+  margin-top: 2px;
+}
+.settings-refused-text {
+  flex: 1;
+}
+.settings-refused-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-refused-body {
+  margin-top: 7px;
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.settings-refused-reason {
+  font-family: var(--font-mono);
+  margin-top: 12px;
+  padding: 10px 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-9);
+  background: var(--panel);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.settings-refused-actions {
+  display: flex;
+  gap: 9px;
+  margin-top: 14px;
+}

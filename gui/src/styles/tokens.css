@@ -1,211 +1,714 @@
 /*
- * Design tokens (F1) — the single source of the visual language from the handoff (§7).
+ * Design tokens — design-v2 (F1). The single source of the visual language.
  *
- * Colour rule: warm orange = local / upload, cyan = remote / download; red is reserved for
- * destructive actions and error / unreachable states (e.g. the unreachable state-pill dot and
- * error rows) — never as a decorative accent. Apply these via the semantic vars below, never raw hex.
+ * SOURCES, in the precedence order fixed by docs/design-v2/IMPLEMENTATION-PLAN.md §1.3:
+ *   1. the .md files in docs/design-v2 are normative for tokens, rules, semantics and copy;
+ *   2. the matching 1040/600/520/360 frame in "Drive Sync.dc.html" is normative for per-element
+ *      colour and geometry;
+ *   3. the illustrative swatches in the prototype's header block are not normative.
+ * Every value below that departs from a doc table was measured node-by-node out of the frames and
+ * is recorded, with its reasoning, in docs/design-v2/DEVIATIONS.md. Do not "fix" one back to the
+ * prose without reading that file first.
  *
- * Theme: dark is the default; light applies under the system preference OR when the shell stamps
- * `data-theme` on <html> (the toggle). The toggle must win in both directions, so the explicit
- * `:root[data-theme=...]` rules come after the media query.
- */
-
-/*
- * Bundled fonts: drop the IBM Plex `.woff2` files into ./fonts/ and uncomment this block
- * (see fonts/README.md). Until then the stacks below fall back to system fonts.
+ * RAW HEX LIVES HERE AND NOWHERE ELSE. `npm run tokens:check` enforces it across gui/src.
  *
- * @font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-display: swap;
- *   src: url("../fonts/ibm-plex-sans-400.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Sans"; font-weight: 500; font-display: swap;
- *   src: url("../fonts/ibm-plex-sans-500.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Sans"; font-weight: 600; font-display: swap;
- *   src: url("../fonts/ibm-plex-sans-600.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Sans"; font-weight: 700; font-display: swap;
- *   src: url("../fonts/ibm-plex-sans-700.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap;
- *   src: url("../fonts/ibm-plex-mono-400.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-display: swap;
- *   src: url("../fonts/ibm-plex-mono-500.woff2") format("woff2"); }
- * @font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap;
- *   src: url("../fonts/ibm-plex-mono-600.woff2") format("woff2"); }
+ * ROLE TOKENS — read this before merging any two tokens that share a value.
+ * The dark palette reuses one hex for several roles; the light palette does not. `#23262D` is the
+ * card border AND the chrome border AND both button borders in dark, but light splits it into
+ * #E6E3DE / #E0DCD5 / #D6D2CB — measured at the same nodes in the paired 2a/3a/4a ↔ 12a frames.
+ * Same story for `#1A1D22` (panel border #EDEAE5 vs the window's own edge #E6E3DE), `#191C21`
+ * (progress track #EDEAE5 vs syncing-hexagon track #E4E1DB), `#0E0F12` (queued row #FDFCFA vs
+ * compact transfer row #FFFFFF), `#C9D0DA` (body text #374151 vs secondary-button label #14161A)
+ * and `#FF9C9C` (decision text #BE123C vs destructive text #B91C1C). So several tokens deliberately
+ * carry the SAME dark value under different names. Collapsing them looks like tidying and silently
+ * breaks the light theme at 100+ sites — and light is the theme with no drawn frame for seven of
+ * eleven screens.
+ *
+ * THEME. Dark is the default. Light applies under the system preference OR when the shell stamps
+ * `data-theme` on <html> (the ⋯ menu toggle, persisted in localStorage). The toggle must win in
+ * both directions, so the explicit `:root[data-theme=...]` rule comes after the media query. The
+ * light palette is therefore declared twice, byte-identically; `npm run tokens:check` asserts the
+ * two copies agree and that neither theme is missing a token the other declares.
  */
 
 :root {
-  /* Dark is the default palette; declare it so UA-native controls/scrollbars match even when
-     no `data-theme` attribute is present. */
+  /* Declared so UA-native controls, scrollbars and the canvas match even before any attribute is
+     stamped — the window paints before app.js runs. */
   color-scheme: dark;
 
-  /* ---- non-colour tokens (theme-independent) ---- */
-  --font-sans: "IBM Plex Sans", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* ============================ theme-independent ============================ */
 
-  --fs-headline: 17px;
-  --fs-section: 15px;
-  --fs-body: 13px;
-  --fs-control: 12.5px;
-  --fs-meta: 11px;
-  --fs-mono-meta: 11px;
-  --fs-label: 10px; /* uppercase labels, 0.08em tracking; never below 10px */
-  --tracking-label: 0.08em;
+  /* Type. Exactly the two stacks the prototype declares — 'Instrument Sans' on its page wrapper,
+     'IBM Plex Mono' per mono node. The faces are bundled in ../fonts and @font-face'd in base.css;
+     the fallbacks only ever apply to glyphs outside the latin/latin-ext subsets (the Unicode
+     symbols in 01-foundations.md §8 are mostly outside both — see fonts/README.md).
+     Deliberately no --fs-* scale: 01-foundations.md §2 is a table of ~20 exact sizes, each paired
+     with its own letter-spacing, and every node in the design sets both explicitly. A token ladder
+     here would invite an inherited default, which is precisely what makes a fidelity gate noisy. */
+  --font-sans: "Instrument Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  --radius-card: 12px;
-  --radius-tile: 10px;
-  --radius-control: 7px;
-  --radius-chip: 6px;
-  --radius-pill: 999px;
+  /* Radii ladder (01-foundations.md §3). Named by value on purpose: it is a ladder, the frames set
+     literal px, and role names would multiply as screens land. Roles noted per rung. */
+  --r-5: 5px; /* tiny mono badges */
+  --r-6: 6px; /* small controls */
+  --r-7: 7px; /* menu rows */
+  --r-8: 8px; /* icon buttons, small buttons */
+  --r-9: 9px; /* buttons, inputs */
+  --r-10: 10px; /* large buttons, list cards */
+  --r-11: 11px; /* transfer rows, inline bands */
+  --r-12: 12px; /* window; radio cards */
+  --r-13: 13px; /* content panels, choice buttons */
+  --r-14: 14px; /* compact panel, emphasis cards */
+  --r-16: 16px; /* chart panel, notification banner */
+  --r-pill: 99px; /* pills, status chips */
+  --r-dot: 50%; /* dots */
 
-  --pad-card: 18px;
-  --pad-row: 14px;
-  --pad-list: 10px;
-  --gap-card: 16px;
-  --gap-tile: 12px;
-  --gap-control: 8px;
+  /* Window geometry (01-foundations.md §4). The window is fixed at this size for now. */
+  --w-window: 1040px;
+  --h-window: 764px;
+  --h-header: 52px;
+  --w-compact: 360px;
 
-  /* fixed dimensions (§7) */
-  --dim-window-w: 1040px;
-  --dim-window-h: 764px;
-  --dim-sidebar: 214px;
-  --dim-conflict-rail: 236px;
-  --dim-action-col: 140px;
-  --dim-titlebar: 42px;
-  --dim-footer: 30px;
-  --dim-tray: 296px;
+  /* Motion (01-foundations.md §7). Durations only — the keyframes themselves belong to the
+     components that own them (hexagon: F2, seam: F3). */
+  --t-press: 140ms; /* hover and press */
+  --t-appear: 220ms; /* a panel or band appearing */
+  --t-traffic: 320ms; /* seam and its columns fading in when traffic starts */
+  --ease: ease-out;
 
-  /* ---- dark palette (default) ---- */
-  --bg: #0b1220;
-  --card: #111b2e;
-  --chrome: #101a2c;
-  --sidebar: #0e1728;
-  --border: #22304c;
-  --border-soft: #1c2942;
-  --row: #131f36;
-  --text-1: #e6edf7;
-  --text-2: #c7d4ea;
-  --muted: #8a9bb8;
-  --muted-2: #64748b;
-  --faint: #5b6d8c;
-  --selected: #1a2740;
-  --selected-border: #2a3550;
-  --btn-bg: #16213a;
-  --btn-border: #2a3550;
-  --btn-text: #c7d4ea;
+  /* ============================== dark palette ============================== */
 
-  --upload-fill: linear-gradient(135deg, #e55b2b, #f59e0b);
-  --upload-text: #f59e0b;
-  --download-fill: linear-gradient(135deg, #06b6d4, #3b82f6);
-  --download-text: #06b6d4;
+  /* ---- surfaces ---- */
+  --surface: #0a0b0d; /* window background; also the mask behind anything centred on the seam */
+  --panel: #0d0e11;
+  --panel-alt: #0e0f12; /* secondary card: queued rows, inert list items */
+  --panel-raised: #101216; /* active/selected row, in-progress transfer card */
+  --compact-row: #0e0f12; /* the compact panel's transfer rows — light diverges from --panel-alt */
+  --track-inert: #191c21; /* progress-bar track */
 
-  --warn-bg: rgba(229, 91, 43, 0.1);
-  --warn-border: rgba(229, 91, 43, 0.32);
-  --warn-text: #f3d9c4;
+  /* ---- lines ---- */
+  --divider: #16181d; /* row separators, header/footer rules */
+  --border-subtle: #1a1d22; /* panel borders */
+  --border-window: #1a1d22; /* the window's own 1px edge — light diverges from --border-subtle */
+  --border: #23262d; /* cards, transfer rows, inputs */
+  --border-chrome: #23262d; /* compact-panel edge, status chip — light diverges from --border */
+  --border-strong: #2e323a; /* emphasised border */
+  --line-inert: #3e454e; /* inert glyph outline, unselected radio ring (08-settings.md, 10-tray.md) */
+  --seam: #2a2e36; /* the centre hairline — see --seam-gradient */
+  /* The second drawn seam value: the 360px compact panel, the tray panel and the 522px checking
+     dialog. Its own token because NEITHER existing one is right in both themes — --border is
+     #23262d in dark but #e6e3de in light, where this measures #d9d5ce, the same as --seam. So the
+     two seam colours part in dark and meet again in light. DEVIATIONS.md §17 and §35. */
+  --seam-panel: #23262d;
 
-  --danger-fill: #ef4444;
-  --danger-text: #fca5a5;
+  /* ---- text: five tiers, use them in order ---- */
+  --text: #f2f4f7; /* 15–42px headings, large numerals, primary values */
+  --text-bright: #e8ebf0; /* 12–14px row primary text, filenames */
+  --text-2: #c9d0da; /* body with emphasis, menu items, consequence sentences */
+  --text-3: #99a2ae; /* standard body, descriptions */
+  --text-4: #828b98; /* quiet body, sub-descriptions */
+  --text-5: #6d7783; /* mono captions, metadata, timestamps (4.33:1 — known deviation) */
+  --text-label: #626b78; /* 9.5–10px uppercase section labels */
+  --text-disabled: #4e5661; /* disabled control glyphs */
+  /* The deletion card's kind, beside the filename (`a folder`, `4 KB`). A SEVENTH grey, and it is
+     `--text-4`'s value under a different name for the reason this file's header gives: `#828B98`
+     does two jobs in dark and light splits them. `12a Deletions light` draws this node `#6B7280`
+     on BOTH cards while the facts strip inside the same card — `deleted on Proton 22m ago`,
+     `last opened Mar 2024`, also `#828B98` in dark — draws `#4B5563`, which is what
+     12-light-theme.md's text-on-tint rule asks for and what the other 31 quiet nodes of the seven
+     light frames do. Two sites against thirty-one is §9's shape and §9's verdict was "drawing
+     inconsistency" — but §9's one node had sixteen counterexamples AT ITS OWN ROLE, and this role
+     has none: these two are every instance of it in the bundle, and they agree. DEVIATIONS §91
+     records the reading a designer would overturn. */
+  --deletion-kind: #828b98;
 
-  --on-accent: #0b1220;
+  /* ---- semantic: warm = leaving this computer ---- */
+  --up-from: #e55b2b;
+  --up-to: #ffb84d;
+  --up-label: #ff9f1c; /* "This computer" label, → arrows, upload accents */
+  --up-gradient: linear-gradient(90deg, var(--up-from), var(--up-to));
 
-  --diff-local: rgba(229, 91, 43, 0.13);
-  --diff-remote: rgba(6, 182, 212, 0.13);
+  /* ---- semantic: cool = arriving from Proton ---- */
+  --down-from: #06b6d4;
+  --down-to: #3b82f6;
+  --down-label: #22d3ee; /* "Proton Drive" label, ← arrows, download accents */
+  --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
 
-  --track: #22304c; /* idle hexagon arc / progress track */
+  /* ---- semantic: amber = here, but not backed up. NOTHING IS AT RISK. ----
+     The never-synced band on `7a Activity quiet` is the only site. Warm rather than crimson on
+     purpose, and the copy says why: "Nothing here is at risk — it's just not backed up." A crimson
+     band would make four skipped temp files look like four files in danger.
 
-  --shadow-card: none; /* dark uses borders, not shadows */
-  --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
+     --warn carries the same value as --up-label in both themes and is deliberately NOT an alias:
+     one is an upload accent, the other is a warning glyph, and tokens.css already keeps several
+     same-valued pairs apart for exactly this reason (--border / --border-chrome, --panel-alt /
+     --compact-row) so that either can move without dragging the other.
+
+     Both light values are CHOSEN — no light frame draws this band. Derived the way §52 derived the
+     light attention band: from a drawn pair that starts at the same dark alpha. The recoverable
+     card is .04/.30 dark and .03/.28 light, so a .04/.28 dark band maps to .03/.28. S10 WALKED ALL
+     EIGHT LIGHT FRAMES AND NEITHER VALUE APPEARS: still chosen, now measured to be undrawn rather
+     than assumed to be. DEVIATIONS §54, §91b. */
+  --warn: #ff9f1c;
+  --warn-band-bg: rgba(255, 159, 28, 0.04);
+  --warn-band-border: rgba(255, 159, 28, 0.28);
+
+  /* ---- semantic: outlined crimson = a person must decide. Never filled. ---- */
+  --decision: #ff6b6b; /* stroke: hexagon, dots, rings */
+  --decision-rgb: 255, 107, 107; /* for the one-off alphas the screens need */
+  --decision-text: #ff9c9c;
+  /* The status chip's attention border. NOT a crimson-surface token: measured 0.35 dark / 0.30
+     light, and the alphas differ per theme so no single rgba(var(--rgb)) form covers both. Drawn on
+     `2a Needs you`, `3a Conflict` x2, `4a Deletions` x2 and their light twins. DEVIATIONS.md §41. */
+  --chip-attention-border: rgba(255, 107, 107, 0.35);
+  /* The header mark's dimmed opacity, when the status chip is idle. 01-foundations.md/02-shell.md
+     give ".65-.75" as a range; measured it is a light/dark split, on one light frame. */
+  --app-mark-quiet: 0.75;
+
+  /* TWO crimson surfaces, not one. They were a single --decision-bg/--decision-border pair until
+     F5 censused the bands, and that pair was broken in a way neither theme could reveal alone: its
+     DARK value was measured off the attention band and its LIGHT value off the recoverable deletion
+     card, because no light frame draws the attention band at all. Whichever surface used it, one
+     theme rendered the other surface's tint. Same class as --chip-attention-border above, same fix
+     — name the site (DEVIATIONS.md §43, and §52 for this one).
+
+     Three of the four light values are measured. The fourth, --decision-band-* in light, is CHOSEN:
+     nothing draws it. Derived from the card, which IS drawn in both themes — 0.04/0.30 dark becomes
+     0.03/0.28 light, so the band's 0.05/0.32 becomes 0.04/0.30. The cross-theme ratio and the
+     band-to-card delta give the same two numbers, which is the only corroboration available without
+     a frame. `2a Needs you` has no `12a` twin, and S10 confirmed only that: the pair appears in none
+     of the eight light frames, so it stays chosen. §91b. */
+
+  /* The attention band. `2a Needs you`: one container, both waiting items, 976x127. */
+  --decision-band-bg: rgba(255, 107, 107, 0.05);
+  --decision-band-border: rgba(255, 107, 107, 0.32);
+  /* The recoverable deletion card (`4a Deletions` right column) and the consent panel
+     (`9a Consent`). One notch softer than the band, in both themes. */
+  --decision-card-bg: rgba(255, 107, 107, 0.04);
+  --decision-card-border: rgba(255, 107, 107, 0.3);
+  --decision-divider: rgba(255, 107, 107, 0.16);
+  --decision-btn-border: rgba(255, 107, 107, 0.4);
+  --decision-btn-bg: rgba(255, 107, 107, 0.1);
+  --decision-choice-border: rgba(255, 107, 107, 0.4); /* the 3a Conflict choice buttons: a lighter */
+  --decision-choice-bg: rgba(255, 107, 107, 0.07); /*  tint than the 4a/2a decision button */
+
+  /* ---- semantic: solid red = irreversible, right now ---- */
+  --destructive: #ff3b3b; /* the 7–8px permanent dot, armed hexagon stroke, warning glyph */
+  --destructive-rgb: 255, 59, 59;
+  --destructive-text: #ff9c9c; /* the emphasised loss inside a destructive card */
+  --destructive-border: rgba(255, 59, 59, 0.38);
+  --destructive-bg: rgba(255, 59, 59, 0.06);
+  /* Settings › Deletions' `Never ask` card — a FIFTH crimson alpha pair, .04/.30 against the base
+     .06/.38. The same per-site step §52a measured across the bands: this card is not warning you
+     that something is about to happen, it is describing a policy you may choose, so it is drawn a
+     notch quieter than the card that says a file is going. Light steps the border the way
+     --decision-card-border does (.30 → .28 of its own base) and keeps the fill, which light's own
+     --destructive-bg already carries at .04. Settings has no light frame; S10 walked all eight and
+     the pair appears in none of them, so it stays chosen. §91b. */
+  --destructive-card-bg: rgba(255, 59, 59, 0.04);
+  --destructive-card-border: rgba(255, 59, 59, 0.3);
+  /* The unselected radio ring on that card: the one place the design tints an inert hairline. The
+     frame draws it OPAQUE (#6B3A3A) rather than as a crimson alpha — a 1px ring at .3 over a .04
+     fill would be invisible — so it is a colour, not a tint. Light is --line-inert warmed the same
+     distance toward that theme's --destructive; no light frame draws this card, and S10 checked all
+     eight rather than only the one it expected. Chosen. §91b. */
+  --destructive-ring: #6b3a3a;
+  /* The disabled `Delete` on `4a Armed`, before the word is typed. NOT --destructive-bg: measured
+     0.1 against that token's 0.06, and DEVIATIONS §27 already records .08 as a third value on the
+     warning hexagon's tint. Three alphas of one hue, each drawn somewhere. */
+  --btn-destructive-disabled-bg: rgba(255, 59, 59, 0.1);
+  --destructive-divider: rgba(255, 59, 59, 0.2);
+  /* The tinted row in `5a Plan`'s action list. Not --destructive-bg: measured .05 against that
+     token's .06.
+
+     ITS LIGHT VALUE IS DERIVED, and the note here used to claim otherwise: "read off a frame rather
+     than derived — --compact-permanent-bg is this same alpha and steps .05 → .03 in `12a Compact
+     needs light`". `12a Compact needs light` draws no deletion row. It is thirteen nodes — a mark, a
+     headline, a sentence, `Review them`, `Later` — and the only tint on it is the button's
+     --decision-btn-bg. --compact-permanent-bg's OWN note, four rows down, says the opposite and is
+     right: "the four row tints have no light frame at all". So this cited a measurement of a value
+     that was itself derived, from a frame that does not draw it. S10 walked all eight light frames
+     and neither alpha appears; both stay CHOSEN. DEVIATIONS §91b. */
+  --destructive-row-bg: rgba(255, 59, 59, 0.05);
+  --destructive-btn-border: rgba(255, 59, 59, 0.25);
+  --destructive-btn-bg: rgba(255, 59, 59, 0.1);
+  --destructive-input-border: rgba(255, 59, 59, 0.35); /* the typed-DELETE field */
+  --destructive-input-bg: #0a0b0d;
+  /* The armed confirmation's word box (`4a Armed`) — a FOURTH crimson alpha, .5, and the strongest
+     of them. It is not an input: the card's gate is where you type, and by the time the takeover is
+     up the word is already typed, so the box restates it. A brighter edge than the field it echoes
+     (.35) is the design saying the same thing louder at the moment it becomes irreversible.
+
+     No `12a Armed light` exists. The light value is the one its nearest measured neighbour keeps —
+     --destructive-input-border is .35 in BOTH themes — rather than the .38→.4 nudge the card border
+     takes, because that pair is the one this box is a step up from — and --destructive-input-border
+     IS drawn on `12a Deletions light`, where this box is not. S10 checked all eight. Chosen. §91b. */
+  --destructive-armed-border: rgba(255, 59, 59, 0.5);
+
+  /* ---- the 360px compact panel (F6): three tints the 1040 screens do not carry ----
+     DEVIATIONS.md §52a's finding, tokenised. THE PANEL STEPS EVERY CRIMSON ALPHA ONE NOTCH DOWN
+     from the window's: the deletion queue's permanent row is .05/.32 against `4a Deletions`'
+     .06/.38, and its recoverable row .035/.26 against the card's .04/.30. Tone and density are
+     independent axes — the same shape controls.js found for kind and size — so these are their own
+     tokens rather than a reuse of the card pair at a smaller radius.
+
+     --compact-attention-border is the panel's own edge when something is waiting on you, and it is
+     the one value here measured in BOTH themes: `2a Compact needs you`, `4a Compact` and
+     `12a Compact needs light` all draw .3. It is NOT --decision-card-border, which is .3 in dark and
+     .28 in light — they coincide in one theme and part in the other, which is the failure mode this
+     file's header warns about.
+
+     The four row tints have no light frame at all: `4a Compact` has no `12a` twin. Their light
+     values are DERIVED the way §52 derived the attention band's — by the delta each family shows
+     between a drawn dark card and its drawn light twin. Destructive moves .06→.04 and .38→.40,
+     decision .04→.03 and .30→.28; applied here that gives .05→.03 / .32→.34 and .035→.025 / .26→.24.
+     STILL CHOSEN. `12a Compact needs light` is the only light compact that could have drawn one and
+     it draws no rows at all — thirteen nodes, no queue — which is also what corrects the claim on
+     --destructive-row-bg above. DEVIATIONS.md §58a, §91b. */
+  --compact-attention-border: rgba(255, 107, 107, 0.3);
+  --compact-permanent-bg: rgba(255, 59, 59, 0.05);
+  --compact-permanent-border: rgba(255, 59, 59, 0.32);
+  --compact-recoverable-bg: rgba(255, 107, 107, 0.035);
+  --compact-recoverable-border: rgba(255, 107, 107, 0.26);
+
+  /* ---- buttons. Maximum contrast is the primary action, in both themes. ---- */
+  --btn-primary-bg: #f2f4f7;
+  --btn-primary-text: #0a0b0d;
+  --btn-primary-quiet-text: #3e454e; /* primary-button sub-label; diff-view absent lines (04-conflicts.md) */
+  --btn-primary-disabled-bg: #2a2e36;
+  --btn-primary-disabled-text: #6d7783;
+  --btn-secondary-bg: #101216;
+  --btn-secondary-bg-alt: #16181d; /* §1 allows either fill; the compact panel uses this one */
+  /* The outlined secondary (`2a Settled`'s `Sync now`): NO fill in dark, a card fill in light. The
+     only token whose two themes disagree about whether there is a surface at all — light's own
+     surface is #FAF8F5, so a white card reads as depth there and as noise on #0A0B0D. S1, §66. */
+  --btn-secondary-outline-bg: transparent;
+  --btn-secondary-border: #23262d;
+  --btn-secondary-text: #c9d0da;
+  --btn-quiet-bg: transparent;
+  --btn-quiet-border: #23262d;
+  --btn-quiet-text: #99a2ae;
+  --btn-destructive-bg: #ff3b3b; /* the ONLY solid-red fill in the app: Delete permanently */
+  --btn-destructive-text: #fff;
+  --btn-destructive-disabled-text: #8a5a5a;
+
+  /* A BUTTON THAT PAINTS NOTHING ITSELF. `3a Conflict`'s three choice buttons put every string in
+     a span with its own colour — glyph, label, consequence — so the element keeps the UA's own
+     button colour and no text ever inherits it. Measured `rgb(0, 0, 0)` on `3a Conflict` and again
+     on `12a Conflict light`: theme-invariant, because it is never seen.
+
+     It is a token rather than the literal it looks like, for two reasons. check-tokens.mjs allows
+     no raw colour outside this file, and a `revert` would not do it — the app declares
+     `color-scheme: dark`, which moves the UA's `buttontext` off black, while the prototype declares
+     none. Named for the reason rather than the value: anything that starts painting text with it
+     has misread the structure. */
+  --btn-unpainted: #000000;
+  /* `Keep both` — the safe choice, and the only primary that is not a footer bar button. ITS TWO
+     THEMES DISAGREE ABOUT WHETHER THERE IS A BORDER AT ALL, the same shape of finding as
+     --btn-secondary-outline-bg above: dark draws a 1px --border-strong edge, light draws none.
+     Not a rounding artefact — the inner label row measures 281.33px dark against 283.33px light,
+     exactly the 2px a border takes out of a border-box.
+
+     The light COLOUR is the unpainted currentColor rather than a hue, because with no border-style
+     there is nothing to paint and the frame records black. Giving it --border-strong would compute
+     #E0DCD5 against a frame that says rgb(0, 0, 0), and fail on a border nobody draws. */
+  --btn-primary-choice-border: #2e323a;
+  --btn-primary-choice-border-style: solid;
+
+  /* `Keep it — …` and `Keep both files` on `4a Deletions`, and the same button on `4a Armed`. The
+     safe choice in both columns, and the loudest thing on the screen — which in LIGHT means it is
+     literally the primary button (#14161A on #FAF8F5, no border) and in dark a raised panel with a
+     bright edge. F5 wrote the kind as --panel-raised / --border-strong / --text-bright, which is
+     exact on every dark frame and wrong on all three values in light: #FFFFFF / #E0DCD5 / #14161A
+     against a frame that draws #14161A / (none) / #FAF8F5. The same §66 finding one screen later,
+     and again only visible because `12a Deletions light` exists to be walked beside its twin.
+
+     Its border is the second token whose themes disagree about whether a border EXISTS
+     (--btn-primary-choice-border above is the first); the 38px dark button measures 36px in light,
+     which is exactly the 2px a border takes out of a border-box. The light colour is the button's
+     own text, because with no border-style the frame records currentColor. */
+  --btn-primary-soft-bg: #101216;
+  --btn-primary-soft-border: #2e323a;
+  --btn-primary-soft-border-style: solid;
+  --btn-primary-soft-text: #e8ebf0;
+
+  /* ---- the side-by-side diff (`3a Conflict diff`) ----
+     The two changed-line tints are --up-from and --down-from at .14 — the gradient START stops, not
+     the --up-label/--down-label accents the gutter numerals use. Both are the only .14 surface in
+     the design.
+
+     BOTH LIGHT TINTS ARE CHOSEN, not measured: `12a Conflict light` mirrors the CARD view, so no
+     frame draws this panel in light. Derived by §54's method — the nearest same-family drawn pair
+     is the warn band (--warn/#FF9F1C darkening to #B23F14, .04 → .03, x0.75), and the background
+     column as a whole centres on x0.7; .14 maps to .105 and .098, which agree at .10. DEVIATIONS
+     §74. S10 walked the eight light frames: `12a Conflict light` mirrors the CARD view, so neither
+     tint is drawn in light and both stay chosen. §91b.
+
+     The three greys are role twins of tokens that already carry these values (--seam, --text-disabled,
+     --border-strong) and take their light values from them. Same-value-different-name is this file's
+     stated doctrine — a diff gutter is not a disabled control glyph, and either must be free to move
+     without dragging the other. The absent-line TEXT is the exception: it reuses
+     --btn-primary-quiet-text, whose comment already names this exact site. */
+  --diff-mine-bg: rgba(229, 91, 43, 0.14);
+  --diff-theirs-bg: rgba(6, 182, 212, 0.14);
+  --diff-divider: #2a2e36;
+  --diff-gutter: #4e5661;
+  --diff-gutter-absent: #2e323a;
+
+  /* ---- the hexagon (01-foundations.md §6). Five states, no sixth. ---- */
+  --hex-settled-track: #2e323a;
+  --hex-settled-check: #e8ebf0;
+  --hex-syncing-track: #191c21; /* inert track; carries fill:var(--surface) to mask the seam */
+  --hex-glyph-track: #2a2e36; /* tray glyph's syncing track — NOT --seam, which shares the hex */
+  /* The tray glyph's own outline. NOT --hex-settled-track: that is the dark ring the in-window
+     settled mark draws its check inside, and at 20px the outline IS the mark — drawn at that
+     value it is a near-invisible grey on a dark panel. 10a Glyph states draws all five forms'
+     monochrome column at this colour, and 10-tray.md gives the light-panel value itself
+     ("the glyph inverts to #14161A with the same five forms"). DEVIATIONS §82a. */
+  --hex-glyph-fg: #e8ebf0;
+  /* The banner's settled outline (S9). NOT --hex-settled-track, for --hex-glyph-fg's reason one size
+     up: at 34px over a translucent banner that dark ring is invisible. `11a In situ` draws it at the
+     quiet mono tier (#6D7783 = --text-5), with the check inside it at --hex-settled-check. */
+  --hex-notify-track: #6d7783;
+  --hex-paused-track: #2e323a;
+  --hex-paused-bars: #99a2ae;
+  --hex-numeral: #f2f4f7;
+  --dot-inert: #2e323a; /* settled-and-inert dot */
+
+  /* ---- the seam (01-foundations.md §5). Stops vary by block height: 10–30% in, 70–90% out. ---- */
+  --seam-gradient: linear-gradient(var(--surface), var(--seam) 26%, var(--seam) 74%, var(--surface));
+
+  /* ---- glow, shadows, focus ---- */
+  --glow-settled: radial-gradient(circle, rgba(232, 235, 240, 0.05), rgba(232, 235, 240, 0) 68%);
+  --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.6);
+  --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.6);
+  /* The scrim behind a dialog. CHOSEN — no frame draws one, and neither 02-shell.md nor
+     14-behaviour-and-state.md specifies it; every dialog is drawn in isolation, so the layer
+     between it and the screen has no ground truth anywhere in the bundle. Derived from the one
+     related pair that IS drawn: --shadow-dialog steps .6 dark -> .4 light, so a .5 scrim steps
+     to .33. Deliberately modest — the dialog already carries a 60px shadow at .6, and a heavy
+     scrim under it draws the same separation twice. DEVIATIONS §56 — OPEN, wants a designer. */
+  --scrim: rgba(0, 0, 0, 0.5);
+  --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.6);
+  --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.5);
+  /* ---- the notification banner (11-notifications.md §Banner spec). Its own surface, because it is
+     the only one that floats over the DESKTOP rather than over the app: translucent, hairlined in
+     white rather than in a border token. Drawn identically in all five 11a frames. Used only where
+     the platform provides no notification chrome of its own. ---- */
+  --notify-bg: rgba(18, 20, 25, 0.94);
+  --notify-border: rgba(255, 255, 255, 0.11);
+  --notify-action-bg: rgba(255, 255, 255, 0.06);
+  --notify-action-border: rgba(255, 255, 255, 0.14);
+  --notify-action-2-border: rgba(255, 255, 255, 0.1);
+  --focus-ring: #3b82f6;
 }
 
-/* Light palette when the system prefers it AND the toggle has not overridden. */
+/*
+ * Light is not an inversion (12-light-theme.md): the accents move to the DARKER end of each ramp,
+ * because #FF9F1C and #22D3EE only work as luminance against near-black and read as pastel on
+ * white. The surface is #FAF8F5, not #fff — cards are white, so depth reads as light, not shadow.
+ *
+ * Keep the two copies below identical. `npm run tokens:check` fails the build if they drift.
+ */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
-    --bg: #f7f8fa;
-    --card: #ffffff;
-    --chrome: #ffffff;
-    --sidebar: #fbfcfd;
-    --border: #e3e7ee;
-    --border-soft: #e3e7ee;
-    --row: #f4f6fa;
-    --text-1: #1e293b;
-    --text-2: #334155;
-    --muted: #64748b;
-    --muted-2: #64748b;
-    --faint: #94a3b8;
-    --selected: #eef2f8;
-    --selected-border: #d7dde7;
-    --btn-bg: #ffffff;
-    --btn-border: #d7dde7;
-    --btn-text: #334155;
 
-    --upload-fill: linear-gradient(135deg, #e55b2b, #ea8c0b);
-    --upload-text: #b45309;
-    --download-fill: linear-gradient(135deg, #0891b2, #0891b2);
-    --download-text: #0e7490;
+    --surface: #faf8f5;
+    --panel: #ffffff;
+    --panel-alt: #fdfcfa;
+    --panel-raised: #ffffff;
+    --compact-row: #ffffff;
+    --track-inert: #edeae5;
 
-    --warn-bg: #fff7ed;
-    --warn-border: #fed7aa;
-    --warn-text: #7c3a11;
+    --divider: #edeae5;
+    --border-subtle: #edeae5;
+    --border-window: #e6e3de;
+    --border: #e6e3de;
+    --border-chrome: #e0dcd5;
+    --border-strong: #e0dcd5;
+    --line-inert: #c7cbd2;
+    --seam: #d9d5ce;
+    --seam-panel: #d9d5ce;
 
-    --danger-fill: #dc2626;
-    --danger-text: #b91c1c;
+    --text: #14161a;
+    --text-bright: #14161a;
+    --text-2: #374151;
+    --text-3: #4b5563;
+    --text-4: #4b5563;
+    --text-5: #6b7280;
+    --text-label: #6b7280;
+    --text-disabled: #b9bec6;
+    --deletion-kind: #6b7280;
 
-    --on-accent: #ffffff;
+    --up-from: #b23f14;
+    --up-to: #d97706;
+    --up-label: #b23f14;
+    --up-gradient: linear-gradient(90deg, var(--up-from), var(--up-to));
 
-    --diff-local: #fff3e6;
-    --diff-remote: #e8fbff;
+    --down-from: #0e7490;
+    --down-to: #1d4ed8;
+    --down-label: #0e7490;
+    --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
 
-    --track: #e3e7ee;
+    --warn: #b23f14;
+    --warn-band-bg: rgba(178, 63, 20, 0.03);
+    --warn-band-border: rgba(178, 63, 20, 0.28);
 
-    --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05);
-    --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
+    --decision: #be123c;
+    --decision-rgb: 190, 18, 60;
+    --decision-text: #be123c;
+    --chip-attention-border: rgba(190, 18, 60, 0.3);
+    --app-mark-quiet: 0.65;
+    --decision-band-bg: rgba(190, 18, 60, 0.04);
+    --decision-band-border: rgba(190, 18, 60, 0.3);
+    --decision-card-bg: rgba(190, 18, 60, 0.03);
+    --decision-card-border: rgba(190, 18, 60, 0.28);
+    --decision-divider: rgba(190, 18, 60, 0.14);
+    --decision-btn-border: rgba(190, 18, 60, 0.38);
+    --decision-btn-bg: rgba(190, 18, 60, 0.06);
+    --decision-choice-border: rgba(190, 18, 60, 0.35);
+    --decision-choice-bg: rgba(190, 18, 60, 0.04);
+
+    --destructive: #dc2626;
+    --destructive-rgb: 220, 38, 38;
+    --destructive-text: #b91c1c;
+    --destructive-border: rgba(220, 38, 38, 0.4);
+    --destructive-bg: rgba(220, 38, 38, 0.04);
+    --destructive-card-bg: rgba(220, 38, 38, 0.04);
+    --destructive-card-border: rgba(220, 38, 38, 0.32);
+    --destructive-ring: #d9b8b8;
+    /* MEASURED now, not derived: `12a Deletions light` draws the disabled `Delete` at .07, where
+       this was .08 — the step dark's .1 suggested. S10, DEVIATIONS §91. */
+    --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.07);
+    --destructive-divider: rgba(220, 38, 38, 0.16);
+    --destructive-row-bg: rgba(220, 38, 38, 0.03);
+    --destructive-btn-border: rgba(220, 38, 38, 0.2);
+    --destructive-btn-bg: rgba(220, 38, 38, 0.07);
+    --destructive-input-border: rgba(220, 38, 38, 0.35);
+    --destructive-input-bg: #ffffff;
+    --destructive-armed-border: rgba(220, 38, 38, 0.5);
+
+    --compact-attention-border: rgba(190, 18, 60, 0.3);
+    --compact-permanent-bg: rgba(220, 38, 38, 0.03);
+    --compact-permanent-border: rgba(220, 38, 38, 0.34);
+    --compact-recoverable-bg: rgba(190, 18, 60, 0.025);
+    --compact-recoverable-border: rgba(190, 18, 60, 0.24);
+
+    --btn-primary-bg: #14161a;
+    --btn-primary-text: #faf8f5;
+    --btn-primary-quiet-text: #b9bec6;
+    --btn-primary-disabled-bg: #e0dcd5;
+    --btn-primary-disabled-text: #9ca3af;
+    --btn-secondary-bg: #ffffff;
+    --btn-secondary-bg-alt: #ffffff;
+    --btn-secondary-outline-bg: #ffffff;
+    --btn-secondary-border: #d6d2cb;
+    --btn-secondary-text: #14161a;
+    --btn-quiet-bg: transparent;
+    --btn-quiet-border: #e0dcd5;
+    --btn-quiet-text: #4b5563;
+    --btn-destructive-bg: #dc2626;
+    --btn-destructive-text: #fff;
+    --btn-destructive-disabled-text: #c08a8a;
+    /* Measured black here too, on `12a Conflict light` — the element is unpainted in both themes. */
+    --btn-unpainted: #000000;
+    --btn-primary-choice-border: #000000;
+    --btn-primary-choice-border-style: none;
+
+    --btn-primary-soft-bg: #14161a;
+    --btn-primary-soft-border: #faf8f5;
+    --btn-primary-soft-border-style: none;
+    --btn-primary-soft-text: #faf8f5;
+
+    /* CHOSEN, not drawn — no light frame carries the diff panel. See the dark block. */
+    --diff-mine-bg: rgba(178, 63, 20, 0.1);
+    --diff-theirs-bg: rgba(14, 116, 144, 0.1);
+    --diff-divider: #d9d5ce;
+    --diff-gutter: #b9bec6;
+    --diff-gutter-absent: #e0dcd5;
+
+    --hex-settled-track: #c7cbd2;
+    --hex-settled-check: #14161a;
+    --hex-syncing-track: #e4e1db;
+    --hex-glyph-track: #e4e1db;
+    --hex-glyph-fg: #14161a;
+    --hex-notify-track: #6b7280;
+    --hex-paused-track: #c7cbd2;
+    --hex-paused-bars: #4b5563;
+    --hex-numeral: #14161a;
+    --dot-inert: #c7cbd2;
+
+    --seam-gradient: linear-gradient(var(--surface), var(--seam) 26%, var(--seam) 74%, var(--surface));
+
+    --glow-settled: radial-gradient(circle, rgba(20, 22, 26, 0.045), rgba(20, 22, 26, 0) 68%);
+    --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.45);
+    --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.4);
+    --scrim: rgba(0, 0, 0, 0.33);
+    --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
+    --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
+    /* MECHANICALLY MAPPED, not measured: no 12a frame draws a banner, so these follow
+       12-light-theme.md's card row (#0D0E11 -> #FFFFFF) and put the two white hairlines onto the
+       dark text colour at the same alphas. S10 confirmed it is undrawn — no `12a` frame carries a
+       banner — so it stays mapped rather than measured. §91b. */
+    --notify-bg: rgba(255, 255, 255, 0.96);
+    --notify-border: rgba(20, 22, 26, 0.11);
+    --notify-action-bg: rgba(20, 22, 26, 0.05);
+    --notify-action-border: rgba(20, 22, 26, 0.14);
+    --notify-action-2-border: rgba(20, 22, 26, 0.1);
+    --focus-ring: #1d4ed8;
   }
 }
 
-/* Explicit light theme via the toggle — wins over the system default in both directions. */
-:root[data-theme="light"] {
-  --bg: #f7f8fa;
-  --card: #ffffff;
-  --chrome: #ffffff;
-  --sidebar: #fbfcfd;
-  --border: #e3e7ee;
-  --border-soft: #e3e7ee;
-  --row: #f4f6fa;
-  --text-1: #1e293b;
-  --text-2: #334155;
-  --muted: #64748b;
-  --muted-2: #64748b;
-  --faint: #94a3b8;
-  --selected: #eef2f8;
-  --selected-border: #d7dde7;
-  --btn-bg: #ffffff;
-  --btn-border: #d7dde7;
-  --btn-text: #334155;
-
-  --upload-fill: linear-gradient(135deg, #e55b2b, #ea8c0b);
-  --upload-text: #b45309;
-  --download-fill: linear-gradient(135deg, #0891b2, #0891b2);
-  --download-text: #0e7490;
-
-  --warn-bg: #fff7ed;
-  --warn-border: #fed7aa;
-  --warn-text: #7c3a11;
-
-  --danger-fill: #dc2626;
-  --danger-text: #b91c1c;
-
-  --on-accent: #ffffff;
-
-  --diff-local: #fff3e6;
-  --diff-remote: #e8fbff;
-
-  --track: #e3e7ee;
-
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05);
-  --shadow-tray: 0 16px 44px rgba(0, 0, 0, 0.42);
-}
-
-/* The design's dark default already matches an unset preference, but make the toggle explicit. */
-:root[data-theme="dark"] {
-  color-scheme: dark;
-}
+/* The explicit choice, which must beat the media query in both directions. */
 :root[data-theme="light"] {
   color-scheme: light;
+
+  --surface: #faf8f5;
+  --panel: #ffffff;
+  --panel-alt: #fdfcfa;
+  --panel-raised: #ffffff;
+  --compact-row: #ffffff;
+  --track-inert: #edeae5;
+
+  --divider: #edeae5;
+  --border-subtle: #edeae5;
+  --border-window: #e6e3de;
+  --border: #e6e3de;
+  --border-chrome: #e0dcd5;
+  --border-strong: #e0dcd5;
+  --line-inert: #c7cbd2;
+  --seam: #d9d5ce;
+  --seam-panel: #d9d5ce;
+
+  --text: #14161a;
+  --text-bright: #14161a;
+  --text-2: #374151;
+  --text-3: #4b5563;
+  --text-4: #4b5563;
+  --text-5: #6b7280;
+  --text-label: #6b7280;
+  --text-disabled: #b9bec6;
+  --deletion-kind: #6b7280;
+
+  --up-from: #b23f14;
+  --up-to: #d97706;
+  --up-label: #b23f14;
+  --up-gradient: linear-gradient(90deg, var(--up-from), var(--up-to));
+
+  --down-from: #0e7490;
+  --down-to: #1d4ed8;
+  --down-label: #0e7490;
+  --down-gradient: linear-gradient(90deg, var(--down-from), var(--down-to));
+
+  --warn: #b23f14;
+  --warn-band-bg: rgba(178, 63, 20, 0.03);
+  --warn-band-border: rgba(178, 63, 20, 0.28);
+
+  --decision: #be123c;
+  --decision-rgb: 190, 18, 60;
+  --decision-text: #be123c;
+  --chip-attention-border: rgba(190, 18, 60, 0.3);
+  --app-mark-quiet: 0.65;
+  --decision-band-bg: rgba(190, 18, 60, 0.04);
+  --decision-band-border: rgba(190, 18, 60, 0.3);
+  --decision-card-bg: rgba(190, 18, 60, 0.03);
+  --decision-card-border: rgba(190, 18, 60, 0.28);
+  --decision-divider: rgba(190, 18, 60, 0.14);
+  --decision-btn-border: rgba(190, 18, 60, 0.38);
+  --decision-btn-bg: rgba(190, 18, 60, 0.06);
+  --decision-choice-border: rgba(190, 18, 60, 0.35);
+  --decision-choice-bg: rgba(190, 18, 60, 0.04);
+
+  --destructive: #dc2626;
+  --destructive-rgb: 220, 38, 38;
+  --destructive-text: #b91c1c;
+  --destructive-border: rgba(220, 38, 38, 0.4);
+  --destructive-bg: rgba(220, 38, 38, 0.04);
+  --destructive-card-bg: rgba(220, 38, 38, 0.04);
+  --destructive-card-border: rgba(220, 38, 38, 0.32);
+  --destructive-ring: #d9b8b8;
+  /* MEASURED now, not derived: `12a Deletions light` draws the disabled `Delete` at .07, where
+     this was .08 — the step dark's .1 suggested. S10, DEVIATIONS §91. */
+  --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.07);
+  --destructive-divider: rgba(220, 38, 38, 0.16);
+  --destructive-row-bg: rgba(220, 38, 38, 0.03);
+  --destructive-btn-border: rgba(220, 38, 38, 0.2);
+  --destructive-btn-bg: rgba(220, 38, 38, 0.07);
+  --destructive-input-border: rgba(220, 38, 38, 0.35);
+  --destructive-input-bg: #ffffff;
+  --destructive-armed-border: rgba(220, 38, 38, 0.5);
+
+  --compact-attention-border: rgba(190, 18, 60, 0.3);
+  --compact-permanent-bg: rgba(220, 38, 38, 0.03);
+  --compact-permanent-border: rgba(220, 38, 38, 0.34);
+  --compact-recoverable-bg: rgba(190, 18, 60, 0.025);
+  --compact-recoverable-border: rgba(190, 18, 60, 0.24);
+
+  --btn-primary-bg: #14161a;
+  --btn-primary-text: #faf8f5;
+  --btn-primary-quiet-text: #b9bec6;
+  --btn-primary-disabled-bg: #e0dcd5;
+  --btn-primary-disabled-text: #9ca3af;
+  --btn-secondary-bg: #ffffff;
+  --btn-secondary-bg-alt: #ffffff;
+  --btn-secondary-outline-bg: #ffffff;
+  --btn-secondary-border: #d6d2cb;
+  --btn-secondary-text: #14161a;
+  --btn-quiet-bg: transparent;
+  --btn-quiet-border: #e0dcd5;
+  --btn-quiet-text: #4b5563;
+  --btn-destructive-bg: #dc2626;
+  --btn-destructive-text: #fff;
+  --btn-destructive-disabled-text: #c08a8a;
+  /* Measured black here too, on `12a Conflict light` — the element is unpainted in both themes. */
+  --btn-unpainted: #000000;
+  --btn-primary-choice-border: #000000;
+  --btn-primary-choice-border-style: none;
+
+  --btn-primary-soft-bg: #14161a;
+  --btn-primary-soft-border: #faf8f5;
+  --btn-primary-soft-border-style: none;
+  --btn-primary-soft-text: #faf8f5;
+
+  /* CHOSEN, not drawn — no light frame carries the diff panel. See the dark block. */
+  --diff-mine-bg: rgba(178, 63, 20, 0.1);
+  --diff-theirs-bg: rgba(14, 116, 144, 0.1);
+  --diff-divider: #d9d5ce;
+  --diff-gutter: #b9bec6;
+  --diff-gutter-absent: #e0dcd5;
+
+  --hex-settled-track: #c7cbd2;
+  --hex-settled-check: #14161a;
+  --hex-syncing-track: #e4e1db;
+  --hex-glyph-track: #e4e1db;
+  --hex-glyph-fg: #14161a;
+  --hex-notify-track: #6b7280;
+  --hex-paused-track: #c7cbd2;
+  --hex-paused-bars: #4b5563;
+  --hex-numeral: #14161a;
+  --dot-inert: #c7cbd2;
+
+  --seam-gradient: linear-gradient(var(--surface), var(--seam) 26%, var(--seam) 74%, var(--surface));
+
+  --glow-settled: radial-gradient(circle, rgba(20, 22, 26, 0.045), rgba(20, 22, 26, 0) 68%);
+  --shadow-window: 0 30px 70px rgba(0, 0, 0, 0.45);
+  --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --scrim: rgba(0, 0, 0, 0.33);
+  --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
+  --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
+  /* See the media-query block above: mapped, not measured. */
+  --notify-bg: rgba(255, 255, 255, 0.96);
+  --notify-border: rgba(20, 22, 26, 0.11);
+  --notify-action-bg: rgba(20, 22, 26, 0.05);
+  --notify-action-border: rgba(20, 22, 26, 0.14);
+  --notify-action-2-border: rgba(20, 22, 26, 0.1);
+  --focus-ring: #1d4ed8;
+}
+
+/* Dark needs no re-declaration — the media query above excludes [data-theme="dark"], so :root
+   stands. This exists only so the UA is told which scheme it is painting. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }

@@ -84,7 +84,12 @@ export default [
       // A cycle in real ESM is a TDZ ReferenceError at load time, not a lazy-init warning.
       "import-x/no-cycle": ["error", { ignoreExternal: true }],
       "import-x/no-self-import": "error",
-      "import-x/no-useless-path-segments": ["error", { noUselessIndex: true }],
+      // `noUselessIndex` is OFF, and this is the one rule in the file whose default is actively
+      // dangerous here. It wants `./fixtures/index.js` rewritten to `./fixtures` — a bundler
+      // convention. Nothing resolves a directory to its index in a raw-served webview, so taking
+      // the advice produces exactly the blank window `import-x/extensions` exists to prevent. The
+      // rest of the rule (`./foo/../bar`) is still worth having.
+      "import-x/no-useless-path-segments": ["error", { noUselessIndex: false }],
       "import-x/no-duplicates": "error",
       // `export let` hands importers a live binding that mutates under them.
       "import-x/no-mutable-exports": "error",
@@ -171,6 +176,28 @@ export default [
   // CI with "'process' is not defined", a confusing error in a plainly-Node file.
   {
     files: ["**/eslint.config.js"],
+    languageOptions: { globals: globals.nodeBuiltin },
+    rules: { "no-console": "off" },
+  },
+
+  // Same reasoning for gui/tools/: build-time helpers that never reach the webview (the font
+  // vendoring script, the token guard, and the fidelity harness when it lands in F8). They are Node
+  // programs whose entire output is console text and whose exit code is the gate, so browser
+  // globals and the no-console rule are both wrong for them. `no-restricted-syntax` stays on: a
+  // tool has even less business reaching for the Tauri injection than a screen module does.
+  {
+    files: ["**/tools/**/*.{js,mjs}"],
+    languageOptions: { globals: globals.nodeBuiltin },
+    rules: { "no-console": "off" },
+  },
+
+  // gui/test/ runs under `node --test`, not in the webview. Declared for the same reason as the two
+  // blocks above and not because anything currently needs it: the suite imports `node:test` and
+  // `node:assert` explicitly, so it lints clean under browser globals TODAY. The first test that
+  // reaches for `process` or logs while debugging would fail CI with "'process' is not defined" in
+  // a plainly-Node file — the confusing error this config exists to prevent.
+  {
+    files: ["**/test/**/*.{js,mjs}"],
     languageOptions: { globals: globals.nodeBuiltin },
     rules: { "no-console": "off" },
   },

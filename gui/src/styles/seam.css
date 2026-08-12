@@ -1,0 +1,39 @@
+/*
+ * The seam's appear transition (F3). Everything else about the seam is inline, because every drawn
+ * seam in docs/design-v2/Drive Sync.dc.html is a pure inline-styled div and F8 compares node for
+ * node — geometry and gradient belong in ui/seam.js, not here.
+ *
+ * This file exists for the one thing an inline style cannot express: `prefers-reduced-motion`.
+ * Same reason and same shape as hexagon.css, and the same failure mode — it needs a <link> in
+ * index.html, and forgetting that is silent (the seam simply snaps instead of fading, with no
+ * error and nothing for lint or CI to catch).
+ *
+ * NOTHING IN THE PROTOTYPE MEASURES THIS. The prototype draws no seam animation and carries no
+ * reduced-motion rule anywhere, so 01-foundations.md §7 is normative on its own here — the same
+ * footing as the reduced-motion question in DEVIATIONS.md §30. Recorded as §38.
+ */
+
+/*
+ * §7: "320ms ease-out for the seam and its columns" — the slowest transition in the design, and
+ * deliberately so. The seam appearing is a statement that the two sides have diverged; at 140ms it
+ * reads as a glitch. Written through --t-traffic/--ease, which F1 added for exactly this rule.
+ *
+ * Only `opacity` transitions. The seam's geometry moves when the block it spans resizes, and
+ * transitioning `top`/`bottom`/`height` would drag the line across the content for a third of a
+ * second every time a list gains a row.
+ */
+.seam {
+  transition: opacity var(--t-traffic) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /*
+   * The transition goes; the seam does not. Rule 1 makes presence carry meaning — a seam is drawn
+   * when data is moving or a decision has two sides — so suppressing the element under this
+   * preference would remove information rather than movement. Compare DEVIATIONS.md §30, where the
+   * paused hexagon's dasharray survives for the same reason.
+   */
+  .seam {
+    transition: none;
+  }
+}
