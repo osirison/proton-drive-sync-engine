@@ -242,7 +242,7 @@ function subOf(v) {
       // The reassurance only. The daemon's string is a BLOCK below the hero, not a clause here:
       // the hero is a fixed 394px centring column, so a second line in it moves the hexagon — the
       // one thing `03-main-screen.md` says this screen must never do — and an error can be any
-      // length at all. See `failedBlock`.
+      // length at all. See `fillFailed`, which builds `.main-failed`.
       return MAIN.failedSub(v.pending);
     default:
       return MAIN.settledSubTime(since(v.lastSync));

@@ -4011,8 +4011,10 @@ Found by asking what else keys on the state rather than by testing the screen:
 
 - **The header chip** (`chipFor`) has an arm per state and a fall-through, and the fall-through is
   `idle`. It would have read `idle` in the corner of a window whose hero said the last sync did not
-  finish. It reads `sync failed` — the daemon's own word for it (`record_status_history`), and S5's
-  word for the same pass in its list.
+  finish. It reads `sync failed` — the daemon's own word for it, the message
+  `record_status_history` writes. **Not S5's word**, which an earlier draft of this claimed: that
+  list labels every failed row `Couldn't reach Proton Drive`, the one sentence §90d rules out for
+  this state. Pre-existing S5 wording, filed rather than absorbed (#258).
 - **The tray panel** (`screens/tray.js`) has a `default` arm and the default is the settled copy, so
   the tray would have said `Up to date` while the window said otherwise. The panel takes the struck
   form and the failed sentence; the menu takes `unreachable`'s rows, because this is the one struck
@@ -4058,7 +4060,9 @@ from a caller and #247 is the standing lesson that a block rendering nothing pas
 ### 90d. The copy is S1's, and it does not borrow the two sentences that nearly fit
 
 `The last sync didn't finish` / `Nothing is lost. 4 changes are waiting and will go on the next try.`
-Both exempted in `copy-gate.mjs`; no `2a` frame draws this state.
+`MAIN.failed` is exempted in `copy-gate.mjs`; no `2a` frame draws this state. The sub-line needs no
+exemption and cannot have one — it is a template, which the gate's walk never collects, and §90e is
+the check that now says so out loud.
 
 - **Not `Can't reach Proton Drive`** (the deck's one sentence for this family, `TRAY.unreachableTitle`).
   It is already spoken by a different state, and it is a claim we cannot make: a pass can fail with
@@ -4087,4 +4091,63 @@ And one gate audited against itself: `copy-gate.mjs`'s `NOT_DRAWN` is a `continu
 so an exemption that names nothing is never contradicted — its own header says as much and stopped
 there. `MAIN.failedSub` was nearly added to it, which would have excused a TEMPLATE the walk never
 collects while still subtracting one from the printed total. Exemptions are now checked to name a
-string the gate would otherwise look at; the 45 that were already there all do.
+string the gate would otherwise look at; the 44 that were already there all do, and this section's
+own entry makes 45.
+
+### 90f. The release set had a second copy, and the second copy was a kill switch
+
+§90b above says adding `failed` to `nextOnboardingLatch`'s release list is what stops the fix
+trapping somebody in the wizard. It was necessary and it was not sufficient, and a review of the
+merged change found out why.
+
+`render()` kept its **own** copy of that list — `const reachable = st === "idle" || st === "running"
+|| st === "paused" || st === "authExpired"`, under a comment reading *"EXACTLY
+`nextOnboardingLatch`'s RELEASE SET"* — and it gates the sticky `onboardingFailure` that
+`failOnboardingMerge` sets when a first sync fails. The latch expression is
+
+```js
+onboardingStage !== null ? false : onboardingFailure ? true : nextOnboardingLatch(…)
+```
+
+so `onboardingFailure` **short-circuits the function entirely**. The two lists disagreeing therefore
+did not produce a mismatched screen, which is what a second copy usually costs. It made the new arm
+in `routes.js` dead code on exactly the path it was written for: a failed first sync latched the
+takeover shut, undismissable, for as long as the daemon kept failing — the inverse of the hand-off,
+and worse than the `Everything is up to date` it replaced.
+
+The S1 failed screen this whole section is about draws for one poll and then the wizard returns over
+it. Three texts asserted the opposite while it did: the comment above `reachable`,
+`failOnboardingMerge`'s *"a reachable daemon that failed a pass is the main screen's business"*, and
+§90b.
+
+**The fix is not to make the copies agree.** `releasesOnboarding` is exported from `routes.js` and
+both callers ask it; the second list is gone. `onboarding-latch.test.js` now also reads `app.js` and
+fails if a hand-written state list comes back near `reachable` — the same construction the tray test
+uses against `state.rs`, and for the same reason: the thing to defend is not this bug, it is the
+shape.
+
+That shape is the one this codebase keeps paying for (§67c, §64, the `severityOf` band). Worth
+naming what made this instance invisible: **the duplicate was in a caller of the function it
+duplicated**, so grepping the fixed function's own file and tests showed nothing, and every gate
+stayed green because no gate renders the onboarding takeover against a failed daemon.
+
+### 90g. Three more, all comments, and one of them was a count
+
+Found by the same review, all in this section's own prose or the diff's comments — which this
+codebase treats as defects rather than tidying, because a comment that states a falsehood is read as
+evidence:
+
+- **`chipFor`'s justification named the wrong screen.** `sync failed` is the daemon's message and
+  the chip is right; the clause claiming it is *"what S5's passes list draws"* was not — `passRowFor`
+  labels every failed row `Couldn't reach Proton Drive`. Which is the sentence §90d rules out for
+  this exact state, on the exact same `last_error` field, so S5 says the thing S1 refuses to. That
+  is pre-existing S5 wording and is #258 rather than something to absorb here.
+- **`subOf`'s failed arm pointed at `failedBlock`,** a function that does not exist. The block is
+  built by `fillFailed`. That cross-reference is the only navigation between the two halves of the
+  hexagon-does-not-move rule, so it pointed at nothing from exactly the place that most needed it.
+- **§90d said both new strings were exempted in the copy gate.** Only `MAIN.failed` is;
+  `MAIN.failedSub` is a template, and §90e — four paragraphs later, in the same section — is the
+  note explaining that a template needs no exemption and that the new check now *rejects* one. And
+  §90e's own figure counted the exemption this change added as pre-existing: 44 were already there,
+  not 45. Both corrected above. The same slip as §88's, one section on: a change invalidates the
+  numbers quoting it, including the ones written in the same commit.

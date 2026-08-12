@@ -216,16 +216,32 @@ export const isDialog = (id) => ROUTES[id]?.presentation === "dialog";
 // `statusPolled` gates this so we never claim "fresh" from the pre-poll default state, and
 // `configLoaded` gates it so a daemon configured elsewhere (or a config file not yet read) doesn't
 // flash the wizard. Pure and side-effect free so it can be unit-tested.
-export function nextOnboardingLatch(prev, daemonState, hasConfigPair, configLoaded, statusPolled) {
-  // Reachable in any form — hand back to the main screen (which surfaces the right per-state action).
-  if (
+/**
+ * Reachable in any form: the state hands back to the main screen, which surfaces the right
+ * per-state action.
+ *
+ * EXPORTED BECAUSE `app.js` HAD A SECOND COPY OF THIS LIST, and a second copy of a rule is this
+ * codebase's most-repeated bug. `render()` gates the sticky `onboardingFailure` on its own
+ * `reachable`, and that gate SHORT-CIRCUITS this function — `onboardingFailure ? true : nextOnboardingLatch(…)`
+ * — so the two lists disagreeing does not produce a mismatched screen, it makes this one dead code.
+ * Which is exactly what happened when `failed` was added here and not there (#246 review): a failed
+ * first sync latched the takeover shut, the inverse of the hand-off this arm exists to guarantee.
+ * The fix is not to make the copies agree. It is that there is one list.
+ *
+ * `firstRun` is deliberately absent: the latch treats it as an ENTRY trigger, not a release.
+ */
+export function releasesOnboarding(daemonState) {
+  return (
     daemonState === "idle" ||
     daemonState === "running" ||
     daemonState === "paused" ||
     daemonState === "authExpired" ||
     daemonState === "failed"
-  )
-    return false;
+  );
+}
+
+export function nextOnboardingLatch(prev, daemonState, hasConfigPair, configLoaded, statusPolled) {
+  if (releasesOnboarding(daemonState)) return false;
   // Reachable daemon that has never synced: the original firstRun takeover.
   if (daemonState === "firstRun") return true;
   // Fresh machine: a completed poll says the daemon is unreachable AND no folders are chosen.

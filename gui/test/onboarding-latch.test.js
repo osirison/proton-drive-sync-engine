@@ -13,7 +13,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextOnboardingLatch } from "../src/js/routes.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { nextOnboardingLatch, releasesOnboarding } from "../src/js/routes.js";
 
 // (prev, daemonState, hasConfigPair, configLoaded, statusPolled)
 const latch = nextOnboardingLatch;
@@ -37,6 +39,37 @@ test("a failed first sync releases too — the wizard cannot fix a daemon error"
   // the sentence and trapped the user in two steps that cannot put `proton-drive` back on the PATH.
   assert.equal(latch(true, "failed", true, true, true), false);
   assert.equal(latch(true, "failed", false, true, true), false, "nor with no pair written yet");
+});
+
+test("the release set has exactly one definition, and app.js asks for it", () => {
+  // THE BUG THIS FILE'S OWN FIX SHIPPED WITH. `render()` kept a second copy of the release list,
+  // under a comment claiming it was "EXACTLY `nextOnboardingLatch`'s RELEASE SET" — and that copy
+  // gates the sticky `onboardingFailure`, which SHORT-CIRCUITS this module:
+  //
+  //     onboardingStage !== null ? false : onboardingFailure ? true : nextOnboardingLatch(…)
+  //
+  // So the lists disagreeing did not draw a mismatched screen. It made the `failed` arm above dead
+  // code on the one path it was written for, and latched the wizard shut on a failed first sync —
+  // the inverse of the hand-off, and undismissable. Every gate stayed green: nothing renders the
+  // takeover against a failed daemon. DEVIATIONS §90f.
+  //
+  // Reading the source is the only check available for a caller this suite cannot execute (no DOM,
+  // deliberately), and it is the construction `tray-view.test.js` already uses against `state.rs`.
+  // What it defends is the shape, not the one state: any hand-written chain of daemon-state
+  // comparisons near `reachable` fails it.
+  const app = readFileSync(fileURLToPath(new URL("../src/js/app.js", import.meta.url)), "utf8");
+  const line = app.split("\n").find((l) => l.includes("const reachable ="));
+  assert.ok(line, "app.js no longer has a `reachable` — if the latch moved, move this test with it");
+  assert.match(line, /releasesOnboarding\(/, "app.js is deriving the release set itself again");
+  assert.doesNotMatch(line, /===\s*"/, "a hand-written state list is back in app.js");
+
+  // And the export itself, so a caller has something to ask.
+  for (const state of ["idle", "running", "paused", "authExpired", "failed"]) {
+    assert.equal(releasesOnboarding(state), true, `${state} should release`);
+  }
+  for (const state of ["firstRun", "unreachable"]) {
+    assert.equal(releasesOnboarding(state), false, `${state} is an entry trigger, not a release`);
+  }
 });
 
 test("firstRun always enters — the canonical signal", () => {
