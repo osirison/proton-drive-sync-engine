@@ -4169,7 +4169,8 @@ evidence:
 document's wrapper carries `color:#F2F4F7`, and a node inside a `12a` frame that declares no colour
 of its own was extracted as the dark text tier. An app that correctly inherits `#14161A` failed on
 every one — **142 failures across the three compacts, one class, none of them a real difference** —
-which is why the light twins were mapped, measured, and taken back out again.
+which is why those three were mapped, measured and taken back out, and the four light windows were
+never mapped at all.
 
 Nothing about that was a mapping problem, and the fix is in `extract.mjs`. Each node now records
 `fromPage`: the properties whose value came from outside the frame root. `assert.mjs` declines to

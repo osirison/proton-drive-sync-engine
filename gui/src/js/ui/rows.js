@@ -416,11 +416,10 @@ export function deletionColumn({ severity = "permanent", eyebrowText, note = nul
   // `Permanent · this computer` — and INVISIBLE IN DARK, where `--decision-text` and
   // `--destructive-text` are both `#FF9C9C`. `12a Deletions light` draws the two apart (`#BE123C`
   // against `#B91C1C`) and is the only frame in the bundle that can say so. S10, DEVIATIONS §84.
-  const label = el(
-    "span",
-    { class: `eyebrow eyebrow-${severity === "permanent" ? "destructive" : "decision"}` },
-    eyebrowText,
-  );
+  // Both class names spelled out rather than interpolated, so a grep for either finds this line.
+  // `eyebrow-${…}` is two characters shorter and reachable from nowhere.
+  const tone = severity === "permanent" ? "eyebrow-destructive" : "eyebrow-decision";
+  const label = el("span", { class: `eyebrow ${tone}` }, eyebrowText);
 
   return el(
     "div",
