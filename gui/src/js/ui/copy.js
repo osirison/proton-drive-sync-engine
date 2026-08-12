@@ -684,7 +684,26 @@ export const ACTIVITY = {
     chartSub: (from) => `how long each took · ${from} onward`,
     mostRecent: (at) => `most recent ${at}`,
     clean: "Finished cleanly",
+    /**
+     * THE DRAWN LABEL, AND IT IS A CLAIM ABOUT THE CAUSE — so it is used only when the daemon's own
+     * string carries one. `6a Activity passes` draws it over
+     * `proton-drive: connection timed out after 60s`, which is exactly the failure it names.
+     *
+     * It used to be the label for EVERY failed pass, keyed on `last_error != null`, which put
+     * `Couldn't reach Proton Drive` over a full disk, a moved binary and a file that could not be
+     * read — directly above the daemon's own words saying otherwise. #258, and #246 had already
+     * settled the same question the other way one screen over (`MAIN.failed`, DEVIATIONS §90d).
+     */
     unreachable: "Couldn't reach Proton Drive",
+    /**
+     * Every other failure. Names no cause, because the row cannot know one — the quoted daemon
+     * string underneath is what says what happened, in the daemon's words (voice rule 4).
+     *
+     * `Didn't finish` rather than S1's `The last sync didn't finish`: this is one row in a list of
+     * twenty, and only one of them is the last sync. Same register, same verb, no false definite
+     * article. Not drawn — see the copy gate's exemption and DEVIATIONS §93.
+     */
+    failed: "Didn't finish",
     retried: (at) => `retried at ${at} and worked`,
     // Voice rule 4: this is a DAEMON STRING and appears exactly as the daemon said it, in mono.
     // It is here only because the deck quotes it as the example; never construct one of these.
