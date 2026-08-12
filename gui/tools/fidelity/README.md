@@ -1,15 +1,16 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Six gates over the 51 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Seven gates over the 51 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
 npm run fidelity:extract    # regenerate frames/*.json from the prototype
-npm run fidelity            # style, unstamped, fit and hue, then the copy gate   (needs Chromium)
+npm run fidelity            # style, unstamped, fit and hue, the copy gate, then contrast (Chromium)
 npm run fidelity:fixtures   # the fixture registry gate                           (Node only)
+npm run fidelity:contrast   # the contrast gate on its own; `--report` writes the distribution
 ```
 
-## The six gates
+## The seven gates
 
 | Gate                              | Compares                                                                        | Runs today?                        |
 | --------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
@@ -99,12 +100,19 @@ mapped. A row is one NODE — `frame`, `slot` **and** `key` — so a factory slo
 never vouches for the rest of its run, and a node that moved fails twice (the row goes stale, the new
 key arrives unexplained) instead of being quietly absorbed.
 
-Its 19 rows name seven issues. Four are #98: `2a Syncing` and `2a Needs you` draw a 2px progress track
-under the in-flight transfer, and `TransferActivity` carries `bytes_total` on an upload and
-`bytes_done` on a download and never both, so no percentage exists to draw (DEVIATIONS §63). The rest
-are per-file sizes the rehearsal does not report (#191 ×5), the deletion facts the index cannot
-answer (#208 ×2, #225 ×2), the onboarding account line and remote picker (#241, #99), and the count
-of files that already match (#242 ×4).
+Its 25 rows name seven issues. Six are #98: `2a Syncing`, `2a Needs you` and `12a Syncing light` draw
+a 2px progress track under the in-flight transfer, and `TransferActivity` carries `bytes_total` on an
+upload and `bytes_done` on a download and never both, so no percentage exists to draw (DEVIATIONS
+§63). The rest are per-file sizes the rehearsal does not report (#191 ×5), the deletion facts the
+index cannot answer (#208 ×4, #225 ×4), the onboarding account line and remote picker (#241, #99),
+and the count of files that already match (#242 ×4).
+
+**Six of the 25 are a light twin of a dark row**, because a row is one NODE and `frame` is part of
+its identity: a capability the daemon does not have is missing from `12a Deletions light` exactly as
+it is from `4a Deletions`, and nothing here lets the dark row vouch for the light one. That rule is
+what found them — S10's first pass read the fid map off the raw registry entry rather than the
+resolved one, so all seven light frames iterated an empty mapping and reported six fewer omitted
+blocks than the app has. Green, and wrong, on the frames it had just been pointed at (§91).
 
 **Factory slots are probed, not skipped** — the half #247 shipped without (#248). A factory
 (`row: (i) => …`) resolves to a different key per call, so it cannot be read off the map; `probeSlot`
@@ -243,8 +251,21 @@ symbol font, which would change what ships.
 Stated rather than implied, because a gate that seems to cover more than it does is worse than one
 that admits its edges:
 
-- **The seven screens with no drawn light frame.** S10 asserts those against `12-light-theme.md`'s
-  mapping table, which is prose, not a drawn artefact.
+- **The seven screens with no drawn light frame.** Their light theme is `12-light-theme.md`'s
+  mapping table applied at the token layer, which is prose, not a drawn artefact. `check-tokens.mjs`
+  proves the mechanical half and `check-contrast.mjs` proves the part that matters — that no token
+  landed on the wrong end of its ramp — but neither is a drawn frame and neither pretends to be.
+- **A stroke's light value on an undrawn screen.** The contrast gate reads text; a hexagon track is
+  drawn a shade off the surface on purpose and a legibility gate has no opinion about one. Strokes
+  ARE compared exactly on the eight light frames that exist.
+- **The `⋯` menu's theme toggle, as a toggle.** Both gates pin the scheme through
+  `emulateMediaFeatures` and clear `localStorage` first, deliberately — a gate that stamped
+  `data-theme` itself would exercise `tokens.css`'s second light block and leave the media half
+  untested, which is `fixtures/preview.js`'s argument for keeping `?theme=` a separate parameter. So
+  CI drives the media path and nothing drives the attribute path. What stands behind it instead is
+  `check-tokens.mjs` asserting the two light declarations are identical and that neither theme is
+  missing a token the other has — the drift that would actually hurt. The click itself is covered by
+  a person opening `?theme=light`.
 - **Whether an animation looks right.** Only the declaration is comparable — name, duration, delay,
   timing function. A wrong easing that parses is invisible here.
 - **Native tray rendering.** Not a webview; it has no DOM. The tray strings are exempted in
@@ -255,9 +276,16 @@ that admits its edges:
 ## State of play
 
 `assert.mjs` reports how many frames carry a `data-fid` and lists the rest every run, so "the gate is
-green" can never be confused with "the gate looked at anything". Today the shell's chrome and S1's
-main screen cover three frames, F6's compact panel eight more, S2 three, S3 three and S4 three —
-**20 of 51, 42,876 assertions** — and 31 frames are waiting for their screens.
+green" can never be confused with "the gate looked at anything". **S10 took it to 51 of 51 and
+94,299 assertions**, and the last eight arrived together because they are one task: the `12a` set is
+the light theme, and a light frame could not be mapped at all until the ground truth stopped
+recording the prototype's dark page as the frame's own colour (§58b, §91).
+
+That last frame count is the one number in this file that should be read with its companion. **628
+colour comparisons are declined on those eight frames** — printed per frame, every run — because the
+prototype never set them. A light frame is compared on everything it declares and on nothing it
+inherits, which is less than a dark frame is compared on, and the gate says so rather than letting
+51/51 imply otherwise.
 
 **S1 moved the assertion count by 5,296 and the frame count by zero**, which is the honest shape of
 what it did: `2a Settled`, `2a Syncing` and `2a Needs you` were already "mapped" on the strength of a
@@ -273,7 +301,9 @@ a fixed 1040.
 **All 51 have a dataset** (F9), which is a different claim and deliberately kept separate: a fixture
 is what the app is fed, a `data-fid` is what gets compared. `check-fixtures.mjs` proves the first,
 `assert.mjs` counts the second, and neither number can inflate the other. Adding the 40 datasets
-moved 11/51 not at all.
+moved 11/51 not at all. The two counts only met at S10, and by inheritance rather than by writing:
+a light frame's mapping IS its dark twin's, because the two are one tree drawn twice — checked, not
+assumed, by `check-fixtures.mjs`'s fifth check.
 
 F6 was the first task to put a hexagon, a transfer row and an SVG colour in front of the gate, and it
 found three things wrong with them rather than with itself; `DEVIATIONS.md` §58c has all three. The

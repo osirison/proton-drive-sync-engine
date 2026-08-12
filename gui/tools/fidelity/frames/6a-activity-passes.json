@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Syncidle⋯Activity18 of the last 20 passes finished cleanly. One failed and retried on its own.FilesSync passesDetailsLast 20 passeshow long each took · 12:45 onwardmost recent 14:32Finished cleanly2 sent, 1 brought here · 1 conflict kept14:32Finished cleanly2 sent14:17Couldn't reach Proton Driveretried at 14:17 and worked13:58proton-drive: connection timed out after 60sFinished cleanly4 brought here · 1 move followed13:12Finished cleanly1 sent12:45Finished cleanlynothing to do12:30Only the last 20 passes are kept. Anything older lives in the system log.Open the system logActivityPlan a syncSettingsDetails",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Syncidle⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -120,6 +137,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 731.08,
         "h": 0
@@ -234,6 +258,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Activity18 of the last 20 passes finished cleanly. One failed and retried on its own.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 61
@@ -260,6 +291,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Activity",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 32
@@ -305,6 +343,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "FilesSync passesDetails",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 33
@@ -410,6 +455,13 @@
     {
       "key": "div[1]/span",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 721.86,
         "h": 0
@@ -472,6 +524,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Last 20 passeshow long each took · 12:45 onwardmost recent 14:32",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 136
@@ -498,6 +557,9 @@
       "key": "div[2]/div",
       "tag": "div",
       "fullText": "Last 20 passeshow long each took · 12:45 onwardmost recent 14:32",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 976,
         "h": 136
@@ -560,6 +622,13 @@
     {
       "key": "div[2]/div/div[1]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 934,
         "h": 56
@@ -584,6 +653,13 @@
     {
       "key": "div[2]/div/div[1]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 21.27
@@ -612,6 +688,13 @@
     {
       "key": "div[2]/div/div[1]/div[1]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 30.23
@@ -640,6 +723,13 @@
     {
       "key": "div[2]/div/div[1]/div[2]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 17.36
@@ -668,6 +758,13 @@
     {
       "key": "div[2]/div/div[1]/div[3]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 40.31
@@ -696,6 +793,13 @@
     {
       "key": "div[2]/div/div[1]/div[4]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 24.63
@@ -724,6 +828,13 @@
     {
       "key": "div[2]/div/div[1]/div[5]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 14.55
@@ -752,6 +863,13 @@
     {
       "key": "div[2]/div/div[1]/div[6]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 34.16
@@ -780,6 +898,13 @@
     {
       "key": "div[2]/div/div[1]/div[7]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 19.59
@@ -808,6 +933,13 @@
     {
       "key": "div[2]/div/div[1]/div[8]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 56
@@ -836,6 +968,13 @@
     {
       "key": "div[2]/div/div[1]/div[9]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 26.88
@@ -864,6 +1003,13 @@
     {
       "key": "div[2]/div/div[1]/div[10]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 16.23
@@ -892,6 +1038,13 @@
     {
       "key": "div[2]/div/div[1]/div[11]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 36.95
@@ -920,6 +1073,13 @@
     {
       "key": "div[2]/div/div[1]/div[12]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 22.95
@@ -948,6 +1108,13 @@
     {
       "key": "div[2]/div/div[1]/div[13]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 18.47
@@ -976,6 +1143,13 @@
     {
       "key": "div[2]/div/div[1]/div[14]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 31.91
@@ -1004,6 +1178,13 @@
     {
       "key": "div[2]/div/div[1]/div[15]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 13.44
@@ -1032,6 +1213,13 @@
     {
       "key": "div[2]/div/div[1]/div[16]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 38.63
@@ -1060,6 +1248,13 @@
     {
       "key": "div[2]/div/div[1]/div[17]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 20.72
@@ -1088,6 +1283,13 @@
     {
       "key": "div[2]/div/div[1]/div[18]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 29.11
@@ -1116,6 +1318,13 @@
     {
       "key": "div[2]/div/div[1]/div[19]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 41,
         "h": 25.19
@@ -1214,6 +1423,13 @@
       "key": "div[3]",
       "tag": "div",
       "fullText": "Finished cleanly2 sent, 1 brought here · 1 conflict kept14:32Finished cleanly2 sent14:17Couldn't reach Proton Driveretried at 14:17 and worked13:58proton-drive: connection timed out after 60sFinished cleanly4 brought here · 1 move followed13:12Finished cleanly1 sent12:45Finished cleanlynothing to do12:30Only the last 20 passes are kept. Anything older lives in the system log.Open the system log",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 372
@@ -1242,6 +1458,12 @@
       "key": "div[3]/div[0]",
       "tag": "div",
       "fullText": "Finished cleanly2 sent, 1 brought here · 1 conflict kept14:32",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 41
@@ -1272,6 +1494,13 @@
     {
       "key": "div[3]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -1370,6 +1599,12 @@
       "key": "div[3]/div[1]",
       "tag": "div",
       "fullText": "Finished cleanly2 sent14:17",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 41
@@ -1400,6 +1635,13 @@
     {
       "key": "div[3]/div[1]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -1498,6 +1740,12 @@
       "key": "div[3]/div[2]",
       "tag": "div",
       "fullText": "Couldn't reach Proton Driveretried at 14:17 and worked13:58proton-drive: connection timed out after 60s",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1000,
         "h": 84
@@ -1531,6 +1779,13 @@
       "key": "div[3]/div[2]/div[0]",
       "tag": "div",
       "fullText": "Couldn't reach Proton Driveretried at 14:17 and worked13:58",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 16
@@ -1555,6 +1810,9 @@
     {
       "key": "div[3]/div[2]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -1701,6 +1959,12 @@
       "key": "div[3]/div[3]",
       "tag": "div",
       "fullText": "Finished cleanly4 brought here · 1 move followed13:12",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 41
@@ -1731,6 +1995,13 @@
     {
       "key": "div[3]/div[3]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -1829,6 +2100,12 @@
       "key": "div[3]/div[4]",
       "tag": "div",
       "fullText": "Finished cleanly1 sent12:45",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 41
@@ -1859,6 +2136,13 @@
     {
       "key": "div[3]/div[4]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -1957,6 +2241,12 @@
       "key": "div[3]/div[5]",
       "tag": "div",
       "fullText": "Finished cleanlynothing to do12:30",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 41
@@ -1987,6 +2277,13 @@
     {
       "key": "div[3]/div[5]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -2085,6 +2382,12 @@
       "key": "div[3]/div[6]",
       "tag": "div",
       "fullText": "Only the last 20 passes are kept. Anything older lives in the system log.Open the system log",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 48
@@ -2137,6 +2440,13 @@
     {
       "key": "div[3]/div[6]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 420.11,
         "h": 0
@@ -2199,6 +2509,13 @@
       "key": "div[4]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 50
@@ -2225,6 +2542,12 @@
       "key": "div[4]/div",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 960,
         "h": 32

@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "This computerProton3Syncing 3 changesdocs/spec.md→←reports/q3-summary.pdf14s agoPauseOpen",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 362,
         "h": 298
@@ -45,6 +48,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "This computerProton3Syncing 3 changes",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 161
@@ -75,6 +85,13 @@
     {
       "key": "div[0]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 139
@@ -103,6 +120,13 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "fullText": "This computerProton",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 320,
         "h": 11
@@ -174,6 +198,13 @@
       "key": "div[0]/div[2]",
       "tag": "div",
       "fullText": "3Syncing 3 changes",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 320,
         "h": 104
@@ -205,6 +236,13 @@
       "key": "div[0]/div[2]/svg",
       "tag": "svg",
       "fullText": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 72,
         "h": 72
@@ -230,6 +268,13 @@
     {
       "key": "div[0]/div[2]/svg/defs",
       "tag": "defs",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -252,6 +297,13 @@
     {
       "key": "div[0]/div[2]/svg/defs/lineargradient[0]",
       "tag": "lineargradient",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -280,6 +332,13 @@
     {
       "key": "div[0]/div[2]/svg/defs/lineargradient[0]/stop[0]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -306,6 +365,13 @@
     {
       "key": "div[0]/div[2]/svg/defs/lineargradient[0]/stop[1]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -332,6 +398,13 @@
     {
       "key": "div[0]/div[2]/svg/defs/lineargradient[1]",
       "tag": "lineargradient",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -360,6 +433,13 @@
     {
       "key": "div[0]/div[2]/svg/defs/lineargradient[1]/stop[0]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -386,6 +466,13 @@
     {
       "key": "div[0]/div[2]/svg/defs/lineargradient[1]/stop[1]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -412,6 +499,13 @@
     {
       "key": "div[0]/div[2]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 51.72,
         "h": 60.72
@@ -441,6 +535,13 @@
     {
       "key": "div[0]/div[2]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 51.72,
         "h": 60.72
@@ -476,6 +577,13 @@
     {
       "key": "div[0]/div[2]/svg/path[2]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 51.72,
         "h": 60.72
@@ -513,6 +621,13 @@
       "key": "div[0]/div[2]/svg/text",
       "tag": "text",
       "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 8.64,
         "h": 19
@@ -567,6 +682,13 @@
       "tag": "div",
       "fullText": "docs/spec.md→←reports/q3-summary.pdf",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 88
@@ -596,6 +718,9 @@
       "tag": "div",
       "fullText": "docs/spec.md→",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 332,
         "h": 35
@@ -691,6 +816,13 @@
     {
       "key": "div[1]/div[0]/div",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 330,
         "h": 2
@@ -718,6 +850,13 @@
     {
       "key": "div[1]/div[0]/div/div",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 211.19,
         "h": 2
@@ -742,6 +881,9 @@
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 332,
         "h": 35
@@ -837,6 +979,13 @@
     {
       "key": "div[1]/div[1]/div",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 330,
         "h": 2
@@ -864,6 +1013,13 @@
     {
       "key": "div[1]/div[1]/div/div",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 102.3,
         "h": 2
@@ -887,6 +1043,12 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "14s agoPauseOpen",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 47
@@ -939,6 +1101,13 @@
     {
       "key": "div[2]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 132.27,
         "h": 0

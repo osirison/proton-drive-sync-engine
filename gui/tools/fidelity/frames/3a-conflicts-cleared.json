@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Sync⋯Nothing left to decideYou settled 3 files. Two kept both versions, one took Proton's copy.Back to syncActivityPlan a syncSettingsDetails",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 522,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Sync⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 520,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -120,6 +137,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 286.48,
         "h": 0
@@ -175,6 +199,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Nothing left to decideYou settled 3 files. Two kept both versions, one took Proton's copy.Back to sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 520,
         "h": 663
@@ -205,6 +236,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 96,
         "h": 96
@@ -230,6 +268,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 68.96,
         "h": 80.96
@@ -259,6 +304,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 18.4,
         "h": 12.8
@@ -290,6 +342,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Nothing left to decide",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 211.84,
         "h": 27
@@ -375,6 +434,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 520,
         "h": 49
@@ -401,6 +467,12 @@
       "key": "div[1]/div",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 472,
         "h": 31

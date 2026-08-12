@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Syncidle⋯Everything is up to datelast synced 2 minutes ago · 12,480 files · 41.2 GBSync nowPauseActivityPlan a syncSettingsDetails~/ProtonDrive ⇄ /Drive/RemoteFolder",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Syncidle⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -120,6 +137,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 731.08,
         "h": 0
@@ -234,6 +258,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Everything is up to datelast synced 2 minutes ago · 12,480 files · 41.2 GBSync nowPause",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 394
@@ -265,6 +296,13 @@
     {
       "key": "div[0]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 480,
         "h": 480
@@ -301,6 +339,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 168,
         "h": 168
@@ -331,6 +376,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 120.68,
         "h": 141.68
@@ -360,6 +412,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 32.2,
         "h": 22.4
@@ -391,6 +450,13 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "text": "Everything is up to date",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 328.33,
         "h": 39
@@ -447,6 +513,13 @@
       "key": "div[0]/div[3]",
       "tag": "div",
       "fullText": "Sync nowPause",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 199.3,
         "h": 40
@@ -552,6 +625,13 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 229
@@ -577,6 +657,13 @@
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails~/ProtonDrive ⇄ /Drive/RemoteFolder",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 89
@@ -603,6 +690,12 @@
       "key": "div[2]/div[0]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 960,
         "h": 37

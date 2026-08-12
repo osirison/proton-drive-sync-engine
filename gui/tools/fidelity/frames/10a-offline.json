@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "Can't reach Proton DriveNothing is lost. 4 changes are waiting and will go as soon as it's back.retrying in 40s · last reached 13:58Try again nowOpen Drive SyncQuitstops syncing",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 362,
         "h": 345.5
@@ -44,6 +47,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Can't reach Proton DriveNothing is lost. 4 changes are waiting and will go as soon as it's back.retrying in 40s · last reached 13:58",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 220.5
@@ -72,6 +82,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 72,
         "h": 72
@@ -97,6 +114,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 51.72,
         "h": 60.72
@@ -126,6 +150,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24,
         "h": 24
@@ -155,6 +186,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Can't reach Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 193.86,
         "h": 20
@@ -224,6 +262,12 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Try again nowOpen Drive SyncQuitstops syncing",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 123
@@ -312,6 +356,13 @@
     {
       "key": "div[1]/div[2]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 328,
         "h": 1

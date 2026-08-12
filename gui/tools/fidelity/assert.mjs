@@ -35,7 +35,7 @@ import {
   LENGTH_TOLERANCE_PX,
   boxComparability,
 } from "./props.mjs";
-import { FIXTURES } from "../../src/js/fixtures/frames.js";
+import { resolveFixture } from "../../src/js/fixtures/frames.js";
 import { OWES_BOX, OWES_FIT } from "./frame-classes.mjs";
 import { isKnown, unmetDeviations, classifyUnstamped, KNOWN_DEVIATIONS } from "./known-deviations.mjs";
 
@@ -105,6 +105,16 @@ const deviations = [];
 const record = (row) => (isKnown(row.frame, row.key, row.prop, row.detail) ? deviations : failures).push(row);
 let asserted = 0;
 let mapped = 0;
+/**
+ * Colour comparisons dropped on the light frames because the prototype's answer is the page's, not
+ * the frame's — `{ [label]: count }`. DEVIATIONS.md §58b; `fromPage` in extract.mjs argues which
+ * properties qualify and why the list is five long rather than "everything inherited".
+ *
+ * COUNTED AND PRINTED rather than silently skipped. This is a gate that stops comparing 628 values
+ * on the theme with the least drawn ground truth, and a reader who cannot see that number cannot
+ * judge what "0 failures" on a `12a` frame is worth.
+ */
+const pageColourSkips = {};
 const unmappedFrames = [];
 /** Frames that DO carry a `fids` map and stamped none of it — built, and rendering nothing. */
 const blankFrames = [];
@@ -354,11 +364,18 @@ for (const entry of index) {
   // folded into a truncated `…` list. (It was 806 when #247 wrote this down.) That frame is the one
   // this mechanism exists for.
   //
-  // Costs nothing today: all 15 unmapped frames are screens with no `fids` map at all, so they
-  // declare nothing and produce no observations. It is the frame that HAS a mapping and stamps
-  // none of it that this now catches.
+  // Since S10 there are no unmapped frames left to cost anything: all 51 carry a `fids` map. The
+  // clause it replaces was "all 15 unmapped frames are screens with no `fids` map at all, so they
+  // declare nothing and produce no observations", and it stops being the reassurance it was — every
+  // frame now declares slots, so every frame can now report one unstamped.
   const stampedKeys = new Set(seen.map((s) => s.key));
-  for (const [slot, value] of Object.entries(FIXTURES[frame.label]?.fids ?? {})) {
+  // RESOLVED, not the raw registry entry. A light twin's mapping is its dark twin's (S10), so
+  // reading `FIXTURES[label].fids` here found `undefined` on all seven `12a` frames and iterated
+  // nothing — which is this gate's own failure mode, one level up: the frames were mapped, compared
+  // and green, and the blocks they render nothing for were invisible. Caught by asking why
+  // `12a Syncing light` reported none of the two #98 slots its twin reports.
+  const declaredFids = resolveFixture(frame.label)?.fids ?? {};
+  for (const [slot, value] of Object.entries(declaredFids)) {
     for (const key of typeof value === "string" ? [value] : probeSlot(value)) {
       if (!stampedKeys.has(key) && expected.has(key)) unstamped.push({ frame: frame.label, slot, key });
     }
@@ -374,9 +391,9 @@ for (const entry of index) {
     // A failure in its own right rather than left to the slot check, and it stays that way now that
     // the slot check covers factories too: a mapping whose every key sits past `PROBE_DEPTH`, or
     // behind a non-numeric argument, would stamp nothing and report nothing. Zero frames are in that
-    // state — all 36 with a `fids` map stamp something — so this costs nothing and states the case
+    // state — all 51 with a `fids` map stamp something — so this costs nothing and states the case
     // the probe cannot.
-    if (Object.keys(FIXTURES[frame.label]?.fids ?? {}).length) blankFrames.push(frame.label);
+    if (Object.keys(declaredFids).length) blankFrames.push(frame.label);
     else unmappedFrames.push(frame.label);
     continue;
   }
@@ -395,7 +412,23 @@ for (const entry of index) {
       });
       continue;
     }
+    // A COLOUR THE PROTOTYPE NEVER SET IS NOT GROUND TRUTH FOR LIGHT. The frames are drawn on one
+    // dark page whose wrapper carries `color:#F2F4F7`, so a `12a` node that declares no colour of its
+    // own was extracted as the dark text tier — against which a correctly-light app fails on every
+    // one, 142 times across the three compacts alone and not once for a real reason (DEVIATIONS
+    // §58b). `fromPage` names those properties per node; the frame's own declared colours, which are
+    // the light values the whole screen doc is about, are untouched and still exact.
+    //
+    // DARK FRAMES KEEP THEM. There the inherited value is accidentally correct — the app inherits
+    // `#F2F4F7` too — so it is a real comparison and dropping it would trade a fixed light theme for
+    // a weaker dark one. Same fixture, different reading, which is why `fromPage` is recorded for all
+    // 51 and interpreted here.
+    const fromPage = scheme === "light" && want.fromPage ? new Set(want.fromPage) : null;
     for (const prop of STYLE_PROPS) {
+      if (fromPage?.has(prop)) {
+        pageColourSkips[frame.label] = (pageColourSkips[frame.label] ?? 0) + 1;
+        continue;
+      }
       const reason = compare(prop, valueOf(want.styles, prop), node.styles[prop]);
       asserted++;
       if (reason) record({ frame: frame.label, key: node.key, prop, detail: reason });
@@ -469,6 +502,17 @@ server.close();
 console.log(
   `fidelity:assert — ${mapped}/${index.length} frames mapped, ${asserted} assertions, ${failures.length} failures`,
 );
+// What the gate stopped comparing, in full, so "0 failures on a light frame" can be read for what it
+// is. A light frame has less drawn ground truth than any other surface in the build, and this is the
+// number that says how much less.
+const skipTotal = Object.values(pageColourSkips).reduce((n, c) => n + c, 0);
+if (skipTotal) {
+  console.log(
+    `  ${skipTotal} colour comparison(s) skipped on ${Object.keys(pageColourSkips).length} light frame(s) — ` +
+      `the prototype draws them on a dark page and never set them (DEVIATIONS §58b):`,
+  );
+  for (const [label, count] of Object.entries(pageColourSkips).sort()) console.log(`    ${label} · ${count}`);
+}
 if (unmappedFrames.length) {
   // Not a failure: a frame with no `fids` map is a screen nobody has built yet, which is the true
   // state of most of S8–S11. Listed every run so "the gate is green" never gets confused with "the

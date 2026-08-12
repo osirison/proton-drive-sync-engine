@@ -19,10 +19,10 @@
 // `ui/chrome.js` import `fid` from HERE and `import-x/no-cycle` is an error.
 //
 // A DATASET IS NOT A MAPPING, and keeping the two apart is what makes the numbers honest. All 51
-// frames have a dataset; **43** carry a `fids` map (11 when F9 wrote this line), because a mapping
-// needs a screen to exist and S10 has not built the other 8. `check-fixtures.mjs` gates the first
-// count and `assert.mjs` reports the second, so adding forty datasets cannot make the style gate
-// look like it grew teeth it did not grow. It did not move 11/51 by one frame.
+// frames have a dataset and, since S10, all 51 carry a `fids` map (11 when F9 wrote this line, 43
+// before the light set landed). `check-fixtures.mjs` gates the first count and `assert.mjs` reports
+// the second, so adding forty datasets cannot make the style gate look like it grew teeth it did
+// not grow. It did not move 11/51 by one frame.
 
 import { MAIN_FIXTURES } from "./main.js";
 import { CONFLICT_FIXTURES } from "./conflicts.js";
@@ -67,10 +67,16 @@ export function activeFrame() {
  * light palette, and writing its dataset out again would be two copies that can disagree. So a light
  * fixture names its dark twin and carries only what genuinely differs.
  *
- * THE DATA IS INHERITED; THE MAPPING IS NOT. `fids` comes from the entry itself and never from the
- * twin, and that asymmetry is deliberate rather than an oversight — see the note at the foot of this
- * file on why the three light compacts were mapped, run, and taken back out. Inheriting a twin's
- * `fids` would silently undo that decision the moment S1 maps a dark frame.
+ * THE MAPPING IS INHERITED TOO, since S10. It was not: `fids` came from the entry alone, because a
+ * light twin could not pass the gate — the prototype draws all sixty frames on one dark page, so a
+ * `12a` node that set no colour was extracted as the dark text tier and a correctly-light app failed
+ * on every one. That was the ground truth being wrong, not the mapping, and `extract.mjs` now records
+ * which colours came from the page rather than from the frame (DEVIATIONS §58b).
+ *
+ * With that fixed there is nothing left for the asymmetry to protect, and one thing it costs: a
+ * hand-written light `fids` is the second copy of a table that can drift from the first. The trees
+ * are not similar, they are the SAME — `check-fixtures.mjs` now fails the build if a `sameAs` pair's
+ * node keys ever stop matching, so inheriting the mapping is checked rather than assumed.
  */
 export function resolveFixture(label, seen = new Set()) {
   const entry = FIXTURES[label];
@@ -87,7 +93,7 @@ export function resolveFixture(label, seen = new Set()) {
   const twin = resolveFixture(entry.sameAs, seen);
   if (!twin) return null;
   const { sameAs: _twinLabel, ...own } = entry;
-  return { ...twin, ...own, fids: entry.fids };
+  return { ...twin, ...own };
 }
 
 /** The fixture for the selected frame, or null. */
@@ -116,22 +122,25 @@ export function fid(node, slot, ...args) {
 }
 
 /**
- * THE THREE LIGHT TWINS ARE DELIBERATELY NOT MAPPED, and it is worth saying why here rather than
- * leaving them to look forgotten.
+ * THE SEVEN LIGHT TWINS ARE MAPPED BY INHERITANCE, and it is worth saying why here rather than
+ * leaving the reader to infer it from four lines of spread syntax.
  *
- * They were mapped, run, and taken back out. The panel needs no new code in light — the same
- * fixture under `prefers-color-scheme: light` reproduces `12a Compact settled/syncing/needs light`
- * at every colour those frames actually declare. What it cannot reproduce is the colour they
- * INHERIT: the prototype draws all sixty frames on one dark page, so every node in a `12a` frame
- * that does not set a colour of its own inherits `#F2F4F7` from that page. The app in light mode
- * inherits `#14161A`, correctly, and fails on all 142 of them — 142 failures, one class, zero real.
+ * They were mapped once before, by hand, run, and taken back out. The panel needed no new code in
+ * light — the same fixture under `prefers-color-scheme: light` reproduced
+ * `12a Compact settled/syncing/needs light` at every colour those frames actually DECLARE. What it
+ * could not reproduce was the colour they INHERIT: the prototype draws all sixty frames on one dark
+ * page, so every node in a `12a` frame that sets no colour of its own inherits `#F2F4F7` from that
+ * page. The app in light mode inherits `#14161A`, correctly, and failed on all 142 of them — 142
+ * failures, one class, zero real.
  *
- * Making the gate right about this means recording, per node, whether the prototype set a property
- * or inherited it, which means regenerating all 51 fixtures. That is a change to the ground truth
- * and it belongs to S10, which owns light and needs the answer for the seven screens with no drawn
- * light frame at all. DEVIATIONS.md §58b carries the measurement so it starts from evidence.
+ * That was never a mapping problem. `extract.mjs` records per node which colour properties came from
+ * the page rather than from the frame, and `assert.mjs` declines to compare those on a light frame
+ * and prints how many it declined — so the fixtures say what they know and stop asserting what they
+ * do not. DEVIATIONS §58b carries the measurement that started it.
  *
- * F9 changed nothing about this. It gave the light frames DATASETS — they are reproducible in the
- * preview, and `?theme=light` shows them — while leaving them unmapped, which is why `resolveFixture`
- * inherits a twin's data and never its `fids`.
+ * With the ground truth fixed, a hand-written light `fids` would be the second copy of a table that
+ * already exists — the exact shape this build has been bitten by before. The seven light frames are
+ * their dark twins node for node (26/26, 60/60, 75/75, 63/63, 12/12, 36/36, 13/13, same keys, same
+ * text, measured), so the mapping is the twin's, and `check-fixtures.mjs` fails the build the day
+ * that stops being true.
  */

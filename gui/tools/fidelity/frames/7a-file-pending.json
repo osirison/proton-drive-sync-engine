@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "photos/trip/img_0042.jpgOn its way to Proton DriveStarted 8 seconds ago · 2.8 MBonly on this computer so farOpen folder",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 600,
         "h": 239
@@ -48,6 +51,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "photos/trip/img_0042.jpgOn its way to Proton DriveStarted 8 seconds ago · 2.8 MB",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 127
@@ -72,6 +82,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 48,
         "h": 48
@@ -97,6 +114,13 @@
     {
       "key": "div[0]/svg/defs",
       "tag": "defs",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -119,6 +143,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient",
       "tag": "lineargradient",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -147,6 +178,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient/stop[0]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -173,6 +211,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient/stop[1]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -199,6 +244,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34.48,
         "h": 40.48
@@ -228,6 +280,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34.48,
         "h": 40.48
@@ -287,6 +346,13 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "text": "On its way to Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 193.08,
         "h": 20
@@ -332,6 +398,13 @@
     {
       "key": "div[1]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 3
@@ -360,6 +433,13 @@
     {
       "key": "div[1]/div",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 223.86,
         "h": 3
@@ -383,6 +463,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "only on this computer so farOpen folder",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 31
@@ -430,6 +517,13 @@
     {
       "key": "div[2]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 241.69,
         "h": 0

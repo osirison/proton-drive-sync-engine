@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Sync3 waiting⋯You both changed this fileNothing has been lost — both versions are still here, and syncing carries on around this.1 of 3‹›3notes/todo.txta plain text file · last agreed 3 hours agoYour version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41See the exact differences→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.Discarding a version can't be undone from here.Decide laterActivityPlan a syncSettingsDetails",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Sync3 waiting⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -98,6 +115,13 @@
       "key": "header/span[0]",
       "tag": "span",
       "text": "Proton Drive Sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 107.52,
         "h": 16
@@ -119,6 +143,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 696.08,
         "h": 0
@@ -248,6 +279,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "You both changed this fileNothing has been lost — both versions are still here, and syncing carries on around this.1 of 3‹›",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 61
@@ -277,6 +315,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "fullText": "You both changed this fileNothing has been lost — both versions are still here, and syncing carries on around this.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 842.59,
         "h": 55
@@ -301,6 +346,13 @@
       "key": "div[0]/div[0]/div[0]",
       "tag": "div",
       "text": "You both changed this file",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 842.59,
         "h": 32
@@ -346,6 +398,13 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "fullText": "1 of 3‹›",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 117.41,
         "h": 34
@@ -472,6 +531,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "3notes/todo.txta plain text file · last agreed 3 hours agoYour version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41See the exact differences",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 425
@@ -505,6 +571,13 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 361
@@ -533,6 +606,13 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "3notes/todo.txta plain text file · last agreed 3 hours ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 99
@@ -564,6 +644,13 @@
       "key": "div[1]/div[1]/svg",
       "tag": "svg",
       "fullText": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 44,
         "h": 44
@@ -589,6 +676,13 @@
     {
       "key": "div[1]/div[1]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 31.61,
         "h": 37.11
@@ -619,6 +713,13 @@
       "key": "div[1]/div[1]/svg/text",
       "tag": "text",
       "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 6.61,
         "h": 14
@@ -700,6 +801,13 @@
       "key": "div[1]/div[2]",
       "tag": "div",
       "fullText": "Your version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 165.73
@@ -725,6 +833,13 @@
       "key": "div[1]/div[2]/div[0]",
       "tag": "div",
       "fullText": "Your version · this computerYou added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 165.73
@@ -771,6 +886,9 @@
       "key": "div[1]/div[2]/div[0]/div[1]",
       "tag": "div",
       "fullText": "You added a line, 5 minutes agoYours has buy milk where Proton's has something else, and is otherwise the same.41 bytes4 linesedited 14:38",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 458,
         "h": 141.73
@@ -811,6 +929,13 @@
       "key": "div[1]/div[2]/div[0]/div[1]/div[0]",
       "tag": "div",
       "text": "You added a line, 5 minutes ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 420,
         "h": 18
@@ -880,6 +1005,12 @@
       "key": "div[1]/div[2]/div[0]/div[1]/div[2]",
       "tag": "div",
       "fullText": "41 bytes4 linesedited 14:38",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 420,
         "h": 28
@@ -974,6 +1105,13 @@
       "key": "div[1]/div[2]/div[1]",
       "tag": "div",
       "fullText": "Proton's version · from another deviceChanged a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 165.73
@@ -1020,6 +1158,9 @@
       "key": "div[1]/div[2]/div[1]/div[1]",
       "tag": "div",
       "fullText": "Changed a line and added one, 2 minutes agoProton's has buy oat milk and an extra line at the end.44 bytes5 linesedited 14:41",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 458,
         "h": 121.59
@@ -1060,6 +1201,13 @@
       "key": "div[1]/div[2]/div[1]/div[1]/div[0]",
       "tag": "div",
       "text": "Changed a line and added one, 2 minutes ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 420,
         "h": 18
@@ -1129,6 +1277,12 @@
       "key": "div[1]/div[2]/div[1]/div[1]/div[2]",
       "tag": "div",
       "fullText": "44 bytes5 linesedited 14:41",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 420,
         "h": 28
@@ -1223,6 +1377,13 @@
       "key": "div[1]/div[3]",
       "tag": "div",
       "fullText": "See the exact differences",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1292,6 +1453,13 @@
       "tag": "div",
       "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.Discarding a version can't be undone from here.Decide later",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 150
@@ -1319,6 +1487,13 @@
       "tag": "div",
       "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 90
@@ -1345,6 +1520,9 @@
       "tag": "button",
       "fullText": "→Keep mineYour version goes to Proton Drive. Proton's version is discarded.",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 317.33,
         "h": 90
@@ -1385,6 +1563,13 @@
       "tag": "div",
       "fullText": "→Keep mine",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 281.33,
         "h": 16
@@ -1479,6 +1664,9 @@
       "tag": "button",
       "fullText": "⇄Keep bothNothing is lost. Proton's copy lands beside yours as todo.proton-cloud.txt.",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 317.33,
         "h": 90
@@ -1519,6 +1707,13 @@
       "tag": "div",
       "fullText": "⇄Keep both",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 281.33,
         "h": 16
@@ -1637,6 +1832,9 @@
       "tag": "button",
       "fullText": "←Use Proton'sProton's version replaces the file on this computer. Yours is discarded.",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 317.34,
         "h": 90
@@ -1677,6 +1875,13 @@
       "tag": "div",
       "fullText": "←Use Proton's",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 281.34,
         "h": 16
@@ -1770,6 +1975,13 @@
       "key": "div[2]/div[1]",
       "tag": "div",
       "fullText": "Discarding a version can't be undone from here.Decide later",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1817,6 +2029,13 @@
     {
       "key": "div[2]/div[1]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 595.45,
         "h": 0
@@ -1879,6 +2098,13 @@
       "key": "div[3]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 50
@@ -1905,6 +2131,12 @@
       "key": "div[3]/div",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 960,
         "h": 32

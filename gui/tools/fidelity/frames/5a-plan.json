@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯The next sync moves 9 thingsOne of them can't be undone. Everything here is a rehearsal — nothing has changed yet.Check againLeaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.Leave it aloneEvery action, in order9 actions · 1 conflict kept as both copies✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lostOnly needed because this plan deletes something.Run it without the deletionRun this sync",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -98,6 +115,13 @@
       "key": "header/span[0]",
       "tag": "span",
       "text": "Proton Drive Sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 107.52,
         "h": 16
@@ -119,6 +143,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 563.88,
         "h": 0
@@ -215,6 +246,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "The next sync moves 9 thingsOne of them can't be undone. Everything here is a rehearsal — nothing has changed yet.Check again",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 61
@@ -244,6 +282,13 @@
       "key": "div[0]/div",
       "tag": "div",
       "fullText": "The next sync moves 9 thingsOne of them can't be undone. Everything here is a rehearsal — nothing has changed yet.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 854.95,
         "h": 55
@@ -268,6 +313,13 @@
       "key": "div[0]/div/div[0]",
       "tag": "div",
       "text": "The next sync moves 9 things",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 854.95,
         "h": 32
@@ -352,6 +404,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 96.38
@@ -382,6 +441,13 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 88.38
@@ -410,6 +476,13 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 96.38
@@ -434,6 +507,13 @@
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MBPlus one new folder created on Proton Drive to hold them.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 96.38
@@ -480,6 +560,13 @@
       "key": "div[1]/div[1]/div[0]/div[1]",
       "tag": "div",
       "fullText": "3files, 4.1 MB",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 42
@@ -506,6 +593,13 @@
       "key": "div[1]/div[1]/div[0]/div[1]/span[0]",
       "tag": "span",
       "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 22.86,
         "h": 42
@@ -573,6 +667,13 @@
       "key": "div[1]/div[1]/div[1]",
       "tag": "div",
       "fullText": "Arriving from Proton2files, 2.6 MBOne file you renamed will be renamed here to match.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 96.38
@@ -619,6 +720,13 @@
       "key": "div[1]/div[1]/div[1]/div[1]",
       "tag": "div",
       "fullText": "2files, 2.6 MB",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 42
@@ -646,6 +754,13 @@
       "key": "div[1]/div[1]/div[1]/div[1]/span[0]",
       "tag": "span",
       "text": "2",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 21.94,
         "h": 42
@@ -713,6 +828,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.Leave it alone",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 76.59
@@ -739,6 +861,9 @@
       "key": "div[2]/div",
       "tag": "div",
       "fullText": "One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.Leave it alone",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 976,
         "h": 76.59
@@ -780,6 +905,13 @@
     {
       "key": "div[2]/div/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -806,6 +938,13 @@
     {
       "key": "div[2]/div/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -835,6 +974,13 @@
     {
       "key": "div[2]/div/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 8.5
@@ -863,6 +1009,13 @@
     {
       "key": "div[2]/div/svg/circle",
       "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 2.61,
         "h": 2.61
@@ -892,6 +1045,13 @@
       "key": "div[2]/div/div",
       "tag": "div",
       "fullText": "One file gets deleted for goodarchive/old-notes.md is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 756.3,
         "h": 42.59
@@ -1026,6 +1186,13 @@
       "tag": "div",
       "fullText": "Every action, in order9 actions · 1 conflict kept as both copies✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lost",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 343.03
@@ -1055,6 +1222,13 @@
       "key": "div[3]/div[0]",
       "tag": "div",
       "fullText": "Every action, in order9 actions · 1 conflict kept as both copies",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 14
@@ -1103,6 +1277,13 @@
     {
       "key": "div[3]/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 515.23,
         "h": 0
@@ -1150,6 +1331,12 @@
       "tag": "div",
       "fullText": "✕archive/old-notes.mddeleted for good on Proton→docs/spec.mdsent to Proton→photos/trip/img_0042.jpgsent to Proton→notes/scratch.mdsent to Proton＋photos/tripfolder created on Proton←reports/q3-summary.pdfbrought to this computer←design/logo.svgbrought to this computer↷notes/old.md → notes/archive/old.mdmoved to match Protonnotes/todo.txtboth copies kept, nothing lost",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 319.03
@@ -1178,6 +1365,12 @@
       "tag": "div",
       "fullText": "✕archive/old-notes.mddeleted for good on Proton",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1282,6 +1475,12 @@
       "tag": "div",
       "fullText": "→docs/spec.mdsent to Proton",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1385,6 +1584,12 @@
       "tag": "div",
       "fullText": "→photos/trip/img_0042.jpgsent to Proton",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1488,6 +1693,12 @@
       "tag": "div",
       "fullText": "→notes/scratch.mdsent to Proton",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1591,6 +1802,12 @@
       "tag": "div",
       "fullText": "＋photos/tripfolder created on Proton",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1694,6 +1911,12 @@
       "tag": "div",
       "fullText": "←reports/q3-summary.pdfbrought to this computer",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1797,6 +2020,12 @@
       "tag": "div",
       "fullText": "←design/logo.svgbrought to this computer",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1900,6 +2129,12 @@
       "tag": "div",
       "fullText": "↷notes/old.md → notes/archive/old.mdmoved to match Proton",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 34
@@ -2003,6 +2238,12 @@
       "key": "div[3]/div[1]/div[8]",
       "tag": "div",
       "fullText": "notes/todo.txtboth copies kept, nothing lost",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -2033,6 +2274,9 @@
     {
       "key": "div[3]/div[1]/div[8]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 6,
         "h": 6
@@ -2117,6 +2361,12 @@
       "key": "div[4]",
       "tag": "div",
       "fullText": "Only needed because this plan deletes something.Run it without the deletionRun this sync",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 69
@@ -2149,6 +2399,13 @@
       "key": "div[4]/div",
       "tag": "div",
       "fullText": "Only needed because this plan deletes something.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 409,
         "h": 37
@@ -2237,6 +2494,13 @@
     {
       "key": "div[4]/span",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 207.52,
         "h": 0

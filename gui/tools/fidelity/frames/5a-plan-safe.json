@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯Nothing gets deletedFive files move, both sides end up with everything. This plan is safe to run.Leaving this computer3files, 4.1 MB→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folderArriving from Proton2files, 2.6 MB←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmovedChecked 40 seconds ago against both sides.Check againRun this sync",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Syncrehearsal · nothing has changed⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -98,6 +115,13 @@
       "key": "header/span[0]",
       "tag": "span",
       "text": "Proton Drive Sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 107.52,
         "h": 16
@@ -119,6 +143,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 563.88,
         "h": 0
@@ -215,6 +246,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Nothing gets deletedFive files move, both sides end up with everything. This plan is safe to run.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 300
@@ -246,6 +284,13 @@
     {
       "key": "div[0]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 316
@@ -273,6 +318,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 88,
         "h": 88
@@ -303,6 +355,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 63.21,
         "h": 74.21
@@ -332,6 +391,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 16.87,
         "h": 11.73
@@ -363,6 +429,13 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "text": "Nothing gets deleted",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 295.77,
         "h": 34
@@ -428,6 +501,13 @@
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MB→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folderArriving from Proton2files, 2.6 MB←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmoved",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 213
@@ -458,6 +538,13 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 253
@@ -487,6 +574,13 @@
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MB→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folderArriving from Proton2files, 2.6 MB←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmoved",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 213
@@ -512,6 +606,13 @@
       "tag": "div",
       "fullText": "Leaving this computer3files, 4.1 MB→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folder",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 213
@@ -558,6 +659,13 @@
       "key": "div[1]/div[1]/div[0]/div[1]",
       "tag": "div",
       "fullText": "3files, 4.1 MB",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 42
@@ -584,6 +692,13 @@
       "key": "div[1]/div[1]/div[0]/div[1]/span[0]",
       "tag": "span",
       "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 22.86,
         "h": 42
@@ -629,6 +744,13 @@
       "tag": "div",
       "fullText": "→docs/spec.md1.2 MB→photos/trip/img_0042.jpg2.8 MB→notes/scratch.md96 KB＋photos/tripnew folder",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 130
@@ -656,6 +778,12 @@
       "tag": "div",
       "fullText": "→docs/spec.md1.2 MB",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 31
@@ -757,6 +885,12 @@
       "tag": "div",
       "fullText": "→photos/trip/img_0042.jpg2.8 MB",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 31
@@ -858,6 +992,12 @@
       "tag": "div",
       "fullText": "→notes/scratch.md96 KB",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 31
@@ -959,6 +1099,12 @@
       "tag": "div",
       "fullText": "＋photos/tripnew folder",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 31
@@ -1060,6 +1206,13 @@
       "tag": "div",
       "fullText": "Arriving from Proton2files, 2.6 MB←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmoved",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 213
@@ -1106,6 +1259,13 @@
       "key": "div[1]/div[1]/div[1]/div[1]",
       "tag": "div",
       "fullText": "2files, 2.6 MB",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 42
@@ -1133,6 +1293,13 @@
       "key": "div[1]/div[1]/div[1]/div[1]/span[0]",
       "tag": "span",
       "text": "2",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 21.94,
         "h": 42
@@ -1178,6 +1345,13 @@
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB←design/logo.svg184 KB↷notes/old.md → notes/archive/old.mdmoved",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 98
@@ -1205,6 +1379,12 @@
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 31
@@ -1306,6 +1486,12 @@
       "tag": "div",
       "fullText": "←design/logo.svg184 KB",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 31
@@ -1407,6 +1593,12 @@
       "tag": "div",
       "fullText": "↷notes/old.md → notes/archive/old.mdmoved",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 32
@@ -1507,6 +1699,13 @@
     {
       "key": "div[2]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 116
@@ -1531,6 +1730,12 @@
       "key": "div[3]",
       "tag": "div",
       "fullText": "Checked 40 seconds ago against both sides.Check againRun this sync",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 69
@@ -1584,6 +1789,13 @@
     {
       "key": "div[3]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 456.39,
         "h": 0

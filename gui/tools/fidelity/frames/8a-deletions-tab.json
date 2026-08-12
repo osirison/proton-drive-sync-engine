@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "When a file is deletedDeleting on one side would normally delete it on the other. This is how much say you get.Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.deletion_policy · applies to both directions",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 600,
         "h": 520
@@ -50,6 +53,13 @@
       "key": "div[0]",
       "tag": "div",
       "text": "When a file is deleted",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 22
@@ -95,6 +105,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 300.25
@@ -121,6 +138,9 @@
       "key": "div[2]/div[0]",
       "tag": "div",
       "fullText": "Ask me every timerecommendedDeletions wait in a queue until you approve them. Nothing disappears behind your back.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 546,
         "h": 96.75
@@ -160,6 +180,13 @@
       "key": "div[2]/div[0]/div[0]",
       "tag": "div",
       "fullText": "Ask me every timerecommended",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 512,
         "h": 20
@@ -184,6 +211,9 @@
     {
       "key": "div[2]/div[0]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 15,
         "h": 15
@@ -219,6 +249,13 @@
       "key": "div[2]/div[0]/div[0]/span[1]",
       "tag": "span",
       "text": "Ask me every time",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 389.69,
         "h": 16
@@ -305,6 +342,9 @@
       "key": "div[2]/div[1]",
       "tag": "div",
       "fullText": "Only ask about permanent onesDeletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 546,
         "h": 92.75
@@ -344,6 +384,13 @@
       "key": "div[2]/div[1]/div[0]",
       "tag": "div",
       "fullText": "Only ask about permanent ones",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 512,
         "h": 16
@@ -368,6 +415,9 @@
     {
       "key": "div[2]/div[1]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 15,
         "h": 15
@@ -451,6 +501,9 @@
       "key": "div[2]/div[2]",
       "tag": "div",
       "fullText": "Never askDeleting a file on either side deletes it on the other immediately, including permanently from this computer.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 546,
         "h": 92.75
@@ -490,6 +543,13 @@
       "key": "div[2]/div[2]/div[0]",
       "tag": "div",
       "fullText": "Never ask",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 512,
         "h": 16
@@ -514,6 +574,9 @@
     {
       "key": "div[2]/div[2]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 15,
         "h": 15

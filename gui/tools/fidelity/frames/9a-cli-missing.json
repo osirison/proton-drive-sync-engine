@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "Proton Drive's command line tool isn't installedThis app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. Detected Debian — other distributions are in the help.$sudo apt install proton-driveCopyCheck againInstallation help",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 600,
         "h": 224
@@ -48,6 +51,13 @@
       "key": "div",
       "tag": "div",
       "fullText": "Proton Drive's command line tool isn't installedThis app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. Detected Debian — other distributions are in the help.$sudo apt install proton-driveCopyCheck againInstallation help",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 176
@@ -72,6 +82,13 @@
     {
       "key": "div/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -99,6 +116,13 @@
     {
       "key": "div/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -128,6 +152,13 @@
     {
       "key": "div/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 7.37
@@ -156,6 +187,13 @@
     {
       "key": "div/svg/circle",
       "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 2.61,
         "h": 2.61
@@ -185,6 +223,13 @@
       "key": "div/div",
       "tag": "div",
       "fullText": "Proton Drive's command line tool isn't installedThis app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. Detected Debian — other distributions are in the help.$sudo apt install proton-driveCopyCheck againInstallation help",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 498,
         "h": 176
@@ -209,6 +254,13 @@
       "key": "div/div/div[0]",
       "tag": "div",
       "text": "Proton Drive's command line tool isn't installed",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 498,
         "h": 20
@@ -381,6 +433,13 @@
       "key": "div/div/div[3]",
       "tag": "div",
       "fullText": "Check againInstallation help",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 498,
         "h": 35

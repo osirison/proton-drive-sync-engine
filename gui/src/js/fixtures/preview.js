@@ -135,6 +135,38 @@ const DESKTOP_CSS = `
 .desktop-column { width: 372px; display: flex; flex-direction: column; gap: 10px; }
 `;
 
+/**
+ * `12a Tray light`'s scenery: a dark card holding a light strip, in a document that is light.
+ *
+ * IT DOES NOT MATCH THE FRAME'S SCENERY EXACTLY AND IT MUST NOT TRY. The card is drawn `#0E0F12` on
+ * `#1A1D22` — dark values, in a light document, where no token carries them; the nearest light-palette
+ * near-blacks are used instead. That is legal precisely because `SPECIMEN_ARTEFACT` narrows this frame
+ * to the glyph: the card, the strip and the three status marks are compared by nothing, and buying an
+ * exact card would cost either a raw colour (which `check-tokens.mjs` forbids outside `tokens.css`) or
+ * a second copy of the dark palette scoped to a subtree, to paint a rectangle nobody measures.
+ *
+ * The DOCUMENT stays light, and that is the load-bearing half. The glyph takes `--hex-glyph-fg`,
+ * which is `#14161A` under the light palette and `#E8EBF0` under the dark one — so the frame's whole
+ * claim, that the mark inverts and needs nothing re-specified, is a fact about the theme the page is
+ * in rather than about this file.
+ */
+const TRAY_LIGHT_CSS = `
+.tray-light-card { width: 360px; box-sizing: border-box; padding: 18px 20px; border-radius: 12px;
+  background: var(--btn-primary-bg); border: 1px solid var(--text-2); }
+.tray-light-strip { height: 30px; background: var(--divider); border-radius: 7px; display: flex;
+  align-items: center; padding: 0 11px; gap: 11px; }
+/* PER TEXT SPAN, never on the strip or on every span in it. The indicator span sets no font-size in
+   the frame, so its <svg> inherits the document's 16px — and the svg IS the mapped node, so a rule
+   that reaches it makes the one thing this frame asserts fail on a property that has nothing to do
+   with the glyph. It did: 10px against the frame's 16, three times. */
+.tray-light-name { font-size: 10.5px; color: var(--text-3); }
+.tray-light-mark { font-size: 10px; color: var(--text-3); }
+.tray-light-spacer { flex: 1; }
+.tray-light-indicator { display: inline-flex; align-items: center; padding: 3px 5px;
+  border-radius: 5px; background: var(--border-strong); }
+.tray-light-note { font-size: 12px; color: var(--text-5); margin-top: 14px; line-height: 1.55; }
+`;
+
 const GLYPH_CSS = `
 .glyph-sheet { width: 560px; padding: 24px 26px; box-sizing: border-box; }
 .glyph-grid { display: grid; grid-template-columns: 52px 52px 366px; align-items: center; gap: 0 18px; }
@@ -292,6 +324,54 @@ function renderDesktopMock(root, label) {
 }
 
 /**
+ * `12a Tray light` — one glyph on a light panel (S10).
+ *
+ * THE ONLY `12a` FRAME WHOSE CARD IS DRAWN DARK, which is the whole reason it is a specimen and not
+ * a light compact panel: `#0E0F12`, radius 12, `padding:18px 20px`, holding a light GNOME strip and
+ * a sentence about it. `SPECIMEN_ARTEFACT` narrows it to the 14px needs-you glyph — `stroke:#14161A`,
+ * `stroke-width:9`, a filled `r=17` circle — and the issue that asks for this frame says to assert
+ * that and nothing else.
+ *
+ * So everything below except the `<svg>` is scenery, and it exists for the two reasons the other two
+ * specimens' scenery does: a person opening `?frame=12a Tray light` should see what the design drew,
+ * and the glyph's key is a POSITION inside this tree (`div[0]/span[2]/svg`). Drop the spacer or one
+ * of the three status glyphs after it and the mark lands on a node the frame does not have.
+ *
+ * The strip is drawn light while the card around it is dark, and no token can express that — a theme
+ * is a property of the document here, not of a subtree — so the strip's own colours are the preview's
+ * (`TRAY_LIGHT_CSS`), exactly as the desktop mock's wallpaper is. Nothing here ships.
+ */
+function renderTrayLight(root, label) {
+  const { state = "needsYou", size = 14 } = activeFixture()?.trayStrip ?? {};
+  root.replaceChildren(
+    el(
+      "div",
+      { class: "tray-light-card" },
+      el(
+        "div",
+        { class: "tray-light-strip" },
+        el("span", { class: "tray-light-name" }, "Activities"),
+        el("span", { class: "tray-light-spacer" }),
+        // `mono`, and it is the point of the frame rather than a rendering choice: the glyph inverts
+        // by taking `--hex-glyph-fg`, which is `#14161A` in light — so a light panel needs no second
+        // drawing, only the theme it is already in. The strip is light, so the app is asked for its
+        // light palette by `?theme=light`, which `href()` puts on every `12a` link.
+        el("span", { class: "tray-light-indicator" }, stampGlyph(trayGlyph({ state, mono: true, size }), 0)),
+        el("span", { class: "tray-light-mark" }, "▲"),
+        el("span", { class: "tray-light-mark" }, "◐"),
+        el("span", { class: "tray-light-mark" }, "▮"),
+      ),
+      el(
+        "div",
+        { class: "tray-light-note" },
+        "The glyph inverts to near-black and keeps its five forms. Because state is carried by fill " +
+          `rather than hue, nothing has to be re-specified for a light panel. · ${label}`,
+      ),
+    ),
+  );
+}
+
+/**
  * The index. Rendered only for `?frames`, and it takes over the window — the shell never renders
  * behind it.
  *
@@ -401,10 +481,17 @@ export function mountPreview(root) {
           // over a desktop, which is neither a screen nor a panel — nothing in the shell draws one.
           FIXTURES[label]?.desktop
           ? renderDesktopMock
-          : null;
+          : // The fifth, and the last one the bundle has (S10): `12a Tray light` is one glyph on a
+            // GNOME strip on a dark card — no screen, no panel, no banner. `trayStrip` says so, the
+            // same way `glyphs` and `desktop` do.
+            FIXTURES[label]?.trayStrip
+            ? renderTrayLight
+            : null;
   if (!claim) return false;
   if (!document.getElementById("preview-css")) {
-    document.head.append(el("style", { id: "preview-css" }, INDEX_CSS + GLYPH_CSS + DESKTOP_CSS));
+    document.head.append(
+      el("style", { id: "preview-css" }, INDEX_CSS + GLYPH_CSS + DESKTOP_CSS + TRAY_LIGHT_CSS),
+    );
   }
   claim(root, label);
   return true;

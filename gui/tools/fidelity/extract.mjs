@@ -126,8 +126,35 @@ await page.addStyleTag({
 });
 await page.evaluate(() => document.fonts.ready);
 
+/**
+ * The five properties whose recorded value can be a property of the PAGE rather than of the frame.
+ *
+ * DEVIATIONS.md §58b, and the reason S10 owns this file. The prototype draws all sixty frames on one
+ * document, and that document's wrapper carries `color:#F2F4F7` — the dark text tier. A node inside a
+ * `12a` frame that declares no colour of its own therefore computes `rgb(242, 244, 247)`, and the
+ * extractor recorded it as ground truth for the LIGHT theme. An app that correctly inherits `#14161A`
+ * failed on every one: 142 failures across the three compacts alone, not one of them a real
+ * difference, which is why the light twins were mapped, measured and taken back out again.
+ *
+ * The list is exactly the measured failure class and deliberately no wider. `font-family`,
+ * `font-size` and `letter-spacing` inherit from the same wrapper and are ground truth in both themes,
+ * so wildcarding "everything inherited" would delete real light assertions to fix a colour problem.
+ *
+ * `border-*-color` is here for a different reason than `color`: it does not inherit, it defaults to
+ * `currentColor`. So its condition is not "no ancestor declares a border colour" — it is "this node
+ * declares none of its own, and its `color` comes from the page". A node that sets `color` and leaves
+ * its border alone has a border colour the frame really does specify.
+ */
+const PAGE_COLOUR_PROPS = [
+  "color",
+  "border-top-color",
+  "border-right-color",
+  "border-bottom-color",
+  "border-left-color",
+];
+
 const frames = await page.evaluate(
-  (OOS, PROPS, ATTRS, keySrc, INITIALS, COVERED_RANGES) => {
+  (OOS, PROPS, ATTRS, keySrc, INITIALS, COVERED_RANGES, PAGE_PROPS) => {
     // A glyph the bundled faces do not cover comes from whatever the machine has installed, and its
     // advance width differs by whole pixels between machines. Flagged here, once, where base.css's
     // own unicode-range declarations are available to say what "covered" means.
@@ -140,6 +167,64 @@ const frames = await page.evaluate(
       return false;
     };
     const keyOfNode = new Function(`return ${keySrc}`)();
+
+    // Every selector rule the document carries, collected once. The prototype styles almost
+    // everything inline, but not quite everything — its `<style>` block sets `a{color:#22D3EE}`, and
+    // a rule is as much a declaration as an attribute is. A cross-origin sheet cannot be read at all
+    // (the prototype links Google Fonts), and is skipped rather than guessed at: it sets no colour on
+    // any node in any frame, and a sheet this cannot see would only ever make the test say "not
+    // declared", which is the cautious direction.
+    const sheetRules = [];
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) if (rule.style && rule.selectorText) sheetRules.push(rule);
+      } catch {
+        /* cross-origin: unreadable by design */
+      }
+    }
+
+    /**
+     * Does this element DECLARE `prop` itself — inline, through a matching rule, or as an SVG
+     * presentation attribute?
+     *
+     * A shorthand counts, and has to: `border:1px solid #E6E3DE` is how every framed surface writes
+     * its edge, and `CSSStyleDeclaration` expands it, so asking for the longhand answers for it.
+     *
+     * `currentcolor` is NOT a declaration here. It is a redirection to `color`, which is the value
+     * being traced — and `border:none` expands to exactly that, so counting it would mark every
+     * borderless node as carrying its own border colour.
+     */
+    const declares = (el, prop) => {
+      const real = (v) => {
+        const s = (v ?? "").trim().toLowerCase();
+        return s !== "" && s !== "currentcolor";
+      };
+      if (real(el.style?.getPropertyValue(prop))) return true;
+      if (real(el.getAttribute(prop))) return true;
+      for (const rule of sheetRules) {
+        let hit;
+        try {
+          hit = el.matches(rule.selectorText);
+        } catch {
+          continue; // a selector this engine cannot match on is not a declaration it can make
+        }
+        if (hit && real(rule.style.getPropertyValue(prop))) return true;
+      }
+      return false;
+    };
+
+    /**
+     * Is this element's `color` decided outside the frame? Walks up to and INCLUDING the frame root,
+     * because the root's own inline style is part of the design — `12a Settled light` declares its
+     * background and border there. Anything above the root is the prototype's dark page.
+     */
+    const colourFromPage = (el, root) => {
+      for (let node = el; node; node = node.parentElement) {
+        if (declares(node, "color")) return false;
+        if (node === root) return true;
+      }
+      return true; // ran out of ancestors without meeting the root: not a frame node, so not design
+    };
     // PAUSE FIRST, THEN SEEK. Seeking a running animation and pausing afterwards leaves a gap in
     // which the compositor can advance it: `opacity` under `breathe` read 0.45 on one run and
     // 0.450015 on the next, from the same machine seconds apart. Pausing first makes the seek final.
@@ -189,6 +274,12 @@ const frames = await page.evaluate(
           const v = el.getAttribute(a);
           if (v) attrs[a] = v;
         }
+        // The properties this node's recorded colour came from the PAGE for, not from the frame.
+        // Recorded for all 51 frames and theme-neutral on purpose: on a dark frame the inherited
+        // `#F2F4F7` happens to be right and is still asserted, so nothing is lost. assert.mjs is
+        // where it turns into a wildcard, and only for the `12a` set.
+        const pageColour = colourFromPage(el, frame);
+        const fromPage = pageColour ? PAGE_PROPS.filter((p) => p === "color" || !declares(el, p)) : [];
         const box = el.getBoundingClientRect();
         return {
           key: keyOfNode(el, frame),
@@ -196,6 +287,7 @@ const frames = await page.evaluate(
           text: ownText || undefined,
           fullText: fullText && fullText !== ownText ? fullText : undefined,
           unbundled: needsUnbundledGlyph(fullText || ownText) || undefined,
+          fromPage: fromPage.length ? fromPage : undefined,
           attrs: Object.keys(attrs).length ? attrs : undefined,
           box: { w: +box.width.toFixed(2), h: +box.height.toFixed(2) },
           styles,
@@ -224,6 +316,7 @@ const frames = await page.evaluate(
   keyOf.toString(),
   INITIAL,
   COVERED,
+  PAGE_COLOUR_PROPS,
 );
 
 await browser.close();

@@ -181,8 +181,12 @@ which is a desktop mock sitting on a wallpaper. Frame majority wins: `--shadow-t
 ## 15. Light values with no drawn frame
 
 These are in `tokens.css` because a token needs a value in both themes, but nothing measured them.
-Each is a guess constrained by the surrounding ramp. **S10 must verify or replace them, and P0.2
-should ask the designer:**
+Each is a guess constrained by the surrounding ramp.
+
+**S10 walked all eight light frames against their twins and none of these seven is drawn in light,
+so all seven stand — as CHOSEN, not as verified.** §91b has the census that says so, the wider list
+of 33 it belongs to, and the one reason `--btn-primary-disabled-text` reads as "observed" and is not.
+P0.2 should still ask the designer:
 
 | Token                                      | Light value           | Basis                                                   |
 | ------------------------------------------ | --------------------- | ------------------------------------------------------- |
@@ -1310,6 +1314,11 @@ and needs the same answer for the seven screens that have no drawn light frame a
 
 The measurement above is the useful part: it says the light mapping of this panel is already right,
 and it names the one thing standing between S10 and proving it.
+
+**CLOSED by S10 — see §91.** `extract.mjs` records `fromPage` per node and `assert.mjs` declines
+those five properties on a light frame, counting and printing what it declined. The three compacts
+are mapped and pass with **zero** failures, which is this section's prediction coming out exactly:
+the panel needed no new code in light, only ground truth that knew what it did not know.
 
 ### 58c. Three defects F6 found in modules that were already merged
 
@@ -4151,3 +4160,148 @@ evidence:
   §90e's own figure counted the exemption this change added as pre-existing: 44 were already there,
   not 45. Both corrected above. The same slip as §88's, one section on: a change invalidates the
   numbers quoting it, including the ones written in the same commit.
+
+## The light theme (S10)
+
+## 91. The `12a` frames' ground truth was the page's, not the frame's
+
+§58b measured this and handed it here: the prototype draws all sixty frames on one document, that
+document's wrapper carries `color:#F2F4F7`, and a node inside a `12a` frame that declares no colour
+of its own was extracted as the dark text tier. An app that correctly inherits `#14161A` failed on
+every one — **142 failures across the three compacts, one class, none of them a real difference** —
+which is why those three were mapped, measured and taken back out, and the four light windows were
+never mapped at all.
+
+Nothing about that was a mapping problem, and the fix is in `extract.mjs`. Each node now records
+`fromPage`: the properties whose value came from outside the frame root. `assert.mjs` declines to
+compare those on a `12a` frame and **prints how many it declined**, per frame, every run — 628 of
+them, on the theme with the least drawn ground truth, which is a number a reader has to be able to
+see before "0 failures on a light frame" means anything.
+
+**Five properties, not "everything inherited".** `font-family`, `font-size` and `letter-spacing`
+inherit from the same wrapper and are ground truth in both themes; wildcarding them to fix a colour
+problem would delete real light assertions. The list is `color` plus the four `border-*-color`,
+which is exactly the failure class §58b measured — and the two halves have different rules.
+`border-*-color` does not inherit, it defaults to `currentColor`, so its condition is "this node
+declares none of its own, **and** its `color` comes from the page". A node that sets `color` and
+leaves its border alone has a border colour the frame really does specify.
+
+**Recorded for all 51 frames, applied to 8.** On a dark frame the inherited `#F2F4F7` is
+accidentally correct — the app inherits it too — so it is a real comparison and dropping it would
+have traded a fixed light theme for a weaker dark one. Same fixture, different reading. Verified
+rather than assumed: re-extracting with `fromPage` and running the gate produced **byte-identical
+output** to the run before it — 43/51 frames, 79,330 assertions, 0 failures.
+
+With that fixed the seven product frames map to their dark twins' `fids` rather than restating them.
+The two trees are the same tree drawn twice — 26/26, 60/60, 75/75, 63/63, 12/12, 36/36, 13/13, same
+keys in the same order with the same text, measured — so a hand-written light table would be a
+second copy of one that already exists. `check-fixtures.mjs` grew a fifth check that fails the build
+the day a `sameAs` pair stops agreeing, which is what makes inheriting the mapping sound rather than
+convenient. **51/51 frames now carry a mapping, 94,299 assertions.**
+
+**The gradients were the one structural edit the doc warned about, and they were already right.**
+`12-light-theme.md` and the plan both flag "SVG gradient stops must be theme-aware — easy to miss";
+§59a settled it three tasks early by driving the stops from CSS variables rather than duplicating the
+defs, and verified it by sampling pixels. This is the first time a drawn light frame has been in a
+position to say so: `12a Syncing light` carries the two-gradient hexagon, its four `stop-color`s are
+compared as computed values, and all four land on the light palette's own `--up-from`/`--up-to`/
+`--down-from`/`--down-to`. One defs pair, both themes, asserted rather than sampled.
+
+### 91a. Three defects, and all three were invisible in dark
+
+Every one is a token pair that coincides in dark and parts in light — the shape `tokens.css`'s own
+header warns about at length, found for the first time by a frame that could see it.
+
+- **The permanent column's eyebrow wore the decision hue.** `deletionColumn` gave both columns
+  `eyebrow-decision`, which is right for `Recoverable · Proton Drive` and wrong for
+  `Permanent · this computer`: `--decision-text` and `--destructive-text` are both `#FF9C9C` in dark
+  and `#BE123C` against `#B91C1C` in light. The dot beside it already followed severity; the label
+  now does too (`.eyebrow-destructive`).
+- **`--btn-destructive-disabled-bg`'s light value was a derivation, and the derivation was wrong.**
+  `.08`, from dark's `.1`. `12a Deletions light` draws the disabled `Delete` at **`.07`** — the
+  first frame in the bundle to draw it in light, and the tokens.css note said as much without
+  anyone having looked.
+- **The deletion card's kind had no token of its own.** `a folder` and `4 KB` were `--text-4`, which
+  is `#828B98` in dark — correct — and `#4B5563` in light, where both drawn cards put the node at
+  `#6B7280`. The facts strip *inside the same card* does map to `#4B5563`, which is what
+  `12-light-theme.md`'s text-on-tint rule asks for, so this is not a card-versus-not-card
+  distinction: it is one dark hex doing two jobs. Now `--deletion-kind`.
+
+  **The reading a designer could overturn**, stated because two sites is not many: §9 called a
+  single node against sixteen a drawing inconsistency, and these two cards are one component drawn
+  twice, so one slip yields two nodes. What decides it the other way is that §9's node had sixteen
+  counterexamples **at its own role** and this role has none — these two are every instance of it in
+  the bundle, and they agree.
+
+### 91b. Which light values a drawn frame measures, and which are still chosen
+
+Walking the eight light frames against their twins gives a verdict per token rather than a promise:
+of the **106** themed tokens that carry a colour, **73** now have their exact (dark → light) pair
+observed at a node in a drawn light frame, and **33** do not.
+
+The 33 are not a to-do list, they are the honest edge of what is drawn — the notification banner (5),
+the diff panel (4), the compact deletion rows (4), the `Never ask` card (3), the seam (2), the warn
+band (2), the armed confirmation, the inert glyph outline, the scrim. No `12a` frame draws any of
+them, so they stay **CHOSEN**, derived from the ramp around them, and their tokens.css notes now say
+so instead of saying "S10 confirms".
+
+**One of those notes claimed a measurement that never existed.** `--destructive-row-bg`'s light
+value was justified as "read off a frame rather than derived — `--compact-permanent-bg` is this same
+alpha and steps `.05 → .03` in `12a Compact needs light`". `12a Compact needs light` draws no
+deletion row: it is thirteen nodes — a mark, a headline, a sentence, `Review them`, `Later` — and
+the only tint on it is the button's `--decision-btn-bg`. `--compact-permanent-bg`'s own note, four
+rows further down the same file, says the opposite and is right. So one derived value was cited as
+evidence for another, from a frame that draws neither. Both stay chosen, and the note says which.
+
+**The method's own limit, since it decides 73 of the numbers above.** It matches a token by its
+(dark, light) VALUE PAIR, so two tokens carrying the same pair under different names are
+indistinguishable to it — which is the doctrine `tokens.css` is built on, not an accident.
+`--btn-primary-disabled-text` reads as "observed" only because `#6D7783 → #9CA3AF` appears at the
+queued-row arrow that §9 already ruled a drawing inconsistency; nothing draws a disabled primary
+button in light. `--hex-paused-track` and `--hex-paused-bars` read as observed for the plainer version
+of the same reason — they share both values with `--hex-settled-track` and `--text-3` — and no light
+`10a Paused` exists. All three stay on §15's unverified list, which is why that list is 7 rows and not
+4: **the census can confirm a VALUE and never a SITE**, and §15 is about sites.
+
+### 91c. The contrast gate, and the two thresholds it needed instead of one
+
+The seven screens with no light frame get `check-contrast.mjs`, which reads every text node in both
+themes and compares it **to itself**, because there is no drawn artefact to compare it to.
+
+A fixed WCAG floor was the obvious design and it is wrong here: `--text-5` is 4.33:1 in dark and
+recorded as deliberate, and light draws a disabled `‹` at 1.76:1 on a frame that IS drawn and IS
+asserted. A gate that fails where the design is right gets an exemption list and then gets ignored.
+
+Parity alone is wrong too, and the first run measured that rather than arguing it: **the accents drop
+hardest of anything in the design and drop correctly.** `--down-label` is 10.89:1 in dark and 5.05:1
+in light — 46% of it, both values drawn, both asserted. Everything below 0.55 parity is an accent
+arrow or a diff-gutter numeral, and the dimmest of them is still 4.67:1.
+
+So it takes both, and the two populations are disjoint on opposite axes: nothing under 3:1 has a
+parity worse than 0.62, and nothing under 0.5 parity is dimmer than 4.74:1. A token left at its dark
+value lands in the corner neither occupies — `--up-to` unmapped measures **1.62:1 against 11.45:1, a
+parity of 0.14**; `--decision` unmapped, 2.62:1 against 7.09:1, 0.37. `S10_CONTRAST_POISON=1` puts an
+accent back to its dark value and the run must exit 1 naming the eyebrows that carry it — it does,
+with 43 findings against the clean run's 0 — because thresholds placed in a gap measured from passing
+data are exactly how a check that can only ever pass gets built.
+
+**Two artefacts of the tool itself, found by reading its own output rather than by trusting it.** Its
+alpha compositing returned `a: 1` unconditionally, which is right only over an opaque layer — the
+design stacks tints two and three deep, and `Move to Proton's Trash` (`rgba(190,18,60,.06)` inside a
+`rgba(190,18,60,.03)` card) came out as solid `#BE123C`, the same colour as its own label, reported
+as 1.00:1 **in both themes**. And it read every SVG node with a `fill`, so 21 hexagon bodies carrying
+`fill: var(--surface)` to mask the seam were reported as text that had vanished — being exactly the
+colour behind them is that node's entire job. **61 findings became 35 became 0**, and 26 of the 61
+were the gate accusing the design of its own bugs: 21 masks and 5 stacked tints.
+
+**And the wildcard did not blunt the style gate**, which is the thing a reader should want checked
+before believing 51/51. Moving a DECLARED light value by two hundredths of an alpha —
+`--decision-card-border` from `.28` to `.30`, a value `12a Deletions light` draws — fails that frame
+on exactly four assertions. 628 comparisons are declined; the ones the frame actually makes are as
+exact as they were.
+
+**What it does not cover, stated rather than implied:** strokes. A glyph whose stroke is mapped to
+the wrong end of its ramp is invisible here, because a track like `--hex-syncing-track` is drawn a
+shade off the surface on purpose and a legibility gate has no opinion about a track. `assert.mjs`
+compares strokes exactly on eight drawn light frames, which is the stronger check — it is the seven
+undrawn screens that have only this one.

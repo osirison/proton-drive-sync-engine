@@ -9,6 +9,13 @@
       "tag": "div",
       "fullText": "ActivitiesTue 14:41▲◐▮▾Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReviewDrive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLaterDrive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 560
@@ -43,6 +50,13 @@
       "tag": "div",
       "fullText": "ActivitiesTue 14:41▲◐▮▾",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 32
@@ -123,6 +137,13 @@
     {
       "key": "div[0]/span[2]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 867.98,
         "h": 0
@@ -148,6 +169,13 @@
       "tag": "span",
       "fullText": "▲◐▮▾",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 95.14,
         "h": 15
@@ -172,6 +200,13 @@
     {
       "key": "div[0]/span[3]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 15,
         "h": 15
@@ -197,6 +232,13 @@
     {
       "key": "div[0]/span[3]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 10.78,
         "h": 12.65
@@ -226,6 +268,13 @@
     {
       "key": "div[0]/span[3]/svg/circle",
       "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 4.25,
         "h": 4.25
@@ -347,6 +396,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReviewDrive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLaterDrive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 454.5
@@ -378,6 +434,13 @@
       "key": "div[1]/div",
       "tag": "div",
       "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReviewDrive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLaterDrive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 372,
         "h": 454.5
@@ -403,6 +466,9 @@
       "key": "div[1]/div/div[0]",
       "tag": "div",
       "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.Keep themReview",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 372,
         "h": 170.5
@@ -442,6 +508,13 @@
       "key": "div[1]/div/div[0]/div[0]",
       "tag": "div",
       "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 336,
         "h": 93.5
@@ -465,6 +538,13 @@
     {
       "key": "div[1]/div/div[0]/div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -492,6 +572,13 @@
     {
       "key": "div[1]/div/div[0]/div[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -521,6 +608,13 @@
     {
       "key": "div[1]/div/div[0]/div[0]/svg/circle",
       "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 8.5,
         "h": 8.5
@@ -550,6 +644,13 @@
       "key": "div[1]/div/div[0]/div[0]/div",
       "tag": "div",
       "fullText": "Drive Syncnow1,204 photos would be deleted from this computerphotos/2019 was deleted on Proton Drive. Nothing has happened here yet.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 289,
         "h": 93.5
@@ -574,6 +675,13 @@
       "key": "div[1]/div/div[0]/div[0]/div/div[0]",
       "tag": "div",
       "fullText": "Drive Syncnow",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 289,
         "h": 15
@@ -620,6 +728,13 @@
     {
       "key": "div[1]/div/div[0]/div[0]/div/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 191.84,
         "h": 0
@@ -736,6 +851,13 @@
       "key": "div[1]/div/div[0]/div[1]",
       "tag": "div",
       "fullText": "Keep themReview",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 336,
         "h": 33
@@ -842,6 +964,9 @@
       "key": "div[1]/div/div[1]",
       "tag": "div",
       "fullText": "Drive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.CompareLater",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 372,
         "h": 154.5
@@ -881,6 +1006,13 @@
       "key": "div[1]/div/div[1]/div[0]",
       "tag": "div",
       "fullText": "Drive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 336,
         "h": 77.5
@@ -904,6 +1036,13 @@
     {
       "key": "div[1]/div/div[1]/div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -931,6 +1070,13 @@
     {
       "key": "div[1]/div/div[1]/div[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -960,6 +1106,13 @@
     {
       "key": "div[1]/div/div[1]/div[0]/svg/circle",
       "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 8.5,
         "h": 8.5
@@ -989,6 +1142,13 @@
       "key": "div[1]/div/div[1]/div[0]/div",
       "tag": "div",
       "fullText": "Drive Sync2m agoYou both changed notes/todo.txtBoth versions are safe. Pick one when you have a moment.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 289,
         "h": 77.5
@@ -1013,6 +1173,13 @@
       "key": "div[1]/div/div[1]/div[0]/div/div[0]",
       "tag": "div",
       "fullText": "Drive Sync2m ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 289,
         "h": 15
@@ -1059,6 +1226,13 @@
     {
       "key": "div[1]/div/div[1]/div[0]/div/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 173.25,
         "h": 0
@@ -1151,6 +1325,13 @@
       "key": "div[1]/div/div[1]/div[1]",
       "tag": "div",
       "fullText": "CompareLater",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 336,
         "h": 33
@@ -1257,6 +1438,9 @@
       "key": "div[1]/div/div[2]",
       "tag": "div",
       "fullText": "Drive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 372,
         "h": 109.5
@@ -1296,6 +1480,13 @@
       "key": "div[1]/div/div[2]/div",
       "tag": "div",
       "fullText": "Drive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 336,
         "h": 77.5
@@ -1319,6 +1510,13 @@
     {
       "key": "div[1]/div/div[2]/div/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -1346,6 +1544,13 @@
     {
       "key": "div[1]/div/div[2]/div/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -1375,6 +1580,13 @@
     {
       "key": "div[1]/div/div[2]/div/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7.65,
         "h": 5.38
@@ -1406,6 +1618,13 @@
       "key": "div[1]/div/div[2]/div/div",
       "tag": "div",
       "fullText": "Drive Sync14:12Both sides now matchFirst sync finished — 12,480 files, 41.2 GB. Nothing was deleted.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 289,
         "h": 77.5
@@ -1430,6 +1649,13 @@
       "key": "div[1]/div/div[2]/div/div/div[0]",
       "tag": "div",
       "fullText": "Drive Sync14:12",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 289,
         "h": 15
@@ -1476,6 +1702,13 @@
     {
       "key": "div[1]/div/div[2]/div/div/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 179.86,
         "h": 0

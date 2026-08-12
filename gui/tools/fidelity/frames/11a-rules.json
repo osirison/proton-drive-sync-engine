@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "Interrupts you — 4Something would be deleted permanentlyThe one event where waiting silently could cost you files you'd never get back.A file changed on both sidesNothing is lost, but you're now editing two versions of the same thing without knowing it.The first sync finishedOnce, at the end of a long wait you were told to walk away from.Nothing has synced for a dayNot a blip — a real outage, wrong password, or full drive. Silence here is dangerous.Stays silent — on purposeevery sync passevery file sentevery file receivedfolders followedrenamesa single failed passretriesscheduled sweepsskipped filespause and resumerecoverable deletionssettings savedAll of it is in Activity, where you go looking for it. A notification you didn't need is a notification you'll switch off.Never a button in a bannerDelete. Discard a version. Approve all. Anything irreversible needs a window where you can see what you're losing — a banner only ever offers the safe direction.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 600,
         "h": 633.38
@@ -70,6 +73,12 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Something would be deleted permanentlyThe one event where waiting silently could cost you files you'd never get back.",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 62
@@ -99,6 +108,13 @@
     {
       "key": "div[1]/span",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -128,6 +144,13 @@
       "key": "div[1]/div",
       "tag": "div",
       "fullText": "Something would be deleted permanentlyThe one event where waiting silently could cost you files you'd never get back.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 526,
         "h": 37
@@ -152,6 +175,13 @@
       "key": "div[1]/div/div[0]",
       "tag": "div",
       "text": "Something would be deleted permanently",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 526,
         "h": 16
@@ -197,6 +227,12 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "A file changed on both sidesNothing is lost, but you're now editing two versions of the same thing without knowing it.",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 62
@@ -225,6 +261,9 @@
     {
       "key": "div[2]/span",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -261,6 +300,13 @@
       "key": "div[2]/div",
       "tag": "div",
       "fullText": "A file changed on both sidesNothing is lost, but you're now editing two versions of the same thing without knowing it.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 526,
         "h": 37
@@ -285,6 +331,13 @@
       "key": "div[2]/div/div[0]",
       "tag": "div",
       "text": "A file changed on both sides",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 526,
         "h": 16
@@ -330,6 +383,12 @@
       "key": "div[3]",
       "tag": "div",
       "fullText": "The first sync finishedOnce, at the end of a long wait you were told to walk away from.",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 62
@@ -358,6 +417,13 @@
     {
       "key": "div[3]/span",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -387,6 +453,13 @@
       "key": "div[3]/div",
       "tag": "div",
       "fullText": "The first sync finishedOnce, at the end of a long wait you were told to walk away from.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 526,
         "h": 37
@@ -411,6 +484,13 @@
       "key": "div[3]/div/div[0]",
       "tag": "div",
       "text": "The first sync finished",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 526,
         "h": 16
@@ -456,6 +536,12 @@
       "key": "div[4]",
       "tag": "div",
       "fullText": "Nothing has synced for a dayNot a blip — a real outage, wrong password, or full drive. Silence here is dangerous.",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 62
@@ -484,6 +570,13 @@
     {
       "key": "div[4]/span",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7,
         "h": 7
@@ -513,6 +606,13 @@
       "key": "div[4]/div",
       "tag": "div",
       "fullText": "Nothing has synced for a dayNot a blip — a real outage, wrong password, or full drive. Silence here is dangerous.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 526,
         "h": 37
@@ -537,6 +637,13 @@
       "key": "div[4]/div/div[0]",
       "tag": "div",
       "text": "Nothing has synced for a day",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 526,
         "h": 16
@@ -606,6 +713,13 @@
       "key": "div[6]",
       "tag": "div",
       "fullText": "every sync passevery file sentevery file receivedfolders followedrenamesa single failed passretriesscheduled sweepsskipped filespause and resumerecoverable deletionssettings saved",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 95
@@ -1134,6 +1248,9 @@
       "key": "div[8]",
       "tag": "div",
       "fullText": "Never a button in a bannerDelete. Discard a version. Approve all. Anything irreversible needs a window where you can see what you're losing — a banner only ever offers the safe direction.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 546,
         "h": 89.19

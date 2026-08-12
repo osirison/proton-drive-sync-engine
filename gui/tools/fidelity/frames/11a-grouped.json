@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "5Drive Syncnow5 files changed on both sidesAll ten versions are safe. This usually means another device was offline for a while.Go through themLater",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 520,
         "h": 154.5
@@ -47,6 +50,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "5Drive Syncnow5 files changed on both sidesAll ten versions are safe. This usually means another device was offline for a while.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 484,
         "h": 77.5
@@ -71,6 +81,13 @@
       "key": "div[0]/svg",
       "tag": "svg",
       "fullText": "5",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -98,6 +115,13 @@
     {
       "key": "div[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -128,6 +152,13 @@
       "key": "div[0]/svg/text",
       "tag": "text",
       "text": "5",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 7.48,
         "h": 16
@@ -155,6 +186,13 @@
       "key": "div[0]/div",
       "tag": "div",
       "fullText": "Drive Syncnow5 files changed on both sidesAll ten versions are safe. This usually means another device was offline for a while.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 437,
         "h": 77.5
@@ -179,6 +217,13 @@
       "key": "div[0]/div/div[0]",
       "tag": "div",
       "fullText": "Drive Syncnow",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 437,
         "h": 15
@@ -225,6 +270,13 @@
     {
       "key": "div[0]/div/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 341.05,
         "h": 0
@@ -317,6 +369,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Go through themLater",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 484,
         "h": 33

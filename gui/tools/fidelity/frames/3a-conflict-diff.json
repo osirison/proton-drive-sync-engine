@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Sync3 waiting⋯3notes/todo.txtTwo lines differ. Everything else in the file matches.1 of 3‹›Your versionProton's version1# Todo2- buy milk3- call Alice4- ship v1·not in your version1# Todo2- buy oat milk3- call Alice4- ship v15- relax2 lines differ · 3 lines identicalOpen both in an editorHide differencesStill waiting after this onedesign/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3ActivityPlan a syncSettingsDetails",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Sync3 waiting⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -98,6 +115,13 @@
       "key": "header/span[0]",
       "tag": "span",
       "text": "Proton Drive Sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 107.52,
         "h": 16
@@ -119,6 +143,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 696.08,
         "h": 0
@@ -248,6 +279,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "3notes/todo.txtTwo lines differ. Everything else in the file matches.1 of 3‹›",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 44
@@ -277,6 +315,13 @@
       "key": "div[0]/svg",
       "tag": "svg",
       "fullText": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -303,6 +348,13 @@
     {
       "key": "div[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -333,6 +385,13 @@
       "key": "div[0]/svg/text",
       "tag": "text",
       "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 6,
         "h": 13
@@ -360,6 +419,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "fullText": "notes/todo.txtTwo lines differ. Everything else in the file matches.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 796.59,
         "h": 38
@@ -429,6 +495,13 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "fullText": "1 of 3‹›",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 117.41,
         "h": 30
@@ -554,6 +627,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Your versionProton's version1# Todo2- buy milk3- call Alice4- ship v1·not in your version1# Todo2- buy oat milk3- call Alice4- ship v15- relax2 lines differ · 3 lines identicalOpen both in an editorHide differencesStill waiting after this onedesign/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 598
@@ -583,6 +663,13 @@
       "key": "div[1]/div[0]",
       "tag": "div",
       "fullText": "Your versionProton's version",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 13
@@ -655,6 +742,9 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "1# Todo2- buy milk3- call Alice4- ship v1·not in your version1# Todo2- buy oat milk3- call Alice4- ship v15- relax",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 976,
         "h": 136
@@ -694,6 +784,13 @@
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
       "fullText": "1# Todo2- buy milk3- call Alice4- ship v1·not in your version",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 134
@@ -718,6 +815,13 @@
       "key": "div[1]/div[1]/div[0]/div[0]",
       "tag": "div",
       "fullText": "1# Todo",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -791,6 +895,13 @@
       "key": "div[1]/div[1]/div[0]/div[1]",
       "tag": "div",
       "fullText": "2- buy milk",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -865,6 +976,13 @@
       "key": "div[1]/div[1]/div[0]/div[2]",
       "tag": "div",
       "fullText": "3- call Alice",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -938,6 +1056,13 @@
       "key": "div[1]/div[1]/div[0]/div[3]",
       "tag": "div",
       "fullText": "4- ship v1",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -1011,6 +1136,13 @@
       "key": "div[1]/div[1]/div[0]/div[4]",
       "tag": "div",
       "fullText": "·not in your version",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -1083,6 +1215,13 @@
     {
       "key": "div[1]/div[1]/div[1]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 134
@@ -1106,6 +1245,13 @@
       "key": "div[1]/div[1]/div[2]",
       "tag": "div",
       "fullText": "1# Todo2- buy oat milk3- call Alice4- ship v15- relax",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 134
@@ -1130,6 +1276,13 @@
       "key": "div[1]/div[1]/div[2]/div[0]",
       "tag": "div",
       "fullText": "1# Todo",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -1203,6 +1356,13 @@
       "key": "div[1]/div[1]/div[2]/div[1]",
       "tag": "div",
       "fullText": "2- buy oat milk",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -1277,6 +1437,13 @@
       "key": "div[1]/div[1]/div[2]/div[2]",
       "tag": "div",
       "fullText": "3- call Alice",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -1350,6 +1517,13 @@
       "key": "div[1]/div[1]/div[2]/div[3]",
       "tag": "div",
       "fullText": "4- ship v1",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -1423,6 +1597,13 @@
       "key": "div[1]/div[1]/div[2]/div[4]",
       "tag": "div",
       "fullText": "5- relax",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 486.5,
         "h": 22
@@ -1497,6 +1678,13 @@
       "key": "div[1]/div[2]",
       "tag": "div",
       "fullText": "2 lines differ · 3 lines identicalOpen both in an editorHide differences",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 31
@@ -1544,6 +1732,13 @@
     {
       "key": "div[1]/div[2]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 436.45,
         "h": 0
@@ -1644,6 +1839,13 @@
       "key": "div[1]/div[3]",
       "tag": "div",
       "fullText": "Still waiting after this onedesign/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 104
@@ -1692,6 +1894,13 @@
       "key": "div[1]/div[3]/div[1]",
       "tag": "div",
       "fullText": "design/logo.svgboth changed it2 of 3photos/tripa folder here, a file there3 of 3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 68
@@ -1717,6 +1926,12 @@
       "key": "div[1]/div[3]/div[1]/div[0]",
       "tag": "div",
       "fullText": "design/logo.svgboth changed it2 of 3",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1747,6 +1962,9 @@
     {
       "key": "div[1]/div[3]/div[1]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 6,
         "h": 6
@@ -1851,6 +2069,12 @@
       "key": "div[1]/div[3]/div[1]/div[1]",
       "tag": "div",
       "fullText": "photos/tripa folder here, a file there3 of 3",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1881,6 +2105,9 @@
     {
       "key": "div[1]/div[3]/div[1]/div[1]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 6,
         "h": 6
@@ -1985,6 +2212,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 50
@@ -2011,6 +2245,12 @@
       "key": "div[2]/div",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 960,
         "h": 32

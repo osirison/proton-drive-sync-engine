@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "When to interrupt meEverything else stays in Activity regardless.Only when you need medefaultThe four events on the left. Roughly once a week, in a quiet month.Only permanent deletionsThe single event that can cost you files. Conflicts wait quietly in the app.NeverThe menu bar glyph still changes, and things still wait for you rather than happening on their own.notify_policy",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 520,
         "h": 426.25
@@ -47,6 +50,13 @@
       "key": "div[0]",
       "tag": "div",
       "text": "When to interrupt me",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 466,
         "h": 22
@@ -92,6 +102,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Only when you need medefaultThe four events on the left. Roughly once a week, in a quiet month.Only permanent deletionsThe single event that can cost you files. Conflicts wait quietly in the app.NeverThe menu bar glyph still changes, and things still wait for you rather than happening on their own.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 466,
         "h": 280.88
@@ -118,6 +135,9 @@
       "key": "div[2]/div[0]",
       "tag": "div",
       "fullText": "Only when you need medefaultThe four events on the left. Roughly once a week, in a quiet month.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 466,
         "h": 77.38
@@ -157,6 +177,13 @@
       "key": "div[2]/div[0]/div[0]",
       "tag": "div",
       "fullText": "Only when you need medefault",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 432,
         "h": 20
@@ -181,6 +208,9 @@
     {
       "key": "div[2]/div[0]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 15,
         "h": 15
@@ -216,6 +246,13 @@
       "key": "div[2]/div[0]/div[0]/span[1]",
       "tag": "span",
       "text": "Only when you need me",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 334.89,
         "h": 16
@@ -302,6 +339,9 @@
       "key": "div[2]/div[1]",
       "tag": "div",
       "fullText": "Only permanent deletionsThe single event that can cost you files. Conflicts wait quietly in the app.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 466,
         "h": 92.75
@@ -341,6 +381,13 @@
       "key": "div[2]/div[1]/div[0]",
       "tag": "div",
       "fullText": "Only permanent deletions",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 432,
         "h": 16
@@ -365,6 +412,9 @@
     {
       "key": "div[2]/div[1]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 15,
         "h": 15
@@ -448,6 +498,9 @@
       "key": "div[2]/div[2]",
       "tag": "div",
       "fullText": "NeverThe menu bar glyph still changes, and things still wait for you rather than happening on their own.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 466,
         "h": 92.75
@@ -487,6 +540,13 @@
       "key": "div[2]/div[2]/div[0]",
       "tag": "div",
       "fullText": "Never",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 432,
         "h": 16
@@ -511,6 +571,9 @@
     {
       "key": "div[2]/div[2]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 15,
         "h": 15

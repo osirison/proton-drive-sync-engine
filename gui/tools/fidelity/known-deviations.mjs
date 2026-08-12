@@ -760,6 +760,58 @@ export const KNOWN_DEVIATIONS = [
     issue: "#218",
     why: "the row around it, the same 60px",
   },
+
+  // ---- S10 · the light theme. FIVE ROWS, AND EVERY ONE IS A DARK ROW SEEN TWICE.
+  //
+  // A light frame is its dark twin with the tokens swapped, so a capability the daemon does not have
+  // is missing from both — `12a Settled light` draws the same `· 12,480 files · 41.2 GB` that
+  // `2a Settled` does, and Phase 1 omits it in both themes. What it is NOT is the same row: a
+  // deviation pins its measurement, and three of these five measure differently in light because
+  // `--btn-primary-soft-border` does not exist there and the 2px a border takes out of a border-box
+  // moves the card that holds the button. `4a Deletions`' card is 275.59 tall and its light twin
+  // 273.59 — two pixels that would have been absorbed silently by a shared row.
+  //
+  // So they are written out rather than derived from the twin, and the two pixels are the argument.
+  {
+    frame: "12a Settled light",
+    key: "div[0]/div[2]",
+    props: ["box.w"],
+    detail: "390.02 vs 195.02",
+    issue: "#207",
+    why: "the settled sub-line's `· 12,480 files · 41.2 GB` — G7 in light, the same missing index-wide totals as `2a Settled`, at the same 195px",
+  },
+  {
+    frame: "12a Conflict light",
+    key: "div[1]/div[1]/div[1]",
+    props: ["box.w"],
+    detail: "324.7 vs 145.31",
+    issue: "#217",
+    why: "`· last agreed 3 hours ago` needs a baseline timestamp `FileRecord` does not keep — `3a Conflict`'s deviation, drawn light",
+  },
+  {
+    frame: "12a Deletions light",
+    key: "div[1]/div[1]/div[0]/div[2]",
+    props: ["box.h"],
+    detail: "273.59 vs 210.8",
+    issue: "#208",
+    why: "the folder card without its second consequence line and without its facts strip — `4a Deletions`' 275.59/212.8, each two pixels shorter because light's primary-soft button draws no border and the card is as tall as what it holds",
+  },
+  {
+    frame: "12a Deletions light",
+    key: "div[1]/div[1]/div[0]/div[2]/div[1]",
+    props: ["box.h"],
+    detail: "41.59 vs 20.8",
+    issue: "#208",
+    why: "the consequence itself, two drawn lines against Phase 1's one — the subtree aggregate `1,204 photos, 8.4 GB` has no command behind it in either theme",
+  },
+  {
+    frame: "12a Deletions light",
+    key: "div[1]/div[1]/div[0]/div[2]/div[1]/strong",
+    props: ["box.w"],
+    detail: "122.27 vs 116.52",
+    issue: "#208",
+    why: "the emphasised loss, `everything inside it` where the frame draws the aggregate — the same substitution `4a Deletions` records, and the same 5.75px",
+  },
 ];
 
 /** `frame|key|prop` → row, for the O(1) lookup the assertion loop wants. */
@@ -1011,6 +1063,58 @@ export const KNOWN_UNSTAMPED = [
     key: "div[1]/div[1]/div[0]/span[2]",
     issue: "#242",
     why: "`left alone`, the note on that row — it goes with it",
+  },
+
+  // ---- S10 · the light theme. SIX ROWS, AND THEY ARE THEIR DARK TWINS' ROWS AT THE SAME KEYS.
+  //
+  // Unlike the deviations above, nothing here measures differently in light — an unstamped slot is
+  // an absence, and an absence has no pixels to shift. They are written out for the reason the file
+  // header gives: a row is one NODE, `frame` included, so a row on `4a Deletions` never vouches for
+  // anything on `12a Deletions light`. Which is what caught them: the first version of this task
+  // read the mapping off the raw registry entry instead of the resolved one, found `undefined` on
+  // all seven light frames, iterated nothing, and reported six fewer blocks than the app omits —
+  // the gate's own failure mode, on the frames it had just been pointed at.
+  {
+    frame: "12a Syncing light",
+    slot: "transferTrack",
+    key: "div[1]/div[0]/div[0]/div[1]",
+    issue: "#98",
+    why: "`2a Syncing`'s progress track, drawn light: `TransferActivity` carries `bytes_total` on an upload and `bytes_done` on a download and never both, so no percentage exists in either theme",
+  },
+  {
+    frame: "12a Syncing light",
+    slot: "transferFill",
+    key: "div[1]/div[0]/div[0]/div[1]/div",
+    issue: "#98",
+    why: "the fill inside that track — same cause, and it goes with it",
+  },
+  {
+    frame: "12a Deletions light",
+    slot: "cardFacts",
+    key: "div[1]/div[1]/div[0]/div[2]/div[2]",
+    issue: "#208",
+    why: "the folder card's facts strip, absent rather than partial — an atime the index does not store (#208) and a detected time that is the pass's age (#225), so `factsOf` returns nothing for a directory",
+  },
+  {
+    frame: "12a Deletions light",
+    slot: "cardFact",
+    key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[0]",
+    issue: "#225",
+    why: "`deleted on Proton 22m ago` — `detected_epoch_secs` is re-stamped every pass",
+  },
+  {
+    frame: "12a Deletions light",
+    slot: "cardFact",
+    key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[1]",
+    issue: "#208",
+    why: "`last opened Mar 2024` is an access time and `FileRecord` stores a modification time only",
+  },
+  {
+    frame: "12a Deletions light",
+    slot: "cardFact",
+    key: "div[1]/div[1]/div[1]/div[2]/div[2]/span[0]",
+    issue: "#225",
+    why: "`deleted here 6m ago` on the local card — the same re-stamped field, which is why this strip draws its second fact and not its first",
   },
 ];
 

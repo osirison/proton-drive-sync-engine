@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "33 things need youOne file changed on both sides.Two deletions are waiting.Review themsyncing continuesLater",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 362,
         "h": 301.5
@@ -44,6 +47,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "33 things need youOne file changed on both sides.Two deletions are waiting.Review them",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 252.5
@@ -73,6 +83,13 @@
       "key": "div[0]/svg",
       "tag": "svg",
       "fullText": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 72,
         "h": 72
@@ -98,6 +115,13 @@
     {
       "key": "div[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 51.72,
         "h": 60.72
@@ -128,6 +152,13 @@
       "key": "div[0]/svg/text",
       "tag": "text",
       "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 9.36,
         "h": 20
@@ -155,6 +186,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "3 things need you",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 140.55,
         "h": 20
@@ -263,6 +301,12 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "syncing continuesLater",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 47
@@ -315,6 +359,13 @@
     {
       "key": "div[1]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 141.44,
         "h": 0
