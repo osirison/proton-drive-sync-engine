@@ -658,9 +658,16 @@ export const TRAY_MENU = {
  * Ids and not labels — two sets can draw the same words for different actions, and the id is what
  * the click dispatches on. `JSON.stringify` for the same reason `screens/main.js` uses it for its
  * lists: any separator character is a wrong answer when the parts are arbitrary strings.
+ *
+ * WHICH IS WHY THE SEPARATOR IS `null` AND NOT `"|"`. It was `"|"` for one commit, and that is the
+ * sentence above being written and then not followed: a row id of `|` would have collided with a
+ * separator. No id is `|` today, so nothing was broken — but the whole reason this is not a `join`
+ * is that no character is safe, and picking one anyway inside the encoding that exists to avoid it
+ * is the argument losing to the habit. `null` cannot be an id, and JSON keeps the two distinct.
+ * Caught by Copilot on #259.
  */
 export function menuSignature(rows) {
-  return JSON.stringify(rows.map((row) => (row.separator ? "|" : row.id)));
+  return JSON.stringify(rows.map((row) => (row.separator ? null : row.id)));
 }
 
 export function trayMenu(state, onSelect = null) {
