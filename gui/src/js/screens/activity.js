@@ -667,6 +667,59 @@ export function elideId(protonId) {
 // ----------------------------------------------------------------------------- passes tab ----
 
 /**
+ * Phrases that mean the daemon could not REACH Proton, as opposed to failing once it had.
+ *
+ * MEASURED AGAINST WHAT THE ENGINE CAN ACTUALLY SAY, not invented. `last_error` is mixed
+ * provenance: some of it the engine wrote (`proton-drive {operation} timed out after {duration}`,
+ * `src/proton.rs`) and the rest is the CLI's stderr passed through verbatim. Nothing classifies it —
+ * `StatusHistoryEntry` carries the string and no cause — so this is a pattern match on prose, the
+ * same shape and the same compromise as `gui-core`'s `looks_like_auth_error` (#103/E6 until the
+ * daemon classifies its own failures).
+ *
+ * TIGHT ON PURPOSE, because the two errors are not symmetric. A miss labels a genuine outage
+ * `Didn't finish`, which is quieter than the truth and still true; a false hit puts
+ * `Couldn't reach Proton Drive` over a full disk, which is the bug #258 is about. So the default is
+ * the neutral label and every entry here has to be transport vocabulary that a local failure has no
+ * reason to use. `no space left on device`, `os error 2`, `session expired` and `permission denied`
+ * all miss, and all four are failures with Proton perfectly reachable — the last of them reached it
+ * and was refused, which is the case an auth-shaped split would have got backwards.
+ *
+ * The five in `activity.test.js` are the binding version of that sentence; this list is four of them
+ * because a comment is not a test, and the day a needle starts matching one of them it is the test
+ * that says so.
+ */
+export const UNREACHABLE_NEEDLES = [
+  "timed out",
+  "timeout",
+  "connection",
+  "network",
+  "unreachable",
+  "no route to host",
+  "name resolution",
+  "could not resolve",
+  "offline",
+];
+
+/**
+ * The label for a failed pass — the drawn one when the error names Proton, the neutral one always.
+ *
+ * Exported for the tests rather than for a second caller: what needs proving is the CLASSIFICATION,
+ * and a test that goes through the row has to assert on rendered DOM to see it.
+ *
+ * NOT `looks_like_auth_error`, which is what #258 suggested. It is the wrong split for this label:
+ * an expired session means Proton was reached and refused you, so the auth-shaped subset is exactly
+ * the one that must NOT say `Couldn't reach Proton Drive` — and the frame's own error, a connection
+ * timeout, does not match it, so following the suggestion literally would have flipped the drawn row
+ * to the neutral label and failed the gate on the frame it was trying to be faithful to.
+ */
+export function failureLabel(error) {
+  const message = String(error ?? "").toLowerCase();
+  return UNREACHABLE_NEEDLES.some((needle) => message.includes(needle))
+    ? ACTIVITY.passes.unreachable
+    : ACTIVITY.passes.failed;
+}
+
+/**
  * One pass, as a row. `passRow` already matches the frame down to the failed variant's tinted
  * break-out and its quoted daemon string, so this is a mapping and not a builder.
  *
@@ -678,7 +731,7 @@ function passRowFor(entry, retriedAt = null) {
   const failed = entry.last_error != null;
   return passRow({
     outcome: failed ? "failed" : "clean",
-    label: failed ? ACTIVITY.passes.unreachable : ACTIVITY.passes.clean,
+    label: failed ? failureLabel(entry.last_error) : ACTIVITY.passes.clean,
     // A FAILED PASS SAYS WHEN IT WAS PUT RIGHT, which is the frame's own `retried at 14:17 and
     // worked`. The retry is not a field on the entry — it is the next pass that succeeded — so a
     // failure with nothing after it yet has no such clause, and gets none rather than a guess.

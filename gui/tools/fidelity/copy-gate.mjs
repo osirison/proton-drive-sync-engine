@@ -48,6 +48,13 @@ const NOT_DRAWN = new Map([
   // empty-state table still specifies it ("Activity › files: `Nothing has moved in the last hour.`
   // + flat line"), and S5 will need it. DEVIATIONS.md §49.
   ["ACTIVITY.nothingRecent", "only drawn in `6a Quiet`, which is out of scope"],
+  // The label for a failed pass whose error names no cause (#258). `6a Activity passes` draws one
+  // failure and it is a connection timeout, so the frame has no occasion to draw this — which is the
+  // whole reason the screen shipped claiming every failure was Proton being unreachable.
+  [
+    "ACTIVITY.passes.failed",
+    "the frame's only failed pass is a connection timeout, which keeps the drawn label",
+  ],
   // The fifth Settings pill (S9). `11a Settings` is the tab's CONTENT, drawn as a crop with no pill
   // row above it, and `8a Settings` draws the row with the four `08-settings.md` names. So the word
   // exists in no frame while the surface it names is drawn in two. DEVIATIONS §83.

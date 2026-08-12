@@ -4437,3 +4437,45 @@ cannot match, which is what makes it stop matching; it now reads `— structural
 mean different things to whoever reads them. An issue means the capability landed, so delete the row.
 `structural` means a property the app could never carry now agrees with the drawing — either the app
 changed or the frame was re-extracted, and both want reading before anything is deleted.
+
+---
+
+## A failed pass names its cause only when it has one (#258)
+
+## 93. The row asserted the one cause it could not check
+
+`passRowFor` labelled every failed pass `Couldn't reach Proton Drive` on the sole test
+`entry.last_error != null`. The label is the deck's, read off `6a Activity passes`, and it is right
+for the pass that frame draws — a connection timeout. It is not right for the field it keys on:
+`last_error` is whatever `reconcile_blocking` caught, so a full disk, a `proton-drive` binary that
+moved and a local file that could not be read all arrived on screen as Proton being unreachable —
+**directly above the daemon's own string, quoted verbatim, saying otherwise.**
+
+#246 had settled the identical question one screen over and settled it the other way (§90d): S1's
+failed hero is `The last sync didn't finish` precisely because naming Proton is a claim the data does
+not support. So the two screens disagreed about the same field, and the one that disagreed loudest
+was the one with the drawing behind it.
+
+**The split is by cause, not by presence.** `ACTIVITY.passes.unreachable` survives for an error whose
+own words are about reaching Proton; everything else gets `Didn't finish`, which names nothing. That
+keeps `6a Activity passes` rendering exactly what it draws — its error is
+`proton-drive: connection timed out after 60s` — so the style gate never moves, and the new string is
+exempt in the copy gate for the reason that made the bug possible: no frame draws a failure of any
+other kind.
+
+**Not `looks_like_auth_error`, which is what the issue proposed.** It is the wrong split for this
+label twice over. An expired session means Proton was *reached* and refused you, so the auth-shaped
+subset is exactly the one that must not say `Couldn't reach Proton Drive`; and the frame's own error
+does not match it, so following the suggestion literally would have flipped the drawn row to the
+neutral label and failed the gate on the frame it was meant to be faithful to. An issue naming a
+mechanism is a hypothesis about it.
+
+**What the needle list is, and what it is not.** `last_error` is mixed provenance — some of it the
+engine wrote (`proton-drive {operation} timed out after {duration}`, `src/proton.rs`) and the rest is
+the CLI's stderr passed through — and nothing classifies it, so this is a pattern match on prose,
+the same compromise as `gui-core`'s `looks_like_auth_error` and with the same ending (#103/E6, the
+daemon classifying its own failures). It is deliberately tight, because the two errors are not
+symmetric: a miss labels a genuine outage `Didn't finish`, which is quieter than the truth and still
+true, while a false hit is the bug this section is about. Nine phrases, each transport vocabulary a
+local failure has no reason to use, pinned in both directions by `activity.test.js` — including the
+five real failures that must NOT match.

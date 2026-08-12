@@ -21,6 +21,8 @@ import {
   footerVariantOf,
   elideId,
   normaliseQuery,
+  failureLabel,
+  UNREACHABLE_NEEDLES,
 } from "../src/js/screens/activity.js";
 import { ACTIVITY } from "../src/js/ui/copy.js";
 import { cardinal } from "../src/js/ui/format.js";
@@ -287,4 +289,70 @@ test("a typed query normalises to the path the index is asked for", () => {
   assert.equal(normaliseQuery(""), "");
   assert.equal(normaliseQuery(null), "");
   assert.equal(normaliseQuery(undefined), "");
+});
+
+// ---- what a failed pass is allowed to claim (#258) --------------------------------------------
+//
+// The row used to label EVERY failure `Couldn't reach Proton Drive`, on the sole test
+// `last_error != null` — over a full disk, over a binary that had moved, and directly above the
+// daemon's own words saying otherwise. These are the two directions that matters in, and they are
+// not symmetric: a miss is quieter than the truth and still true, a false hit is the bug.
+
+test("the drawn label survives, because the frame's own error is a connection timeout", () => {
+  // Not a paraphrase: this is the exact string `6a Activity passes` draws and the fixture feeds.
+  assert.equal(failureLabel(ACTIVITY.passes.exampleDaemonError), ACTIVITY.passes.unreachable);
+});
+
+test("a failure Proton had nothing to do with does not blame Proton", () => {
+  for (const error of [
+    "No space left on device (os error 28)",
+    "failed to spawn proton-drive: No such file or directory (os error 2)",
+    "permission denied reading /home/qp/ProtonDrive/notes.md",
+    "session expired — sign in again",
+    "refusing to bind control socket: /run/user/1000/proton-sync.sock already exists",
+  ]) {
+    assert.equal(failureLabel(error), ACTIVITY.passes.failed, error);
+  }
+});
+
+test("the reach-shaped failures the engine and the CLI can actually produce all match", () => {
+  for (const error of [
+    // The engine's own, `src/proton.rs`: `proton-drive {operation} timed out after {duration}`.
+    "proton-drive list timed out after 120s",
+    "connection refused",
+    "Connection reset by peer",
+    "network is unreachable",
+    "curl: (6) Could not resolve host: drive.proton.me",
+    "temporary failure in name resolution",
+    "no route to host",
+  ]) {
+    assert.equal(failureLabel(error), ACTIVITY.passes.unreachable, error);
+  }
+});
+
+// A row whose error is missing or empty still has to render a label. It cannot claim a cause it
+// does not have — and `String(null)` is the word `null`, which would have matched nothing and
+// worked by accident; `String(undefined)` contains no needle either, but neither is a reason.
+test("an absent error falls to the neutral label rather than throwing", () => {
+  assert.equal(failureLabel(null), ACTIVITY.passes.failed);
+  assert.equal(failureLabel(undefined), ACTIVITY.passes.failed);
+  assert.equal(failureLabel(""), ACTIVITY.passes.failed);
+});
+
+// Case is the daemon's to choose and the CLI's to vary — `Connection reset` and `connection reset`
+// are the same failure, and a classifier that reads one and not the other is a coin toss.
+test("the match is case-insensitive", () => {
+  assert.equal(failureLabel("CONNECTION TIMED OUT"), ACTIVITY.passes.unreachable);
+  assert.equal(failureLabel("Network Is Unreachable"), ACTIVITY.passes.unreachable);
+});
+
+// A COUNT IS A CLAIM, and this branch already got one wrong: the list comment said "all three" of
+// four errors, caught in review. DEVIATIONS §93 and the PR body both say NINE phrases, so the number
+// is pinned here rather than left as prose that ages. Growing the list is fine; growing it without
+// touching the sentence that quotes it is not.
+test("the needle list is the nine phrases the write-up claims", () => {
+  assert.equal(UNREACHABLE_NEEDLES.length, 9);
+  // Lower-case, because the match lower-cases the message and not the needle — an upper-case entry
+  // here would silently never fire.
+  for (const needle of UNREACHABLE_NEEDLES) assert.equal(needle, needle.toLowerCase(), needle);
 });
