@@ -3733,3 +3733,51 @@ name; the other two in the same mock and both standalone banners draw `normal`. 
 0.12px. The component draws `normal` and that one node carries no slot — the call `8a Settings`'
 `event_driven_reconcile` key line got, which is neither a mapped node nor a known-deviations row. The
 spacer beside it goes with it: it is `flex:1`, so its width is the app name's subtracted from the row.
+
+### 88a. What an adversarial review found, and the shape it was
+
+Four lenses over the branch — the triggers, the Rust, the screen, the safety invariants and the
+truth of these sections. Thirty findings, of which the ones worth recording are these, because none
+of them is visible in a rendering and every gate in this repo was green with all of them present.
+
+**Three change what a person sees.**
+
+1. **A banner click was dropped about half the time.** A server emits `ActionInvoked` and
+   `NotificationClosed` for the same press; both arrive in one socket read; `tokio::select!` picks
+   between two ready branches at random. The close branch cleared the attribution the invoked branch
+   needed, so `Keep them` did nothing, with no log line and nothing on screen. The id and event of
+   the last banner now outlive its closing — only `replaces_id` is cleared.
+2. **`First sync finished` announced itself on an established install.** The witness rule read a
+   live `last_sync_epoch_secs == null` as "nothing has ever synced". `ControlShared::new` starts
+   that field at `None`, so it is null after *every* daemon restart — and Settings ships a
+   `Restart it now` button. It counts only where nothing has ever been seen either.
+3. **The delivered banner had no icon.** `icons.rs` writes the five symbolic SVGs to
+   `$XDG_RUNTIME_DIR/proton-sync-tray` and hands that path to the STATUS-NOTIFIER HOST as
+   `IconThemePath`. A notification server is a third process and is told nothing, so
+   `proton-sync-attention-symbolic` resolved against the system icon themes, where this application
+   installs nothing. The absolute path goes on the wire when the file is there.
+
+**And the rest, each one line:** the signal listener exited silently on connection loss and left a
+dead notifier behind, so nothing worked again for the life of the process · the send held the state
+mutex across an untimed D-Bus call · `close()` forgot the id before the call that could fail · the
+deletion body sent a user-chosen path unescaped to a server that advertises `body-markup` · the
+`desktop-entry` hint named a file that does not exist · a staged policy outlived leaving the screen,
+because `resetSettingsScreen` cleared ten fields and not that one · a `lastAt` in the future silenced
+every banner until the clock caught up · a policy-only save offered to restart a daemon that has
+never heard of the setting · a refused config save said `Nothing was saved` after the policy had
+already been written · and the hard-rule test passed with both `throw`s deleted.
+
+**The shape.** Eight of the ten are states that exist only in TIME — a restart, a signal ordering, a
+connection that drops, a screen left and returned to. `11a In situ` is one rendering of one moment,
+and this task's whole subject is when to speak; nothing that compares drawings can see any of it.
+That is the same conclusion S1–S8 reached from the other side (§67b: "a frame is one rendering, and
+this screen has twenty transitions"), arriving here as: **the fidelity harness cannot review a
+trigger.** What reviewed these was reading the daemon's own source for what `last_sync` survives,
+reading the freedesktop specification for what a server emits and in what order, and running
+`decide` in sequence rather than once.
+
+Two were caught by Copilot's first pass and are the same shape from a third direction: `payloadFor`
+sent no `app`, which `NotifyPayload` requires with no default — so serde refused every payload and
+no banner would ever have arrived — and a `#[cfg]` bound to one statement left a Linux-only type
+managed unconditionally. Nothing checks one language's struct against the other's object; the test
+does now.
