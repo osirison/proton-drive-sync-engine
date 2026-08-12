@@ -355,7 +355,7 @@
 /* -------------------------------------------------------------------------- tab 4 · advanced ---- */
 
 /* Not drawn anywhere: the same panel pattern as the cadence panels, because it is the same kind of
-   thing. Only the two settings `ConfigUpdate` round-trips are here; the other four are G17 (#237). */
+   thing. Only the two settings `ConfigUpdate` round-trips are here; the other four are G23 (#237). */
 .settings-panel-list .settings-rule-plain {
   border-top: 0;
   padding: 6px 0;

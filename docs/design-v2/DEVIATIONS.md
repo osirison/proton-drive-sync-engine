@@ -2512,7 +2512,7 @@ query `spec.md` to `docs/spec.md` with `1 match` beside it; `path_sync_status` o
 path it is given, and none of the 23 commands lists or searches local files. So a bare name that is
 not at the sync root misses, and the miss draws `14-behaviour-and-state.md:130`'s own sentence. Two
 consequences: the count is only ever 0 or 1, so the plural arm of `ACTIVITY.matches(n)` is
-unreachable, and the frame's own query is not reproducible by the shipped screen. G17 #234.
+unreachable, and the frame's own query is not reproducible by the shipped screen. G21 #234.
 
 **Four of the five lookup verdicts are undrawn, and they are the screen's front door.** `path_sync_
 status` answers `synced`, `modified` or `conflict`, reports `tracked:false`, and marks a directory
@@ -2598,18 +2598,18 @@ argument rather than a caller-side `.toLowerCase()`, since above ten `cardinal` 
 
 | screen | frame                | drawn                                    | Phase 1                                 | gap          |
 | ------ | -------------------- | ---------------------------------------- | --------------------------------------- | ------------ |
-| S5     | `6a Activity passes` | a twenty-bar duration chart              | the whole card omitted                  | G12 #229     |
+| S5     | `6a Activity passes` | a twenty-bar duration chart              | the whole card omitted                  | G16 #229     |
 | S5     | `7a Activity quiet`  | `12,480` `files · 41.2 GB`, both sides   | both numeral rows omitted               | G7 #207      |
 | S5     | `7a Activity quiet`  | `next full check in 4m`                  | the sub-line omitted                    | G4 #193      |
-| S5     | `7a Activity quiet`  | `Last things to move`, head + three rows | the block's footer row alone            | G13 #230     |
-| S5     | `7a Activity quiet`  | `4 files are never synced`               | the rule-matched count alone            | G15 #232     |
+| S5     | `7a Activity quiet`  | `Last things to move`, head + three rows | the block's footer row alone            | G17 #230     |
+| S5     | `7a Activity quiet`  | `4 files are never synced`               | the rule-matched count alone            | G19 #232     |
 | S5     | `7a File lookup`     | `This file's history`, four rows         | the `linked · id` line alone            | G1 #190      |
-| S5     | `7a File lookup`     | the query `spec.md` → `docs/spec.md`     | an exact relative path                  | G17 #234     |
-| S5     | `7a File lookup`     | `received 14:32` on the Proton card      | the clause omitted                      | G16 #233     |
+| S5     | `7a File lookup`     | the query `spec.md` → `docs/spec.md`     | an exact relative path                  | G21 #234     |
+| S5     | `7a File lookup`     | `received 14:32` on the Proton card      | the clause omitted                      | G20 #233     |
 | S5     | `7a File pending`    | a 3px bar at 41%                         | no track at all (§63)                   | G2 #191, #98 |
-| S5     | `7a Never synced`    | `Can't be synced`, two rows              | the group omitted                       | G15 #232     |
-| S5     | `6a Details`         | `Open the system log`                    | omitted; `Copy all` stays               | G14 #231     |
-| S5     | all three            | `Open folder`, `Open on Proton Drive`    | omitted                                 | G14 #231     |
+| S5     | `7a Never synced`    | `Can't be synced`, two rows              | the group omitted                       | G19 #232     |
+| S5     | `6a Details`         | `Open the system log`                    | omitted; `Copy all` stays               | G18 #231     |
+| S5     | all three            | `Open folder`, `Open on Proton Drive`    | omitted                                 | G18 #231     |
 | S5     | `5a Checking`        | four unlit doors on the plan screen      | `Plan a sync` lit, per `02-shell.md:42` | —            |
 
 **`ACTIVITY.nothingRecent` stays undrawn, and it looks like it should not.**
@@ -2817,7 +2817,7 @@ fact; with either above zero, every number on the tab is a lower bound and the l
 `write_config` refuses on `ConfigDoc::validate` — a serde/TOML check against `FileConfig` that never
 contacts Proton Drive. So it cannot know a remote folder is missing and cannot say `That folder
 doesn't exist on Proton Drive`; nor is there a command behind `Create it on Proton Drive`. Filed as
-G16 ([#236](https://github.com/osirison/proton-drive-sync-engine/issues/236)).
+G22 ([#236](https://github.com/osirison/proton-drive-sync-engine/issues/236)).
 
 What ships is the generic title, the sentence `08-settings.md` calls the important one — _"Nothing
 was saved — your old settings are still running."_ — and the daemon's reason in mono with the
@@ -2895,14 +2895,14 @@ ring at .3 over a .04 fill would be invisible.
 | S6     | `8a Settings`         | the Weekly/Monthly control, day chips, time stepper            | the panel shell over `scan_interval_secs` | G4 #193  |
 | S6     | `8a Settings`         | `12,480 files, 41.2 GB in here today`                          | the merge warning alone                   | G7 #207  |
 | S6     | `8a Settings`         | `A full check of all 12,480 files as a safety net`             | a sentence about the timer                | G7 #207  |
-| S6     | `8a Settings`         | `Takes about 4 minutes … Last one 2 days ago`                  | what is true every time                   | G18 #238 |
+| S6     | `8a Settings`         | `Takes about 4 minutes … Last one 2 days ago`                  | what is true every time                   | G24 #238 |
 | S6     | `8a Settings`         | `event_driven_reconcile`                                       | `events_driven`, the key that exists      | —        |
 | S6     | `8a Skip rules`       | `added 14 Jul` on a rule                                       | the folder clause alone                   | —        |
-| S6     | `8a Skip rules`       | the unsyncable panel and `See them`                            | omitted; the `.sync` note stays           | G15 #232 |
+| S6     | `8a Skip rules`       | the unsyncable panel and `See them`                            | omitted; the `.sync` note stays           | G19 #232 |
 | S6     | `8a Schedule monthly` | the whole monthly variant                                      | the panel head alone                      | G4 #193  |
-| S6     | `8a Save refused`     | `That folder doesn't exist on Proton Drive`                    | a generic refusal title                   | G16 #236 |
-| S6     | `8a Save refused`     | `Create it on Proton Drive`                                    | omitted; `Go back and fix it` stays       | G16 #236 |
-| S6     | _(not drawn)_         | Advanced: socket path, log level, conflict suffix, index reset | named as not writable yet                 | G17 #237 |
+| S6     | `8a Save refused`     | `That folder doesn't exist on Proton Drive`                    | a generic refusal title                   | G22 #236 |
+| S6     | `8a Save refused`     | `Create it on Proton Drive`                                    | omitted; `Go back and fix it` stays       | G22 #236 |
+| S6     | _(not drawn)_         | Advanced: socket path, log level, conflict suffix, index reset | named as not writable yet                 | G23 #237 |
 
 ### 78j. What the review found, and the shape it was
 
@@ -3065,7 +3065,7 @@ everything and cannot be dismissed, so there is no sub-screen to visit and come 
   setup. The panel keeps its sentence, whose "or any time later in Settings" is the half that works.
 - **`See all 471 actions`** — the action list is the Plan screen, behind a footer door the takeover
   covers.
-- **`Installation help`** — needs G14 (#231) as well: nothing in the command surface opens a URL.
+- **`Installation help`** — needs G18 (#231) as well: nothing in the command surface opens a URL.
 
 A disabled button would be worse than an absent one (§76's own rule, and `button()` attaches no
 listener to a disabled kind — so one armed later paints live and does nothing).

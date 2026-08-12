@@ -146,11 +146,11 @@ const NOT_DRAWN = new Map([
   // 2. A drawn sentence whose every clause needs data nothing returns, so nothing of it survives.
   [
     "SETTINGS.fullSweepNoteUnknown",
-    "G18 (#238): `Takes about 4 minutes` and `Last one 2 days ago` both need per-pass data that does not exist",
+    "G24 (#238): `Takes about 4 minutes` and `Last one 2 days ago` both need per-pass data that does not exist",
   ],
   [
     "SETTINGS.refusedTitleUnknown",
-    "G16 (#236): `write_config` never contacts Proton Drive, so it cannot say a folder is missing",
+    "G22 (#236): `write_config` never contacts Proton Drive, so it cannot say a folder is missing",
   ],
   // 3. States no frame draws, reachable on the first click.
   ["SETTINGS.ruleUnchecked", "no frame draws a rule the walk could not evaluate (`RuleUsage.error`)"],
@@ -175,7 +175,7 @@ const NOT_DRAWN = new Map([
   ["SETTINGS.configFileMissing", "the Advanced tab is not drawn in any frame"],
   [
     "SETTINGS.advancedMissing",
-    "G17 (#237): the four settings the config layer cannot round-trip, named rather than left to be looked for",
+    "G23 (#237): the four settings the config layer cannot round-trip, named rather than left to be looked for",
   ],
 ]);
 

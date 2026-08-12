@@ -619,7 +619,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["margin-top"],
     detail: "85.8125px vs 156.812px",
     issue: "#232",
-    why: "the tail is pushed to the bottom with `margin-top:auto`, so its used value measures whatever is above it — and what is above it is 71px shorter without the unsyncable panel (G15: a socket or a symlink never enters the index, so there is nothing to count and `See them` would open the one group `7a Never synced` already omits)",
+    why: "the tail is pushed to the bottom with `margin-top:auto`, so its used value measures whatever is above it — and what is above it is 71px shorter without the unsyncable panel (G19: a socket or a symlink never enters the index, so there is nothing to count and `See them` would open the one group `7a Never synced` already omits)",
   },
   {
     frame: "8a Skip rules",
@@ -635,7 +635,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.h"],
     detail: "165 vs 145",
     issue: "#236",
-    why: "the refusal's body drops `Create the folder on Proton Drive first, or pick a different one.` — `write_config` validates TOML and never contacts Proton Drive, so it cannot know a remote folder is missing (G16) — and one line instead of two takes 20px off the dialog",
+    why: "the refusal's body drops `Create the folder on Proton Drive first, or pick a different one.` — `write_config` validates TOML and never contacts Proton Drive, so it cannot know a remote folder is missing (G22) — and one line instead of two takes 20px off the dialog",
   },
   {
     frame: "8a Save refused",

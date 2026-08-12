@@ -876,7 +876,7 @@ const activityDoors = (at) => ({
  * UNDECLARED, AND EACH FOR A REASON THE SCREEN RECORDS: both seam sides' numeral rows
  * (`div[2]/div[2]/div[s]/div[1]`, G7 #207), the right side's `next full check in 4m`
  * (G4 #193), and the whole `Last things to move` head and its three rows
- * (`div[3]/div[1]/div[0..3]`, G13). The app draws no node for any of them.
+ * (`div[3]/div[1]/div[0..3]`, G17). The app draws no node for any of them.
  */
 const ACTIVITY_QUIET_FIDS = {
   title: "div[0]/div[0]",
@@ -926,7 +926,7 @@ const ACTIVITY_QUIET_FIDS = {
  * block and wears the 4px padding-top the title block had.
  *
  * UNDECLARED: the four `This file's history` rows (`div[2]/div[0..3]`, G1 #190) and the two
- * openers in its footer row (`div[2]/div[5]/button[0..1]`, G14). The `linked · id` line stays,
+ * openers in its footer row (`div[2]/div[5]/button[0..1]`, G18). The `linked · id` line stays,
  * because `proton_id` is on the reply today.
  */
 const ACTIVITY_LOOKUP_FIDS = {
@@ -965,8 +965,8 @@ const ACTIVITY_LOOKUP_FIDS = {
  * `6a Activity passes` — the other tab. The pill strip exists ONLY here; the quiet tab's way in is
  * the button in its list footer.
  *
- * UNDECLARED: the whole twenty-bar chart card (`div[2]`, G12 — no per-pass duration exists) and
- * `Open the system log` (`div[3]/div[6]/button`, G14).
+ * UNDECLARED: the whole twenty-bar chart card (`div[2]`, G16 — no per-pass duration exists) and
+ * `Open the system log` (`div[3]/div[6]/button`, G18).
  */
 const ACTIVITY_PASSES_FIDS = {
   title: "div[0]/div[0]",
@@ -989,7 +989,7 @@ const ACTIVITY_PASSES_FIDS = {
 /**
  * `7a Never synced` — the 602x602 dialog, one group instead of two.
  *
- * UNDECLARED: the whole `Can't be synced` group (`div[1]/div[4..7]`, G15). A socket or a symlink
+ * UNDECLARED: the whole `Can't be synced` group (`div[1]/div[4..7]`, G19). A socket or a symlink
  * never enters the index, so there is nothing to enumerate — which is a harder gap than the rule
  * group's was, not the same one twice.
  */
@@ -1023,7 +1023,7 @@ const NEVER_SYNCED_FIDS = {
 /**
  * `6a Details` — the 522x462 dialog of eight rows.
  *
- * UNDECLARED: `Open the system log` (`div[2]/button[1]`, G14). `Copy all` stays — the clipboard is
+ * UNDECLARED: `Open the system log` (`div[2]/button[1]`, G18). `Copy all` stays — the clipboard is
  * the webview's own and needs no command.
  */
 const DETAILS_FIDS = {
@@ -1043,8 +1043,8 @@ const DETAILS_FIDS = {
 /**
  * `7a File pending` — 18 nodes, no title row, no ✕.
  *
- * UNDECLARED: the progress bar (`div[1]` and `div[1]/div`, G14's sibling — no fraction is
- * computable in either direction, see §63) and `Open folder` (`div[2]/button`, G14). Note the
+ * UNDECLARED: the progress bar (`div[1]` and `div[1]/div`, G18's sibling — no fraction is
+ * computable in either direction, see §63) and `Open folder` (`div[2]/button`, G18). Note the
  * bar's absence moves nothing: it sits BELOW the hero and above the footer row, and the footer row
  * keeps its own key.
  */
@@ -1118,14 +1118,14 @@ export function activityFids(view) {
 //   · the whole weekly/monthly control and the day/time row (`div[2]/div[5]/div[0]/div[1]` and
 //     `div[2]/div[5]/div[1]`, plus every node the monthly crop draws below its header) — G4 (#193).
 //     There is no `full_scan_schedule` key, no scheduler and no command that returns any of it.
-//   · `div[2]/div[2]/div[0]` on the skip tab — the unsyncable panel and its `See them` (G15 #232):
+//   · `div[2]/div[2]/div[0]` on the skip tab — the unsyncable panel and its `See them` (G19 #232):
 //     the files it counts never enter the index, and that button would open the one group `7a
 //     Never synced` already omits for the same reason. Its PARENT `div[2]/div[2]` is declared, as
 //     `tail`, because the app does draw that block — it holds the `.sync` note.
 //   · `div[3]` on the deletions crop, and `div[0]` on the monthly crop. Both are drawn and both
 //     are mapped nowhere, for the reason the module note above gives: a crop cannot say where an
 //     `auto` margin sits, and the two frames disagree about the head row's gap.
-//   · `div/div/div[3]/button[1]` on the refusal (`Create it on Proton Drive`) — G16 (#236).
+//   · `div/div/div[3]/button[1]` on the refusal (`Create it on Proton Drive`) — G22 (#236).
 //
 // NOT undeclared, though an earlier version of this note claimed it: `div[2]/div[2]/div[0]/div[2]`,
 // the local helper. The app draws that node with the Phase-1 half of its sentence, so it is mapped
@@ -1273,7 +1273,7 @@ const SETTINGS_MONTHLY_FIDS = {
 /**
  * `8a Save refused` — a dialog, so no shell slots.
  *
- * `body` is declared even though Phase 1 draws one line where the frame draws two (G16, #236): the
+ * `body` is declared even though Phase 1 draws one line where the frame draws two (G22, #236): the
  * node exists in both, its styles are comparable, and leaving it out would hide the height it gets
  * wrong instead of recording it. That is the difference between an undeclared slot and a
  * known-deviations row — this one is a capability gap with an issue, so it is the row.

@@ -24,16 +24,16 @@
 //     files` in the panel above (G7 #207). `skip_rule_usage` counts files and not bytes, so half of
 //     it would still be missing; both clauses go and the sentences that remain are the ones that
 //     say what changing the setting does.
-//   · `Takes about 4 minutes … Last one 2 days ago` under `Full sweep now` (G18 #238) — no per-pass
+//   · `Takes about 4 minutes … Last one 2 days ago` under `Full sweep now` (G24 #238) — no per-pass
 //     duration exists, and nothing records which past pass was a full sweep.
 //   · `added 14 Jul` on a rule — a TOML array of globs carries no per-entry timestamps. Not a
 //     missing command: an absent fact, and the fixture pins it as a literal that nothing reads.
 //   · the unsyncable panel — `Two more files can't be synced no matter what` and `See them`
-//     (G15 #232). The files it counts never enter the index, and `See them` would open the one
+//     (G19 #232). The files it counts never enter the index, and `See them` would open the one
 //     group `7a Never synced` already omits for the same reason.
 //   · `That folder doesn't exist on Proton Drive` and `Create it on Proton Drive` on the refusal
-//     (G16 #236). `write_config` validates TOML and never contacts Proton Drive, so it cannot know.
-//   · four of Advanced's six settings (G17 #237): the socket path, the log level, the conflict
+//     (G22 #236). `write_config` validates TOML and never contacts Proton Drive, so it cannot know.
+//   · four of Advanced's six settings (G23 #237): the socket path, the log level, the conflict
 //     suffix and *Reset the index* have no key and no command between them.
 //
 // AND TWO THINGS THE SCREEN GAINED RATHER THAN LOST. `Sweep now` is `ControlCommand::Resync`, which
@@ -950,7 +950,7 @@ function notificationsTab(props) {
 
 /**
  * Not drawn anywhere. `08-settings.md` names six things this tab holds; two of them round-trip
- * through `ConfigUpdate` and four have no key and no command (G17 #237), so the tab says which four
+ * through `ConfigUpdate` and four have no key and no command (G23 #237), so the tab says which four
  * rather than leaving someone to look for them.
  *
  * Same panel pattern as the cadence panels, because it is the same kind of thing: a plain-language
@@ -1174,7 +1174,7 @@ export const settingsBarShape = (props = {}) =>
  * `8a Save refused` — the dialog's contents. No title row and no ✕: it asks you to fix one thing,
  * and a dismiss in the corner would be a second answer to a question with one.
  *
- * TWO THINGS THE FRAME DRAWS THAT PHASE 1 CANNOT (G16 #236). `write_config` refuses on
+ * TWO THINGS THE FRAME DRAWS THAT PHASE 1 CANNOT (G22 #236). `write_config` refuses on
  * `ConfigDoc::validate`, a serde/TOML check that never contacts Proton Drive — so it cannot say a
  * remote folder is missing, and `Create it on Proton Drive` has no command behind it. What is left
  * is the sentence `08-settings.md` calls the important one, which is true of every refusal: nothing
