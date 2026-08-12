@@ -210,11 +210,17 @@ impl Notifier {
     }
 
     /// What the server says it can do. `actions` is the one this design cares about.
+    ///
+    /// ON THE SAME DEADLINE AS `show`, and for the same reason one call earlier: this runs on the
+    /// connect path with the state mutex held, so a server that accepts the call and never answers
+    /// would block every later banner AND every close for the life of the process. `show` was given
+    /// a timeout for exactly that and this was left without one, which is the same bug at the only
+    /// other place it can happen.
     pub async fn capabilities(&self) -> zbus::Result<Vec<String>> {
-        NotificationsProxy::new(&self.connection)
-            .await?
-            .get_capabilities()
+        let proxy = NotificationsProxy::new(&self.connection).await?;
+        tokio::time::timeout(DBUS_DEADLINE, proxy.get_capabilities())
             .await
+            .map_err(|_| zbus::Error::Failure("the notification server did not answer".into()))?
     }
 
     /// Record what the server said it can do. Read once, at connect.
@@ -251,12 +257,9 @@ impl Notifier {
             payload.body.clone()
         };
 
-        // A ROUND TRIP WITH A DEADLINE. This runs under the state mutex, and a server that accepts
-        // the call and never answers would otherwise hold it for the life of the process — taking
-        // the close path and every later banner with it. Ten seconds is far longer than any
-        // notification server takes and far shorter than "for ever".
+        // A ROUND TRIP WITH A DEADLINE — see `DBUS_DEADLINE`.
         let id = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            DBUS_DEADLINE,
             proxy.notify(
                 &payload.app,
                 self.live,
@@ -303,10 +306,10 @@ impl Notifier {
             return Ok(());
         }
         let id = self.live;
-        NotificationsProxy::new(&self.connection)
-            .await?
-            .close_notification(id)
-            .await?;
+        let proxy = NotificationsProxy::new(&self.connection).await?;
+        tokio::time::timeout(DBUS_DEADLINE, proxy.close_notification(id))
+            .await
+            .map_err(|_| zbus::Error::Failure("the notification server did not answer".into()))??;
         // AFTER the call, not before: a failed close leaves the banner up, and forgetting its id
         // first would mean the next send opened a second one beside it.
         self.live = 0;
@@ -331,6 +334,14 @@ fn icon_path(name: &str) -> String {
         name.to_string()
     }
 }
+
+/// How long any call to the notification server may take before it is treated as unanswered.
+///
+/// EVERY ROUND TRIP HERE RUNS UNDER THE STATE MUTEX, so one that never returns holds it for the
+/// life of the process — and takes every later banner and every close with it. Ten seconds is far
+/// longer than any notification server takes and far shorter than "for ever".
+#[cfg(target_os = "linux")]
+const DBUS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Whether to escape the body, from what the server said it can do — or from not knowing.
 ///

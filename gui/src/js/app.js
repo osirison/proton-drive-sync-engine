@@ -2915,6 +2915,11 @@ function loadNotifierState() {
     const saved = JSON.parse(localStorage.getItem(NOTIFIER_KEY) ?? "null");
     // Shape-checked rather than trusted: a half-written or older value must not make `decide` throw
     // inside the status poll, which would take the whole window's refresh down with it.
+    //
+    // `typeof null === "object"` PASSES THIS, and that is safe rather than overlooked — reviewed and
+    // reproduced, because it is the obvious place to assume otherwise. Object spread of `null` is a
+    // no-op by specification, so `{ said: null }` resolves to `said: {}`, which is the empty state
+    // this function would have returned anyway. It does not throw, and neither does `{ said: [] }`.
     if (saved && typeof saved === "object" && typeof saved.said === "object") {
       return { ...emptyState(), ...saved, said: { ...saved.said } };
     }
