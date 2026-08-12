@@ -527,6 +527,27 @@ const dom = {
 };
 
 /**
+ * Mark the root as holding a compact panel rather than the shell, so it stops capping its height.
+ *
+ * THE ROOT WAS SHRINKING THE PANEL, AND IN THE TRAY WINDOW THAT IS A ONE-WAY RATCHET. `#app-root` is
+ * a `height:100vh` flex column built for the shell, and a flex item shrinks: the panel measures
+ * `min(its content, the viewport)`. `reportTrayHeight` sends that measurement to `panel.rs`, which
+ * sizes the WINDOW to it — so the number is capped by the thing it sets. One short measurement and
+ * the panel can never grow again, at any state, for the life of the window: the settled panel
+ * reported 302 where it draws 365, and the two rows past the cut were `Close window · keeps syncing`
+ * and `Quit · stops syncing` — the pair `10-tray.md` calls the single worst misunderstanding a tray
+ * app can cause. Reproduced by opening the panel on a cold webview profile, where the first frame is
+ * measured before the window settles at its built size; the race is incidental, the latch is not.
+ *
+ * Both mounts below take it, and they must stay in step: the fidelity gate only ever renders the
+ * preview one, so dropping it from `mountTrayPanel` alone leaves the gate green and the app broken.
+ */
+function panelSurface(root) {
+  root.classList.add("is-panel-surface");
+  return root;
+}
+
+/**
  * The compact frames' preview route (F6).
  *
  * `?frame=2a Compact syncing` renders the 362px panel ALONE, because that is what the frame is —
@@ -552,7 +573,7 @@ function mountFramePanel(root) {
     // from it, and the cycle is a lint error.
     menu: spec.menu === true ? trayMenu(spec.state) : (spec.menu ?? null),
   });
-  root.replaceChildren(dom.panel);
+  panelSurface(root).replaceChildren(dom.panel);
   return true;
 }
 
@@ -594,6 +615,9 @@ function mountFrameBanner(root) {
 
 function mountTrayPanel(root) {
   if (!isTraySurface()) return false;
+  // Before the first render rather than beside `replaceChildren`, because the patch path below
+  // returns without touching the root and `reportTrayHeight` runs on both.
+  panelSurface(root);
   const view = trayView({
     daemonState: store.select.daemonState(),
     response: store.select.response(),
@@ -623,6 +647,11 @@ function mountTrayPanel(root) {
  * `requestAnimationFrame` because the panel has just been put in the document and has no layout yet
  * — reading `offsetHeight` in the same tick returns the previous state's height, which is the subtle
  * version of this bug: the panel is the right size one poll late, every time.
+ *
+ * THIS MEASUREMENT SETS THE WINDOW IT IS MEASURED IN, so nothing may cap the measured node at the
+ * window's own size or the loop latches at its first wrong answer and no later poll can undo it.
+ * `panelSurface` is what holds that open; a rule that shrinks `.compact-panel` to its container
+ * re-arms it.
  */
 function reportTrayHeight() {
   requestAnimationFrame(() => {

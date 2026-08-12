@@ -4305,3 +4305,109 @@ the wrong end of its ramp is invisible here, because a track like `--hex-syncing
 shade off the surface on purpose and a legibility gate has no opinion about a track. `assert.mjs`
 compares strokes exactly on eight drawn light frames, which is the stronger check — it is the seven
 undrawn screens that have only this one.
+
+---
+
+## Verifying the tray with a pointer (#187)
+
+## 92. Three of them only a hand could find, and one of them cut the tray's two most important words off the bottom
+
+`10-tray.md`'s definition of done ends with a clause no gate can execute: *"verified on GNOME
+(AppIndicator extension) and KDE Plasma."* §89i said so in as many words — "two clicks close both
+gaps, and neither has been made" — and left them owed. This is the section that makes them, on a live
+Plasma 6.7/X11 session, with `xdotool` driving XTEST so the pointer is the X server's own and not a
+D-Bus call standing in for one.
+
+**Both clicks land, and the bus says so.** A real left click on the indicator arrived as
+`Activate(3132, 2112)` from plasmashell, and the panel opened centred on it with its bottom edge on
+`_NET_WORKAREA`'s — clamped into the work area and therefore opening UPWARD, which is what a bottom
+panel needs and what the spec's fixed `top:40px; right:16px` would get wrong on every Plasma desktop.
+Re-measured at all five panel heights (302–440 logical px) and every one of them anchored there. A
+real right click produced `AboutToShow` → `Event` → `GetLayout` on `/StatusNotifierItem/Menu` and
+Plasma drew the rows — the settled five, with §82k's em-dash fold intact: `Close window — keeps
+syncing`, `Quit — stops syncing`. Clicking a row sent `Event(1, "clicked")`. §89i is discharged for
+KDE; **GNOME is not**, and stays owed for the reason it always had — there is no GNOME session on
+this machine, and §89j's reading of `indicatorStatusIcon.js` is reading, not running.
+
+### 92a. The panel measured itself inside the window that measurement sets
+
+`reportTrayHeight` measures the panel and `panel.rs` sizes the window to the answer. `#app-root` is
+the shell's `height:100vh` flex column, and a flex item shrinks — so the measurement was
+`min(content, viewport)`, capped by the window it had just set. **One short measurement and the panel
+could never grow again**, in any state, for the life of the window.
+
+Which is what shipped: on a cold webview profile the settled panel came up **302px tall where it
+draws 365**, and the two rows past the cut were `Close window — keeps syncing` and `Quit — stops
+syncing` — the pair `10-tray.md` calls *the single worst misunderstanding a tray app can cause* and
+requires the build to keep. Switching the daemon to a state whose panel is 440px tall changed
+nothing: still 302, on every poll, for as long as it was watched. The latch is the finding; which
+transient measurement arms it (an early frame before the window settles at its built size) is not
+worth pinning, because any of them is fatal and a cold profile reproduces it every time.
+
+**No gate could have caught it and that is structural, not an oversight.** `assert.mjs` opens every
+frame at 1040×764, so a 362×365 panel has 399px of slack and nothing can compress it. The shipped
+window has no slack at all — it is exactly as tall as the panel said it was. So the harness now
+re-measures **all 11 compact frames in a 200px window** and requires the drawn height back; poisoned
+by reverting the fix, it fails all eleven.
+
+`flex:none` on `.compact-panel` would fix it and is not available: the gate compares `flex-shrink`
+against the drawn node, which is `1` — `shell.css` already carries two comments saying exactly that
+about `.menu-btn` and `.chip-dot`. So the container gives up its height instead
+(`#app-root.is-panel-surface`), applied by `panelSurface()` at both mounts. Both, and they have to
+stay in step: the gate only ever renders the preview one, so dropping it from `mountTrayPanel` alone
+would leave the gate green and the app broken.
+
+### 92b. `set_focus()` is a request, and KWin was refusing it
+
+The click that opens anything in this app goes to **plasmashell**, not to us. So when we ask for the
+focus, the timestamp the request carries is whatever GTK last saw an event with in this process —
+older than the click, which is precisely the shape focus-stealing prevention refuses. The panel came
+up carrying `_NET_WM_STATE_DEMANDS_ATTENTION`, the WM's marker for *this window asked and I said no*.
+
+Two failures, one seam:
+
+- **The panel lingered.** `lib.rs` hides it on a blur that FOLLOWS a focus — deliberately, so a
+  compositor that refuses focus cannot make it flash and vanish (§82, bug 4). Refused focus means no
+  focus, so no blur ever counted: an always-on-top borderless popover stayed over the user's work
+  until they clicked the indicator again. IMPLEMENTATION-PLAN §6's second sub-risk, and not on an
+  edge case — on the ordinary path, since *another app holds the focus* is the normal state of a
+  desktop. That file's own consolation ("Esc, any menu row, and a second click all still dismiss it")
+  was two-thirds true: **Esc could not reach a window that had no keyboard focus.**
+- **`Open Drive Sync` did nothing.** With the window already open behind others, the row raised
+  nothing and focused nothing. The stacking order was identical before and after.
+
+`focus::present` fixes both by asking with a timestamp `gdk_x11_get_server_time` supplies, which is
+the X server's own clock rather than anything this process guessed. **It runs from a `glib` idle
+callback**, and that is not a flourish: `WebviewWindow::show()` posts a message to the event loop
+rather than calling GTK, so `gtk_window().window()` is still `None` on the line after it — the first
+version took the not-realized branch every single time and changed nothing. It is also the guard
+against the one outcome worse than the bug: `gdk_x11_get_server_time` waits for a `PropertyNotify`
+that only a mapped window will send, so an unmapped one would hang the GTK main loop. The plain
+`set_focus()` stays where it was and the stamped present is added after it, so Wayland, an unrealized
+window and a server that returns no time all behave exactly as before.
+
+Measured after, on the same three tests that failed before: the panel takes the focus, clicking away
+hides it, Esc hides it, a second click on the indicator hides it, and `Open Drive Sync` moves the
+main window above the one that was covering it. `gtk` and `gdkx11` are new *direct* dependencies and
+no new build — Tauri already compiles both, and `WebviewWindow::gtk_window()` hands back a
+`gtk::ApplicationWindow`, so the versions must be the ones Tauri resolved.
+
+### 92c. Nine deviation rows were pointing at the issue that builds the thing
+
+`10a In situ`'s nine recorded rows all cited **#187**, which closes with S8 — leaving nine entries
+naming a closed issue and no gate able to notice. They are two different kinds of thing and are now
+recorded as such:
+
+- **Four are a design tie**, carved out as **#261**: `10-tray.md` asks the tray form for
+  `rgba(255,255,255,.1)` because it floats over a desktop, `10a In situ` is the only frame drawn that
+  way, and the four gated standalone panels all draw `#23262D`. §58d ruled for the four with only the
+  four in view; the doc's reason is still a good one, and the tie is the design's to break.
+- **Five no issue will ever close.** The drawn panel is placed on a desktop mock with
+  `position:absolute; top; right`; the shipped one is a window, and its placement lives there —
+  measured above, against the click, clamped into the work area. `known-deviations.mjs` grows a
+  `structural` tag for exactly this, printed under its own heading and still bound by the
+  must-still-fail clause, so it cannot become the escape hatch that file's first paragraph forbids.
+
+Splitting them exposed a lookup bug one line long: the printout matched a row on `frame|key` alone,
+and `10a In situ · div[1]` carries both sets. It printed the right issue only because all nine
+agreed; the moment they stopped, four would have been labelled with the fifth's answer.

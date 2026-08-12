@@ -3,6 +3,9 @@
 
 mod commands;
 mod config_path;
+// Not Linux-gated even though its whole body is: every caller wants "raise this window" and none of
+// them wants to know which display server is under it.
+mod focus;
 mod notify;
 mod panel;
 mod tray;

@@ -2825,6 +2825,8 @@ name = "proton-sync-gui"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "gdkx11",
+ "gtk",
  "proton-sync-gui-core",
  "serde",
  "serde_json",

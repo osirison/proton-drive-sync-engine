@@ -19,6 +19,17 @@
   min-height: 0;
 }
 
+/* A surface whose whole content is ONE compact panel — the tray window (S8) and the `?frame=`
+   preview of a compact frame. Both are added by `panelSurface()` in app.js; read the comment there
+   for what this defends against. Short version: the panel measures itself and, in the tray window,
+   that measurement becomes the window's height — so a `height:100vh` root shrinks the panel to
+   whatever the window already is, and the window can then never grow. `flex:none` on the panel
+   would fix it too and is not available: the fidelity gate compares `flex-shrink` against the drawn
+   node, which is 1. So the container gives up its height instead. */
+#app-root.is-panel-surface {
+  height: auto;
+}
+
 /* ---------------------------------------------------------------------------- the header ---- */
 
 /* 52px, and NO bottom border — the header floats on the surface. The v1 build had a 1px rule and a

@@ -353,7 +353,10 @@ fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
-        let _ = window.set_focus();
+        // `set_focus` alone raised NOTHING when the window was already open behind other windows —
+        // the stacking order was identical before and after, so `Open Drive Sync` was inert in the
+        // one case a tray row is for. `focus::present` explains what the compositor was refusing.
+        crate::focus::present(&window);
     }
 }
 
