@@ -3611,6 +3611,24 @@ more, against `GetServerInformation` `("Plasma", "KDE", "6.7.4", "1.2")`. A serv
 advertise `actions` still gets the banner and is logged once, at connect; the sentence is the part
 that matters and both actions are reachable in the window anyway.
 
+### 84a. The banner we draw is not shown anywhere yet
+
+`11-notifications.md`: *"Use the desktop's own notification chrome where the platform provides it —
+these values are for when it doesn't."* `ui/notification.js` builds both halves — `renderBanner`
+draws the 372/520px banner the frames specify, `payloadFor` flattens the same spec for the wire — so
+the sentence a desktop shows and the one we would draw come from one builder rather than two that
+agree today.
+
+**What is not built is the window to put it in.** A desktop with no notification server would need a
+borderless, always-on-top webview positioned in a corner and dismissed on a timer — which is
+`panel.rs` again, and S8 records what that took (physical pixels, a monitor a never-shown window
+does not have, an X11 position that is advisory before mapping, a blur that fires before focus is
+ever held). GNOME and KDE both ship a server, so this is the fallback for a bare window manager. A
+failed send is logged, once, and the same event is still in the window and on the tray glyph.
+
+Filed as a follow-up. The renderer is not dead code in the meantime: it is what the five `11a`
+frames are asserted against.
+
 **`replaces_id` is tracked, not assumed.** Passing a stale id to a server that has forgotten it is
 server-defined behaviour, and most create a new banner — which is the stacking it exists to prevent.
 A `NotificationClosed` for our id clears it and the next banner is a fresh one. `ActionInvoked` is
