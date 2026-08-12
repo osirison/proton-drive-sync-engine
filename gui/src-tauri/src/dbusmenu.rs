@@ -366,7 +366,17 @@ impl TrayMenu {
     /// asked about needs an update, for the reason above, and none of them is an error: an id this
     /// menu no longer draws is a host holding a stale layout, which the refresh it is about to make
     /// is what fixes.
+    ///
+    /// **An empty list answers `[0]` rather than "nothing needs updating".** Whether an empty `ids`
+    /// means "all" here is undocumented — the reference XML annotates neither argument, and the
+    /// convention is only spelled out for `GetGroupProperties` — so the answer is the one that is
+    /// safe under both readings: this menu has exactly one node that can be shown, `about_to_show`
+    /// says yes for it unconditionally, and a host told "nothing" would draw a menu that has gone
+    /// stale.
     fn about_to_show_group(&self, ids: Vec<i32>) -> (Vec<i32>, Vec<i32>) {
+        if ids.is_empty() {
+            return (vec![0], Vec::new());
+        }
         (ids, Vec::new())
     }
 
