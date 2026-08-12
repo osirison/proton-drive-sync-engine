@@ -4238,10 +4238,11 @@ Walking the eight light frames against their twins gives a verdict per token rat
 of the **106** themed tokens that carry a colour, **73** now have their exact (dark → light) pair
 observed at a node in a drawn light frame, and **33** do not.
 
-The 33 are not a to-do list, they are the honest edge of what is drawn — the notification banner,
-the diff panel, the compact deletion rows, the armed confirmation, the `Never ask` card, the paused
-mark, the seam, the scrim. No `12a` frame draws any of them, so they stay **CHOSEN**, derived from
-the ramp around them, and their tokens.css notes now say so instead of saying "S10 confirms".
+The 33 are not a to-do list, they are the honest edge of what is drawn — the notification banner (5),
+the diff panel (4), the compact deletion rows (4), the `Never ask` card (3), the seam (2), the warn
+band (2), the armed confirmation, the inert glyph outline, the scrim. No `12a` frame draws any of
+them, so they stay **CHOSEN**, derived from the ramp around them, and their tokens.css notes now say
+so instead of saying "S10 confirms".
 
 **One of those notes claimed a measurement that never existed.** `--destructive-row-bg`'s light
 value was justified as "read off a frame rather than derived — `--compact-permanent-bg` is this same
@@ -4256,7 +4257,10 @@ evidence for another, from a frame that draws neither. Both stay chosen, and the
 indistinguishable to it — which is the doctrine `tokens.css` is built on, not an accident.
 `--btn-primary-disabled-text` reads as "observed" only because `#6D7783 → #9CA3AF` appears at the
 queued-row arrow that §9 already ruled a drawing inconsistency; nothing draws a disabled primary
-button in light, and it stays on §15's unverified list.
+button in light. `--hex-paused-track` and `--hex-paused-bars` read as observed for the plainer version
+of the same reason — they share both values with `--hex-settled-track` and `--text-3` — and no light
+`10a Paused` exists. All three stay on §15's unverified list, which is why that list is 7 rows and not
+4: **the census can confirm a VALUE and never a SITE**, and §15 is about sites.
 
 ### 91c. The contrast gate, and the two thresholds it needed instead of one
 
