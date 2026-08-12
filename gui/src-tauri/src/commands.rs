@@ -1061,10 +1061,13 @@ pub enum TrayRow {
 /// which is exactly what made it worth fixing: two vocabularies that happen to work are a trap for
 /// whoever edits one of them, and the comment promised they were one thing.
 ///
-/// So they are one thing now. `ui/compact.js`'s `TRAY_MENU` is the source of the id strings, the
-/// fallback menu in `tray.rs` builds its items from `FALLBACK_IDS` below, and both dispatch through
-/// here. An id this does not know returns `None` and the caller reports it rather than silently
-/// doing nothing.
+/// So they are one thing now. `ui/compact.js`'s `TRAY_MENU` is the source of the id strings, both
+/// native menus build their rows from `tray_menu::rows_for` — which carries the same ids — and all
+/// three dispatch through here. An id this does not know returns `None` and the caller reports it
+/// rather than silently doing nothing.
+///
+/// (The comment this replaces pointed at a `FALLBACK_IDS` table "below" that was never written: the
+/// fallback menu spelled its rows out by hand. #252 gave it the table the comment described.)
 pub fn tray_row(id: &str) -> Option<TrayRow> {
     Some(match id {
         // `Review them` is the panel's own decision button rather than a menu row, and it goes where

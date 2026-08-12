@@ -33,12 +33,14 @@
 //! SVG under `IconThemePath` that declared `#ff00ff` rendered **white**, so the desktop does the
 //! recolouring `10-tray.md` asks for.
 //!
-//! # What is deliberately not here
+//! # The menu (#252)
 //!
-//! **No `com.canonical.dbusmenu`.** Right-click therefore opens the panel rather than a native menu,
-//! which `10-tray.md` gives to the menu alone by KDE convention. dbusmenu is a second protocol with
-//! its own layout-revision model and is an S8-sized task by itself; the panel already contains every
-//! row that menu would have. Recorded as DEVIATIONS §82j and filed as a follow-up.
+//! S8 shipped this item with no `Menu` object path, so right-click opened the panel — dbusmenu is a
+//! second protocol with its own layout-revision model and was an S8-sized task by itself
+//! (DEVIATIONS §82j). It is here now, in `dbusmenu.rs`, and the two facts that matter to THIS file
+//! are that `ItemIsMenu` stays `false` — Plasma's `StatusNotifierItem.qml` routes a left click on
+//! that property alone, so publishing a menu does not cost the click — and that `ContextMenu` stays
+//! implemented, because it is what a host with no dbusmenu importer falls back to calling.
 
 #![cfg(target_os = "linux")]
 
@@ -84,10 +86,13 @@ impl TrayItem {
         crate::panel::toggle(&self.app, Some((x, y)));
     }
 
-    /// Right click. `10-tray.md` gives this to the native menu alone, by KDE convention, and this
-    /// build has no native menu to give it to — see the module header on dbusmenu. The panel
-    /// contains every row that menu would have, so this opens the panel rather than doing nothing:
-    /// a right click that produces no response reads as a broken tray, not as a deliberate absence.
+    /// Right click, for a host that does not import dbusmenus.
+    ///
+    /// NOT DEAD CODE, though it now looks like it on this desktop. `statusnotifieritemsource.cpp`
+    /// calls this only when it could not build an importer for the `Menu` path — "Could not find
+    /// DBusMenu interface, falling back to calling ContextMenu()" — so on Plasma, with #252 landed,
+    /// the host renders the menu itself and never gets here. A host that cannot is exactly the one
+    /// that must still respond to a right click, and the panel carries every row the menu has.
     async fn context_menu(&self, x: i32, y: i32) {
         crate::panel::toggle(&self.app, Some((x, y)));
     }
@@ -144,12 +149,29 @@ impl TrayItem {
         crate::icons::theme_dir().to_string_lossy().into_owned()
     }
 
+    /// Where the native right-click menu lives (#252).
+    ///
+    /// Publishing this is what makes a host import `com.canonical.dbusmenu` instead of calling
+    /// `ContextMenu` above. It does NOT change what a left click does — that is `ItemIsMenu` below,
+    /// and the two properties are read by different branches of the same host.
+    #[zbus(property)]
+    fn menu(&self) -> zbus::zvariant::ObjectPath<'static> {
+        zbus::zvariant::ObjectPath::from_static_str_unchecked(crate::dbusmenu::MENU_PATH)
+    }
+
     /// **`false` is what makes left click reach `Activate`.**
     ///
     /// The property means "this item is only a menu; prefer showing it, or sending `ContextMenu`,
     /// over `Activate`". libappindicator's items are menus in exactly that sense, which is why a
-    /// left click on one opens a menu on every desktop. Saying `false` — and publishing no `Menu`
-    /// object path, as xembedsniproxy does not — is what asks the host for the click itself.
+    /// left click on one opens a menu on every desktop. Saying `false` is what asks the host for the
+    /// click itself.
+    ///
+    /// **It is the whole of that ask, and the `Menu` path above does not weaken it.** S8 published
+    /// no menu at all — the xembedsniproxy shape — and this comment used to credit the absence of
+    /// one for the click, which would have made #252 look like a trade: a native right-click menu
+    /// bought with the left click that opens the panel. It is not. Plasma's applet reads exactly one
+    /// property here (`if (model.ItemIsMenu) openContextMenu else activate`), and the item published
+    /// by this build has been left-clicked with a `Menu` on it.
     #[zbus(property)]
     fn item_is_menu(&self) -> bool {
         false
@@ -182,7 +204,12 @@ impl Sni {
     /// Returns `Err` when there is no watcher on the bus — a session with no SNI host at all, which
     /// is a real configuration (a bare window manager, or GNOME without the AppIndicator extension).
     /// The caller falls back to the Tauri tray rather than leaving the user with no indicator.
-    pub async fn start(app: AppHandle, icon: String, title: String) -> zbus::Result<Self> {
+    pub async fn start(
+        app: AppHandle,
+        icon: String,
+        title: String,
+        rows: &'static [crate::tray_menu::Entry],
+    ) -> zbus::Result<Self> {
         // The spec's own name form: `org.kde.StatusNotifierItem-<pid>-<id>`. A well-known name
         // rather than the unique one, because that is what a real item registers and because the
         // watcher's registry is keyed on it.
@@ -192,9 +219,16 @@ impl Sni {
             title,
             app: app.clone(),
         };
+        // BOTH OBJECTS BEFORE THE NAME IS REGISTERED. A host reads `Menu` as soon as it hears about
+        // the item and imports it immediately; an item that advertises a path it has not served yet
+        // hands the host an error at the one moment it looks, and hosts do not re-import on a whim.
         let conn = connection::Builder::session()?
             .name(name.as_str())?
             .serve_at(ITEM_PATH, item)?
+            .serve_at(
+                crate::dbusmenu::MENU_PATH,
+                crate::dbusmenu::TrayMenu::new(app.clone(), rows),
+            )?
             .build()
             .await?;
 
@@ -208,13 +242,34 @@ impl Sni {
         Ok(Self { conn, live })
     }
 
-    /// Point the item at a different glyph. A no-op when the name has not changed — a host that is
-    /// told its icon changed will reload it, and doing that every two seconds makes a tray icon
-    /// flicker for no reason.
-    pub async fn set_icon(&self, icon: &str, title: &str) -> zbus::Result<()> {
-        if !self.live.load(Ordering::Relaxed) {
-            return Ok(());
-        }
+    /// Point the item at a different glyph, and the menu at a different set of rows.
+    ///
+    /// Both halves are no-ops when nothing changed — a host that is told its icon changed will
+    /// reload it, and one told its layout changed will re-read the menu; doing either every two
+    /// seconds is a flickering tray icon and a round trip per tick for a menu nobody has opened.
+    /// **What `live` gates is the SIGNALS, not the state.** It used to gate the whole function, and
+    /// that was a stale tray after every plasmashell restart: the poll marks a tick as shown whatever
+    /// happened here, so a state change landing inside the outage was written nowhere — and when the
+    /// host came back and read the item, it read the glyph, the title and the rows from *before* it
+    /// went away, with nothing to correct them until the daemon changed state again. A host reads
+    /// properties on registration; what it must find there is the truth. Emitting into a bus with no
+    /// host is the only part that is pointless, so that is the only part skipped.
+    pub async fn update(
+        &self,
+        icon: &str,
+        title: &str,
+        rows: &'static [crate::tray_menu::Entry],
+    ) -> zbus::Result<()> {
+        let live = self.live.load(Ordering::Relaxed);
+        // Both halves run even when one fails: a menu-path error must not cost the glyph, and the
+        // caller is told about the first thing that went wrong.
+        let menu = crate::dbusmenu::set_rows(&self.conn, rows, live).await;
+
+        let item = self.set_icon(icon, title, live).await;
+        menu.and(item)
+    }
+
+    async fn set_icon(&self, icon: &str, title: &str, live: bool) -> zbus::Result<()> {
         let iface = self
             .conn
             .object_server()
@@ -227,6 +282,9 @@ impl Sni {
             }
             item.icon = icon.to_string();
             item.title = title.to_string();
+        }
+        if !live {
+            return Ok(());
         }
         // Both the property change and the SNI-specific signal: hosts differ about which they
         // listen to, and emitting one is how an icon silently stops updating on somebody's desktop.

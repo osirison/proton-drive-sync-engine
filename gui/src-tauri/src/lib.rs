@@ -6,10 +6,15 @@ mod config_path;
 mod notify;
 mod panel;
 mod tray;
+// The rows every tray menu draws, in one table. Not Linux-gated: the fallback tray is built on every
+// platform, and the table is what stops the three surfaces drawing three menus.
+mod tray_menu;
 
-// The tray item and its glyph theme are the D-Bus half of S8 and exist on Linux alone — the only
-// platform this app targets today (the engine's IPC is Unix-socket only), but the split keeps the
-// `cfg` at the module boundary instead of scattered through `tray.rs`.
+// The tray item, its menu and its glyph theme are the D-Bus half of S8 and exist on Linux alone —
+// the only platform this app targets today (the engine's IPC is Unix-socket only), but the split
+// keeps the `cfg` at the module boundary instead of scattered through `tray.rs`.
+#[cfg(target_os = "linux")]
+mod dbusmenu;
 #[cfg(target_os = "linux")]
 mod icons;
 #[cfg(target_os = "linux")]
