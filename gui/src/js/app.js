@@ -880,7 +880,19 @@ function render() {
     // it, so the next keystroke inserted where it should have replaced.
     const input = focused instanceof HTMLInputElement ? focused : null;
     const range = input ? [input.selectionStart, input.selectionEnd, input.selectionDirection] : null;
+    // AND THE SCROLL POSITION, which the focus restore below does not cover. Two blocks on this
+    // screen are taller than their box — the skip tab's rule list and the notifications tab's rules
+    // sheet — and a rebuild every ~2s put both back at the top, which makes the bottom of either
+    // one physically unreadable. Keyed by name rather than by node, because the node is a new one.
+    const scrolled = new Map();
+    for (const node of document.querySelectorAll("[data-scroll]")) {
+      if (node.scrollTop) scrolled.set(node.dataset.scroll, node.scrollTop);
+    }
     setBody(renderSettings(settingsProps()));
+    for (const node of document.querySelectorAll("[data-scroll]")) {
+      const at = scrolled.get(node.dataset.scroll);
+      if (at) node.scrollTop = at;
+    }
     dom.bodyRoute = active;
     if (key) {
       const next = [...document.querySelectorAll("[data-sfocus]")].find((n) => n.dataset.sfocus === key);

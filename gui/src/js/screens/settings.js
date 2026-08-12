@@ -659,7 +659,8 @@ function rulesBlock(props) {
       // unremovable from the screen that exists to remove it.
       el(
         "div",
-        { class: "settings-rules-scroll" },
+        // Named so its position survives the ~2s rebuild — see `keepScroll` in app.js.
+        { class: "settings-rules-scroll", "data-scroll": "skip-rules" },
         rules.map((pattern, i) =>
           ruleRow(props, byPattern.get(pattern) ?? { pattern }, i, !savedRules.includes(pattern)),
         ),
@@ -812,17 +813,22 @@ function rulesPanel(handlers) {
   );
   rows.forEach((row, i) => fid(row.querySelector(".notify-rule-text"), "ruleBody", i));
 
-  const link = el(
-    "a",
-    {
-      class: "notify-rules-link",
-      href: "#",
-      onClick: (e) => {
-        e.preventDefault();
-        handlers?.onRoute?.("activity");
+  // A link is keyboard-reachable, so it needs a name like every other control on this screen: the
+  // body is rebuilt on the ~2s poll and focus would otherwise land on `<body>` inside two ticks.
+  const link = focusable(
+    el(
+      "a",
+      {
+        class: "notify-rules-link",
+        href: "#",
+        onClick: (e) => {
+          e.preventDefault();
+          handlers?.onRoute?.("activity");
+        },
       },
-    },
-    NOTIFY.rules.activityLink,
+      NOTIFY.rules.activityLink,
+    ),
+    "notify-activity",
   );
 
   return fid(
@@ -934,7 +940,7 @@ function notificationsTab(props) {
     el(
       "div",
       { class: "settings-notify" },
-      el("div", { class: "notify-rules-scroll" }, rulesPanel(props.handlers)),
+      el("div", { class: "notify-rules-scroll", "data-scroll": "notify-rules" }, rulesPanel(props.handlers)),
       notifyPolicyColumn(props),
     ),
   ];
