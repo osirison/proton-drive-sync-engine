@@ -64,7 +64,12 @@ const STATES = ["settled", "syncing", "needsYou", "paused", "unreachable", "dele
 const HERO_PAD = {
   settled: { panel: "28px 22px 22px", tray: "26px 22px 20px" },
   syncing: { panel: "22px 20px 16px", tray: "22px 20px 14px" },
-  needsYou: { panel: "28px 22px 20px" },
+  // The tray's needs-you hero is 2px tighter at the top than the panel's — measured on
+  // `10a In situ`, which is the only frame that draws this state in the tray family. Before it was
+  // mapped this fell back to the panel's 28 and nothing could see the difference, which is exactly
+  // the hazard the note above describes: "Ranges cannot be interpolated; the table below is the
+  // source", and a fallback is an interpolation with one data point.
+  needsYou: { panel: "28px 22px 20px", tray: "26px 22px 20px" },
   deletions: { panel: "24px 20px 18px" },
   paused: { tray: "26px 22px 20px" },
   unreachable: { tray: "26px 22px 20px" },
@@ -109,7 +114,18 @@ function heroMark(state, family, count) {
       return renderHexagon({ ...common, state: "syncing", masked: true, numeral: count });
     case "needsYou":
     case "deletions":
-      return renderHexagon({ ...common, state: "needsNumeral", tone: "decision", numeral: count });
+      return renderHexagon({
+        ...common,
+        state: "needsNumeral",
+        tone: "decision",
+        numeral: count,
+        // The tray panel's count sits ONE USER UNIT lower than the window's — 70 against the 69 in
+        // `NUMERAL[72].needs`. Measured on `10a In situ`; `2a Compact needs you` draws the same
+        // 72px mark at 69. One unit on a 120 viewBox is 0.6px at this size, which is precisely the
+        // kind of difference that is invisible to review and loud to a gate, and it is why the
+        // number is read off the frame rather than shared.
+        ...(family === "tray" && state === "needsYou" ? { numeralY: 70 } : {}),
+      });
     case "paused":
       return renderHexagon({ ...common, state: "paused" });
     case "unreachable":

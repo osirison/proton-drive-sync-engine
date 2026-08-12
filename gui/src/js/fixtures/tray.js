@@ -18,7 +18,7 @@
 // contract asks a specimen for. Nothing else belongs in them.
 
 import { MAIN, TRAY } from "../ui/copy.js";
-import { compactFids, glyphFids } from "./fids.js";
+import { compactFids, glyphFids, without } from "./fids.js";
 
 export const TRAY_FIXTURES = {
   // The swatch sheet behind `10-tray.md` §"The glyph": two columns (`mono`, `colour`) × five rows,
@@ -53,6 +53,42 @@ export const TRAY_FIXTURES = {
   "10a In situ": {
     specimen: {
       note: "the tray panel (ui/compact.js, needs-you + menu) positioned under the indicator by S8; the 32px bar, the clock and the status cluster are a desktop mock and are never asserted",
+    },
+    // S8 SUPPLIED THE ARGUMENTS THE NOTE ABOVE SAID IT WOULD. This is the combination no other
+    // fixture carries: `2a Compact needs you` is the same state with a footer instead of the menu,
+    // and the four `10a` panels are the menu with the other four states. So the gap the F9 note
+    // recorded was real, and closing it needed the screen that owns the panel to exist.
+    //
+    // THE TOP BAR IS NOT MAPPED, and that is the specimen rule rather than an oversight.
+    // `frame-classes.mjs` says the artefact here is "the compact panel over a desktop mock — assert
+    // the panel, not the wallpaper". The bar does contain one piece of product — the 16px needs-you
+    // glyph at `div[0]/span[3]/span[0]/svg`, our own indicator — but its construction is already
+    // compared ten ways over on `10a Glyph states`, and claiming it here would quietly widen
+    // `SPECIMEN_ARTEFACT` to mean something it does not say.
+    // `meta` is dropped: this panel draws a headline, two sentences and a button, and no quieter
+    // third line. The four unprefixed `10a` panels can declare it because the shared key resolves on
+    // `10a Offline`, the one frame that draws one; a prefixed map has no sibling to resolve against.
+    fids: without(
+      compactFids({
+        state: "needsYou",
+        tail: "menu",
+        tailAt: 1,
+        // The panel is `div[1]`: `div[0]` is the GNOME top bar. Without this every key is off by a
+        // level, and NOT loudly — `div[0]/svg` exists in this frame too (it is the indicator glyph),
+        // so the 72px hero mark would have been compared against a 16px icon.
+        prefix: "div[1]",
+      }),
+      "meta",
+    ),
+    panel: {
+      state: "needsYou",
+      family: "tray",
+      headline: MAIN.compact.needYou(3),
+      count: 3,
+      // Two sentences that must break where the design put them, not where 362px happens to wrap.
+      sub: [MAIN.compact.conflictLine, MAIN.compact.deletionLine],
+      action: { label: MAIN.compact.review },
+      menu: true,
     },
   },
 

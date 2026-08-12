@@ -246,7 +246,7 @@ export function mainFids({
  * @param buttons  how many footer buttons (a lone one is `button`, two are `button[0]`/`button[1]`)
  * @param rows     the transfer rows' directions, in order
  */
-export function compactFids({ state, tail, tailAt, buttons = 0, rows = [] }) {
+export function compactFids({ state, tail, tailAt, buttons = 0, rows = [], prefix = "" }) {
   const at = `div[${tailAt}]`;
   const btn = buttons > 1 ? (i) => `${at}/button[${i}]` : () => `${at}/button`;
   const map = {
@@ -309,7 +309,46 @@ export function compactFids({ state, tail, tailAt, buttons = 0, rows = [] }) {
       footerButton: btn,
     });
   }
-  return map;
+  return prefix ? nestUnder(prefix, map) : map;
+}
+
+/**
+ * Re-root a whole slot map under a block of a bigger frame.
+ *
+ * `10a In situ` is why this exists. It is a `specimen` — a desktop mock with the real panel sitting
+ * on it — so the panel is not the frame's root: the GNOME top bar is `div[0]` and the panel is
+ * `div[1]`. Every key the panel's own map produces is therefore off by one level, and the failure
+ * would not have been loud: `div[0]/svg` exists in that frame too (it is the 16px indicator glyph in
+ * the top bar), so the hero mark would have been compared against the tray icon and reported a
+ * 72-vs-16 box mismatch pointing at the wrong node entirely.
+ *
+ * `root: ""` IS THE CASE TO GET RIGHT. The panel's own root is keyed by the empty string — it is the
+ * frame — and naively prefixing gives `div[1]/`, a trailing slash that matches nothing. Under a
+ * prefix the root IS the prefix.
+ */
+export function without(map, ...slots) {
+  // Drop slots a particular frame does not draw.
+  //
+  // `compactFids` declares `meta` for every non-syncing panel because the shared key
+  // `div[0]/div[2]` resolves on `10a Offline`, which is the one frame that draws a meta line
+  // (`retrying in 40s · last reached 13:58`). `check-fixtures.mjs` is satisfied by a key existing in
+  // ANY frame declaring it, so the others ride along.
+  //
+  // A PREFIXED MAP CANNOT RIDE ALONG. `10a In situ`'s keys are unique to it, so a slot naming a node
+  // it does not draw resolves nowhere and fails the build — correctly. This is how the fixture says
+  // which slots that is, at the call site, rather than by a factory quietly guessing per state.
+  const dropped = new Set(slots);
+  return Object.fromEntries(Object.entries(map).filter(([slot]) => !dropped.has(slot)));
+}
+
+function nestUnder(prefix, map) {
+  const under = (key) => (key === "" ? prefix : `${prefix}/${key}`);
+  return Object.fromEntries(
+    Object.entries(map).map(([slot, key]) => [
+      slot,
+      typeof key === "function" ? (...args) => under(key(...args)) : under(key),
+    ]),
+  );
 }
 
 // ------------------------------------------------------------- S8 · the tray glyph sheet ----
