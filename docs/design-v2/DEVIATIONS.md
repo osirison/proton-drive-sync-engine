@@ -3909,16 +3909,19 @@ the same words in a language that gate cannot read. `the_labels_are_the_copy_dec
 `TRAY` block out of `ui/copy.js` and compares — including composing the folded label from the parsed
 parts, so the fold itself is not written down twice.
 
-**h. Four defects an adversarial review found, three of them in the tray S8 shipped.** Every gate was
-green with all four present, which is the fifth time this project has recorded that sentence.
+**h. Four defects an adversarial review found — two of them S8's, two of them this branch's.** Every
+gate was green with all four present, which is the fifth time this project has recorded that
+sentence. (The first draft of this line said "three of them S8's" and contradicted its own list one
+paragraph later: `EventGroup` was written here, and the fourth is a *regression* — S8's behaviour was
+right until a `Menu` path took the click away from it. A count is a claim like any other.)
 
-1. **`EventGroup`'s out-arg is `idErrors` — the ids that could NOT be handled** — and this returned
+1. **(this branch) `EventGroup`'s out-arg is `idErrors` — the ids that could NOT be handled** — and this returned
    every id it was sent, with a doc comment stating the inverted meaning as its justification. A host
    that batches (libdbusmenu-glib's client prefers `EventGroup` for a server advertising `Version >=
    3`, which this does) would have been told every working click failed. The name is in the XML
    libdbusmenu-glib compiles in, read on this machine rather than from the specification:
    `<arg type="ai" name="idErrors" direction="out">`.
-2. **`live` gated the state, not just the signals** (`sni.rs`, S8). While a status-notifier host was
+2. **(S8) `live` gated the state, not just the signals** (`sni.rs`). While a status-notifier host was
    away — plasmashell restarts on any panel-settings change — `update` returned early without
    writing the icon, the title or the rows, while the poll recorded the tick as shown. The host came
    back, read the item on registration, and got the state from *before* it left, with nothing to
@@ -3948,6 +3951,16 @@ published, but that exercises an unchanged handler and would pass whatever a hos
 so *that a real left click still reaches `Activate`* rests on Plasma's `StatusNotifierItem.qml`, and
 that Plasma renders these rows on a right click rests on its importer's source. Reading a host's
 code is better evidence than reading a specification and it is not the same as watching it happen.
-Two clicks close both gaps, and neither has been made. GNOME with the AppIndicator extension —
-`10-tray.md` names it alongside Plasma — is a second host with a second importer and no session here
-to try it on.
+Two clicks close both gaps, and neither has been made.
+
+**j. On GNOME the menu changes what a SINGLE click does, and the panel was always on the double.**
+`10-tray.md` names GNOME-with-the-AppIndicator-extension alongside Plasma, and there is no GNOME
+session here — but the extension is a JavaScript file that can be read, and it does not resemble
+Plasma. `indicatorStatusIcon.js` puts `open()` — the `Activate` that opens the panel — on a **double**
+click, gated on `supportsActivation !== false`; a single left click waits out the double-click
+interval and then toggles the menu, and does that only `if (this.menu.numMenuItems)`. Before #252
+that count was zero, because there was no `Menu` path and so no menu client: **a single left click on
+GNOME did nothing at all.** Publishing the menu turns that dead click into an opened menu and leaves
+the double click on `Activate` untouched, so the panel does not become less reachable there either —
+it was never on the single click to begin with. Read, not run; the two clicks above are still owed,
+and on that desktop it is three.

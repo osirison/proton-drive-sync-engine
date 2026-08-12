@@ -43,6 +43,10 @@ use tauri::{AppHandle, Manager};
 
 const TRAY_ID: &str = "proton-sync-tray";
 
+/// The state the fallback text menu was last built for. `None` until there is a fallback tray at all
+/// — which on a session with a status-notifier host is for ever.
+static FALLBACK_STATE: Mutex<Option<DaemonState>> = Mutex::new(None);
+
 /// The poll that keeps the glyph current. `10-tray.md` asks for "the daemon's status stream, not a
 /// timer", and there is no stream to subscribe to — the control socket answers questions and does
 /// not push (#101, E4, explicitly deferred). Two seconds matches the window's own cadence, so the
@@ -120,10 +124,21 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 /// it. The SNI item never had the bug — it has always been re-fed by `update` — which is why the
 /// text menu is the copy that quietly went stale.
 fn install_fallback(app: &AppHandle, state: DaemonState) -> tauri::Result<()> {
-    let menu = fallback_menu(app, state)?;
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        return tray.set_menu(Some(menu));
+        // Rebuilt only when the rows would differ, for the same reason `set_rows` and `set_icon` are
+        // no-ops on an unchanged value: this is now reached on every 30-second retry tick as well as
+        // on a state change, and a live GTK menu is not a description of a menu — replacing the one
+        // the user has open is at best wasted work.
+        if FALLBACK_STATE.lock().unwrap().as_ref() == Some(&state) {
+            return Ok(());
+        }
+        let menu = fallback_menu(app, state)?;
+        tray.set_menu(Some(menu))?;
+        *FALLBACK_STATE.lock().unwrap() = Some(state);
+        return Ok(());
     }
+    let menu = fallback_menu(app, state)?;
+    *FALLBACK_STATE.lock().unwrap() = Some(state);
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().ok_or_else(|| {
             tauri::Error::AssetNotFound("no default window icon for the fallback tray".into())

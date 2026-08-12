@@ -282,6 +282,12 @@ impl TrayMenu {
     /// default — so answering `GetProperty(6, "enabled")` with an error would tell a host that a row
     /// it is drawing has no enabled state, when the answer is `true`. The defaults are answered
     /// here; an id the menu has never drawn is still an error, because there is no row to describe.
+    ///
+    /// This is deliberately MORE generous than the reference server, which errors on an unset
+    /// property too ("The property '%s' does not exist on menuitem with ID of %d", in
+    /// libdbusmenu-glib) — and no importer in either toolkit calls this method at all, so nothing
+    /// observed depends on either behaviour. Answering the specified default cannot mislead a host;
+    /// an error about a property with a documented value can.
     fn get_property(&self, id: i32, name: String) -> zbus::fdo::Result<OwnedValue> {
         let set = if id == 0 {
             root_properties()
