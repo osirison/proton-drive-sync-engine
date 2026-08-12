@@ -8,7 +8,18 @@
   display: grid;
   grid-template-columns: 600fr 520fr;
   gap: 26px;
-  align-items: start;
+  /* `stretch`, so the left column can be told how tall it is and scroll inside that. `start` sizes
+     it to its content, which is 210px more than the window has. */
+  align-items: stretch;
+  min-height: 0;
+  height: 100%;
+}
+
+/* The reference sheet is taller than the window: 974px against 764 with it at its natural height.
+   A wrapper, not `overflow` on the panel — the panel's box is what `11a Rules` describes. */
+.notify-rules-scroll {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ------------------------------------------------------------------------- the rules panel -- */

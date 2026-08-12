@@ -50,7 +50,10 @@ test("a direction nobody anticipated warns rather than stays silent", () => {
   // `severityOf` answers `permanent` for anything that is not the literal `remote`. Written down
   // because the opposite default is the natural one to write and it fails in the direction that
   // costs files.
-  assert.equal(tick({ response: { pending_deletions: [deletion({ direction: "sideways" })] } }).event?.kind, "deletion");
+  assert.equal(
+    tick({ response: { pending_deletions: [deletion({ direction: "sideways" })] } }).event?.kind,
+    "deletion",
+  );
 });
 
 test("the same queue does not say the same thing twice", () => {
@@ -67,7 +70,9 @@ test("the same queue does not say the same thing twice", () => {
   // A second item IS a new thing to say.
   const more = decide({
     state: first.state,
-    view: view({ response: { pending_deletions: [deletion(), deletion({ path: "docs/old", fingerprint: "d" })] } }),
+    view: view({
+      response: { pending_deletions: [deletion(), deletion({ path: "docs/old", fingerprint: "d" })] },
+    }),
     policy: "only_when_needed",
     nowMs: NOW_MS + COALESCE_MS * 10,
   });
@@ -138,10 +143,20 @@ test("the first sync is announced once, and only where this install watched the 
   assert.equal(watched.event, null);
   assert.equal(watched.state.sawUnsynced, true);
 
-  const done = decide({ state: watched.state, view: view(), policy: "only_when_needed", nowMs: NOW_MS + 60_000 });
+  const done = decide({
+    state: watched.state,
+    view: view(),
+    policy: "only_when_needed",
+    nowMs: NOW_MS + 60_000,
+  });
   assert.equal(done.event?.kind, "firstSync");
   // Once, ever.
-  const again = decide({ state: done.state, view: view(), policy: "only_when_needed", nowMs: NOW_MS + 600_000 });
+  const again = decide({
+    state: done.state,
+    view: view(),
+    policy: "only_when_needed",
+    nowMs: NOW_MS + 600_000,
+  });
   assert.equal(again.event, null);
 });
 
@@ -215,7 +230,10 @@ test("`only_permanent_deletions` lets exactly one event through", () => {
 
 test("an unknown policy is the default, not silence", () => {
   // A hand-edited `gui.toml` must not be able to switch the safety banner off by typo.
-  assert.equal(tick({ response: { pending_deletions: [deletion()] }, policy: "sometimes" }).event?.kind, "deletion");
+  assert.equal(
+    tick({ response: { pending_deletions: [deletion()] }, policy: "sometimes" }).event?.kind,
+    "deletion",
+  );
 });
 
 test("the three policy values are the ones the Rust side stores", () => {

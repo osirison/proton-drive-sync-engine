@@ -917,9 +917,27 @@ function notifyPolicyColumn(props) {
   );
 }
 
-/** The tab: the rules on the left, the choice on the right — which is what the first card's copy says. */
+/**
+ * The tab: the rules on the left, the choice on the right — which is what the first card's copy says.
+ *
+ * THE RULES PANEL SCROLLS, and it is the one thing here no gate could have caught. `11a Rules` is
+ * 633px tall at the 600px it is drawn and neither crop is a window, so nothing in the harness
+ * renders this tab at 1040×764. Measured instead: the window came out 974px against 764, a 210px
+ * overflow that would have painted through the footer.
+ *
+ * A WRAPPER rather than `overflow` on the panel, for `.settings-rules-scroll`'s reason: the panel's
+ * own box is what `11a Rules` describes, and a scroll declared on it would put a property of the
+ * app's layout on the node the gate compares.
+ */
 function notificationsTab(props) {
-  return [el("div", { class: "settings-notify" }, rulesPanel(props.handlers), notifyPolicyColumn(props))];
+  return [
+    el(
+      "div",
+      { class: "settings-notify" },
+      el("div", { class: "notify-rules-scroll" }, rulesPanel(props.handlers)),
+      notifyPolicyColumn(props),
+    ),
+  ];
 }
 
 // ------------------------------------------------------------------------- tab 5 · advanced ----

@@ -146,7 +146,7 @@ export const NOTIFICATION_FIXTURES = {
           // ONE QUEUE ITEM, and a directory: the frame's banner is about `photos/2019` being deleted
           // on Proton, which is one withheld deletion whose subtree holds 1,204 photos. Nothing
           // counts that subtree (G8 #208), so the title is one line where the frame draws two.
-          event: { kind: "deletion", paths: ["photos/2019"], noun: "folder" },
+          event: { kind: "deletion", paths: ["photos/2019"], entity: "folder" },
         },
         {
           get at() {

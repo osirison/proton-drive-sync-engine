@@ -11,7 +11,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { EVENT_KINDS, SAFE_ACTIONS, bannerFor, isDestructive, payloadFor } from "../src/js/ui/notification.js";
+import {
+  EVENT_KINDS,
+  SAFE_ACTIONS,
+  bannerFor,
+  isDestructive,
+  payloadFor,
+} from "../src/js/ui/notification.js";
 import { DELETIONS, NOTIFY } from "../src/js/ui/copy.js";
 
 /** One event of each kind, at the data the frames draw. */
