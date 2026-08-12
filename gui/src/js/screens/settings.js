@@ -42,19 +42,45 @@
 // exception and not the rule.
 
 import { el } from "../ui/el.js";
-import { MAIN, SETTINGS } from "../ui/copy.js";
+import { MAIN, NOTIFY, SETTINGS } from "../ui/copy.js";
 import { button, pillTabs, radioCard, setButtonKind, stepper, textInput, toggle } from "../ui/controls.js";
 import { eyebrow, splitEmphasis } from "../ui/rows.js";
 import { renderSeam } from "../ui/seam.js";
 import { renderHexagon } from "../ui/hexagon.js";
 import { fid } from "../fixtures/frames.js";
 
-/** The tabs, in the drawn order. The index is the frame's `div[1]/button[i]`. */
+/**
+ * The tabs, in the drawn order. The index is the frame's `div[1]/button[i]`.
+ *
+ * A FIFTH PILL THE 8a FRAMES DO NOT DRAW (S9). `08-settings.md` enumerates four and
+ * `11-notifications.md` specifies a settings surface with no home; the `11a Settings` frame's own
+ * caption calls it "the settings tab", `14-behaviour-and-state.md`'s fallback row calls the section
+ * "Notifications", and the `11a Settings` card is drawn with the same chrome as the `8a Deletions
+ * tab` crop — same background, border, radius, padding and presentation shadow. So it is a tab.
+ *
+ * It costs the gate nothing: the drawn pill row is 1040 wide and left-aligned, so a fifth pill moves
+ * none of the four boxes `8a Settings` asserts. DEVIATIONS §83.
+ */
 const TABS = [
   { id: "folders", label: SETTINGS.tabs.folders },
   { id: "skip", label: SETTINGS.tabs.skip },
   { id: "deletions", label: SETTINGS.tabs.deletions },
+  { id: "notifications", label: NOTIFY.settings.tab },
   { id: "advanced", label: SETTINGS.tabs.advanced },
+];
+
+/**
+ * The three `notify_policy` values, in the order the cards are drawn.
+ *
+ * GUI-LOCAL, not a daemon key (IMPLEMENTATION-PLAN row 6). The daemon parses its config with
+ * `deny_unknown_fields`, so writing `notify_policy` into `proton-sync.toml` would stop it starting —
+ * it lives in the GUI's own `gui.toml` beside it. `never` must not change engine behaviour: the
+ * deletion queue still holds, because nothing here is passed to the daemon at all.
+ */
+export const NOTIFY_POLICIES = [
+  { id: "only_when_needed" },
+  { id: "only_permanent_deletions" },
+  { id: "never" },
 ];
 
 /** `Choose…`, `Add` — a filled secondary at input height. */
@@ -755,7 +781,148 @@ function deletionsTab(props) {
   ];
 }
 
-// ------------------------------------------------------------------------- tab 4 · advanced ----
+// -------------------------------------------------------------------- tab 4 · notifications ----
+
+/** The dot beside each rule row. Three forms, and `11a Rules` draws the third one quiet. */
+const RULE_DOTS = ["irreversible", "decision", "settled", "irreversible"];
+
+/**
+ * `11a Rules` — the reference sheet. No daemon data behind it: the content IS the policy, so it
+ * renders from `NOTIFY.rules` and never changes.
+ *
+ * The Activity link is a real route change, not decoration — it is the door the sentence names.
+ */
+function rulesPanel(handlers) {
+  const rows = NOTIFY.rules.interrupts.map((rule, i) =>
+    fid(
+      el(
+        "div",
+        { class: "notify-rule" },
+        fid(el("span", { class: `notify-rule-dot is-${RULE_DOTS[i]}` }), "ruleDot", i),
+        el(
+          "div",
+          { class: "notify-rule-text" },
+          fid(el("div", { class: "notify-rule-title" }, rule.title), "ruleTitle", i),
+          fid(el("div", { class: "notify-rule-why" }, rule.why), "ruleWhy", i),
+        ),
+      ),
+      "rule",
+      i,
+    ),
+  );
+  rows.forEach((row, i) => fid(row.querySelector(".notify-rule-text"), "ruleBody", i));
+
+  const link = el(
+    "a",
+    {
+      class: "notify-rules-link",
+      href: "#",
+      onClick: (e) => {
+        e.preventDefault();
+        handlers?.onRoute?.("activity");
+      },
+    },
+    NOTIFY.rules.activityLink,
+  );
+
+  return fid(
+    el(
+      "div",
+      { class: "notify-rules" },
+      fid(el("div", { class: "notify-rules-eyebrow" }, NOTIFY.rules.interruptsTitle), "interruptsTitle"),
+      ...rows,
+      fid(el("div", { class: "notify-rules-eyebrow is-silent" }, NOTIFY.rules.silentTitle), "silentTitle"),
+      fid(
+        el(
+          "div",
+          { class: "notify-silent" },
+          ...NOTIFY.rules.silent.map((word, i) =>
+            fid(el("span", { class: "notify-silent-chip" }, word), "silentChip", i),
+          ),
+        ),
+        "silent",
+      ),
+      fid(
+        el(
+          "div",
+          { class: "notify-rules-note" },
+          NOTIFY.rules.activityBefore,
+          fid(link, "activityLink"),
+          NOTIFY.rules.activityAfter,
+        ),
+        "activityNote",
+      ),
+      fid(
+        el(
+          "div",
+          { class: "notify-hard-rule" },
+          fid(el("div", { class: "notify-hard-rule-title" }, NOTIFY.rules.hardRuleTitle), "hardRuleTitle"),
+          fid(el("div", { class: "notify-hard-rule-body" }, NOTIFY.rules.hardRuleBody), "hardRuleBody"),
+        ),
+        "hardRule",
+      ),
+    ),
+    "rulesRoot",
+  );
+}
+
+/**
+ * `11a Settings` — the `notify_policy` cards, the deletions tab's pattern at a different subject.
+ *
+ * No "until the file has been read" guard, and that asymmetry with `deletionsTab` is deliberate: the
+ * deletion policy describes what the DAEMON does with files and must not be guessed at, while this
+ * one is the GUI's own preference with a defined default. An unreadable `gui.toml` means the default
+ * is in force, which is exactly what the first card says.
+ */
+function notifyPolicyColumn(props) {
+  const { notifyPolicy, handlers } = props;
+  const selected = notifyPolicy ?? NOTIFY_POLICIES[0].id;
+  return fid(
+    el(
+      "div",
+      { class: "notify-policy" },
+      fid(el("div", { class: "settings-section-title" }, NOTIFY.settings.title), "policyTitle"),
+      fid(el("div", { class: "settings-section-sub" }, NOTIFY.settings.sub), "policySub"),
+      fid(
+        el(
+          "div",
+          { class: "settings-cards", role: "radiogroup", "aria-label": NOTIFY.settings.title },
+          NOTIFY_POLICIES.map((policy, i) => {
+            const copy = NOTIFY.settings.choices[i];
+            const card = fid(
+              radioCard({
+                selected: selected === policy.id,
+                title: copy.label,
+                note: i === 0 ? NOTIFY.settings.badge : null,
+                body: copy.sub,
+                onSelect: () => handlers?.onNotifyPolicy?.(policy.id),
+              }),
+              "card",
+              i,
+            );
+            focusable(card, `notify:${policy.id}`);
+            fid(card.querySelector(".radio-head"), "cardHead", i);
+            fid(card.querySelector(".radio-ring"), "cardRing", i);
+            fid(card.querySelector(".radio-title"), "cardTitle", i);
+            fid(card.querySelector(".radio-text"), "cardBody", i);
+            if (i === 0) fid(card.querySelector(".radio-note"), "cardBadge");
+            return card;
+          }),
+        ),
+        "cards",
+      ),
+      fid(keyLine(NOTIFY.settings.key), "policyKey"),
+    ),
+    "policyRoot",
+  );
+}
+
+/** The tab: the rules on the left, the choice on the right — which is what the first card's copy says. */
+function notificationsTab(props) {
+  return [el("div", { class: "settings-notify" }, rulesPanel(props.handlers), notifyPolicyColumn(props))];
+}
+
+// ------------------------------------------------------------------------- tab 5 · advanced ----
 
 /**
  * Not drawn anywhere. `08-settings.md` names six things this tab holds; two of them round-trip
@@ -852,6 +1019,7 @@ const TAB_BODIES = {
   folders: foldersTab,
   skip: skipTab,
   deletions: deletionsTab,
+  notifications: notificationsTab,
   advanced: advancedTab,
 };
 
@@ -882,7 +1050,12 @@ export function renderSettings(props = {}) {
   });
   tabs.classList.add("settings-tabs");
   fid(tabs, "tabs");
-  for (const [i, node] of [...tabs.children].entries()) focusable(fid(node, "tab", i), `tab:${TABS[i].id}`);
+  // BY THE TAB'S OWN ID, not by its position. The fifth pill sits fourth (Advanced is the technical
+  // drawer and stays last), so a positional key would compare `Notifications` against the frame's
+  // `Advanced` and report a width difference between two different words. `settingsFids`' `tab`
+  // answers `undefined` for a tab no frame draws, and `fid` then stamps nothing.
+  for (const [i, node] of [...tabs.children].entries())
+    focusable(fid(node, "tab", TABS[i].id), `tab:${TABS[i].id}`);
   return [
     titleBlock,
     tabs,

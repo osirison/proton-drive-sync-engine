@@ -102,10 +102,16 @@ export function activeFixture() {
  */
 export function fid(node, slot, ...args) {
   const fixture = activeFixture();
-  const key = fixture?.fids?.[slot];
-  if (node && key != null) {
-    node.setAttribute("data-fid", `${activeFrame()}:${typeof key === "function" ? key(...args) : key}`);
-  }
+  const declared = fixture?.fids?.[slot];
+  if (!node || declared == null) return node;
+  // A FACTORY MAY ANSWER "NOT IN THIS FRAME". S9 needed it twice over: the Settings pill row gains a
+  // fifth tab no `8a` frame draws, and one of the three `11a In situ` banners draws its app name at
+  // a letter-spacing the other four banners do not. Both are one node inside a run the rest of which
+  // is mapped, and the alternative — stamping `…:undefined` — fails as "no such node key", which is
+  // the message for a stale mapping and would send the next reader looking for a re-extraction.
+  const key = typeof declared === "function" ? declared(...args) : declared;
+  if (key == null) return node;
+  node.setAttribute("data-fid", `${activeFrame()}:${key}`);
   return node;
 }
 

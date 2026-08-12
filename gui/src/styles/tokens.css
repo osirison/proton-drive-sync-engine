@@ -340,6 +340,10 @@
      monochrome column at this colour, and 10-tray.md gives the light-panel value itself
      ("the glyph inverts to #14161A with the same five forms"). DEVIATIONS §82a. */
   --hex-glyph-fg: #e8ebf0;
+  /* The banner's settled outline (S9). NOT --hex-settled-track, for --hex-glyph-fg's reason one size
+     up: at 34px over a translucent banner that dark ring is invisible. `11a In situ` draws it at the
+     quiet mono tier (#6D7783 = --text-5), with the check inside it at --hex-settled-check. */
+  --hex-notify-track: #6d7783;
   --hex-paused-track: #2e323a;
   --hex-paused-bars: #99a2ae;
   --hex-numeral: #f2f4f7;
@@ -361,6 +365,15 @@
   --scrim: rgba(0, 0, 0, 0.5);
   --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.6);
   --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.5);
+  /* ---- the notification banner (11-notifications.md §Banner spec). Its own surface, because it is
+     the only one that floats over the DESKTOP rather than over the app: translucent, hairlined in
+     white rather than in a border token. Drawn identically in all five 11a frames. Used only where
+     the platform provides no notification chrome of its own. ---- */
+  --notify-bg: rgba(18, 20, 25, 0.94);
+  --notify-border: rgba(255, 255, 255, 0.11);
+  --notify-action-bg: rgba(255, 255, 255, 0.06);
+  --notify-action-border: rgba(255, 255, 255, 0.14);
+  --notify-action-2-border: rgba(255, 255, 255, 0.1);
   --focus-ring: #3b82f6;
 }
 
@@ -491,6 +504,7 @@
     --hex-syncing-track: #e4e1db;
     --hex-glyph-track: #e4e1db;
     --hex-glyph-fg: #14161a;
+    --hex-notify-track: #6b7280;
     --hex-paused-track: #c7cbd2;
     --hex-paused-bars: #4b5563;
     --hex-numeral: #14161a;
@@ -504,6 +518,14 @@
     --scrim: rgba(0, 0, 0, 0.33);
     --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
     --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
+    /* MECHANICALLY MAPPED, not measured: no 12a frame draws a banner, so these follow
+       12-light-theme.md's card row (#0D0E11 -> #FFFFFF) and put the two white hairlines onto the
+       dark text colour at the same alphas. S10 owns the undrawn light surfaces; this is one. */
+    --notify-bg: rgba(255, 255, 255, 0.96);
+    --notify-border: rgba(20, 22, 26, 0.11);
+    --notify-action-bg: rgba(20, 22, 26, 0.05);
+    --notify-action-border: rgba(20, 22, 26, 0.14);
+    --notify-action-2-border: rgba(20, 22, 26, 0.1);
     --focus-ring: #1d4ed8;
   }
 }
@@ -628,6 +650,7 @@
   --hex-syncing-track: #e4e1db;
   --hex-glyph-track: #e4e1db;
   --hex-glyph-fg: #14161a;
+  --hex-notify-track: #6b7280;
   --hex-paused-track: #c7cbd2;
   --hex-paused-bars: #4b5563;
   --hex-numeral: #14161a;
@@ -641,6 +664,12 @@
   --scrim: rgba(0, 0, 0, 0.33);
   --shadow-tray-panel: 0 22px 54px rgba(0, 0, 0, 0.45);
   --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
+  /* See the media-query block above: mapped, not measured. */
+  --notify-bg: rgba(255, 255, 255, 0.96);
+  --notify-border: rgba(20, 22, 26, 0.11);
+  --notify-action-bg: rgba(20, 22, 26, 0.05);
+  --notify-action-border: rgba(20, 22, 26, 0.14);
+  --notify-action-2-border: rgba(20, 22, 26, 0.1);
   --focus-ring: #1d4ed8;
 }
 

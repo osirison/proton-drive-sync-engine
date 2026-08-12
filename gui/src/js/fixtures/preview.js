@@ -16,6 +16,7 @@
 import { FIXTURES, activeFixture, fid } from "./frames.js";
 import { el } from "../ui/el.js";
 import { trayGlyph } from "../ui/hexagon.js";
+import { bannerFor, renderBanner } from "../ui/notification.js";
 
 const params = () => new URLSearchParams(typeof location === "undefined" ? "" : location.search);
 
@@ -110,6 +111,30 @@ const INDEX_CSS = `
  * the grid, or a `text-align`, would fail ten nodes at once with a diff that points at the mark and
  * blames the wrong thing. The captions may style themselves; they are siblings, not ancestors.
  */
+/**
+ * The desktop under `11a In situ` (S9). Scenery, and `SPECIMEN_ARTEFACT` says so — the wallpaper,
+ * the bar and the clock are not product and are not asserted.
+ *
+ * STYLED FROM TOKENS, NOT FROM THE PROTOTYPE'S LITERALS. The frame paints a GNOME-ish wallpaper in
+ * three raw hexes; `check-tokens.mjs` allows a raw colour in `tokens.css` alone, and a fake
+ * wallpaper is not a design token. What matters here is the STRUCTURE — the banners' fid keys are
+ * positions inside this tree (`div[1]/div/div[0]`…), so the bar, the positioner and the 372px
+ * column are load-bearing even though nothing compares them.
+ */
+const DESKTOP_CSS = `
+.desktop-mock { width: 1040px; height: 560px; border-radius: 12px; overflow: hidden;
+  box-shadow: var(--shadow-window); position: relative; background: var(--panel-alt); }
+.desktop-bar { height: 32px; background: var(--surface); display: flex; align-items: center;
+  padding: 0 14px; position: relative; }
+.desktop-bar span { font-size: 11.5px; color: var(--text-2); }
+.desktop-clock { position: absolute; left: 0; right: 0; text-align: center; font-weight: 600;
+  color: var(--text-bright); pointer-events: none; }
+.desktop-spacer { flex: 1; }
+.desktop-stack { position: absolute; top: 44px; left: 0; right: 0; display: flex;
+  flex-direction: column; align-items: center; gap: 10px; }
+.desktop-column { width: 372px; display: flex; flex-direction: column; gap: 10px; }
+`;
+
 const GLYPH_CSS = `
 .glyph-sheet { width: 560px; padding: 24px 26px; box-sizing: border-box; }
 .glyph-grid { display: grid; grid-template-columns: 52px 52px 366px; align-items: center; gap: 0 18px; }
@@ -227,6 +252,46 @@ function renderGlyphSheet(root, label) {
 }
 
 /**
+ * `11a In situ` — three banners over a desktop mock (S9).
+ *
+ * A SPECIMEN, so only the banners are product (`SPECIMEN_ARTEFACT`) and the bar, the clock and the
+ * wallpaper are scenery — none of it carries a slot. But the scenery is load-bearing for the KEYS:
+ * the banners' fids are positions inside this tree (`div[1]/div/div[0]`…), so dropping the top bar
+ * or the positioner between the mock and the column moves every one of them onto a node the frame
+ * does not have. `fids.js`'s `IN_SITU_BANNERS` is written against exactly this nesting.
+ *
+ * The strings on the bar are the prototype's own wallpaper furniture, which is why they are here and
+ * not in `ui/copy.js`: nothing in the app ever renders them, and `copy-gate.mjs` would then be
+ * checking a mock's clock.
+ */
+function renderDesktopMock(root, label) {
+  const banners = activeFixture()?.desktop?.banners ?? [];
+  root.replaceChildren(
+    el(
+      "div",
+      { class: "desktop-mock" },
+      el(
+        "div",
+        { class: "desktop-bar" },
+        el("span", {}, "Activities"),
+        el("span", { class: "desktop-clock" }, "Tue 14:41"),
+        el("span", { class: "desktop-spacer" }),
+        el("span", {}, `${label} · ${banners.length} banners`),
+      ),
+      el(
+        "div",
+        { class: "desktop-stack" },
+        el(
+          "div",
+          { class: "desktop-column" },
+          ...banners.map((banner, i) => renderBanner(bannerFor(banner.event), { at: banner.at, index: i })),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
  * The index. Rendered only for `?frames`, and it takes over the window — the shell never renders
  * behind it.
  *
@@ -332,10 +397,14 @@ export function mountPreview(root) {
         // for `mountFramePanel` to draw and both would fall through to the generic mock.
         FIXTURES[label]?.glyphs
         ? renderGlyphSheet
-        : null;
+        : // The fourth claim, and the same argument (S9): `11a In situ`'s product is three banners
+          // over a desktop, which is neither a screen nor a panel — nothing in the shell draws one.
+          FIXTURES[label]?.desktop
+          ? renderDesktopMock
+          : null;
   if (!claim) return false;
   if (!document.getElementById("preview-css")) {
-    document.head.append(el("style", { id: "preview-css" }, INDEX_CSS + GLYPH_CSS));
+    document.head.append(el("style", { id: "preview-css" }, INDEX_CSS + GLYPH_CSS + DESKTOP_CSS));
   }
   claim(root, label);
   return true;

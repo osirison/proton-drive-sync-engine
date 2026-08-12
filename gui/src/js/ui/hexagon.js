@@ -64,6 +64,9 @@ export const HEX_PERIMETER = 303.0115;
 export const DASH_PERIOD = 300;
 
 const CHECK = "M49 60 L57 68 L72 52";
+// The banner's settled mark is a different drawing, not the in-window one at 34px: a wider check on
+// a quiet outline. Measured off `11a In situ`'s third banner (S9).
+const CHECK_NOTIFY = "M47 60 L57 70 L74 51";
 const STRIKE = "M40 40 L80 80";
 const STRIKE_SMALL = "M38 38 L82 82"; // ≤20px — 10-tray.md's longer strike, so it reads at 16px
 
@@ -247,7 +250,7 @@ export function renderHexagon(opts = {}) {
     strokeWidth = strokeForSize(size, state === "warning" && STROKE[size]?.warning ? "warning" : family),
     numeralSize = null,
     numeralY = null,
-    checkPath = CHECK,
+    checkPath = family === "notification" ? CHECK_NOTIFY : CHECK,
     strikePath = size <= 20 ? STRIKE_SMALL : STRIKE,
     dotRadius = size <= 20 ? 17 : 15,
     tint = null,
@@ -290,7 +293,19 @@ export function renderHexagon(opts = {}) {
     case "settled": {
       // Both columns of the sheet draw this one at `--hex-glyph-fg`, so it does not go through
       // `toned` — there is no hue to lose, which is the whole of the "Up to date" form.
-      children.push(body(strokeWidth, glyph ? glyphFg : "var(--hex-settled-track)", maskFill));
+      // The banner's outline is the quiet tier, not the in-window track: at 34px over a dark banner
+      // `--hex-settled-track` is invisible, the same failure the tray glyph had at 20px (§82a).
+      children.push(
+        body(
+          strokeWidth,
+          glyph
+            ? glyphFg
+            : family === "notification"
+              ? "var(--hex-notify-track)"
+              : "var(--hex-settled-track)",
+          maskFill,
+        ),
+      );
       // Dropped below 20px: the tray settled glyph is a bare outline, and so is the 13px bullet.
       // Reusing the panel construction there ships a checkmark that is not in the design.
       if (size > 20) {

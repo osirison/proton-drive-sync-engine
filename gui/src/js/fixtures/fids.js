@@ -1147,7 +1147,13 @@ const settingsShell = {
   sub: "div[0]/div[1]",
 
   tabs: "div[1]",
-  tab: (i) => `div[1]/button[${i}]`,
+  // KEYED BY TAB ID. The four pills `08-settings.md` names are `button[0]`…`button[3]`; S9's fifth
+  // (`notifications`) is drawn in no frame and answers `undefined`, which `fid` reads as "no node
+  // here". Positional keys would have compared the new pill against `Advanced`.
+  tab: (id) => {
+    const drawn = ["folders", "skip", "deletions", "advanced"].indexOf(id);
+    return drawn < 0 ? undefined : `div[1]/button[${drawn}]`;
+  },
 
   content: "div[2]",
 
@@ -1293,11 +1299,13 @@ export function settingsFids(view) {
     deletions: SETTINGS_DELETIONS_FIDS,
     monthly: SETTINGS_MONTHLY_FIDS,
     refused: SETTINGS_REFUSED_FIDS,
+    notifyRules: SETTINGS_NOTIFY_RULES_FIDS,
+    notifyPolicy: SETTINGS_NOTIFY_POLICY_FIDS,
   }[view];
   if (!body) throw new Error(`fids: no settings view "${view}"`);
-  // The two crops and the dialog are standalone surfaces: neither draws the app header, and neither
-  // draws the action bar the two 1040 frames carry.
-  const standalone = view === "deletions" || view === "monthly" || view === "refused";
+  // The crops and the dialog are standalone surfaces: none draws the app header, and none draws the
+  // action bar the two 1040 frames carry.
+  const standalone = ["deletions", "monthly", "refused", "notifyRules", "notifyPolicy"].includes(view);
   return standalone ? body : { ...settingsShell, ...body };
 }
 
@@ -1461,6 +1469,58 @@ const ONBOARDING_CLI_FIDS = {
   cliCheckAgain: "div/div/div[3]/button[0]",
 };
 
+/**
+ * `11a Rules` — the reference sheet on the left of Settings › Notifications.
+ *
+ * The four rule rows are `div[1]`…`div[4]`, so the row index is offset by one from the eyebrow above
+ * them. Written as `i + 1` rather than renumbering the rows, because the offset is what the frame
+ * says and a table that hides it makes the next reader check.
+ */
+const SETTINGS_NOTIFY_RULES_FIDS = {
+  rulesRoot: "",
+  interruptsTitle: "div[0]",
+  rule: (i) => `div[${i + 1}]`,
+  ruleDot: (i) => `div[${i + 1}]/span`,
+  ruleBody: (i) => `div[${i + 1}]/div`,
+  ruleTitle: (i) => `div[${i + 1}]/div/div[0]`,
+  ruleWhy: (i) => `div[${i + 1}]/div/div[1]`,
+  silentTitle: "div[5]",
+  silent: "div[6]",
+  silentChip: (i) => `div[6]/span[${i}]`,
+  activityNote: "div[7]",
+  activityLink: "div[7]/a",
+  hardRule: "div[8]",
+  hardRuleTitle: "div[8]/div[0]",
+  hardRuleBody: "div[8]/div[1]",
+};
+
+/**
+ * `11a Settings` — the `notify_policy` cards on the right.
+ *
+ * The same tree as `8a Deletions tab`'s cards, at two different numbers: the card list sits 18px
+ * under the sub-line rather than 20, and the key line 16px under the cards rather than 7. Unlike the
+ * deletions crop's key line this one IS mapped — its margin is a measured value, not an `auto` that
+ * resolves differently in a 520-tall crop and a 764-tall window.
+ */
+const SETTINGS_NOTIFY_POLICY_FIDS = {
+  // `policyRoot` IS NOT MAPPED, for the reason the deletions crop's key line is not: the frame's own
+  // root is the presentation card the prototype draws a crop inside — `#0A0B0D` on a 1px `#1A1D22`
+  // at radius 12 with 24/26 padding and a dialog shadow, byte for byte what `8a Deletions tab` draws
+  // around its crop. The app's policy column is a column in a tab; that chrome is an artefact of how
+  // the frame was drawn. `11a Rules` IS mapped at its root, because there the card is real — it is
+  // the panel the tab draws on the left.
+  policyTitle: "div[0]",
+  policySub: "div[1]",
+  cards: "div[2]",
+  card: (i) => `div[2]/div[${i}]`,
+  cardHead: (i) => `div[2]/div[${i}]/div[0]`,
+  cardRing: (i) => `div[2]/div[${i}]/div[0]/span[0]`,
+  cardTitle: (i) => `div[2]/div[${i}]/div[0]/span[1]`,
+  cardBadge: "div[2]/div[0]/div[0]/span[2]",
+  cardBody: (i) => `div[2]/div[${i}]/div[1]`,
+  policyKey: "div[3]",
+};
+
 /** The five maps a `9a` fixture asks for by step. */
 export function onboardingFids(step) {
   const table = {
@@ -1472,4 +1532,106 @@ export function onboardingFids(step) {
   }[step];
   if (!table) throw new Error(`fids: no onboarding step "${step}"`);
   return table;
+}
+
+// ---------------------------------------------------------------------- S9 · notifications ----
+
+// TWO FRAMES AND FIVE BANNERS. `11a Outage` and `11a Grouped` are one banner each, at their own
+// root; `11a In situ` is three inside a desktop mock, so every slot is a factory over the banner's
+// position in the column even where a frame draws one.
+//
+// The mark's children differ by form, the way `hexFids` does one level up: `needsDot` is a path and
+// a circle, `needsNumeral` a path and a text, `settled` and `unreachable` two paths. Declaring a
+// numeral on a banner that draws none would be a mapping naming a node the frame does not have —
+// harmless until something renders it, then a stale key. So each form declares only its own.
+const MARK_PATHS = { needsDot: 1, needsNumeral: 1, settled: 2, unreachable: 2 };
+
+/** `a/b` unless `a` is the frame root, where the key is `b`. */
+const under = (base, rest) => (base ? `${base}/${rest}` : rest);
+
+/**
+ * One banner's keys, given where it sits and what it draws.
+ *
+ * `head` is `div[0]` when the banner has an actions row and `div` when it does not — `keyOf` only
+ * indexes a tag with more than one sibling of its kind, so the first-sync banner's single child is
+ * keyed differently from the other four's first child. That is not a detail: mapping it as `div[0]`
+ * silently points every slot under it at a node that does not exist.
+ */
+function bannerAt({ root = "", actions = true, form, path = false, slipped = false }) {
+  const head = under(root, actions ? "div[0]" : "div");
+  return {
+    root,
+    head,
+    mark: `${head}/svg`,
+    markPath: (j) => `${head}/svg/path${MARK_PATHS[form] > 1 ? `[${j}]` : ""}`,
+    dot: `${head}/svg/circle`,
+    numeral: `${head}/svg/text`,
+    text: `${head}/div`,
+    meta: `${head}/div/div[0]`,
+    app: `${head}/div/div[0]/span[0]`,
+    spacer: `${head}/div/div[0]/span[1]`,
+    time: `${head}/div/div[0]/span[2]`,
+    title: `${head}/div/div[1]`,
+    body: `${head}/div/div[2]`,
+    path: `${head}/div/div[2]/span`,
+    actions: under(root, "div[1]"),
+    action: (j) => `${under(root, "div[1]")}/button[${j}]`,
+    form,
+    hasPath: path,
+    hasActions: actions,
+    slipped,
+  };
+}
+
+/** The banner slots for a frame, over however many banners it draws. */
+function bannerFids(banners) {
+  const at = (i) => banners[Math.min(i, banners.length - 1)];
+  const has = (pick) => banners.some(pick);
+  return {
+    banner: (i) => at(i).root,
+    bannerHead: (i) => at(i).head,
+    bannerMark: (i) => at(i).mark,
+    bannerMarkPath: (i, j) => at(i).markPath(j),
+    ...(has((b) => b.form === "needsDot") ? { bannerMarkDot: (i) => at(i).dot } : {}),
+    ...(has((b) => b.form === "needsNumeral") ? { bannerMarkNumeral: (i) => at(i).numeral } : {}),
+    bannerText: (i) => at(i).text,
+    bannerMeta: (i) => at(i).meta,
+    // A DRAWING SLIP, UNMAPPED. `11a In situ`'s FIRST banner is the only one of the five that puts
+    // `letter-spacing:.01em` on the app name; the other two in the same mock and both standalone
+    // banners draw `normal`. Four against one, at 0.12px, so the component draws `normal` and the
+    // one node that disagrees carries no slot — the call `8a Settings`' `event_driven_reconcile`
+    // key line got, which is neither a mapped node nor a known-deviations row. The spacer beside it
+    // goes with it: it is `flex:1`, so its width is the app name's width subtracted from the row.
+    bannerApp: (i) => (banners[i]?.slipped ? undefined : at(i).app),
+    bannerSpacer: (i) => (banners[i]?.slipped ? undefined : at(i).spacer),
+    bannerTime: (i) => at(i).time,
+    bannerTitle: (i) => at(i).title,
+    bannerBody: (i) => at(i).body,
+    // Only the permanent-deletion banner puts a mono path inside its sentence.
+    ...(has((b) => b.hasPath) ? { bannerPath: (i) => at(i).path } : {}),
+    ...(has((b) => b.hasActions)
+      ? { bannerActions: (i) => at(i).actions, bannerAction: (i, j) => at(i).action(j) }
+      : {}),
+  };
+}
+
+/**
+ * The three `11a In situ` banners, in the column's order. The mock's own bar, clock and wallpaper
+ * are scenery (`SPECIMEN_ARTEFACT`) and carry no slots.
+ */
+const IN_SITU_BANNERS = [
+  { root: "div[1]/div/div[0]", form: "needsDot", actions: true, path: true, slipped: true },
+  { root: "div[1]/div/div[1]", form: "needsDot", actions: true },
+  { root: "div[1]/div/div[2]", form: "settled", actions: false },
+];
+
+/** The three maps an `11a` banner fixture asks for. */
+export function notifyFids(view) {
+  const banners = {
+    outage: [{ form: "unreachable" }],
+    grouped: [{ form: "needsNumeral" }],
+    inSitu: IN_SITU_BANNERS,
+  }[view];
+  if (!banners) throw new Error(`fids: no notification view "${view}"`);
+  return bannerFids(banners.map(bannerAt));
 }

@@ -48,6 +48,10 @@ const NOT_DRAWN = new Map([
   // empty-state table still specifies it ("Activity › files: `Nothing has moved in the last hour.`
   // + flat line"), and S5 will need it. DEVIATIONS.md §49.
   ["ACTIVITY.nothingRecent", "only drawn in `6a Quiet`, which is out of scope"],
+  // The fifth Settings pill (S9). `11a Settings` is the tab's CONTENT, drawn as a crop with no pill
+  // row above it, and `8a Settings` draws the row with the four `08-settings.md` names. So the word
+  // exists in no frame while the surface it names is drawn in two. DEVIATIONS §83.
+  ["NOTIFY.settings.tab", "no frame draws the Settings pill row with a fifth pill"],
   // S2's meta line names what sort of file this is, and only ONE of the three answers is drawn.
   // `3a Conflict` is a text conflict, so `a plain text file` is in a frame; the other two describe
   // states no `3a` frame draws — a type conflict (the frames put `photos/trip` in the queue list,
@@ -314,6 +318,21 @@ const DRAWN = [
   ["SETTINGS.skippingSize", [2, 3_100_000_000], "8a Skip rules"],
   ["SETTINGS.ruleAdded", ["14 Jul"], "8a Skip rules"],
   ["SETTINGS.ruleRemovedCost", [2, 3_100_000_000], "8a Skip rules"],
+  // S9. The banner sentences. Five of the six are rendered by the app at live values and gated here
+  // at the frame's; `deletionTitle` is the sixth and is the `pairLocalNote` shape — the noun is
+  // passed to reproduce what the frame draws, and the app never passes one (G8 #208: nothing types
+  // a queued deletion or counts what is under it).
+  //
+  // THREE OF THESE FRAMES ARE NOT WINDOWS. `11a In situ` is a specimen whose product is the three
+  // banners inside it, and `11a Outage`/`11a Grouped` are banners the desktop sizes. The gate reads
+  // frame TEXT, so it does not care — which is worth saying because it is the only gate in the set
+  // that covers the three banners without needing them mounted anywhere.
+  ["NOTIFY.deletionTitle", [1204, "photos"], "11a In situ"],
+  ["NOTIFY.conflictTitle", ["notes/todo.txt"], "11a In situ"],
+  ["NOTIFY.firstSyncBody", [12480, 41_200_000_000], "11a In situ"],
+  ["NOTIFY.groupedTitle", [5], "11a Grouped"],
+  ["NOTIFY.groupedBody", [10], "11a Grouped"],
+  ["NOTIFY.outageBody", [61], "11a Outage"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */

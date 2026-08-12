@@ -32,7 +32,6 @@ use gui_core::{config_io, index_read, ipc, plan};
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Manager, State};
-use tauri_plugin_notification::NotificationExt;
 
 type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
 
@@ -709,14 +708,49 @@ pub async fn restart_service(state: Paths<'_>) -> Result<String, String> {
         .map_err(|error| format!("restart task failed: {error}"))?
 }
 
+// ------------------------------------------------------------------ notifications (S9) ----
+
+/// Show one banner, replacing whichever of ours is still on screen.
+///
+/// **Linux only, and silent everywhere else.** The whole app is Linux-only (the engine's IPC is
+/// Unix-socket) but the notification path is the one that would panic rather than degrade, so the
+/// off-Linux arm answers `Ok` with nothing shown: a notification is an addition to the window, and
+/// no build target should fail to compile over one.
 #[tauri::command]
-pub fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-        .map_err(|e| e.to_string())
+pub async fn send_notification(
+    app: tauri::AppHandle,
+    payload: crate::notify::NotifyPayload,
+) -> Result<(), String> {
+    crate::notify::send(app, payload).await
+}
+
+/// Take our banner down. Used when the thing it was about resolved itself.
+#[tauri::command]
+pub async fn close_notification(app: tauri::AppHandle) -> Result<(), String> {
+    crate::notify::close(app).await
+}
+
+/// The GUI-local `notify_policy` (C6). Never sent to the daemon — see `gui_core::gui_prefs`.
+#[tauri::command]
+pub fn read_notify_policy(state: Paths<'_>) -> String {
+    let config_path = { state.lock().unwrap().config_path.clone() };
+    gui_core::gui_prefs::load_notify_policy(&gui_core::gui_prefs::gui_prefs_path(&config_path))
+        .as_str()
+        .to_string()
+}
+
+/// Refuses an unknown token rather than defaulting: a write is a person choosing, and silently
+/// storing something else would be the screen answering a question it was not asked.
+#[tauri::command]
+pub fn write_notify_policy(state: Paths<'_>, policy: String) -> Result<(), String> {
+    let parsed = gui_core::gui_prefs::NotifyPolicy::parse(&policy)
+        .ok_or_else(|| format!("unknown notify_policy \"{policy}\""))?;
+    let config_path = { state.lock().unwrap().config_path.clone() };
+    gui_core::gui_prefs::store_notify_policy(
+        &gui_core::gui_prefs::gui_prefs_path(&config_path),
+        parsed,
+    )
+    .map_err(|e| e.to_string())
 }
 
 // ------------------------------------------------------- the Phase-1 capability commands ----

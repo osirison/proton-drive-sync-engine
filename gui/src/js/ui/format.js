@@ -161,6 +161,33 @@ export function clock(epochSecs) {
 }
 
 /**
+ * The notification header's time, and the ONLY register in the app that has a word for "just now".
+ *
+ * `11a In situ` draws all three forms at once, which is what makes this a formatter rather than a
+ * caller's choice: `now` on the banner that has just arrived, `2m ago` on the one behind it, `14:12`
+ * on the oldest. Two thresholds, both read off that frame:
+ *
+ *   · under a minute → `now`. `since(…, "short")` says `0s ago` there, and a banner that counts
+ *     seconds at you is the opposite of what this surface is for — it is a thing you glance at.
+ *   · under an hour → `since(…, "short")`, the mono relative tier the rest of the app uses.
+ *   · beyond that → `clock()`. `14:12` is a time of day, and by then that is the more useful fact.
+ *
+ * The hour boundary is the one number here no frame pins — `2m ago` and `14:12` are 58 minutes
+ * apart at the closest and the drawn banners could be hours apart. It is chosen for the reason the
+ * form changes at all: past an hour, "73m ago" is arithmetic and "14:12" is an answer.
+ */
+export function notifyTime(epochSecs) {
+  if (epochSecs == null) return EM_DASH;
+  const value = Number(epochSecs);
+  if (!Number.isFinite(value)) return EM_DASH;
+  const delta = Math.floor(Date.now() / 1000) - value;
+  // A clock skew or a fixture reading a hair into the future is `now`, never a negative age.
+  if (delta < 60) return "now";
+  if (delta < 3600) return since(value, "short");
+  return clock(value);
+}
+
+/**
  * A month and a year, `Jan 2026` — the register the deletion card's facts strip uses for anything
  * older than a relative time is worth stating in (`last edited Jan 2026`, `last opened Mar 2024`).
  *

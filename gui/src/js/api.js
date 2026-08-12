@@ -42,7 +42,14 @@ export const api = {
   pathSyncStatus: (relativePath) => invoke("path_sync_status", { relativePath }),
   startService: () => invoke("start_service"),
   restartService: () => invoke("restart_service"),
-  notify: (title, body) => invoke("notify", { title, body }),
+  // The notification banners (S9). `payload` is `payloadFor(spec)` from `ui/notification.js`, so the
+  // sentence a desktop shows and the one `renderBanner` draws come from the same builder.
+  sendNotification: (payload) => invoke("send_notification", { payload }),
+  closeNotification: () => invoke("close_notification"),
+  // `notify_policy` (C6) — GUI-local, in the GUI's own `gui.toml`. It is never sent to the daemon:
+  // "Never" must not change engine behaviour, and it cannot, because the daemon never sees it.
+  readNotifyPolicy: () => invoke("read_notify_policy"),
+  writeNotifyPolicy: (policy) => invoke("write_notify_policy", { policy }),
   // The Phase-1 capability commands (C2/C4/C5). `path` prices a folder before the config is
   // written; omitted, `free_space` uses the configured local root.
   freeSpace: (path) => invoke("free_space", { path: path ?? null }),
@@ -71,6 +78,19 @@ export const api = {
     window.__TAURI__.event
       .listen("tray-navigate", (e) => cb(e.payload))
       .catch((err) => console.error("tray-navigate listen failed:", err));
+  },
+  /**
+   * A click on one of a banner's buttons (S9). The payload is `{ id, kind, action }` — the action id
+   * from `SAFE_ACTIONS`, and which of the four events it belongs to.
+   *
+   * `notify.rs` has already checked the notification id against its own before emitting, because
+   * `ActionInvoked` is broadcast to every listener on the bus.
+   */
+  onNotificationAction: (cb) => {
+    if (!inTauri()) return;
+    window.__TAURI__.event
+      .listen("notification-action", (e) => cb(e.payload))
+      .catch((err) => console.error("notification-action listen failed:", err));
   },
   isMock: () => !inTauri(),
 };
@@ -167,6 +187,11 @@ function mockInvoke(cmd, args) {
       case "skip_rule_usage":
         if (fixture.skipRules) return Promise.resolve(fixture.skipRules);
         break;
+      case "read_notify_policy":
+        // A frame that says nothing about the policy is the DEFAULT, not an unanswered question:
+        // `gui_prefs::load_notify_policy` cannot fail — a missing, unreadable or unknown value all
+        // read back as `only_when_needed`, which is the card `11a Settings` draws chosen.
+        return Promise.resolve(fixture.ui?.notifyPolicy ?? "only_when_needed");
       case "path_sync_status":
         // Keyed by the path asked for. An unlisted path answers `tracked: false` rather than falling
         // through to the generic mock: "this frame does not describe that file" is a real answer, and
@@ -273,6 +298,15 @@ function mockInvoke(cmd, args) {
       });
     case "start_service":
       return Promise.resolve("asked systemd to start proton-syncd (preview mock)");
+    case "read_notify_policy":
+      return Promise.resolve("only_when_needed");
+    case "write_notify_policy":
+    case "close_notification":
+      return Promise.resolve(null);
+    case "send_notification":
+      // A browser has no notification server, and drawing one here would be the preview inventing a
+      // surface. `?frame=11a Outage` is where a banner is looked at.
+      return Promise.resolve(null);
     case "write_config":
       // Accepts. The REFUSAL is what `8a Save refused` is for, and it is reached by the fixture's
       // own `saveError` rather than by a mock that decides to fail — a preview that rejected every

@@ -15,7 +15,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 gui_core = { package = "proton-sync-gui-core", path = "../gui-core" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
-tauri-plugin-notification = "2"
 # Tauri's own async runtime IS tokio; naming it directly is what lets the tray poll sleep and the
 # SNI item hold an async mutex without spinning up a second one.
 tokio = { version = "1", features = ["sync", "time", "rt"] }
@@ -30,9 +29,12 @@ tauri-plugin-dialog = "2.7.2"
 # left click opens the panel — is not reachable through it, and `src/sni.rs` speaks the protocol
 # directly instead.
 #
-# NOT A NEW DEPENDENCY: zbus 5 is already compiled into this tree via tauri-plugin-notification →
-# notify-rust. `default-features = false` + `tokio` so it shares Tauri's reactor rather than pulling
-# in async-io and running a second one.
+# The tray item (S8) and the notification banners (S9). `default-features = false` + `tokio` so it
+# shares Tauri's reactor rather than pulling in async-io and running a second one.
+#
+# S9 REMOVED `tauri-plugin-notification`, which used to bring zbus in transitively (via notify-rust)
+# and which no code calls any more: its desktop path cannot set an action button or a `replaces_id`,
+# and both are load-bearing in `11-notifications.md`. See `src/notify.rs`.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 # `StreamExt`, for the NameOwnerChanged stream that re-registers the item when the host restarts.

@@ -1005,3 +1005,147 @@ export const TRAY = {
       : `Nothing is lost. ${count(n)} ${plural(n, "change is", "changes are")} waiting and will go as soon as it's back.`,
   retrying: (inTime, lastAt) => `retrying in ${inTime} · last reached ${lastAt}`,
 };
+
+// ------------------------------------------------------------------------ notifications ----
+
+/**
+ * The four banners, the rules sheet and the `notify_policy` cards (S9).
+ *
+ * `13-copy-deck.md` §Notifications delegates to `11-notifications.md`, so unlike every block above
+ * these were read off the frames. `copy-gate.mjs` checks all of them against `11a In situ`,
+ * `11a Outage`, `11a Grouped`, `11a Rules` and `11a Settings`, including six templates.
+ *
+ * Four actions are imported, not retyped: they are the attention band's, the compact panel's and the
+ * tray's own words for the same three jobs, and a banner offering `Open Drive Sync` is offering the
+ * tray's row.
+ *
+ * No key here names a destructive act — `11-notifications.md`'s hard rule. `ui/notification.js`
+ * enforces it on the builders rather than trusting this list.
+ */
+export const NOTIFY = {
+  /** The notification server's app name. Not `CHROME.productName`; all five frames draw two words. */
+  app: "Drive Sync",
+
+  /**
+   * `1,204 photos would be deleted from this computer`.
+   *
+   * The app passes no noun and the queue length as `n`: nothing types a queued deletion, and nothing
+   * counts what is under a folder about to go (G8 #208). The deck keeps the frame's form so the gate
+   * can still check it — same shape as `SETTINGS.pairLocalNote`.
+   */
+  deletionTitle: (n, noun = null) =>
+    `${count(n)} ${noun ?? plural(n, "file", "files")} would be deleted from this computer`,
+  /** The path is separate: it is drawn in mono inside the sentence, and the frame's text breaks there. */
+  deletionBodyAfter: " was deleted on Proton Drive. Nothing has happened here yet.",
+  deletionKeep: "Keep them",
+  deletionReview: MAIN.band.deletionAction,
+
+  conflictTitle: (path) => `You both changed ${path}`,
+  conflictBody: "Both versions are safe. Pick one when you have a moment.",
+  conflictCompare: MAIN.band.conflictAction,
+  later: MAIN.compact.later,
+
+  /** Digits where `MAIN.band.conflictTitle` spells the word — same words, different string. */
+  groupedTitle: (n) => `${count(n)} files changed on both sides`,
+  /** Versions, not files: two copies per conflict, and the larger number is the reassurance. */
+  groupedBody: (versions) =>
+    `All ${cardinal(versions, "mid")} versions are safe. This usually means another device was offline for a while.`,
+  groupedAction: "Go through them",
+
+  firstSyncTitle: "Both sides now match",
+  /** The totals are G7 (#207); the clause goes rather than being filled, as `2a Settled` does. */
+  firstSyncBody: (files, size) =>
+    files == null || size == null
+      ? "First sync finished. Nothing was deleted."
+      : `First sync finished — ${count(files)} files, ${bytes(size)}. Nothing was deleted.`,
+
+  outageTitle: "Nothing has synced since yesterday",
+  /** `n == null` drops the count clause — unknown is never zero (`TRAY.unreachableBody`'s rule). */
+  outageBody: (n) =>
+    n == null
+      ? "Proton Drive is asking you to sign in again. Nothing is lost."
+      : `Proton Drive is asking you to sign in again. ${count(n)} ${plural(n, "change is", "changes are")} waiting — nothing is lost.`,
+  /**
+   * `11a Outage` draws `Sign in`. Nothing in the command surface signs in — the daemon reuses the
+   * CLI's keyring session, so re-authenticating is `proton-drive login` in a terminal. DEVIATIONS
+   * §67a settled this for the main screen's hero; `Try again now` is the tray's word for the same act.
+   */
+  outageRetry: TRAY.tryAgain,
+  outageOpen: TRAY.open,
+
+  /**
+   * `11a Rules`. Every `why` line differs from `11-notifications.md`'s table — the frame wins
+   * (IMPLEMENTATION-PLAN §1.3 rule 2). Do not restore the prose wording.
+   */
+  rules: {
+    /** `— 4` is drawn, not counted. */
+    interruptsTitle: "Interrupts you — 4",
+    interrupts: [
+      {
+        title: "Something would be deleted permanently",
+        why: "The one event where waiting silently could cost you files you'd never get back.",
+      },
+      {
+        title: "A file changed on both sides",
+        why: "Nothing is lost, but you're now editing two versions of the same thing without knowing it.",
+      },
+      {
+        title: "The first sync finished",
+        why: "Once, at the end of a long wait you were told to walk away from.",
+      },
+      {
+        title: "Nothing has synced for a day",
+        why: "Not a blip — a real outage, wrong password, or full drive. Silence here is dangerous.",
+      },
+    ],
+    silentTitle: "Stays silent — on purpose",
+    silent: [
+      "every sync pass",
+      "every file sent",
+      "every file received",
+      "folders followed",
+      "renames",
+      "a single failed pass",
+      "retries",
+      "scheduled sweeps",
+      "skipped files",
+      "pause and resume",
+      "recoverable deletions",
+      "settings saved",
+    ],
+    /** Three fields because the frame's text breaks around an `<a>`. The trailing space is drawn. */
+    activityBefore: "All of it is in ",
+    activityLink: CHROME.doors.activity,
+    activityAfter:
+      ", where you go looking for it. A notification you didn't need is a notification you'll switch off.",
+    hardRuleTitle: "Never a button in a banner",
+    hardRuleBody:
+      "Delete. Discard a version. Approve all. Anything irreversible needs a window where you can see what you're losing — a banner only ever offers the safe direction.",
+  },
+
+  /** `11a Settings` — the deletions tab's radio cards, three choices. */
+  settings: {
+    /** The fifth pill. No frame draws the Settings tab row with it — see `settings.js`'s TABS. */
+    tab: "Notifications",
+    title: "When to interrupt me",
+    sub: "Everything else stays in Activity regardless.",
+    /** `default`, not `SETTINGS.recommended` — a different word making a different claim. */
+    badge: "default",
+    choices: [
+      {
+        label: "Only when you need me",
+        sub: "The four events on the left. Roughly once a week, in a quiet month.",
+      },
+      {
+        label: "Only permanent deletions",
+        sub: "The single event that can cost you files. Conflicts wait quietly in the app.",
+      },
+      {
+        label: "Never",
+        /** Turning notifications off is not consent: the deletion queue still holds. */
+        sub: "The menu bar glyph still changes, and things still wait for you rather than happening on their own.",
+      },
+    ],
+    key: "notify_policy",
+  },
+};

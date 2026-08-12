@@ -37,6 +37,76 @@
  * @property why    one line, in the same voice as DEVIATIONS.md
  */
 export const KNOWN_DEVIATIONS = [
+  // ---- S9 · the three banners inside the desktop mock ----
+  //
+  // TWO SENTENCES ARE SHORTER THAN THE DRAWN ONES, and every row below is one of them wrapping to one
+  // line instead of two — the banner, its head, the text column and the sentence itself, four nodes
+  // per cause. Neither is a layout difference: `renderBanner` draws exactly what the frame draws, at
+  // the length Phase 1 can honestly write.
+  {
+    frame: "11a In situ",
+    key: "div[1]/div/div[0]",
+    props: ["box.h"],
+    detail: "170.5 vs 154.5",
+    issue: "#208",
+    why: "`1,204 photos` counts the files under a folder about to be deleted and nothing reports a subtree total (G8 #208); the app names the queue instead — one item, so the title is one line where the frame draws two",
+  },
+  {
+    frame: "11a In situ",
+    key: "div[1]/div/div[0]/div[0]",
+    props: ["box.h"],
+    detail: "93.5 vs 77.5",
+    issue: "#208",
+    why: "`1,204 photos` counts the files under a folder about to be deleted and nothing reports a subtree total (G8 #208); the app names the queue instead — one item, so the title is one line where the frame draws two",
+  },
+  {
+    frame: "11a In situ",
+    key: "div[1]/div/div[0]/div[0]/div",
+    props: ["box.h"],
+    detail: "93.5 vs 77.5",
+    issue: "#208",
+    why: "`1,204 photos` counts the files under a folder about to be deleted and nothing reports a subtree total (G8 #208); the app names the queue instead — one item, so the title is one line where the frame draws two",
+  },
+  {
+    frame: "11a In situ",
+    key: "div[1]/div/div[0]/div[0]/div/div[1]",
+    props: ["box.h"],
+    detail: "32 vs 16",
+    issue: "#208",
+    why: "`1,204 photos` counts the files under a folder about to be deleted and nothing reports a subtree total (G8 #208); the app names the queue instead — one item, so the title is one line where the frame draws two",
+  },
+  {
+    frame: "11a In situ",
+    key: "div[1]/div/div[2]",
+    props: ["box.h"],
+    detail: "109.5 vs 90.75",
+    issue: "#207",
+    why: "`12,480 files, 41.2 GB` is the index-wide total (G7 #207), and the rule for a missing capability is to drop the clause rather than fill it — so the body is one line where the frame draws two",
+  },
+  {
+    frame: "11a In situ",
+    key: "div[1]/div/div[2]/div",
+    props: ["box.h"],
+    detail: "77.5 vs 58.75",
+    issue: "#207",
+    why: "`12,480 files, 41.2 GB` is the index-wide total (G7 #207), and the rule for a missing capability is to drop the clause rather than fill it — so the body is one line where the frame draws two",
+  },
+  {
+    frame: "11a In situ",
+    key: "div[1]/div/div[2]/div/div",
+    props: ["box.h"],
+    detail: "77.5 vs 58.75",
+    issue: "#207",
+    why: "`12,480 files, 41.2 GB` is the index-wide total (G7 #207), and the rule for a missing capability is to drop the clause rather than fill it — so the body is one line where the frame draws two",
+  },
+  {
+    frame: "11a In situ",
+    key: "div[1]/div/div[2]/div/div/div[2]",
+    props: ["box.h"],
+    detail: "37.5 vs 18.75",
+    issue: "#207",
+    why: "`12,480 files, 41.2 GB` is the index-wide total (G7 #207), and the rule for a missing capability is to drop the clause rather than fill it — so the body is one line where the frame draws two",
+  },
   // ---- S8 · the tray panel, drawn floating over a desktop ----
   //
   // `10a In situ` is the only frame that draws the panel WHERE IT ACTUALLY LIVES: over a wallpaper,

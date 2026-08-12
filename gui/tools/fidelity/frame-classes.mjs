@@ -29,12 +29,17 @@ export const OUT_OF_SCOPE = new Set([
  *              product. Asserted through `artefact`, never as a whole.
  */
 export const FRAME_CLASS = {
-  crop: ["8a Deletions tab", "8a Schedule monthly"],
+  // `11a Rules` and `11a Settings` are the two halves of Settings › Notifications, re-rendered at
+  // 600 and 520 exactly as `8a Deletions tab` re-renders its tab at 600 — same background, border,
+  // radius, padding and presentation shadow as that crop, and the frame's own caption calls it "the
+  // settings tab". F9 put them in `notification` because nothing had yet decided where they live;
+  // S9 did, and a crop is what they are. DEVIATIONS §83.
+  crop: ["8a Deletions tab", "8a Schedule monthly", "11a Rules", "11a Settings"],
   specimen: ["10a In situ", "11a In situ", "10a Glyph states", "12a Tray light"],
   // Desktop notification banners (S9). Their own class because the fit gate does not apply — a
   // banner is sized by the desktop's notification chrome, not by a 1040×764 window — and because
-  // 520/600px would otherwise classify them as dialogs, which they are not.
-  notification: ["11a Rules", "11a Settings", "11a Outage", "11a Grouped"],
+  // 520px would otherwise classify them as dialogs, which they are not.
+  notification: ["11a Outage", "11a Grouped"],
 };
 
 /**
