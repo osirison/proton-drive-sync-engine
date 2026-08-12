@@ -28,6 +28,7 @@ pub mod config_io;
 pub mod conflicts;
 pub mod distro;
 pub mod free_space;
+pub mod gui_prefs;
 pub mod index_read;
 pub mod ipc;
 pub mod plan;

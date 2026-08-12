@@ -25,6 +25,8 @@ import {
 } from "./ui/chrome.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu } from "./ui/compact.js";
+import { bannerFor, payloadFor, renderBanner } from "./ui/notification.js";
+import { decide, emptyState } from "./notifier.js";
 import { trayView, renderTrayPanel, updateTrayPanel } from "./screens/tray.js";
 import { ACTIVITY, CHROME, ONBOARDING, SETTINGS } from "./ui/copy.js";
 import { clock, since } from "./ui/format.js";
@@ -495,6 +497,8 @@ const dom = {
   dialogSignature: null, // what the mounted dialog's body was built from — see the layer below
   dialogDetach: null,
   panel: null,
+  // The two standalone banner frames (S9). Latched for `panel`'s reason.
+  banner: null,
   // The tray panel (S8). Latched like `panel` and for a harder reason: it holds an animated mark
   // and a focusable menu, and the poll behind it runs every ~2s.
   trayPanel: null,
@@ -552,6 +556,26 @@ function mountFramePanel(root) {
  * returns false when the SHAPE changed (a different state, a different row count), which is the
  * signal to render a fresh one; `ui/compact.js` documents that contract and S8 is its first caller.
  */
+/**
+ * The two standalone banner frames (S9) — `11a Outage` and `11a Grouped`.
+ *
+ * A banner is not a window and not a panel: it is drawn by the desktop's notification server in the
+ * shipped app, so it has no route and nothing in the shell renders one. The frames still have to be
+ * reproducible, and the component that draws them is the same one `payloadFor` flattens for D-Bus —
+ * which is what makes the drawn banner and the delivered one the same sentence.
+ *
+ * 520px, which both frames declare and neither `11a In situ` banner does. Mounted once: a fixture
+ * cannot change, and the poll behind this would otherwise rebuild it every ~2s.
+ */
+function mountFrameBanner(root) {
+  if (dom.banner) return true;
+  const spec = activeFixture()?.notification;
+  if (!spec) return false;
+  dom.banner = renderBanner(bannerFor(spec.event), { at: spec.at, width: 520 });
+  root.replaceChildren(dom.banner);
+  return true;
+}
+
 function mountTrayPanel(root) {
   if (!isTraySurface()) return false;
   const view = trayView({
@@ -604,6 +628,7 @@ function render() {
     return;
   }
   if (mountFramePanel(root)) return;
+  if (mountFrameBanner(root)) return;
   // THE TRAY PANEL TAKES THE WINDOW, AND IT TAKES IT BEFORE THE ONBOARDING LATCH.
   //
   // That order is the whole of the decision. `nextOnboardingLatch` returns true for a fresh machine,
@@ -855,7 +880,19 @@ function render() {
     // it, so the next keystroke inserted where it should have replaced.
     const input = focused instanceof HTMLInputElement ? focused : null;
     const range = input ? [input.selectionStart, input.selectionEnd, input.selectionDirection] : null;
+    // AND THE SCROLL POSITION, which the focus restore below does not cover. Two blocks on this
+    // screen are taller than their box — the skip tab's rule list and the notifications tab's rules
+    // sheet — and a rebuild every ~2s put both back at the top, which makes the bottom of either
+    // one physically unreadable. Keyed by name rather than by node, because the node is a new one.
+    const scrolled = new Map();
+    for (const node of document.querySelectorAll("[data-scroll]")) {
+      if (node.scrollTop) scrolled.set(node.dataset.scroll, node.scrollTop);
+    }
     setBody(renderSettings(settingsProps()));
+    for (const node of document.querySelectorAll("[data-scroll]")) {
+      const at = scrolled.get(node.dataset.scroll);
+      if (at) node.scrollTop = at;
+    }
     dom.bodyRoute = active;
     if (key) {
       const next = [...document.querySelectorAll("[data-sfocus]")].find((n) => n.dataset.sfocus === key);
@@ -2101,7 +2138,16 @@ let settingsSaving = false;
 let settingsSweeping = false;
 /** The daemon's refusal, verbatim. Non-null is what opens `8a Save refused`. */
 let settingsError = null;
-/** A save landed and the daemon is still running the old config — see `SETTINGS.savedNote`. */
+/**
+ * A save landed and the daemon is still running the old config — see `SETTINGS.savedNote`.
+ *
+ * SET FOR A CONFIG WRITE ONLY. A policy-only save writes `gui.toml`, which the daemon never reads,
+ * so "the sync service is still running the old settings until it restarts" would be a sentence
+ * about a file nothing is waiting on — and it also swaps `Discard changes` for `Restart the
+ * service`, offering to bounce the daemon for a setting the daemon has never heard of. What a
+ * policy-only save leaves behind is what any form leaves behind: a `Save` that has gone quiet
+ * because there is nothing left to save.
+ */
 let settingsSaved = false;
 /** A restart asked for and not yet answered. `restart_service` can take ten seconds. */
 let settingsRestarting = false;
@@ -2119,6 +2165,11 @@ let settingsNotice = null;
 function resetSettingsScreen() {
   settingsTab = "folders";
   settingsEdits = {};
+  // WITH THE REST OF THE STAGED STATE. It is one of the two things a person can stage on this
+  // screen and it lives outside `settingsEdits` (it is not a daemon-config key), so leaving it out
+  // here made it the one edit that survived walking away: the card stayed chosen and the screen
+  // stayed dirty about a value nothing had written, for the life of the window.
+  notifyPolicyEdit = null;
   settingsDrafts = { exclude: "", include: "" };
   settingsSaving = false;
   settingsSweeping = false;
@@ -2162,13 +2213,19 @@ function settingsProps() {
     : settingsEdits;
   const config = { ...saved, ...edits };
   const skip = activeFixture()?.skipRules ?? skipRuleReport;
-  const dirty = ui?.dirty ?? isDirty(saved, edits);
+  // The staged policy counts as dirty like any other control, even though it is not part of the
+  // config `write_config` sends — the footer promises "nothing is written until you save", and a
+  // control that saved itself on click would be the one exception nobody was told about.
+  const policyStaged = notifyPolicyEdit != null && notifyPolicyEdit !== notifyPolicy;
+  const dirty = ui?.dirty ?? (isDirty(saved, edits) || policyStaged);
   return {
     tab,
     saved,
     config,
     skip,
     dirty,
+    // The frame names it; otherwise the staged value, then what is on disk.
+    notifyPolicy: ui?.notifyPolicy ?? notifyPolicyEdit ?? notifyPolicy,
     drafts: settingsDrafts,
     saving: settingsSaving,
     justSaved: settingsSaved,
@@ -2220,6 +2277,17 @@ function settingsProps() {
         settingsSaved = false;
         render();
       },
+      // Staged, not written. `null` once it matches what is saved, so choosing the card that is
+      // already selected does not mark the screen dirty — the same rule `configUpdate` applies to
+      // every other control.
+      onNotifyPolicy: (id) => {
+        settingsNotice = null;
+        notifyPolicyEdit = id === notifyPolicy ? null : id;
+        settingsSaved = false;
+        render();
+      },
+      // The Activity link inside the rules sheet. A real route change, not decoration.
+      onRoute: (id) => navigate(id),
       onDraft: (key, value) => {
         settingsDrafts = { ...settingsDrafts, [key]: value };
         render();
@@ -2234,6 +2302,7 @@ function settingsProps() {
       onDiscard: () => {
         settingsEdits = {};
         settingsDrafts = { exclude: "", include: "" };
+        notifyPolicyEdit = null;
         settingsSaved = false;
         render();
       },
@@ -2313,7 +2382,8 @@ async function sweepNow() {
 async function saveSettings() {
   const saved = activeFixture()?.config ?? configInfo ?? {};
   const update = configUpdate(saved, settingsEdits);
-  if (settingsSaving || Object.keys(update).length === 0) return;
+  const policy = notifyPolicyEdit != null && notifyPolicyEdit !== notifyPolicy ? notifyPolicyEdit : null;
+  if (settingsSaving || (Object.keys(update).length === 0 && !policy)) return;
   settingsSaving = true;
   settingsError = null;
   render();
@@ -2322,9 +2392,21 @@ async function saveSettings() {
   // keystroke typed while the write was in flight, while telling the person it had been saved.
   const sent = settingsEdits;
   try {
-    await api.writeConfig(update);
+    // TWO FILES, AND `notify_policy` NEVER GOES IN THE DAEMON'S. Its config parser is
+    // `deny_unknown_fields`, so one stray key stops the daemon starting; the GUI's own `gui.toml`
+    // is where a GUI-local preference belongs.
+    //
+    // THE CONFIG GOES FIRST, because it is the one that can be refused. `8a Save refused` says
+    // "Nothing was saved. Your old settings are still running", and a policy written before a
+    // refusal would make that sentence false about the one thing that HAD been written.
+    if (Object.keys(update).length) await api.writeConfig(update);
+    if (policy) {
+      await api.writeNotifyPolicy(policy);
+      notifyPolicy = policy;
+      notifyPolicyEdit = null;
+    }
     if (settingsEdits === sent) settingsEdits = {};
-    settingsSaved = true;
+    settingsSaved = Object.keys(update).length > 0;
     // The rules changed under the report, so the counts on the skip tab are about a config that is
     // no longer on disk. Ask again rather than showing yesterday's numbers next to today's rules.
     skipRuleReport = null;
@@ -2817,6 +2899,170 @@ async function refreshConfig() {
   render();
 }
 
+// ---- notifications (S9, C6) ----
+
+/**
+ * The trigger state, across restarts.
+ *
+ * localStorage FOR THE SAME REASON THE THEME IS THERE: it is GUI-local, per-machine, and losing it
+ * costs one repeated banner rather than anything about anyone's files. `notify_policy` is NOT here —
+ * it is a setting a person chose, so it lives in a file they can read and edit (`gui.toml`).
+ */
+const NOTIFIER_KEY = "notifier";
+
+function loadNotifierState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(NOTIFIER_KEY) ?? "null");
+    // Shape-checked rather than trusted: a half-written or older value must not make `decide` throw
+    // inside the status poll, which would take the whole window's refresh down with it.
+    //
+    // `typeof null === "object"` PASSES THIS, and that is safe rather than overlooked — reviewed and
+    // reproduced, because it is the obvious place to assume otherwise. Object spread of `null` is a
+    // no-op by specification, so `{ said: null }` resolves to `said: {}`, which is the empty state
+    // this function would have returned anyway. It does not throw, and neither does `{ said: [] }`.
+    if (saved && typeof saved === "object" && typeof saved.said === "object") {
+      return { ...emptyState(), ...saved, said: { ...saved.said } };
+    }
+  } catch (_) {
+    /* unreadable storage is an empty state, not a failure */
+  }
+  return emptyState();
+}
+
+let notifierState = loadNotifierState();
+/** The saved policy, and the one staged on the Settings tab. */
+let notifyPolicy = "only_when_needed";
+let notifyPolicyEdit = null;
+/**
+ * Whether the policy has been read off disk yet.
+ *
+ * NOTHING INTERRUPTS BEFORE IT HAS. `refreshNotifyPolicy` is a command round trip and `poll()`
+ * starts beside it, so the first evaluation could otherwise run against the DEFAULT — and someone
+ * who chose `Never` would be interrupted exactly once per launch, by the one setting whose whole
+ * purpose is that they are not.
+ */
+let notifyPolicyLoaded = false;
+
+async function refreshNotifyPolicy() {
+  try {
+    notifyPolicy = await api.readNotifyPolicy();
+    notifyPolicyLoaded = true;
+  } catch (error) {
+    // The default is what `gui_prefs::load_notify_policy` answers for every unreadable case anyway,
+    // so a failed read changes nothing about what is shown — it is logged because a command that
+    // cannot be reached is worth knowing about. The latch is still set: a command that cannot be
+    // reached will not become reachable, and refusing to notify for ever is the wrong failure.
+    console.error("read_notify_policy failed:", error);
+    notifyPolicyLoaded = true;
+  }
+  render();
+}
+
+/**
+ * Decide whether anything should interrupt, and say it.
+ *
+ * Called at the end of every poll, after the conflicts and the deletion queue are in the store, so
+ * the four triggers see one consistent picture rather than two ticks of one.
+ */
+function evaluateNotifications() {
+  const { event, state, resolved } = decide({
+    state: notifierState,
+    view: {
+      response: store.select.response(),
+      conflicts: store.select.conflicts(),
+      daemonState: store.select.daemonState(),
+    },
+    // THE SAVED VALUE, never the staged one. The Settings footer promises "nothing is written until
+    // you save", and this setting IS the written thing — a staged `Never` that silenced the deletion
+    // banner before anyone pressed Save would be the one exception nobody was told about, in the
+    // direction that costs files.
+    policy: notifyPolicy,
+    nowMs: Date.now(),
+  });
+  notifierState = state;
+  try {
+    localStorage.setItem(NOTIFIER_KEY, JSON.stringify(state));
+  } catch (_) {
+    /* a full or disabled storage costs a repeated banner, nothing more */
+  }
+  if (!event) {
+    // The banner's subject is gone — the deletion was approved, the conflict resolved, the daemon
+    // came back. A persistent banner (Plasma advertises `persistence`) would otherwise sit there
+    // asking about something already decided, and its buttons would act on an empty queue.
+    if (resolved) api.closeNotification().catch((error) => console.error("close_notification:", error));
+    return;
+  }
+  api.sendNotification(payloadFor(bannerFor(event))).catch((error) => {
+    // A desktop with no notification server, or one that refused. Not fatal and not retried: the
+    // same event is still in the window, and a retry loop against a server that is not there would
+    // be the noisiest possible way to be silent.
+    console.error("send_notification failed:", error);
+  });
+}
+
+/**
+ * `Keep them` — the permanent deletions the banner named, and only those.
+ *
+ * NOT `keepAllDeletions`, which is the screen's `Keep both files` and sends the reserved `all`
+ * selector. On the wire that deletes EVERY row from `delete_approvals`, so a mixed queue would have
+ * this banner revoke a standing approval the user granted for a recoverable deletion it never
+ * mentioned. Keeping is always safe, but doing more than the button says is not the same as safe.
+ *
+ * It carries S3's caveat unchanged (#224): `deny` revokes an approval and nothing on the wire
+ * refuses a withheld deletion durably. What it does do is true — a withheld deletion is not applied,
+ * so the files stay — and the row comes back next pass, on the screen, where the decision belongs.
+ */
+async function keepPermanentDeletions() {
+  const items = visibleDeletions().filter((item) => severityOf(item.direction) === "permanent");
+  if (!items.length) return;
+  for (const item of items) {
+    const key = itemKey(item);
+    if (deletionBusy.has(key)) continue;
+    deletionBusy.add(key);
+    try {
+      if (acknowledged(await api.deny(item.path))) deletionsDecided.set(key, item.fingerprint);
+    } catch (error) {
+      console.error("deny failed:", error);
+    }
+    deletionBusy.delete(key);
+  }
+  // ONE poll at the end, not one per item: a banner about a folder with a thousand withheld files
+  // would otherwise ask the daemon a thousand times over.
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * A banner's button. The ids are `SAFE_ACTIONS` — no destructive one exists to arrive here.
+ *
+ * `trayAction` FOR THE THREE THAT OPEN OR RETRY, because they are the tray's own rows doing the
+ * tray's own job: `review`/`open` show the window and `retry` is `Try again now`, which is a sync.
+ * One id space, one handler, as `tray_row` already documents.
+ */
+function onNotificationAction({ kind, action } = {}) {
+  switch (action) {
+    case "keep":
+      keepPermanentDeletions();
+      return;
+    case "later":
+      // Dismiss. The thing is still in the window, which is the whole design of this action.
+      return;
+    case "retry":
+      api.trayAction("tryAgain").then((payload) => store.setStatus(payload));
+      return;
+    case "compare":
+    case "review":
+      api.trayAction("open").then((payload) => store.setStatus(payload));
+      navigate(kind === "deletion" ? "deletions" : "conflicts");
+      return;
+    case "open":
+      api.trayAction("open").then((payload) => store.setStatus(payload));
+      return;
+    default:
+      console.warn(`notification-action: no handler for "${action}"`);
+  }
+}
+
 async function poll() {
   let payload = null;
   try {
@@ -2844,6 +3090,16 @@ async function poll() {
   }
   // Pending deletions ride on the status reply itself — no second IPC round trip per tick.
   if (payload?.response) store.setPendingDeletions(payload.response.pending_deletions ?? []);
+  // LAST, and after the conflict scan above, so the four triggers see one consistent picture.
+  //
+  // TWO EXCLUSIONS, AND THE SECOND IS THE ONE THAT BITES. A frame preview never notifies: `?frame=`
+  // is a fixture, and a design surface raising a real desktop banner would be the preview reaching
+  // outside the window. And THE TRAY PANEL IS A SECOND WEBVIEW RUNNING THIS FILE
+  // (`index.html?surface=tray`, `panel.rs`) — it calls `main()`, so it polls, and without this it
+  // would evaluate the same triggers against its own copy of the state, race the main window on the
+  // same localStorage key and send a second time. `replaces_id` would stop them stacking and
+  // nothing would stop the banner re-popping every time the panel is opened.
+  if (!activeFixture() && !isTraySurface() && notifyPolicyLoaded) evaluateNotifications();
   scheduleNextPoll();
 }
 
@@ -2858,12 +3114,18 @@ function main() {
   store.subscribe(render);
   render();
   refreshConfig();
+  refreshNotifyPolicy();
   poll();
   window.addEventListener("focus", scheduleNextPoll);
   document.addEventListener("keydown", onKeydown);
 
   // Tray menu items ask the shell to navigate. Routed through the api facade — no direct
   // window.__TAURI__ here.
+  // MAIN WINDOW ONLY. `app.emit` broadcasts to every webview, so the tray panel — which runs this
+  // same file — would run the handler a second time for one click: two deny sweeps over the queue,
+  // and a `navigate()` that moves the panel's own route to a screen it cannot draw.
+  if (!isTraySurface()) api.onNotificationAction(onNotificationAction);
+
   api.onTrayNavigate((id) => {
     if (typeof id !== "string") return;
     // Nothing emits this today: S8's tray acts through `commands::tray_action` rather than asking

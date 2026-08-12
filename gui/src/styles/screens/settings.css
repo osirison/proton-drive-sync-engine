@@ -67,6 +67,14 @@
   display: flex;
   flex-direction: column;
 }
+/* The notifications tab is the one whose content is taller than the region it lives in, so it is the
+   one that has to be told how tall the region is. `overflow:hidden` is the shell's own discipline
+   (`02-shell.md`, "a real bug found twice during this design"): clipping is recoverable, painting
+   over the footer is not. The scroller inside it is `.notify-rules-scroll`. */
+.settings-content-notifications {
+  min-height: 0;
+  overflow: hidden;
+}
 
 .settings-spacer {
   flex: 1;

@@ -3,6 +3,7 @@
 
 mod commands;
 mod config_path;
+mod notify;
 mod panel;
 mod tray;
 
@@ -20,7 +21,6 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
         // Settings › Folders' `Choose…`. Registered for the Rust side only: `commands::choose_folder`
         // calls it, and an app-defined command needs no capability grant — so the webview never gets
         // a file dialog it could open on its own.
@@ -46,7 +46,10 @@ pub fn run() {
             commands::path_sync_status,
             commands::start_service,
             commands::restart_service,
-            commands::notify,
+            commands::send_notification,
+            commands::close_notification,
+            commands::read_notify_policy,
+            commands::write_notify_policy,
             // The Phase-1 capability commands (C2/C4/C5) — data the design assumes and the daemon
             // does not expose. Added by the C-tasks, not by the screens that consume them.
             commands::free_space,
@@ -62,8 +65,16 @@ pub fn run() {
             commands::hide_tray_panel,
         ])
         .setup(|app| {
+            // Both are Linux-only types, and `#[cfg]` binds to ONE statement — the notifier's line
+            // was outside the attribute above it and would have failed to compile off Linux.
             #[cfg(target_os = "linux")]
-            app.manage::<sni::SniState>(std::sync::Arc::new(tokio::sync::Mutex::new(None)));
+            {
+                app.manage::<sni::SniState>(std::sync::Arc::new(tokio::sync::Mutex::new(None)));
+                // The notification connection is made on first send (S9), so this starts empty.
+                app.manage::<notify::NotifierState>(std::sync::Arc::new(tokio::sync::Mutex::new(
+                    None,
+                )));
+            }
             tray::setup(app.handle())?;
             Ok(())
         })

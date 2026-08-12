@@ -55,13 +55,13 @@
   },
   {
     "label": "11a Rules",
-    "kind": "notification",
+    "kind": "crop",
     "file": "11a-rules.json",
     "nodes": 41
   },
   {
     "label": "11a Settings",
-    "kind": "notification",
+    "kind": "crop",
     "file": "11a-settings.json",
     "nodes": 21
   },

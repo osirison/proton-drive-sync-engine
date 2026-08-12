@@ -19,10 +19,10 @@
 // `ui/chrome.js` import `fid` from HERE and `import-x/no-cycle` is an error.
 //
 // A DATASET IS NOT A MAPPING, and keeping the two apart is what makes the numbers honest. All 51
-// frames have a dataset; **11** carry a `fids` map, because a mapping needs a screen to exist and
-// S1–S10 have not built the other 40. `check-fixtures.mjs` gates the first count and `assert.mjs`
-// reports the second, so adding forty datasets cannot make the style gate look like it grew teeth
-// it did not grow. It did not move 11/51 by one frame.
+// frames have a dataset; **43** carry a `fids` map (11 when F9 wrote this line), because a mapping
+// needs a screen to exist and S10 has not built the other 8. `check-fixtures.mjs` gates the first
+// count and `assert.mjs` reports the second, so adding forty datasets cannot make the style gate
+// look like it grew teeth it did not grow. It did not move 11/51 by one frame.
 
 import { MAIN_FIXTURES } from "./main.js";
 import { CONFLICT_FIXTURES } from "./conflicts.js";
@@ -102,10 +102,16 @@ export function activeFixture() {
  */
 export function fid(node, slot, ...args) {
   const fixture = activeFixture();
-  const key = fixture?.fids?.[slot];
-  if (node && key != null) {
-    node.setAttribute("data-fid", `${activeFrame()}:${typeof key === "function" ? key(...args) : key}`);
-  }
+  const declared = fixture?.fids?.[slot];
+  if (!node || declared == null) return node;
+  // A FACTORY MAY ANSWER "NOT IN THIS FRAME". S9 needed it twice over: the Settings pill row gains a
+  // fifth tab no `8a` frame draws, and one of the three `11a In situ` banners draws its app name at
+  // a letter-spacing the other four banners do not. Both are one node inside a run the rest of which
+  // is mapped, and the alternative — stamping `…:undefined` — fails as "no such node key", which is
+  // the message for a stale mapping and would send the next reader looking for a re-extraction.
+  const key = typeof declared === "function" ? declared(...args) : declared;
+  if (key == null) return node;
+  node.setAttribute("data-fid", `${activeFrame()}:${key}`);
   return node;
 }
 
