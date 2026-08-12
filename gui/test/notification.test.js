@@ -17,6 +17,7 @@ import {
   bannerFor,
   isDestructive,
   payloadFor,
+  safeActions,
 } from "../src/js/ui/notification.js";
 import { DELETIONS, NOTIFY } from "../src/js/ui/copy.js";
 import { readFileSync } from "node:fs";
@@ -145,4 +146,23 @@ test("a payload carries every field the Rust struct requires", () => {
   for (const key of Object.keys(payload)) {
     assert.ok(fields.includes(key), `payloadFor sends \`${key}\`, which NotifyPayload does not take`);
   }
+});
+
+test("the guard fires — the rule is enforced, not merely satisfied", () => {
+  // WITHOUT THIS TEST THE TWO ABOVE PASS WITH BOTH `throw`s DELETED. Nothing the four builders
+  // produce is destructive, so walking them proves the builders are clean and says nothing about
+  // whether anything would stop a fifth. This drives the guard directly.
+  assert.throws(() => safeActions([{ id: "keep", label: "Delete permanently" }]), /destructive/);
+  assert.throws(() => safeActions([{ id: "approve", label: "Yes" }]), /not a safe banner action/);
+  assert.throws(
+    () =>
+      safeActions([
+        { id: "keep", label: "Keep" },
+        { id: "later", label: "Later" },
+        { id: "review", label: "Review" },
+      ]),
+    /at most two actions/,
+  );
+  // And it lets the drawn pair through, or every banner would fail to build.
+  assert.equal(safeActions([{ id: "keep", label: NOTIFY.deletionKeep }]).length, 1);
 });

@@ -33,7 +33,11 @@ const DESTRUCTIVE =
 /** Whether a word belongs to something irreversible. Exported so the test can prove it catches. */
 export const isDestructive = (text) => DESTRUCTIVE.test(String(text ?? ""));
 
-function safeActions(actions) {
+/**
+ * Exported so a test can prove the guard fires. Nothing in the four builders offers a destructive
+ * action, so a test that only walks them passes just as well with both throws deleted.
+ */
+export function safeActions(actions) {
   for (const action of actions) {
     if (!SAFE_ACTIONS.has(action.id)) {
       throw new Error(`notification: "${action.id}" is not a safe banner action`);
@@ -167,8 +171,12 @@ export function payloadFor(spec) {
 }
 
 /**
- * Which tray glyph each banner shows. Deletion and outage share the struck/filled destructive pair
- * the tray draws for `unreachable`; a conflict is the attention form. `icons.rs` owns the names.
+ * Which tray glyph each banner shows. `icons.rs` owns the five names and installs the SVGs.
+ *
+ * A DELETION AND A CONFLICT SHARE ONE GLYPH, because the tray has five forms and this screen has
+ * four events: both are the app needing a decision, which is what `attention` means. Only the
+ * outage has a form of its own, and it is the one the tray is already showing while the banner is
+ * up — which is the agreement `11-notifications.md` asks for.
  */
 const TRAY_ICON = {
   deletion: "proton-sync-attention-symbolic",

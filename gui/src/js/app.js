@@ -2138,7 +2138,16 @@ let settingsSaving = false;
 let settingsSweeping = false;
 /** The daemon's refusal, verbatim. Non-null is what opens `8a Save refused`. */
 let settingsError = null;
-/** A save landed and the daemon is still running the old config — see `SETTINGS.savedNote`. */
+/**
+ * A save landed and the daemon is still running the old config — see `SETTINGS.savedNote`.
+ *
+ * SET FOR A CONFIG WRITE ONLY. A policy-only save writes `gui.toml`, which the daemon never reads,
+ * so "the sync service is still running the old settings until it restarts" would be a sentence
+ * about a file nothing is waiting on — and it also swaps `Discard changes` for `Restart the
+ * service`, offering to bounce the daemon for a setting the daemon has never heard of. What a
+ * policy-only save leaves behind is what any form leaves behind: a `Save` that has gone quiet
+ * because there is nothing left to save.
+ */
 let settingsSaved = false;
 /** A restart asked for and not yet answered. `restart_service` can take ten seconds. */
 let settingsRestarting = false;
@@ -2156,6 +2165,11 @@ let settingsNotice = null;
 function resetSettingsScreen() {
   settingsTab = "folders";
   settingsEdits = {};
+  // WITH THE REST OF THE STAGED STATE. It is one of the two things a person can stage on this
+  // screen and it lives outside `settingsEdits` (it is not a daemon-config key), so leaving it out
+  // here made it the one edit that survived walking away: the card stayed chosen and the screen
+  // stayed dirty about a value nothing had written, for the life of the window.
+  notifyPolicyEdit = null;
   settingsDrafts = { exclude: "", include: "" };
   settingsSaving = false;
   settingsSweeping = false;
@@ -2380,16 +2394,19 @@ async function saveSettings() {
   try {
     // TWO FILES, AND `notify_policy` NEVER GOES IN THE DAEMON'S. Its config parser is
     // `deny_unknown_fields`, so one stray key stops the daemon starting; the GUI's own `gui.toml`
-    // is where a GUI-local preference belongs. Written first because it cannot be refused — the
-    // config write can, and it opens a dialog that would otherwise swallow this one.
+    // is where a GUI-local preference belongs.
+    //
+    // THE CONFIG GOES FIRST, because it is the one that can be refused. `8a Save refused` says
+    // "Nothing was saved. Your old settings are still running", and a policy written before a
+    // refusal would make that sentence false about the one thing that HAD been written.
+    if (Object.keys(update).length) await api.writeConfig(update);
     if (policy) {
       await api.writeNotifyPolicy(policy);
       notifyPolicy = policy;
       notifyPolicyEdit = null;
     }
-    if (Object.keys(update).length) await api.writeConfig(update);
     if (settingsEdits === sent) settingsEdits = {};
-    settingsSaved = true;
+    settingsSaved = Object.keys(update).length > 0;
     // The rules changed under the report, so the counts on the skip tab are about a config that is
     // no longer on disk. Ask again rather than showing yesterday's numbers next to today's rules.
     skipRuleReport = null;
@@ -2911,15 +2928,27 @@ let notifierState = loadNotifierState();
 /** The saved policy, and the one staged on the Settings tab. */
 let notifyPolicy = "only_when_needed";
 let notifyPolicyEdit = null;
+/**
+ * Whether the policy has been read off disk yet.
+ *
+ * NOTHING INTERRUPTS BEFORE IT HAS. `refreshNotifyPolicy` is a command round trip and `poll()`
+ * starts beside it, so the first evaluation could otherwise run against the DEFAULT — and someone
+ * who chose `Never` would be interrupted exactly once per launch, by the one setting whose whole
+ * purpose is that they are not.
+ */
+let notifyPolicyLoaded = false;
 
 async function refreshNotifyPolicy() {
   try {
     notifyPolicy = await api.readNotifyPolicy();
+    notifyPolicyLoaded = true;
   } catch (error) {
     // The default is what `gui_prefs::load_notify_policy` answers for every unreadable case anyway,
     // so a failed read changes nothing about what is shown — it is logged because a command that
-    // cannot be reached is worth knowing about.
+    // cannot be reached is worth knowing about. The latch is still set: a command that cannot be
+    // reached will not become reachable, and refusing to notify for ever is the wrong failure.
     console.error("read_notify_policy failed:", error);
+    notifyPolicyLoaded = true;
   }
   render();
 }
@@ -3065,7 +3094,7 @@ async function poll() {
   // would evaluate the same triggers against its own copy of the state, race the main window on the
   // same localStorage key and send a second time. `replaces_id` would stop them stacking and
   // nothing would stop the banner re-popping every time the panel is opened.
-  if (!activeFixture() && !isTraySurface()) evaluateNotifications();
+  if (!activeFixture() && !isTraySurface() && notifyPolicyLoaded) evaluateNotifications();
   scheduleNextPoll();
 }
 

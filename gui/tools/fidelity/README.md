@@ -11,14 +11,14 @@ npm run fidelity:fixtures   # the fixture registry gate                         
 
 ## The six gates
 
-| Gate                              | Compares                                                                        | Runs today?                      |
-| --------------------------------- | ------------------------------------------------------------------------------- | -------------------------------- |
-| **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid` |
-| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot         |
-| **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                              |
-| **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames        |
-| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 221 + 9 templates       |
-| **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                      |
+| Gate                              | Compares                                                                        | Runs today?                        |
+| --------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
+| **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`   |
+| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot           |
+| **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                |
+| **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames          |
+| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 71 templates |
+| **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                        |
 
 The first five need a browser and run in the `fidelity` CI job. The last does not, and runs in
 `frontend` alongside the linters — a gate that can run in the fifteen-second job should.

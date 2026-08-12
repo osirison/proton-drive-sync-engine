@@ -51,6 +51,12 @@ export const emptyState = () => ({
    * ever. Installing the GUI on a machine that has been syncing for a year would otherwise announce
    * `Both sides now match` as though the wait had just ended. So the banner fires only where this
    * process (or a previous one, through storage) actually watched the transition.
+   *
+   * AND A LIVE `null` IS NOT THAT WITNESS ON ITS OWN. `ControlShared::new` starts `last_sync` at
+   * `None`, so every daemon RESTART answers `null` until its next successful pass — on an
+   * established install that would make a witness out of a service restart and announce the first
+   * sync again. It counts only when nothing has ever been seen (`lastSeenSync == null`), which is
+   * the difference between "this daemon has not synced yet" and "this machine never has".
    */
   sawUnsynced: false,
   /**
@@ -156,7 +162,8 @@ export function decide({ state, view, policy = "only_when_needed", nowMs }) {
   const next = {
     ...state,
     said: { ...state.said },
-    sawUnsynced: state.sawUnsynced || (Boolean(view?.response) && lastSync == null),
+    sawUnsynced:
+      state.sawUnsynced || (Boolean(view?.response) && lastSync == null && state.lastSeenSync == null),
     lastSeenSync: lastSync ?? state.lastSeenSync ?? null,
   };
 
@@ -186,7 +193,11 @@ export function decide({ state, view, policy = "only_when_needed", nowMs }) {
     // The rate limit, and the one thing that may jump it: something more serious than what is
     // already on screen. Waiting 25 seconds to say that files are about to be deleted, because a
     // conflict banner went up five seconds ago, is the wrong way round.
-    const withinWindow = nowMs - state.lastAt < COALESCE_MS;
+    // `> 0` as well as `< COALESCE_MS`: a clock that steps backwards (or a state written on another
+    // machine) leaves `lastAt` in the future, and an unclamped comparison would then silence every
+    // banner until the wall clock caught up — hours, on a timezone-sized step.
+    const since = nowMs - state.lastAt;
+    const withinWindow = since >= 0 && since < COALESCE_MS;
     const moreSerious = SEVERITY[candidate.kind] > (SEVERITY[state.lastKind] ?? -1);
     if (withinWindow && !moreSerious) return { event: null, state: next, resolved };
 

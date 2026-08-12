@@ -81,19 +81,23 @@ pub async fn send(app: AppHandle, payload: NotifyPayload) -> Result<(), String> 
     let state = app.state::<NotifierState>().inner().clone();
     let mut guard = state.lock().await;
     if guard.is_none() {
-        let notifier = Notifier::connect(app.clone())
+        let mut notifier = Notifier::connect(app.clone())
             .await
             .map_err(|e| format!("no notification server: {e}"))?;
         // Logged once, on connect, because it is the one runtime answer to the risk
         // `IMPLEMENTATION-PLAN.md` §6 raises: a server without `actions` shows the sentence and
         // drops the two buttons, and nothing else in the app can tell you that happened.
         match notifier.capabilities().await {
-            Ok(caps) if !caps.iter().any(|c| c == "actions") => eprintln!(
-                "notify: this notification server advertises no `actions` capability — banners will \
-                 show without their buttons ({})",
-                caps.join(", ")
-            ),
-            Ok(_) => {}
+            Ok(caps) => {
+                if !caps.iter().any(|c| c == "actions") {
+                    eprintln!(
+                        "notify: this notification server advertises no `actions` capability — \
+                         banners will show without their buttons ({})",
+                        caps.join(", ")
+                    );
+                }
+                notifier.note_capabilities(&caps);
+            }
             Err(error) => eprintln!("notify: could not read the server's capabilities: {error}"),
         }
         *guard = Some(notifier);
@@ -170,15 +174,22 @@ trait Notifications {
 #[cfg(target_os = "linux")]
 pub struct Notifier {
     connection: Connection,
-    /// The id of our live banner, or `None` once the server tells us it closed.
+    /// The id to pass as `replaces_id`, or `0` once the server says ours closed.
     ///
-    /// `replaces_id` IS THE NEVER-STACK RULE, and it is tracked rather than assumed: passing a stale
-    /// id to a server that has forgotten it is server-defined behaviour (most create a new banner,
-    /// which is exactly the stacking this is meant to prevent), so a `NotificationClosed` for our id
-    /// clears it and the next banner is a fresh one.
+    /// `replaces_id` IS THE NEVER-STACK RULE, and it is tracked rather than assumed: measured on
+    /// Plasma, `Notify(replaces_id: 26)` returns `26` and replaces in place, and an id the server
+    /// never issued comes back unchanged — but the spec requires neither, and a server that
+    /// allocates a fresh id for one it has forgotten would stack the banner this rule prevents.
     live: u32,
-    /// Which event the live banner is about, so an `ActionInvoked` can say what was acted on.
-    kind: String,
+    /// The id and event of the banner we sent LAST, kept after it closes.
+    ///
+    /// NOT CLEARED WITH `live`, and that asymmetry is the point. A server emits `ActionInvoked` and
+    /// `NotificationClosed` for the same click, `tokio::select!` picks randomly between two ready
+    /// branches, and clearing the attribution on close would therefore drop the click about half
+    /// the time — including the click that keeps someone's files.
+    last: Option<(u32, String)>,
+    /// Whether the server parses markup in a body. Read once, at connect.
+    markup: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -192,7 +203,8 @@ impl Notifier {
         Ok(Self {
             connection,
             live: 0,
-            kind: String::new(),
+            last: None,
+            markup: false,
         })
     }
 
@@ -202,6 +214,11 @@ impl Notifier {
             .await?
             .get_capabilities()
             .await
+    }
+
+    /// Record what the server said it can do. Read once, at connect.
+    pub fn note_capabilities(&mut self, caps: &[String]) {
+        self.markup = caps.iter().any(|c| c == "body-markup");
     }
 
     /// Show one banner, replacing ours if one is still up.
@@ -219,57 +236,112 @@ impl Notifier {
         // dismiss on a timer, and `11-notifications.md`'s whole argument is that the corner of the
         // screen is not where an irreversible decision is made — the banner points at the window.
         hints.insert("urgency", zbus::zvariant::Value::U8(1));
+        // The application's desktop-file id, which is what a server matches to find our name and
+        // icon — `tauri.conf.json`'s `identifier`, and the file `setup.sh` installs.
         hints.insert(
             "desktop-entry",
-            zbus::zvariant::Value::new("proton-sync-gui"),
+            zbus::zvariant::Value::new("app.protondrivesync.engine"),
         );
 
-        let id = proxy
-            .notify(
+        let icon = icon_path(&payload.icon);
+        let body = if self.markup {
+            escape_markup(&payload.body)
+        } else {
+            payload.body.clone()
+        };
+
+        // A ROUND TRIP WITH A DEADLINE. This runs under the state mutex, and a server that accepts
+        // the call and never answers would otherwise hold it for the life of the process — taking
+        // the close path and every later banner with it. Ten seconds is far longer than any
+        // notification server takes and far shorter than "for ever".
+        let id = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            proxy.notify(
                 &payload.app,
                 self.live,
-                &payload.icon,
+                &icon,
                 &payload.summary,
-                &payload.body,
+                &body,
                 &actions,
                 hints,
                 // The server's own default timeout. A sync app deciding how long a desktop shows
                 // its banners is the kind of thing "use the desktop's own notification chrome"
                 // rules out.
                 -1,
-            )
-            .await?;
+            ),
+        )
+        .await
+        .map_err(|_| zbus::Error::Failure("the notification server did not answer".into()))??;
+
         self.live = id;
-        self.kind = payload.kind.clone();
+        self.last = Some((id, payload.kind.clone()));
         Ok(id)
     }
 
-    /// The event the live banner is about, if the id matches ours.
+    /// The event a notification id is about, if it is one of ours.
+    ///
+    /// Reads `last` rather than `live`, so a click still resolves when the close signal for the very
+    /// same click has already been handled.
     pub fn kind_of(&self, id: u32) -> Option<&str> {
-        (self.live == id && self.live != 0).then_some(self.kind.as_str())
-    }
-
-    /// Forget the live banner once the server says it is gone.
-    pub fn forget(&mut self, id: u32) {
-        if self.live == id {
-            self.live = 0;
-            self.kind.clear();
+        match &self.last {
+            Some((last, kind)) if *last == id => Some(kind.as_str()),
+            _ => None,
         }
     }
 
-    /// Take our banner down (the webview asking, e.g. because the queue emptied on its own).
+    /// Stop replacing a banner the server says is gone. The attribution in `last` survives it.
+    pub fn forget(&mut self, id: u32) {
+        if self.live == id {
+            self.live = 0;
+        }
+    }
+
+    /// Take our banner down (the webview asking, because the thing it was about resolved itself).
     pub async fn close(&mut self) -> zbus::Result<()> {
         if self.live == 0 {
             return Ok(());
         }
         let id = self.live;
-        self.live = 0;
-        self.kind.clear();
         NotificationsProxy::new(&self.connection)
             .await?
             .close_notification(id)
-            .await
+            .await?;
+        // AFTER the call, not before: a failed close leaves the banner up, and forgetting its id
+        // first would mean the next send opened a second one beside it.
+        self.live = 0;
+        Ok(())
     }
+}
+
+/// The icon a server can actually load.
+///
+/// `icons.rs` writes the five symbolic SVGs to `$XDG_RUNTIME_DIR/proton-sync-tray` and hands that
+/// path to the STATUS-NOTIFIER HOST as `IconThemePath`. A notification server is a different process
+/// again and is told nothing, so a bare `proton-sync-attention-symbolic` resolves against the
+/// system icon themes — where this application installs nothing — and the banner arrives with no
+/// icon at all. The spec allows an absolute path, so that is what goes on the wire when the file is
+/// there, and the name survives as the fallback for a desktop that does have it installed.
+#[cfg(target_os = "linux")]
+fn icon_path(name: &str) -> String {
+    let file = crate::icons::theme_dir().join(format!("{name}.svg"));
+    if file.is_file() {
+        file.to_string_lossy().into_owned()
+    } else {
+        name.to_string()
+    }
+}
+
+/// The three characters a `body-markup` server parses.
+///
+/// The deletion banner's body carries a PATH, which is the one part of any of these sentences a
+/// person chooses. A file called `<b>` would render as markup on Plasma (which advertises
+/// `body-markup`) and can break the parse outright on a stricter one. Escaped only where the server
+/// says it parses markup: on a server that does not, `&amp;` is what would be shown.
+#[cfg(target_os = "linux")]
+fn escape_markup(body: &str) -> String {
+    body.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(target_os = "linux")]
@@ -315,6 +387,13 @@ async fn spawn_signal_listener(app: AppHandle, connection: Connection) -> zbus::
                 else => break,
             }
         }
+        // THE LOOP ONLY ENDS WHEN BOTH STREAMS DO, which is the connection going away — the server
+        // restarting, or the bus dropping us. `send` connects only when the state is `None`, so
+        // leaving it populated here would mean every later banner was sent over a dead connection
+        // and no click ever came back. Clearing it makes the next send reconnect.
+        eprintln!("notify: the notification server's signal stream ended; will reconnect on the next banner");
+        let state = app.state::<NotifierState>();
+        *state.lock().await = None;
     });
     Ok(())
 }
