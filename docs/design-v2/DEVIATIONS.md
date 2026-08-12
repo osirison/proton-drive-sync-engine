@@ -4411,3 +4411,29 @@ recorded as such:
 Splitting them exposed a lookup bug one line long: the printout matched a row on `frame|key` alone,
 and `10a In situ · div[1]` carries both sets. It printed the right issue only because all nine
 agreed; the moment they stopped, four would have been labelled with the fifth's answer.
+
+### 92d. The raise fix landed on one of the two `Open Drive Sync` paths
+
+Found by asking which callers of `focus::present` had actually been clicked. Two, and only one had
+been: the native menus route through `tray::show_window`, and the panel's own row went through a
+**second copy of the same three lines** inside `commands::tray_action`. So after 92b the right-click
+menu raised the window and the panel's own row — the more likely of the two to be used — still left
+it exactly where it was. The copy is deleted; `tray_action` calls `show_window`.
+
+That is also why `focus::present` hops to the main thread itself rather than documenting that its
+caller must. `set_focus` and `show` are Tauri proxies that post to the event loop and can be called
+from anywhere, so every existing caller is wherever it happens to be — `tray_action` is an **async
+command on the runtime's pool**. `glib::idle_add_local_once` asserts ownership of the thread-default
+main context: called off it, it does not misbehave, it aborts the process. A doc comment asking
+callers to be on the main thread would have been a rule that is obeyed until the first caller who
+has not read it, and `panel::hide` and `panel::resize` already carry their hop for the same reason.
+
+### 92e. `— undefined`, on the one run that matters
+
+Copilot, reviewing #262: the stale-deviation printout interpolates `d.issue`, and a `structural` row
+has none, so the line the gate prints on the day a structural row stops failing would have read
+`10a In situ · div[1] · top — undefined`. Verified by pinning that row's `detail` to a value it
+cannot match, which is what makes it stop matching; it now reads `— structural`, and the two words
+mean different things to whoever reads them. An issue means the capability landed, so delete the row.
+`structural` means a property the app could never carry now agrees with the drawing — either the app
+changed or the frame was re-extracted, and both want reading before anything is deleted.

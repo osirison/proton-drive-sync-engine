@@ -541,6 +541,12 @@ const dom = {
  *
  * Both mounts below take it, and they must stay in step: the fidelity gate only ever renders the
  * preview one, so dropping it from `mountTrayPanel` alone leaves the gate green and the app broken.
+ *
+ * `mountFrameBanner` is deliberately NOT a caller. A banner is drawn by the desktop's notification
+ * server in the shipped app, so nothing measures it and nothing sizes a window to it — the trap
+ * needs the feedback loop, not just the container. It would still be capped in a short viewport,
+ * which is latent rather than harmless: the day anything sizes a window to a banner, this is the
+ * comment that says where to look.
  */
 function panelSurface(root) {
   root.classList.add("is-panel-surface");

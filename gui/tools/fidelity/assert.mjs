@@ -613,7 +613,14 @@ if (structural.length) {
 const unmet = unmetDeviations();
 if (unmet.length) {
   console.error("\nRecorded deviations that no longer fail — delete them, or re-pin their measurement:\n");
-  for (const d of unmet) console.error(`  ${d.frame} · ${d.key} · ${d.prop} — ${d.issue}\n      ${d.why}`);
+  // `d.issue ?? "structural"`, because a structural row HAS no issue and the template would have
+  // printed `— undefined` on the one run where this list matters. It is not a cosmetic difference:
+  // the two say different things about what to do. An issue means the capability landed, so delete
+  // the row; `structural` means a property the app could never carry now matches the drawing, which
+  // is either a real change to the app or a re-extracted frame, and both want reading before either
+  // is deleted. (Copilot, PR #262.)
+  for (const d of unmet)
+    console.error(`  ${d.frame} · ${d.key} · ${d.prop} — ${d.issue ?? "structural"}\n      ${d.why}`);
   console.error(`\nfidelity:assert: ${unmet.length} stale deviation(s) in known-deviations.mjs.`);
 }
 

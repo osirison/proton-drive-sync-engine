@@ -51,8 +51,13 @@ use tauri::WebviewWindow;
 
 /// Raise `window` and ask for the focus, with a timestamp the compositor will honour.
 ///
-/// **Main thread only** (every path below is a GTK call, and the idle callback is registered on the
-/// thread-default main context).
+/// **Callable from any thread**, and that is a property rather than a convenience. `set_focus` and
+/// `show` are Tauri proxies that post to the event loop, so every existing caller of theirs is
+/// wherever it happens to be — `commands::tray_action` is an async command on the runtime's pool.
+/// Everything below is raw GTK, and `glib::idle_add_local_once` asserts ownership of the
+/// thread-default main context: called off it, it does not misbehave, it **aborts the process**. So
+/// the hop lives here, the way `panel::hide` and `panel::resize` already carry theirs, rather than
+/// in a doc comment asking every caller to have read one.
 pub fn present(window: &WebviewWindow) {
     let _ = window.set_focus();
     #[cfg(target_os = "linux")]
@@ -61,11 +66,21 @@ pub fn present(window: &WebviewWindow) {
 
 #[cfg(target_os = "linux")]
 fn present_stamped(window: &WebviewWindow) {
-    let Ok(gtk_window) = window.gtk_window() else {
-        return;
-    };
-    gtk::glib::idle_add_local_once(move || {
-        stamp_and_present(&gtk_window);
+    use tauri::Manager;
+
+    let window = window.clone();
+    let app = window.app_handle().clone();
+    let _ = app.run_on_main_thread(move || {
+        let Ok(gtk_window) = window.gtk_window() else {
+            return;
+        };
+        // AND THEN AN IDLE ON TOP OF THE HOP, which is not the same wait twice. The hop answers
+        // WHICH THREAD; the idle answers WHEN — `show()` is a queued message and this has to run
+        // after it has been drained, or the window is not realized yet and there is nothing to
+        // stamp. Measured: without the idle, the not-realized branch is taken every single time.
+        gtk::glib::idle_add_local_once(move || {
+            stamp_and_present(&gtk_window);
+        });
     });
 }
 

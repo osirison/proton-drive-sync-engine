@@ -1,16 +1,16 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Seven gates over the 51 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Eight gates over the 51 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
 npm run fidelity:extract    # regenerate frames/*.json from the prototype
-npm run fidelity            # style, unstamped, fit and hue, the copy gate, then contrast (Chromium)
+npm run fidelity            # style, unstamped, fit, hue and squeeze, the copy gate, then contrast
 npm run fidelity:fixtures   # the fixture registry gate                           (Node only)
 npm run fidelity:contrast   # the contrast gate on its own; `--report` writes the distribution
 ```
 
-## The seven gates
+## The eight gates
 
 | Gate                              | Compares                                                                        | Runs today?                        |
 | --------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
@@ -18,11 +18,26 @@ npm run fidelity:contrast   # the contrast gate on its own; `--report` writes th
 | **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot           |
 | **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                |
 | **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames          |
+| **squeeze** `assert.mjs`          | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames         |
 | **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 71 templates |
+| **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes   | yes, 1064 nodes across 51 frames   |
 | **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                        |
 
-The first five need a browser and run in the `fidelity` CI job. The last does not, and runs in
+The first seven need a browser and run in the `fidelity` CI job. The last does not, and runs in
 `frontend` alongside the linters — a gate that can run in the fifteen-second job should.
+
+## The squeeze gate, and the condition the other seven cannot be in (S8)
+
+Every gate above opens its frame at **1040×764**, which is the window — and a 362×365 compact panel
+has 399px of slack there, so nothing can compress it. The tray window has no slack at all: it is
+exactly as tall as the panel measured itself to be, because `reportTrayHeight` reads the panel and
+`panel.rs` sizes the window to the answer. A container that shrinks the panel therefore caps the
+measurement at the window it just set, and the panel can never grow again — the shipped settled panel
+came up 302px where it draws 365, losing `Close window · keeps syncing` and `Quit · stops syncing`
+off the bottom, and no state change or poll could recover it (DEVIATIONS §92a).
+
+So this one re-opens all 11 compact frames in a **200px** window and demands the drawn height back.
+It is the same assertion the style gate makes, in the only condition under which it can fail.
 
 ## The hue gate, and the threshold that had to be measured twice (S1)
 
