@@ -330,3 +330,32 @@ test("the first sync is not un-said when it stops being current", () => {
   // …and it does not ask for a banner to be closed either: nothing is waiting on it.
   assert.equal(later.resolved, false);
 });
+
+test("a daemon restart does not silence the outage trigger for ever", () => {
+  // `last_sync_epoch_secs` DOES NOT SURVIVE A DAEMON RESTART: `ControlShared::new` starts it at
+  // `None` and only a successful pass sets it. So a daemon that restarts and then cannot sync — an
+  // expired session, a full disk, precisely what this trigger is for — reports a live `null` for
+  // ever, and a trigger that measured only the live value would never cross any threshold at all.
+  const seen = decide({ state: emptyState(), view: view(), policy: "only_when_needed", nowMs: NOW_MS });
+  const restarted = decide({
+    state: { ...seen.state, sawUnsynced: true, said: { firstSync: "first" } },
+    view: view({ response: { last_sync_epoch_secs: null, pending_changes: 4 } }),
+    policy: "only_when_needed",
+    nowMs: (NOW_SECS + OUTAGE_AFTER_SECS) * 1000,
+  });
+  assert.equal(restarted.event?.kind, "outage");
+  assert.equal(restarted.event.changes, 4);
+});
+
+test("a machine that has never synced gets no outage banner", () => {
+  // The remembered value is what makes the test above work, and this is the state it must not
+  // invent one for: nothing has ever synced, so there is nothing to have stopped. That is
+  // onboarding's, and `firstRun` is what draws it.
+  const fresh = decide({
+    state: emptyState(),
+    view: view({ response: { last_sync_epoch_secs: null } }),
+    policy: "only_when_needed",
+    nowMs: (NOW_SECS + OUTAGE_AFTER_SECS) * 1000,
+  });
+  assert.equal(fresh.event, null);
+});

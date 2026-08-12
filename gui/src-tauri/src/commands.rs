@@ -22,7 +22,8 @@
 //! `resolve_conflict`, `read_conflict_pair` and `path_sync_status` predate the rule and are still
 //! synchronous — `path_sync_status` in particular can hold the loop for its full 3s index busy
 //! timeout. They are bounded enough to have survived; anything unbounded is not, and none of the
-//! commands added since is synchronous.
+//! commands added since is synchronous. S9's two `notify_policy` commands were, for one commit, and
+//! the review that caught them is the reason this sentence is checkable at all.
 
 use crate::config_path::RuntimePaths;
 use gui_core::conflicts::{self, Conflict, Resolution};
@@ -731,26 +732,47 @@ pub async fn close_notification(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// The GUI-local `notify_policy` (C6). Never sent to the daemon — see `gui_core::gui_prefs`.
+///
+/// `AppHandle` rather than `Paths<'_>`, and `spawn_blocking` rather than a read on the spot: both
+/// are this module's own rules. A synchronous command runs on the GTK main loop and WebKitGTK aborts
+/// the process when that loop stalls (#142/#143), and an async command taking a borrowed `State<'_>`
+/// is forced to return `Result` — so the handle is owned and the state is taken inside.
 #[tauri::command]
-pub fn read_notify_policy(state: Paths<'_>) -> String {
-    let config_path = { state.lock().unwrap().config_path.clone() };
-    gui_core::gui_prefs::load_notify_policy(&gui_core::gui_prefs::gui_prefs_path(&config_path))
-        .as_str()
-        .to_string()
+pub async fn read_notify_policy(app: tauri::AppHandle) -> Result<String, String> {
+    let config_path = {
+        let state = app.state::<Mutex<RuntimePaths>>();
+        let paths = state.lock().unwrap();
+        paths.config_path.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gui_core::gui_prefs::load_notify_policy(&gui_core::gui_prefs::gui_prefs_path(&config_path))
+            .as_str()
+            .to_string()
+    })
+    .await
+    .map_err(|error| format!("read_notify_policy did not complete: {error}"))
 }
 
 /// Refuses an unknown token rather than defaulting: a write is a person choosing, and silently
 /// storing something else would be the screen answering a question it was not asked.
 #[tauri::command]
-pub fn write_notify_policy(state: Paths<'_>, policy: String) -> Result<(), String> {
+pub async fn write_notify_policy(app: tauri::AppHandle, policy: String) -> Result<(), String> {
     let parsed = gui_core::gui_prefs::NotifyPolicy::parse(&policy)
         .ok_or_else(|| format!("unknown notify_policy \"{policy}\""))?;
-    let config_path = { state.lock().unwrap().config_path.clone() };
-    gui_core::gui_prefs::store_notify_policy(
-        &gui_core::gui_prefs::gui_prefs_path(&config_path),
-        parsed,
-    )
-    .map_err(|e| e.to_string())
+    let config_path = {
+        let state = app.state::<Mutex<RuntimePaths>>();
+        let paths = state.lock().unwrap();
+        paths.config_path.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gui_core::gui_prefs::store_notify_policy(
+            &gui_core::gui_prefs::gui_prefs_path(&config_path),
+            parsed,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|error| format!("write_notify_policy did not complete: {error}"))?
 }
 
 // ------------------------------------------------------- the Phase-1 capability commands ----

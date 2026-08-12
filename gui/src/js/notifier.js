@@ -106,10 +106,15 @@ export function candidates({ response, conflicts = [], daemonState = null, lastS
     const paths = conflicts.map((c) => String(c.path ?? c.original ?? c));
     out.push({ kind: "conflict", paths, signature: sig(paths) });
   }
-  // The live answer, then the remembered one. `?? null` on the whole thing, not on the first half:
-  // a reachable daemon that has never synced answers `null` and means it, and that is `firstRun`
-  // rather than an outage.
-  const lastSync = response ? response.last_sync_epoch_secs : lastSeenSync;
+  // The live answer, then the remembered one — and the fallback covers a LIVE NULL as well as a
+  // missing reply, because `last_sync_epoch_secs` does not survive a daemon restart:
+  // `ControlShared::new` starts it at `None` and only a successful pass sets it. A daemon that
+  // restarts and then cannot sync — an expired session, a full disk, exactly what this trigger is
+  // for — would otherwise report `null` for ever and never cross a threshold at all.
+  //
+  // A machine that has genuinely never synced has no remembered value either, so it stays `null`
+  // and produces no outage: that state is onboarding's, and `firstRun` is what draws it.
+  const lastSync = response?.last_sync_epoch_secs ?? lastSeenSync;
   // A DELIBERATE PAUSE IS NOT AN OUTAGE. `pause and resume` is one of the twelve categories that
   // stay silent on purpose, and a folder paused over a weekend crosses the day threshold on its own.
   const paused = daemonState === "paused" || response?.paused === true;
