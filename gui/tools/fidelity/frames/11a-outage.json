@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "Drive SyncnowNothing has synced since yesterdayProton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.Sign inOpen Drive Sync",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 520,
         "h": 154.5
@@ -47,6 +50,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Drive SyncnowNothing has synced since yesterdayProton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 484,
         "h": 77.5
@@ -70,6 +80,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -97,6 +114,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -126,6 +150,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 11.33,
         "h": 11.33
@@ -155,6 +186,13 @@
       "key": "div[0]/div",
       "tag": "div",
       "fullText": "Drive SyncnowNothing has synced since yesterdayProton Drive is asking you to sign in again. 61 changes are waiting — nothing is lost.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 437,
         "h": 77.5
@@ -179,6 +217,13 @@
       "key": "div[0]/div/div[0]",
       "tag": "div",
       "fullText": "Drive Syncnow",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 437,
         "h": 15
@@ -225,6 +270,13 @@
     {
       "key": "div[0]/div/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 341.05,
         "h": 0
@@ -317,6 +369,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Sign inOpen Drive Sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 484,
         "h": 33

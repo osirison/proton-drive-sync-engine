@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Syncsyncing⋯This computer~/ProtonDriveProton Drive/Drive/RemoteFolder3Syncing 3 changesstarted 14 seconds ago · 2 leaving, 1 arrivingPausedocs/spec.md1.2 MB→notes/scratch.mdqueued→←reports/q3-summary.pdf2.4 MBActivityPlan a syncSettingsDetails386 MB sent · 1.1 GB received today",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Syncsyncing⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -119,6 +136,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 709.28,
         "h": 0
@@ -245,6 +269,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "This computer~/ProtonDriveProton Drive/Drive/RemoteFolder3Syncing 3 changesstarted 14 seconds ago · 2 leaving, 1 arrivingPause",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 394
@@ -276,6 +307,13 @@
     {
       "key": "div[0]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 544
@@ -304,6 +342,13 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "fullText": "This computer~/ProtonDrive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 102.97,
         "h": 34
@@ -377,6 +422,13 @@
       "key": "div[0]/div[2]",
       "tag": "div",
       "fullText": "Proton Drive/Drive/RemoteFolder",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 136.81,
         "h": 34
@@ -450,6 +502,13 @@
       "key": "div[0]/svg",
       "tag": "svg",
       "fullText": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 168,
         "h": 168
@@ -480,6 +539,13 @@
     {
       "key": "div[0]/svg/defs",
       "tag": "defs",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -502,6 +568,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[0]",
       "tag": "lineargradient",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -530,6 +603,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[0]/stop[0]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -556,6 +636,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[0]/stop[1]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -582,6 +669,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[1]",
       "tag": "lineargradient",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -610,6 +704,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[1]/stop[0]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -636,6 +737,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[1]/stop[1]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -662,6 +770,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 120.68,
         "h": 141.68
@@ -691,6 +806,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 120.68,
         "h": 141.68
@@ -726,6 +848,13 @@
     {
       "key": "div[0]/svg/path[2]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 120.68,
         "h": 141.68
@@ -763,6 +892,13 @@
       "key": "div[0]/svg/text",
       "tag": "text",
       "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 17.64,
         "h": 38
@@ -854,6 +990,13 @@
       "key": "div[0]/div[5]",
       "tag": "div",
       "fullText": "Pause",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 83.84,
         "h": 40
@@ -924,6 +1067,13 @@
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→notes/scratch.mdqueued→←reports/q3-summary.pdf2.4 MB",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 195
@@ -954,6 +1104,13 @@
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→notes/scratch.mdqueued→",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 88
@@ -981,6 +1138,9 @@
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 462,
         "h": 40
@@ -1027,6 +1187,13 @@
       "tag": "div",
       "fullText": "docs/spec.md1.2 MB→",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 434,
         "h": 16
@@ -1121,6 +1288,13 @@
     {
       "key": "div[1]/div[0]/div[0]/div[1]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 460,
         "h": 2
@@ -1148,6 +1322,13 @@
     {
       "key": "div[1]/div[0]/div[0]/div[1]/div",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 294.39,
         "h": 2
@@ -1172,6 +1353,9 @@
       "tag": "div",
       "fullText": "notes/scratch.mdqueued→",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 462,
         "h": 40
@@ -1285,6 +1469,13 @@
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 88
@@ -1312,6 +1503,9 @@
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 462,
         "h": 40
@@ -1358,6 +1552,13 @@
       "tag": "div",
       "fullText": "←reports/q3-summary.pdf2.4 MB",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 434,
         "h": 16
@@ -1452,6 +1653,13 @@
     {
       "key": "div[1]/div[1]/div/div[1]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 460,
         "h": 2
@@ -1479,6 +1687,13 @@
     {
       "key": "div[1]/div[1]/div/div[1]/div",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 142.59,
         "h": 2
@@ -1502,6 +1717,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails386 MB sent · 1.1 GB received today",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 89
@@ -1528,6 +1750,12 @@
       "key": "div[2]/div[0]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 960,
         "h": 37

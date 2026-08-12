@@ -410,7 +410,17 @@ export function deletionColumn({ severity = "permanent", eyebrowText, note = nul
   // The shared `.eyebrow` typography, not a second copy of it — the alignment the standalone
   // builder applies is the flex row's job here, so this takes the class without going through
   // `eyebrow()`. Wearing only a local class is how the first version of this rendered at 16px sans.
-  const label = el("span", { class: "eyebrow eyebrow-decision" }, eyebrowText);
+  //
+  // THE TONE FOLLOWS SEVERITY, exactly as the dot beside it already does. It did not: both columns
+  // wore `eyebrow-decision`, which is right for `Recoverable · Proton Drive` and wrong for
+  // `Permanent · this computer` — and INVISIBLE IN DARK, where `--decision-text` and
+  // `--destructive-text` are both `#FF9C9C`. `12a Deletions light` draws the two apart (`#BE123C`
+  // against `#B91C1C`) and is the only frame in the bundle that can say so. S10, DEVIATIONS §84.
+  const label = el(
+    "span",
+    { class: `eyebrow eyebrow-${severity === "permanent" ? "destructive" : "decision"}` },
+    eyebrowText,
+  );
 
   return el(
     "div",

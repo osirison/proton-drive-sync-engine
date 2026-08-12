@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "4 files are never syncedThey live in your folder but no copy exists on Proton Drive.✕You told it to skip theseA rule in your settings matches them: *.tmpexports/draft.tmp2.1 MBexports/render-final.tmp840 KBChange this ruleCan't be syncedNot real files — Proton Drive has nothing to store for them..cache/session.socka socketprojects/current → ~/work/q3a shortcutNothing here is at risk — it's just not backed up.Done",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 602,
         "h": 602
@@ -48,6 +51,13 @@
       "tag": "div",
       "fullText": "4 files are never syncedThey live in your folder but no copy exists on Proton Drive.✕",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 600,
         "h": 69.38
@@ -77,6 +87,13 @@
       "key": "div[0]/div",
       "tag": "div",
       "fullText": "4 files are never syncedThey live in your folder but no copy exists on Proton Drive.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 514,
         "h": 47.38
@@ -101,6 +118,13 @@
       "key": "div[0]/div/div[0]",
       "tag": "div",
       "text": "4 files are never synced",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 514,
         "h": 22
@@ -187,6 +211,13 @@
       "tag": "div",
       "fullText": "You told it to skip theseA rule in your settings matches them: *.tmpexports/draft.tmp2.1 MBexports/render-final.tmp840 KBChange this ruleCan't be syncedNot real files — Proton Drive has nothing to store for them..cache/session.socka socketprojects/current → ~/work/q3a shortcut",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 600,
         "h": 430.63
@@ -284,6 +315,12 @@
       "key": "div[1]/div[2]",
       "tag": "div",
       "fullText": "exports/draft.tmp2.1 MB",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 552,
         "h": 35
@@ -363,6 +400,12 @@
       "key": "div[1]/div[3]",
       "tag": "div",
       "fullText": "exports/render-final.tmp840 KB",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 552,
         "h": 35
@@ -528,6 +571,12 @@
       "key": "div[1]/div[6]",
       "tag": "div",
       "fullText": ".cache/session.socka socket",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 552,
         "h": 35
@@ -608,6 +657,12 @@
       "tag": "div",
       "fullText": "projects/current → ~/work/q3a shortcut",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 552,
         "h": 36
@@ -687,6 +742,12 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Nothing here is at risk — it's just not backed up.Done",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 600,
         "h": 66
@@ -741,6 +802,13 @@
     {
       "key": "div[2]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 211.27,
         "h": 0

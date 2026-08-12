@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Syncidle⋯ActivityNothing has needed to move since 14:32. Both sides matched at the last check, 2 minutes ago.⌕Check a file — type any name or pathCtrl FBoth sides agreeThis computer12,480files · 41.2 GBwatched continuously · checked 2m agoProton Drive12,480files · 41.2 GBnext full check in 4m⊘4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.Show themLast things to move7 files in the last 3 days→docs/spec.mdsent to Protontoday←reports/q3-summary.pdfbrought heretoday→design/brand-guide.pdfsent to ProtonyesterdayQuiet is normal — most days nothing needs to move.All 7 filesSync passesActivityPlan a syncSettingsDetails",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Syncidle⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -120,6 +137,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 731.08,
         "h": 0
@@ -234,6 +258,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "ActivityNothing has needed to move since 14:32. Both sides matched at the last check, 2 minutes ago.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 58
@@ -260,6 +291,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Activity",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 32
@@ -306,6 +344,13 @@
       "tag": "div",
       "fullText": "⌕Check a file — type any name or pathCtrl F",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 48
@@ -333,6 +378,9 @@
       "tag": "div",
       "fullText": "⌕Check a file — type any name or pathCtrl F",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 976,
         "h": 48
@@ -460,6 +508,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Both sides agreeThis computer12,480files · 41.2 GBwatched continuously · checked 2m agoProton Drive12,480files · 41.2 GBnext full check in 4m",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 178
@@ -490,6 +545,13 @@
     {
       "key": "div[2]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 172
@@ -518,6 +580,13 @@
       "key": "div[2]/div[1]",
       "tag": "div",
       "fullText": "Both sides agree",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 83
@@ -547,6 +616,13 @@
     {
       "key": "div[2]/div[1]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 52,
         "h": 52
@@ -572,6 +648,13 @@
     {
       "key": "div[2]/div[1]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 37.35,
         "h": 43.85
@@ -601,6 +684,13 @@
     {
       "key": "div[2]/div[1]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 9.97,
         "h": 6.93
@@ -632,6 +722,13 @@
       "key": "div[2]/div[1]/div",
       "tag": "div",
       "text": "Both sides agree",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 164.2,
         "h": 20
@@ -658,6 +755,13 @@
       "key": "div[2]/div[2]",
       "tag": "div",
       "fullText": "This computer12,480files · 41.2 GBwatched continuously · checked 2m agoProton Drive12,480files · 41.2 GBnext full check in 4m",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 77
@@ -683,6 +787,13 @@
       "key": "div[2]/div[2]/div[0]",
       "tag": "div",
       "fullText": "This computer12,480files · 41.2 GBwatched continuously · checked 2m ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 77
@@ -729,6 +840,13 @@
       "key": "div[2]/div[2]/div[0]/div[1]",
       "tag": "div",
       "fullText": "12,480files · 41.2 GB",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 30
@@ -755,6 +873,13 @@
       "key": "div[2]/div[2]/div[0]/div[1]/span[0]",
       "tag": "span",
       "text": "12,480",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 86.38,
         "h": 30
@@ -822,6 +947,13 @@
       "key": "div[2]/div[2]/div[1]",
       "tag": "div",
       "fullText": "Proton Drive12,480files · 41.2 GBnext full check in 4m",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 77
@@ -868,6 +1000,13 @@
       "key": "div[2]/div[2]/div[1]/div[1]",
       "tag": "div",
       "fullText": "12,480files · 41.2 GB",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 30
@@ -895,6 +1034,13 @@
       "key": "div[2]/div[2]/div[1]/div[1]/span[0]",
       "tag": "span",
       "text": "12,480",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 86.38,
         "h": 30
@@ -963,6 +1109,13 @@
       "tag": "div",
       "fullText": "⊘4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.Show themLast things to move7 files in the last 3 days→docs/spec.mdsent to Protontoday←reports/q3-summary.pdfbrought heretoday→design/brand-guide.pdfsent to ProtonyesterdayQuiet is normal — most days nothing needs to move.All 7 filesSync passes",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 313
@@ -993,6 +1146,9 @@
       "tag": "div",
       "fullText": "⊘4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.Show them",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 976,
         "h": 70.75
@@ -1033,6 +1189,13 @@
       "tag": "div",
       "fullText": "⊘4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.Show them",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 938,
         "h": 38.75
@@ -1081,6 +1244,13 @@
       "key": "div[3]/div[0]/div/div",
       "tag": "div",
       "fullText": "4 files are never syncedThey sit in your folder but aren't copied anywhere. Two match a rule you wrote; two can't be synced at all.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 805.95,
         "h": 38.75
@@ -1105,6 +1275,13 @@
       "key": "div[3]/div[0]/div/div/div[0]",
       "tag": "div",
       "text": "4 files are never synced",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 805.95,
         "h": 16
@@ -1191,6 +1368,13 @@
       "tag": "div",
       "fullText": "Last things to move7 files in the last 3 days→docs/spec.mdsent to Protontoday←reports/q3-summary.pdfbrought heretoday→design/brand-guide.pdfsent to ProtonyesterdayQuiet is normal — most days nothing needs to move.All 7 filesSync passes",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 165
@@ -1216,6 +1400,13 @@
       "key": "div[3]/div[1]/div[0]",
       "tag": "div",
       "fullText": "Last things to move7 files in the last 3 days",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 14
@@ -1264,6 +1455,13 @@
     {
       "key": "div[3]/div[1]/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 636.77,
         "h": 0
@@ -1311,6 +1509,12 @@
       "tag": "div",
       "fullText": "→docs/spec.mdsent to Protontoday",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 35
@@ -1438,6 +1642,12 @@
       "tag": "div",
       "fullText": "←reports/q3-summary.pdfbrought heretoday",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 35
@@ -1565,6 +1775,12 @@
       "tag": "div",
       "fullText": "→design/brand-guide.pdfsent to Protonyesterday",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 35
@@ -1691,6 +1907,12 @@
       "key": "div[3]/div[1]/div[4]",
       "tag": "div",
       "fullText": "Quiet is normal — most days nothing needs to move.All 7 filesSync passes",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 42
@@ -1743,6 +1965,13 @@
     {
       "key": "div[3]/div[1]/div[4]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 478.92,
         "h": 0
@@ -1843,6 +2072,13 @@
       "key": "div[4]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 49
@@ -1869,6 +2105,12 @@
       "key": "div[4]/div",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 960,
         "h": 31

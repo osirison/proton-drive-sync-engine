@@ -24,22 +24,24 @@
 // hand-copied `12a Deletions light` keeps the old queue and the light frame quietly stops being the
 // frame it was drawn from. There is nothing here for that bug to happen to.
 //
-// WHAT IS DELIBERATELY ABSENT: `fids`. The three light COMPACTS were mapped, run against the gate and
-// taken back out — DEVIATIONS.md §58b: the prototype draws all sixty frames on one dark page, so
-// every `12a` node that sets no colour of its own inherits `#F2F4F7` and the extractor records that
-// as ground truth, against which a correctly-light app fails on 142 nodes. The four light WINDOWS
-// were never mapped at all (`SHELL_FIDS` carries only the three `2a` labels). Both facts belong to
-// S10, which owns light and needs the answer for the seven screens with no drawn light frame; this
-// module does not re-litigate either.
+// AND SO IS `fids`, SINCE S10 — by the same `sameAs`, for the same reason. It was not: the three
+// light COMPACTS were mapped by hand, run against the gate and taken back out, and the four light
+// WINDOWS were never mapped at all. DEVIATIONS.md §58b says why, and it was never a fact about the
+// mapping: the prototype draws all sixty frames on one dark page, so every `12a` node that sets no
+// colour of its own inherits `#F2F4F7`, the extractor recorded that as ground truth, and a
+// correctly-light app failed on 142 nodes of it.
 //
-// That absence is enforced rather than trusted: `resolveFixture` inherits a twin's DATA and never its
-// `fids`, so mapping `2a Settled` in S1 cannot silently map `12a Settled light` too. It is the one
-// asymmetry in `sameAs`, and it is there for this paragraph.
+// `extract.mjs` now records per node which colour properties came from the PAGE rather than from the
+// frame, and `assert.mjs` declines to compare those on a `12a` frame and prints how many it declined
+// (§91). With the ground truth honest there is nothing left for the asymmetry to protect and one
+// thing it costs — a hand-written light table is the second copy of one that already exists, which is
+// the shape this build keeps finding bugs in. `check-fixtures.mjs`'s fifth check fails the build if a
+// `sameAs` pair's node trees ever stop matching, so the inheritance is checked rather than trusted.
 //
-// The fixtures exist so the frames open in the browser preview — `?frame=<label>&theme=light`, and
-// the `?frames` index links them that way — which is the half of F9 that is for people. What they
-// feed today is the shell F4 built: header chip, footer, doors. The heroes and bodies below are not
-// missing data, they are unbuilt screens, exactly as in the dark twins.
+// The eighth entry declares its own, because it has no twin to inherit from.
+//
+// The fixtures also exist so the frames open in the browser preview — `?frame=<label>&theme=light`,
+// and the `?frames` index links them that way — which is the half of F9 that is for people.
 
 export const LIGHT_FIXTURES = {
   // ------------------------------------------------------------------------ the four windows ----
@@ -100,6 +102,35 @@ export const LIGHT_FIXTURES = {
   "12a Tray light": {
     specimen: {
       note: "the 14px tray glyph inverted to near-black on a light panel (ui/hexagon.js, placed by S8); its surrounding card is drawn dark and is not product",
+    },
+    /**
+     * The two facts the frame pins, and they are the only two it has. `renderTrayLight` in
+     * `preview.js` builds the strip around them.
+     *
+     * 14, not the sheet's 20: `10-tray.md` gives a range and every mark on `10a Glyph states` is
+     * drawn at 20, but this frame draws its one glyph at 14 — the smallest size in `STROKE`, and the
+     * point of the frame is that the form survives being both inverted AND that small.
+     *
+     * `needsYou` because it is the form with the most to lose from inversion: the other four are
+     * outlines, and this one carries a FILLED centre, which is the property `10-tray.md` calls
+     * load-bearing ("state is carried by fill rather than hue"). A settled outline would prove
+     * nothing about a light panel.
+     */
+    trayStrip: { state: "needsYou", size: 14 },
+    /**
+     * THREE SLOTS, AND THE ISSUE ASKS FOR EXACTLY THREE. `frame-classes.mjs` calls this a specimen
+     * and `SPECIMEN_ARTEFACT` narrows it to "only the 14px glyph is product — its own card is drawn
+     * dark". So the card, the light strip, `Activities` and the three status marks beside ours carry
+     * no slot: they are scenery, and mapping them would assert a mock.
+     *
+     * The names are `glyphFids`' — the same three nodes mean the same three things — but as strings
+     * rather than factories, because this frame draws one mark where the sheet draws ten. `fid()`
+     * passes its extra arguments only to a factory, so `stampGlyph` drives both.
+     */
+    fids: {
+      glyph: "div[0]/span[2]/svg",
+      glyphPath: "div[0]/span[2]/svg/path",
+      glyphCircle: "div[0]/span[2]/svg/circle",
     },
   },
 };

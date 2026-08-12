@@ -73,6 +73,18 @@ for (const file of new Set([...committedFiles, ...freshFiles])) {
         drift.push(`${was.label} · ${node.key} · box.${side}: ${old.box[side]} vs ${node.box[side]}`);
       }
     }
+    // `fromPage` is exact too, and it is the one field here that decides what the STYLE gate
+    // compares rather than what it compares against (§91). A prototype edit that starts declaring a
+    // colour on a `12a` node turns a wildcard back into a real assertion, and one that stops
+    // declaring it does the reverse — silently, on the theme with the least drawn ground truth.
+    // Sorted before joining because it is a set: `extract.mjs` emits it in `PAGE_COLOUR_PROPS`
+    // order today, and a comparison that depends on that would break the day the list is reordered.
+    {
+      const list = (n) => [...(n.fromPage ?? [])].sort().join(",");
+      if (list(old) !== list(node)) {
+        drift.push(`${was.label} · ${node.key} · fromPage: [${list(old)}] vs [${list(node)}]`);
+      }
+    }
     // Copy is exact — a changed sentence is never sub-pixel noise, and the copy gate depends on it.
     for (const field of ["text", "fullText"]) {
       if ((old[field] ?? null) !== (node[field] ?? null)) {

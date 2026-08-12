@@ -111,6 +111,17 @@
   --text-5: #6d7783; /* mono captions, metadata, timestamps (4.33:1 — known deviation) */
   --text-label: #626b78; /* 9.5–10px uppercase section labels */
   --text-disabled: #4e5661; /* disabled control glyphs */
+  /* The deletion card's kind, beside the filename (`a folder`, `4 KB`). A SEVENTH grey, and it is
+     `--text-4`'s value under a different name for the reason this file's header gives: `#828B98`
+     does two jobs in dark and light splits them. `12a Deletions light` draws this node `#6B7280`
+     on BOTH cards while the facts strip inside the same card — `deleted on Proton 22m ago`,
+     `last opened Mar 2024`, also `#828B98` in dark — draws `#4B5563`, which is what
+     12-light-theme.md's text-on-tint rule asks for and what the other 31 quiet nodes of the seven
+     light frames do. Two sites against thirty-one is §9's shape and §9's verdict was "drawing
+     inconsistency" — but §9's one node had sixteen counterexamples AT ITS OWN ROLE, and this role
+     has none: these two are every instance of it in the bundle, and they agree. DEVIATIONS §91
+     records the reading a designer would overturn. */
+  --deletion-kind: #828b98;
 
   /* ---- semantic: warm = leaving this computer ---- */
   --up-from: #e55b2b;
@@ -136,8 +147,9 @@
 
      Both light values are CHOSEN — no light frame draws this band. Derived the way §52 derived the
      light attention band: from a drawn pair that starts at the same dark alpha. The recoverable
-     card is .04/.30 dark and .03/.28 light, so a .04/.28 dark band maps to .03/.28. S10 confirms.
-     DEVIATIONS §54. */
+     card is .04/.30 dark and .03/.28 light, so a .04/.28 dark band maps to .03/.28. S10 WALKED ALL
+     EIGHT LIGHT FRAMES AND NEITHER VALUE APPEARS: still chosen, now measured to be undrawn rather
+     than assumed to be. DEVIATIONS §54, §91b. */
   --warn: #ff9f1c;
   --warn-band-bg: rgba(255, 159, 28, 0.04);
   --warn-band-border: rgba(255, 159, 28, 0.28);
@@ -165,7 +177,8 @@
      nothing draws it. Derived from the card, which IS drawn in both themes — 0.04/0.30 dark becomes
      0.03/0.28 light, so the band's 0.05/0.32 becomes 0.04/0.30. The cross-theme ratio and the
      band-to-card delta give the same two numbers, which is the only corroboration available without
-     a frame. S10 owns confirming it when the light mapping is propagated. */
+     a frame. `2a Needs you` has no `12a` twin, and S10 confirmed only that: the pair appears in none
+     of the eight light frames, so it stays chosen. §91b. */
 
   /* The attention band. `2a Needs you`: one container, both waiting items, 976x127. */
   --decision-band-bg: rgba(255, 107, 107, 0.05);
@@ -191,13 +204,15 @@
      that something is about to happen, it is describing a policy you may choose, so it is drawn a
      notch quieter than the card that says a file is going. Light steps the border the way
      --decision-card-border does (.30 → .28 of its own base) and keeps the fill, which light's own
-     --destructive-bg already carries at .04. S10 confirms. */
+     --destructive-bg already carries at .04. Settings has no light frame; S10 walked all eight and
+     the pair appears in none of them, so it stays chosen. §91b. */
   --destructive-card-bg: rgba(255, 59, 59, 0.04);
   --destructive-card-border: rgba(255, 59, 59, 0.3);
   /* The unselected radio ring on that card: the one place the design tints an inert hairline. The
      frame draws it OPAQUE (#6B3A3A) rather than as a crimson alpha — a 1px ring at .3 over a .04
      fill would be invisible — so it is a colour, not a tint. Light is --line-inert warmed the same
-     distance toward that theme's --destructive; no light frame draws this card. S10 confirms. */
+     distance toward that theme's --destructive; no light frame draws this card, and S10 checked all
+     eight rather than only the one it expected. Chosen. §91b. */
   --destructive-ring: #6b3a3a;
   /* The disabled `Delete` on `4a Armed`, before the word is typed. NOT --destructive-bg: measured
      0.1 against that token's 0.06, and DEVIATIONS §27 already records .08 as a third value on the
@@ -205,8 +220,16 @@
   --btn-destructive-disabled-bg: rgba(255, 59, 59, 0.1);
   --destructive-divider: rgba(255, 59, 59, 0.2);
   /* The tinted row in `5a Plan`'s action list. Not --destructive-bg: measured .05 against that
-     token's .06. The light value is read off a frame rather than derived — --compact-permanent-bg
-     is this same alpha and steps .05 → .03 in `12a Compact needs light`. S10 confirms. */
+     token's .06.
+
+     ITS LIGHT VALUE IS DERIVED, and the note here used to claim otherwise: "read off a frame rather
+     than derived — --compact-permanent-bg is this same alpha and steps .05 → .03 in `12a Compact
+     needs light`". `12a Compact needs light` draws no deletion row. It is thirteen nodes — a mark, a
+     headline, a sentence, `Review them`, `Later` — and the only tint on it is the button's
+     --decision-btn-bg. --compact-permanent-bg's OWN note, four rows down, says the opposite and is
+     right: "the four row tints have no light frame at all". So this cited a measurement of a value
+     that was itself derived, from a frame that does not draw it. S10 walked all eight light frames
+     and neither alpha appears; both stay CHOSEN. DEVIATIONS §91b. */
   --destructive-row-bg: rgba(255, 59, 59, 0.05);
   --destructive-btn-border: rgba(255, 59, 59, 0.25);
   --destructive-btn-bg: rgba(255, 59, 59, 0.1);
@@ -219,7 +242,8 @@
 
      No `12a Armed light` exists. The light value is the one its nearest measured neighbour keeps —
      --destructive-input-border is .35 in BOTH themes — rather than the .38→.4 nudge the card border
-     takes, because that pair is the one this box is a step up from. S10 confirms. */
+     takes, because that pair is the one this box is a step up from — and --destructive-input-border
+     IS drawn on `12a Deletions light`, where this box is not. S10 checked all eight. Chosen. §91b. */
   --destructive-armed-border: rgba(255, 59, 59, 0.5);
 
   /* ---- the 360px compact panel (F6): three tints the 1040 screens do not carry ----
@@ -239,7 +263,9 @@
      values are DERIVED the way §52 derived the attention band's — by the delta each family shows
      between a drawn dark card and its drawn light twin. Destructive moves .06→.04 and .38→.40,
      decision .04→.03 and .30→.28; applied here that gives .05→.03 / .32→.34 and .035→.025 / .26→.24.
-     S10 owns confirming them when the light mapping is propagated. DEVIATIONS.md §58a. */
+     STILL CHOSEN. `12a Compact needs light` is the only light compact that could have drawn one and
+     it draws no rows at all — thirteen nodes, no queue — which is also what corrects the claim on
+     --destructive-row-bg above. DEVIATIONS.md §58a, §91b. */
   --compact-attention-border: rgba(255, 107, 107, 0.3);
   --compact-permanent-bg: rgba(255, 59, 59, 0.05);
   --compact-permanent-border: rgba(255, 59, 59, 0.32);
@@ -316,7 +342,8 @@
      frame draws this panel in light. Derived by §54's method — the nearest same-family drawn pair
      is the warn band (--warn/#FF9F1C darkening to #B23F14, .04 → .03, x0.75), and the background
      column as a whole centres on x0.7; .14 maps to .105 and .098, which agree at .10. DEVIATIONS
-     §74. S10 confirms.
+     §74. S10 walked the eight light frames: `12a Conflict light` mirrors the CARD view, so neither
+     tint is drawn in light and both stay chosen. §91b.
 
      The three greys are role twins of tokens that already carry these values (--seam, --text-disabled,
      --border-strong) and take their light values from them. Same-value-different-name is this file's
@@ -413,6 +440,7 @@
     --text-5: #6b7280;
     --text-label: #6b7280;
     --text-disabled: #b9bec6;
+    --deletion-kind: #6b7280;
 
     --up-from: #b23f14;
     --up-to: #d97706;
@@ -451,7 +479,9 @@
     --destructive-card-bg: rgba(220, 38, 38, 0.04);
     --destructive-card-border: rgba(220, 38, 38, 0.32);
     --destructive-ring: #d9b8b8;
-    --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
+    /* MEASURED now, not derived: `12a Deletions light` draws the disabled `Delete` at .07, where
+       this was .08 — the step dark's .1 suggested. S10, DEVIATIONS §91. */
+    --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.07);
     --destructive-divider: rgba(220, 38, 38, 0.16);
     --destructive-row-bg: rgba(220, 38, 38, 0.03);
     --destructive-btn-border: rgba(220, 38, 38, 0.2);
@@ -520,7 +550,8 @@
     --shadow-banner: 0 18px 44px rgba(0, 0, 0, 0.4);
     /* MECHANICALLY MAPPED, not measured: no 12a frame draws a banner, so these follow
        12-light-theme.md's card row (#0D0E11 -> #FFFFFF) and put the two white hairlines onto the
-       dark text colour at the same alphas. S10 owns the undrawn light surfaces; this is one. */
+       dark text colour at the same alphas. S10 confirmed it is undrawn — no `12a` frame carries a
+       banner — so it stays mapped rather than measured. §91b. */
     --notify-bg: rgba(255, 255, 255, 0.96);
     --notify-border: rgba(20, 22, 26, 0.11);
     --notify-action-bg: rgba(20, 22, 26, 0.05);
@@ -559,6 +590,7 @@
   --text-5: #6b7280;
   --text-label: #6b7280;
   --text-disabled: #b9bec6;
+  --deletion-kind: #6b7280;
 
   --up-from: #b23f14;
   --up-to: #d97706;
@@ -597,7 +629,9 @@
   --destructive-card-bg: rgba(220, 38, 38, 0.04);
   --destructive-card-border: rgba(220, 38, 38, 0.32);
   --destructive-ring: #d9b8b8;
-  --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.08);
+  /* MEASURED now, not derived: `12a Deletions light` draws the disabled `Delete` at .07, where
+     this was .08 — the step dark's .1 suggested. S10, DEVIATIONS §91. */
+  --btn-destructive-disabled-bg: rgba(220, 38, 38, 0.07);
   --destructive-divider: rgba(220, 38, 38, 0.16);
   --destructive-row-bg: rgba(220, 38, 38, 0.03);
   --destructive-btn-border: rgba(220, 38, 38, 0.2);

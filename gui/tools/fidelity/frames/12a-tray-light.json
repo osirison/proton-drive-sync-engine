@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Activities▲◐▮The glyph inverts to near-black and keeps its five forms. Because state is carried by fill rather than hue, nothing has to be re-specified for a light panel.",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 360,
         "h": 137.78
@@ -49,6 +52,13 @@
       "tag": "div",
       "fullText": "Activities▲◐▮",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 318,
         "h": 30
@@ -102,6 +112,13 @@
     {
       "key": "div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 150.91,
         "h": 0
@@ -125,6 +142,13 @@
     {
       "key": "div[0]/span[2]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24,
         "h": 20
@@ -157,6 +181,13 @@
     {
       "key": "div[0]/span[2]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 14,
         "h": 14
@@ -182,6 +213,13 @@
     {
       "key": "div[0]/span[2]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 10.06,
         "h": 11.81
@@ -211,6 +249,13 @@
     {
       "key": "div[0]/span[2]/svg/circle",
       "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 3.97,
         "h": 3.97

@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "That folder doesn't exist on Proton DriveNothing was saved — your old settings are still running. Create the folder on Proton Drive first, or pick a different one.remote_root: /Drive/Archive2026 — not foundGo back and fix itCreate it on Proton Drive",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 600,
         "h": 213
@@ -48,6 +51,13 @@
       "key": "div",
       "tag": "div",
       "fullText": "That folder doesn't exist on Proton DriveNothing was saved — your old settings are still running. Create the folder on Proton Drive first, or pick a different one.remote_root: /Drive/Archive2026 — not foundGo back and fix itCreate it on Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 546,
         "h": 165
@@ -72,6 +82,13 @@
     {
       "key": "div/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34,
         "h": 34
@@ -99,6 +116,13 @@
     {
       "key": "div/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 24.42,
         "h": 28.67
@@ -128,6 +152,13 @@
     {
       "key": "div/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 7.37
@@ -156,6 +187,13 @@
     {
       "key": "div/svg/circle",
       "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 2.61,
         "h": 2.61
@@ -185,6 +223,13 @@
       "key": "div/div",
       "tag": "div",
       "fullText": "That folder doesn't exist on Proton DriveNothing was saved — your old settings are still running. Create the folder on Proton Drive first, or pick a different one.remote_root: /Drive/Archive2026 — not foundGo back and fix itCreate it on Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 498,
         "h": 165
@@ -209,6 +254,13 @@
       "key": "div/div/div[0]",
       "tag": "div",
       "text": "That folder doesn't exist on Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 498,
         "h": 20
@@ -294,6 +346,13 @@
       "key": "div/div/div[3]",
       "tag": "div",
       "fullText": "Go back and fix itCreate it on Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 498,
         "h": 35

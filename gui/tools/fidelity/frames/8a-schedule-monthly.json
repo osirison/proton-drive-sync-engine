@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net.WeeklyMonthlyOn day1234567891011121314151617181920full_scan_schedule · monthly day 15, 03:00−03:00＋Months without a 15th are skipped to the last day.",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 600,
         "h": 229.75
@@ -49,6 +52,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net.WeeklyMonthly",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 558,
         "h": 41.75
@@ -74,6 +84,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "fullText": "Compare everything, top to bottomA full check of all 12,480 files as a safety net.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 388.69,
         "h": 41.75
@@ -98,6 +115,13 @@
       "key": "div[0]/div[0]/div[0]",
       "tag": "div",
       "text": "Compare everything, top to bottom",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 388.69,
         "h": 18
@@ -143,6 +167,9 @@
       "key": "div[0]/div[1]",
       "tag": "div",
       "fullText": "WeeklyMonthly",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 151.31,
         "h": 35
@@ -247,6 +274,12 @@
       "tag": "div",
       "fullText": "On day1234567891011121314151617181920full_scan_schedule · monthly day 15, 03:00−03:00＋Months without a 15th are skipped to the last day.",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 558,
         "h": 137
@@ -273,6 +306,13 @@
       "key": "div[1]/div[0]",
       "tag": "div",
       "fullText": "On day1234567891011121314151617181920",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 558,
         "h": 56
@@ -320,6 +360,13 @@
       "key": "div[1]/div[0]/div",
       "tag": "div",
       "fullText": "1234567891011121314151617181920",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 507.67,
         "h": 56
@@ -1069,6 +1116,13 @@
       "tag": "div",
       "fullText": "full_scan_schedule · monthly day 15, 03:00−03:00＋",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 558,
         "h": 28
@@ -1120,6 +1174,13 @@
       "tag": "div",
       "fullText": "−03:00＋",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 116,
         "h": 28

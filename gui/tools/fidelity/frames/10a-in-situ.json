@@ -9,6 +9,13 @@
       "tag": "div",
       "fullText": "ActivitiesTue 14:41▲◐▮▾33 things need youOne file changed on both sides.Two deletions are waiting.Review themOpen Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 520
@@ -43,6 +50,13 @@
       "tag": "div",
       "fullText": "ActivitiesTue 14:41▲◐▮▾",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 32
@@ -123,6 +137,13 @@
     {
       "key": "div[0]/span[2]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 857.98,
         "h": 0
@@ -148,6 +169,13 @@
       "tag": "span",
       "fullText": "▲◐▮▾",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 105.14,
         "h": 21
@@ -177,6 +205,13 @@
     {
       "key": "div[0]/span[3]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 25,
         "h": 21
@@ -209,6 +244,13 @@
     {
       "key": "div[0]/span[3]/span[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 15,
         "h": 15
@@ -234,6 +276,13 @@
     {
       "key": "div[0]/span[3]/span[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 10.78,
         "h": 12.65
@@ -263,6 +312,13 @@
     {
       "key": "div[0]/span[3]/span[0]/svg/circle",
       "tag": "circle",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 4.25,
         "h": 4.25
@@ -384,6 +440,9 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "33 things need youOne file changed on both sides.Two deletions are waiting.Review themOpen Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 362,
         "h": 441.5
@@ -425,6 +484,13 @@
       "key": "div[1]/div[0]",
       "tag": "div",
       "fullText": "33 things need youOne file changed on both sides.Two deletions are waiting.Review them",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 250.5
@@ -454,6 +520,13 @@
       "key": "div[1]/div[0]/svg",
       "tag": "svg",
       "fullText": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 72,
         "h": 72
@@ -479,6 +552,13 @@
     {
       "key": "div[1]/div[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 51.72,
         "h": 60.72
@@ -509,6 +589,13 @@
       "key": "div[1]/div[0]/svg/text",
       "tag": "text",
       "text": "3",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 9.36,
         "h": 20
@@ -536,6 +623,13 @@
       "key": "div[1]/div[0]/div[0]",
       "tag": "div",
       "text": "3 things need you",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 140.55,
         "h": 20
@@ -644,6 +738,12 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "Open Drive SyncSync nowPause syncingClose windowkeeps syncingQuitstops syncing",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 189
@@ -762,6 +862,13 @@
     {
       "key": "div[1]/div[1]/div[3]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 328,
         "h": 1

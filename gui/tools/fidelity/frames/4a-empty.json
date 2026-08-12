@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "Nothing waiting to be deletedWhen a file disappears from one side, it waits here for you instead of vanishing from the other.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 522,
         "h": 422
@@ -46,6 +49,13 @@
       "key": "div",
       "tag": "div",
       "fullText": "Nothing waiting to be deletedWhen a file disappears from one side, it waits here for you instead of vanishing from the other.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 520,
         "h": 420
@@ -75,6 +85,13 @@
     {
       "key": "div/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 80,
         "h": 80
@@ -100,6 +117,13 @@
     {
       "key": "div/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 57.47,
         "h": 67.46
@@ -129,6 +153,13 @@
     {
       "key": "div/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 15.33,
         "h": 10.67
@@ -160,6 +191,13 @@
       "key": "div/div[0]",
       "tag": "div",
       "text": "Nothing waiting to be deleted",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 252.03,
         "h": 23

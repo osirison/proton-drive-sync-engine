@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Syncstep 1 of 2Which two folders should match?One on this computer, one on Proton Drive. From then on they stay identical.This computer~/ProtonDrive341 files2.1 GBChoose a different folder…A new empty folder is fine — everything on Proton Drive will be brought down into it.Proton Drive/Drive/RemoteFolder12,139 files39.1 GBBrowse Proton Drive…Signed in as you@proton.me · 39.1 GB of 500 GB used⊘You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.Add skip rulesNothing is copied or changed until you approve the plan.See what will happen",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -47,6 +50,13 @@
       "key": "header",
       "tag": "header",
       "fullText": "Proton Drive Syncstep 1 of 2",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -74,6 +84,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -97,6 +114,13 @@
       "key": "header/span[0]",
       "tag": "span",
       "text": "Proton Drive Sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 107.52,
         "h": 16
@@ -118,6 +142,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 763.88,
         "h": 0
@@ -164,6 +195,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Which two folders should match?One on this computer, one on Proton Drive. From then on they stay identical.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 84
@@ -190,6 +228,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Which two folders should match?",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 37
@@ -236,6 +281,13 @@
       "tag": "div",
       "fullText": "This computer~/ProtonDrive341 files2.1 GBChoose a different folder…A new empty folder is fine — everything on Proton Drive will be brought down into it.Proton Drive/Drive/RemoteFolder12,139 files39.1 GBBrowse Proton Drive…Signed in as you@proton.me · 39.1 GB of 500 GB used⊘You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.Add skip rules",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 521
@@ -267,6 +319,13 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 250
@@ -295,6 +354,13 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "This computer~/ProtonDrive341 files2.1 GBChoose a different folder…A new empty folder is fine — everything on Proton Drive will be brought down into it.Proton Drive/Drive/RemoteFolder12,139 files39.1 GBBrowse Proton Drive…Signed in as you@proton.me · 39.1 GB of 500 GB used",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 221.5
@@ -319,6 +385,13 @@
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
       "fullText": "This computer~/ProtonDrive341 files2.1 GBChoose a different folder…A new empty folder is fine — everything on Proton Drive will be brought down into it.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 221.5
@@ -342,6 +415,13 @@
       "key": "div[1]/div[1]/div[0]/div[0]",
       "tag": "div",
       "fullText": "This computer",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 452,
         "h": 13
@@ -366,6 +446,13 @@
     {
       "key": "div[1]/div[1]/div[0]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 8,
         "h": 8
@@ -417,6 +504,9 @@
       "key": "div[1]/div[1]/div[0]/div[1]",
       "tag": "div",
       "fullText": "~/ProtonDrive341 files2.1 GBChoose a different folder…",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 452,
         "h": 147
@@ -479,6 +569,12 @@
       "key": "div[1]/div[1]/div[0]/div[1]/div[1]",
       "tag": "div",
       "fullText": "341 files2.1 GB",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 410,
         "h": 28
@@ -614,6 +710,13 @@
       "key": "div[1]/div[1]/div[1]",
       "tag": "div",
       "fullText": "Proton Drive/Drive/RemoteFolder12,139 files39.1 GBBrowse Proton Drive…Signed in as you@proton.me · 39.1 GB of 500 GB used",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 221.5
@@ -637,6 +740,13 @@
       "key": "div[1]/div[1]/div[1]/div[0]",
       "tag": "div",
       "fullText": "Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 452,
         "h": 13
@@ -685,6 +795,13 @@
     {
       "key": "div[1]/div[1]/div[1]/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 8,
         "h": 8
@@ -713,6 +830,9 @@
       "key": "div[1]/div[1]/div[1]/div[1]",
       "tag": "div",
       "fullText": "/Drive/RemoteFolder12,139 files39.1 GBBrowse Proton Drive…",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 452,
         "h": 147
@@ -775,6 +895,12 @@
       "key": "div[1]/div[1]/div[1]/div[1]/div[1]",
       "tag": "div",
       "fullText": "12,139 files39.1 GB",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 410,
         "h": 28
@@ -936,6 +1062,9 @@
       "tag": "div",
       "fullText": "⊘You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.Add skip rules",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 976,
         "h": 63
@@ -1065,6 +1194,12 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Nothing is copied or changed until you approve the plan.See what will happen",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 71
@@ -1118,6 +1253,13 @@
     {
       "key": "div[2]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 468.72,
         "h": 0

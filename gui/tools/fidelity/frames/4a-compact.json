@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "22 files waiting to be deletedphotos/20191,204 photos gone from this computer, permanentlyarchive/old-notes.mdto Proton's Trash — recoverableReview themsyncing continuesLater",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 362,
         "h": 377.34
@@ -44,6 +47,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "22 files waiting to be deleted",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 140
@@ -73,6 +83,13 @@
       "key": "div[0]/svg",
       "tag": "svg",
       "fullText": "2",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 64,
         "h": 64
@@ -98,6 +115,13 @@
     {
       "key": "div[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 45.97,
         "h": 53.97
@@ -128,6 +152,13 @@
       "key": "div[0]/svg/text",
       "tag": "text",
       "text": "2",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 8.33,
         "h": 18
@@ -155,6 +186,13 @@
       "key": "div[0]/div",
       "tag": "div",
       "text": "2 files waiting to be deleted",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 203.48,
         "h": 20
@@ -178,6 +216,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "photos/20191,204 photos gone from this computer, permanentlyarchive/old-notes.mdto Proton's Trash — recoverable",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 139.34
@@ -206,6 +251,9 @@
       "key": "div[1]/div[0]",
       "tag": "div",
       "fullText": "photos/20191,204 photos gone from this computer, permanently",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 332,
         "h": 60.67
@@ -245,6 +293,13 @@
       "key": "div[1]/div[0]/div[0]",
       "tag": "div",
       "fullText": "photos/2019",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 304,
         "h": 15
@@ -269,6 +324,13 @@
     {
       "key": "div[1]/div[0]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 6,
         "h": 6
@@ -297,6 +359,13 @@
       "key": "div[1]/div[0]/div[0]/span[1]",
       "tag": "span",
       "text": "photos/2019",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 289,
         "h": 15
@@ -345,6 +414,9 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "archive/old-notes.mdto Proton's Trash — recoverable",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 332,
         "h": 60.67
@@ -384,6 +456,13 @@
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
       "fullText": "archive/old-notes.md",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 304,
         "h": 15
@@ -408,6 +487,9 @@
     {
       "key": "div[1]/div[1]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 6,
         "h": 6
@@ -443,6 +525,13 @@
       "key": "div[1]/div[1]/div[0]/span[1]",
       "tag": "span",
       "text": "archive/old-notes.md",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 289,
         "h": 15
@@ -491,6 +580,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Review them",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 49
@@ -556,6 +652,12 @@
       "key": "div[3]",
       "tag": "div",
       "fullText": "syncing continuesLater",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 47
@@ -608,6 +710,13 @@
     {
       "key": "div[3]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 141.44,
         "h": 0

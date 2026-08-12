@@ -6,12 +6,13 @@
 // reproducible", and without this gate that claim rests on someone having counted to 51 once.
 //
 // It has to have teeth, because label-set equality alone passes on `{ "3a Conflict": {} }` — 51
-// labels, 51 empty objects, a green gate and not one reproducible frame. So four checks:
+// labels, 51 empty objects, a green gate and not one reproducible frame. So five checks:
 //
 //   1. the label set IS `frames/index.json`'s, in both directions;
 //   2. every entry carries a payload of the shape its frame CLASS implies, and it is not empty;
 //   3. no `fids` slot is dead — its node key exists in at least one frame declaring it;
-//   4. no fixture module reads the wall clock except through `clock.js`.
+//   4. no fixture module reads the wall clock except through `clock.js`;
+//   5. a `sameAs` pair is one tree drawn twice — same keys, same order, same text.
 //
 // (3) is the one that earns its keep long before S10. `assert.mjs` catches a stale key only for
 // nodes the app actually stamps, at runtime, in a browser — so a mapping written for a node the
@@ -129,9 +130,13 @@ for (const [label, entry] of Object.entries(FIXTURES)) {
 const slotSites = new Map(); // "slot → key" → { alive, frames[] }
 let fidKeysChecked = 0;
 
-for (const [label, entry] of Object.entries(FIXTURES)) {
+for (const label of Object.keys(FIXTURES)) {
   const spec = drawn.get(label);
-  if (!spec || !entry.fids) continue;
+  // RESOLVED, not `entry.fids` — since S10 a light twin inherits its mapping rather than restating
+  // it, so reading the raw entry would skip the seven `12a` frames and check nothing about the keys
+  // they stamp. Check 5 below is what makes that inheritance safe; this is what checks its result.
+  const fids = resolveFixture(label)?.fids;
+  if (!spec || !fids) continue;
   const frame = JSON.parse(readFileSync(join(FRAMES, spec.file), "utf8"));
   const keys = new Set(frame.nodes.map((n) => n.key));
 
@@ -144,7 +149,7 @@ for (const [label, entry] of Object.entries(FIXTURES)) {
     slotSites.set(id, site);
   };
 
-  for (const [slot, value] of Object.entries(entry.fids)) {
+  for (const [slot, value] of Object.entries(fids)) {
     if (typeof value === "string") note(slot, [value]);
     else if (typeof value === "function") {
       // A factory slot (`door: (i) => …`) covers a run of siblings, and nothing here knows how many
@@ -197,9 +202,55 @@ for (const file of readdirSync(SRC_FIXTURES)) {
   }
 }
 
+// ---- 5. a `sameAs` pair is the SAME TREE ------------------------------------------------------
+
+// WHAT MAKES AN INHERITED MAPPING SOUND. Since S10 a light twin takes its `fids` from its dark twin
+// rather than restating it, because a restated table is a second copy of something that already
+// exists and this build has been bitten by that shape more than once. The inheritance is only
+// correct while the two frames really are one tree drawn twice, which is a fact about the PROTOTYPE
+// and can stop being true in an edit nobody here is reviewing.
+//
+// So it is checked rather than trusted: same node keys, in the same order, with the same own text.
+// A key that moved would otherwise stamp a `data-fid` onto the wrong node in the light frame and be
+// compared, in full, against a node it does not correspond to — which is the one failure a fidelity
+// gate must never produce, since every number it prints afterwards is measured against it.
+//
+// NOT the boxes and NOT the styles. Light legitimately differs there: `--btn-primary-choice-border`
+// and `--btn-primary-soft-border` do not exist in light at all, and the 2px a border takes out of a
+// border-box moves thirteen boxes on `12a Deletions light` alone (tokens.css argues both). Those are
+// the design, and asserting them equal would forbid the very thing the light theme is.
+for (const [label, entry] of Object.entries(FIXTURES)) {
+  if (!entry.sameAs) continue;
+  const here = drawn.get(label);
+  const there = drawn.get(entry.sameAs);
+  if (!here || !there) continue; // check 1 and check 2 already reported it
+  const a = JSON.parse(readFileSync(join(FRAMES, here.file), "utf8")).nodes;
+  const b = JSON.parse(readFileSync(join(FRAMES, there.file), "utf8")).nodes;
+  if (a.length !== b.length) {
+    fail(
+      label,
+      `sameAs: ${a.length} nodes against ${entry.sameAs}'s ${b.length} — the mapping it inherits cannot fit`,
+    );
+    continue;
+  }
+  const moved = a
+    .map((n, i) => ({ here: n, there: b[i] }))
+    .filter(({ here: h, there: t }) => h.key !== t.key || (h.text ?? "") !== (t.text ?? ""));
+  if (moved.length) {
+    const shown = moved.slice(0, 3).map(({ here: h, there: t }) => `${h.key} vs ${t.key}`);
+    fail(
+      label,
+      `sameAs: ${moved.length} node(s) differ from ${entry.sameAs} in key or text (${shown.join(", ")}) — ` +
+        `an inherited fids map would stamp the wrong nodes`,
+    );
+  }
+}
+
 // ---- report ----------------------------------------------------------------------------------
 
-const withFids = Object.values(FIXTURES).filter((f) => f.fids).length;
+// RESOLVED, for the same reason the slot loop is: a light twin's mapping is its dark twin's, and a
+// count read off the raw entries would report seven mapped frames as unmapped.
+const withFids = Object.keys(FIXTURES).filter((label) => resolveFixture(label)?.fids).length;
 console.log(
   `fidelity:fixtures — ${registered.size}/${index.length} frames have a dataset, ` +
     `${withFids} carry a fids map (${fidKeysChecked} keys checked), ${failures.length} failures`,

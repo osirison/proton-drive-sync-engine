@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "Both sides now match12,480 files, 41.2 GB. Nothing was deleted, and 2 files are waiting for you to pick a version.One thing to agree to before it runs on its ownFrom now on, deleting a file on either side deletes it on the other. You'll be asked before each one — and you can change that in Settings — but this is how the two folders stay identical.I understand deletions travel both ways.Syncing stays paused until you agree.Start syncing",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 600,
         "h": 481.69
@@ -48,6 +51,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Both sides now match12,480 files, 41.2 GB. Nothing was deleted, and 2 files are waiting for you to pick a version.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 538,
         "h": 178.19
@@ -72,6 +82,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 76,
         "h": 76
@@ -97,6 +114,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 54.59,
         "h": 64.09
@@ -126,6 +150,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 14.57,
         "h": 10.13
@@ -157,6 +188,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Both sides now match",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 234.75,
         "h": 29
@@ -203,6 +241,9 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "One thing to agree to before it runs on its ownFrom now on, deleting a file on either side deletes it on the other. You'll be asked before each one — and you can change that in Settings — but this is how the two folders stay identical.I understand deletions travel both ways.",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 538,
         "h": 167.5
@@ -288,6 +329,12 @@
       "key": "div[1]/div[2]",
       "tag": "div",
       "fullText": "I understand deletions travel both ways.",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 500,
         "h": 33.5
@@ -316,6 +363,9 @@
     {
       "key": "div[1]/div[2]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 17,
         "h": 17
@@ -374,6 +424,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Syncing stays paused until you agree.Start syncing",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 538,
         "h": 38
@@ -421,6 +478,13 @@
     {
       "key": "div[2]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 184.7,
         "h": 0

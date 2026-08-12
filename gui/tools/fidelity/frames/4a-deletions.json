@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Proton Drive Sync2 waiting⋯Two files are waiting to be deletedThey were deleted on one side. Nothing happens to the other side until you say so — syncing carries on around them.Permanent · this computerRemoved straight from disk. Not moved to any trash, and not recoverable from Proton.photos/2019a folderDeleting this removes 1,204 photos, 8.4 GB from this computer, including everything inside it.deleted on Proton 22m agolast opened Mar 2024To delete it, type DELETE below.DeleteKeep it — put it back on Proton DriveRecoverable · Proton DriveMoved to Proton Drive's Trash. You can restore it there until the trash is emptied.archive/old-notes.md4 KBYou deleted this on this computer. Deleting it on Proton moves it to Proton Drive's Trash, where you can still get it back.deleted here 6m agolast edited Jan 2026Move to Proton's TrashKeep it — bring it back to this computerDeletions stay here until you decide. Nothing expires.Keep both filesActivityPlan a syncSettingsDetails",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 1042,
         "h": 766
@@ -48,6 +51,13 @@
       "tag": "header",
       "fullText": "Proton Drive Sync2 waiting⋯",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 52
@@ -75,6 +85,13 @@
     {
       "key": "header/img",
       "tag": "img",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 20,
         "h": 20
@@ -98,6 +115,13 @@
       "key": "header/span[0]",
       "tag": "span",
       "text": "Proton Drive Sync",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 107.52,
         "h": 16
@@ -119,6 +143,13 @@
     {
       "key": "header/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 696.08,
         "h": 0
@@ -241,6 +272,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Two files are waiting to be deletedThey were deleted on one side. Nothing happens to the other side until you say so — syncing carries on around them.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 61
@@ -267,6 +305,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Two files are waiting to be deleted",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 32
@@ -312,6 +357,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Permanent · this computerRemoved straight from disk. Not moved to any trash, and not recoverable from Proton.photos/2019a folderDeleting this removes 1,204 photos, 8.4 GB from this computer, including everything inside it.deleted on Proton 22m agolast opened Mar 2024To delete it, type DELETE below.DeleteKeep it — put it back on Proton DriveRecoverable · Proton DriveMoved to Proton Drive's Trash. You can restore it there until the trash is emptied.archive/old-notes.md4 KBYou deleted this on this computer. Deleting it on Proton moves it to Proton Drive's Trash, where you can still get it back.deleted here 6m agolast edited Jan 2026Move to Proton's TrashKeep it — bring it back to this computer",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 528
@@ -343,6 +395,13 @@
     {
       "key": "div[1]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 514
@@ -371,6 +430,13 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "Permanent · this computerRemoved straight from disk. Not moved to any trash, and not recoverable from Proton.photos/2019a folderDeleting this removes 1,204 photos, 8.4 GB from this computer, including everything inside it.deleted on Proton 22m agolast opened Mar 2024To delete it, type DELETE below.DeleteKeep it — put it back on Proton DriveRecoverable · Proton DriveMoved to Proton Drive's Trash. You can restore it there until the trash is emptied.archive/old-notes.md4 KBYou deleted this on this computer. Deleting it on Proton moves it to Proton Drive's Trash, where you can still get it back.deleted here 6m agolast edited Jan 2026Move to Proton's TrashKeep it — bring it back to this computer",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 528
@@ -395,6 +461,13 @@
       "key": "div[1]/div[1]/div[0]",
       "tag": "div",
       "fullText": "Permanent · this computerRemoved straight from disk. Not moved to any trash, and not recoverable from Proton.photos/2019a folderDeleting this removes 1,204 photos, 8.4 GB from this computer, including everything inside it.deleted on Proton 22m agolast opened Mar 2024To delete it, type DELETE below.DeleteKeep it — put it back on Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 528
@@ -420,6 +493,13 @@
       "key": "div[1]/div[1]/div[0]/div[0]",
       "tag": "div",
       "fullText": "Permanent · this computer",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 13
@@ -444,6 +524,13 @@
     {
       "key": "div[1]/div[1]/div[0]/div[0]/span[0]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 8,
         "h": 8
@@ -518,6 +605,9 @@
       "key": "div[1]/div[1]/div[0]/div[2]",
       "tag": "div",
       "fullText": "photos/2019a folderDeleting this removes 1,204 photos, 8.4 GB from this computer, including everything inside it.deleted on Proton 22m agolast opened Mar 2024To delete it, type DELETE below.DeleteKeep it — put it back on Proton Drive",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 458,
         "h": 275.59
@@ -558,6 +648,13 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[0]",
       "tag": "div",
       "fullText": "photos/2019a folder",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 416,
         "h": 20
@@ -583,6 +680,13 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[0]/span[0]",
       "tag": "span",
       "text": "photos/2019",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 94.69,
         "h": 20
@@ -674,6 +778,12 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[2]",
       "tag": "div",
       "fullText": "deleted on Proton 22m agolast opened Mar 2024",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 416,
         "h": 28
@@ -746,6 +856,13 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[3]",
       "tag": "div",
       "fullText": "To delete it, type DELETE below.Delete",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 416,
         "h": 61
@@ -816,6 +933,13 @@
       "key": "div[1]/div[1]/div[0]/div[2]/div[3]/div[1]",
       "tag": "div",
       "fullText": "Delete",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 416,
         "h": 38
@@ -964,6 +1088,13 @@
       "key": "div[1]/div[1]/div[1]",
       "tag": "div",
       "fullText": "Recoverable · Proton DriveMoved to Proton Drive's Trash. You can restore it there until the trash is emptied.archive/old-notes.md4 KBYou deleted this on this computer. Deleting it on Proton moves it to Proton Drive's Trash, where you can still get it back.deleted here 6m agolast edited Jan 2026Move to Proton's TrashKeep it — bring it back to this computer",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 488,
         "h": 528
@@ -989,6 +1120,13 @@
       "key": "div[1]/div[1]/div[1]/div[0]",
       "tag": "div",
       "fullText": "Recoverable · Proton Drive",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 458,
         "h": 13
@@ -1037,6 +1175,9 @@
     {
       "key": "div[1]/div[1]/div[1]/div[0]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 8,
         "h": 8
@@ -1095,6 +1236,9 @@
       "key": "div[1]/div[1]/div[1]/div[2]",
       "tag": "div",
       "fullText": "archive/old-notes.md4 KBYou deleted this on this computer. Deleting it on Proton moves it to Proton Drive's Trash, where you can still get it back.deleted here 6m agolast edited Jan 2026Move to Proton's TrashKeep it — bring it back to this computer",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 458,
         "h": 252.59
@@ -1135,6 +1279,13 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[0]",
       "tag": "div",
       "fullText": "archive/old-notes.md4 KB",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 416,
         "h": 20
@@ -1160,6 +1311,13 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[0]/span[0]",
       "tag": "span",
       "text": "archive/old-notes.md",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 163.45,
         "h": 20
@@ -1251,6 +1409,12 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[2]",
       "tag": "div",
       "fullText": "deleted here 6m agolast edited Jan 2026",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 416,
         "h": 28
@@ -1323,6 +1487,13 @@
       "key": "div[1]/div[1]/div[1]/div[2]/div[3]",
       "tag": "div",
       "fullText": "Move to Proton's Trash",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 416,
         "h": 38
@@ -1430,6 +1601,13 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Deletions stay here until you decide. Nothing expires.Keep both files",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 47
@@ -1456,6 +1634,13 @@
       "key": "div[2]/div",
       "tag": "div",
       "fullText": "Deletions stay here until you decide. Nothing expires.Keep both files",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 976,
         "h": 33
@@ -1502,6 +1687,13 @@
     {
       "key": "div[2]/div/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 544.02,
         "h": 0
@@ -1565,6 +1757,13 @@
       "key": "div[3]",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1040,
         "h": 50
@@ -1591,6 +1790,12 @@
       "key": "div[3]/div",
       "tag": "div",
       "fullText": "ActivityPlan a syncSettingsDetails",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 960,
         "h": 32

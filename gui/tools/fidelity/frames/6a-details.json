@@ -9,6 +9,9 @@
       "tag": "div",
       "fullText": "Details✕pending_changes0conflicts3destructive_actions1skipped_unsupported1scan_interval300sevent_streamonsourcestatus_historysocketconnectedCopy allOpen the system log",
       "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 522,
         "h": 462
@@ -48,6 +51,13 @@
       "tag": "div",
       "fullText": "Details✕",
       "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 520,
         "h": 46
@@ -77,6 +87,13 @@
       "key": "div[0]/div",
       "tag": "div",
       "text": "Details",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 440,
         "h": 20
@@ -140,6 +157,13 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "pending_changes0conflicts3destructive_actions1skipped_unsupported1scan_interval300sevent_streamonsourcestatus_historysocketconnected",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 520,
         "h": 338
@@ -168,6 +192,12 @@
       "key": "div[1]/div[0]",
       "tag": "div",
       "fullText": "pending_changes0",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 476,
         "h": 32
@@ -242,6 +272,12 @@
       "key": "div[1]/div[1]",
       "tag": "div",
       "fullText": "conflicts3",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 476,
         "h": 32
@@ -316,6 +352,12 @@
       "key": "div[1]/div[2]",
       "tag": "div",
       "fullText": "destructive_actions1",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 476,
         "h": 32
@@ -390,6 +432,12 @@
       "key": "div[1]/div[3]",
       "tag": "div",
       "fullText": "skipped_unsupported1",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 476,
         "h": 32
@@ -464,6 +512,12 @@
       "key": "div[1]/div[4]",
       "tag": "div",
       "fullText": "scan_interval300s",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 476,
         "h": 32
@@ -538,6 +592,12 @@
       "key": "div[1]/div[5]",
       "tag": "div",
       "fullText": "event_streamon",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 476,
         "h": 32
@@ -612,6 +672,12 @@
       "key": "div[1]/div[6]",
       "tag": "div",
       "fullText": "sourcestatus_history",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 476,
         "h": 32
@@ -686,6 +752,12 @@
       "key": "div[1]/div[7]",
       "tag": "div",
       "fullText": "socketconnected",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 476,
         "h": 32
@@ -760,6 +832,12 @@
       "key": "div[2]",
       "tag": "div",
       "fullText": "Copy allOpen the system log",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 520,
         "h": 64

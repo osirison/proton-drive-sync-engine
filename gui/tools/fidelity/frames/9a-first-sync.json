@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "This computerProton Drive312Bringing everything together159 of 471 done · about 17 minutes left44 sent115 receivedYou can close this window — it keeps going in the background.nothing deleted · 2 conflicts kept as copiesPause",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 602,
         "h": 542
@@ -46,6 +49,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "This computerProton Drive312Bringing everything together159 of 471 done · about 17 minutes left44 sent115 receivedYou can close this window — it keeps going in the background.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 600,
         "h": 477
@@ -80,6 +90,13 @@
     {
       "key": "div[0]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 1,
         "h": 327
@@ -164,6 +181,13 @@
       "key": "div[0]/svg",
       "tag": "svg",
       "fullText": "312",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 116,
         "h": 116
@@ -194,6 +218,13 @@
     {
       "key": "div[0]/svg/defs",
       "tag": "defs",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -216,6 +247,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[0]",
       "tag": "lineargradient",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -244,6 +282,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[0]/stop[0]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -270,6 +315,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[0]/stop[1]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -296,6 +348,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[1]",
       "tag": "lineargradient",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -324,6 +383,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[1]/stop[0]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -350,6 +416,13 @@
     {
       "key": "div[0]/svg/defs/lineargradient[1]/stop[1]",
       "tag": "stop",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 0,
         "h": 0
@@ -376,6 +449,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 83.33,
         "h": 97.83
@@ -405,6 +485,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 83.33,
         "h": 97.83
@@ -440,6 +527,13 @@
     {
       "key": "div[0]/svg/path[2]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 83.33,
         "h": 97.83
@@ -477,6 +571,13 @@
       "key": "div[0]/svg/text",
       "tag": "text",
       "text": "312",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 34.8,
         "h": 25
@@ -504,6 +605,13 @@
       "key": "div[0]/div[3]",
       "tag": "div",
       "text": "Bringing everything together",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 316.84,
         "h": 27
@@ -568,6 +676,13 @@
       "key": "div[0]/div[5]",
       "tag": "div",
       "fullText": "44 sent115 received",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 400,
         "h": 26
@@ -595,6 +710,13 @@
     {
       "key": "div[0]/div[5]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 400,
         "h": 3
@@ -623,6 +745,13 @@
     {
       "key": "div[0]/div[5]/div[0]/div[0]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 48,
         "h": 3
@@ -645,6 +774,13 @@
     {
       "key": "div[0]/div[5]/div[0]/div[1]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 88,
         "h": 3
@@ -668,6 +804,13 @@
       "key": "div[0]/div[5]/div[1]",
       "tag": "div",
       "fullText": "44 sent115 received",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 400,
         "h": 14
@@ -770,6 +913,12 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "nothing deleted · 2 conflicts kept as copiesPause",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 600,
         "h": 63
@@ -823,6 +972,13 @@
     {
       "key": "div[1]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 174.55,
         "h": 0

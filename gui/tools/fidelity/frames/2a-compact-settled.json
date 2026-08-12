@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "Up to date2 minutes ago12,480 filesPauseOpen",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 362,
         "h": 227
@@ -44,6 +47,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Up to date2 minutes ago",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 178
@@ -72,6 +82,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 72,
         "h": 72
@@ -97,6 +114,13 @@
     {
       "key": "div[0]/svg/path[0]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 51.72,
         "h": 60.72
@@ -126,6 +150,13 @@
     {
       "key": "div[0]/svg/path[1]",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 13.8,
         "h": 9.6
@@ -157,6 +188,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Up to date",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 81.78,
         "h": 20
@@ -203,6 +241,12 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "12,480 filesPauseOpen",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 47
@@ -255,6 +299,13 @@
     {
       "key": "div[1]/span[1]",
       "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 100.77,
         "h": 0

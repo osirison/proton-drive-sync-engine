@@ -8,6 +8,9 @@
       "key": "",
       "tag": "div",
       "fullText": "Paused7 changes have piled up since 13:20. Nothing will move until you resume.Resume syncingOpen Drive SyncQuitstops syncing",
+      "fromPage": [
+        "color"
+      ],
       "box": {
         "w": 362,
         "h": 321.5
@@ -44,6 +47,13 @@
       "key": "div[0]",
       "tag": "div",
       "fullText": "Paused7 changes have piled up since 13:20. Nothing will move until you resume.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 196.5
@@ -72,6 +82,13 @@
     {
       "key": "div[0]/svg",
       "tag": "svg",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 72,
         "h": 72
@@ -98,6 +115,13 @@
     {
       "key": "div[0]/svg/path",
       "tag": "path",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 51.72,
         "h": 60.72
@@ -128,6 +152,13 @@
     {
       "key": "div[0]/svg/rect[0]",
       "tag": "rect",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 3.3,
         "h": 13.2
@@ -158,6 +189,13 @@
     {
       "key": "div[0]/svg/rect[1]",
       "tag": "rect",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 3.3,
         "h": 13.2
@@ -189,6 +227,13 @@
       "key": "div[0]/div[0]",
       "tag": "div",
       "text": "Paused",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 59.25,
         "h": 20
@@ -235,6 +280,12 @@
       "key": "div[1]",
       "tag": "div",
       "fullText": "Resume syncingOpen Drive SyncQuitstops syncing",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 360,
         "h": 123
@@ -323,6 +374,13 @@
     {
       "key": "div[1]/div[2]",
       "tag": "div",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
       "box": {
         "w": 328,
         "h": 1

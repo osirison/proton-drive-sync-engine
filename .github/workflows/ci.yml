@@ -119,7 +119,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       # The style and fit gates against every frame the app maps, then the copy gate over all 224
-      # drawn strings in ui/copy.js. See gui/tools/fidelity/README.md for what they cannot cover.
+      # drawn strings in ui/copy.js, then the contrast gate — which reads every text node in BOTH
+      # themes, because the seven screens with no drawn light frame have no other check (S10).
+      # See gui/tools/fidelity/README.md for what all of them cannot cover.
       - name: Fidelity
         run: npm run fidelity
       # The fixtures are checked in so a prototype change is a reviewable diff. If regenerating them
