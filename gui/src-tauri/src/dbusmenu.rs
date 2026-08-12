@@ -50,6 +50,12 @@
 //! when they are a rule. Properties a row leaves out take their documented defaults (`enabled` and
 //! `visible` are both true), which is what the specimen relies on too.
 //!
+//! To repeat the measurement: **neither `busctl` nor `gdbus` can send that call**, because both
+//! parse the `-1` recursion depth as one of their own options (`busctl: invalid option -- '1'`). A
+//! four-line Python caller through `Gio.DBusConnection.call_sync` with a `(iias)` variant does it.
+//! And `strings` on `libdbusmenu-glib.so.4` prints the whole interface XML, argument names included
+//! — which is where the two mistakes in the first draft of this file were eventually found.
+//!
 //! # What the consumer does, and the two choices that follow from it
 //!
 //! Plasma's importer is `libdbusmenuqt`'s `DBusMenuImporter`. It calls `GetLayout(id, 1, [])` — one
