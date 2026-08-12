@@ -750,7 +750,7 @@ export const SETTINGS = {
   fullSweep: "Full sweep now",
   fullSweepNote:
     "Takes about 4 minutes; syncing keeps working. Last one 2 days ago — nothing was out of step.",
-  // Both dropped clauses are G18 (#238): no per-pass duration exists anywhere, and `status_history`
+  // Both dropped clauses are G24 (#238): no per-pass duration exists anywhere, and `status_history`
   // does not record which past pass was a full sweep — so `Takes about 4 minutes` and `Last one 2
   // days ago` have no source and no near neighbour. What survives is what is true every time.
   fullSweepNoteUnknown: "Compares every file on both sides. Syncing keeps working while it runs.",
@@ -821,7 +821,7 @@ export const SETTINGS = {
   refusedCreate: "Create it on Proton Drive",
   // The refusal Phase 1 can actually produce. `write_config` refuses on `ConfigDoc::validate` — a
   // serde/TOML check against `FileConfig` that never contacts Proton Drive — so it cannot know a
-  // remote folder is missing and cannot say so (G16, #236). The title therefore names what IS known
+  // remote folder is missing and cannot say so (G22, #236). The title therefore names what IS known
   // (the save did not happen) and the body keeps the sentence `08-settings.md` calls the important
   // one, which is true of every refusal whatever caused it.
   refusedTitleUnknown: "That change wasn't saved",
@@ -844,7 +844,7 @@ export const SETTINGS = {
 
   // ------------------------------------------------------------------- Advanced (not drawn) ----
   // `08-settings.md` names six things this tab holds and does not draw it. Four of the six have no
-  // key and no command (G17, #237); these are the two that round-trip through `ConfigUpdate`, plus
+  // key and no command (G23, #237); these are the two that round-trip through `ConfigUpdate`, plus
   // the file itself, which is not a setting but is the answer to "where did this go".
   includeTitle: "Only sync these",
   includeSub:

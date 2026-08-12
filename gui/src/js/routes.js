@@ -93,7 +93,7 @@ export const ROUTES = {
   // `8a Save refused` — the daemon would not take the config, and nothing was written. Like
   // `filePending` it draws no title row and carries its padding on the surface itself, which is why
   // it too comes out at exactly 600 where the two dialogs with a head gain 2px (§48a). Its height
-  // is content-sized: Phase 1 draws one line of body where the frame draws two (G16 #236).
+  // is content-sized: Phase 1 draws one line of body where the frame draws two (G22 #236).
   //
   // `closable:false` here means what it means on `saveRefused` alone: a ✕ would be a third answer
   // to a two-way choice. Esc still closes it, through F4's chain.

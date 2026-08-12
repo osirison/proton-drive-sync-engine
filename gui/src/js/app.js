@@ -1831,7 +1831,7 @@ async function ensureSkipRules() {
  * query `spec.md` resolving to `docs/spec.md`, which is a name-to-path SEARCH, and no Phase-1
  * command lists or searches local files — `path_sync_status` opens the index at the path it is
  * given and nothing else. So a bare name that is not at the root MISSES, and the deck's own
- * `No file by that name in your sync folder.` is the honest answer rather than a failure. G17.
+ * `No file by that name in your sync folder.` is the honest answer rather than a failure. G21.
  *
  * The consequence for the drawn `1 match`: the count is only ever 0 or 1 here, so the plural arm of
  * `ACTIVITY.matches` is unreachable until that gap closes.

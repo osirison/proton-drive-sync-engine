@@ -11,13 +11,13 @@
 //
 //   · the twenty-bar duration chart — NO per-pass duration exists anywhere. `StatusHistoryEntry` is
 //     {epoch_secs, message, last_error, plan_summary, successful_sync_summary}; the sidecars carry
-//     no timing either. The whole card is omitted (G12).
+//     no timing either. The whole card is omitted (G16).
 //   · `12,480 files · 41.2 GB` on both seam sides — no index-wide count (G7 #207). The numeral row
 //     is omitted and the eyebrow keeps its sub-line, which IS sourced.
 //   · `next full check in 4m` — counts down to a full-scan schedule that does not exist (G4 #193).
 //     Deliberately NOT derived from `scan_interval`: `6a Details` draws that as 300s in the same
 //     fixture, so the two would contradict each other and one of them would be false.
-//   · the `Last things to move` rows — `status_history` is per-pass and carries no paths (G13).
+//   · the `Last things to move` rows — `status_history` is per-pass and carries no paths (G17).
 //     The block's rows and head go; its footer row stays, because the way to the other tab is in it.
 //   · `This file's history` — per-path history (G1 #190), and `07-activity.md` itself prescribes
 //     omitting it. The `linked · id` line survives: `proton_id` is on the reply today.
@@ -25,10 +25,10 @@
 //     has `bytes_total` and never `bytes_done`; a download has `bytes_done` and never `bytes_total`
 //     (`daemon.rs`, `ipc.rs`). §63's rule applies: no track at all, never a bar reading zero.
 //   · `Open folder` · `Open on Proton Drive` · `Open the system log` — no opener command exists and
-//     no opener plugin is a dependency (G14). Omitted rather than painted dead: a live-looking
+//     no opener plugin is a dependency (G18). Omitted rather than painted dead: a live-looking
 //     button that does nothing is the trap this project has already recorded twice (#224, #227).
 //   · the never-synced `Can't be synced` group — a socket or a symlink never enters the index at
-//     all, so there is nothing to enumerate (G15). Its GROUP goes; the rule-matched group stays,
+//     all, so there is nothing to enumerate (G19). Its GROUP goes; the rule-matched group stays,
 //     and is the one block on this screen that a Phase-1 command gained rather than lost.
 //
 // THE ONE BLOCK THAT GOT A SOURCE. `skip_rule_usage` (C2) walks the local tree and reports, per
@@ -497,7 +497,7 @@ function lookupCard(which, { size, root, relative, meta }) {
       sizeSpan,
       // `edited HH:MM` only on the LOCAL side. `EmblemStatus.mtime` is `record.mtime`, the local
       // modification time; the reply carries no remote-side timestamp at all, so the frame's
-      // `received 14:32` has nothing behind it (G16) and the clause is omitted rather than
+      // `received 14:32` has nothing behind it (G20) and the clause is omitted rather than
       // filled with the local time wearing a remote label.
       meta ? el("span", {}, meta) : null,
     ),
@@ -791,7 +791,7 @@ function passesTab(props) {
   // per-pass duration exists on the socket, in either sidecar, or anywhere in the engine's types —
   // there is nothing to degrade gracefully from. Drawing bars from any other number (a plan's
   // action count, say) would put a chart captioned `how long each took` over data about something
-  // else entirely. G12.
+  // else entirely. G16.
 
   // NEWEST FIRST, which is the opposite of the wire. `6a Activity passes` draws 14:32 at the top
   // and 12:30 at the bottom; `status_history` arrives oldest-first. Reversed on a copy — the array
@@ -808,7 +808,7 @@ function passesTab(props) {
       { class: "activity-passes-foot" },
       fid(el("span", { class: "activity-retention" }, ACTIVITY.passes.retention), "retention"),
       el("span", { class: "activity-spacer" }),
-      // `Open the system log` omitted with the other two openers — G14.
+      // `Open the system log` omitted with the other two openers — G18.
     ),
     "passesFoot",
   );
@@ -834,7 +834,7 @@ export function renderActivity(props) {
  *
  * ONE GROUP, NOT TWO. `Can't be synced` (a socket, a symlink) has no source in Phase 1 and cannot
  * acquire one by looking harder: those entries never enter the index, and `skip_rule_usage` reports
- * what the exclude rules matched, which is a different question. G15.
+ * what the exclude rules matched, which is a different question. G19.
  */
 export function renderNeverSyncedBody(props) {
   const never = props.never;
@@ -955,7 +955,7 @@ export function renderDetailsBody(props) {
         children: [
           // `Copy all` stays. It needs no command — the clipboard is the webview's own — so it is
           // the one footer control on this screen not gated on a gap. `Open the system log` goes
-          // with the other two openers (G14).
+          // with the other two openers (G18).
           fid(
             smallSecondary(ACTIVITY.copyAll, () => copyDetails(rows), { padding: "8px 14px" }),
             "copyAll",
@@ -1028,7 +1028,7 @@ export function renderFilePendingBody(props) {
         { class: "activity-pending-foot" },
         fid(el("span", { class: "activity-pending-note" }, ACTIVITY.lookup.onlyLocal), "pendingNote"),
         el("span", { class: "activity-spacer" }),
-        // `Open folder` omitted — G14.
+        // `Open folder` omitted — G18.
       ),
       "pendingFoot",
     ),
