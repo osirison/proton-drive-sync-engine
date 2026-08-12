@@ -110,9 +110,9 @@ let mapped = 0;
  * the frame's — `{ [label]: count }`. DEVIATIONS.md §58b; `fromPage` in extract.mjs argues which
  * properties qualify and why the list is five long rather than "everything inherited".
  *
- * COUNTED AND PRINTED rather than silently skipped. This is a gate that stops comparing 1,400-odd
- * values on the theme with the least drawn ground truth, and a reader who cannot see that number
- * cannot judge what "0 failures" on a `12a` frame is worth.
+ * COUNTED AND PRINTED rather than silently skipped. This is a gate that stops comparing 628 values
+ * on the theme with the least drawn ground truth, and a reader who cannot see that number cannot
+ * judge what "0 failures" on a `12a` frame is worth.
  */
 const pageColourSkips = {};
 const unmappedFrames = [];
@@ -364,15 +364,16 @@ for (const entry of index) {
   // folded into a truncated `…` list. (It was 806 when #247 wrote this down.) That frame is the one
   // this mechanism exists for.
   //
-  // Costs nothing today: all 15 unmapped frames are screens with no `fids` map at all, so they
-  // declare nothing and produce no observations. It is the frame that HAS a mapping and stamps
-  // none of it that this now catches.
+  // Since S10 there are no unmapped frames left to cost anything: all 51 carry a `fids` map. The
+  // clause it replaces was "all 15 unmapped frames are screens with no `fids` map at all, so they
+  // declare nothing and produce no observations", and it stops being the reassurance it was — every
+  // frame now declares slots, so every frame can now report one unstamped.
+  const stampedKeys = new Set(seen.map((s) => s.key));
   // RESOLVED, not the raw registry entry. A light twin's mapping is its dark twin's (S10), so
   // reading `FIXTURES[label].fids` here found `undefined` on all seven `12a` frames and iterated
   // nothing — which is this gate's own failure mode, one level up: the frames were mapped, compared
   // and green, and the blocks they render nothing for were invisible. Caught by asking why
   // `12a Syncing light` reported none of the two #98 slots its twin reports.
-  const stampedKeys = new Set(seen.map((s) => s.key));
   const declaredFids = resolveFixture(frame.label)?.fids ?? {};
   for (const [slot, value] of Object.entries(declaredFids)) {
     for (const key of typeof value === "string" ? [value] : probeSlot(value)) {
@@ -390,7 +391,7 @@ for (const entry of index) {
     // A failure in its own right rather than left to the slot check, and it stays that way now that
     // the slot check covers factories too: a mapping whose every key sits past `PROBE_DEPTH`, or
     // behind a non-numeric argument, would stamp nothing and report nothing. Zero frames are in that
-    // state — all 36 with a `fids` map stamp something — so this costs nothing and states the case
+    // state — all 51 with a `fids` map stamp something — so this costs nothing and states the case
     // the probe cannot.
     if (Object.keys(declaredFids).length) blankFrames.push(frame.label);
     else unmappedFrames.push(frame.label);

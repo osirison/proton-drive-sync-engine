@@ -125,10 +125,20 @@ const READ_NODES = function nodesOfDocument() {
   const out = [];
   const root = document.getElementById("app-root");
   if (!root) return out;
-  // The canvas the whole window is painted on. Everything composites down to this in the end, and
-  // it is the one surface that is opaque by construction in both themes.
-  const base = parse(getComputedStyle(document.documentElement).backgroundColor) ??
-    parse(getComputedStyle(document.body).backgroundColor) ?? { r: 0, g: 0, b: 0, a: 1 };
+  // The canvas the whole window is painted on — the FIRST OPAQUE one of `<html>` and `<body>`, and
+  // null if neither is.
+  //
+  // Not `?? body ?? black`, which is what this was and which is wrong in a way that matters here:
+  // `base.css` puts `background: var(--surface)` on `body` and nothing on `html`, so
+  // `getComputedStyle(html).backgroundColor` is `rgba(0, 0, 0, 0)` — a value `parse` returns happily
+  // and `??` therefore accepts. Every ratio would then have been measured against transparent black.
+  // It never fired, because the ancestor walk reaches `body` and stops there; it would have fired the
+  // first time a screen was measured outside one. A tool whose fallback is wrong only while it is
+  // unreachable is the same shape as the compositing bug above, and it is not worth keeping.
+  const opaque = (c) => (c && c.a >= 1 ? c : null);
+  const base =
+    opaque(parse(getComputedStyle(document.documentElement).backgroundColor)) ??
+    opaque(parse(getComputedStyle(document.body).backgroundColor));
 
   for (const el of [root, ...root.querySelectorAll("*")]) {
     // Own text only. A wrapper's `textContent` is its children's, and reading it here would compare
@@ -177,9 +187,22 @@ const READ_NODES = function nodesOfDocument() {
       out.push({ image: true });
       continue;
     }
+    // NOTHING OPAQUE ANYWHERE ABOVE IT. Reported and counted rather than guessed at, exactly as a
+    // background image is: there is no colour behind this text that the tool can name, and inventing
+    // one is how the first version reported 1.00:1 on a button that was fine.
+    if ((bg == null || bg.a < 1) && base == null) {
+      out.push({ unresolved: true });
+      continue;
+    }
     bg = bg == null ? base : bg.a >= 1 ? bg : over(bg, base);
     // The opacity chain applies to the text as painted, so fold it into the foreground before
     // compositing. `--app-mark-quiet` is .65/.75 and is exactly this case.
+    //
+    // The chain stops where the background does, which is an approximation and a deliberate one: an
+    // ancestor with opacity ABOVE the first opaque layer fades the text and that layer together, so
+    // most of the effect cancels. Nothing in this design has one — the only two `opacity` users are
+    // the header mark and the settled glow — so it is a limit rather than an error, and it would
+    // want measuring the first time a screen fades a whole panel.
     const painted = over({ ...fg, a: fg.a * alpha }, bg);
     out.push({
       // `getAttribute`, not `className`: on an SVG element `className` is an `SVGAnimatedString`
@@ -198,6 +221,7 @@ const findings = [];
 const report = [];
 let compared = 0;
 let skippedImage = 0;
+let unresolved = 0;
 
 for (const label of labels) {
   const seen = {};
@@ -250,6 +274,10 @@ for (const label of labels) {
       skippedImage++;
       continue;
     }
+    if (d.unresolved || l.unresolved) {
+      unresolved++;
+      continue;
+    }
     const rgb = ([r, g, b]) => ({ r, g, b });
     const dark = contrast(rgb(d.fg), rgb(d.bg));
     const light = contrast(rgb(l.fg), rgb(l.bg));
@@ -296,7 +324,8 @@ if (process.argv.includes("--report")) {
 
 console.log(
   `fidelity:contrast — ${compared} text nodes across ${labels.length} frames read in both themes, ` +
-    `${skippedImage} over a gradient (no single colour to compare), ${findings.length} failures`,
+    `${skippedImage} over a gradient and ${unresolved} over nothing opaque (no single colour to ` +
+    `compare), ${findings.length} failures`,
 );
 
 if (findings.length) {
