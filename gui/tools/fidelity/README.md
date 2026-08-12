@@ -14,7 +14,7 @@ npm run fidelity:fixtures   # the fixture registry gate                         
 | Gate                              | Compares                                                                        | Runs today?                      |
 | --------------------------------- | ------------------------------------------------------------------------------- | -------------------------------- |
 | **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid` |
-| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, all 838 slots               |
+| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot         |
 | **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                              |
 | **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames        |
 | **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, all 221 + 9 templates       |
@@ -113,7 +113,8 @@ calls it over a 10³ index grid and keeps the keys the frame draws. That is stri
 and one axis reaches only row 0 of each side. Measured — the grid finds 39 drawn-but-unstamped slots
 where one axis finds 33, and all six extra are further rows of clusters the one axis already found.
 
-Leaving factories out was not free. 218 of 838 slots are factories, and a factory slot is by
+Leaving factories out was not free. 218 of the 838 slots declared when this was measured (S8) are
+factories, and a factory slot is by
 definition a repeated block — a row, a card, a fact, a path — which is exactly what a screen renders
 none of. It was also why #247 did not catch the case it was built for: the compact panel declares
 `transferTrack`/`transferFill` as factories, so S8 wiring the tray panel to `SyncActivity` passed it

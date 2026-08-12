@@ -323,7 +323,8 @@ for (const entry of index) {
   // FACTORY SLOTS TOO, which is the half #247 shipped without and #248 closed. A factory slot
   // (`row: (i) => …`) resolves to a different key per call, so it cannot be read off the map the way
   // a static one can — it has to be PROBED, and `probeSlot` argues the grid it probes over and the
-  // two things that grid still cannot reach. Leaving them out was not free: 218 of 838 slots are
+  // two things that grid still cannot reach. Leaving them out was not free: 218 of the 838 slots
+  // declared when this was measured (S8) are
   // factories, and a factory slot is by definition a repeated block — a row, a card, a fact, a path
   // — which is exactly the kind of thing a screen renders none of. It was also why #247 did not
   // catch the case it was built for: the compact panel declares `transferTrack`/`transferFill` as

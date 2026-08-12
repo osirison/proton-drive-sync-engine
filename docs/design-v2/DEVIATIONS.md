@@ -3541,3 +3541,163 @@ Every one of these compiles, renders, and passes every gate in the build.
    focus straight back, and the resulting `Focused(false)` was indistinguishable from the user
    clicking away — so the panel showed and hid in the same breath, looking exactly like a panel that
    never opened.
+
+## Notifications (S9)
+
+## 83. Two of the five `11a` frames are a Settings tab, and it is a tab the frames do not draw
+
+`11-notifications.md` specifies a settings surface and gives it no home. `08-settings.md` enumerates
+four pills — Folders · What to skip · Deletions · Advanced — and no frame draws a fifth, so this had
+to be decided rather than read. Four pieces of evidence, all pointing one way:
+
+- the prototype's own caption above the frame reads **"the settings tab — three choices, not twelve
+  switches"**;
+- `14-behaviour-and-state.md`'s fallback table names the section **Notifications** (*"Hide the
+  section; default to the four events"*);
+- the first card's body is `The four events on the left`, which is a claim about a layout with the
+  rules sheet beside it;
+- and `11a Settings` is drawn with the **identical chrome** `8a Deletions tab` puts around its crop
+  — `#0A0B0D` on a 1px `#1A1D22`, radius 12, padding 24/26, `0 24px 60px rgba(0,0,0,.6)`. That frame
+  is a known 600px re-render of a tab inside the 1040 window, and this one is the same object at 520.
+
+So both are **crops** (`frame-classes.mjs` moved them out of the `notification` class F9 put them in,
+which F9's own note says was a placeholder for "nothing had yet decided where they live"), and the
+pill row gains a fifth tab. It sits **fourth**, before Advanced: Advanced is the technical drawer and
+`08-settings.md` puts the dangerous things behind it, and a plain-language preference in front of it
+is the product order.
+
+**It costs the gate nothing.** The drawn pill row is 1040 wide and left-aligned, so a fifth pill
+moves none of the four boxes `8a Settings` and `8a Skip rules` assert. What it did cost was the
+mapping: `tab` was keyed by POSITION, so the new pill was compared against `Advanced` and reported a
+width difference between two different words. `settingsFids`' `tab` is keyed by tab **id** now and
+answers `undefined` for a tab no frame draws — and `fid()` learned to read that as "no node here"
+rather than stamping `…:undefined`, which fails as "no such node key" and reads like a stale mapping.
+
+`NOTIFY.settings.tab` is the one S9 string in `copy-gate.mjs`'s `NOT_DRAWN`, with that reason.
+
+### 83a. The tab is 210px taller than the window, and no gate could have said so
+
+`11a Rules` is 633px tall at the 600px it is drawn. The fit gate runs on `window`-class frames alone,
+both halves of this tab are crops, and **nothing in the harness renders the tab at 1040×764** — so it
+was measured by hand: the window came out **974px against 764**, with the reference sheet running
+straight through the footer. `02-shell.md` calls that "a real bug found twice during this design".
+
+The rules panel scrolls inside a wrapper, which is `.settings-rules-scroll`'s shape one screen over:
+the panel's own box is what `11a Rules` describes, and an `overflow` declared on it would put a
+property of the app's layout on the node the gate compares.
+
+**The general form, for S10 and anything after it:** a crop is rendered inside a window and the fit
+gate does not know that. Four frames are crops today and two of them (`8a Deletions tab`,
+`8a Schedule monthly`) are short enough that it has never mattered.
+
+## 84. `tauri-plugin-notification` cannot express either half of this design
+
+The plugin was a dependency from v1 and `commands::notify` — title and body, no caller anywhere in
+the frontend — was the whole of the notification surface. Two properties `11-notifications.md`
+requires are unreachable through it, and both are in its source rather than in a changelog:
+
+- **Action buttons.** `desktop.rs` builds a `notify_rust::Notification` from a title, a body and an
+  icon and never calls `.action()`. `Keep them` / `Review`, `Compare` / `Later` and the outage pair
+  are the spec; *"the absence of a Delete button is a deliberate safety property, not an omission"*
+  (IMPLEMENTATION-PLAN §6) is the rest of it.
+- **`replaces_id`.** "Never stack more than one Drive Sync banner" is that argument on the wire, and
+  the plugin does not expose it.
+
+So `src/notify.rs` speaks `org.freedesktop.Notifications` over the zbus connection S8 already added,
+and the plugin (with its `notification:default` capability grant) is removed. The risk §6 flags —
+*"the notification server may not support actions"* — was **measured before any of it was written**:
+`GetCapabilities` on this project's session answers `actions`, `persistence`, `inline-reply` and
+more, against `GetServerInformation` `("Plasma", "KDE", "6.7.4", "1.2")`. A server that does not
+advertise `actions` still gets the banner and is logged once, at connect; the sentence is the part
+that matters and both actions are reachable in the window anyway.
+
+**`replaces_id` is tracked, not assumed.** Passing a stale id to a server that has forgotten it is
+server-defined behaviour, and most create a new banner — which is the stacking it exists to prevent.
+A `NotificationClosed` for our id clears it and the next banner is a fresh one. `ActionInvoked` is
+broadcast to every listener on the bus, so the id is matched against ours before anything runs;
+without that, clicking `Discard` in another application's banner would fire one of ours.
+
+## 85. The triggers are in the webview, and the copy is the reason
+
+`10-tray.md`'s poll is in Rust and this is not, which is worth stating because the reverse looks
+safer. The four triggers produce SENTENCES, and IMPLEMENTATION-PLAN §3.4 puts every sentence in one
+module *"so a string can't drift between the screen, the tray and the notification"* — `copy-gate.mjs`
+checks that module against the frames, and a second copy in Rust would be outside every gate in the
+build. `notifier.js` is pure and `ui/notification.js` builds the banner; `notify.rs` carries no
+user-visible text at all, not even the app name.
+
+The window is **hidden, not closed** (`lib.rs`'s `CloseRequested` arm calls `window.hide()`), so the
+poll behind this survives the tray. Its cadence drops from 2s to 10s when unfocused, which is well
+inside every threshold here — the shortest is a 30-second coalescing window.
+
+### 85a. Two rules the design states and one it does not
+
+- **Coalescing is a rate, not a delay.** *"Coalesce within a 30-second window"* read as "hold the
+  first event for 30 seconds" would hold the permanent-deletion warning for half a minute, and that
+  banner's whole justification is that silence costs files. So the first is immediate, anything
+  behind it inside the window **replaces** it rather than adding one, and the replacement is
+  `replaces_id` — which is also "never stack more than one".
+- **A more serious event jumps the window.** Waiting 25 seconds to say that files are about to be
+  deleted, because a conflict banner went up five seconds ago, is the wrong way round. Severity is
+  deletion > outage > conflict > first sync, and only a strictly higher one preempts.
+- **The first-sync banner needs a witness.** `last_sync_epoch_secs` is set on *every* successful pass
+  and says nothing about which one was the first, so installing the GUI on a machine that has been
+  syncing for a year would announce `Both sides now match` as though the wait had just ended. It
+  fires only where this install actually watched the transition — and an unreachable daemon is not a
+  witness that nothing has ever synced, because it is not an answer at all.
+
+### 85b. The outage banner does not blame the session when the session is not the cause
+
+`11a Outage`'s body is `Proton Drive is asking you to sign in again. 61 changes are waiting — nothing
+is lost.` and the doc gives the trigger three causes: *"an outage, expired session, or full disk"*.
+Saying the first about the third would be a false statement in the banner whose whole job is to be
+believed, so the other two causes take the deck's own unreachable sentence
+(`TRAY.unreachableBody`) — already drawn in `10a Offline`, already gated, and it opens with the
+reassurance the same way.
+
+**`Sign in` is not built and the button says `Try again now`.** §67a settled this for the main
+screen's hero and nothing has changed: no command signs in, because the daemon reuses the
+`proton-drive` CLI's keyring session.
+
+**`Keep them` carries S3's caveat.** It sends what `Keep both files` sends, and #224 is unchanged —
+`deny` revokes an approval and nothing on the wire refuses a withheld deletion durably. What it does
+do is true: a withheld deletion is not applied, so the files stay.
+
+## 86. `notify_policy` is GUI-local, and that is what makes "Never" safe
+
+The daemon parses its config with `#[serde(deny_unknown_fields)]` on `FileConfig` *and* its nested
+tables, so one key it does not know makes it **fail to start**. `notify_policy` therefore lives in
+the GUI's own `gui.toml` beside `proton-sync.toml`, never inside it.
+
+That is not only a storage decision. `11-notifications.md`: *"'Never' must not change engine
+behaviour — deletions still wait for approval. Turning off notifications is not consent."* With the
+key in a file the daemon never reads, the property holds by construction rather than by care.
+
+A missing, unreadable, unparseable or unknown value reads back as `only_when_needed` — **fail loud,
+not quiet**: the failure that matters is a broken file silently meaning `never`, which would drop the
+one banner that can save someone's files. A *write* refuses an unknown token instead, because a write
+is a person choosing and storing something else would be the screen answering a question nobody
+asked.
+
+## 87. What the frames draw that Phase 1 cannot
+
+| frame           | drawn                                       | Phase 1 draws                | closed by |
+| --------------- | ------------------------------------------- | ---------------------------- | --------- |
+| `11a In situ` 1 | `1,204 photos would be deleted…`            | the queue's own length + noun | G8 #208   |
+| `11a In situ` 3 | `First sync finished — 12,480 files, 41.2 GB` | the sentence without the clause | G7 #207   |
+| `11a Outage`    | `Sign in`                                   | `Try again now` (§67a)       | E6 #103   |
+
+Eight `known-deviations.mjs` rows, four nodes per cause: each sentence wraps to one line where the
+frame draws two, and the banner, its head, its text column and the sentence itself all measure it.
+
+**The noun is not cosmetic.** `PendingDeletion` carries an `entity_kind`, so a queue that agrees on
+one says `folder`/`folders` — a banner asking you to keep something it has misnamed is worse than
+one that cannot count what is inside it.
+
+## 88. One drawing slip, unmapped
+
+`11a In situ`'s FIRST banner is the only one of the five that puts `letter-spacing:.01em` on the app
+name; the other two in the same mock and both standalone banners draw `normal`. Four against one, at
+0.12px. The component draws `normal` and that one node carries no slot — the call `8a Settings`'
+`event_driven_reconcile` key line got, which is neither a mapped node nor a known-deviations row. The
+spacer beside it goes with it: it is `flex:1`, so its width is the app name's subtracted from the row.

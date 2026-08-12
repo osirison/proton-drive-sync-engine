@@ -19,10 +19,10 @@
 // `ui/chrome.js` import `fid` from HERE and `import-x/no-cycle` is an error.
 //
 // A DATASET IS NOT A MAPPING, and keeping the two apart is what makes the numbers honest. All 51
-// frames have a dataset; **11** carry a `fids` map, because a mapping needs a screen to exist and
-// S1–S10 have not built the other 40. `check-fixtures.mjs` gates the first count and `assert.mjs`
-// reports the second, so adding forty datasets cannot make the style gate look like it grew teeth
-// it did not grow. It did not move 11/51 by one frame.
+// frames have a dataset; **43** carry a `fids` map (11 when F9 wrote this line), because a mapping
+// needs a screen to exist and S10 has not built the other 8. `check-fixtures.mjs` gates the first
+// count and `assert.mjs` reports the second, so adding forty datasets cannot make the style gate
+// look like it grew teeth it did not grow. It did not move 11/51 by one frame.
 
 import { MAIN_FIXTURES } from "./main.js";
 import { CONFLICT_FIXTURES } from "./conflicts.js";
