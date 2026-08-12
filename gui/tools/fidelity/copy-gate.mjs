@@ -87,6 +87,16 @@ const NOT_DRAWN = new Map([
   // (voice rule 4).
   ["PLAN.failedTitle", "no frame draws a failed rehearsal — 14-behaviour-and-state.md specifies it in prose"],
   ["PLAN.failedSub", "no frame draws a failed rehearsal — 14-behaviour-and-state.md specifies it in prose"],
+  // S1's failed PASS — the sibling of the two above, and #246's own words for what would close it.
+  // The deck has one sentence for a daemon that cannot reach Proton (`TRAY.unreachableTitle`) and
+  // it is already spoken by a different state; a pass can fail with Proton perfectly reachable, so
+  // reusing it would put a claim in the headline that the quoted string underneath contradicts.
+  // The daemon's own message is not copy and never passes through here — voice rule 4.
+  //
+  // Its sub-line is NOT here: `MAIN.failedSub` is a template, `walk` never collects one, and an
+  // exemption for something the gate does not look at would subtract one from a denominator it was
+  // never in. The check below is what turned that from a guess into a build failure.
+  ["MAIN.failed", "no `2a` frame draws a pass that failed — the deck's error table gives the shape in prose"],
   // S4's empty plan — the safe variant with different words. No frame draws a rehearsal that found
   // nothing to do, and it is the likeliest state a user sees.
   [
@@ -409,6 +419,28 @@ for (const [path, args, label] of DRAWN) {
   drawnChecks.push([shown, fn(...args), label]);
 }
 
+// EVERY EXEMPTION MUST NAME A STRING THE GATE WOULD OTHERWISE CHECK, and the header explains why
+// this is worth a check of its own: `NOT_DRAWN` is a `continue` before the lookup, so a wrong entry
+// is never contradicted by anything. Two ways to be wrong, and both are silent — a path that no
+// longer exists (the string was renamed or deleted), and a path that names a TEMPLATE, which `walk`
+// never collects, so the exemption excuses nothing while still subtracting one from the total
+// printed below. Nearly shipped the second one with `MAIN.failedSub` (#246).
+const staleExemptions = [];
+const collected = new Set(strings.map(([path]) => path));
+for (const path of NOT_DRAWN.keys()) {
+  if (collected.has(path)) continue;
+  const value = at(path);
+  staleExemptions.push(
+    `${path} is ${
+      value === undefined
+        ? "not in the deck"
+        : typeof value === "function"
+          ? "a template — templates are not gated, so it needs no exemption"
+          : `a ${typeof value}, not a string`
+    }`,
+  );
+}
+
 const missing = [];
 const found = [];
 for (const [path, text] of strings) {
@@ -442,6 +474,14 @@ if (templateErrors.length) {
   for (const problem of templateErrors) console.error(`  ${problem}`);
 }
 
+if (staleExemptions.length) {
+  console.error("\nExemptions in NOT_DRAWN that excuse nothing:\n");
+  for (const problem of staleExemptions) console.error(`  ${problem}`);
+  console.error(
+    "\nAn exemption is a claim that a string exists and no frame draws it. Delete the entry, or fix the path.",
+  );
+}
+
 if (missing.length) {
   console.error("\nStrings in ui/copy.js that no in-scope frame contains:\n");
   for (const [path, text] of missing) {
@@ -459,4 +499,4 @@ if (missing.length) {
   console.error(`\nfidelity:copy: ${missing.length} string(s) do not match the frames.`);
 }
 
-if (missing.length || templateErrors.length) process.exit(1);
+if (missing.length || templateErrors.length || staleExemptions.length) process.exit(1);

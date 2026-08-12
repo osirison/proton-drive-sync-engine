@@ -198,9 +198,17 @@ export const isDialog = (id) => ROUTES[id]?.presentation === "dialog";
 // at which point the main screen (with its per-state actions) takes over.
 //
 // Release on ANY reachable state — `idle`/`running`/`paused` (setup succeeded) AND `authExpired`
-// (setup succeeded but Proton sign-in lapsed): onboarding can't fix expired auth, and its step-4
-// status line already promises a hand-off once the state moves past `firstRun`, so we must actually
-// hand off to the main screen's Re-authenticate action rather than trap the user in the wizard.
+// (setup succeeded but Proton sign-in lapsed) AND `failed` (setup succeeded, the first pass did
+// not): onboarding can't fix expired auth, and its step-4 status line already promises a hand-off
+// once the state moves past `firstRun`, so we must actually hand off to the main screen's
+// Re-authenticate action rather than trap the user in the wizard.
+//
+// `failed` HAS TO BE ON THAT LIST, and it is the half of #246 that is easy to miss. Before that
+// state existed a failed first pass derived to `idle`, which released the latch and handed off to a
+// main screen saying `Everything is up to date` — the bug. Adding the state without adding it here
+// would fix the sentence and break the hand-off instead, trapping someone in a wizard whose two
+// steps cannot fix a `proton-drive` binary that is not on the PATH. The main screen carries it, with
+// the daemon's own string and a `Try again now`.
 //
 // Entry has two triggers: (1) `firstRun` — the canonical signal (a reachable daemon that has never
 // synced), preserving the original single-hook behaviour; and (2) a genuinely fresh machine — a
@@ -214,7 +222,8 @@ export function nextOnboardingLatch(prev, daemonState, hasConfigPair, configLoad
     daemonState === "idle" ||
     daemonState === "running" ||
     daemonState === "paused" ||
-    daemonState === "authExpired"
+    daemonState === "authExpired" ||
+    daemonState === "failed"
   )
     return false;
   // Reachable daemon that has never synced: the original firstRun takeover.

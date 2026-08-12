@@ -40,6 +40,10 @@ const PANEL_STATE = {
   paused: "paused",
   unreachable: "unreachable",
   authExpired: "unreachable",
+  // The third of `11-notifications.md`'s one-icon trio ("an outage, expired session, or full disk"),
+  // and `14-behaviour-and-state.md`'s own route into the struck mark: "unreachable is entered after
+  // a failed pass and retry". #246.
+  failed: "unreachable",
   firstRun: "needsYou",
 };
 
@@ -59,6 +63,10 @@ const MENU_STATE = {
   paused: "paused",
   unreachable: "unreachable",
   authExpired: "deferToWindow",
+  // `unreachable`'s rows, not `deferToWindow`'s: this is the one struck state where `Try again now`
+  // is unambiguously a working control, because the daemon is answering and `syncnow` reaches it.
+  // Same table, same reasoning, in `tray_menu.rs` for the native menus.
+  failed: "unreachable",
   firstRun: "deferToWindow",
 };
 
@@ -170,6 +178,16 @@ function copyFor(hero, v) {
       return {
         headline: MAIN.authExpired,
         sub: MAIN.authExpiredSub(v.queued ?? 0),
+      };
+
+    case "failed":
+      return {
+        headline: MAIN.failed,
+        // The reassurance and the count, and NOT the daemon's string: the panel is 362px wide with
+        // no block sized to quote one, and a stderr wrapped into a sub-line is the paraphrase-by-
+        // truncation voice rule 4 forbids. `Open Drive Sync` is a row on this very menu, and the
+        // window has the block. #246.
+        sub: MAIN.failedSub(v.queued ?? 0),
       };
 
     case "decision":

@@ -63,6 +63,35 @@ test("the sign-in hero quotes the deck's one sentence, split in two", () => {
   );
 });
 
+test("a pass that failed never falls through to `Everything is up to date`", () => {
+  // #246. The same shape as the `authExpired` test above and the one it was found next to: every
+  // arm of the derivation is a state the daemon is IN, a failed pass is none of them, and the
+  // fall-through drew the app's strongest all-clear over a sync that did not happen.
+  assert.equal(heroStateOf(state({ daemonState: "failed" })), "failed");
+  assert.notEqual(heroStateOf(state({ daemonState: "failed" })), "settled");
+  // AND NOT `syncing`, which is the half a `derive_state` fix alone would not have covered: this
+  // function calls a non-empty watch queue `syncing` on its own, so a failure with anything queued
+  // behind it would have read `Syncing 5 changes` instead. The failure outranks the queue.
+  assert.equal(heroStateOf(state({ daemonState: "failed", pending: 5 })), "failed");
+  // And a decision waiting does not displace it either — the band still draws, additively.
+  assert.equal(heroStateOf(state({ daemonState: "failed", waiting: 2 })), "failed");
+});
+
+test("the failed hero quotes the daemon and says nothing is lost", () => {
+  const v = mainView({
+    daemonState: "failed",
+    response: { pending_changes: 4, last_error: "proton-drive list failed: os error 2" },
+  });
+  assert.equal(v.hero, "failed");
+  // Verbatim, through no formatter — voice rule 4, and the whole point of the state.
+  assert.equal(v.error, "proton-drive list failed: os error 2");
+  assert.equal(MAIN.failedSub(4), "Nothing is lost. 4 changes are waiting and will go on the next try.");
+  // `0` drops the clause rather than reading as an all-clear; so does an absent reply.
+  assert.equal(MAIN.failedSub(0), "Nothing is lost.");
+  assert.equal(MAIN.failedSub(null), "Nothing is lost.");
+  assert.equal(MAIN.failedSub(1), "Nothing is lost. 1 change is waiting and will go on the next try.");
+});
+
 test("the band's titles reproduce the drawn sentences at the drawn counts", () => {
   assert.equal(MAIN.band.conflictTitle(1), "One file changed on both sides");
   assert.equal(MAIN.band.deletionTitle(2), "Two deletions are waiting on you");

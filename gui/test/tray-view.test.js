@@ -5,14 +5,41 @@
 // silent: the panel renders, the menu opens, and the sentence is about a different moment than the
 // one the user is in.
 //
-// The two states below that no frame draws are the reason this file exists. Both would otherwise
-// reach a 362px window with no takeover in front of them and no reviewer looking at them.
+// The three states below that no frame draws are the reason this file exists — `firstRun`,
+// `authExpired` and now `failed` (#246). Each would otherwise reach a 362px window with no takeover
+// in front of it and no reviewer looking at it, and two of the three fall through to the SETTLED
+// copy if nothing maps them, which is the false all-clear in the surface nobody inspects.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { trayView } from "../src/js/screens/tray.js";
 import { TRAY_MENU } from "../src/js/ui/compact.js";
 import { MAIN, TRAY } from "../src/js/ui/copy.js";
+
+/**
+ * Every `DaemonState`, READ OFF THE RUST rather than typed here again.
+ *
+ * The enum is the webview's input and it lives in another language, so nothing but this makes a
+ * variant added there fail anything over here. That is not hypothetical: `trayMenu` THROWS on a key
+ * it does not know, so a state the daemon can produce and the tray cannot map is a panel that stops
+ * opening at all — in a borderless window with no devtools. The list was hand-written until `failed`
+ * (#246) was added on the Rust side and this file would have gone on testing the six it knew about.
+ *
+ * `serde(rename_all = "camelCase")` is what the wire carries, so the variant names are lowered the
+ * same way here.
+ */
+const DAEMON_STATES = (() => {
+  const source = readFileSync(fileURLToPath(new URL("../gui-core/src/state.rs", import.meta.url)), "utf8");
+  const body = source.match(/pub enum DaemonState \{([\s\S]*?)\n\}/);
+  assert.ok(body, "could not find `pub enum DaemonState` in gui-core/src/state.rs");
+  const names = [...body[1].matchAll(/^ {4}([A-Z][A-Za-z]*),$/gm)].map(
+    ([, name]) => name[0].toLowerCase() + name.slice(1),
+  );
+  assert.ok(names.length >= 6, `only found ${names.length} variants — the regex has drifted`);
+  return names;
+})();
 
 const reply = (over = {}) => ({
   paused: false,
@@ -26,8 +53,7 @@ test("every daemon state lands on a form the panel draws and rows the menu has",
   // `trayMenu` THROWS on a key it does not know, and this panel lives in a borderless window with no
   // devtools and no error surface — an unmapped state is a tray that silently stops opening. So the
   // exhaustive check is the point, not the individual answers.
-  const states = ["idle", "running", "paused", "authExpired", "unreachable", "firstRun"];
-  for (const daemonState of states) {
+  for (const daemonState of DAEMON_STATES) {
     const view = trayView({ daemonState, response: reply() });
     assert.ok(view.state, `${daemonState} produced no panel state`);
     assert.ok(TRAY_MENU[view.menuState], `${daemonState} → menu "${view.menuState}" has no rows`);
@@ -59,6 +85,32 @@ test("an expired session keeps the struck mark and loses the row that cannot fix
   // And the menu is not: `Try again now` retries a sync, which is not what an expired session needs.
   assert.equal(view.menuState, "deferToWindow");
   assert.ok(!TRAY_MENU[view.menuState].some((row) => row.label === TRAY.tryAgain));
+});
+
+test("a failed pass keeps the struck mark and KEEPS the row that can fix it", () => {
+  // #246's tray half, and the mirror image of the test above it. Same struck form — a failed pass is
+  // the third of `11-notifications.md`'s one-icon trio — and the opposite menu answer: this daemon
+  // IS answering, so `Try again now` reaches it and runs the pass that failed.
+  const view = trayView({
+    daemonState: "failed",
+    response: reply({ pending_changes: 4, last_error: "proton-drive list failed: os error 2" }),
+  });
+  assert.equal(view.state, "unreachable");
+  assert.notEqual(view.headline, MAIN.compact.upToDate, "the false all-clear #246 is about");
+  assert.equal(view.headline, MAIN.failed);
+  assert.equal(view.sub, MAIN.failedSub(4));
+  assert.equal(view.menuState, "unreachable");
+  assert.ok(TRAY_MENU[view.menuState].some((row) => row.label === TRAY.tryAgain));
+  // The daemon's string is NOT in the panel: 362px has no block to quote one in, and a truncated
+  // stderr is the paraphrase voice rule 4 forbids. The window carries it.
+  assert.ok(!JSON.stringify(view).includes("os error 2"));
+});
+
+test("a failed pass with an empty queue keeps the reassurance and drops the count", () => {
+  // `0 changes are waiting` reads as an all-clear in the one place that must not give one, and the
+  // queue is genuinely empty on a pass driven from Proton's side. The reassurance survives alone.
+  const view = trayView({ daemonState: "failed", response: reply({ pending_changes: 0 }) });
+  assert.equal(view.sub, "Nothing is lost.");
 });
 
 test("an unreachable daemon drops the count clause rather than claiming zero", () => {
