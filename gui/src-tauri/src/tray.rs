@@ -349,11 +349,19 @@ async fn update(app: &AppHandle, state: DaemonState, _next: &Shown) -> bool {
         .is_ok()
 }
 
-fn show_window(app: &AppHandle) {
+/// `Open Drive Sync`, from whichever of the three menus asked — and `commands::tray_action` calls
+/// this rather than keeping the copy it used to have. Two copies of it existed, the panel's row went
+/// through one and both native menus through the other, and the bug below was fixed in one of them
+/// first: the native menu raised the window and the panel's own row did not. §92b.
+pub fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
-        let _ = window.set_focus();
+        // `set_focus` alone raised NOTHING when the window was already open behind other windows —
+        // the stacking order was identical before and after, so `Open Drive Sync` was inert in the
+        // one case a tray row is for. `focus::present` explains what the compositor was refusing,
+        // and hops to the main thread itself, which is what lets an async command call this.
+        crate::focus::present(&window);
     }
 }
 

@@ -131,7 +131,10 @@ fn show_at(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
     place(window, at);
     let _ = window.show();
     place(window, at);
-    let _ = window.set_focus();
+    // AND THE FOCUS HAS TO BE ASKED FOR WITH A TIMESTAMP, or KWin refuses it and the panel becomes
+    // the thing IMPLEMENTATION-PLAN §6 forbids: never focused, so never blurred, so never hidden by
+    // looking away. `focus::present` has the measurement.
+    crate::focus::present(window);
 }
 
 /// Hide it, from anywhere.

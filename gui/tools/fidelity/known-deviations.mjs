@@ -1,4 +1,5 @@
-// The assertions a screen CANNOT pass yet, each named with the issue that closes it.
+// The assertions a screen CANNOT pass yet, each named with the issue that closes it — or, for the
+// five marked `structural`, with the reason nothing ever will.
 //
 // WHY THIS FILE EXISTS, AND WHY IT IS NOT AN ESCAPE HATCH.
 //
@@ -25,6 +26,11 @@
 // The bar for adding a row: the difference must be a MISSING CAPABILITY, already written up in
 // `docs/design-v2/DEVIATIONS.md` with an open issue against it. A colour that is wrong, a padding
 // that is off, a node that was never mapped — none of those belong here. They are bugs.
+//
+// The one exception is `structural`, and it is narrow on purpose: the property cannot be carried by
+// any element the app draws, so there is no capability to wait for. See the tag's own note below —
+// and note that the must-still-fail clause applies to it unchanged, which is what keeps "structural"
+// from becoming the escape hatch this file's first paragraph says it is not.
 
 /**
  * @property frame  the `data-screen-label` exactly as `frames/index.json` carries it
@@ -33,7 +39,16 @@
  *                  SECOND thing going wrong on the same node is still caught
  * @property detail the EXACT mismatch, verbatim as `assert.mjs` formats it. Absorbs that one
  *                  difference and nothing else; see the note below.
- * @property issue  the issue that closes it
+ * @property issue  the issue that closes it — unless `structural`, which nothing closes
+ * @property structural
+ *                  the app CANNOT EXPRESS this property, so no capability lands and no issue
+ *                  closes it. The five `10a In situ` offsets are the case it was added for: the
+ *                  drawn panel is placed on a desktop mock with `position:absolute; top; right`,
+ *                  and the shipped one is a borderless window whose viewport IS the panel, so the
+ *                  offsets live on the window and there is no element to compare. Filing an issue
+ *                  for it would be filing an issue against the architecture. Everything else about
+ *                  a row is unchanged — it must still name the exact difference, and it must still
+ *                  FAIL: a structural row that stops failing is as much of a lie as any other.
  * @property why    one line, in the same voice as DEVIATIONS.md
  */
 export const KNOWN_DEVIATIONS = [
@@ -117,40 +132,40 @@ export const KNOWN_DEVIATIONS = [
     key: "div[1]",
     props: ["position"],
     detail: "absolute vs static",
-    issue: "#187",
-    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+    structural: true,
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. MEASURED on a live Plasma 6.7 session (S8 verification): a real pointer click on the indicator arrived as `Activate(3132, 2112)` and the panel opened centred on it, its bottom edge on `_NET_WORKAREA`'s at 2068 — clamped into the work area and therefore UPWARD, which is what the spec's fixed `top:40px` gets wrong on every bottom-panel desktop. Re-measured at all five panel heights and every one of them anchored there. The design's intent is delivered by the thing that can hold it",
   },
   {
     frame: "10a In situ",
     key: "div[1]",
     props: ["top"],
     detail: "40px vs auto",
-    issue: "#187",
-    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+    structural: true,
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. MEASURED on a live Plasma 6.7 session (S8 verification): a real pointer click on the indicator arrived as `Activate(3132, 2112)` and the panel opened centred on it, its bottom edge on `_NET_WORKAREA`'s at 2068 — clamped into the work area and therefore UPWARD, which is what the spec's fixed `top:40px` gets wrong on every bottom-panel desktop. Re-measured at all five panel heights and every one of them anchored there. The design's intent is delivered by the thing that can hold it",
   },
   {
     frame: "10a In situ",
     key: "div[1]",
     props: ["right"],
     detail: "16px vs auto",
-    issue: "#187",
-    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+    structural: true,
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. MEASURED on a live Plasma 6.7 session (S8 verification): a real pointer click on the indicator arrived as `Activate(3132, 2112)` and the panel opened centred on it, its bottom edge on `_NET_WORKAREA`'s at 2068 — clamped into the work area and therefore UPWARD, which is what the spec's fixed `top:40px` gets wrong on every bottom-panel desktop. Re-measured at all five panel heights and every one of them anchored there. The design's intent is delivered by the thing that can hold it",
   },
   {
     frame: "10a In situ",
     key: "div[1]",
     props: ["bottom"],
     detail: "38.5px vs auto",
-    issue: "#187",
-    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+    structural: true,
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. MEASURED on a live Plasma 6.7 session (S8 verification): a real pointer click on the indicator arrived as `Activate(3132, 2112)` and the panel opened centred on it, its bottom edge on `_NET_WORKAREA`'s at 2068 — clamped into the work area and therefore UPWARD, which is what the spec's fixed `top:40px` gets wrong on every bottom-panel desktop. Re-measured at all five panel heights and every one of them anchored there. The design's intent is delivered by the thing that can hold it",
   },
   {
     frame: "10a In situ",
     key: "div[1]",
     props: ["left"],
     detail: "662px vs auto",
-    issue: "#187",
-    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. `panel.rs` applies them — against the click `Activate` reports, clamped into the work area, which is what makes it open upward on a bottom panel — so the design's intent is delivered by the thing that can hold it",
+    structural: true,
+    why: "the drawn panel is absolutely positioned on a desktop MOCK; the shipped one is a borderless webview window whose viewport is the panel, so the offsets live on the window and not on any element. MEASURED on a live Plasma 6.7 session (S8 verification): a real pointer click on the indicator arrived as `Activate(3132, 2112)` and the panel opened centred on it, its bottom edge on `_NET_WORKAREA`'s at 2068 — clamped into the work area and therefore UPWARD, which is what the spec's fixed `top:40px` gets wrong on every bottom-panel desktop. Re-measured at all five panel heights and every one of them anchored there. The design's intent is delivered by the thing that can hold it",
   },
 
   {
@@ -158,7 +173,7 @@ export const KNOWN_DEVIATIONS = [
     key: "div[1]",
     props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
     detail: "rgba(255, 255, 255, 0.1) vs rgba(255, 107, 107, 0.3)",
-    issue: "#187",
+    issue: "#261",
     why: "FOUR FRAMES AGAINST ONE, and DEVIATIONS §58d already ruled on it with only the four in view. `10-tray.md` asks the tray form for `border:1px solid rgba(255,255,255,.1)` because it floats over the desktop rather than over the app surface — and this is the one frame drawn that way, so it is the one that shows it. The four standalone `10a` panels all draw `#23262D` like every other compact panel, and they are gated. The app cannot be both. Keeping the four means the attention edge (`rgba(255,107,107,.3)`, measured on three needs-you frames) survives here, which is also the more useful of the two: it is the panel saying something is waiting on you. Recorded rather than resolved — the tie is the design's to break",
   },
 

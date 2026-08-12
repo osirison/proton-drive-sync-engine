@@ -496,11 +496,52 @@ for (const entry of index) {
   }
 }
 
+// --- the squeeze gate (S8). Every compact frame again, in a window SHORTER than the panel.
+//
+// THE LOOP ABOVE CANNOT SEE THIS, and that is a property of the harness rather than an oversight: it
+// opens every frame at 1040×764, so a 362×365 panel has 399px of slack and nothing can compress it.
+// The tray window has no slack at all — it is 362 wide and exactly as tall as the panel said it was,
+// because `reportTrayHeight` measures the panel and `panel.rs` sizes the window to the answer. A
+// container that shrinks the panel therefore caps the measurement at the window it just set, and the
+// panel can never grow again: the shipped settled panel came up 302 tall where it draws 365, losing
+// `Close window · keeps syncing` and `Quit · stops syncing` off the bottom, and no state change or
+// poll could recover it. `panelSurface` in app.js is the fix and this is what keeps it.
+//
+// A short viewport is the poison this gate needs: it reproduces the shipped condition — a panel
+// asked to render in less room than it wants — without a webview, a window manager or a tray.
+const SQUEEZE_VIEWPORT = 200;
+let squeezed = 0;
+for (const entry of index.filter((e) => e.kind === "compact")) {
+  const frame = JSON.parse(readFileSync(join(FRAMES, entry.file), "utf8"));
+  await page.setViewport({ width: 1040, height: SQUEEZE_VIEWPORT, deviceScaleFactor: 1 });
+  await page.goto(`http://127.0.0.1:${port}/index.html?frame=${encodeURIComponent(frame.label)}`, {
+    waitUntil: "networkidle0",
+  });
+  const height = await page.evaluate(
+    () => document.querySelector("#app-root > .compact-panel")?.offsetHeight ?? null,
+  );
+  // `null` is a finding, not a skip: every compact frame mounts its panel as the root's only child,
+  // so a miss means the preview stopped rendering one and the check would otherwise pass by absence.
+  if (height === null || Math.abs(height - frame.height) > LENGTH_TOLERANCE_PX) {
+    record({
+      frame: frame.label,
+      key: "(squeeze)",
+      prop: "box.h",
+      detail: `${frame.height} vs ${height} in a ${SQUEEZE_VIEWPORT}px window`,
+    });
+  }
+  squeezed++;
+}
+
 await browser.close();
 server.close();
 
 console.log(
   `fidelity:assert — ${mapped}/${index.length} frames mapped, ${asserted} assertions, ${failures.length} failures`,
+);
+console.log(
+  `  ${squeezed} compact panel(s) re-measured in a ${SQUEEZE_VIEWPORT}px window — a panel that shrinks to its container ` +
+    `latches the tray window at the wrong height (S8)`,
 );
 // What the gate stopped comparing, in full, so "0 failures on a light frame" can be read for what it
 // is. A light frame has less drawn ground truth than any other surface in the build, and this is the
@@ -535,12 +576,32 @@ if (recordedUnstamped.length) {
 
 // Printed every run, in full, and never folded into the pass count. A recorded deviation is a
 // difference the build KNOWS about — the reader has to be able to see how many, and which.
-if (deviations.length) {
-  console.log(`  ${deviations.length} recorded Phase-1 deviation(s), each waiting on an open issue:`);
-  for (const d of deviations) {
-    const row = KNOWN_DEVIATIONS.find((k) => k.frame === d.frame && k.key === d.key);
-    console.log(`    ${d.frame} · ${d.key} · ${d.prop} (${d.detail}) — ${row?.issue}`);
-  }
+//
+// SPLIT IN TWO, because "waiting on an open issue" was not true of all of them and a reader counting
+// the list deserves to know which. A Phase-1 deviation ends when a capability lands; a STRUCTURAL one
+// never ends, because the app has no element that could carry the property — `10a In situ` draws the
+// panel's placement as CSS on a desktop mock and the shipped panel's placement is its window's. Those
+// five used to cite #187, the issue that BUILDS the tray, so closing S8 would have left five rows
+// pointing at a closed issue and nothing to notice it.
+// `props.includes` AND NOT JUST frame+key, which is what this used to match on. One node can carry
+// two rows — `10a In situ · div[1]` carries the four border properties and the five offsets — and
+// `find` on frame+key returns whichever was written first for both of them. It printed the right
+// issue only because those nine rows all cited #187; the moment they stopped agreeing, four of them
+// would have been labelled with the fifth's answer.
+const rowOf = (d) =>
+  KNOWN_DEVIATIONS.find((k) => k.frame === d.frame && k.key === d.key && k.props.includes(d.prop));
+const structural = deviations.filter((d) => rowOf(d)?.structural);
+const phase1 = deviations.filter((d) => !rowOf(d)?.structural);
+if (phase1.length) {
+  console.log(`  ${phase1.length} recorded Phase-1 deviation(s), each waiting on an open issue:`);
+  for (const d of phase1)
+    console.log(`    ${d.frame} · ${d.key} · ${d.prop} (${d.detail}) — ${rowOf(d)?.issue}`);
+}
+if (structural.length) {
+  console.log(
+    `  ${structural.length} structural deviation(s) — no issue closes these, the app has no element that carries the property:`,
+  );
+  for (const d of structural) console.log(`    ${d.frame} · ${d.key} · ${d.prop} (${d.detail})`);
 }
 
 // An entry that stopped failing is a lie about the build, so it fails it. This is the clause that
@@ -552,7 +613,14 @@ if (deviations.length) {
 const unmet = unmetDeviations();
 if (unmet.length) {
   console.error("\nRecorded deviations that no longer fail — delete them, or re-pin their measurement:\n");
-  for (const d of unmet) console.error(`  ${d.frame} · ${d.key} · ${d.prop} — ${d.issue}\n      ${d.why}`);
+  // `d.issue ?? "structural"`, because a structural row HAS no issue and the template would have
+  // printed `— undefined` on the one run where this list matters. It is not a cosmetic difference:
+  // the two say different things about what to do. An issue means the capability landed, so delete
+  // the row; `structural` means a property the app could never carry now matches the drawing, which
+  // is either a real change to the app or a re-extracted frame, and both want reading before either
+  // is deleted. (Copilot, PR #262.)
+  for (const d of unmet)
+    console.error(`  ${d.frame} · ${d.key} · ${d.prop} — ${d.issue ?? "structural"}\n      ${d.why}`);
   console.error(`\nfidelity:assert: ${unmet.length} stale deviation(s) in known-deviations.mjs.`);
 }
 

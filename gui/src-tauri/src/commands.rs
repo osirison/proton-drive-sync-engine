@@ -1096,11 +1096,10 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
     // second routing question this task does not own. Recorded as DEVIATIONS §82l.
     let command = match tray_row(&id) {
         Some(TrayRow::Open) => {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            // `tray::show_window`, not a second copy of it. This WAS the second copy, and it is how
+            // the raise fix landed on one of the two paths: the native menus' row raised the window
+            // and the panel's own row — this one — left it exactly where it was. §92b.
+            crate::tray::show_window(&app);
             ControlCommand::Status
         }
         Some(TrayRow::SyncNow) => ControlCommand::Syncnow,
