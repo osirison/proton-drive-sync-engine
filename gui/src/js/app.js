@@ -2926,7 +2926,11 @@ function evaluateNotifications() {
       conflicts: store.select.conflicts(),
       daemonState: store.select.daemonState(),
     },
-    policy: notifyPolicyEdit ?? notifyPolicy,
+    // THE SAVED VALUE, never the staged one. The Settings footer promises "nothing is written until
+    // you save", and this setting IS the written thing — a staged `Never` that silenced the deletion
+    // banner before anyone pressed Save would be the one exception nobody was told about, in the
+    // direction that costs files.
+    policy: notifyPolicy,
     nowMs: Date.now(),
   });
   notifierState = state;
@@ -2945,6 +2949,38 @@ function evaluateNotifications() {
 }
 
 /**
+ * `Keep them` — the permanent deletions the banner named, and only those.
+ *
+ * NOT `keepAllDeletions`, which is the screen's `Keep both files` and sends the reserved `all`
+ * selector. On the wire that deletes EVERY row from `delete_approvals`, so a mixed queue would have
+ * this banner revoke a standing approval the user granted for a recoverable deletion it never
+ * mentioned. Keeping is always safe, but doing more than the button says is not the same as safe.
+ *
+ * It carries S3's caveat unchanged (#224): `deny` revokes an approval and nothing on the wire
+ * refuses a withheld deletion durably. What it does do is true — a withheld deletion is not applied,
+ * so the files stay — and the row comes back next pass, on the screen, where the decision belongs.
+ */
+async function keepPermanentDeletions() {
+  const items = visibleDeletions().filter((item) => severityOf(item.direction) === "permanent");
+  if (!items.length) return;
+  for (const item of items) {
+    const key = itemKey(item);
+    if (deletionBusy.has(key)) continue;
+    deletionBusy.add(key);
+    try {
+      if (acknowledged(await api.deny(item.path))) deletionsDecided.set(key, item.fingerprint);
+    } catch (error) {
+      console.error("deny failed:", error);
+    }
+    deletionBusy.delete(key);
+  }
+  // ONE poll at the end, not one per item: a banner about a folder with a thousand withheld files
+  // would otherwise ask the daemon a thousand times over.
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
  * A banner's button. The ids are `SAFE_ACTIONS` — no destructive one exists to arrive here.
  *
  * `trayAction` FOR THE THREE THAT OPEN OR RETRY, because they are the tray's own rows doing the
@@ -2954,11 +2990,7 @@ function evaluateNotifications() {
 function onNotificationAction({ kind, action } = {}) {
   switch (action) {
     case "keep":
-      // Every queued permanent deletion, which is what the banner's `Keep them` names. It sends the
-      // command S3's own `Keep it` sends and carries S3's caveat with it: `deny` revokes an approval
-      // and there is nothing on the wire that refuses a withheld deletion durably (#224). What it
-      // does do is true — a withheld deletion is not applied — so the files stay.
-      keepAllDeletions();
+      keepPermanentDeletions();
       return;
     case "later":
       // Dismiss. The thing is still in the window, which is the whole design of this action.
