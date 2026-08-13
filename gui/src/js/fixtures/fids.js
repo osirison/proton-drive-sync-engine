@@ -869,7 +869,7 @@ const activityShell = {
   menu: "header/button",
 };
 
-/** The four doors, at whichever index the blocks above them leave. */
+/** The doors the frame draws, at whichever index the blocks above them leave. */
 const activityDoors = (at) => ({
   footerNav: at,
   footerBar: `${at}/div`,

@@ -130,7 +130,8 @@ const NOT_DRAWN = new Map([
   ["ACTIVITY.lookup.chooseTitle", "no frame draws a search that matched more than one file"],
   ["ACTIVITY.lookup.chooseSub", "no frame draws a search that matched more than one file"],
   ["ACTIVITY.lookup.backToMatches", "no frame draws a search that matched more than one file"],
-  ["ACTIVITY.lookup.capped", "no frame draws a search with more matches than the screen shows"],
+  // `capped` is a TEMPLATE and needs no entry — templates are checked only against the frame that
+  // draws them, and none draws this one. The exemption was here for one commit and the gate said so.
   ["ACTIVITY.lookup.changed", "no frame draws a `modified` verdict"],
   ["ACTIVITY.lookup.changedSub", "no frame draws a `modified` verdict"],
   ["ACTIVITY.lookup.conflict", "no frame draws a `conflict` verdict"],
