@@ -686,9 +686,14 @@ pub async fn search_files(
     .map_err(|error| format!("search task failed: {error}"))?
 }
 
-/// A typed query as the index would store it: `~` expanded, the sync folder's own prefix removed,
-/// and no leading separator. Anything that is not under the sync folder is left alone — an absolute
-/// path elsewhere still matches as a fragment, which is a better answer than no answer.
+/// A typed query as the index would store it: `~` expanded, the sync folder's own prefix removed
+/// when the path is under it, and never a leading separator.
+///
+/// A path that is NOT under the sync folder keeps its components and loses only that separator, so
+/// `/etc/hosts` is asked for as `etc/hosts` — it cannot match as a whole path (nothing in the index
+/// is stored that way) but it still matches as a fragment, which is a better answer than none. The
+/// separator goes for every query alike because the index stores relative paths and nothing in it
+/// begins with one.
 fn relative_query(query: &str, local_root: Option<&std::path::Path>) -> String {
     let query = query.trim();
     let expanded = match query.strip_prefix('~') {
@@ -1265,8 +1270,9 @@ mod tests {
     }
 
     #[test]
-    fn a_path_outside_the_sync_folder_is_left_alone_to_match_as_a_fragment() {
+    fn a_path_outside_the_sync_folder_keeps_its_components_and_loses_its_leading_slash() {
         // Better a fragment match than "no such file": the user may well be looking for the name.
+        // NOT "left alone" — the separator goes, because no stored path begins with one.
         assert_eq!(
             relative_query("/etc/hosts", Some(Path::new("/home/me/ProtonDrive"))),
             "etc/hosts"
