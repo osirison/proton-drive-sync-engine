@@ -622,10 +622,18 @@ export const ACTIVITY = {
     conflictSub: "Both copies were edited. Nothing is lost — Conflicts decides which one to keep.",
     folder: "That's a folder",
     folderSub: "Folders are followed as a whole. Look up a file inside it to see where it stands.",
-    // 14-behaviour-and-state.md:130, verbatim. The miss is the ordinary case, not an error: the
-    // lookup matches a relative path exactly, so a bare name that is not at the root misses.
+    // 14-behaviour-and-state.md:130, verbatim. A miss is the ordinary case, not an error — the
+    // search reads the index, so a file that has never synced is not in it to find.
     noMatch: "No file by that name in your sync folder.",
-    noMatchSub: "Type the path as it sits inside your sync folder, like docs/spec.md.",
+    noMatchSub: "Try part of the name, or the path as it sits inside your sync folder.",
+
+    // SEVERAL FILES SHARE A NAME, which nothing drew because until the search landed the lookup
+    // could only ever answer about one path (G21). The screen must not pick for the user: a verdict
+    // about the wrong `notes.md` is worse than a question.
+    chooseTitle: "More than one file matches",
+    chooseSub: "Pick the one you meant.",
+    backToMatches: "← All matches",
+    capped: (shown, total) => `Showing ${count(shown)} of ${count(total)} — narrow the search.`,
     // A FAILED CHECK IS NOT A MISS, and conflating the two is the worst answer this screen can
     // give: "no file by that name" about a file that is sitting right there would tell someone
     // their file is not being synced when nothing of the sort is known. Same shape as S4's failed

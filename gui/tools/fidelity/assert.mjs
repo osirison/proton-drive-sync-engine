@@ -465,6 +465,27 @@ for (const entry of index) {
       const root = document.documentElement;
       const footer = document.querySelector(".footer-nav, .footer-action-bar");
       const overlap = [];
+      // WHERE THIS ELEMENT'S PAINT ACTUALLY STOPS: the bottom of the nearest ancestor that clips it,
+      // or null when nothing does. A row inside a `.pl-rows` that ends above the footer paints
+      // nothing over the footer however far its layout box runs on — and the whole point of the
+      // shell's `overflow:hidden` discipline is that clipping is the RECOVERABLE failure, so a gate
+      // that counts a clipped box as a violation is refusing the fix it demands.
+      //
+      // `position:absolute` escapes a clipper that is not its containing block, so the walk tracks
+      // that rather than assuming every ancestor clips. `fixed` escapes all of them.
+      const clipBottom = (el) => {
+        let pos = getComputedStyle(el).position;
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          if (pos === "fixed") return null;
+          const s = getComputedStyle(p);
+          const isContainingBlock = s.position !== "static" || s.transform !== "none" || s.filter !== "none";
+          const clips = s.overflowX !== "visible" || s.overflowY !== "visible";
+          if (clips && (pos !== "absolute" || isContainingBlock)) return p.getBoundingClientRect().bottom;
+          // Past its containing block, an absolute is clipped like anything else above it.
+          if (pos === "absolute" && isContainingBlock) pos = "static";
+        }
+        return null;
+      };
       if (footer) {
         const f = footer.getBoundingClientRect();
         for (const el of document.querySelectorAll("#app-root *")) {
@@ -472,7 +493,10 @@ for (const entry of index) {
           const b = el.getBoundingClientRect();
           if (!b.width || !b.height) continue;
           // A descendant painting over the footer is the bug 02-shell.md says was found twice.
-          if (b.bottom > f.top + 0.5 && b.top < f.bottom) overlap.push(el.className || el.tagName);
+          if (b.bottom <= f.top + 0.5 || b.top >= f.bottom) continue;
+          const stops = clipBottom(el);
+          if (stops != null && stops <= f.top + 0.5) continue;
+          overlap.push(el.className || el.tagName);
         }
       }
       return { w: root.scrollWidth, h: root.scrollHeight, overlap: [...new Set(overlap)].slice(0, 5) };
@@ -591,7 +615,10 @@ if (recordedUnstamped.length) {
 const rowOf = (d) =>
   KNOWN_DEVIATIONS.find((k) => k.frame === d.frame && k.key === d.key && k.props.includes(d.prop));
 const structural = deviations.filter((d) => rowOf(d)?.structural);
-const phase1 = deviations.filter((d) => !rowOf(d)?.structural);
+// A third bucket, for the same reason there is a second: "waiting on an open issue" is not true of a
+// row the product decided against the drawing. See `decision` in known-deviations.mjs.
+const decided = deviations.filter((d) => rowOf(d)?.decision);
+const phase1 = deviations.filter((d) => !rowOf(d)?.structural && !rowOf(d)?.decision);
 if (phase1.length) {
   console.log(`  ${phase1.length} recorded Phase-1 deviation(s), each waiting on an open issue:`);
   for (const d of phase1)
@@ -602,6 +629,12 @@ if (structural.length) {
     `  ${structural.length} structural deviation(s) — no issue closes these, the app has no element that carries the property:`,
   );
   for (const d of structural) console.log(`    ${d.frame} · ${d.key} · ${d.prop} (${d.detail})`);
+}
+if (decided.length) {
+  console.log(
+    `  ${decided.length} decided deviation(s) — the product chose against the drawing, and no issue closes these:`,
+  );
+  for (const d of decided) console.log(`    ${d.frame} · ${d.key} · ${d.prop} (${d.detail})`);
 }
 
 // An entry that stopped failing is a lie about the build, so it fails it. This is the clause that
@@ -620,7 +653,9 @@ if (unmet.length) {
   // is either a real change to the app or a re-extracted frame, and both want reading before either
   // is deleted. (Copilot, PR #262.)
   for (const d of unmet)
-    console.error(`  ${d.frame} · ${d.key} · ${d.prop} — ${d.issue ?? "structural"}\n      ${d.why}`);
+    console.error(
+      `  ${d.frame} · ${d.key} · ${d.prop} — ${d.issue ?? (d.decision ? "decision" : "structural")}\n      ${d.why}`,
+    );
   console.error(`\nfidelity:assert: ${unmet.length} stale deviation(s) in known-deviations.mjs.`);
 }
 

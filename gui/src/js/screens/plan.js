@@ -32,10 +32,12 @@ const CHECKING_MARK = 104;
 /**
  * How many rows the action list shows before it has to scroll.
  *
- * Measured: `5a Plan` draws nine 33px rows in a 319px block, so a tenth is the first to fall off. At
- * or under that count the list keeps the frame's `overflow:hidden`, an asserted property.
+ * Measured: `5a Plan` draws nine 33px rows in a 319px block — but the block is 272px in this build,
+ * because the doors are drawn under the action bar (DEVIATIONS §94) and take 50px of it. Eight rows
+ * fit; a ninth is the first to fall off. At or under that count the list keeps the frame's
+ * `overflow:hidden`, an asserted property.
  */
-const ROWS_THAT_FIT = 9;
+const ROWS_THAT_FIT = 8;
 
 // ------------------------------------------------------------------------------ the model ----
 

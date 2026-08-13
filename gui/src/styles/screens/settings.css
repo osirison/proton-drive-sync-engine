@@ -46,8 +46,13 @@
 
 /* ------------------------------------------------------------------------ the content region ---- */
 
+/* `min-height:0` + a scroller, because the doors are drawn under the Save bar (DEVIATIONS §94) and
+   the region lost 50px: without it the folders tab is 491px in a 447px slot, the flex item refuses to
+   shrink below its content, and the window scrolls as a whole — the footer leaves the screen. */
 .settings-content {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   margin-top: 22px;
   padding: 0 32px;
 }

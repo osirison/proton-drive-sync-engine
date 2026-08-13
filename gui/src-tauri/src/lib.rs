@@ -52,6 +52,7 @@ pub fn run() {
             commands::resolve_conflict,
             commands::read_conflict_pair,
             commands::path_sync_status,
+            commands::search_files,
             commands::start_service,
             commands::restart_service,
             commands::send_notification,

@@ -21,6 +21,7 @@ import {
   footerVariantOf,
   elideId,
   normaliseQuery,
+  searchOutcome,
   failureLabel,
   UNREACHABLE_NEEDLES,
 } from "../src/js/screens/activity.js";
@@ -217,6 +218,66 @@ test("a failed lookup says the check failed, and never that the file is not ther
   assert.equal(verdictOf(tracked(), "14:32", "boom").title, ACTIVITY.lookup.failed);
   // And no error means the ordinary paths are untouched.
   assert.equal(verdictOf(null, "14:32", null).title, ACTIVITY.lookup.noMatch);
+});
+
+// ---- the search's three outcomes -------------------------------------------------------------
+//
+// `search_files` replaced `path_sync_status` on this field (G21), and the screen's whole behaviour
+// turns on how many files came back. Nothing draws two of the three.
+
+const match = (path, over = {}) => ({ path, status: tracked(over) });
+
+test("one match resolves straight to the file, under the path the index stores", () => {
+  // The gap this closes: someone types `spec.md` and means `docs/spec.md`.
+  const out = searchOutcome({ matches: [match("docs/spec.md")], total: 1, query: "spec.md" }, "spec.md");
+  assert.equal(out.lookup.path, "docs/spec.md");
+  assert.equal(out.lookup.status.sync_status, "synced");
+  assert.equal(out.matches.total, 1);
+});
+
+test("several matches answer about none of them", () => {
+  const out = searchOutcome(
+    { matches: [match("a/notes.md"), match("b/notes.md")], total: 2, query: "notes.md" },
+    "notes.md",
+  );
+  // A verdict about the wrong `notes.md` is worse than a question, so there is no lookup to draw.
+  assert.equal(out.lookup, null);
+  assert.equal(out.matches.matches.length, 2);
+});
+
+test("the count belongs to what was typed, not to the resolved path", () => {
+  // A pasted absolute path resolves to a different string, and the field still holds the paste.
+  const out = searchOutcome(
+    { matches: [match("docs/spec.md")], total: 1, query: "docs/spec.md" },
+    "~/ProtonDrive/docs/spec.md",
+  );
+  assert.equal(out.matches.typed, "~/ProtonDrive/docs/spec.md");
+  assert.equal(out.matches.query, "docs/spec.md");
+});
+
+test("no match is a miss under the query the backend actually ran", () => {
+  // `~` expanded and the sync root stripped happen in Rust, so the miss must name the reply's query
+  // and not the typed one — otherwise the screen says no such file about a path it never asked for.
+  const out = searchOutcome({ matches: [], total: 0, query: "docs/spec.md" }, "~/ProtonDrive/docs/spec.md");
+  assert.equal(out.lookup.path, "docs/spec.md");
+  assert.equal(out.lookup.status, null);
+  assert.equal(verdictOf(out.lookup.status, "14:32", out.lookup.error).title, ACTIVITY.lookup.noMatch);
+});
+
+test("a failed search is a failure, not a miss", () => {
+  // No reply at all — the command threw — so the error travels with the empty answer.
+  const out = searchOutcome(null, "spec.md", "index is locked");
+  assert.equal(out.lookup.error, "index is locked");
+  assert.equal(verdictOf(out.lookup.status, "14:32", out.lookup.error).title, ACTIVITY.lookup.failed);
+  assert.equal(out.matches.total, 0);
+});
+
+test("the count is the total, not the capped list", () => {
+  // The cap is the screen's, not the answer's: saying `2 matches` when 132 files match would send
+  // someone away believing their file is not there.
+  const out = searchOutcome({ matches: [match("a/x.md"), match("b/x.md")], total: 132, query: "x" }, "x");
+  assert.equal(out.matches.total, 132);
+  assert.equal(out.matches.matches.length, 2);
 });
 
 // The `Can't be synced` group has no Phase-1 source (#232), so the live sentence always renders at

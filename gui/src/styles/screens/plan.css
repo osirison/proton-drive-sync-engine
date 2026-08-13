@@ -152,8 +152,9 @@
   border-top: 1px solid var(--divider);
   overflow: hidden;
 }
-/* Nine rows fit (`ROWS_THAT_FIT`); past that the list scrolls rather than pushing the footer out of
-   a window that cannot grow. The frame's own `overflow: hidden` would drop the tenth action. */
+/* Eight rows fit (`ROWS_THAT_FIT` — nine before the doors took 50px of the block, §94); past that
+   the list scrolls rather than pushing the footer out of a window that cannot grow. The frame's own
+   `overflow: hidden` would drop the ninth action. */
 .pl-rows.is-scrollable {
   overflow-y: auto;
 }

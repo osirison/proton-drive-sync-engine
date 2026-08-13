@@ -390,3 +390,75 @@
   font-size: 11px;
   color: var(--text-5);
 }
+
+/* ------------------------------------------------------------------------ the chooser ---- */
+
+/* Several files matched, so the screen lists them instead of answering about one. No frame draws
+   this (the lookup could only ever resolve one exact path before `search_files`), so the metrics
+   are the screen's own neighbours: the title tier of a verdict, the row rhythm of `.row-path`. */
+.activity-matches {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  margin-top: 26px;
+  padding: 0 32px;
+}
+.activity-matches-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.activity-matches-sub {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-4);
+}
+/* Scrolls rather than pushing the footer out of a window that cannot grow — the same trade the
+   plan list makes, and the reason the list is capped at all. */
+.activity-matches-list {
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 14px;
+  border-top: 1px solid var(--divider);
+}
+.activity-match {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 2px;
+  border: none;
+  border-bottom: 1px solid var(--divider);
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.activity-match:hover {
+  background: var(--panel-alt);
+}
+.activity-match-path {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.activity-match-verdict {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-4);
+}
+.activity-matches-capped {
+  margin-top: 12px;
+  font-size: 11.5px;
+  color: var(--text-5);
+}
+/* The way back to the list, above the chosen file's tail. */
+.activity-match-back {
+  display: flex;
+  margin-bottom: 14px;
+}

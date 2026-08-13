@@ -40,6 +40,10 @@ export const api = {
   resolveConflict: (conflict, choice) => invoke("resolve_conflict", { conflict, choice }),
   readConflictPair: (conflict) => invoke("read_conflict_pair", { conflict }),
   pathSyncStatus: (relativePath) => invoke("path_sync_status", { relativePath }),
+  // The lookup field's search (S5). Takes a name, a path fragment or a pasted absolute path and
+  // answers `{ matches: [{ path, status }], total, query }` — the resolved query included, because
+  // the backend is what expands `~` and strips the sync root, so the screen must not re-derive it.
+  searchFiles: (query, limit) => invoke("search_files", { query, limit: limit ?? null }),
   startService: () => invoke("start_service"),
   restartService: () => invoke("restart_service"),
   // The notification banners (S9). `payload` is `payloadFor(spec)` from `ui/notification.js`, so the
@@ -199,6 +203,25 @@ function mockInvoke(cmd, args) {
         if (fixture.pathStatus)
           return Promise.resolve(fixture.pathStatus[args?.relativePath] ?? { tracked: false });
         break;
+      case "search_files": {
+        // Served from the SAME keyed table `path_sync_status` uses, matched the way the Rust does
+        // (case-insensitive name, trailing path, then fragment) so a fixture describes its files
+        // once. A frame with no table answers "nothing matched", which is a real answer too.
+        const query = String(args?.query ?? "")
+          .trim()
+          .toLowerCase();
+        const table = fixture.pathStatus ?? {};
+        const matches = !query
+          ? []
+          : Object.entries(table)
+              .filter(([path]) => {
+                const folded = path.toLowerCase();
+                const name = folded.split("/").pop();
+                return folded === query || name === query || folded.includes(query);
+              })
+              .map(([path, status]) => ({ path, status }));
+        return Promise.resolve({ matches, total: matches.length, query });
+      }
       default:
         break;
     }

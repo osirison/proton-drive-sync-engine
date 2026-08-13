@@ -580,6 +580,32 @@ pub struct EmblemStatus {
     proton_id: Option<String>,
 }
 
+impl EmblemStatus {
+    fn untracked() -> Self {
+        Self {
+            tracked: false,
+            sync_status: None,
+            entity_kind: None,
+            file_size: None,
+            mtime: None,
+            proton_id: None,
+        }
+    }
+}
+
+impl From<gui_core::wire::FileRecord> for EmblemStatus {
+    fn from(record: gui_core::wire::FileRecord) -> Self {
+        Self {
+            tracked: true,
+            sync_status: Some(record.sync_status.as_str().to_string()),
+            entity_kind: Some(record.entity_kind.as_str().to_string()),
+            file_size: Some(record.file_size),
+            mtime: Some(record.mtime),
+            proton_id: record.proton_id,
+        }
+    }
+}
+
 #[tauri::command]
 pub fn path_sync_status(state: Paths, relative_path: String) -> Result<EmblemStatus, String> {
     let db_path = state
@@ -589,24 +615,101 @@ pub fn path_sync_status(state: Paths, relative_path: String) -> Result<EmblemSta
         .ok_or_else(|| "no index database configured or reported by the daemon".to_string())?;
     let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT)?;
     let record = index_read::record_for_path(&connection, std::path::Path::new(&relative_path))?;
-    Ok(match record {
-        Some(record) => EmblemStatus {
-            tracked: true,
-            sync_status: Some(record.sync_status.as_str().to_string()),
-            entity_kind: Some(record.entity_kind.as_str().to_string()),
-            file_size: Some(record.file_size),
-            mtime: Some(record.mtime),
-            proton_id: record.proton_id,
-        },
-        None => EmblemStatus {
-            tracked: false,
-            sync_status: None,
-            entity_kind: None,
-            file_size: None,
-            mtime: None,
-            proton_id: None,
-        },
+    Ok(record
+        .map(EmblemStatus::from)
+        .unwrap_or_else(EmblemStatus::untracked))
+}
+
+/// One file the search found: the path it is stored under, and that record's status.
+#[derive(serde::Serialize)]
+pub struct FileMatch {
+    /// Relative to the local root, exactly as the index stores it.
+    path: String,
+    status: EmblemStatus,
+}
+
+/// What the search found. `total` counts every match; `matches` is capped at the asked-for limit,
+/// so a screen can say what it is not showing rather than implying the list is all of it.
+#[derive(serde::Serialize)]
+pub struct FileSearch {
+    matches: Vec<FileMatch>,
+    total: usize,
+    query: String,
+}
+
+/// Default cap. Above ~50 rows the answer is "narrow the query", not a longer list.
+const SEARCH_LIMIT: usize = 50;
+
+/// Find files by name or by path (S5's lookup field).
+///
+/// WHY THIS EXISTS ALONGSIDE `path_sync_status`: that one opens the index AT the path it is given,
+/// so `spec.md` answers "not tracked" for a file that is really at `docs/spec.md` — the gap the
+/// lookup field shipped with (G21). This one matches a bare name, a trailing path, or any fragment.
+///
+/// The query is taken as a user types it: a leading `~` expands, and an absolute path under the
+/// sync folder is reduced to the relative one the index stores. Neither is a guess — both are
+/// exactly what someone pastes out of a file manager.
+///
+/// Async + `spawn_blocking`: a name search is a full table scan behind a 3s busy timeout, and the
+/// module header's rule is what keeps WebKitGTK from aborting on a stalled main loop.
+#[tauri::command]
+pub async fn search_files(
+    app: tauri::AppHandle,
+    query: String,
+    limit: Option<usize>,
+) -> Result<FileSearch, String> {
+    let (db_path, local_root) = {
+        let paths = app.state::<Mutex<RuntimePaths>>();
+        let paths = paths.lock().unwrap();
+        (paths.effective_db_path(), paths.effective_local_root())
+    };
+    let db_path = db_path
+        .ok_or_else(|| "no index database configured or reported by the daemon".to_string())?;
+    let limit = limit.unwrap_or(SEARCH_LIMIT).clamp(1, 500);
+    tauri::async_runtime::spawn_blocking(move || {
+        let query = relative_query(&query, local_root.as_deref());
+        let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT)?;
+        let (found, total) = index_read::search_records(&connection, &query, limit)?;
+        Ok(FileSearch {
+            matches: found
+                .into_iter()
+                .map(|m| FileMatch {
+                    path: m.path.to_string_lossy().into_owned(),
+                    status: EmblemStatus::from(m.record),
+                })
+                .collect(),
+            total,
+            query,
+        })
     })
+    .await
+    .map_err(|error| format!("search task failed: {error}"))?
+}
+
+/// A typed query as the index would store it: `~` expanded, the sync folder's own prefix removed,
+/// and no leading separator. Anything that is not under the sync folder is left alone — an absolute
+/// path elsewhere still matches as a fragment, which is a better answer than no answer.
+fn relative_query(query: &str, local_root: Option<&std::path::Path>) -> String {
+    let query = query.trim();
+    let expanded = match query.strip_prefix('~') {
+        // `~user` is somebody else's home and is not expanded here either — same rule as the
+        // daemon's `expand_tilde`.
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => match std::env::var_os("HOME") {
+            Some(home) => format!("{}{rest}", home.to_string_lossy()),
+            None => query.to_string(),
+        },
+        _ => query.to_string(),
+    };
+    let stripped = local_root
+        .map(|root| root.to_string_lossy().trim_end_matches('/').to_string())
+        .filter(|root| !root.is_empty())
+        .and_then(|root| {
+            expanded
+                .strip_prefix(&root)
+                .map(|rest| rest.trim_start_matches('/').to_string())
+        })
+        .unwrap_or(expanded);
+    stripped.trim_start_matches('/').to_string()
 }
 
 /// Start the sync daemon: prefer the user's systemd unit; when there is none, fall back to
@@ -1142,7 +1245,61 @@ pub fn hide_tray_panel(app: tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_ignored_paths, probe_cli, strip_ansi};
+    use super::{daemon_ignored_paths, probe_cli, relative_query, strip_ansi};
+    use std::path::Path;
+
+    #[test]
+    fn a_pasted_absolute_path_is_reduced_to_the_one_the_index_stores() {
+        let root = Path::new("/home/me/ProtonDrive");
+        assert_eq!(
+            relative_query("/home/me/ProtonDrive/docs/spec.md", Some(root)),
+            "docs/spec.md"
+        );
+        // A trailing separator on the root is the same root.
+        assert_eq!(
+            relative_query(
+                "/home/me/ProtonDrive/docs/spec.md",
+                Some(Path::new("/home/me/ProtonDrive/"))
+            ),
+            "docs/spec.md"
+        );
+    }
+
+    #[test]
+    fn a_path_outside_the_sync_folder_is_left_alone_to_match_as_a_fragment() {
+        // Better a fragment match than "no such file": the user may well be looking for the name.
+        assert_eq!(
+            relative_query("/etc/hosts", Some(Path::new("/home/me/ProtonDrive"))),
+            "etc/hosts"
+        );
+    }
+
+    #[test]
+    fn a_bare_name_survives_untouched() {
+        assert_eq!(
+            relative_query("  spec.md  ", Some(Path::new("/home/me/ProtonDrive"))),
+            "spec.md"
+        );
+        assert_eq!(relative_query("docs/spec.md", None), "docs/spec.md");
+    }
+
+    #[test]
+    fn a_leading_tilde_expands_the_way_the_daemon_expands_it() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return;
+        }
+        let root = Path::new(&home).join("ProtonDrive");
+        assert_eq!(
+            relative_query("~/ProtonDrive/docs/spec.md", Some(&root)),
+            "docs/spec.md"
+        );
+        // `~user` is somebody else's home: not expanded, and not a path this index stores.
+        assert_eq!(
+            relative_query("~someone/file.md", Some(&root)),
+            "~someone/file.md"
+        );
+    }
 
     #[test]
     fn a_missing_binary_is_the_only_thing_that_reads_as_not_installed() {

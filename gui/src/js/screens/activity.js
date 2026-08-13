@@ -393,19 +393,22 @@ function listFooter(onPasses) {
 }
 
 function filesTab(props) {
-  const { lookup, query } = props;
-  // A resolved lookup REPLACES the title block and the quiet body. Not hidden and not pushed down:
-  // `7a File lookup` has no title node at all, and the search field inherits the title block's
-  // 4px padding-top and loses its own 18px margin.
-  const looking = Boolean(lookup);
+  const { lookup, query, matches } = props;
+  // A resolved lookup REPLACES the title block and the quiet body, and so does the chooser. Not
+  // hidden and not pushed down: `7a File lookup` has no title node at all, and the search field
+  // inherits the title block's 4px padding-top and loses its own 18px margin.
+  const choosing = !lookup && (matches?.matches?.length ?? 0) > 1;
+  const looking = Boolean(lookup) || choosing;
 
-  // Only the answer to the query that is IN the field. `path_sync_status` takes an exact relative
-  // path, so a resolved lookup answers for exactly one string; while the field holds anything else
-  // there is no count to state.
-  const answered = lookup && lookup.path === normaliseQuery(query);
+  // Only the count for the string that is IN the field. Against what was TYPED, not the resolved
+  // query: the two differ for a pasted absolute path, and `3 matches` beside a different string is
+  // a count for a search nobody is looking at. Debounced, so this is false for 180ms after a
+  // keystroke — deliberately, since `0 matches` there flashes a false negative mid-path.
+  const asked = normaliseQuery(query);
+  const answered = matches && matches.typed === asked;
   const field = lookupField({
     value: query,
-    matches: answered ? (lookup.status?.tracked ? 1 : 0) : null,
+    matches: answered ? matches.total : null,
     onInput: props.onQuery,
     onClear: props.onClearQuery,
     inputRef: props.inputRef,
@@ -420,8 +423,50 @@ function filesTab(props) {
   return [
     looking ? null : titleBlock(props.quietSub),
     field,
-    ...(looking ? lookupBody(props) : quietBody(props)),
+    ...(choosing ? chooserBody(props) : lookup ? lookupBody(props) : quietBody(props)),
   ];
+}
+
+// --------------------------------------------------------------------- the chooser body ----
+
+/** One row of the chooser: the path the index stores, and where that file stands. */
+function matchRow(match, onChoose) {
+  const verdict = verdictOf(match.status);
+  const row = el(
+    "button",
+    { class: "activity-match", onClick: () => onChoose?.(match) },
+    el("span", { class: "activity-match-path" }, match.path),
+    el("span", { class: "activity-match-verdict" }, verdict.title),
+  );
+  return row;
+}
+
+/**
+ * Several files matched, so the screen asks instead of answering.
+ *
+ * NO HEXAGON AND NO SEAM. Both are claims about one file's standing, and there is no one file yet —
+ * the mark over a list would be a verdict about whichever row it happened to sit above.
+ */
+function chooserBody(props) {
+  const { matches } = props;
+  const shown = matches.matches;
+  const list = el(
+    "div",
+    { class: "activity-matches" },
+    el("div", { class: "activity-matches-title" }, ACTIVITY.lookup.chooseTitle),
+    el("div", { class: "activity-matches-sub" }, ACTIVITY.lookup.chooseSub),
+    el(
+      "div",
+      { class: "activity-matches-list" },
+      ...shown.map((match) => matchRow(match, props.onChooseMatch)),
+    ),
+    // Said only when it is true: a capped list that claims to be everything is how someone concludes
+    // their file is not there.
+    matches.total > shown.length
+      ? el("div", { class: "activity-matches-capped" }, ACTIVITY.lookup.capped(shown.length, matches.total))
+      : null,
+  );
+  return [list];
 }
 
 function quietBody(props) {
@@ -638,6 +683,17 @@ function lookupBody(props) {
     : el("div", { class: "activity-content" });
 
   tail.style.marginTop = "34px";
+  // The way back to a list this file was chosen out of. Drawn only when there IS one: a search that
+  // matched a single file has no list behind it, and a button that returns to nothing is a dead end.
+  if (props.chosen && (props.matches?.matches?.length ?? 0) > 1) {
+    tail.prepend(
+      el(
+        "div",
+        { class: "activity-match-back" },
+        smallSecondary(ACTIVITY.lookup.backToMatches, props.onBackToMatches),
+      ),
+    );
+  }
   return [seamBlock, fid(tail, "content")];
 }
 
@@ -657,6 +713,35 @@ export function normaliseQuery(query) {
   return String(query ?? "")
     .trim()
     .replace(/^\/+/, "");
+}
+
+/**
+ * What a `search_files` reply means for the screen: the list it holds, and the one file to describe
+ * — or null when there is not one.
+ *
+ * PURE, and separate from the fetch, because the three outcomes are exactly where this screen can
+ * go wrong: one match must resolve straight to a verdict, several must NOT (a verdict about the
+ * wrong `notes.md` is worse than a question), and none must carry the error through — a failed
+ * search rendered as a miss tells someone their file is not being synced when nothing of the sort
+ * is known.
+ *
+ * `query` is the BACKEND's, which is the resolved one: it expands `~` and strips the sync root, so
+ * the miss names the path the index was actually asked about.
+ */
+export function searchOutcome(reply, typed, error = null) {
+  const matches = reply?.matches ?? [];
+  const query = reply?.query ?? normaliseQuery(typed);
+  // `typed` as well as `query`, because they are two different questions. The count belongs to what
+  // is IN the field — so the screen compares against what was typed — while the miss and the cards
+  // name the file, which is the resolved path. A pasted `~/ProtonDrive/docs/spec.md` is both.
+  const summary = { query, typed: normaliseQuery(typed), matches, total: reply?.total ?? matches.length };
+  if (matches.length === 1) {
+    return { matches: summary, lookup: { path: matches[0].path, status: matches[0].status, error: null } };
+  }
+  if (matches.length === 0) {
+    return { matches: summary, lookup: { path: query, status: null, error } };
+  }
+  return { matches: summary, lookup: null };
 }
 
 export function elideId(protonId) {

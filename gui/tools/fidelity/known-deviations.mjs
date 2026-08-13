@@ -49,6 +49,13 @@
  *                  for it would be filing an issue against the architecture. Everything else about
  *                  a row is unchanged — it must still name the exact difference, and it must still
  *                  FAIL: a structural row that stops failing is as much of a lie as any other.
+ * @property decision
+ *                  THE PRODUCT CHOSE AGAINST THE DRAWING, so no capability is missing and no issue
+ *                  closes it either. The four `§94` rows are the case it was added for: the doors
+ *                  are drawn on every screen, which takes 50px from a content region the frames
+ *                  measured without them. Narrower than it looks — it may only be used for a
+ *                  departure recorded in DEVIATIONS.md with the decision and its date, never for
+ *                  "the app does it differently". Must still fail, like every other row.
  * @property why    one line, in the same voice as DEVIATIONS.md
  */
 export const KNOWN_DEVIATIONS = [
@@ -617,9 +624,46 @@ export const KNOWN_DEVIATIONS = [
     frame: "8a Skip rules",
     key: "div[2]/div[2]",
     props: ["margin-top"],
-    detail: "85.8125px vs 156.812px",
+    detail: "85.8125px vs 106.812px",
     issue: "#232",
-    why: "the tail is pushed to the bottom with `margin-top:auto`, so its used value measures whatever is above it — and what is above it is 71px shorter without the unsyncable panel (G19: a socket or a symlink never enters the index, so there is nothing to count and `See them` would open the one group `7a Never synced` already omits)",
+    why: "the tail is pushed to the bottom with `margin-top:auto`, so its used value measures whatever is above it — and what is above it is 71px shorter without the unsyncable panel (G19: a socket or a symlink never enters the index, so there is nothing to count and `See them` would open the one group `7a Never synced` already omits), less the 50px the doors take back off the region (§94)",
+  },
+  // ---- §94 · the doors are drawn on every screen ----
+  //
+  // The 2026-08-13 decision (DEVIATIONS §94) draws the footer nav under the action bar, so Settings
+  // and Plan hand 50px of their content region to navigation. Every row below is that 50px arriving
+  // somewhere measurable. No capability closes them; a re-drawn frame would.
+  {
+    frame: "8a Settings",
+    key: "div[2]",
+    props: ["overflow"],
+    detail: "visible vs auto",
+    decision: true,
+    why: "the folders tab is 491px of content in a 447px region once the doors take their 50px, and a `flex:1` item with no `min-height:0` refuses to shrink below its content — the window scrolled as a whole and took the footer off the screen. Scrolling the region loses nothing; clipping it would",
+  },
+  {
+    frame: "8a Settings",
+    key: "div[2]/div[0]",
+    props: ["bottom"],
+    detail: "382px vs 332px",
+    decision: true,
+    why: "the folder pair's seam is pinned 60px off each end of the tab, so its used `bottom` is whatever the tab's height leaves — exactly 50px less with the doors under the bar",
+  },
+  {
+    frame: "8a Skip rules",
+    key: "div[2]",
+    props: ["overflow"],
+    detail: "visible vs auto",
+    decision: true,
+    why: "the same region on the same screen, and the same 50px: `.settings-content` is one rule for all five tabs",
+  },
+  {
+    frame: "5a Plan",
+    key: "div[3]/div[1]",
+    props: ["overflow"],
+    detail: "hidden vs hidden auto",
+    decision: true,
+    why: "the frame draws nine 33px rows in a 319px block; with the doors under the bar the block is 272px and eight fit, so the list scrolls rather than hiding the ninth action behind a clip the user cannot reach",
   },
   {
     frame: "8a Skip rules",
