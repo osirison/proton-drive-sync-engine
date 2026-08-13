@@ -16,6 +16,12 @@
 // declares it, which is how the dead `hexRect`/`hexNumeral` declarations below were found.
 
 /**
+ * The doors, off by one: the app's door 0 is Home, which no frame draws (DEVIATIONS §94), so it
+ * answers null and every drawn door keeps its frame identity — app door 1 IS the frame's `Activity`.
+ */
+export const doorKeys = (bar) => (i) => (i === 0 ? null : `${bar}/span[${i - 1}]`);
+
+/**
  * Where the shell's own slots live in each frame's node tree. The footer's key differs per frame
  * because the number of blocks above it does — `2a Settled` has one hero, `2a Needs you` has a hero
  * plus a transfer grid plus an attention band — which is exactly why this cannot be derived.
@@ -31,7 +37,7 @@ export const SHELL_FIDS = {
     menu: "header/button",
     footerNav: "div[2]",
     footerBar: "div[2]/div[0]",
-    door: (i) => `div[2]/div[0]/span[${i}]`,
+    door: doorKeys("div[2]/div[0]"),
     footerLine: "div[2]/div[1]",
   },
   "2a Syncing": {
@@ -44,7 +50,7 @@ export const SHELL_FIDS = {
     menu: "header/button",
     footerNav: "div[2]",
     footerBar: "div[2]/div[0]",
-    door: (i) => `div[2]/div[0]/span[${i}]`,
+    door: doorKeys("div[2]/div[0]"),
     footerLine: "div[2]/div[1]",
   },
   "2a Needs you": {
@@ -57,7 +63,7 @@ export const SHELL_FIDS = {
     menu: "header/button",
     footerNav: "div[3]",
     footerBar: "div[3]/div",
-    door: (i) => `div[3]/div/span[${i}]`,
+    door: doorKeys("div[3]/div"),
   },
 };
 
@@ -423,7 +429,7 @@ const conflictShell = (tailAt, chip) => ({
   menu: "header/button",
   footerNav: `div[${tailAt}]`,
   footerBar: `div[${tailAt}]/div`,
-  door: (i) => `div[${tailAt}]/div/span[${i}]`,
+  door: doorKeys(`div[${tailAt}]/div`),
 });
 
 /**
@@ -566,7 +572,7 @@ const deletionShell = (tailAt) => ({
   menu: "header/button",
   footerNav: `div[${tailAt}]`,
   footerBar: `div[${tailAt}]/div`,
-  door: (i) => `div[${tailAt}]/div/span[${i}]`,
+  door: doorKeys(`div[${tailAt}]/div`),
 });
 
 /**
@@ -863,11 +869,11 @@ const activityShell = {
   menu: "header/button",
 };
 
-/** The four doors, at whichever index the blocks above them leave. */
+/** The doors the frame draws, at whichever index the blocks above them leave. */
 const activityDoors = (at) => ({
   footerNav: at,
   footerBar: `${at}/div`,
-  door: (i) => `${at}/div/span[${i}]`,
+  door: doorKeys(`${at}/div`),
 });
 
 /**

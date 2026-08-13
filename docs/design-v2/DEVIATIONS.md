@@ -2513,6 +2513,7 @@ path it is given, and none of the 23 commands lists or searches local files. So 
 not at the sync root misses, and the miss draws `14-behaviour-and-state.md:130`'s own sentence. Two
 consequences: the count is only ever 0 or 1, so the plural arm of `ACTIVITY.matches(n)` is
 unreachable, and the frame's own query is not reproducible by the shipped screen. G21 #234.
+**Closed 2026-08-13 by `search_files` — see §94.**
 
 **Four of the five lookup verdicts are undrawn, and they are the screen's front door.** `path_sync_
 status` answers `synced`, `modified` or `conflict`, reports `tracked:false`, and marks a directory
@@ -2604,7 +2605,7 @@ argument rather than a caller-side `.toLowerCase()`, since above ten `cardinal` 
 | S5     | `7a Activity quiet`  | `Last things to move`, head + three rows | the block's footer row alone            | G17 #230     |
 | S5     | `7a Activity quiet`  | `4 files are never synced`               | the rule-matched count alone            | G19 #232     |
 | S5     | `7a File lookup`     | `This file's history`, four rows         | the `linked · id` line alone            | G1 #190      |
-| S5     | `7a File lookup`     | the query `spec.md` → `docs/spec.md`     | an exact relative path                  | G21 #234     |
+| S5     | `7a File lookup`     | the query `spec.md` → `docs/spec.md`     | ~~an exact relative path~~ a search (§94) | G21 #234 ✔   |
 | S5     | `7a File lookup`     | `received 14:32` on the Proton card      | the clause omitted                      | G20 #233     |
 | S5     | `7a File pending`    | a 3px bar at 41%                         | no track at all (§63)                   | G2 #191, #98 |
 | S5     | `7a Never synced`    | `Can't be synced`, two rows              | the group omitted                       | G19 #232     |
@@ -4479,3 +4480,63 @@ symmetric: a miss labels a genuine outage `Didn't finish`, which is quieter than
 true, while a false hit is the bug this section is about. Nine phrases, each transport vocabulary a
 local failure has no reason to use, pinned in both directions by `activity.test.js` — including the
 five real failures that must NOT match.
+
+## Navigation everywhere, a Home door, and a search that searches (2026-08-13)
+
+## 94. Three product decisions taken against the drawings
+
+The frames are a design, and on these three points the product decided otherwise. Recorded here
+rather than argued in a commit message, because every one of them contradicts something this file
+already measured.
+
+**The doors are drawn on every screen but the takeover.** §40 measured the split — 13 in-scope 1040
+frames carry the four doors, 6 carry a footer action bar, never both — and read the consequence
+correctly: on Settings, Plan and onboarding there was no navigation at all, so the app mark had to be
+a home affordance. That is the part that did not survive contact: a user on Settings sees the
+navigation vanish and has no reason to know the app mark is a way out. `app.js` now draws the nav
+under the action bar on those screens, and only the onboarding takeover keeps none — on a fresh
+machine there is nowhere to navigate to, and the flow's own step buttons are the way through.
+
+It costs 50px of content region on two screens, and every one of the four recorded deviations is that
+50px arriving somewhere measurable: `.settings-content` scrolls rather than pushing the footer off
+the window (a `flex:1` item with no `min-height:0` refuses to shrink below its content, so the whole
+window scrolled and the footer went with it); the folder pair's seam is pinned 60px off each end of a
+tab that is 50px shorter; the plan list fits eight of its nine drawn rows and scrolls for the ninth.
+They are tagged `decision` in `known-deviations.mjs` — a third class beside `structural`, for a
+departure that no capability closes and no issue tracks, and it carries the must-still-fail clause
+unchanged.
+
+**Home is a door.** `navigate` used to answer a click on the lit door by going back to the main
+screen — IMPLEMENTATION-PLAN §3.3's assumption, and on Settings and Plan the only way back at all.
+Two things were wrong with it. A tab that toggles is not a tab: clicking `Activity` while on Activity
+left the screen you were looking at. And it was silently destructive — re-entering a screen resets
+it, so the toggle discarded a half-typed lookup and an in-flight rehearsal. So `FOOTER_ORDER` gained
+`main` at its head, labelled `Home`, the lit door is now a no-op, and the app mark stays a home
+affordance as well (a second route home is redundant, not wrong). The frames draw four doors and none
+of them lit on the main screen; the app draws five and lights Home there.
+
+The fid mapping is where that stays honest. `doorKeys` maps the app's door *i* to the frame's
+`span[i-1]` and answers `null` for door 0, so every drawn door keeps its identity in the gate and the
+one the frames do not draw is not compared against a node that does not exist.
+
+**The lookup field searches.** G21 recorded the gap and #234 tracked it: `path_sync_status` opens the
+index AT the string it is given, so `spec.md` — the query `7a File lookup` itself draws — answered
+`No file by that name in your sync folder` for a file sitting at `docs/spec.md`. The frame drew a
+search; the screen shipped an exact-path lookup, and the honest miss sentence made it look
+deliberate.
+
+`search_files` (gui-core `index_read::search_records`) matches an exact path, a whole name, a
+trailing run of components, then any fragment, ranked in that order and stable across runs. It is a
+full table scan — the index is keyed by path and has no name column, so a name search cannot be a
+point query — which is why the command is `async` + `spawn_blocking` (#142/#143: a stalled GTK main
+loop aborts WebKitGTK). A pasted absolute path is reduced to the relative one the index stores, and a
+leading `~` expands, because that is what someone pastes out of a file manager.
+
+Three outcomes, and only one of them was reachable before: one match resolves straight to the
+verdict; none is a miss (carrying the error separately, so a failed search never renders as a missing
+file); several are listed for the user to choose from. The chooser is undrawn — no frame could draw
+it, since the old lookup could only ever answer about one path — and it deliberately shows no
+hexagon and no seam: both are claims about one file's standing, and over a list they would be a
+verdict about whichever row they sat above. `ACTIVITY.matches`' plural arm is reachable for the first
+time, and the count states the TOTAL rather than the capped list, so a search that matched 132 files
+never reads as though it matched 50.

@@ -1,25 +1,20 @@
-// The route table (F4). Three kinds of route, and the difference is structural rather than
-// cosmetic — it decides what the window's footer is, which is the single biggest shape change from
-// the v1 sidebar build.
+// The route table (F4). A route's `kind` decides how it is entered; its `footer` decides whether it
+// carries an action bar. The doors themselves are drawn on every screen but the onboarding takeover
+// — see FOOTER_ORDER.
 //
-// Conflicts and Deletions are NOT navigation destinations any more. They are reached from the
-// attention band, the status chip, or a notification. That is why the footer has four labels and
-// only three of them are doors.
+// Conflicts and Deletions are NOT navigation destinations. They are reached from the attention band,
+// the status chip, or a notification.
 
 /**
- * MEASURED, not read: every in-scope 1040 frame carries EITHER the four doors OR a footer action
- * bar — 13 frames to 6, never both, never neither. `02-shell.md` says the doors "never move and
- * never change order, on any screen, in any state", which reads as *present everywhere*; the frames
- * say the action bar replaces them on the screens that commit something. See DEVIATIONS.md §40.
- *
- * The consequence is a real product constraint, not a layout detail: on Settings, Plan and
- * onboarding there is no navigation at all, so the action bar's own secondary button and the app
- * mark are the only ways out. That settles half of IMPLEMENTATION-PLAN.md §3.3's open question by
- * elimination — the app mark as a home affordance is not optional.
+ * `footer` is the route's ACTION BAR, not its navigation. The frames drew the two as alternatives —
+ * 13 frames with doors to 6 with a bar, never both (DEVIATIONS §40) — and a product decision of
+ * 2026-08-13 overrides that: the doors are drawn on every screen, under the action bar when there is
+ * one. Only the onboarding takeover still has none, because on a fresh machine there is nowhere to
+ * navigate to. DEVIATIONS §94.
  */
 export const ROUTES = {
-  // root — the main screen. Default, and no door of its own.
-  main: { kind: "root", footer: "doors" },
+  // root — the main screen. Default, and since 2026-08-13 a door of its own: see FOOTER_ORDER.
+  main: { kind: "root", footer: "doors", label: "Home" },
 
   // doors — reachable from the footer nav, in this order, always.
   activity: { kind: "door", label: "Activity", footer: "doors", task: "S5", issue: 184 },
@@ -152,11 +147,16 @@ export const ROUTES = {
 };
 
 /**
- * Footer order. Four labels, three doors and one overlay. **This array is the contract**: the
- * design's testing checklist has "Footer's four doors never move or reorder" as a line item, so
- * nothing may sort, filter or conditionally omit it.
+ * Footer order. Five labels: the root, three doors and one overlay. **This array is the contract** —
+ * the design's checklist has "Footer's doors never move or reorder" as a line item, so nothing may
+ * sort, filter or conditionally omit it.
+ *
+ * `main` leads it by the 2026-08-13 decision: Home is a door of its own, because clicking the lit
+ * door no longer returns you here (that toggle was the only way back from Settings and Plan, and it
+ * made a tab a switch). The app mark stays a home affordance as well — a second route home is
+ * redundant, not wrong.
  */
-export const FOOTER_ORDER = ["activity", "plan", "settings", "details"];
+export const FOOTER_ORDER = ["main", "activity", "plan", "settings", "details"];
 
 /** Overlay routes stack over whatever is underneath; a door replaces it. */
 export const isOverlay = (id) => ROUTES[id]?.kind === "overlay";

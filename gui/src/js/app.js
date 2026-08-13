@@ -64,6 +64,7 @@ import {
   neverSyncedFrom,
   normaliseQuery,
   passesSummaryOf,
+  searchOutcome,
 } from "./screens/activity.js";
 import {
   renderSettings,
@@ -213,17 +214,28 @@ function chipFor() {
 function navigate(id) {
   if (!ROUTES[id]) throw new Error(`app: no route "${id}"`);
   if (isOverlay(id)) return openOverlay(id);
-  // IMPLEMENTATION-PLAN §3.3's assumption, and on Settings and Plan there is no other way back:
-  // clicking the door you are already on returns to the main screen.
+  // The lit door is a no-op, NOT a toggle back to main (2026-08-13; Home is its own door now). It
+  // has to stay a no-op rather than a re-navigate: re-entering resets the screen, which would drop
+  // a half-typed lookup or an in-flight rehearsal.
+  //
+  // Only when nothing is stacked over it. With an overlay open the same click is the way back down
+  // to the screen underneath, so it must fall through and clear the layers.
+  if (route === id && screenStack.length === 0 && !dialogOverlay) return;
   const was = route;
-  route = route === id ? "main" : id;
+  route = id;
   // Leaving discards the plan; arriving is handled at the mount in `render()`, because a door is not
   // the only way in. Moving the token here also drops an in-flight rehearsal's reply where it lands,
   // rather than writing it into state the next visit throws away.
-  if (was === "plan") resetPlanScreen();
-  // Same rule for the activity screen: a tab, a half-typed path and a filesystem walk are all
-  // per-visit, so leaving drops them rather than carrying them into a session that may be hours old.
-  if (was === "activity") resetActivityScreen();
+  //
+  // `was !== id` guards both: the fall-through above re-enters the route you are already on to shut
+  // an overlay, and that is not leaving it — resetting there would wipe the plan or the lookup you
+  // came back to.
+  if (was !== id) {
+    if (was === "plan") resetPlanScreen();
+    // Same rule for the activity screen: a tab, a half-typed path and a filesystem walk are all
+    // per-visit, so leaving drops them rather than carrying them into a session that may be hours old.
+    if (was === "activity") resetActivityScreen();
+  }
   // A door leaves everything stacked over the old screen behind — both layers, not just the top
   // one. Cleared directly rather than by popping: the door itself keeps focus, so there is no
   // return target to honour.
@@ -499,6 +511,9 @@ const dom = {
   // a container would put a flex context between them and the window that the design does not have.
   bodyNodes: [],
   footer: null,
+  // The doors when they are NOT the footer itself — i.e. under an action bar. Latched like the
+  // footer so a poll patches them instead of destroying the door the user is standing on.
+  footerDoors: null,
   footerKind: null,
   // Which screen an action bar belongs to. Two screens' bars are both `actionBar` and are not
   // interchangeable — see the footer block in render().
@@ -820,9 +835,12 @@ function render() {
     // three activity windows paint `Activity` at --text and the other three at --text-4 — and under
     // `?frame=` the module `route` is still "main", so the gate would have compared four unlit
     // doors against three lit frames. `activeRoute()` collapses a dialog back to its underlying
-    // route and yields the overlay id for a screen overlay, which is why the `kind === "door"`
-    // test stays: `conflicts` and `deletions` are overlays, and their frames draw no lit door.
-    active: ROUTES[active]?.kind === "door" ? active : null,
+    // route and yields the overlay id for a screen overlay, which is why the kind test stays:
+    // `conflicts` and `deletions` are overlays, and their frames draw no lit door.
+    //
+    // `root` joins `door` since Home became one (2026-08-13). The main-screen frames draw every door
+    // unlit, so this lights one they do not — DEVIATIONS §94.
+    active: ["door", "root"].includes(ROUTES[active]?.kind) ? active : null,
     // The mono line is drawn on the settled and syncing main screens ONLY. `2a Needs you` is also
     // the main screen and drops it — the attention band has taken the space, and the footer tightens
     // from 22/20 to 20/16 to match. Measured, and the fidelity gate caught the first version of this
@@ -907,14 +925,34 @@ function render() {
     // landing mid-word would move the cursor to the front of what someone was typing. Restoring
     // both after the swap is cheaper than the patch path the plan and deletions screens need,
     // because nothing here animates and nothing else here holds state.
+    //
+    // THE CHOOSER MADE THAT INCOMPLETE. A search that matches several files draws up to 50 rows in
+    // a scroller, and a rebuild put a user who had scrolled to row 40 back at row 1 every two
+    // seconds — and dropped the keyboard off whichever row they had tabbed to. So the field's caret
+    // is no longer the only thing carried across: the list's scroll offset and the focused row's
+    // path come too. Keyed by PATH rather than by index, because a landing reply can reorder rows.
     const focused = document.activeElement === activityInputRef.node;
     const caret = focused ? caretOffset() : null;
+    const matchList = document.querySelector(".activity-matches-list");
+    const scrolled = matchList?.scrollTop ?? 0;
+    const rowPath =
+      document.activeElement instanceof HTMLElement
+        ? (document.activeElement.closest(".activity-match")?.dataset.matchPath ?? null)
+        : null;
     if (dom.bodyRoute !== active) unmountScreens();
     setBody(renderActivity(activityProps()));
     dom.bodyRoute = active;
     if (focused && activityInputRef.node) {
       activityInputRef.node.focus();
       putCaret(activityInputRef.node, caret);
+    }
+    const nextList = document.querySelector(".activity-matches-list");
+    if (nextList && scrolled) nextList.scrollTop = scrolled;
+    if (rowPath) {
+      const row = [...document.querySelectorAll(".activity-match")].find(
+        (node) => node.dataset.matchPath === rowPath,
+      );
+      row?.focus();
     }
   } else if (active === "settings") {
     // REBUILT EVERY PASS, with the focused field's caret put back — the same trade the activity
@@ -992,11 +1030,12 @@ function render() {
     if (nodes) setBody(nodes);
   }
 
-  // --- footer: either the four doors or an action bar — never both, never neither. The 13-to-6
-  // split is measured, not chosen; see routes.js.
+  // --- footer: the screen's action bar when it has one, and the doors beneath it. The frames drew
+  // the two as alternatives (13 to 6); the 2026-08-13 decision keeps navigation on every screen but
+  // the onboarding takeover. See routes.js and DEVIATIONS §94.
   //
   // The plan screen answers for itself, and is the only route that does: `5a Plan` and `5a Plan
-  // safe` draw an action bar, `5a Checking` draws the four doors. routes.js records only the route's
+  // safe` draw an action bar, `5a Checking` draws no bar at all. routes.js records only the route's
   // usual answer; the screen records what its current state draws.
   const kind = active === "plan" ? footerKindOf(planProps()) : (spec.footer ?? "doors");
   // Whose bar it is. A plan bar and a placeholder bar are both `actionBar`, and patching one as the
@@ -1025,6 +1064,21 @@ function render() {
               ? dom.footer.dataset.shape === onboardingBarShape(onboardingProps())
               : true;
   }
+  // WHICH DOOR THE KEYBOARD IS STANDING ON, before either node below can be replaced.
+  //
+  // The doors are drawn on every screen now, so they outlive the screen under them — but the NODE
+  // does not: the nav is `dom.footer` on a doors screen and `dom.footerDoors` under an action bar,
+  // and crossing between the two (or changing the nav's padding variant) rebuilds it. Focus then
+  // lands on `<body>` with the doors still drawn in the same place, which is worse than the old
+  // behaviour where they visibly went away. Two of this file's own comments assert the property —
+  // `navigate` clears the overlay stack because "the door itself keeps focus", and `focusKeyOf`
+  // calls a door button an opener that survives. Measured: standing on a door while the plan
+  // rehearsal lands drops the keyboard with no user action at all.
+  const standingOn =
+    document.activeElement instanceof HTMLElement
+      ? (document.activeElement.closest(".door")?.dataset.route ?? null)
+      : null;
+
   if (!patched) {
     const built =
       kind === "actionBar"
@@ -1039,17 +1093,42 @@ function render() {
                   // Onboarding draws 14px 32px 18px: it has no footer nav beneath to carry the margin.
                   bottom: spec.takeover ? 18 : 14,
                 })
-        : renderFooterNav({
-            ...navOpts,
-            order: FOOTER_ORDER,
-            labels: Object.fromEntries(FOOTER_ORDER.map((id) => [id, ROUTES[id].label])),
-            onNavigate: navigate,
-          });
+        : buildFooterNav(navOpts);
     if (dom.footer) dom.footer.replaceWith(built);
     else root.append(built);
     dom.footer = built;
     dom.footerKind = kind;
     dom.footerOwner = owner;
+  }
+
+  // The doors under an action bar. A second node rather than one composite footer, so every patch
+  // path above keeps working and the bar's own position among the root's children — which is what
+  // the fidelity mapping is keyed on — does not move.
+  //
+  // Not on the takeover: nothing it could navigate to works until the flow finishes.
+  if (kind === "actionBar" && !spec.takeover) {
+    // `standard`, and never the mono line: the line is the main screen's folder pair, and this nav
+    // sits under a bar that has already said what the screen is about.
+    const belowOpts = { ...navOpts, variant: "standard", line: null };
+    if (!dom.footerDoors || !updateFooterNav(dom.footerDoors, belowOpts)) {
+      const built = buildFooterNav(belowOpts);
+      if (dom.footerDoors) dom.footerDoors.replaceWith(built);
+      else dom.footer.after(built);
+      dom.footerDoors = built;
+    }
+  } else if (dom.footerDoors) {
+    dom.footerDoors.remove();
+    dom.footerDoors = null;
+  }
+
+  // Put the keyboard back on the same door, in whichever node now holds it. Only when it fell off:
+  // a patched nav keeps its own button, and re-focusing one that never lost focus would fight a
+  // caret somewhere else on a later render.
+  if (
+    standingOn &&
+    !(document.activeElement instanceof HTMLElement && document.activeElement.closest(".door"))
+  ) {
+    document.querySelector(`.footer-nav [data-route="${standingOn}"]`)?.focus();
   }
 
   // --- the dialog layer: mounted when the route changes, PATCHED (i.e. left alone) otherwise.
@@ -1154,6 +1233,16 @@ function render() {
 
 function titleFor(id) {
   return id.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
+}
+
+/** The doors. One builder for both mounts — the footer itself, and the nav under an action bar. */
+function buildFooterNav(navOpts) {
+  return renderFooterNav({
+    ...navOpts,
+    order: FOOTER_ORDER,
+    labels: Object.fromEntries(FOOTER_ORDER.map((id) => [id, ROUTES[id].label])),
+    onNavigate: navigate,
+  });
 }
 
 /**
@@ -1790,6 +1879,16 @@ let activityTab = "files";
 /** What is in the lookup field, and the answer for it — the second only moves when a reply lands. */
 let activityQuery = "";
 let activityLookup = null; // { path, status } — `status` null-but-present means "asked, not found"
+/**
+ * Every file the search found for the resolved query, and how many there were before the cap.
+ * `{ query, matches: [{ path, status }], total }`, or null when nothing has been asked yet.
+ */
+let activityMatches = null;
+/**
+ * Which match the user picked out of a list of several. Cleared on every new reply, so a chosen
+ * file never survives the query that found it.
+ */
+let activityChosen = null;
 let activityLookupInFlight = null;
 let activityLookupTimer = null;
 /**
@@ -1829,6 +1928,8 @@ function resetActivityScreen() {
   activityTab = "files";
   activityQuery = "";
   activityLookup = null;
+  activityMatches = null;
+  activityChosen = null;
   activityLookupInFlight = null;
   activityPendingShown = null;
   activityPendingTransfer = null;
@@ -1860,56 +1961,89 @@ async function ensureSkipRules() {
 }
 
 /**
- * Look one path up.
+ * Search the index for what was typed.
  *
- * AN EXACT RELATIVE PATH, and that is narrower than the frame implies: `7a File lookup` draws the
- * query `spec.md` resolving to `docs/spec.md`, which is a name-to-path SEARCH, and no Phase-1
- * command lists or searches local files — `path_sync_status` opens the index at the path it is
- * given and nothing else. So a bare name that is not at the root MISSES, and the deck's own
- * `No file by that name in your sync folder.` is the honest answer rather than a failure. G21.
+ * A NAME, A TRAILING PATH OR A FRAGMENT — `search_files` matches all three, so `spec.md` resolves to
+ * `docs/spec.md` the way `7a File lookup` draws it. This used to be `path_sync_status`, which opens
+ * the index AT the string it is given: a bare name that was not at the root missed, and the screen
+ * said the file did not exist. That was G21, and closing it is what makes the plural arm of
+ * `ACTIVITY.matches` reachable.
  *
- * The consequence for the drawn `1 match`: the count is only ever 0 or 1 here, so the plural arm of
- * `ACTIVITY.matches` is unreachable until that gap closes.
+ * One match resolves straight to the verdict. Several are listed for the user to pick from — the
+ * screen cannot choose for them, and answering for the first would be a verdict about a file they
+ * did not ask about.
  */
 async function lookupPath(query) {
-  const path = normaliseQuery(query);
-  if (!path) {
+  const typed = normaliseQuery(query);
+  if (!typed) {
     activityLookup = null;
+    activityMatches = null;
+    activityChosen = null;
     activityLookupInFlight = null;
     render();
     return;
   }
   // Latest-wins. Typing outruns the round trip, and an early reply landing after a later one would
   // put the verdict for `doc` under the word `docs/spec.md`.
-  activityLookupInFlight = path;
-  let status = null;
+  activityLookupInFlight = typed;
+  let reply = null;
   let failure = null;
   try {
-    status = await api.pathSyncStatus(path);
+    // THE RAW STRING, not `normaliseQuery`'s. That one strips the leading `/` so the field's own
+    // count can be keyed on what is in it — and the backend's root-stripping is a PATH prefix
+    // match, which an absolute path with its slash removed can never satisfy. Sent normalised, a
+    // pasted `/home/me/ProtonDrive/docs/spec.md` reached the index as the literal
+    // `home/me/ProtonDrive/docs/spec.md` and matched nothing, which is exactly the input
+    // `relative_query` exists to serve.
+    reply = await api.searchFiles(String(query ?? "").trim());
   } catch (error) {
-    console.error("path_sync_status failed:", error);
-    // KEPT, not swallowed. A caught error and a path that is not in the index both leave `status`
-    // null, and the screen must not tell someone their file is missing when the check is what
+    console.error("search_files failed:", error);
+    // KEPT, not swallowed. A caught error and a name nothing matches both leave the screen with no
+    // file to describe, and it must not tell someone their file is missing when the search is what
     // failed. The daemon's own words go through untouched, to be quoted in mono.
     failure = String(error?.message ?? error);
   }
-  if (activityLookupInFlight !== path) return;
+  if (activityLookupInFlight !== typed) return;
   activityLookupInFlight = null;
-  activityLookup = { path, status, error: failure };
+  // One match resolves, none is a miss carrying the failure, several are a list. Pure and pinned in
+  // `activity.test.js` — see `searchOutcome`.
+  const outcome = searchOutcome(reply, typed, failure);
+  activityMatches = outcome.matches;
+  activityLookup = outcome.lookup;
+  activityChosen = null;
   // THE PENDING DIALOG'S TRIGGER, and it is the only one the data supports. `7a File lookup` and
   // `7a File pending` are the same lookup in two states — a file that is settled, and a file that
   // is moving right now — so looking up the file the daemon is currently transferring is what
   // tells the two apart. Nothing else could: `SyncActivity` carries exactly ONE in-flight transfer
   // (#211), so a lookup for any other moving file cannot reach this state at all.
   //
+  // Against the RESOLVED path, not the query: `spec.md` and `docs/spec.md` are the same file, and
+  // the transfer names it the way the index does. A list of several has no one file to describe, so
+  // it opens nothing until one is chosen — see `onChooseMatch`.
+  //
   // Latched, so dismissing it sticks. The condition stays true for as long as the transfer runs.
-  const moving = store.select.response()?.activity?.transfer ?? null;
-  if (moving?.path === path && activityPendingShown !== path) {
-    activityPendingShown = path;
-    navigate("filePending");
-    return;
-  }
+  if (activityLookup && offerPendingDialog(activityLookup.path)) return;
   render();
+}
+
+/**
+ * Open `7a File pending` for a path that is moving right now, once per path.
+ *
+ * Returns true when it took over, so the caller stops rather than rendering the screen underneath.
+ */
+function offerPendingDialog(path) {
+  // NEVER OVER SOMETHING THE USER OPENED. A reply lands ~180ms plus a round trip after the last
+  // keystroke, and nothing on the way out of this screen cancels it — so a search started before
+  // `Show them`, `Details` or a notification's `Review` was clicked would put this dialog over a
+  // surface it is not about, taking the one the user asked for down with it (`openOverlay` nulls
+  // `dialogOverlay` for a screen overlay and overwrites `dialogReturn` for a dialog). Silently
+  // dropped rather than queued: the offer is about a transfer that is happening NOW.
+  if (dialogOverlay || screenStack.length) return false;
+  const moving = store.select.response()?.activity?.transfer ?? null;
+  if (moving?.path !== path || activityPendingShown === path) return false;
+  activityPendingShown = path;
+  navigate("filePending");
+  return true;
 }
 
 /**
@@ -1967,6 +2101,9 @@ function activityProps() {
     tab,
     query: ui?.query ?? activityQuery,
     lookup: ui?.lookup ?? activityLookup,
+    // `ui.lookup` IS a fixture's whole answer — one file, resolved — so a frame that pins one draws
+    // the verdict and never the chooser. Only a live search fills this.
+    matches: ui?.lookup ? null : (ui?.matches ?? activityMatches),
     editedAt: ui?.clock?.edited ?? null,
     never,
     history,
@@ -2006,11 +2143,39 @@ function activityProps() {
     onClearQuery: () => {
       activityQuery = "";
       activityLookup = null;
+      activityMatches = null;
+      activityChosen = null;
       activityLookupInFlight = null;
       activityPendingShown = null;
       clearTimeout(activityLookupTimer);
       render();
     },
+    // One file out of several. The row already carries the status the search read, so choosing is
+    // not a second round trip — and the pending dialog is offered here for the same reason it is
+    // offered on a single match: this is the moment the screen knows which file is meant.
+    //
+    // A CLICK OUTRANKS A SEARCH THE USER HAS ALREADY MOVED PAST. The chooser goes on drawing the
+    // last answer while a newer query is debounced, so the row can be clicked with a reply still
+    // coming — and that reply would replace the file just chosen with the one nobody picked.
+    // Cancelling both the timer and the in-flight token drops it: `lookupPath` bails on a token
+    // that has moved.
+    onChooseMatch: (match) => {
+      clearTimeout(activityLookupTimer);
+      activityLookupTimer = null;
+      activityLookupInFlight = null;
+      activityChosen = match.path;
+      activityLookup = { path: match.path, status: match.status, error: null };
+      if (offerPendingDialog(match.path)) return;
+      render();
+    },
+    // Back to the list from a file that was chosen out of one. Not a re-search: the answers are
+    // already held, and asking again would put a fresh reply under a query nobody retyped.
+    onBackToMatches: () => {
+      activityChosen = null;
+      activityLookup = null;
+      render();
+    },
+    chosen: activityChosen,
     onPasses: () => {
       activityTab = "passes";
       render();

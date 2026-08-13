@@ -1,9 +1,9 @@
-// The route table's invariants. Two of these are promises the design makes in writing, and a
-// promise nothing checks is a promise that drifts:
+// The route table's invariants.
 //
-//   · "Footer's four doors never move or reorder" — 14-behaviour-and-state.md's testing checklist.
-//   · Every screen has EITHER the doors OR a footer action bar, never both — measured over the 22
-//     in-scope 1040 frames, DEVIATIONS.md §40.
+//   · "Footer's doors never move or reorder" — 14-behaviour-and-state.md's testing checklist.
+//   · `footer` says whether a route has an ACTION BAR. It no longer says whether the doors are
+//     drawn: the 2026-08-13 decision draws them on every screen but the onboarding takeover, over
+//     the frames' 13-to-6 either/or (DEVIATIONS §40, superseded by §94).
 //
 // Plus the tray aliases, which exist because tray.rs is Rust and does not move when this table does.
 
@@ -11,10 +11,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ROUTES, FOOTER_ORDER, isOverlay, isDialog } from "../src/js/routes.js";
 
-test("the four doors, in this order, and no others", () => {
+test("the five doors, in this order, and no others", () => {
   // Hard-coded rather than derived: deriving it from ROUTES would let a reordering of the object
   // literal reorder the footer, which is the exact thing the checklist forbids.
-  assert.deepEqual(FOOTER_ORDER, ["activity", "plan", "settings", "details"]);
+  assert.deepEqual(FOOTER_ORDER, ["main", "activity", "plan", "settings", "details"]);
+});
+
+test("Home leads the footer and is the root route", () => {
+  // Its own door since 2026-08-13. Before that the way back was clicking the door you were already
+  // on, which made a tab a toggle and left Settings and Plan with no navigation at all.
+  assert.equal(FOOTER_ORDER[0], "main");
+  assert.equal(ROUTES.main.kind, "root");
+  assert.equal(ROUTES.main.label, "Home");
 });
 
 test("every footer entry is a real route with a label to show", () => {
@@ -45,20 +53,21 @@ test("every route declares a known kind", () => {
   }
 });
 
-test("a route's footer is doors or an action bar — never both, never something else", () => {
+test("a route's footer is doors or an action bar — never something else", () => {
   for (const [id, spec] of Object.entries(ROUTES)) {
     if (spec.footer === undefined) continue; // overlays inherit whatever is underneath
     assert.ok(["doors", "actionBar"].includes(spec.footer), `${id} has footer "${spec.footer}"`);
   }
 });
 
-test("the screens that commit something have an action bar instead of doors", () => {
-  // The measured 13-to-6 split. Settings, Plan and onboarding therefore have no navigation at all,
-  // which is why the app mark has to be a home affordance.
+test("the screens that commit something carry an action bar as well", () => {
+  // `actionBar` is now ADDITIVE — app.js draws the doors under the bar on every one of these but
+  // the takeover, which is the only screen with no navigation left.
   for (const id of ["plan", "settings", "onboarding"]) {
     assert.equal(ROUTES[id].footer, "actionBar", `${id} should carry the action bar`);
   }
   assert.equal(ROUTES.main.footer, "doors");
+  assert.ok(ROUTES.onboarding.takeover, "onboarding is the one screen the doors are kept off");
 });
 
 test("only onboarding is a takeover, and it is not dismissible", () => {

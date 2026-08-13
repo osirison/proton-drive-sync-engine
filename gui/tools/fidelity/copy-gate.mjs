@@ -124,7 +124,14 @@ const NOT_DRAWN = new Map([
   // gives it verbatim for `Activity › lookup`, and it is in copy.js for the first time with S5.
   // The other three are S5's wording, and DEVIATIONS §77 records them as such.
   ["ACTIVITY.lookup.noMatch", "14-behaviour-and-state.md specifies it; no frame draws a miss"],
-  ["ACTIVITY.lookup.noMatchSub", "no frame draws a miss — the lookup matches an exact relative path"],
+  ["ACTIVITY.lookup.noMatchSub", "no frame draws a miss — nothing in the index matched what was typed"],
+  // The chooser. No frame draws it because no frame could: the lookup could only answer about one
+  // exact path until `search_files` landed (G21), so "several files match" was unreachable.
+  ["ACTIVITY.lookup.chooseTitle", "no frame draws a search that matched more than one file"],
+  ["ACTIVITY.lookup.chooseSub", "no frame draws a search that matched more than one file"],
+  ["ACTIVITY.lookup.backToMatches", "no frame draws a search that matched more than one file"],
+  // `capped` is a TEMPLATE and needs no entry — templates are checked only against the frame that
+  // draws them, and none draws this one. The exemption was here for one commit and the gate said so.
   ["ACTIVITY.lookup.changed", "no frame draws a `modified` verdict"],
   ["ACTIVITY.lookup.changedSub", "no frame draws a `modified` verdict"],
   ["ACTIVITY.lookup.conflict", "no frame draws a `conflict` verdict"],

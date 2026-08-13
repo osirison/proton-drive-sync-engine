@@ -29,14 +29,6 @@ const BAND_MARK = 34;
 const SAFE_MARK = 88;
 const CHECKING_MARK = 104;
 
-/**
- * How many rows the action list shows before it has to scroll.
- *
- * Measured: `5a Plan` draws nine 33px rows in a 319px block, so a tenth is the first to fall off. At
- * or under that count the list keeps the frame's `overflow:hidden`, an asserted property.
- */
-const ROWS_THAT_FIT = 9;
-
 // ------------------------------------------------------------------------------ the model ----
 
 /**
@@ -431,10 +423,12 @@ function actionList(model) {
     ),
     "listHead",
   );
-  const rows = fid(
-    el("div", { class: "pl-rows" + (model.rows.length > ROWS_THAT_FIT ? " is-scrollable" : "") }),
-    "rows",
-  );
+  // ALWAYS SCROLLABLE, and the count that used to decide it is gone. `ROWS_THAT_FIT` was a fixed
+  // number for a height that is not fixed: a destructive band whose note wraps to a second line
+  // takes another 20px off the list, and the row that no longer fits was clipped by
+  // `overflow:hidden` with no way to reach it. A scroller costs nothing when everything fits —
+  // `overflow-y:auto` draws no bar — and is right in every state, including the ones no frame draws.
+  const rows = fid(el("div", { class: "pl-rows is-scrollable" }), "rows");
   for (const [i, row] of model.rows.entries()) {
     const { glyph, tone } = markOf(row.action);
     const node = fid(

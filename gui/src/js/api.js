@@ -40,6 +40,10 @@ export const api = {
   resolveConflict: (conflict, choice) => invoke("resolve_conflict", { conflict, choice }),
   readConflictPair: (conflict) => invoke("read_conflict_pair", { conflict }),
   pathSyncStatus: (relativePath) => invoke("path_sync_status", { relativePath }),
+  // The lookup field's search (S5). Takes a name, a path fragment or a pasted absolute path and
+  // answers `{ matches: [{ path, status }], total, query }` — the resolved query included, because
+  // the backend is what expands `~` and strips the sync root, so the screen must not re-derive it.
+  searchFiles: (query, limit) => invoke("search_files", { query, limit: limit ?? null }),
   startService: () => invoke("start_service"),
   restartService: () => invoke("restart_service"),
   // The notification banners (S9). `payload` is `payloadFor(spec)` from `ui/notification.js`, so the
@@ -199,6 +203,48 @@ function mockInvoke(cmd, args) {
         if (fixture.pathStatus)
           return Promise.resolve(fixture.pathStatus[args?.relativePath] ?? { tracked: false });
         break;
+      case "search_files": {
+        // Served from the SAME keyed table `path_sync_status` uses, ranked and capped the way the
+        // Rust does, so a fixture describes its files once and the preview cannot show a shape the
+        // real command never produces. A frame with no table answers "nothing matched", which is a
+        // real answer too.
+        // TRIMMED, NOT FOLDED. The reply's `query` is what the screen names the file by when nothing
+        // matched, and the Rust returns the resolved query with its case intact — a lowercased one
+        // would head a miss card with `spec.md` for someone who typed `Spec.md`. Folding belongs in
+        // the comparisons below and nowhere else.
+        const query = String(args?.query ?? "").trim();
+        const folded = query.toLowerCase();
+        const table = fixture.pathStatus ?? {};
+        // `index_read::MatchRank`, in the same order: exact path (byte-exact first, then folded),
+        // exact name, trailing components, then any fragment.
+        const rankOf = (path) => {
+          const foldedPath = path.toLowerCase();
+          const name = foldedPath.split("/").pop();
+          if (path === query) return 0;
+          if (foldedPath === folded) return 1;
+          if (name === folded) return 2;
+          if (foldedPath.endsWith(folded) && foldedPath.at(-folded.length - 1) === "/") return 3;
+          if (name.includes(folded)) return 4;
+          if (foldedPath.includes(folded)) return 5;
+          return null;
+        };
+        const ranked = !query
+          ? []
+          : Object.entries(table)
+              .map(([path, status]) => ({ path, status, rank: rankOf(path) }))
+              .filter((m) => m.rank != null)
+              .sort((a, b) => a.rank - b.rank || a.path.length - b.path.length || (a.path < b.path ? -1 : 1));
+        // TOTAL BEFORE THE CAP. The two are what the chooser's `Showing N of M` is made of, so a
+        // mock that returned the capped length for both could never draw the line at all.
+        // Clamped like `search_files` does (1..=500), so a preview cannot see a list the real
+        // command would never return.
+        const limit = Math.min(500, Math.max(1, args?.limit ?? 50));
+        return Promise.resolve({
+          matches: ranked.slice(0, limit).map(({ path, status }) => ({ path, status })),
+          total: ranked.length,
+          query,
+        });
+      }
       default:
         break;
     }

@@ -1083,7 +1083,20 @@ export function renderSettings(props = {}) {
   return [
     titleBlock,
     tabs,
-    fid(el("div", { class: `settings-content settings-content-${tab}` }, unreadable, body(props)), "content"),
+    // `data-scroll` PER TAB, and the region scrolls at all because the doors are drawn under the
+    // Save bar now (§94). This screen is rebuilt on every ~2s poll, so without the key app.js has
+    // nothing to put the scroll position back on: measured at 29px back to 0 within three polls,
+    // which makes the bottom of a tall tab unreadable. Per tab, because two tabs' contents have
+    // nothing to do with each other.
+    fid(
+      el(
+        "div",
+        { class: `settings-content settings-content-${tab}`, "data-scroll": `tab:${tab}` },
+        unreadable,
+        body(props),
+      ),
+      "content",
+    ),
   ];
 }
 
