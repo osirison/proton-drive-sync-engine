@@ -429,16 +429,20 @@ function filesTab(props) {
 
 // --------------------------------------------------------------------- the chooser body ----
 
-/** One row of the chooser: the path the index stores, and where that file stands. */
+/**
+ * One row of the chooser: the path the index stores, and where that file stands.
+ *
+ * `data-match-path` is how app.js puts the keyboard back on this row after the ~2s poll rebuilds
+ * the screen. By path and not by index — a landing reply can reorder the list.
+ */
 function matchRow(match, onChoose) {
   const verdict = verdictOf(match.status);
-  const row = el(
+  return el(
     "button",
-    { class: "activity-match", onClick: () => onChoose?.(match) },
+    { class: "activity-match", "data-match-path": match.path, onClick: () => onChoose?.(match) },
     el("span", { class: "activity-match-path" }, match.path),
     el("span", { class: "activity-match-verdict" }, verdict.title),
   );
-  return row;
 }
 
 /**
@@ -730,7 +734,10 @@ export function normaliseQuery(query) {
  */
 export function searchOutcome(reply, typed, error = null) {
   const matches = reply?.matches ?? [];
-  const query = reply?.query ?? normaliseQuery(typed);
+  // `||`, NOT `??`: the backend resolves the sync root itself to the EMPTY string, and a miss card
+  // headed by nothing is a hero with a blank line where the file's name goes. Falling back to what
+  // was typed names the thing the user actually asked about.
+  const query = reply?.query || normaliseQuery(typed);
   // `typed` as well as `query`, because they are two different questions. The count belongs to what
   // is IN the field — so the screen compares against what was typed — while the miss and the cards
   // name the file, which is the resolved path. A pasted `~/ProtonDrive/docs/spec.md` is both.

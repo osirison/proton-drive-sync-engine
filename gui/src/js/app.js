@@ -925,14 +925,34 @@ function render() {
     // landing mid-word would move the cursor to the front of what someone was typing. Restoring
     // both after the swap is cheaper than the patch path the plan and deletions screens need,
     // because nothing here animates and nothing else here holds state.
+    //
+    // THE CHOOSER MADE THAT INCOMPLETE. A search that matches several files draws up to 50 rows in
+    // a scroller, and a rebuild put a user who had scrolled to row 40 back at row 1 every two
+    // seconds — and dropped the keyboard off whichever row they had tabbed to. So the field's caret
+    // is no longer the only thing carried across: the list's scroll offset and the focused row's
+    // path come too. Keyed by PATH rather than by index, because a landing reply can reorder rows.
     const focused = document.activeElement === activityInputRef.node;
     const caret = focused ? caretOffset() : null;
+    const matchList = document.querySelector(".activity-matches-list");
+    const scrolled = matchList?.scrollTop ?? 0;
+    const rowPath =
+      document.activeElement instanceof HTMLElement
+        ? (document.activeElement.closest(".activity-match")?.dataset.matchPath ?? null)
+        : null;
     if (dom.bodyRoute !== active) unmountScreens();
     setBody(renderActivity(activityProps()));
     dom.bodyRoute = active;
     if (focused && activityInputRef.node) {
       activityInputRef.node.focus();
       putCaret(activityInputRef.node, caret);
+    }
+    const nextList = document.querySelector(".activity-matches-list");
+    if (nextList && scrolled) nextList.scrollTop = scrolled;
+    if (rowPath) {
+      const row = [...document.querySelectorAll(".activity-match")].find(
+        (node) => node.dataset.matchPath === rowPath,
+      );
+      row?.focus();
     }
   } else if (active === "settings") {
     // REBUILT EVERY PASS, with the focused field's caret put back — the same trade the activity
@@ -1044,6 +1064,21 @@ function render() {
               ? dom.footer.dataset.shape === onboardingBarShape(onboardingProps())
               : true;
   }
+  // WHICH DOOR THE KEYBOARD IS STANDING ON, before either node below can be replaced.
+  //
+  // The doors are drawn on every screen now, so they outlive the screen under them — but the NODE
+  // does not: the nav is `dom.footer` on a doors screen and `dom.footerDoors` under an action bar,
+  // and crossing between the two (or changing the nav's padding variant) rebuilds it. Focus then
+  // lands on `<body>` with the doors still drawn in the same place, which is worse than the old
+  // behaviour where they visibly went away. Two of this file's own comments assert the property —
+  // `navigate` clears the overlay stack because "the door itself keeps focus", and `focusKeyOf`
+  // calls a door button an opener that survives. Measured: standing on a door while the plan
+  // rehearsal lands drops the keyboard with no user action at all.
+  const standingOn =
+    document.activeElement instanceof HTMLElement
+      ? (document.activeElement.closest(".door")?.dataset.route ?? null)
+      : null;
+
   if (!patched) {
     const built =
       kind === "actionBar"
@@ -1084,6 +1119,16 @@ function render() {
   } else if (dom.footerDoors) {
     dom.footerDoors.remove();
     dom.footerDoors = null;
+  }
+
+  // Put the keyboard back on the same door, in whichever node now holds it. Only when it fell off:
+  // a patched nav keeps its own button, and re-focusing one that never lost focus would fight a
+  // caret somewhere else on a later render.
+  if (
+    standingOn &&
+    !(document.activeElement instanceof HTMLElement && document.activeElement.closest(".door"))
+  ) {
+    document.querySelector(`.footer-nav [data-route="${standingOn}"]`)?.focus();
   }
 
   // --- the dialog layer: mounted when the route changes, PATCHED (i.e. left alone) otherwise.
@@ -1944,7 +1989,13 @@ async function lookupPath(query) {
   let reply = null;
   let failure = null;
   try {
-    reply = await api.searchFiles(typed);
+    // THE RAW STRING, not `normaliseQuery`'s. That one strips the leading `/` so the field's own
+    // count can be keyed on what is in it — and the backend's root-stripping is a PATH prefix
+    // match, which an absolute path with its slash removed can never satisfy. Sent normalised, a
+    // pasted `/home/me/ProtonDrive/docs/spec.md` reached the index as the literal
+    // `home/me/ProtonDrive/docs/spec.md` and matched nothing, which is exactly the input
+    // `relative_query` exists to serve.
+    reply = await api.searchFiles(String(query ?? "").trim());
   } catch (error) {
     console.error("search_files failed:", error);
     // KEPT, not swallowed. A caught error and a name nothing matches both leave the screen with no
@@ -1981,6 +2032,13 @@ async function lookupPath(query) {
  * Returns true when it took over, so the caller stops rather than rendering the screen underneath.
  */
 function offerPendingDialog(path) {
+  // NEVER OVER SOMETHING THE USER OPENED. A reply lands ~180ms plus a round trip after the last
+  // keystroke, and nothing on the way out of this screen cancels it — so a search started before
+  // `Show them`, `Details` or a notification's `Review` was clicked would put this dialog over a
+  // surface it is not about, taking the one the user asked for down with it (`openOverlay` nulls
+  // `dialogOverlay` for a screen overlay and overwrites `dialogReturn` for a dialog). Silently
+  // dropped rather than queued: the offer is about a transfer that is happening NOW.
+  if (dialogOverlay || screenStack.length) return false;
   const moving = store.select.response()?.activity?.transfer ?? null;
   if (moving?.path !== path || activityPendingShown === path) return false;
   activityPendingShown = path;
@@ -2095,7 +2153,16 @@ function activityProps() {
     // One file out of several. The row already carries the status the search read, so choosing is
     // not a second round trip — and the pending dialog is offered here for the same reason it is
     // offered on a single match: this is the moment the screen knows which file is meant.
+    //
+    // A CLICK OUTRANKS A SEARCH THE USER HAS ALREADY MOVED PAST. The chooser goes on drawing the
+    // last answer while a newer query is debounced, so the row can be clicked with a reply still
+    // coming — and that reply would replace the file just chosen with the one nobody picked.
+    // Cancelling both the timer and the in-flight token drops it: `lookupPath` bails on a token
+    // that has moved.
     onChooseMatch: (match) => {
+      clearTimeout(activityLookupTimer);
+      activityLookupTimer = null;
+      activityLookupInFlight = null;
       activityChosen = match.path;
       activityLookup = { path: match.path, status: match.status, error: null };
       if (offerPendingDialog(match.path)) return;
