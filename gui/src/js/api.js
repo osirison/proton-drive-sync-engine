@@ -208,21 +208,24 @@ function mockInvoke(cmd, args) {
         // Rust does, so a fixture describes its files once and the preview cannot show a shape the
         // real command never produces. A frame with no table answers "nothing matched", which is a
         // real answer too.
-        const query = String(args?.query ?? "")
-          .trim()
-          .toLowerCase();
+        // TRIMMED, NOT FOLDED. The reply's `query` is what the screen names the file by when nothing
+        // matched, and the Rust returns the resolved query with its case intact — a lowercased one
+        // would head a miss card with `spec.md` for someone who typed `Spec.md`. Folding belongs in
+        // the comparisons below and nowhere else.
+        const query = String(args?.query ?? "").trim();
+        const folded = query.toLowerCase();
         const table = fixture.pathStatus ?? {};
-        // `index_read::MatchRank`, in the same order: exact path, exact name, trailing components,
-        // then any fragment. The mock folds case throughout — the Rust's byte-exact first rung
-        // cannot change which files match, only which one sorts first.
+        // `index_read::MatchRank`, in the same order: exact path (byte-exact first, then folded),
+        // exact name, trailing components, then any fragment.
         const rankOf = (path) => {
-          const folded = path.toLowerCase();
-          const name = folded.split("/").pop();
-          if (folded === query) return 0;
-          if (name === query) return 1;
-          if (folded.endsWith(query) && folded.at(-query.length - 1) === "/") return 2;
-          if (name.includes(query)) return 3;
-          if (folded.includes(query)) return 4;
+          const foldedPath = path.toLowerCase();
+          const name = foldedPath.split("/").pop();
+          if (path === query) return 0;
+          if (foldedPath === folded) return 1;
+          if (name === folded) return 2;
+          if (foldedPath.endsWith(folded) && foldedPath.at(-folded.length - 1) === "/") return 3;
+          if (name.includes(folded)) return 4;
+          if (foldedPath.includes(folded)) return 5;
           return null;
         };
         const ranked = !query
@@ -233,7 +236,9 @@ function mockInvoke(cmd, args) {
               .sort((a, b) => a.rank - b.rank || a.path.length - b.path.length || (a.path < b.path ? -1 : 1));
         // TOTAL BEFORE THE CAP. The two are what the chooser's `Showing N of M` is made of, so a
         // mock that returned the capped length for both could never draw the line at all.
-        const limit = args?.limit ?? 50;
+        // Clamped like `search_files` does (1..=500), so a preview cannot see a list the real
+        // command would never return.
+        const limit = Math.min(500, Math.max(1, args?.limit ?? 50));
         return Promise.resolve({
           matches: ranked.slice(0, limit).map(({ path, status }) => ({ path, status })),
           total: ranked.length,
