@@ -463,7 +463,12 @@ for (const entry of index) {
   if (OWES_FIT(entry.kind)) {
     const fit = await page.evaluate(() => {
       const root = document.documentElement;
-      const footer = document.querySelector(".footer-nav, .footer-action-bar");
+      // ALL of them, not the first. A screen with an action bar draws the doors under it (§94), so
+      // "the footer" is two nodes: taking `querySelector`'s first match reads the boundary off the
+      // bar alone and lets an absolutely-positioned box paint over the doors below it unseen. The
+      // region is their union, and a descendant of EITHER is part of the footer rather than over it.
+      // (Copilot, PR #266.)
+      const footers = [...document.querySelectorAll(".footer-nav, .footer-action-bar")];
       const overlap = [];
       // WHERE THIS ELEMENT'S PAINT ACTUALLY STOPS: the bottom of the nearest ancestor that clips it,
       // or null when nothing does. A row inside a `.pl-rows` that ends above the footer paints
@@ -486,10 +491,14 @@ for (const entry of index) {
         }
         return null;
       };
-      if (footer) {
-        const f = footer.getBoundingClientRect();
+      if (footers.length) {
+        const boxes = footers.map((node) => node.getBoundingClientRect());
+        const f = {
+          top: Math.min(...boxes.map((b) => b.top)),
+          bottom: Math.max(...boxes.map((b) => b.bottom)),
+        };
         for (const el of document.querySelectorAll("#app-root *")) {
-          if (footer.contains(el) || el.contains(footer)) continue;
+          if (footers.some((node) => node.contains(el) || el.contains(node))) continue;
           const b = el.getBoundingClientRect();
           if (!b.width || !b.height) continue;
           // A descendant painting over the footer is the bug 02-shell.md says was found twice.

@@ -204,23 +204,41 @@ function mockInvoke(cmd, args) {
           return Promise.resolve(fixture.pathStatus[args?.relativePath] ?? { tracked: false });
         break;
       case "search_files": {
-        // Served from the SAME keyed table `path_sync_status` uses, matched the way the Rust does
-        // (case-insensitive name, trailing path, then fragment) so a fixture describes its files
-        // once. A frame with no table answers "nothing matched", which is a real answer too.
+        // Served from the SAME keyed table `path_sync_status` uses, ranked and capped the way the
+        // Rust does, so a fixture describes its files once and the preview cannot show a shape the
+        // real command never produces. A frame with no table answers "nothing matched", which is a
+        // real answer too.
         const query = String(args?.query ?? "")
           .trim()
           .toLowerCase();
         const table = fixture.pathStatus ?? {};
-        const matches = !query
+        // `index_read::MatchRank`, in the same order: exact path, exact name, trailing components,
+        // then any fragment. The mock folds case throughout — the Rust's byte-exact first rung
+        // cannot change which files match, only which one sorts first.
+        const rankOf = (path) => {
+          const folded = path.toLowerCase();
+          const name = folded.split("/").pop();
+          if (folded === query) return 0;
+          if (name === query) return 1;
+          if (folded.endsWith(query) && folded.at(-query.length - 1) === "/") return 2;
+          if (name.includes(query)) return 3;
+          if (folded.includes(query)) return 4;
+          return null;
+        };
+        const ranked = !query
           ? []
           : Object.entries(table)
-              .filter(([path]) => {
-                const folded = path.toLowerCase();
-                const name = folded.split("/").pop();
-                return folded === query || name === query || folded.includes(query);
-              })
-              .map(([path, status]) => ({ path, status }));
-        return Promise.resolve({ matches, total: matches.length, query });
+              .map(([path, status]) => ({ path, status, rank: rankOf(path) }))
+              .filter((m) => m.rank != null)
+              .sort((a, b) => a.rank - b.rank || a.path.length - b.path.length || (a.path < b.path ? -1 : 1));
+        // TOTAL BEFORE THE CAP. The two are what the chooser's `Showing N of M` is made of, so a
+        // mock that returned the capped length for both could never draw the line at all.
+        const limit = args?.limit ?? 50;
+        return Promise.resolve({
+          matches: ranked.slice(0, limit).map(({ path, status }) => ({ path, status })),
+          total: ranked.length,
+          query,
+        });
       }
       default:
         break;

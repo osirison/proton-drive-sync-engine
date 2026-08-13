@@ -700,14 +700,13 @@ fn relative_query(query: &str, local_root: Option<&std::path::Path>) -> String {
         },
         _ => query.to_string(),
     };
+    // `Path::strip_prefix`, NOT the string one: a textual prefix is not a path prefix, so
+    // `/home/me/ProtonDrive-Other/x.md` under the root `/home/me/ProtonDrive` came out as the
+    // fragment `-Other/x.md` — a path from outside the sync folder, mangled into one that could
+    // match inside it. (Copilot, PR #266.)
     let stripped = local_root
-        .map(|root| root.to_string_lossy().trim_end_matches('/').to_string())
-        .filter(|root| !root.is_empty())
-        .and_then(|root| {
-            expanded
-                .strip_prefix(&root)
-                .map(|rest| rest.trim_start_matches('/').to_string())
-        })
+        .and_then(|root| std::path::Path::new(&expanded).strip_prefix(root).ok())
+        .map(|rest| rest.to_string_lossy().into_owned())
         .unwrap_or(expanded);
     stripped.trim_start_matches('/').to_string()
 }
@@ -1271,6 +1270,19 @@ mod tests {
         assert_eq!(
             relative_query("/etc/hosts", Some(Path::new("/home/me/ProtonDrive"))),
             "etc/hosts"
+        );
+    }
+
+    #[test]
+    fn a_root_that_is_only_a_textual_prefix_strips_nothing() {
+        // The string version turned this into `-Other/x.md` — a path from outside the sync folder,
+        // mangled into one that could match inside it.
+        assert_eq!(
+            relative_query(
+                "/home/me/ProtonDrive-Other/x.md",
+                Some(Path::new("/home/me/ProtonDrive"))
+            ),
+            "home/me/ProtonDrive-Other/x.md"
         );
     }
 
