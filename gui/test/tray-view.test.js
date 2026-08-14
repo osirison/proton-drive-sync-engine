@@ -99,7 +99,10 @@ test("a failed pass keeps the struck mark and KEEPS the row that can fix it", ()
   assert.notEqual(view.headline, MAIN.compact.upToDate, "the false all-clear #246 is about");
   assert.equal(view.headline, MAIN.failed);
   assert.equal(view.sub, MAIN.failedSub(4));
-  assert.equal(view.menuState, "unreachable");
+  // `outage`, which is what this set is called now that it serves this state ALONE. It was
+  // `unreachable`, shared with the daemon-is-not-running state, where the same `Try again now`
+  // dispatched a `Syncnow` at a socket that had just refused the connection.
+  assert.equal(view.menuState, "outage");
   assert.ok(TRAY_MENU[view.menuState].some((row) => row.label === TRAY.tryAgain));
   // The daemon's string is NOT in the panel: 362px has no block to quote one in, and a truncated
   // stderr is the paraphrase voice rule 4 forbids. The window carries it.
@@ -136,14 +139,23 @@ test("the panel form does not identify the menu, so a patch cannot be gated on i
   );
 });
 
-test("an unreachable daemon drops the count clause rather than claiming zero", () => {
+test("a daemon that is not running says so, and is offered the row that starts it", () => {
+  // `derive_state` answers `unreachable` for ONE thing: the control socket did not answer. Proton is
+  // not on the far end of that round trip, so the deck's `Can't reach Proton Drive` was a diagnosis
+  // of the wrong machine — and the menu under it offered `Try again now`, a `Syncnow` down the very
+  // socket that had just refused. Both halves are fixed here. DEVIATIONS §95.
+  const view = trayView({ daemonState: "unreachable", response: null });
+  assert.equal(view.headline, MAIN.notRunning);
+  assert.notEqual(view.headline, TRAY.unreachableTitle, "the outage sentence belongs to `failed`");
+  assert.equal(view.sub, MAIN.notRunningSub);
+  assert.equal(view.menuState, "notRunning");
+  const rows = TRAY_MENU[view.menuState];
+  assert.ok(rows.some((row) => row.label === TRAY.start));
+  assert.ok(!rows.some((row) => row.label === TRAY.tryAgain), "nothing to retry against");
   // 14-behaviour-and-state.md: a null summary means unknown, never zero. `0 changes are waiting` is
   // a false all-clear at the exact moment the app cannot see anything — and the reply that would
-  // carry the count is the one that did not arrive.
-  const view = trayView({ daemonState: "unreachable", response: null });
-  assert.equal(view.headline, TRAY.unreachableTitle);
-  assert.equal(view.sub, "Nothing is lost.");
-  assert.equal(view.menuState, "unreachable");
+  // carry the count is the one that did not arrive. Met here by having no clause to fill.
+  assert.ok(!/\bchanges?\b/.test(view.sub), view.sub);
   // `retrying in 40s · last reached 13:58` is drawn and nothing in the reply can produce it.
   assert.equal(view.meta, null);
 });

@@ -1155,6 +1155,8 @@ pub enum TrayRow {
     SyncNow,
     Pause,
     Resume,
+    /// The one row that is not a control command: there is no daemon to send one to.
+    Start,
     CloseWindow,
     Quit,
 }
@@ -1180,11 +1182,15 @@ pub fn tray_row(id: &str) -> Option<TrayRow> {
         // `Review them` is the panel's own decision button rather than a menu row, and it goes where
         // `Open Drive Sync` goes — see the note in `tray_action`.
         "open" | "review" => TrayRow::Open,
-        // `Try again now` IS a sync: the daemon is unreachable, so the thing to retry is reaching
-        // it, and if it is back the pass it schedules is what the row promises.
+        // `Try again now` IS a sync, and the state it is offered in is `Failed`: the daemon is
+        // answering and its last pass was not. It USED to be offered for `Unreachable` as well, on
+        // the reasoning that "the thing to retry is reaching it" — but the retry is a `Syncnow` sent
+        // down the same socket that just refused the connection, so there was nothing there to
+        // reach. That state gets `start` instead.
         "syncNow" | "tryAgain" => TrayRow::SyncNow,
         "pause" => TrayRow::Pause,
         "resume" => TrayRow::Resume,
+        "start" => TrayRow::Start,
         "closeWindow" => TrayRow::CloseWindow,
         "quit" => TrayRow::Quit,
         _ => return None,
@@ -1212,6 +1218,33 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
         Some(TrayRow::SyncNow) => ControlCommand::Syncnow,
         Some(TrayRow::Pause) => ControlCommand::Pause,
         Some(TrayRow::Resume) => ControlCommand::Resume,
+        Some(TrayRow::Start) => {
+            // `spawn_blocking`, like every other subprocess on this surface: `systemctl --user
+            // start` blocks until the unit reports started, and a stalled GTK main loop aborts
+            // WebKitGTK outright (#142/#143). The guard is cloned out and dropped before the await —
+            // a `MutexGuard` is not `Send` and cannot cross one.
+            let config_path = {
+                let paths: Paths = app.state();
+                let path = paths.lock().unwrap().config_path.clone();
+                path
+            };
+            match tauri::async_runtime::spawn_blocking(move || start_service_impl(&config_path))
+                .await
+            {
+                Ok(Ok(detail)) => eprintln!("tray: {detail}"),
+                // STDERR IS THE WHOLE REPORT HERE, and that is a limit of the surface rather than a
+                // choice: the panel is hidden by the time this runs (every row dismisses it), so
+                // there is nothing left on screen to render a reason into. The window's own button
+                // quotes the same message — `mainProps`' `startError` — which is why the failure
+                // path people can act on is the one in `app.js` and not this one.
+                Ok(Err(error)) => eprintln!("tray: could not start the daemon: {error}"),
+                Err(join_error) => eprintln!("tray: start-service task failed: {join_error}"),
+            }
+            // The reply to a `Status` sent THIS instant will usually still say unreachable — the
+            // daemon binds its socket after we return. Correct, and not worth special-casing: the
+            // tray polls on its own ~2s cadence and the next tick tells the truth.
+            ControlCommand::Status
+        }
         Some(TrayRow::CloseWindow) => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();

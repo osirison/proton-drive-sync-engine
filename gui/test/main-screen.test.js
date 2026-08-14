@@ -19,7 +19,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { heroStateOf, mainView } from "../src/js/screens/main.js";
+import {
+  clearsStartError,
+  headlineOf,
+  heroActionsOf,
+  heroStateOf,
+  mainView,
+  quotedError,
+  subOf,
+} from "../src/js/screens/main.js";
 import { MAIN, TRAY } from "../src/js/ui/copy.js";
 import { cardinal } from "../src/js/ui/format.js";
 
@@ -198,4 +206,106 @@ test("cardinal spells the small counts a sentence opens with and hands the rest 
   assert.equal(cardinal(1200), "1,200");
   assert.equal(cardinal(null), "—");
   assert.equal(cardinal(1.5), "1.5");
+});
+
+// ---- a daemon that is not running (DEVIATIONS §95) ----
+//
+// The state has no frame, and until now it had no control either: the hero offered `Try again now`,
+// which is `onSyncNow`, which is a round trip down the control socket — the socket whose silence is
+// the definition of this state. Everything below is a branch the fidelity gate cannot reach.
+
+const view = (over = {}) => mainView({ daemonState: "unreachable", response: null, ...over });
+
+test("a stopped daemon is offered the row that starts it, not the one that retries a sync", () => {
+  const actions = heroActionsOf(view());
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].label, TRAY.start);
+  assert.equal(actions[0].on, "onStartService");
+  // The mistake this replaces, named so a revert reads as a failure rather than a diff.
+  assert.notEqual(actions[0].label, TRAY.tryAgain);
+  assert.notEqual(actions[0].on, "onSyncNow");
+});
+
+test("the two states that ARE answering keep the retry", () => {
+  // `syncnow` reaches a daemon that replies, so `Try again now` does what it says for both of these
+  // — which is why they stayed behind when `unreachable` moved out of the shared branch.
+  for (const hero of ["failed", "authExpired"]) {
+    const actions = heroActionsOf({ hero });
+    assert.equal(actions.length, 1, hero);
+    assert.equal(actions[0].label, TRAY.tryAgain, hero);
+    assert.equal(actions[0].on, "onSyncNow", hero);
+  }
+});
+
+test("the start button goes inert while the start is in flight, and carries no handler when it does", () => {
+  // `systemctl --user start` blocks until the unit reports started, so this is on screen for
+  // seconds. A DISABLED KIND WOULD HAVE DROPPED THE HANDLER SILENTLY (`button` sets `onClick: null`
+  // for one), which is fine here because the button is meant to be inert — but the same fact is why
+  // the armed one must NOT be disabled. Both directions are asserted.
+  const busy = heroActionsOf(view({ starting: true }));
+  assert.equal(busy[0].label, MAIN.starting);
+  assert.equal(busy[0].disabled, true);
+  assert.equal(busy[0].on, null, "an inert button must not also be wired");
+
+  const armed = heroActionsOf(view({ starting: false }));
+  assert.ok(!armed[0].disabled, "the armed button must not be disabled — it would drop its handler");
+  assert.equal(armed[0].on, "onStartService");
+});
+
+test("the headline names the daemon, because the socket is what did not answer", () => {
+  // THROUGH `headlineOf` AND `subOf`, not against the constants. The first version of this test
+  // asserted properties of MAIN.notRunning itself — that it is not TRAY.unreachableTitle, that it
+  // says nothing about Proton — which no edit to this screen can falsify: reverting the two `case
+  // "unreachable"` arms left it green. It pinned the deck, and the deck was never what changed.
+  //
+  // `Can't reach Proton Drive` is the deck's OUTAGE sentence and it is a claim about the wrong
+  // machine: Proton takes no part in a control-socket round trip. A daemon that is up and cannot
+  // reach Proton derives `failed` or `authExpired`, both of which still say so.
+  const v = view();
+  assert.equal(headlineOf(v), MAIN.notRunning);
+  assert.notEqual(headlineOf(v), TRAY.unreachableTitle);
+  assert.doesNotMatch(headlineOf(v), /Proton/);
+  // The sub-line carries no count clause at all, rather than one that has to remember to drop
+  // itself: there is no reply here, so the number was never `0` — it was unknown. Asserted at a
+  // pending count of 4, the value that made the old `TRAY.unreachableBody(v.pending)` produce one.
+  assert.equal(subOf(v), MAIN.notRunningSub);
+  assert.doesNotMatch(subOf({ ...v, pending: 4 }), /\bchanges?\b/);
+  assert.match(subOf(v), /Nothing is lost/);
+  // The two states that DO mean Proton keep their own sentences — the arm above must not swallow them.
+  assert.equal(headlineOf({ hero: "failed" }), MAIN.failed);
+  assert.equal(headlineOf({ hero: "authExpired" }), MAIN.authExpired);
+});
+
+test("a start that failed is quoted, and only under the hero it explains", () => {
+  // THROUGH `quotedError`, which is what picks the string the `.main-failed` block renders. The
+  // first version asserted `failed.startError` matched the string it had passed in one line earlier
+  // — a round trip through mainView, proving nothing about the branch that draws it. Deleting that
+  // branch entirely left the suite green.
+  //
+  // `start_service` REJECTS — unlike every control-socket command, which folds its failure into the
+  // payload — and its message names which of the two ways it failed (no systemd unit, no config
+  // file). Swallowed, the button is the dead control #224 and #227 record.
+  const why = "couldn't start via systemd (Unit not found) and there is no config file";
+  assert.equal(quotedError(view({ startError: why })), why);
+  assert.equal(quotedError(view()), null, "no attempt yet is not an empty quotation");
+  // A failed PASS still quotes the DAEMON's string in the same block, and the two never cross: a
+  // start failure under a settled hero would be a stopped-service reason on a running daemon.
+  assert.equal(quotedError({ hero: "failed", error: "os error 2" }), "os error 2");
+  assert.equal(quotedError({ hero: "failed", startError: why }), null);
+  assert.equal(quotedError({ hero: "settled", startError: why }), null);
+  assert.equal(quotedError({ hero: "syncing", startError: why }), null);
+});
+
+test("a start failure stops being the reason the moment the socket answers", () => {
+  // Found by review. `quotedError` asks only which HERO is showing, and a later outage puts the
+  // screen back in the same one — so a remembered failure that nothing retires gets drawn as the
+  // diagnosis of an outage it predates, under the block whose whole job is to say why.
+  //
+  // The routes that make it reachable are the ones that do NOT go through the button: the tray's own
+  // `Start the sync service` row starts the daemon entirely in Rust, Settings' restart has its own
+  // path, and a terminal has no path at all. All three leave the JS latch untouched.
+  assert.equal(clearsStartError("unreachable"), false, "still down — the reason still stands");
+  for (const answered of ["idle", "running", "paused", "failed", "authExpired", "firstRun"]) {
+    assert.equal(clearsStartError(answered), true, answered);
+  }
 });

@@ -387,9 +387,35 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
                 let _ = window.hide();
             }
         }
+        Some(TrayRow::Start) => start_service_in_background(app),
         Some(TrayRow::Quit) => crate::commands::quit_stopping_the_daemon(app.clone()),
         None => eprintln!("tray: no action for menu id {id:?}"),
     }
+}
+
+/// `Start the sync service`, off the main thread — `send_command`'s shape, for the same reason.
+///
+/// `handle_menu_event` is called ON the GTK main thread (its doc comment says callers must be), and
+/// `start_service_impl` shells `systemctl --user start`, which blocks until the unit reports
+/// started. Doing that inline freezes the desktop's tray for seconds and, on the window side of the
+/// same loop, is what aborts WebKitGTK (#142/#143).
+///
+/// Nothing polls the result: the tray's own ~2s status poll is what notices the daemon came up. The
+/// failure goes to stderr because a native menu row has no surface to report into — the window's
+/// button is the path that shows a reason.
+fn start_service_in_background(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let config_path = {
+            let state = app.state::<Mutex<RuntimePaths>>();
+            let guard = state.lock().unwrap();
+            guard.config_path.clone()
+        };
+        match crate::commands::start_service_impl(&config_path) {
+            Ok(detail) => eprintln!("tray: {detail}"),
+            Err(error) => eprintln!("tray: could not start the daemon: {error}"),
+        }
+    });
 }
 
 fn send_command(app: &AppHandle, command: ControlCommand) {

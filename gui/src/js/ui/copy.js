@@ -125,6 +125,36 @@ export const MAIN = {
       ? `Nothing is lost. ${count(n)} ${plural(n, "change is", "changes are")} waiting and will go on the next try.`
       : "Nothing is lost.",
 
+  /**
+   * THE DAEMON IS NOT RUNNING, which is not `TRAY.unreachableTitle`'s `Can't reach Proton Drive`.
+   *
+   * `derive_state` answers `Unreachable` for one thing only: the CONTROL SOCKET did not answer —
+   * missing, refused, closed early, or a reply that would not decode. Proton is not involved in that
+   * round trip at all. A daemon that is running and cannot reach Proton answers perfectly well and
+   * derives `Failed` or `AuthExpired`, which have their own two sentences above.
+   *
+   * So the deck's outage sentence was a diagnosis of the wrong machine, and `copy.js` already said
+   * so in prose (see `failed`'s note: "`unreachable` means the app cannot reach the DAEMON"). This
+   * is the state finally speaking for itself, and it is the sentence that makes the button under it
+   * make sense — nothing explains a `Start syncing` control like being told the service is stopped.
+   *
+   * No frame draws it. `14-behaviour-and-state.md`'s `unreachable` is *Proton* unreachable ("entered
+   * after a failed pass and retry"), so the design never drew the case where the service itself is
+   * down — a state a user reaches by rebooting. DEVIATIONS §95, and NOT_DRAWN in `copy-gate.mjs`.
+   *
+   * A PLAIN STRING AND NOT A TEMPLATE, unlike every sibling here: the count clause the others carry
+   * comes from a reply, and in this state there is no reply. `TRAY.unreachableBody`'s rule — unknown
+   * is never zero — is met by having nothing to drop.
+   */
+  notRunning: "The sync service isn't running",
+  notRunningSub: "Nothing is lost. Start it and it picks up where it left off.",
+  /**
+   * What `TRAY.start` says once it has been pressed. `systemctl --user start` blocks until the unit
+   * reports started, so this is on screen for seconds — long enough that an unchanged label reads as
+   * a button that did nothing, which is the misreading it exists to prevent.
+   */
+  starting: "Starting…",
+
   sideLocal: "This computer",
   sideRemote: "Proton Drive",
   sideRemoteCompact: "Proton",
@@ -1020,6 +1050,22 @@ export const TRAY = {
   pause: "Pause syncing",
   resume: "Resume syncing",
   tryAgain: "Try again now",
+  /**
+   * The row that starts a stopped service, and the counterpart of `MAIN.notRunning` — the sentence
+   * says what is wrong and this says what to do about it.
+   *
+   * NAMES THE SERVICE, and the two shorter labels it could have had are both taken by something
+   * else. `Resume syncing` is three rows up and unpauses a daemon that is already running.
+   * `Start syncing` is `ONBOARDING.consentStart`, which is ALSO a resume — the wizard leaves the
+   * daemon paused for the consent dialog and that button lifts the pause. Either would be one
+   * phrase meaning two things across two surfaces, which is the failure `10-tray.md` asks this menu
+   * to avoid above all others ("the labels say what each does").
+   *
+   * So it says the longer, duller thing, and it is the one row here whose object is a process rather
+   * than a sync. `ONBOARDING.start` — `Start the first sync` — is the same shape and the same
+   * command (`start_service`) at the other end of the app's life.
+   */
+  start: "Start the sync service",
   closeWindow: "Close window",
   // The two sub-labels 10-tray.md calls the single worst misunderstanding a tray app can cause.
   // They are not decoration and they are not shortenable further.
@@ -1041,6 +1087,19 @@ export const TRAY = {
   nothingSyncedYet: "Nothing has synced yet",
   nothingSyncedYetSub: "Open Drive Sync to choose your two folders.",
 
+  /**
+   * DRAWN IN `10a Offline` AND SPOKEN BY NOTHING — kept because the frame draws it, not because a
+   * screen renders it, and this note is here so the next reader does not assume otherwise.
+   *
+   * It was the headline for `DaemonState::Unreachable` on both the window and the panel, and that
+   * state is the CONTROL SOCKET failing to answer, which says nothing about Proton. The three states
+   * that can actually mean "Proton is out of reach" each say something truer: `failed` quotes the
+   * daemon's own reason under `MAIN.failed` (#246 chose that over guessing a cause), `authExpired`
+   * names the sign-in, and a stopped daemon says `MAIN.notRunning`. DEVIATIONS §95.
+   *
+   * `unreachableBody` below is still live — the outage NOTIFICATION uses it for its non-auth causes,
+   * where the trigger really is "a day with no sync" and the cause really is unknown.
+   */
   unreachableTitle: "Can't reach Proton Drive",
   /**
    * `n == null` DROPS THE SECOND SENTENCE rather than rendering the count, and this is the one place

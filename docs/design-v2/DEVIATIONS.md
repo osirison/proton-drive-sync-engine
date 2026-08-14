@@ -4540,3 +4540,78 @@ hexagon and no seam: both are claims about one file's standing, and over a list 
 verdict about whichever row they sat above. `ACTIVITY.matches`' plural arm is reachable for the first
 time, and the count states the TOTAL rather than the capped list, so a search that matched 132 files
 never reads as though it matched 50.
+
+## Starting the daemon from the GUI (2026-08-14)
+
+## 95. `unreachable` was two states wearing one name, and only one of them was Proton's
+
+The design has one struck state and calls it *Proton unreachable*: `14-behaviour-and-state.md` puts
+it "after a failed pass and retry", `10a Offline` draws `Can't reach Proton Drive` over `Try again
+now`, and `11-notifications.md` groups it with an expired session and a full disk behind one icon.
+Every one of those is about the far end of a sync.
+
+`gui-core`'s `DaemonState::Unreachable` is not that. It is returned for exactly one thing — the
+**control socket** did not answer: missing, refused, closed early, or a reply that would not decode.
+Proton takes no part in that round trip. A daemon that is running and cannot reach Proton answers
+perfectly well and derives `Failed` or `AuthExpired`, which have had their own sentences since #246.
+
+So the state the app most often reaches after a reboot — no daemon — was drawing a diagnosis of the
+wrong machine, and was offering `Try again now` to fix it. That row is `onSyncNow` in the window and
+`ControlCommand::Syncnow` on both native menus: a control-socket round trip, sent down the socket
+whose silence is the definition of the state. It could not have worked, and it did not fail
+visibly either — it re-asked, failed the same way, and redrew the same screen.
+
+**The window and both tray menus now offer `Start the sync service`**, wired to the `start_service`
+command that existed and, until now, had exactly one caller: onboarding's `Start the first sync`. The
+capability was complete; nothing outside the wizard could reach it. It prefers the user's systemd
+unit and falls back to spawning `proton-syncd` against the GUI config, which is `restart_service`'s
+own shared path (`start_service_impl`) rather than a second copy of that decision.
+
+Three consequences worth naming.
+
+**The row set was renamed, not extended.** `unreachable` held both states and the name matched the
+wrong one, so it is `outage` (`Failed` — Proton is out, the daemon answers, retry it) and
+`notRunning` (`Unreachable` — start the service) in both languages. A shared id whose meaning
+depended on the current state was never an option: `tray_menu.rs` is built on the id being the
+action, precisely so a menu left open across a state change dispatches what its label promised.
+`START` therefore takes `dbus_id` 8 rather than overloading `tryAgain`'s 5.
+
+**`TRAY.unreachableTitle` is now drawn and unspoken.** No screen renders `Can't reach Proton Drive`
+any more; the three states that could mean it each say something truer. It stays in the deck because
+`10a Offline` draws it and the copy gate checks the frame, and `copy.js` says so at the constant so
+the next reader does not take its presence for currency. `unreachableBody` is still live — the
+outage notification uses it where the cause genuinely is unknown.
+
+**The failure is quoted, not swallowed.** `start_service` is the only command on the main screen that
+REJECTS rather than folding its failure into a payload, and its message names which of the two ways
+it failed ("no systemd unit … and no config file at …"). It rides `startError` into the block a
+failed pass already uses. Without it the button is the dead control #227 and #224 record: pressed,
+nothing visible, no reason given.
+
+No frame draws any of this, and none could — the design has no state for a stopped service.
+
+### 95a. Two things review found that every gate had passed
+
+**A start failure outlived its subject.** `serviceStartError` had two writers, both inside
+`startService`: set on rejection, cleared only by the NEXT click. Nothing retired it when the daemon
+came up — and the routes that bring a daemon up mostly do not go through that function. The tray row
+this same change adds starts the service entirely in Rust; Settings' restart has its own path; a
+terminal has none. So the string survived into a later, unrelated outage and was drawn as *that*
+outage's reason, in the block whose stated job is to be the account of why. `clearsStartError` is the
+rule `app.js` already applied to `onboardingFailure` twenty lines above `mainProps` — "a merge that
+failed against a daemon that then came up is not onboarding's problem any more" — applied to this.
+It is deliberately narrower than that one's `releasesOnboarding`: the subject here is the socket
+answering at all, by any route.
+
+**Two of the new tests would have survived a revert.** Reverting all three window-side branches —
+`headlineOf`'s and `subOf`'s `unreachable` arms and `quotedError`'s — left 322/322 green and the copy
+gate at 0 missing. The tests named after those branches asserted properties of the *constants*
+(`MAIN.notRunning` is not `TRAY.unreachableTitle`, says nothing about Proton), which no edit to the
+screen can falsify, and a prop round trip through `mainView` for the other. They pinned the deck, and
+the deck was never what changed.
+
+`heroActionsOf` had the right shape already and its tests do fail on a revert; the fix was to give
+the copy and the quoted block the same seam — `headlineOf`, `subOf` and `quotedError` are exported
+and asserted through, and the revert now fails two tests. This is the file's own lesson from S5
+arriving one screen later: a test over a function the caller does not reach proves the function, not
+the feature.

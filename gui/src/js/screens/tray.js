@@ -28,10 +28,14 @@ import { heroStateOf } from "./main.js";
 /**
  * The hero state S1 derives → the panel arrangement `ui/compact.js` draws.
  *
- * Five forms, and `10-tray.md` is explicit that there is no sixth. `authExpired` and `unreachable`
- * share one — "both mean *Proton is out of reach*; only the sentence underneath differs", which is
- * S1's own note and `11-notifications.md`'s grouping (one struck icon behind "an outage, expired
- * session, or full disk").
+ * Five forms, and `10-tray.md` is explicit that there is no sixth. `authExpired`, `failed` and
+ * `unreachable` share one, on `11-notifications.md`'s grouping — one struck icon behind "an outage,
+ * expired session, or full disk".
+ *
+ * S1's own note used to justify that with "both mean *Proton is out of reach*", and for `unreachable`
+ * it is not true: the socket is what did not answer. The FORM still holds — nothing is syncing and
+ * something is wrong, which is what the struck mark says — but it is the only claim the three share,
+ * and `MENU_STATE` below is where they stop sharing. §95.
  */
 const PANEL_STATE = {
   settled: "settled",
@@ -50,23 +54,32 @@ const PANEL_STATE = {
 /**
  * The menu rows, which are NOT keyed by the panel form.
  *
- * Two daemon states share the struck hexagon and share nothing else: the row that fixes an outage is
- * `Try again now`, and the row that fixes an expired session is signing in, which lives in the
- * window. Offering `Try again now` for expired auth is offering a button that cannot do what the
- * sentence above it asks — the failure `10-tray.md` is otherwise careful about ("the labels say what
- * each does"). So the panel takes the form and the menu takes the cause.
+ * THREE daemon states share the struck hexagon and want three different menus, because the thing
+ * that fixes each is different: a failed pass is retried (`Try again now` reaches a daemon that is
+ * answering), an expired session is fixed by signing in — which is a terminal, not a menu — and a
+ * daemon that is not running is fixed by starting it. Offering a row that cannot do what its label
+ * says is the failure `10-tray.md` is otherwise careful about ("the labels say what each does").
+ *
+ * So the panel takes the form and the menu takes the cause. Two of these were one entry until §95:
+ * `unreachable` and `failed` both pointed at the set holding `Try again now`, and on the first of
+ * them there was no daemon on the other end of the socket for that retry to reach.
  */
 const MENU_STATE = {
   settled: "settled",
   syncing: "syncing",
   decision: "needsYou",
   paused: "paused",
-  unreachable: "unreachable",
+  // NOT `outage`, which is what this said while that set was called `unreachable` — and the two
+  // words looking alike is exactly how it went unnoticed. `derive_state` answers `unreachable` when
+  // the CONTROL SOCKET did not respond, so the daemon is not there to be asked for anything: a
+  // `Try again now` here retried a sync against nothing, which is a row that cannot do what it says.
+  // The thing that fixes a stopped service is starting it, and that is `notRunning`'s lead row.
+  unreachable: "notRunning",
   authExpired: "deferToWindow",
-  // `unreachable`'s rows, not `deferToWindow`'s: this is the one struck state where `Try again now`
-  // is unambiguously a working control, because the daemon is answering and `syncnow` reaches it.
+  // `outage`'s rows, not `deferToWindow`'s: this is the one struck state where `Try again now` is
+  // unambiguously a working control, because the daemon is answering and `syncnow` reaches it.
   // Same table, same reasoning, in `tray_menu.rs` for the native menus.
-  failed: "unreachable",
+  failed: "outage",
   firstRun: "deferToWindow",
 };
 
@@ -140,8 +153,10 @@ function transfersOf(activity) {
 /**
  * Headline, sub-line and count, per state.
  *
- * Every string is `ui/copy.js`'s. Three surfaces quote `Can't reach Proton Drive` — the window, this
- * panel and the outage notification — and the deck exists so they cannot drift.
+ * Every string is `ui/copy.js`'s, and the deck exists so the window and this panel cannot drift: the
+ * two are one moment seen twice, so every case below reaches for the same constant `screens/main.js`
+ * does. `unreachable` is the case that proves the rule — when its sentence changed, it changed on
+ * both surfaces at once, because neither of them owns one.
  */
 function copyFor(hero, v) {
   switch (hero) {
@@ -163,14 +178,18 @@ function copyFor(hero, v) {
 
     case "unreachable":
       return {
-        headline: TRAY.unreachableTitle,
-        // `null` when the counters are unknown, which for an unreachable daemon they always are —
-        // `unreachableBody` then DROPS the count clause and keeps the reassurance. `0 changes are
-        // waiting` would be a false all-clear at the exact moment the app cannot see anything.
-        sub: TRAY.unreachableBody(null),
+        // NOT `TRAY.unreachableTitle`. `10a Offline` draws `Can't reach Proton Drive` on this panel
+        // and the frame is answering a different question: the socket is what did not respond, and
+        // Proton takes no part in that round trip. A daemon that is up and cannot reach Proton is
+        // `failed` or `authExpired` below, both of which still say so. DEVIATIONS §95.
+        headline: MAIN.notRunning,
+        // No count clause to drop here — `notRunningSub` is a plain string, because the reply that
+        // would carry the number is the one that never arrived. Same rule as `unreachableBody(null)`,
+        // reached by having nothing to count rather than by discarding it.
+        sub: MAIN.notRunningSub,
         // `retrying in 40s · last reached 13:58` is drawn and is not derivable: nothing in the reply
-        // says when the next attempt is, and an unreachable daemon is not answering to be asked.
-        // Omitted rather than filled (#213 covers the pass clock). §82h.
+        // says when the next attempt is, and a daemon that is not running is not answering to be
+        // asked. Omitted rather than filled (#213 covers the pass clock). §82h.
         meta: null,
       };
 

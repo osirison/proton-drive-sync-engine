@@ -583,9 +583,14 @@ export function updateCompactPanel(node, opts = {}) {
  * native right-click menu and the window cannot drift apart — three surfaces quote `Sync now`.
  *
  * Read the table alongside 10-tray.md and two things stand out, both deliberate. `Sync now` is
- * ABSENT while syncing, because it would do nothing. And the two states that are not moving files —
- * paused and can't-reach — lead with the row that fixes them and drop `Close window` entirely: with
- * nothing syncing, "keeps syncing" would be a lie.
+ * ABSENT while syncing, because it would do nothing. And the states that are not moving files —
+ * paused, can't-reach and stopped — lead with the row that fixes them and drop `Close window`
+ * entirely: with nothing syncing, "keeps syncing" would be a lie.
+ *
+ * The keys are no longer the panel's five forms, and `screens/tray.js` is where the mapping lives:
+ * the panel is keyed by FORM and the menu by CAUSE, because two states can wear the same struck
+ * hexagon and share none of the same actions. `outage`/`notRunning`/`deferToWindow` are the three
+ * that exist for that reason; each carries its own note.
  */
 export const TRAY_MENU = {
   settled: [
@@ -618,15 +623,40 @@ export const TRAY_MENU = {
     { separator: true },
     { id: "quit", label: TRAY.quit, sub: TRAY.quitSub },
   ],
-  unreachable: [
+  /**
+   * `outage` AND NOT `unreachable`, which is what this set was called while it served both of the
+   * states below — and the rename is the fix, not decoration.
+   *
+   * `Try again now` retries a SYNC, which needs a daemon to ask. It is the right row for a daemon
+   * that is answering and whose last pass failed (`failed`), and it is a control that cannot do what
+   * it says for a daemon that is not answering at all (`unreachable`) — the socket is what did not
+   * respond, so there is nothing there to retry against. Those two states shared this set and the
+   * name matched the wrong one of them; `notRunning` below is what `unreachable` takes now.
+   */
+  outage: [
     { id: "tryAgain", label: TRAY.tryAgain },
     { id: "open", label: TRAY.open },
     { separator: true },
     { id: "quit", label: TRAY.quit, sub: TRAY.quitSub },
   ],
   /**
-   * A SIXTH ROW SET FOR TWO STATES THE TABLE IN `10-tray.md` DOES NOT LIST, and the reason it exists
-   * rather than reusing `unreachable` is one row: `Try again now`.
+   * A STOPPED SERVICE, which is the state `derive_state` really means by `Unreachable`: the control
+   * socket did not answer. `10-tray.md` has no row for it because the design has no such state —
+   * its `unreachable` is Proton being out of reach, which is `outage` above.
+   *
+   * Leads with the row that fixes it, on the same rule as `paused` and `outage`, and drops
+   * `Close window — keeps syncing` on the same rule too: with the service down, nothing is syncing
+   * for it to keep. DEVIATIONS §95.
+   */
+  notRunning: [
+    { id: "start", label: TRAY.start },
+    { id: "open", label: TRAY.open },
+    { separator: true },
+    { id: "quit", label: TRAY.quit, sub: TRAY.quitSub },
+  ],
+  /**
+   * A ROW SET FOR TWO STATES THE TABLE IN `10-tray.md` DOES NOT LIST, and the reason it exists
+   * rather than reusing `outage` is one row: `Try again now`.
    *
    * An expired Proton session and a daemon that has never synced are both states where nothing is
    * moving and where the thing that fixes them is in the window — signing in again, or choosing the
