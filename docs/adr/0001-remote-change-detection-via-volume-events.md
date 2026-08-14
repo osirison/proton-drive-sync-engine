@@ -232,8 +232,10 @@ periodic full scan as backstop", and the original `EVENTS_POLL_INTERVAL` comment
 - **`EVENTS_POLL_INTERVAL` (30s)** — the incremental (O(changes)) pass. Its select arm is armed only
   while `events_driven` is on **and** an event source exists. A degraded session (locked keyring,
   headless host, no CLI session) makes every pass a full-tree walk, so leaving the arm armed there
-  meant an O(folders) BFS every 30s forever (#50); it is now gated off, and the daemon warns once,
-  naming both intervals.
+  meant an O(folders) BFS every 30s forever (#50); it is now gated off, and the cause is reported
+  once — naming both intervals — through the same one-reason-per-cause latch
+  (`note_event_scope_declined`) that reports a missing volume or cursor, so
+  "event-driven detection unavailable" stays one message family rather than two overlapping lines.
 - **`scan_interval`** — the *snapshot* cadence only when event-driven detection is not live (feature
   off, or degraded as above; that pass is also where the session is retried). With detection live a
   `scan_interval` tick is **just another incremental pass**, usually idle (#52). It is deliberately
@@ -242,7 +244,8 @@ periodic full scan as backstop", and the original `EVENTS_POLL_INTERVAL` comment
   change removed.
 - **Full-tree walks** therefore happen on: the first pass after boot (bootstrap, or the warm start's
   remote replay — ADR 0004), an event-stream fallback (no cursor / no volume / fetch error / server
-  refresh / unresolvable node), `proton-sync resync` / `--full-walk`, the opt-in
+  refresh / unresolvable node / a `Created` node its parent listing has not caught up with yet),
+  `proton-sync resync` / `--full-walk`, the opt-in
   `events_full_scan_every` (in-run) and `warm_start_full_walk_every` (across restarts), and every
   pass while the session is unusable.
 
