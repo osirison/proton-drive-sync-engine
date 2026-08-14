@@ -1854,7 +1854,40 @@ impl<C: ProtonClient> Daemon<C> {
                         None => {}
                     },
                     SyncAction::Conflict => {
-                        if action.remote_id.is_some()
+                        if action.sidecar_from_local_copy {
+                            // The remote node is confirmed gone, so the sidecar is a copy of the
+                            // surviving local file (#46). Recording the conflict without the
+                            // sidecar is the frozen state this action exists to end, so anything
+                            // that stops the copy skips the index write too and re-plans.
+                            let (Some(conflict_path), Some(local)) =
+                                (action.conflict_path.as_ref(), local_files.get(&action.path))
+                            else {
+                                break 'action;
+                            };
+                            let Some(destination) =
+                                safe_local_path(&self.config.local_root, conflict_path)
+                            else {
+                                warn!(
+                                    path = %action.path.display(),
+                                    "skipping conflict: the sidecar destination escapes the sync \
+                                     root (e.g. through a symlinked directory)"
+                                );
+                                break 'action;
+                            };
+                            // Never clobber a sidecar that already exists: an unresolved sidecar is
+                            // the user's, and a re-planned conflict must not overwrite it with
+                            // newer local content.
+                            if !destination.exists() {
+                                ensure_parent_directory(&destination)?;
+                                if let Err(error) = fs::copy(&local.absolute_path, &destination) {
+                                    // A truncated sidecar would survive as the artefact of a
+                                    // conflict this pass never recorded, and the retry would take
+                                    // it for a finished copy.
+                                    let _ = fs::remove_file(&destination);
+                                    return Err(error.into());
+                                }
+                            }
+                        } else if action.remote_id.is_some()
                             && let Some(remote_path) =
                                 safe_remote_path(&self.config.remote_root, &action.path)
                             && let Some(conflict_path) = action.conflict_path.as_ref()
@@ -6146,6 +6179,179 @@ mod tests {
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Conflict);
+    }
+
+    #[test]
+    fn reconcile_copies_the_local_edit_into_a_sidecar_when_the_remote_is_deleted() {
+        // (Changed, Missing), issues #46/#15: the remote node is confirmed gone, so nothing may be
+        // downloaded; the local edit is preserved and the sidecar is materialized by COPYING it,
+        // which is the artefact the GUI conflicts list walks for and the handle for the exit.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .iter()
+                .all(|operation| !matches!(
+                    operation,
+                    RecordedOperation::Download { .. } | RecordedOperation::DownloadBatch { .. }
+                )),
+            "a confirmed-missing remote must never be downloaded for a sidecar"
+        );
+        let sidecar_path = local_root.join("notes.proton-cloud.txt");
+        assert_eq!(
+            fs::read(&sidecar_path).expect("sidecar"),
+            b"local edit",
+            "the sidecar must be a copy of the surviving local file"
+        );
+        assert_eq!(
+            fs::read(&local_path).expect("local file"),
+            b"local edit",
+            "the local edit must be preserved untouched"
+        );
+        // The two predicates `gui_core::conflicts::scan_conflicts` walks the disk with: the sidecar
+        // is only in the GUI's conflicts list if both hold for what the daemon actually wrote.
+        assert!(crate::sync::is_conflict_copy(&sidecar_path));
+        assert_eq!(
+            crate::sync::original_from_conflict_copy(&sidecar_path),
+            Some(local_path.clone())
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Conflict);
+        assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
+
+        let operations_after_first = operations.lock().expect("operations lock").len();
+        daemon.reconcile_blocking().expect("second reconcile");
+        assert_eq!(
+            operations.lock().expect("operations lock").len(),
+            operations_after_first,
+            "a parked conflict must not re-run its side effects every pass"
+        );
+    }
+
+    #[test]
+    fn deleting_the_copied_sidecar_uploads_the_preserved_local_edit() {
+        // The exit for the (Changed, Missing) conflict: removing the sidecar re-arms the record and
+        // the next pass uploads the local edit instead of resurrecting the sidecar forever (#46b).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("first reconcile");
+
+        let sidecar_path = local_root.join("notes.proton-cloud.txt");
+        fs::remove_file(&sidecar_path).expect("resolve by removing the sidecar");
+        daemon
+            .handle_fs_event(
+                Event::new(EventKind::Remove(RemoveKind::File)).add_path(sidecar_path.clone()),
+            )
+            .expect("handle sidecar remove event");
+
+        daemon.reconcile_blocking().expect("second reconcile");
+
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .contains(&RecordedOperation::Upload {
+                    local_path,
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from("notes.txt"),
+                }),
+            "deleting the sidecar must resolve the conflict by uploading the local edit"
+        );
+        assert!(
+            !sidecar_path.exists(),
+            "the resolved sidecar must not be resurrected"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn reconcile_replaces_a_stale_directory_record_with_the_new_remote_file() {
+        // #47: `docs` was a synced directory, deleted on both sides; a remote FILE now holds the
+        // name. Only the BASE kind is stale (no live clash), so the pass must adopt the surviving
+        // remote file instead of warning about a type conflict forever.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let content = b"the new remote file".to_vec();
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("docs"),
+            remote(
+                "docs",
+                "remote-file-id",
+                Some(sha1_bytes(&content).as_str()),
+            ),
+        );
+        let mut remote_contents = HashMap::new();
+        remote_contents.insert(PathBuf::from("/Drive/RemoteFolder/docs"), content.clone());
+        let (client, operations) =
+            RecordingProtonClient::with_remote_contents(remote_files, remote_contents);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("docs", Some("dir-id")),
+        )
+        .expect("stale directory record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            fs::read(local_root.join("docs")).expect("downloaded file"),
+            content,
+            "the surviving remote file must be downloaded over the stale directory record"
+        );
+        let record = get_record(&daemon.connection, Path::new("docs"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            record.entity_kind,
+            EntityKind::File,
+            "the stale directory kind must be replaced, not kept"
+        );
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+        assert_eq!(record.proton_id.as_deref(), Some("remote-file-id"));
+
+        let operations_after_first = operations.lock().expect("operations lock").len();
+        daemon.reconcile_blocking().expect("second reconcile");
+        assert_eq!(
+            operations.lock().expect("operations lock").len(),
+            operations_after_first,
+            "the adopted file must converge instead of re-downloading every pass"
+        );
     }
 
     #[test]
