@@ -46,6 +46,16 @@ export const api = {
   searchFiles: (query, limit) => invoke("search_files", { query, limit: limit ?? null }),
   startService: () => invoke("start_service"),
   restartService: () => invoke("restart_service"),
+  // The four openers (#220/#231). ALL OF THEM REJECT on failure — unlike the status commands, whose
+  // error travels inside a resolved payload — so a caller that does not catch loses the only account
+  // of why nothing opened. `openPaths` takes RELATIVE paths (both sides of a conflict); the backend
+  // joins them onto the sync root and refuses anything that is not under it. `openRemote` takes no
+  // argument at all: the URL is a constant in Rust, because no per-file Proton Drive link is
+  // derivable from anything the daemon reports.
+  openPaths: (relative) => invoke("open_paths", { relative }),
+  openFolder: (relative) => invoke("open_folder", { relative }),
+  openRemote: () => invoke("open_remote"),
+  openSystemLog: () => invoke("open_system_log"),
   // The notification banners (S9). `payload` is `payloadFor(spec)` from `ui/notification.js`, so the
   // sentence a desktop shows and the one `renderBanner` draws come from the same builder.
   sendNotification: (payload) => invoke("send_notification", { payload }),
@@ -344,6 +354,14 @@ function mockInvoke(cmd, args) {
       });
     case "start_service":
       return Promise.resolve("asked systemd to start proton-syncd (preview mock)");
+    case "open_paths":
+    case "open_folder":
+    case "open_remote":
+    case "open_system_log":
+      // A browser tab has no `xdg-open` and no journal. Resolving is the honest preview: the click
+      // is the thing being looked at, and rejecting would draw a failure nobody chose to see —
+      // `?frame=` has no way to ask for one, unlike `8a Save refused`'s fixture-driven error.
+      return Promise.resolve(null);
     case "read_notify_policy":
       return Promise.resolve("only_when_needed");
     case "write_notify_policy":

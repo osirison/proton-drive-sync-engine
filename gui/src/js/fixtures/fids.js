@@ -931,9 +931,10 @@ const ACTIVITY_QUIET_FIDS = {
  * `7a File lookup` — one path, resolved. No title block: the search field is the first content
  * block and wears the 4px padding-top the title block had.
  *
- * UNDECLARED: the four `This file's history` rows (`div[2]/div[0..3]`, G1 #190) and the two
- * openers in its footer row (`div[2]/div[5]/button[0..1]`, G18). The `linked · id` line stays,
- * because `proton_id` is on the reply today.
+ * UNDECLARED: the four `This file's history` rows (`div[2]/div[0..3]`, G1 #190). The `linked · id`
+ * line stays, because `proton_id` is on the reply today, and the two openers beside it are drawn
+ * since #231 — `Open folder` on `tracked`, `Open on Proton Drive` on the same `proton_id`, so a
+ * frame drawing a file with neither would map neither.
  */
 const ACTIVITY_LOOKUP_FIDS = {
   searchWrap: "div[0]",
@@ -962,6 +963,8 @@ const ACTIVITY_LOOKUP_FIDS = {
 
   content: "div[2]",
   historyFoot: "div[2]/div[5]",
+  openFolder: "div[2]/div[5]/button[0]",
+  openRemote: "div[2]/div[5]/button[1]",
   linked: "div[2]/div[5]/span[1]",
 
   ...activityDoors("div[3]"),
@@ -971,8 +974,8 @@ const ACTIVITY_LOOKUP_FIDS = {
  * `6a Activity passes` — the other tab. The pill strip exists ONLY here; the quiet tab's way in is
  * the button in its list footer.
  *
- * UNDECLARED: the whole twenty-bar chart card (`div[2]`, G16 — no per-pass duration exists) and
- * `Open the system log` (`div[3]/div[6]/button`, G18).
+ * UNDECLARED: the whole twenty-bar chart card (`div[2]`, G16 — no per-pass duration exists).
+ * `Open the system log` is drawn and mapped since #231.
  */
 const ACTIVITY_PASSES_FIDS = {
   title: "div[0]/div[0]",
@@ -988,6 +991,7 @@ const ACTIVITY_PASSES_FIDS = {
   passRow: (i) => `div[3]/div[${i}]`,
   passesFoot: "div[3]/div[6]",
   retention: "div[3]/div[6]/span[0]",
+  openLog: "div[3]/div[6]/button",
 
   ...activityDoors("div[4]"),
 };
@@ -1029,8 +1033,10 @@ const NEVER_SYNCED_FIDS = {
 /**
  * `6a Details` — the 522x462 dialog of eight rows.
  *
- * UNDECLARED: `Open the system log` (`div[2]/button[1]`, G18). `Copy all` stays — the clipboard is
- * the webview's own and needs no command.
+ * NOTHING UNDECLARED. `Copy all` never needed a command — the clipboard is the webview's own — and
+ * `Open the system log` got one in #231. Its slot is `detailsOpenLog` and NOT `openLog`: this dialog
+ * floats over the passes tab, which draws the same label, and a slot name in two tables is resolved
+ * by name — so the unprefixed key would be stamped on whichever button rendered first.
  */
 const DETAILS_FIDS = {
   dlgHead: "div[0]",
@@ -1044,15 +1050,17 @@ const DETAILS_FIDS = {
 
   dlgFoot: "div[2]",
   copyAll: "div[2]/button[0]",
+  detailsOpenLog: "div[2]/button[1]",
 };
 
 /**
  * `7a File pending` — 18 nodes, no title row, no ✕.
  *
  * UNDECLARED: the progress bar (`div[1]` and `div[1]/div`, G18's sibling — no fraction is
- * computable in either direction, see §63) and `Open folder` (`div[2]/button`, G18). Note the
- * bar's absence moves nothing: it sits BELOW the hero and above the footer row, and the footer row
- * keeps its own key.
+ * computable in either direction, see §63). Note the bar's absence moves nothing: it sits BELOW the
+ * hero and above the footer row, and the footer row keeps its own key. `Open folder` is drawn since
+ * #231, under `pendingOpenFolder` — prefixed because this dialog floats over the lookup body, which
+ * draws its own `Open folder`, and slots resolve by name.
  */
 const FILE_PENDING_FIDS = {
   pendingHero: "div[0]",
@@ -1070,6 +1078,7 @@ const FILE_PENDING_FIDS = {
 
   pendingFoot: "div[2]",
   pendingNote: "div[2]/span[0]",
+  pendingOpenFolder: "div[2]/button",
 };
 
 /**
@@ -1334,7 +1343,8 @@ export function settingsFids(view) {
 //     takeover that covers the plan door.
 //   · `9a First sync` — the split progress bar and its two labels (`div[0]/div[5]`, #243).
 //   · `9a CLI missing` — the command box (`div/div/div[2]`, #218) and `Installation help`
-//     (`div/div/div[3]/button[1]`, #231 and #244).
+//     (`div/div/div[3]/button[1]`, #244). #231 shipped the opener half; what is still missing is a
+//     URL to send it to, and a takeover with nowhere to open from.
 //
 // The two window frames' header has no `menu` slot — onboarding drops the ⋯ — and no `chipDot`:
 // `step N of 2` is text only.
