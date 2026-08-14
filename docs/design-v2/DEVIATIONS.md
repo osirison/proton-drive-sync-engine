@@ -2610,8 +2610,8 @@ argument rather than a caller-side `.toLowerCase()`, since above ten `cardinal` 
 | S5     | `7a File lookup`     | `received 14:32` on the Proton card      | the clause omitted                      | G20 #233     |
 | S5     | `7a File pending`    | a 3px bar at 41%                         | no track at all (§63)                   | G2 #191, #98 |
 | S5     | `7a Never synced`    | `Can't be synced`, two rows              | the group omitted                       | G19 #232     |
-| S5     | `6a Details`         | `Open the system log`                    | omitted; `Copy all` stays               | G18 #231     |
-| S5     | all three            | `Open folder`, `Open on Proton Drive`    | omitted                                 | G18 #231     |
+| S5     | `6a Details`         | `Open the system log`                    | ~~omitted~~ drawn; a journal snapshot (§97) | G18 #231 ✔   |
+| S5     | all three            | `Open folder`, `Open on Proton Drive`    | ~~omitted~~ drawn; the Drive app, not the file (§97) | G18 #231 ✔   |
 | S5     | `5a Checking`        | four unlit doors on the plan screen      | `Plan a sync` lit, per `02-shell.md:42` | —            |
 
 **`ACTIVITY.nothingRecent` stays undrawn, and it looks like it should not.**
@@ -3067,7 +3067,10 @@ everything and cannot be dismissed, so there is no sub-screen to visit and come 
   setup. The panel keeps its sentence, whose "or any time later in Settings" is the half that works.
 - **`See all 471 actions`** — the action list is the Plan screen, behind a footer door the takeover
   covers.
-- **`Installation help`** — needs G18 (#231) as well: nothing in the command surface opens a URL.
+- **`Installation help`** — needed G18 (#231) as well, and half of that is now gone: `open_remote`
+  proves the command surface can open a URL. What is missing is a URL worth opening (this project's
+  own docs record that no distribution packages the CLI, #218) and somewhere to come back from —
+  so #244 alone still holds this one.
 
 A disabled button would be worse than an absent one (§76's own rule, and `button()` attaches no
 listener to a disabled kind — so one armed later paints live and does nothing).
@@ -3097,9 +3100,9 @@ machine with no `proton-syncd` on its `PATH` gets a blank middle. Both borrow sh
 `5a Checking`'s dry-run mark and copy for the wait, S4's failed body for the failure, with the
 daemon's string quoted verbatim (voice rule 4).
 
-The error block caps its height and wraps anywhere, which `.pl-failed-error` does not: a daemon
-failing with a long stderr would otherwise grow the block until it painted over the footer. Driven
-with a 10 KB error at 1042×766 — 766, no overlap.
+The error block caps its height and wraps anywhere, which `.pl-failed-error` did not until §96 gave
+it the same bound by a different spelling: a daemon failing with a long stderr would otherwise grow
+the block until it painted over the footer. Driven with a 10 KB error at 1042×766 — 766, no overlap.
 
 ### 79g. Four primitives, corrected by the screen that drew them first
 
@@ -4616,3 +4619,110 @@ the copy and the quoted block the same seam — `headlineOf`, `subOf` and `quote
 and asserted through, and the revert now fails two tests. This is the file's own lesson from S5
 arriving one screen later: a test over a function the caller does not reach proves the function, not
 the feature.
+
+## The plan screen's lists are bounded by the window (2026-08-14)
+
+## 96. Seven files took the primary action off a window that cannot scroll
+
+`5a Plan safe` is the one body on this screen whose height is the plan's length. A 300px hero, then a
+row per file under each side count, then a `flex: 1` spacer — and the spacer is the only slack there
+is. Measured at 1040×764, with the app's own fixture and the doors §94 put under the action bar:
+
+| rows on the taller side | document height | the four doors | `Run this sync` |
+| --- | --- | --- | --- |
+| 4 (the frame's own plan) | 764 | on screen | bottom edge at 699 |
+| 6 | 764 | on screen, and the spacer is gone | 699 |
+| 7 | 797 | 33px below the fold | 732 — the last row that keeps it |
+| 8 | 830 | 66px below | 765, 1px below the fold |
+| 44 | 2018 | 1254px below | 1953, 1189px below |
+
+The window is a fixed, non-resizable 1040×764 with no scrollbar of its own, so past six files the
+whole window scrolled: the four doors go first and the screen's primary action follows one row later.
+A plan that moves seven files is an ordinary plan. #267.
+
+**Scrolled, not capped, and the block that shrinks is the seam block.** 02-shell.md states the rule
+for exactly this ("where a list can genuinely exceed the space, use `overflow-y:auto` so the clip
+reads as a scroll region"), and this screen's other body already follows it — `.pl-rows` became
+unconditionally scrollable under §94, having first shipped a `ROWS_THAT_FIT` constant for a height
+that was not fixed. A cap here would be that constant again: six rows fit under a 300px hero today,
+five would if the footer ever grew the optional line 02-shell.md reserves beneath the doors. Letting
+the hero give up height instead was considered and refused — it centres a mark, a headline and a
+sentence, and shrinking it moves all three for a reason the user cannot see.
+
+So `.pl-seam-block.is-bounded` (the safe body only — `5a Plan`'s block is untouched) may shrink, its
+grid carries that bound down to the columns, each column is a flex column so the squeeze lands on the
+list rather than on the 42px count above it, and each list scrolls. Seven assertions on `5a Plan safe`
+move with it, all tagged `decision` in `known-deviations.mjs`: `flex-shrink` on the block, `display`
+and `flex-direction` on both columns, `overflow` on both lists. The frame draws three files and two,
+so it had no occasion to bound anything.
+
+Two more measurements taken in the same window, on the same screen, neither of them in #267:
+
+**A long path grew the document sideways.** `.side-path` ellipsises, but only inside a column that is
+allowed to be narrower than its content: a grid item's automatic minimum is `auto`, so a 207-character
+path widened the `1fr` column, the grid and the document to **2198px** in a 1040px window. `min-width: 0`
+on `.pl-side` is the whole fix, and it applies to both frames.
+
+**The failed rehearsal quoted a daemon without bounding it.** The fourth body no frame draws
+(§76) prints the daemon's exact string, which is right — voice rule 4 — and unbounded, which is not:
+a 10 KB stderr wrapped to **1853px** of column and painted its own tail over the footer. §79f named
+this in a subordinate clause when onboarding borrowed the block — "the error block caps its height
+and wraps anywhere, which `.pl-failed-error` does not" — and the clause outlived the note: the
+onboarding block was bounded, `.main-failed-error` was bounded under §90, and the block both of them
+were copied from never was. `min-height: 0` on a flex item whose automatic minimum was its content is
+the whole fix; §79f's sentence is updated rather than left naming a bug that is gone.
+
+Every reachable state of the screen was re-measured after the change — the safe body at 4, 5, 6, 7,
+8, 10, 16 and 44 files a side and with both sides long, the empty plan that routes here, the list
+body at 9, 21, 61 and 69 actions and with thirteen gated rows, the checking body, and the failed body
+at 30 bytes, 1.4 KB and 10 KB. All of them 764×1040, nothing over the footer.
+
+## The four openers (2026-08-14)
+
+## 97. Two of them cannot open what their label promises
+
+`Open both in an editor` (§74), `Open folder`, `Open on Proton Drive` and `Open the system log`
+(G18) were four drawn buttons with no command behind them: the first painted live and inert, the
+other three omitted rather than painted dead. #220 and #231 close together, because they are one
+capability — a command that hands something to the desktop — behind four labels.
+
+`open_paths`, `open_folder`, `open_remote` and `open_system_log` shell `xdg-open`, the way this
+project already shells `systemctl`, `proton-drive`, `secret-tool` and `curl`. No plugin: an opener
+plugin would be a dependency, a capability grant in `capabilities/default.json` and a Debian build
+rule, for what `std::process::Command` does in twenty lines. The webview therefore gets exactly four
+named doors out and no general "open anything" permission.
+
+**`Open on Proton Drive` opens the Drive web app and not the file, and the button is honest about
+that rather than absent.** A per-file web URL is `/u/0/<shareId>/folder/<linkId>`; the GUI holds
+neither id. `proton_id` is the engine's composed `volumeId~nodeId` — an API identity, not a route
+the web app resolves — and no field on the status reply, the index, or the CLI's listing carries a
+share. Interpolating the ids we do have would ship a 404 behind a button promising a file. So the
+URL is a constant in `commands.rs` and the command takes **no argument at all**, which also removes
+the only place a URL could have been injected from the webview.
+
+**`Open the system log` opens a snapshot, because a journal has no path.** The daemon logs through
+`tracing` to stderr; the shipped user unit captures that in the journal, which is a binary store with
+no filename and no registered handler, and a terminal emulator is not something a Linux desktop
+guarantees. So `journalctl --user -u proton-syncd -n 1000` is written to
+`$XDG_CACHE_HOME/proton-sync/proton-syncd-log.txt` — `.txt` is load-bearing, `xdg-open` picks a
+handler by type — with a header naming the live command. A daemon started outside systemd has no
+journal at all (`start_service`'s fallback nulls the child's stderr), and that case returns the
+command as an error rather than opening an empty file, which would read as "nothing is wrong".
+
+**Every path is re-validated at the command boundary**, though both conflict paths come off a
+`Conflict` the GUI produced itself: `gui_core::opener` refuses absolute paths, `..`, prefix
+components — and, by canonicalising both sides, a symlink inside the sync folder that points out of
+it, which the textual guard cannot see. A missing file is refused rather than handed over. Nothing
+builds a shell string; `Command` takes an argv, so a filename containing `;` or `$(…)` is one
+argument.
+
+**A refused or failed open says so, in mono, under the button that failed.** No frame draws this
+row — no frame draws a failure — and without it the four buttons fail exactly the way they behaved
+before they were wired. `xdg-open` exiting 3 (no handler registered) is the "no editor configured"
+case and names the file it could not open. On `6a Details`, the one dialog with a fixed height, the
+line goes INSIDE the body rather than under the foot: `.dialog` clips what overflows it, and a
+message nobody can see is the bug this whole change is about.
+
+**`Installation help` is still not drawn.** #231 was half of what it needed; #218 (no distribution
+packages the CLI, so there is no true help URL) and #244 (a takeover has nowhere to come back from)
+are the other half, and neither moved.

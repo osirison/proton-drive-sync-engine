@@ -547,22 +547,6 @@ export const KNOWN_DEVIATIONS = [
     issue: "#207",
     why: "`Proton Drive` loses the same count — and its sub-line too, but to a different gap: `next full check in 4m` counts down to a full-scan schedule the daemon does not expose (#193), and deriving it from `scan_interval` would contradict `6a Details`, which draws that interval as its own row",
   },
-  {
-    frame: "6a Activity passes",
-    key: "div[3]/div[6]",
-    props: ["box.h"],
-    detail: "48 vs 35",
-    issue: "#231",
-    why: "the retention row keeps its sentence — `Only the last 20 passes are kept.` is true and needs no data — and loses `Open the system log`, which has no command behind it; the 31px button was what made the row 48 tall",
-  },
-  {
-    frame: "7a File pending",
-    key: "div[2]",
-    props: ["box.h"],
-    detail: "31 vs 14",
-    issue: "#231",
-    why: "the pending dialog's footer row keeps `only on this computer so far` and loses `Open folder`, the same missing opener; the row is now the height of its remaining text",
-  },
 
   // ---- S6 · settings ----
   //
@@ -664,6 +648,70 @@ export const KNOWN_DEVIATIONS = [
     detail: "hidden vs hidden auto",
     decision: true,
     why: "the frame draws nine 33px rows in a 319px block; with the doors under the bar the block is 272px and eight fit, so the list scrolls rather than hiding the ninth action behind a clip the user cannot reach",
+  },
+  // ---- §96 · the safe body's side lists are bounded by the window ----
+  //
+  // The other half of the row above, on the other body (#267, DEVIATIONS §96). `5a Plan safe` draws
+  // three files and two, so the frame had no occasion to bound them; a seventh file leaving put
+  // `Run this sync` 33px below a window that cannot be resized, and 44 put it 1254px below. Seven
+  // rows, one shrinking block: the frame's `flex: none` seam block becomes the block that gives, its
+  // two columns become flex columns so the squeeze lands on the list rather than on the count above
+  // it, and each list scrolls. No capability closes them; a re-drawn frame would.
+  {
+    frame: "5a Plan safe",
+    key: "div[1]",
+    props: ["flex-shrink"],
+    detail: "0 vs 1",
+    decision: true,
+    why: "the seam block is the block with the slack — the hero above it is a fixed 300px and the spacer below it has already collapsed by the seventh file — so it is the one that shrinks when the lists outgrow the window",
+  },
+  {
+    frame: "5a Plan safe",
+    key: "div[1]/div[1]/div[0]",
+    props: ["display"],
+    detail: "block vs flex",
+    decision: true,
+    why: "the leaving column is a flex column so that a bounded height reaches the list alone: the eyebrow and the 42px count are floored by their own content, and the rows are what is left to give",
+  },
+  {
+    frame: "5a Plan safe",
+    key: "div[1]/div[1]/div[0]",
+    props: ["flex-direction"],
+    detail: "row vs column",
+    decision: true,
+    why: "the same column, stacking the way it already drew — `flex-direction` is only observable at all because the display changed",
+  },
+  {
+    frame: "5a Plan safe",
+    key: "div[1]/div[1]/div[0]/div[2]",
+    props: ["overflow"],
+    detail: "visible vs auto",
+    decision: true,
+    why: "six 33px rows fit under a 300px hero and the seventh does not; the list scrolls rather than pushing the primary action off a window with no scrollbar of its own — 02-shell.md's own rule for a list that can genuinely exceed its space",
+  },
+  {
+    frame: "5a Plan safe",
+    key: "div[1]/div[1]/div[1]",
+    props: ["display"],
+    detail: "block vs flex",
+    decision: true,
+    why: "the arriving column, for the same reason and by the same rule: one stylesheet rule covers both sides of the seam",
+  },
+  {
+    frame: "5a Plan safe",
+    key: "div[1]/div[1]/div[1]",
+    props: ["flex-direction"],
+    detail: "row vs column",
+    decision: true,
+    why: "likewise",
+  },
+  {
+    frame: "5a Plan safe",
+    key: "div[1]/div[1]/div[1]/div[2]",
+    props: ["overflow"],
+    detail: "visible vs auto",
+    decision: true,
+    why: "the arriving list scrolls too — the taller side is whichever way the plan happens to run, and a rule that bounded only the leaving one would be a fix for half the plans",
   },
   {
     frame: "8a Skip rules",

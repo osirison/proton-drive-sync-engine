@@ -462,3 +462,14 @@
   display: flex;
   margin-bottom: 14px;
 }
+
+/* WHY NOTHING OPENED (#220/#231). Undrawn — no frame draws a failure — so it takes the same
+   treatment every other quoted machine string on this screen takes: mono, one tier dimmer than the
+   text it sits under. Shared by all four opener sites. */
+.activity-open-error {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}

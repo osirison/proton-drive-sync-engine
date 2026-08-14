@@ -57,11 +57,11 @@ const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// This interval is **not** a snapshot cadence, and neither is `scan_interval` in events mode
 /// (#52): a `scan_interval` tick is just another incremental — usually idle — pass. The only
-/// full-tree walks in events mode are the first pass after boot (bootstrap or the warm start's
-/// remote-side replay), an event-stream fallback (no cursor / no volume / fetch error / server
-/// refresh / unresolvable node), `proton-sync resync` / `--full-walk`, the opt-in periodic
+/// remote-tree walks in events mode are a startup bootstrap (when warm start is ineligible), an
+/// event-stream fallback (no cursor / no volume / fetch error / server refresh / unresolvable
+/// node / incomplete remote listing), `proton-sync resync` / `--full-walk`, the opt-in periodic
 /// `events_full_scan_every`, the across-restart `warm_start_full_walk_every`, and the degraded
-/// session above.
+/// session above. A warm start instead replays the cursor and scans the local tree only.
 const EVENTS_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Dedicated `tracing` target for the per-file upload/download log lines, so operators can filter
 /// or silence the (potentially high-volume, filename-bearing) transfer trace independently of the
@@ -3447,11 +3447,12 @@ fn remove_control_socket(socket_path: &Path) {
 /// Join `relative` onto `local_root` only when it is safe to do so.
 ///
 /// Returns `None` (and the caller should skip the action) when `relative`
-/// contains components that could escape `local_root`.  Delegates to
-/// [`crate::validate_relative_path`] for consistent security semantics with
-/// the remote-path normalization in `proton.rs`.
+/// contains components that could escape `local_root`, or is the root itself.
+/// Delegates to [`crate::validate_relative_path_non_empty`] for consistent security semantics
+/// with the remote-path normalization in `proton.rs`: an empty relative path resolves to
+/// `local_root`, turning a per-entry download or delete into a whole-root one (#72).
 fn safe_local_path(local_root: &Path, relative: &Path) -> Option<PathBuf> {
-    let destination = local_root.join(crate::validate_relative_path(relative)?);
+    let destination = local_root.join(crate::validate_relative_path_non_empty(relative)?);
     if local_write_escapes_root(local_root, &destination) {
         return None;
     }
@@ -3485,8 +3486,11 @@ fn local_write_escapes_root(local_root: &Path, destination: &Path) -> bool {
     }
 }
 
+/// The remote-side counterpart of [`safe_local_path`]: rejects the empty path too, so a planned
+/// action can never address the remote root itself (#72). `CreateRemoteDirectory` handles the
+/// root through `ensure_root_directory` before reaching here.
 fn safe_remote_path(remote_root: &Path, relative: &Path) -> Option<PathBuf> {
-    crate::validate_relative_path(relative).map(|safe| remote_root.join(safe))
+    crate::validate_relative_path_non_empty(relative).map(|safe| remote_root.join(safe))
 }
 
 /// Returns every base-index path strictly nested under `directory_path`, used to purge
@@ -4672,6 +4676,66 @@ mod tests {
                 .iter()
                 .any(|op| matches!(op, RecordedOperation::Download { .. })),
             "no download should run for a path that escapes the sync root"
+        );
+    }
+
+    #[test]
+    fn safe_paths_reject_the_empty_relative_path() {
+        // #72: `validate_relative_path` maps "" and "." to Some("") — load-bearing for the
+        // remote root itself (the listing's root wrapper node, and `CreateRemoteDirectory`'s
+        // empty-path arm, which never reaches these helpers). Every path-keyed *side effect*
+        // must refuse it: joined onto a root it resolves to the root, turning a per-file
+        // download or delete into a whole-root one.
+        let root = Path::new("/tmp/sync-root");
+        assert_eq!(safe_remote_path(root, Path::new("")), None);
+        assert_eq!(safe_remote_path(root, Path::new(".")), None);
+        assert_eq!(safe_local_path(root, Path::new("")), None);
+        assert_eq!(safe_local_path(root, Path::new(".")), None);
+        assert_eq!(
+            safe_remote_path(root, Path::new("notes.txt")),
+            Some(root.join("notes.txt"))
+        );
+    }
+
+    #[test]
+    fn reconcile_never_downloads_a_remote_entry_that_resolves_to_the_sync_roots() {
+        // #72, second layer: even if an empty-path entry reached the planner, the executor must
+        // refuse it rather than run a download whose destination is the local root itself.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(PathBuf::from(""), remote("", "root-id", Some("root-hash")));
+        let (client, operations) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        let error = daemon
+            .reconcile_blocking()
+            .expect_err("an empty-path download must be refused, not executed");
+
+        assert!(
+            error.to_string().contains("unsafe remote path"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !operations
+                .lock()
+                .expect("operations lock")
+                .iter()
+                .any(|op| matches!(
+                    op,
+                    RecordedOperation::Download { .. } | RecordedOperation::DownloadBatch { .. }
+                )),
+            "no download may run for an entry that resolves to the sync roots"
+        );
+        assert!(
+            local_root
+                .read_dir()
+                .expect("local root listing")
+                .next()
+                .is_none(),
+            "the local root must be untouched"
         );
     }
 
@@ -7824,6 +7888,9 @@ mod tests {
         /// single pass fail and have the retry succeed (used to prove a failed first pass retries
         /// as a first pass rather than idle-skipping the local scan).
         fail_next_upload: Arc<AtomicBool>,
+        /// When `true`, every targeted single-directory listing fails the way `proton::collect_node`
+        /// fails an incomplete listing (a node present remotely that this listing cannot describe).
+        fail_directory_lists: bool,
     }
 
     impl EventFakeClient {
@@ -7834,6 +7901,7 @@ mod tests {
                 directory_lists: Arc::new(AtomicUsize::new(0)),
                 failed_uploads: BTreeSet::new(),
                 fail_next_upload: Arc::new(AtomicBool::new(false)),
+                fail_directory_lists: false,
             }
         }
     }
@@ -7864,6 +7932,12 @@ mod tests {
             relative_directory: &Path,
         ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
             self.directory_lists.fetch_add(1, Ordering::SeqCst);
+            if self.fail_directory_lists {
+                return Err(boxed_error(
+                    "remote listing is incomplete: a node under the remote root has an \
+                     undecodable name/path",
+                ));
+            }
             Ok(self
                 .remote_entities
                 .iter()
@@ -8426,6 +8500,77 @@ mod tests {
             full_walks.load(Ordering::SeqCst),
             1,
             "an events fetch error must trigger a full-tree snapshot"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_directory_listing_falls_back_instead_of_planning_a_deletion() {
+        // `list_directory` can now fail (#59's incomplete-listing guard). That error must travel
+        // resolver -> `Reconstruction::FallbackToSnapshot` -> a full-tree snapshot, and must never
+        // become a plan: the whole point of failing the listing is that a node missing from it is
+        // indistinguishable from a deleted one. The pass-scoped listing memo (#70) sits on that
+        // path — it caches the `Rc` only after a successful call, so a failure is never memoized.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]);
+        let mut client = EventFakeClient::new(remote_entities);
+        client.fail_directory_lists = true;
+        let full_walks = Arc::clone(&client.full_walks);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        // An update to a node whose parent is not indexed sends the resolver to the root listing.
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Updated, "nk", None, false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![page],
+            ))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        daemon.is_first_reconcile = false;
+
+        daemon
+            .reconcile_blocking()
+            .expect("an incomplete listing falls back cleanly");
+
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            1,
+            "the failed listing must abandon the incremental pass, not be retried"
+        );
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "an incomplete targeted listing must fall back to a full-tree snapshot"
+        );
+        assert!(
+            local_root.join("keep.txt").exists(),
+            "an incomplete listing must never delete local content"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("keep.txt"))
+                .expect("index lookup")
+                .is_some(),
+            "an incomplete listing must not purge the index record either"
         );
     }
 

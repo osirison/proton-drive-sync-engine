@@ -213,6 +213,11 @@ function chipFor() {
 
 function navigate(id) {
   if (!ROUTES[id]) throw new Error(`app: no route "${id}"`);
+  // A REFUSED OPEN IS ABOUT THE BUTTON THAT WAS CLICKED, and nothing else. `openerError` is one
+  // variable feeding five sites across two screens, so a failure left standing is drawn under a
+  // different button on a screen the user has since walked to — as the reason THAT one did nothing.
+  // §95a records the identical shape on `serviceStartError`, which outlived its own subject.
+  openerError = null;
   if (isOverlay(id)) return openOverlay(id);
   // The lit door is a no-op, NOT a toggle back to main (2026-08-13; Home is its own door now). It
   // has to stay a no-op rather than a re-navigate: re-entering resets the screen, which would drop
@@ -309,6 +314,9 @@ function focusAfterSwap(selector) {
 
 /** Close the topmost layer. The dialog is always above the screen stack, so it goes first. */
 function closeOverlay() {
+  // Same rule as `navigate`: leaving the surface the failure was about retires it. A dialog is left
+  // through here and not through `navigate`, so the clear has to be in both.
+  openerError = null;
   if (dialogOverlay) {
     dialogOverlay = null;
     const back = dialogReturn;
@@ -1436,12 +1444,14 @@ function conflictsProps() {
       conflictDiffOpen = false;
       render();
     },
-    // `Open both in an editor` is DRAWN AND INERT, and that is the process rather than an
-    // oversight. There is no command that opens a path, and `commands.rs` is explicit that a
-    // screen task never adds one — a screen needing something the surface lacks files a C-item,
-    // which adds the command before the screen is built. S2 found this one too late for that, so
-    // the button is drawn (the frame draws it) and does nothing until the C-item lands. §74.
-    onOpenBoth: null,
+    // `Open both in an editor` (#220, §74) — live since the openers landed as a C-item.
+    //
+    // BOTH RELATIVE PATHS COME OFF THE `Conflict`, and neither is rebuilt here. The sidecar name has
+    // two forms (`{stem}.proton-cloud.{ext}` and the extensionless `{name}.proton-cloud`) and
+    // `gui_core::conflicts` is the one place that knows which this is; deriving it in JS would be a
+    // second copy of that rule, which is this project's most-recorded bug shape.
+    onOpenBoth: conflict ? () => runOpener(() => api.openPaths([conflict.original, conflict.sidecar])) : null,
+    openError: openerError,
     onBack: () => navigate("main"),
     onPrev: () => stepConflict(-1),
     onNext: () => stepConflict(1),
@@ -1879,6 +1889,46 @@ async function startService() {
   poll();
 }
 
+// ---- the openers (#220/#231) ----
+
+/**
+ * Why the last open did not happen. One variable for all four buttons: only one can be clicked at a
+ * time, and the sentence is only ever about the click that just failed.
+ */
+let openerError = null;
+
+/**
+ * Run one of the four openers and keep its refusal.
+ *
+ * NOT `command(...)`. That helper folds a rejection into `console.error`, which is right for the
+ * control-socket commands — their failure travels inside a RESOLVED payload, so a throw there is a
+ * bug and not a diagnosis — and wrong for these: `open_paths`/`open_folder`/`open_remote`/
+ * `open_system_log` genuinely reject, and the message is the only account of why nothing opened.
+ * Swallowing it is the silence these four buttons already had, moved one layer down.
+ */
+async function runOpener(call) {
+  if (openerError !== null) {
+    openerError = null;
+    render();
+  }
+  try {
+    await call();
+  } catch (error) {
+    openerError = String(error?.message ?? error);
+    render();
+  }
+}
+
+/** The three handlers every screen with an opener passes down, plus the reason the last one failed. */
+function openerProps() {
+  return {
+    openError: openerError,
+    onOpenFolder: (path) => runOpener(() => api.openFolder(path)),
+    onOpenRemote: () => runOpener(() => api.openRemote()),
+    onOpenLog: () => runOpener(() => api.openSystemLog()),
+  };
+}
+
 /** Everything the main screen reads, plus the actions it can take. */
 function mainProps(localRoot, remoteRoot) {
   return {
@@ -2240,6 +2290,7 @@ function activityProps() {
     onDetails: () => navigate("details"),
     onShowNeverSynced: () => navigate("neverSynced"),
     inputRef: activityInputRef,
+    ...openerProps(),
   };
 }
 
@@ -2339,10 +2390,18 @@ function activityDialog(id) {
       config: activeFixture()?.config ?? configInfo,
       socketOk: Boolean(store.select.response()) && !store.select.error(),
       historyCount: props.history.length,
+      // The dialog's own `Open the system log` (#231) — the same handler the passes tab's copy of
+      // that button uses, so the two cannot drift apart.
+      onOpenLog: props.onOpenLog,
+      openError: props.openError,
     };
     return {
       signature:
-        JSON.stringify(body.counters) + JSON.stringify(body.config) + body.socketOk + body.historyCount,
+        JSON.stringify(body.counters) +
+        JSON.stringify(body.config) +
+        body.socketOk +
+        body.historyCount +
+        String(body.openError),
       children: renderDetailsBody(body),
     };
   }
@@ -2374,8 +2433,12 @@ function activityDialog(id) {
     return {
       head: false,
       label: ACTIVITY.lookup.pending,
-      signature: JSON.stringify(transfer),
-      children: renderFilePendingBody({ transfer }),
+      signature: JSON.stringify(transfer) + String(props.openError),
+      children: renderFilePendingBody({
+        transfer,
+        onOpenFolder: props.onOpenFolder,
+        openError: props.openError,
+      }),
     };
   }
   return null;

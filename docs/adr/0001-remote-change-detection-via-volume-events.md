@@ -242,12 +242,13 @@ periodic full scan as backstop", and the original `EVENTS_POLL_INTERVAL` comment
   not made to force a snapshot: the periodic full-tree resync (`events_full_scan_every`) has been
   **opt-in and off by default** since PR #138, so forcing one here would reinstate exactly what that
   change removed.
-- **Full-tree walks** therefore happen on: the first pass after boot (bootstrap, or the warm start's
-  remote replay — ADR 0004), an event-stream fallback (no cursor / no volume / fetch error / server
-  refresh / unresolvable node / a `Created` node its parent listing has not caught up with yet),
-  `proton-sync resync` / `--full-walk`, the opt-in
+- **Full remote-tree walks** therefore happen on: a startup bootstrap (when warm start is
+  ineligible), an event-stream fallback (no cursor / no volume / fetch error / server refresh /
+  unresolvable node / incomplete remote listing / a `Created` node whose parent listing has not
+  caught up with it), `proton-sync resync` / `--full-walk`, the opt-in
   `events_full_scan_every` (in-run) and `warm_start_full_walk_every` (across restarts), and every
-  pass while the session is unusable.
+  pass while the session is unusable. A warm start instead replays the cursor and full-scans only
+  the local tree (ADR 0004).
 
 Corollary for **local** changes: with no periodic full walk, the idle fast-path is the only thing
 standing between a dropped `notify` event and a change that is never re-derived. Directory events
