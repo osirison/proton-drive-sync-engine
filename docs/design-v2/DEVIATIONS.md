@@ -1,7 +1,8 @@
 # Deviations
 
-Where `docs/design-v2` and the prototype disagree, and what was done about it. Resolutions follow
-the precedence rule in `IMPLEMENTATION-PLAN.md` §1.3:
+Where `docs/design-v2` and the prototype disagree, and what was done about it. The five decisions
+that were taken once and apply everywhere are in `DECISIONS.md`; this file is the per-conflict
+record under them. Resolutions follow the precedence rule in `IMPLEMENTATION-PLAN.md` §1.3:
 
 1. the `.md` files are normative for **tokens, rules, semantics and copy**;
 2. the matching 1040 / 600 / 520 / 360 frame is normative for that screen's **layout geometry and
