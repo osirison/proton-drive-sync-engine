@@ -3097,9 +3097,9 @@ machine with no `proton-syncd` on its `PATH` gets a blank middle. Both borrow sh
 `5a Checking`'s dry-run mark and copy for the wait, S4's failed body for the failure, with the
 daemon's string quoted verbatim (voice rule 4).
 
-The error block caps its height and wraps anywhere, which `.pl-failed-error` does not: a daemon
-failing with a long stderr would otherwise grow the block until it painted over the footer. Driven
-with a 10 KB error at 1042×766 — 766, no overlap.
+The error block caps its height and wraps anywhere, which `.pl-failed-error` did not until §96 gave
+it the same bound by a different spelling: a daemon failing with a long stderr would otherwise grow
+the block until it painted over the footer. Driven with a 10 KB error at 1042×766 — 766, no overlap.
 
 ### 79g. Four primitives, corrected by the screen that drew them first
 
@@ -4616,3 +4616,60 @@ the copy and the quoted block the same seam — `headlineOf`, `subOf` and `quote
 and asserted through, and the revert now fails two tests. This is the file's own lesson from S5
 arriving one screen later: a test over a function the caller does not reach proves the function, not
 the feature.
+
+## The plan screen's lists are bounded by the window (2026-08-14)
+
+## 96. Seven files took the primary action off a window that cannot scroll
+
+`5a Plan safe` is the one body on this screen whose height is the plan's length. A 300px hero, then a
+row per file under each side count, then a `flex: 1` spacer — and the spacer is the only slack there
+is. Measured at 1040×764, with the app's own fixture and the doors §94 put under the action bar:
+
+| rows on the taller side | document height | the four doors | `Run this sync` |
+| --- | --- | --- | --- |
+| 4 (the frame's own plan) | 764 | on screen | bottom edge at 699 |
+| 6 | 764 | on screen, and the spacer is gone | 699 |
+| 7 | 797 | 33px below the fold | 732 — the last row that keeps it |
+| 8 | 830 | 66px below | 765, 1px below the fold |
+| 44 | 2018 | 1254px below | 1953, 1189px below |
+
+The window is a fixed, non-resizable 1040×764 with no scrollbar of its own, so past six files the
+whole window scrolled: the four doors go first and the screen's primary action follows one row later.
+A plan that moves seven files is an ordinary plan. #267.
+
+**Scrolled, not capped, and the block that shrinks is the seam block.** 02-shell.md states the rule
+for exactly this ("where a list can genuinely exceed the space, use `overflow-y:auto` so the clip
+reads as a scroll region"), and this screen's other body already follows it — `.pl-rows` became
+unconditionally scrollable under §94, having first shipped a `ROWS_THAT_FIT` constant for a height
+that was not fixed. A cap here would be that constant again: six rows fit under a 300px hero today,
+five would if the footer ever grew the optional line 02-shell.md reserves beneath the doors. Letting
+the hero give up height instead was considered and refused — it centres a mark, a headline and a
+sentence, and shrinking it moves all three for a reason the user cannot see.
+
+So `.pl-seam-block.is-bounded` (the safe body only — `5a Plan`'s block is untouched) may shrink, its
+grid carries that bound down to the columns, each column is a flex column so the squeeze lands on the
+list rather than on the 42px count above it, and each list scrolls. Seven assertions on `5a Plan safe`
+move with it, all tagged `decision` in `known-deviations.mjs`: `flex-shrink` on the block, `display`
+and `flex-direction` on both columns, `overflow` on both lists. The frame draws three files and two,
+so it had no occasion to bound anything.
+
+Two more measurements taken in the same window, on the same screen, neither of them in #267:
+
+**A long path grew the document sideways.** `.side-path` ellipsises, but only inside a column that is
+allowed to be narrower than its content: a grid item's automatic minimum is `auto`, so a 207-character
+path widened the `1fr` column, the grid and the document to **2198px** in a 1040px window. `min-width: 0`
+on `.pl-side` is the whole fix, and it applies to both frames.
+
+**The failed rehearsal quoted a daemon without bounding it.** The fourth body no frame draws
+(§76) prints the daemon's exact string, which is right — voice rule 4 — and unbounded, which is not:
+a 10 KB stderr wrapped to **1853px** of column and painted its own tail over the footer. §79f named
+this in a subordinate clause when onboarding borrowed the block — "the error block caps its height
+and wraps anywhere, which `.pl-failed-error` does not" — and the clause outlived the note: the
+onboarding block was bounded, `.main-failed-error` was bounded under §90, and the block both of them
+were copied from never was. `min-height: 0` on a flex item whose automatic minimum was its content is
+the whole fix; §79f's sentence is updated rather than left naming a bug that is gone.
+
+Every reachable state of the screen was re-measured after the change — the safe body at 4, 5, 6, 7,
+8, 10, 16 and 44 files a side and with both sides long, the empty plan that routes here, the list
+body at 9, 21, 61 and 69 actions and with thirteen gated rows, the checking body, and the failed body
+at 30 bytes, 1.4 KB and 10 KB. All of them 764×1040, nothing over the footer.

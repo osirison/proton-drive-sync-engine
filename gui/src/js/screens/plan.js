@@ -228,12 +228,19 @@ function checkAgain({ handlers, size, padding, fontSize = "12.5px", kind = "seco
  * `5a Plan safe` the files themselves). The geometry must not drift between them: a `1fr 1fr` grid
  * with a 30px gutter each side of the centre line, the right column right-aligned in its entirety.
  */
-function seamBlock({ model, site, detail, aligned }) {
+function seamBlock({ model, site, detail, aligned, bounded = false }) {
   // `aligned` is measured per frame: `5a Plan` right-aligns the whole arriving column (all text);
   // `5a Plan safe` right-aligns only its eyebrow and pushes the count over with `justify-content`,
   // because its third child is rows and a right-aligned column would drag each path off its glyph.
   // The gate reads `text-align` on the column itself, so it is a property of the block, not the seam.
-  const block = fid(el("div", { class: `pl-seam-block${aligned ? " is-aligned" : ""}` }), "seamBlock");
+  //
+  // `bounded` is the OTHER frame's difference, and it is about height rather than alignment: only
+  // the safe body hangs a list off each count, so only it can be taller than the window (#267). The
+  // block below a 300px hero is the one that has to give, and the flag says which block that is
+  // rather than reading it off `aligned` — the two happen to disagree on both frames today, and a
+  // third body drawing an aligned list would inherit the wrong answer silently.
+  const classes = ["pl-seam-block", aligned ? "is-aligned" : null, bounded ? "is-bounded" : null];
+  const block = fid(el("div", { class: classes.filter(Boolean).join(" ") }), "seamBlock");
   block.append(fid(renderSeam({ site }), "seam"));
   const sides = fid(el("div", { class: "pl-sides" }), "sides");
   for (const [s, side] of ["leaving", "arriving"].entries()) {
@@ -300,7 +307,15 @@ function sideNote(model) {
   };
 }
 
-/** `5a Plan safe`'s third child per side: the files themselves, one row each. */
+/**
+ * `5a Plan safe`'s third child per side: the files themselves, one row each.
+ *
+ * NO CAP, and the block around it scrolls instead (`.pl-seam-block.is-bounded`, plan.css). A row
+ * per action is what the frame draws and what the state means — every file that moves, named — and
+ * the number that fits is not a constant to write down here: six rows fit under a 300px hero today,
+ * five would if the footer ever grew a line, and `.pl-rows` already lost that argument once
+ * (`ROWS_THAT_FIT`). A list that is longer than its room is the shell's own scroll case (02-shell.md).
+ */
 function sideList(model) {
   return (side, s) => {
     const rows = side === "leaving" ? model.leaving : model.arriving;
@@ -504,7 +519,15 @@ function safeBody(model) {
   hero.append(mark, title, sub);
   return [
     hero,
-    empty ? null : seamBlock({ model, site: "planSafeList", detail: sideList(model), aligned: false }),
+    empty
+      ? null
+      : seamBlock({
+          model,
+          site: "planSafeList",
+          detail: sideList(model),
+          aligned: false,
+          bounded: true,
+        }),
     // The empty flex:1 block the frame draws between the lists and the footer. A real node rather
     // than a margin: the footer is a child of the window, so something has to take up the slack.
     fid(el("div", { class: "pl-spacer" }), "tailSpacer"),
