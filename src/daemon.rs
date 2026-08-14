@@ -1874,18 +1874,37 @@ impl<C: ProtonClient> Daemon<C> {
                                 );
                                 break 'action;
                             };
-                            // Never clobber a sidecar that already exists: an unresolved sidecar is
-                            // the user's, and a re-planned conflict must not overwrite it with
-                            // newer local content.
-                            if !destination.exists() {
-                                ensure_parent_directory(&destination)?;
-                                if let Err(error) = fs::copy(&local.absolute_path, &destination) {
-                                    // A truncated sidecar would survive as the artefact of a
-                                    // conflict this pass never recorded, and the retry would take
-                                    // it for a finished copy.
-                                    let _ = fs::remove_file(&destination);
-                                    return Err(error.into());
+                            // Never clobber or write *through* whatever is already at the sidecar
+                            // path. `symlink_metadata` classifies a symlink as itself, so a
+                            // dangling one reads as present here — `Path::exists()` follows the
+                            // link and answers "absent", after which `fs::copy` would push the
+                            // local file's bytes through it, outside the sync root or over
+                            // another file inside it. `local_write_escapes_root` cannot catch
+                            // that either: it canonicalizes the deepest *existing* ancestor, and
+                            // a dangling link has none.
+                            match fs::symlink_metadata(&destination) {
+                                Ok(metadata) => {
+                                    // Occupied. A regular file is an unresolved sidecar from an
+                                    // earlier pass (or the user's own copy) and is left alone;
+                                    // anything else is the user's object and is never replaced.
+                                    // The conflict is still recorded below either way, so the
+                                    // pass converges instead of re-planning this action forever —
+                                    // and removing the squatter emits the same sidecar-removal
+                                    // event that drives the ordinary exit.
+                                    if !metadata.is_file() {
+                                        warn!(
+                                            path = %destination.display(),
+                                            "conflict sidecar not written: the path is already \
+                                             taken by a symlink or directory, which is never \
+                                             replaced"
+                                        );
+                                    }
                                 }
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                    ensure_parent_directory(&destination)?;
+                                    copy_into_new_file(&local.absolute_path, &destination)?;
+                                }
+                                Err(error) => return Err(error.into()),
                             }
                         } else if action.remote_id.is_some()
                             && let Some(remote_path) =
@@ -3106,6 +3125,38 @@ fn ensure_parent_directory(path: &Path) -> AppResult<()> {
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+/// Copies `source` to `destination`, which must not exist. The destination is opened with
+/// `create_new` (`O_EXCL`), which never follows a symlink and fails on any existing object, so a
+/// planted or stale link at a predictable path cannot redirect the write — and, being one atomic
+/// syscall, it also closes the window between a prior check and this write. An existing object is
+/// therefore not an error here: the caller has already decided that an occupied path is left
+/// alone, and losing the race means the path is occupied. A partially written file is removed
+/// rather than left behind as the artefact of an operation that then failed.
+fn copy_into_new_file(source: &Path, destination: &Path) -> AppResult<()> {
+    let mut reader = File::open(source)?;
+    let mut writer = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            warn!(
+                path = %destination.display(),
+                "not writing file: something appeared at the path first, and it is never replaced"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Err(error) = std::io::copy(&mut reader, &mut writer) {
+        drop(writer);
+        let _ = fs::remove_file(destination);
+        return Err(error.into());
     }
     Ok(())
 }
@@ -6347,6 +6398,101 @@ mod tests {
             Some(sha1_bytes(b"second local edit").as_str()),
             "the record must track the newest local content"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_sidecar_path_never_receives_the_preserved_local_file() {
+        // The sidecar path is predictable (`notes.proton-cloud.txt` beside `notes.txt`), so
+        // anything already sitting there — a hostile plant or a stale link the user made — must
+        // not be followed. A BROKEN symlink is the dangerous shape: `Path::exists()` follows it
+        // and reports "absent", and `local_write_escapes_root` canonicalizes the deepest EXISTING
+        // ancestor, which a dangling link does not have, so neither guard sees it.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).expect("outside dir");
+        let target = outside.join("target.txt");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let sidecar_path = local_root.join("notes.proton-cloud.txt");
+        std::os::unix::fs::symlink(&target, &sidecar_path).expect("plant a broken symlink");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            !target.exists(),
+            "the preserved local edit must never be written through a symlink at the sidecar path"
+        );
+        assert!(
+            fs::symlink_metadata(&sidecar_path)
+                .expect("sidecar path")
+                .is_symlink(),
+            "the user's own object at the path must be left exactly as it was"
+        );
+        assert_eq!(
+            fs::read_link(&sidecar_path).expect("symlink target"),
+            target,
+            "the symlink must not be retargeted or replaced"
+        );
+        assert_eq!(
+            fs::read(&local_path).expect("local file"),
+            b"local edit",
+            "the local edit must still be preserved"
+        );
+        // Converges rather than wedging: the conflict is recorded, so the record parks instead of
+        // re-planning this action with a warning on every pass.
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Conflict);
+        daemon.reconcile_blocking().expect("second reconcile");
+        assert!(
+            !target.exists(),
+            "a later pass must not write through it either"
+        );
+    }
+
+    #[test]
+    fn a_pre_existing_sidecar_file_is_left_alone_and_the_conflict_is_still_recorded() {
+        // The user (or an interrupted earlier pass) already put a file at the sidecar path: it is
+        // never overwritten, and the conflict is still recorded so the state keeps its exit.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let sidecar_path = local_root.join("notes.proton-cloud.txt");
+        fs::write(&sidecar_path, b"the user's own copy").expect("pre-existing sidecar");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            fs::read(&sidecar_path).expect("sidecar"),
+            b"the user's own copy",
+            "an existing sidecar file must never be overwritten"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Conflict);
     }
 
     #[test]
