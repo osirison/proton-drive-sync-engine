@@ -41,12 +41,16 @@ A warm start is attempted on the first pass only when **all** hold, else the pas
 (today's behavior, byte-for-byte):
 
 1. `warm_start` enabled (default on) with event-driven detection and a usable event source.
-2. A volume id and a stored cursor exist (there is something to replay from).
+2. A volume id and a stored cursor exist (there is something to replay from). The volume comes from
+   a baseline composed `proton_id`, or — when the index carries none, e.g. an all-Proton-native
+   remote — from the sole stored cursor row, whose `scope_id` *is* the volume (#32). Either way a
+   real cursor must exist, so the gate cannot engage without one.
 3. The cursor is **fresh** — `now - updated_at ≤ warm_start_max_cursor_age` (default 7 days).
 4. The across-restart floor is not due — `warm_starts_since_full_walk < warm_start_full_walk_every`
    (default 30).
 
-Any doubt during the pass (no cursor, server refresh, events error, unresolvable node) falls back
+Any doubt during the pass (no cursor, server refresh, events error, unresolvable node, a `Created`
+node its parent listing has not caught up with yet) falls back
 to a bootstrap exactly as a steady-state incremental pass does.
 
 Two safety bounds, both new surface:

@@ -683,6 +683,34 @@ pub fn load_event_cursor(
     Ok(cursor)
 }
 
+/// Loads the **one** stored cursor, or `None` when there is no row or more than one.
+///
+/// The caller uses the row's `scope_id` as the volume id when nothing else names it (an index with
+/// no composed `proton_id` — a brand-new sync, or an all-Proton-native remote). That inference is
+/// only sound while the row is unambiguous: one database per sync root, one volume per root, so a
+/// single row *is* this root's volume. Two rows (a future multi-scope world, or the account-wide
+/// `"core"` stream alongside a volume) name no single volume, and `None` keeps the caller on the
+/// safe full-tree walk. `"core"` is excluded outright — it is an account stream, never a volume.
+pub fn load_sole_event_cursor(connection: &Connection) -> AppResult<Option<EventCursor>> {
+    let mut statement = connection.prepare(
+        "SELECT scope_id, last_event_id, updated_at FROM remote_event_cursor
+         WHERE scope_id <> 'core' LIMIT 2",
+    )?;
+    let mut cursors = statement
+        .query_map([], |row| {
+            Ok(EventCursor {
+                scope_id: row.get(0)?,
+                last_event_id: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    if cursors.len() != 1 {
+        return Ok(None);
+    }
+    Ok(cursors.pop())
+}
+
 /// Records (inserts or replaces) the cursor for `scope_id`.
 pub fn store_event_cursor(
     connection: &Connection,
@@ -1929,6 +1957,38 @@ mod tests {
                 .expect("load core")
                 .is_some(),
             "clearing one scope must not affect another"
+        );
+    }
+
+    #[test]
+    fn the_sole_event_cursor_names_the_volume_only_while_unambiguous() {
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+
+        assert!(
+            load_sole_event_cursor(&connection)
+                .expect("load empty")
+                .is_none(),
+            "nothing stored names no volume"
+        );
+
+        store_event_cursor(&connection, "vol-1", "cursor-a", 100).expect("store volume");
+        store_event_cursor(&connection, "core", "core-cursor", 100).expect("store core");
+        assert_eq!(
+            load_sole_event_cursor(&connection)
+                .expect("load")
+                .expect("the one volume row")
+                .scope_id,
+            "vol-1",
+            "the account-wide core stream is not a volume and must be ignored"
+        );
+
+        store_event_cursor(&connection, "vol-2", "cursor-b", 100).expect("store second volume");
+        assert!(
+            load_sole_event_cursor(&connection)
+                .expect("load ambiguous")
+                .is_none(),
+            "two volume rows name no single volume"
         );
     }
 
