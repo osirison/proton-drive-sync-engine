@@ -31,6 +31,7 @@ pub mod free_space;
 pub mod gui_prefs;
 pub mod index_read;
 pub mod ipc;
+pub mod opener;
 pub mod plan;
 pub mod sidecars;
 pub mod skip_rules;

@@ -2609,8 +2609,8 @@ argument rather than a caller-side `.toLowerCase()`, since above ten `cardinal` 
 | S5     | `7a File lookup`     | `received 14:32` on the Proton card      | the clause omitted                      | G20 #233     |
 | S5     | `7a File pending`    | a 3px bar at 41%                         | no track at all (§63)                   | G2 #191, #98 |
 | S5     | `7a Never synced`    | `Can't be synced`, two rows              | the group omitted                       | G19 #232     |
-| S5     | `6a Details`         | `Open the system log`                    | omitted; `Copy all` stays               | G18 #231     |
-| S5     | all three            | `Open folder`, `Open on Proton Drive`    | omitted                                 | G18 #231     |
+| S5     | `6a Details`         | `Open the system log`                    | ~~omitted~~ drawn; a journal snapshot (§96) | G18 #231 ✔   |
+| S5     | all three            | `Open folder`, `Open on Proton Drive`    | ~~omitted~~ drawn; the Drive app, not the file (§96) | G18 #231 ✔   |
 | S5     | `5a Checking`        | four unlit doors on the plan screen      | `Plan a sync` lit, per `02-shell.md:42` | —            |
 
 **`ACTIVITY.nothingRecent` stays undrawn, and it looks like it should not.**
@@ -3066,7 +3066,10 @@ everything and cannot be dismissed, so there is no sub-screen to visit and come 
   setup. The panel keeps its sentence, whose "or any time later in Settings" is the half that works.
 - **`See all 471 actions`** — the action list is the Plan screen, behind a footer door the takeover
   covers.
-- **`Installation help`** — needs G18 (#231) as well: nothing in the command surface opens a URL.
+- **`Installation help`** — needed G18 (#231) as well, and half of that is now gone: `open_remote`
+  proves the command surface can open a URL. What is missing is a URL worth opening (this project's
+  own docs record that no distribution packages the CLI, #218) and somewhere to come back from —
+  so #244 alone still holds this one.
 
 A disabled button would be worse than an absent one (§76's own rule, and `button()` attaches no
 listener to a disabled kind — so one armed later paints live and does nothing).
@@ -4615,3 +4618,51 @@ the copy and the quoted block the same seam — `headlineOf`, `subOf` and `quote
 and asserted through, and the revert now fails two tests. This is the file's own lesson from S5
 arriving one screen later: a test over a function the caller does not reach proves the function, not
 the feature.
+
+### 96. The four openers, and what two of them can honestly open
+
+`Open both in an editor` (§74), `Open folder`, `Open on Proton Drive` and `Open the system log`
+(G18) were four drawn buttons with no command behind them: the first painted live and inert, the
+other three omitted rather than painted dead. #220 and #231 close together, because they are one
+capability — a command that hands something to the desktop — behind four labels.
+
+`open_paths`, `open_folder`, `open_remote` and `open_system_log` shell `xdg-open`, the way this
+project already shells `systemctl`, `proton-drive`, `secret-tool` and `curl`. No plugin: an opener
+plugin would be a dependency, a capability grant in `capabilities/default.json` and a Debian build
+rule, for what `std::process::Command` does in twenty lines. The webview therefore gets exactly four
+named doors out and no general "open anything" permission.
+
+**`Open on Proton Drive` opens the Drive web app and not the file, and the button is honest about
+that rather than absent.** A per-file web URL is `/u/0/<shareId>/folder/<linkId>`; the GUI holds
+neither id. `proton_id` is the engine's composed `volumeId~nodeId` — an API identity, not a route
+the web app resolves — and no field on the status reply, the index, or the CLI's listing carries a
+share. Interpolating the ids we do have would ship a 404 behind a button promising a file. So the
+URL is a constant in `commands.rs` and the command takes **no argument at all**, which also removes
+the only place a URL could have been injected from the webview.
+
+**`Open the system log` opens a snapshot, because a journal has no path.** The daemon logs through
+`tracing` to stderr; the shipped user unit captures that in the journal, which is a binary store with
+no filename and no registered handler, and a terminal emulator is not something a Linux desktop
+guarantees. So `journalctl --user -u proton-syncd -n 1000` is written to
+`$XDG_CACHE_HOME/proton-sync/proton-syncd-log.txt` — `.txt` is load-bearing, `xdg-open` picks a
+handler by type — with a header naming the live command. A daemon started outside systemd has no
+journal at all (`start_service`'s fallback nulls the child's stderr), and that case returns the
+command as an error rather than opening an empty file, which would read as "nothing is wrong".
+
+**Every path is re-validated at the command boundary**, though both conflict paths come off a
+`Conflict` the GUI produced itself: `gui_core::opener` refuses absolute paths, `..`, prefix
+components — and, by canonicalising both sides, a symlink inside the sync folder that points out of
+it, which the textual guard cannot see. A missing file is refused rather than handed over. Nothing
+builds a shell string; `Command` takes an argv, so a filename containing `;` or `$(…)` is one
+argument.
+
+**A refused or failed open says so, in mono, under the button that failed.** No frame draws this
+row — no frame draws a failure — and without it the four buttons fail exactly the way they behaved
+before they were wired. `xdg-open` exiting 3 (no handler registered) is the "no editor configured"
+case and names the file it could not open. On `6a Details`, the one dialog with a fixed height, the
+line goes INSIDE the body rather than under the foot: `.dialog` clips what overflows it, and a
+message nobody can see is the bug this whole change is about.
+
+**`Installation help` is still not drawn.** #231 was half of what it needed; #218 (no distribution
+packages the CLI, so there is no true help URL) and #244 (a takeover has nowhere to come back from)
+are the other half, and neither moved.

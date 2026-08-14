@@ -411,7 +411,7 @@ export function fileKindOf(conflict, pair, comparison) {
  * choices, the note and `Decide later` are all absent from it. The frame wins on geometry under
  * IMPLEMENTATION-PLAN §1.3, and `Hide differences` is the way back to deciding. §74.
  */
-function diffBody({ pair, comparison, queue, index, onHideDiff, onOpenBoth }) {
+function diffBody({ pair, comparison, queue, index, onHideDiff, onOpenBoth, openError }) {
   const rows = alignedRows(pair?.original?.text, pair?.sidecar?.text) ?? [];
 
   const panel = fid(el("div", { class: "cf-diff-panel" }), "diffPanel");
@@ -460,6 +460,12 @@ function diffBody({ pair, comparison, queue, index, onHideDiff, onOpenBoth }) {
   );
 
   const content = fid(el("div", { class: "cf-diff-content" }, labels, panel, counts), "body");
+  // WHY NOTHING OPENED, where the button that did not open it is. No frame draws this row — no
+  // frame draws a failure — and it is the whole difference between `Open both in an editor` being
+  // wired and being wired usefully: an editor that is not installed, a sidecar already resolved
+  // away, or a path the backend refused all look identical from the click. Machine text in mono,
+  // like every other quoted reason in this app (voice rule 4).
+  if (openError) content.append(el("div", { class: "cf-open-error" }, openError));
   const remaining = queueList(queue, index);
   if (remaining) content.append(remaining);
   return content;
@@ -605,6 +611,7 @@ export function renderConflicts(state) {
     onOpenDiff = () => {},
     onHideDiff = () => {},
     onOpenBoth = () => {},
+    openError = null,
     onBack = () => {},
     onPrev = () => {},
     onNext = () => {},
@@ -653,7 +660,10 @@ export function renderConflicts(state) {
       ),
       "diffHead",
     );
-    return [head, diffBody({ pair, comparison, queue: conflicts, index: at, onHideDiff, onOpenBoth })];
+    return [
+      head,
+      diffBody({ pair, comparison, queue: conflicts, index: at, onHideDiff, onOpenBoth, openError }),
+    ];
   }
 
   const titleRow = fid(

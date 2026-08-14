@@ -547,22 +547,6 @@ export const KNOWN_DEVIATIONS = [
     issue: "#207",
     why: "`Proton Drive` loses the same count — and its sub-line too, but to a different gap: `next full check in 4m` counts down to a full-scan schedule the daemon does not expose (#193), and deriving it from `scan_interval` would contradict `6a Details`, which draws that interval as its own row",
   },
-  {
-    frame: "6a Activity passes",
-    key: "div[3]/div[6]",
-    props: ["box.h"],
-    detail: "48 vs 35",
-    issue: "#231",
-    why: "the retention row keeps its sentence — `Only the last 20 passes are kept.` is true and needs no data — and loses `Open the system log`, which has no command behind it; the 31px button was what made the row 48 tall",
-  },
-  {
-    frame: "7a File pending",
-    key: "div[2]",
-    props: ["box.h"],
-    detail: "31 vs 14",
-    issue: "#231",
-    why: "the pending dialog's footer row keeps `only on this computer so far` and loses `Open folder`, the same missing opener; the row is now the height of its remaining text",
-  },
 
   // ---- S6 · settings ----
   //

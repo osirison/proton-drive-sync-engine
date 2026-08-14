@@ -64,6 +64,14 @@ pub fn run() {
             commands::free_space,
             commands::check_cli,
             commands::skip_rule_usage,
+            // The openers (#220/#231): the one capability behind `Open both in an editor`,
+            // `Open folder`, `Open on Proton Drive` and `Open the system log`. No plugin and no
+            // capability grant — these are app-defined commands shelling `xdg-open`, so the webview
+            // gets exactly these four doors out and no general "open anything" permission.
+            commands::open_paths,
+            commands::open_folder,
+            commands::open_remote,
+            commands::open_system_log,
             // F4's keyboard map: Ctrl W and Ctrl Q. Same two paths the tray menu already offers.
             commands::close_window,
             commands::quit_app,

@@ -16,6 +16,12 @@
 //! the collision the rule protects against cannot happen. A screen that needs *data* still files a
 //! C-item — that is the case the rule is really about, and `skip_rule_usage` is why.
 //!
+//! **The four openers (#220/#231) arrived as a C-item, after every screen.** `open_paths`,
+//! `open_folder`, `open_remote` and `open_system_log` are the one capability behind four buttons
+//! that three screens drew and left inert — the rule above is what kept them inert rather than
+//! smuggled in, and this is the sanctioned way they land: the command first, the screens wired to
+//! it in the same change. See "the openers" below for why none of them takes a URL.
+//!
 //! **A command that touches the filesystem, a subprocess or a socket must be `async` and do its
 //! work in `spawn_blocking`.** A synchronous one runs on the GTK main loop, and WebKitGTK aborts
 //! the whole process when that loop stalls (#142/#143). `read_config`, `write_config`,
@@ -882,6 +888,245 @@ pub async fn write_notify_policy(app: tauri::AppHandle, policy: String) -> Resul
     .map_err(|error| format!("write_notify_policy did not complete: {error}"))?
 }
 
+// ------------------------------------------------------------ the openers (#220, #231) ----
+//
+// G18: four drawn buttons with nothing behind them — `Open both in an editor` (S2's conflict diff),
+// `Open folder` and `Open on Proton Drive` (S5's lookup and pending dialog) and `Open the system
+// log` (S5's passes footer and details dialog). This is a C-item, not a screen task: it adds the
+// commands, and the screens that were shipped short of them are wired to it in the same change.
+//
+// NO NEW DEPENDENCY. `tauri-plugin-opener` would mean a capability grant, a dependabot surface and a
+// Debian build rule for what `std::process::Command` already does — the same reasoning that has this
+// module shelling `systemctl` and `proton-drive` rather than wrapping them.
+//
+// PATHS ARE GUARDED AT THIS BOUNDARY. Every relative path here comes from the webview, so it goes
+// through `gui_core::opener`, which rejects absolute/`..`/prefix components AND a symlink that
+// leaves the sync folder. Nothing builds a shell string: `Command` takes an argv, so a path
+// containing `;` or `$(…)` is one argument and not a command.
+
+/// The Drive web app.
+///
+/// **Not a deep link, and the button is honest about opening the app rather than the file.** A
+/// per-file URL needs a share id and a link id (`/u/0/<shareId>/folder/<linkId>`); the GUI holds
+/// neither. `proton_id` is the engine's composed `volumeId~nodeId`, which is an API identity and not
+/// a route the web app resolves, and no reply on the wire carries a share. Constructing a plausible
+/// URL out of it would ship a 404 behind a button that promises a file. Hardcoded here so the
+/// webview passes no URL at all — the command takes no argument and there is nothing to inject.
+const PROTON_DRIVE_URL: &str = "https://drive.proton.me/";
+
+/// The desktop's opener. Not configurable: a user-supplied program name would be the one injection
+/// surface this module otherwise does not have.
+const OPENER: &str = "xdg-open";
+
+/// How long to wait for the opener to fail before calling it launched.
+///
+/// `xdg-open` exits 3 (no handler) or 4 (the action failed) within milliseconds. A handler that DID
+/// launch may keep the process alive for as long as the editor is open — the generic fallback execs
+/// the application in the foreground — so a child still running past this point is a success, not a
+/// hang, and waiting for it would leave the button spinning until the user closed their editor.
+const OPEN_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Hand one target to the opener and report whether it took it.
+///
+/// `program` is a parameter for the tests alone (`/bin/true`, `/bin/false`, a missing binary) —
+/// every caller passes `OPENER`.
+///
+/// SPAWN, NOT `output()`: the opener may outlive the click by hours. The child is polled to the
+/// deadline so a non-zero exit is still an error the user is told about, then reaped off-thread so
+/// a long-lived editor does not become a zombie.
+fn open_target(program: &str, target: &std::ffi::OsStr) -> Result<(), String> {
+    use std::time::Instant;
+
+    let mut child = Command::new(program)
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't run {program}: {e}"))?;
+
+    let deadline = Instant::now() + OPEN_SETTLE;
+    let exited = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() >= deadline => break None,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(e) => return Err(format!("couldn't wait for {program}: {e}")),
+        }
+    };
+    match exited {
+        None => {
+            // Still running — the handler took over. Reaped off-thread; nothing waits on this.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        }
+        Some(status) if status.success() => Ok(()),
+        // 3 is `xdg-open`'s own "a required tool could not be found", which in practice is the
+        // "nothing is registered to open this" case — the one a silent no-op would hide.
+        Some(status) if status.code() == Some(3) => Err(format!(
+            "nothing on this computer is set up to open {} — choose a default application for this \
+             kind of file and try again",
+            target.to_string_lossy()
+        )),
+        Some(status) => Err(format!(
+            "{program} couldn't open {} ({status})",
+            target.to_string_lossy()
+        )),
+    }
+}
+
+/// Open one or both sides of a conflict in whatever the desktop opens that kind of file with
+/// (#220 — S2's `Open both in an editor`).
+///
+/// Both paths are `Conflict`'s own `original` and `sidecar`, and both are re-validated here anyway:
+/// the boundary rule is about where a path enters a join, not where it came from.
+///
+/// Every failure is reported, not the first: `Open both` opening one of two and saying nothing about
+/// the other is the same silence the button had before.
+#[tauri::command]
+pub async fn open_paths(state: Paths<'_>, relative: Vec<String>) -> Result<(), String> {
+    let local_root = state.lock().unwrap().effective_local_root();
+    tauri::async_runtime::spawn_blocking(move || {
+        if relative.is_empty() {
+            return Err("nothing to open".to_string());
+        }
+        let mut failures = Vec::new();
+        for path in &relative {
+            let resolved = match gui_core::opener::resolve_under_root(local_root.as_deref(), path) {
+                Ok(resolved) => resolved,
+                Err(refusal) => {
+                    failures.push(refusal.to_string());
+                    continue;
+                }
+            };
+            if let Err(e) = open_target(OPENER, resolved.as_os_str()) {
+                failures.push(e);
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    })
+    .await
+    .map_err(|error| format!("open task failed: {error}"))?
+}
+
+/// Open the folder a file sits in, in the desktop's file manager (#231 — S5's `Open folder`).
+///
+/// The parent is computed HERE. Letting the webview send a directory would mean trusting it to have
+/// stripped the last component, and a path that is a file or a folder depending on who called is
+/// exactly the ambiguity the guard is for.
+#[tauri::command]
+pub async fn open_folder(state: Paths<'_>, relative: String) -> Result<(), String> {
+    let local_root = state.lock().unwrap().effective_local_root();
+    tauri::async_runtime::spawn_blocking(move || {
+        let folder = gui_core::opener::folder_under_root(local_root.as_deref(), &relative)
+            .map_err(|refusal| refusal.to_string())?;
+        open_target(OPENER, folder.as_os_str())
+    })
+    .await
+    .map_err(|error| format!("open task failed: {error}"))?
+}
+
+/// Open Proton Drive in the browser (#231 — S5's `Open on Proton Drive`). Takes no argument; see
+/// `PROTON_DRIVE_URL` for why it cannot land on the file.
+#[tauri::command]
+pub async fn open_remote() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        open_target(OPENER, std::ffi::OsStr::new(PROTON_DRIVE_URL))
+    })
+    .await
+    .map_err(|error| format!("open task failed: {error}"))?
+}
+
+/// Where the log snapshot is written. One stable name, so clicking twice does not litter.
+fn log_snapshot_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("proton-sync").join("proton-syncd-log.txt")
+}
+
+/// `journalctl --user -u proton-syncd`, as a file the desktop can open (#231 — S5's
+/// `Open the system log`).
+///
+/// THERE IS NOTHING ELSE TO OPEN. The daemon logs through `tracing` to stderr, and the shipped user
+/// unit captures that in the journal — which is a binary store with no path and no registered
+/// handler, so `xdg-open` has nothing to point at. A terminal emulator is not a thing a Linux
+/// desktop guarantees either. So the journal is read into a `.txt` beside the GUI's other cached
+/// state and that is opened; the header line names the command, so anyone who wants it live has it.
+///
+/// A DAEMON STARTED OUTSIDE SYSTEMD HAS NO LOG AT ALL — `start_service`'s fallback path nulls the
+/// child's stderr. Then `journalctl` answers with no entries and this returns the command as an
+/// error rather than opening an empty file, which would read as "there is nothing wrong".
+fn write_log_snapshot(journalctl: &str, destination: &std::path::Path) -> Result<(), String> {
+    let output = Command::new(journalctl)
+        .args([
+            "--user",
+            "-u",
+            "proton-syncd",
+            "-n",
+            "1000",
+            "--no-pager",
+            "--output",
+            "short-iso",
+        ])
+        .output()
+        .map_err(|e| {
+            format!(
+                "couldn't read the system log ({e}) — this machine may not use systemd. The daemon's \
+                 log, when there is one, is: journalctl --user -u proton-syncd"
+            )
+        })?;
+    let body = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    // `-- No entries --` is journalctl's own answer for a unit it has never seen. Treated as empty:
+    // the file would otherwise open on one line that looks like a log.
+    let empty = body
+        .lines()
+        .all(|line| line.trim().is_empty() || line.trim().starts_with("-- No entries"));
+    if !output.status.success() || empty {
+        let detail = strip_ansi(String::from_utf8_lossy(&output.stderr).trim());
+        let detail = if detail.is_empty() {
+            "the journal has no entries for proton-syncd".to_string()
+        } else {
+            detail
+        };
+        return Err(format!(
+            "no system log to open: {detail}. The daemon only logs to the journal when it runs as a \
+             systemd user service — start it with `systemctl --user start proton-syncd`, or read it \
+             with `journalctl --user -u proton-syncd`"
+        ));
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create {}: {e}", parent.display()))?;
+    }
+    let header =
+        "# proton-syncd — the last 1000 journal entries, copied at the moment you clicked.\n\
+                  # Live: journalctl --user -u proton-syncd -f\n\n";
+    std::fs::write(destination, format!("{header}{body}"))
+        .map_err(|e| format!("couldn't write {}: {e}", destination.display()))
+}
+
+#[tauri::command]
+pub async fn open_system_log() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let destination = log_snapshot_path();
+        write_log_snapshot("journalctl", &destination)?;
+        open_target(OPENER, destination.as_os_str())
+    })
+    .await
+    .map_err(|error| format!("open task failed: {error}"))?
+}
+
 // ------------------------------------------------------- the Phase-1 capability commands ----
 
 /// Room on the filesystem the sync folder lives on (C4, #177).
@@ -1388,6 +1633,121 @@ mod tests {
         );
     }
 
+    // The openers (#220/#231). `open_target` takes its program as a parameter precisely so these
+    // run without a desktop: `/bin/true` is a handler that took the file, `/bin/false` is one that
+    // refused it, and a missing binary is a machine with no `xdg-open` at all. No real `xdg-open`
+    // is ever spawned by the suite.
+
+    #[test]
+    #[cfg(unix)]
+    fn an_opener_that_takes_the_file_reports_success() {
+        assert!(super::open_target("/bin/true", std::ffi::OsStr::new("/tmp/x")).is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_opener_that_refuses_the_file_is_an_error_the_user_is_told_about() {
+        let error = super::open_target("/bin/false", std::ffi::OsStr::new("/tmp/x"))
+            .expect_err("a non-zero exit must not read as opened");
+        // The path is IN the message: "it didn't open" without saying what is the silence this
+        // whole change exists to remove.
+        assert!(error.contains("/tmp/x"), "got {error}");
+    }
+
+    #[test]
+    fn a_missing_opener_is_an_error_rather_than_a_silent_no_op() {
+        let error = super::open_target(
+            "xdg-open-that-is-not-installed-xyzzy",
+            std::ffi::OsStr::new("/tmp/x"),
+        )
+        .expect_err("a failed spawn must not read as opened");
+        assert!(
+            error.contains("xdg-open-that-is-not-installed-xyzzy"),
+            "got {error}"
+        );
+    }
+
+    #[test]
+    fn a_child_that_outlives_the_deadline_is_a_launched_handler_and_not_a_hang() {
+        // `sleep 30` stands in for an editor left open. The call must return well inside the 30s,
+        // because a button that waits for the editor to close is a button that looks broken.
+        if !Path::new("/bin/sleep").exists() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        assert!(super::open_target("/bin/sleep", std::ffi::OsStr::new("30")).is_ok());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "returned after {:?} — it waited for the handler",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_journal_with_no_entries_is_refused_rather_than_opened_empty() {
+        // `/bin/true` is a journalctl that succeeds and prints nothing — the shape of a daemon
+        // started outside systemd, whose stderr `start_service`'s fallback nulls.
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("log.txt");
+        let error = super::write_log_snapshot("/bin/true", &destination)
+            .expect_err("an empty journal must not become an empty file that reads as 'all clear'");
+        assert!(
+            error.contains("journalctl --user -u proton-syncd"),
+            "got {error}"
+        );
+        assert!(!destination.exists(), "nothing should have been written");
+    }
+
+    #[test]
+    fn a_missing_journalctl_names_the_command_it_could_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = super::write_log_snapshot(
+            "journalctl-that-is-not-installed-xyzzy",
+            &dir.path().join("l.txt"),
+        )
+        .expect_err("no journalctl is not a log");
+        assert!(
+            error.contains("journalctl --user -u proton-syncd"),
+            "got {error}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_journal_with_entries_is_written_with_the_live_command_in_its_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("nested").join("log.txt");
+        // `/bin/echo` ignores journalctl's flags and prints them — enough of a non-empty journal.
+        if !Path::new("/bin/echo").exists() {
+            return;
+        }
+        super::write_log_snapshot("/bin/echo", &destination).expect("a non-empty journal writes");
+        let written = std::fs::read_to_string(&destination).unwrap();
+        assert!(
+            written.contains("journalctl --user -u proton-syncd -f"),
+            "got {written}"
+        );
+    }
+
+    #[test]
+    fn the_log_snapshot_lives_under_a_cache_directory_and_ends_in_txt() {
+        // `.txt` is load-bearing: `xdg-open` picks a handler by type, and an extensionless file has
+        // none on most desktops.
+        let path = super::log_snapshot_path();
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("txt"));
+        assert!(path.is_absolute() || std::env::var_os("HOME").is_none());
+    }
+
+    #[test]
+    fn the_proton_drive_url_is_the_web_app_and_is_not_built_from_anything() {
+        // The command takes no argument; this pins the constant so a later "improvement" that
+        // interpolates an id has to change the test that says why it cannot.
+        assert_eq!(super::PROTON_DRIVE_URL, "https://drive.proton.me/");
+    }
+
     #[test]
     fn strip_ansi_removes_color_sequences_and_keeps_text() {
         let colored = "\u{1b}[2m2026-07-27\u{1b}[0m \u{1b}[33m WARN\u{1b}[0m list failed";
@@ -1481,6 +1841,63 @@ mod socket_tests {
         );
         assert!(payload.response.is_some(), "expected a decoded response");
         assert_ne!(payload.state, gui_core::DaemonState::Unreachable);
+    }
+
+    /// A mock app whose managed paths name `root` as the sync folder. The socket is deliberately a
+    /// path nothing is listening on: the opener commands never touch it.
+    fn mock_app_rooted(root: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
+        let mut paths = RuntimePaths::resolve();
+        paths.socket_path = root.join("unused.sock");
+        paths.local_root = Some(root.to_path_buf());
+        tauri::test::mock_builder()
+            .manage(Mutex::new(paths))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build")
+    }
+
+    // The two below drive the REAL commands through a mock app, which is what proves the guard runs
+    // before the spawn: each returns its refusal, and no `xdg-open` is ever reached. A test that
+    // called the resolver directly would prove the resolver and not the command.
+
+    #[test]
+    fn open_folder_refuses_an_escaping_path_before_it_spawns_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = mock_app_rooted(dir.path());
+        for hostile in ["../../etc", "/etc", "docs/../../etc"] {
+            let error = tauri::async_runtime::block_on(open_folder(
+                app.state::<Mutex<RuntimePaths>>(),
+                hostile.to_string(),
+            ))
+            .expect_err("an escaping path must never reach the opener");
+            assert!(
+                error.contains("inside the sync folder"),
+                "{hostile} gave: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_paths_reports_every_refusal_and_not_just_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.txt"), b"x").unwrap();
+        let app = mock_app_rooted(dir.path());
+        let error = tauri::async_runtime::block_on(open_paths(
+            app.state::<Mutex<RuntimePaths>>(),
+            vec!["/etc/passwd".to_string(), "gone.txt".to_string()],
+        ))
+        .expect_err("both sides are unopenable");
+        assert!(error.contains("/etc/passwd"), "got {error}");
+        assert!(error.contains("gone.txt"), "got {error}");
+    }
+
+    #[test]
+    fn open_paths_with_nothing_to_open_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = mock_app_rooted(dir.path());
+        let error =
+            tauri::async_runtime::block_on(open_paths(app.state::<Mutex<RuntimePaths>>(), vec![]))
+                .expect_err("an empty list is not a successful open");
+        assert_eq!(error, "nothing to open");
     }
 
     #[test]
