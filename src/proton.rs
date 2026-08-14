@@ -1295,8 +1295,10 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(reader: Option<R>) -> Option<Pipe
 ///
 /// Expiry is not a lost cause the caller can paper over: the output would be truncated mid-JSON, so
 /// it is an error, worded like the timeout it effectively is. Nothing is killed on expiry — the
-/// group leader has already been reaped and its pid may have been reused. `timeout` names the
-/// command budget in the message only.
+/// group leader has already been reaped and its pid may have been reused. The message reports the
+/// drain wait actually served, not `timeout`: `deadline` is floored by `PIPE_DRAIN_GRACE`, so the
+/// two differ whenever the command expired at the instant of exit. `timeout` is carried alongside
+/// it so an operator can still correlate the failure with the command budget.
 ///
 /// A `None` reader is an invariant violation (`spawn_once` always sets stdout/stderr to
 /// `Stdio::piped()`, so `child.stdout`/`stderr` are always present) and is reported as an error
@@ -1314,19 +1316,23 @@ fn collect_pipe_output(
             "proton-drive child output pipe was not captured (expected a piped stdout/stderr)",
         )
     })?;
-    match reader.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+    let started = Instant::now();
+    match reader.recv_timeout(deadline.saturating_duration_since(started)) {
         Ok(result) => Ok(result?),
         Err(RecvTimeoutError::Timeout) => {
+            let waited = started.elapsed();
             warn!(
                 operation,
                 stream,
+                waited_ms = waited.as_millis(),
                 timeout_ms = timeout.as_millis(),
                 "proton-drive command exited but its output pipe stayed open"
             );
             Err(boxed_error(format!(
                 "proton-drive {operation} exited but its {stream} was still held open after {} \
-                 (a forked grandchild is keeping the pipe alive), so its output could not be \
-                 collected",
+                 (a forked grandchild is keeping the pipe alive; the command's own budget was {}), \
+                 so its output could not be collected",
+                format_duration(waited),
                 format_duration(timeout)
             )))
         }
