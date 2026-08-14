@@ -51,6 +51,25 @@ const MAX_ROWS = 6;
 // ------------------------------------------------------------------------------ the states ----
 
 /**
+ * Whether a remembered `start_service` failure has stopped being the reason for anything.
+ *
+ * A start failure describes a STOPPED SERVICE. The moment the control socket answers — by whatever
+ * route, this button, the tray row, Settings' restart, a `systemctl` in a terminal — the sentence it
+ * explained is no longer on screen, and the string is a fact about a superseded attempt.
+ *
+ * It has to be cleared rather than merely hidden, because `quotedError` asks only which HERO is
+ * showing and a later outage puts the screen back in the same one. Left alone, the next time the
+ * daemon went down the block would quote a failure from minutes earlier as that outage's diagnosis —
+ * in the one block whose whole job is to be the account of why. `app.js` already carries this exact
+ * rule for `onboardingFailure` ("a merge that failed against a daemon that then came up is not
+ * onboarding's problem any more"); this is the same rule for the same reason.
+ *
+ * NOT cleared by navigating away and back: while the daemon is still down, the last attempt's reason
+ * is still the right answer, and forgetting it would leave the button unexplained again.
+ */
+export const clearsStartError = (daemonState) => daemonState !== "unreachable";
+
+/**
  * Which hero the moment is in. Deliberately NOT the daemon's derived `state` verbatim: `running`
  * splits by whether a pass is actually in flight, and the two decision states are a question about
  * the queue rather than about the daemon.
@@ -200,7 +219,7 @@ function transfersOf(activity) {
 // ------------------------------------------------------------------------------ the copy ----
 
 /** The headline, per state. */
-function headlineOf(v) {
+export function headlineOf(v) {
   switch (v.hero) {
     case "syncing":
       return MAIN.syncing(v.pending);
@@ -232,7 +251,7 @@ function headlineOf(v) {
  * omitted rather than faked, which is the fallback `14-behaviour-and-state.md` prescribes for a
  * missing capability, and `MAIN.settledSub` is left for the day #207 lands.
  */
-function subOf(v) {
+export function subOf(v) {
   switch (v.hero) {
     case "syncing":
       // `?? null`, never `?? 0` — see `syncingSub`. And `since_epoch_secs` is the PHASE's start, not
@@ -616,7 +635,7 @@ function blocksOf(v) {
  * ONE FUNCTION rather than a condition here and the string picked again in `fillFailed`: they are
  * the same question asked twice, and the second copy is where the two answers drift apart.
  */
-function quotedError(v) {
+export function quotedError(v) {
   if (v.hero === "failed") return v.error ?? null;
   if (v.hero === "unreachable") return v.startError ?? null;
   return null;

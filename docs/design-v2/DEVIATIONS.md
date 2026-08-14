@@ -4589,3 +4589,29 @@ failed pass already uses. Without it the button is the dead control #227 and #22
 nothing visible, no reason given.
 
 No frame draws any of this, and none could — the design has no state for a stopped service.
+
+### 95a. Two things review found that every gate had passed
+
+**A start failure outlived its subject.** `serviceStartError` had two writers, both inside
+`startService`: set on rejection, cleared only by the NEXT click. Nothing retired it when the daemon
+came up — and the routes that bring a daemon up mostly do not go through that function. The tray row
+this same change adds starts the service entirely in Rust; Settings' restart has its own path; a
+terminal has none. So the string survived into a later, unrelated outage and was drawn as *that*
+outage's reason, in the block whose stated job is to be the account of why. `clearsStartError` is the
+rule `app.js` already applied to `onboardingFailure` twenty lines above `mainProps` — "a merge that
+failed against a daemon that then came up is not onboarding's problem any more" — applied to this.
+It is deliberately narrower than that one's `releasesOnboarding`: the subject here is the socket
+answering at all, by any route.
+
+**Two of the new tests would have survived a revert.** Reverting all three window-side branches —
+`headlineOf`'s and `subOf`'s `unreachable` arms and `quotedError`'s — left 322/322 green and the copy
+gate at 0 missing. The tests named after those branches asserted properties of the *constants*
+(`MAIN.notRunning` is not `TRAY.unreachableTitle`, says nothing about Proton), which no edit to the
+screen can falsify, and a prop round trip through `mainView` for the other. They pinned the deck, and
+the deck was never what changed.
+
+`heroActionsOf` had the right shape already and its tests do fail on a revert; the fix was to give
+the copy and the quoted block the same seam — `headlineOf`, `subOf` and `quotedError` are exported
+and asserted through, and the revert now fails two tests. This is the file's own lesson from S5
+arriving one screen later: a test over a function the caller does not reach proves the function, not
+the feature.

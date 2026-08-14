@@ -37,7 +37,7 @@ import { decide, emptyState } from "./notifier.js";
 import { trayView, renderTrayPanel, updateTrayPanel } from "./screens/tray.js";
 import { ACTIVITY, CHROME, ONBOARDING, SETTINGS } from "./ui/copy.js";
 import { clock, since } from "./ui/format.js";
-import { renderMain, updateMain, unmountMain } from "./screens/main.js";
+import { renderMain, updateMain, unmountMain, clearsStartError } from "./screens/main.js";
 import { renderConflicts, advanceAfter, skipTo } from "./screens/conflicts.js";
 import {
   renderDeletions,
@@ -745,6 +745,13 @@ function render() {
   const reachable = releasesOnboarding(st);
   // A merge that failed against a daemon that then came up is not onboarding's problem any more.
   if (onboardingFailure && reachable) onboardingFailure = null;
+  // And the same rule for the start button's failure, which is a fact about a STOPPED SERVICE.
+  // `clearsStartError` is its own predicate rather than `reachable`: that one is the onboarding
+  // release set, and this string's subject is narrower — the socket answering at all, by any route.
+  // A daemon started from the tray row, from Settings' restart or from a terminal retires this
+  // message just as much as the button does, and none of those three passes through `startService`.
+  // Without it the next outage would be diagnosed with a superseded reason. Found by review.
+  if (serviceStartError && clearsStartError(st)) serviceStartError = null;
   onboardingLatch =
     onboardingStage !== null
       ? false
