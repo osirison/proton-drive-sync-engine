@@ -68,6 +68,98 @@ fn live_proton_drive_filesystem_list_smoke() {
     }
 }
 
+/// #59 follow-up, still unverified offline: nothing in the repo pins the CLI's **failed**
+/// wrapped-value shape, so `proton::collect_node`'s undecodable-node guard shipped blind. The
+/// guard fires only on a value that is PRESENT but unreadable (`{"ok": false, ...}`, `{}`,
+/// `{"value": null}`, a non-string scalar); it cannot see an absent or `null` field, because
+/// those are legitimate and common. This read-only probe reports which shapes a real account
+/// actually emits for `id`/`uid`/`name`/`path`, and asserts the guard does not fire on a healthy
+/// listing. Run it against an account that has a degraded (undecryptable-name) node to learn
+/// whether the guard can ever fire in practice.
+#[test]
+#[ignore = "requires PROTON_SYNC_LIVE_REMOTE_ROOT and an authenticated proton-drive CLI"]
+fn live_wrapped_value_shapes_for_the_undecodable_node_guard() {
+    let remote_root = PathBuf::from(
+        env::var_os("PROTON_SYNC_LIVE_REMOTE_ROOT")
+            .expect("set PROTON_SYNC_LIVE_REMOTE_ROOT to a safe Proton Drive folder"),
+    );
+    let executable = env::var_os("PROTON_SYNC_LIVE_CLI")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("proton-drive"));
+
+    let output = std::process::Command::new(&executable)
+        .args([
+            OsString::from("filesystem"),
+            OsString::from("list"),
+            OsString::from("--json"),
+        ])
+        .arg(remote_root.as_os_str())
+        .output()
+        .expect("run proton-drive filesystem list");
+    assert!(
+        output.status.success(),
+        "proton-drive list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("CLI listing should be JSON");
+
+    let mut shapes: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    report_wrapped_shapes(&value, &mut shapes);
+    for (shape, count) in &shapes {
+        println!("{shape}: {count}");
+    }
+    assert!(
+        !shapes.is_empty(),
+        "the listing exposed no id/uid/name/path fields at all — the probe needs updating"
+    );
+
+    let client = ProtonDriveClient::new(executable);
+    client
+        .list(&remote_root)
+        .expect("the undecodable-node guard must not fire on a healthy listing");
+}
+
+/// Tallies `field=shape` counts for the identity/locator fields the #59 guard keys on.
+fn report_wrapped_shapes(
+    value: &serde_json::Value,
+    shapes: &mut std::collections::BTreeMap<String, usize>,
+) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                report_wrapped_shapes(item, shapes);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for field in ["id", "uid", "name", "path"] {
+                let shape = match object.get(field) {
+                    None => "absent",
+                    Some(serde_json::Value::Null) => "null",
+                    Some(serde_json::Value::String(_)) => "bare string",
+                    Some(serde_json::Value::Object(wrapper)) => {
+                        match (wrapper.get("ok"), wrapper.get("value")) {
+                            (_, Some(serde_json::Value::String(_))) => {
+                                "wrapper with a string value"
+                            }
+                            (Some(serde_json::Value::Bool(false)), _) => "wrapper with ok=false",
+                            _ => "wrapper without a usable value",
+                        }
+                    }
+                    Some(_) => "non-string scalar",
+                };
+                *shapes.entry(format!("{field}={shape}")).or_default() += 1;
+            }
+            for nested in ["children", "entries", "files"] {
+                if let Some(nested) = object.get(nested) {
+                    report_wrapped_shapes(nested, shapes);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn parse_positive_u64_env(
     value: Option<OsString>,
     default_value: u64,

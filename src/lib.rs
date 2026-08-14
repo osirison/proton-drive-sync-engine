@@ -59,5 +59,51 @@ pub fn validate_relative_path(path: &std::path::Path) -> Option<std::path::PathB
         .components()
         .filter(|c| matches!(c, Component::Normal(_)))
         .collect();
+    // Deliberately `Some("")` for an empty/`.` path: the root itself is a legitimate value here
+    // (`proton::collect_node`'s depth-0 wrapper node normalizes to it, and the daemon's
+    // `CreateRemoteDirectory` uses it to mean "create the remote root"). Callers that resolve a
+    // path into a *side effect* must use `validate_relative_path_non_empty` instead — see #72.
     Some(normalized)
+}
+
+/// [`validate_relative_path`], additionally rejecting the empty (root) result.
+///
+/// Joining an empty relative path onto a root resolves to the root itself, which silently
+/// promotes a per-entry action into a whole-root one: a download over the local root, a delete
+/// of the entire sync root. Any boundary that turns an externally-sourced relative path into a
+/// filesystem or remote operation must reject it (issue #72).
+pub fn validate_relative_path_non_empty(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    validate_relative_path(path).filter(|normalized| !normalized.as_os_str().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn validate_relative_path_keeps_the_empty_root_path() {
+        // Pinned, not incidental: `proton::collect_node` returns early on `None`, so rejecting
+        // the empty path here would skip the listing's root wrapper node and its entire
+        // subtree, and `CreateRemoteDirectory`'s empty-path arm would stop creating the root.
+        assert_eq!(validate_relative_path(Path::new("")), Some(PathBuf::new()));
+        assert_eq!(validate_relative_path(Path::new(".")), Some(PathBuf::new()));
+        assert_eq!(
+            validate_relative_path(Path::new("./")),
+            Some(PathBuf::new())
+        );
+    }
+
+    #[test]
+    fn validate_relative_path_non_empty_rejects_the_root_path() {
+        assert_eq!(validate_relative_path_non_empty(Path::new("")), None);
+        assert_eq!(validate_relative_path_non_empty(Path::new(".")), None);
+        assert_eq!(validate_relative_path_non_empty(Path::new("./.")), None);
+        assert_eq!(validate_relative_path_non_empty(Path::new("..")), None);
+        assert_eq!(validate_relative_path_non_empty(Path::new("/abs")), None);
+        assert_eq!(
+            validate_relative_path_non_empty(Path::new("./sub/notes.txt")),
+            Some(PathBuf::from("sub/notes.txt"))
+        );
+    }
 }
