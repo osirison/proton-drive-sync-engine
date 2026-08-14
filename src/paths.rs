@@ -125,23 +125,34 @@ fn ensure_private_runtime_dir(dir: PathBuf, owner_uid: u32) -> AppResult<PathBuf
     })?;
     // Check BEFORE chmod: `set_permissions` follows symlinks, so tightening first would re-mode
     // an attacker's target instead of this path.
-    require_private_dir(&dir, owner_uid, None)?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(RUNTIME_DIR_MODE)).map_err(|error| {
-        boxed_error(format!(
-            "failed to restrict fallback runtime directory {} to mode {RUNTIME_DIR_MODE:o}: {error}",
-            dir.display()
-        ))
-    })?;
-    // Re-verify after the chmod: closes the swap window between the check above and the chmod,
-    // and is the only place the mode itself is asserted.
-    require_private_dir(&dir, owner_uid, Some(RUNTIME_DIR_MODE))?;
+    let mode = require_private_dir(&dir, owner_uid, None)?;
+    // Only chmod when the mode is not already 0700. An unconditional chmod fails closed on a
+    // TMPDIR whose filesystem cannot change permissions (FAT, some network mounts) even though the
+    // directory is already private — a refusal that protects nothing. Skipping a no-op weakens
+    // nothing: the check above already read this mode, which is what the post-chmod re-verify
+    // would assert.
+    if mode != RUNTIME_DIR_MODE {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(RUNTIME_DIR_MODE)).map_err(
+            |error| {
+                boxed_error(format!(
+                    "failed to restrict fallback runtime directory {} to mode \
+                     {RUNTIME_DIR_MODE:o}: {error}",
+                    dir.display()
+                ))
+            },
+        )?;
+        // Re-verify after the chmod: closes the swap window between the check above and the chmod,
+        // and is the only place the mode itself is asserted.
+        require_private_dir(&dir, owner_uid, Some(RUNTIME_DIR_MODE))?;
+    }
     Ok(dir)
 }
 
 /// Fail-closed gate for a directory the engine is about to put private runtime state in.
 /// `expected_mode` is compared against the full permission bits (including setuid/setgid/sticky)
-/// and is only meaningful after this process has set them.
-fn require_private_dir(dir: &Path, owner_uid: u32, expected_mode: Option<u32>) -> AppResult<()> {
+/// and is only meaningful after this process has set them. Returns the observed permission bits so
+/// a caller can skip a chmod that would be a no-op.
+fn require_private_dir(dir: &Path, owner_uid: u32, expected_mode: Option<u32>) -> AppResult<u32> {
     let metadata = fs::symlink_metadata(dir).map_err(|error| {
         boxed_error(format!(
             "failed to inspect fallback runtime directory {}: {error}",
@@ -163,16 +174,16 @@ fn require_private_dir(dir: &Path, owner_uid: u32, expected_mode: Option<u32>) -
             metadata.uid()
         )));
     }
-    if let Some(expected) = expected_mode {
-        let mode = metadata.permissions().mode() & 0o7777;
-        if mode != expected {
-            return Err(boxed_error(format!(
-                "refusing to use {}: mode is {mode:o}, expected {expected:o} (owner-only)",
-                dir.display()
-            )));
-        }
+    let mode = metadata.permissions().mode() & 0o7777;
+    if let Some(expected) = expected_mode
+        && mode != expected
+    {
+        return Err(boxed_error(format!(
+            "refusing to use {}: mode is {mode:o}, expected {expected:o} (owner-only)",
+            dir.display()
+        )));
     }
-    Ok(())
+    Ok(mode)
 }
 
 /// The effective user id, used to give each local user a private fallback runtime
@@ -362,6 +373,31 @@ mod tests {
         assert!(
             error.to_string().contains("mode is 777"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_already_private_fallback_runtime_dir_is_adopted_without_a_chmod() {
+        // A chmod that only restates the current mode still fails on a TMPDIR whose filesystem
+        // cannot change permissions (FAT, some network mounts), refusing a directory that is
+        // already private. ctime is the observable: chmod bumps it, adoption must not.
+        let directory = tempfile::tempdir().expect("tempdir");
+        let dir = directory.path().join("proton-drive-sync-1000");
+        fs::create_dir(&dir).expect("directory");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(RUNTIME_DIR_MODE))
+            .expect("private mode");
+        let before = fs::symlink_metadata(&dir).expect("metadata");
+        let stamp = (before.ctime(), before.ctime_nsec());
+
+        let resolved = ensure_private_runtime_dir(dir.clone(), effective_uid())
+            .expect("an already-private directory is adopted");
+
+        assert_eq!(resolved, dir);
+        let after = fs::symlink_metadata(&dir).expect("metadata");
+        assert_eq!(
+            (after.ctime(), after.ctime_nsec()),
+            stamp,
+            "an already-0700 directory must be adopted without a chmod"
         );
     }
 
