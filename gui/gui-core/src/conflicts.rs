@@ -1,7 +1,10 @@
 //! Conflict detection and the staged resolution file-operations.
 //!
 //! When both sides change, the engine keeps the local file and writes the remote copy beside it as
-//! a sidecar. Resolution needs **no IPC verb** — it is ordinary file work the GUI performs on
+//! a sidecar. When the remote copy was *deleted* while the local file was edited, there is nothing
+//! to download, so the sidecar is a copy of the local file instead — same name, same resolutions,
+//! and the same reason it exists: without a sidecar that state has no exit and never reaches this
+//! scanner. Resolution needs **no IPC verb** — it is ordinary file work the GUI performs on
 //! disk, after which the daemon reconciles from the resulting on-disk state.
 //!
 //! The sidecar name has two forms and a correct scanner must match **both**:
