@@ -105,6 +105,8 @@ export function mainView(props = {}) {
     deletions = [],
     localRoot = null,
     remoteRoot = null,
+    starting = false,
+    startError = null,
   } = props;
 
   const activity = response?.activity ?? null;
@@ -153,6 +155,15 @@ export function mainView(props = {}) {
     // The daemon's own account of why the last pass failed, carried down to the block that quotes
     // it. Never formatted, never truncated, never joined to a sentence of ours (voice rule 4).
     error: response?.last_error ?? null,
+    // The other two facts a stopped daemon has, and neither is in a reply — there isn't one. The
+    // caller owns both: `starting` is a click that has not come back yet, and `startError` is why
+    // the last attempt did not work. `start_service` is the one command on this screen that REJECTS
+    // rather than folding its failure into a payload, and its message ("no systemd unit … and no
+    // config file at …") is the only thing that says which of the two ways it failed — so it is
+    // quoted, in the block a failed pass already uses. Without it the button is the dead control
+    // #224 and #227 record: pressed, nothing visible, no reason given.
+    starting,
+    startError,
     // "The count in the hexagon is transfers, not decisions" — the decisions are in the chip and the
     // band. `null` renders no numeral at all rather than a zero.
     numeral: hero === "syncing" ? changes : hero === "decision" ? waiting : null,
@@ -196,10 +207,12 @@ function headlineOf(v) {
     case "paused":
       return MAIN.paused;
     case "unreachable":
-      // The deck writes this sentence once, under the outage banner, and three surfaces quote it.
-      // Reaching into `TRAY` for it is the copy module working: a second constant saying the same
-      // thing here is exactly the drift `ui/copy.js` exists to prevent.
-      return TRAY.unreachableTitle;
+      // NOT `TRAY.unreachableTitle`, which is the deck's outage sentence and says `Can't reach
+      // Proton Drive`. This state is the CONTROL SOCKET not answering — Proton is not on the far end
+      // of that round trip, and a daemon that is running and cannot reach Proton lands in `failed`
+      // or `authExpired` instead. Saying the wrong one here also left the button underneath
+      // unexplained. DEVIATIONS §95.
+      return MAIN.notRunning;
     case "authExpired":
       return MAIN.authExpired;
     case "failed":
@@ -235,7 +248,11 @@ function subOf(v) {
     case "paused":
       return MAIN.pausedSub(v.pending, clock(v.lastSync));
     case "unreachable":
-      return TRAY.unreachableBody(v.pending);
+      // A plain string, where every sibling here is a template. `v.pending` comes from a reply and
+      // this is the state with no reply, so the count was never `0` — it was unknown, and
+      // `unreachableBody(0)` rendered `0 changes are waiting`, a false all-clear on the one screen
+      // that cannot see anything. Nothing to drop beats remembering to drop it.
+      return MAIN.notRunningSub;
     case "authExpired":
       return MAIN.authExpiredSub(v.pending);
     case "failed":
@@ -314,41 +331,86 @@ function sideLabel(side, root) {
 }
 
 /**
- * The hero's buttons.
+ * WHICH buttons the hero has, as data — the rendering is `heroActions` below.
  *
- * `Sync now` DISAPPEARS mid-sync — "it's meaningless mid-sync" — and that is the only reason the
- * count of buttons changes, which is why `updateMain` treats a change here as a rebuild of the row
- * rather than something to patch.
+ * Split out and exported for the same reason `heroStateOf` is: this is a decision per state, the
+ * states that get it wrong are the ones no frame draws, and the alternative is a DOM. Every other
+ * check in this file's suite reads a plain object, and a branch that returns the wrong control is
+ * exactly the failure a fidelity gate cannot see — it compares one rendering of one drawn frame.
+ *
+ * `on` is a KEY into the handlers object rather than a function, which is what keeps this pure.
+ * `null` means the button is inert on purpose; nothing else may leave it unset.
  */
-function heroActions(v, handlers) {
-  const buttons = [];
+export function heroActionsOf(v) {
   if (v.hero === "paused") {
-    buttons.push(action(MAIN.resume, "secondaryOutlined", handlers.onResume));
-  } else if (v.hero === "unreachable" || v.hero === "authExpired" || v.hero === "failed") {
+    return [{ label: MAIN.resume, kind: "secondaryOutlined", on: "onResume" }];
+  }
+  if (v.hero === "unreachable") {
+    // THE DAEMON IS NOT RUNNING, and this branch is split out of the three-way one below because
+    // `Try again now` there is `onSyncNow` — an IPC round trip to the control socket. `unreachable`
+    // is precisely the state in which that socket did not answer, so the retry was a button that
+    // could not do what it said: it re-asked a process that is not there, failed the same way, and
+    // redrew the same screen. The one control that changes anything is starting the service.
+    //
+    // `starting` disables it while `start_service` is in flight, which is seconds and not
+    // milliseconds: `systemctl --user start` blocks until the unit reports started. A control that
+    // looks untouched for three seconds gets clicked again, which is the same complaint the delete
+    // approvals answered with a busy-disable (#140).
+    //
+    // The DISABLED ATTRIBUTE and not a `…Disabled` KIND. The design tokenises a disabled fill for
+    // `primary` and `destructive` only — there is no `secondaryDisabled` — and inventing one means
+    // two new tokens in both themes and a contrast check for a state no frame draws. `button` drops
+    // the click handler for either form (`onClick: disabled || role.disabled ? null : onClick`), so
+    // the trap that matters is covered: this button cannot be disabled-looking and live.
+    return [
+      v.starting
+        ? { label: MAIN.starting, kind: "secondaryOutlined", on: null, disabled: true }
+        : { label: TRAY.start, kind: "secondaryOutlined", on: "onStartService" },
+    ];
+  }
+  if (v.hero === "authExpired" || v.hero === "failed") {
     // `Try again now` and not `11a Outage`'s `Sign in`: NOTHING IN THE COMMAND SURFACE SIGNS IN.
     // Re-authentication is `proton-drive login` in a terminal — the daemon reuses that CLI's keyring
     // session — so a `Sign in` button here would be a control with no action behind it, which is
     // worse than the honest one. Retrying is exactly right once the user has signed in elsewhere.
     // DEVIATIONS §67.
     //
-    // On `failed` it is the one of the three that unambiguously does something: the daemon is
-    // answering, so `syncnow` reaches it and runs the pass that failed. `Pause` is dropped with the
-    // other two — nothing is moving to pause.
-    buttons.push(action(TRAY.tryAgain, "secondaryOutlined", handlers.onSyncNow));
-  } else {
-    if (v.hero !== "syncing") buttons.push(action(MAIN.syncNow, "secondaryOutlined", handlers.onSyncNow));
-    // Filled while syncing and outlined when settled: the mid-sync button sits ON the seam and its
-    // own fill is what masks the hairline behind it (`seam.js` rule 3 — pass `surface:null` and keep
-    // the button's fill). Both are the same colour role; only the surface differs.
-    buttons.push(
-      action(MAIN.pause, v.hero === "syncing" ? "secondaryFilled" : "quietOutlined", handlers.onPause),
-    );
+    // BOTH OF THESE ANSWER, which is what separates them from `unreachable` above and is why that
+    // one moved out: `syncnow` is an IPC round trip, so it does something here — it runs the pass
+    // that failed, or the pass a re-signed-in session can now finish — and did nothing at all on a
+    // socket with no daemon behind it. `Pause` is dropped from both: nothing is moving to pause.
+    return [{ label: TRAY.tryAgain, kind: "secondaryOutlined", on: "onSyncNow" }];
   }
+  const buttons = [];
+  if (v.hero !== "syncing") buttons.push({ label: MAIN.syncNow, kind: "secondaryOutlined", on: "onSyncNow" });
+  // Filled while syncing and outlined when settled: the mid-sync button sits ON the seam and its
+  // own fill is what masks the hairline behind it (`seam.js` rule 3 — pass `surface:null` and keep
+  // the button's fill). Both are the same colour role; only the surface differs.
+  buttons.push({
+    label: MAIN.pause,
+    kind: v.hero === "syncing" ? "secondaryFilled" : "quietOutlined",
+    on: "onPause",
+  });
+  return buttons;
+}
+
+/**
+ * The hero's buttons, rendered.
+ *
+ * `Sync now` DISAPPEARS mid-sync — "it's meaningless mid-sync" — and that is the only reason the
+ * count of buttons changes, which is why `updateMain` treats a change here as a rebuild of the row
+ * rather than something to patch. (`starting` is the one prop that changes the row WITHOUT changing
+ * the hero, and `updateMain` rebuilds on it explicitly.)
+ */
+function heroActions(v, handlers) {
+  const buttons = heroActionsOf(v).map((spec) =>
+    action(spec.label, spec.kind, spec.on ? handlers[spec.on] : null, Boolean(spec.disabled)),
+  );
   return el("div", { class: "main-actions" }, buttons);
 }
 
-function action(label, kind, onClick) {
-  return button({ kind, size: "bar", fontSize: "13.5px", label, onClick: onClick ?? null });
+function action(label, kind, onClick, disabled = false) {
+  return button({ kind, size: "bar", fontSize: "13.5px", label, onClick: onClick ?? null, disabled });
 }
 
 /**
@@ -490,6 +552,17 @@ export function updateMain(props = {}) {
     view.seam = seam;
   }
 
+  // `starting` IS THE ONE PROP THAT CHANGES THE BUTTONS WITHOUT CHANGING THE HERO, and the rebuild
+  // above only runs on a hero change — so without this the busy state was unreachable: the click
+  // set the flag, the ~2s poll called `updateMain`, and the row on screen stayed the row built
+  // before the click. A separate `if` rather than a fourth arm of that chain, because it is not an
+  // alternative to any of them; when the hero DID change, the rebuild has already covered it.
+  if (next.hero === prev.hero && next.starting !== prev.starting) {
+    const actions = heroActions(next, handlers);
+    view.actions.replaceWith(actions);
+    view.actions = actions;
+  }
+
   updateHexagon(view.mark, { numeral: next.numeral });
   setText(view.headline, headlineOf(next));
   setText(view.sub, subTextOf(next));
@@ -533,7 +606,23 @@ function blocksOf(v) {
   return blocks;
 }
 
-const quotingError = (v) => v.hero === "failed" && Boolean(v.error);
+/**
+ * The string the middle block quotes, or `null` — and it comes from one of two places.
+ *
+ * A failed PASS is the daemon's `last_error`. A failed START has no daemon to have said anything, so
+ * it is the `start_service` rejection instead. Both are machine text quoted verbatim in mono (voice
+ * rule 4), both go in the same capped, scrolling block, and neither state draws it in a frame.
+ *
+ * ONE FUNCTION rather than a condition here and the string picked again in `fillFailed`: they are
+ * the same question asked twice, and the second copy is where the two answers drift apart.
+ */
+function quotedError(v) {
+  if (v.hero === "failed") return v.error ?? null;
+  if (v.hero === "unreachable") return v.startError ?? null;
+  return null;
+}
+
+const quotingError = (v) => Boolean(quotedError(v));
 
 /** Only write when it changed: an unchanged assignment still invalidates layout for the whole line. */
 function setText(node, text) {
@@ -693,14 +782,15 @@ function fillColumns(v) {
  * the one block on the screen whose text somebody has a reason to select and copy.
  */
 function fillFailed(v) {
-  const sig = quotingError(v) ? v.error : "";
+  const quoted = quotedError(v);
+  const sig = quoted ?? "";
   if (view.failedSig === sig) return;
   view.failedSig = sig;
-  if (!quotingError(v)) {
+  if (!quoted) {
     view.failed.replaceChildren();
     return;
   }
-  view.failed.replaceChildren(el("div", { class: "main-failed-error" }, v.error));
+  view.failed.replaceChildren(el("div", { class: "main-failed-error" }, quoted));
 }
 
 /**

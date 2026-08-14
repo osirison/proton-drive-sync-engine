@@ -27,8 +27,8 @@
 //! is 5th while settled and 4th while syncing; `Quit` is 5th while syncing and 4th while paused. So
 //! a menu opened on an idle daemon and clicked once a pass had started would have stopped the
 //! daemon, on the row whose whole job is to say that it will not — and settled→syncing happens on
-//! every pass. (`positions_collide_and_the_worst_pair_is_the_one_10_tray_md_names` walks all five
-//! sets and fails if that stops being true, because it is the reason for this design.)
+//! every pass. (`positions_collide_and_the_worst_pair_is_the_one_10_tray_md_names` walks every set
+//! and fails if that stops being true, because it is the reason for this design.)
 //!
 //! So the id travels with the row. A stale menu dispatches the action its label promised, or none.
 
@@ -111,6 +111,18 @@ const TRY_AGAIN: Entry = Entry::Row {
     label: "Try again now",
     sub: None,
 };
+/// Starts the daemon rather than talking to it — the only row here that is not a control command.
+///
+/// Its own id and its own `dbus_id`, on the rule this module is built on: `tryAgain` could not have
+/// become "start the service when unreachable, retry the sync when failed" without making an id mean
+/// two things, which is precisely the stale-menu collision the header describes. `8` because 1–7 and
+/// the separator's 90 are taken.
+const START: Entry = Entry::Row {
+    id: "start",
+    dbus_id: 8,
+    label: "Start the sync service",
+    sub: None,
+};
 const CLOSE_WINDOW: Entry = Entry::Row {
     id: "closeWindow",
     dbus_id: 6,
@@ -125,16 +137,26 @@ const QUIT: Entry = Entry::Row {
 };
 const SEP: Entry = Entry::Separator;
 
-// The five sets, and they are `ui/compact.js`'s five: `settled`, `syncing`, `paused`, `unreachable`
-// and `deferToWindow`. `needsYou` is not a sixth — the panel's needs-you list is `settled`'s rows,
-// because `Review them` is the panel's own decision button rather than a menu row.
+// The sets, and they are `ui/compact.js`'s: `settled`, `syncing`, `paused`, `outage`, `notRunning`
+// and `deferToWindow`. `needsYou` is not one of them — the panel's needs-you list is `settled`'s
+// rows, because `Review them` is the panel's own decision button rather than a menu row.
 const SETTLED: &[Entry] = &[OPEN, SYNC_NOW, PAUSE, SEP, CLOSE_WINDOW, QUIT];
 // `Sync now` is absent while a pass is running: it would do nothing.
 const SYNCING: &[Entry] = &[OPEN, PAUSE, SEP, CLOSE_WINDOW, QUIT];
-// The two states that are not moving files lead with the row that fixes them and drop
-// `Close window` — with nothing syncing, `keeps syncing` would be a lie.
+// The states that are not moving files lead with the row that fixes them and drop `Close window` —
+// with nothing syncing, `keeps syncing` would be a lie.
 const PAUSED: &[Entry] = &[RESUME, OPEN, SEP, QUIT];
-const UNREACHABLE: &[Entry] = &[TRY_AGAIN, OPEN, SEP, QUIT];
+/// PROTON is out of reach and the daemon is answering, which is `DaemonState::Failed`.
+///
+/// Called `UNREACHABLE` until it was not: it served `Unreachable` too, and there `Try again now`
+/// dispatches `Syncnow` at a control socket that did not answer — a row that cannot do the thing its
+/// label promises, on the one menu `10-tray.md` asks to be honest above all else. The name went with
+/// the state that kept it.
+const OUTAGE: &[Entry] = &[TRY_AGAIN, OPEN, SEP, QUIT];
+/// The DAEMON is not running, which is what `DaemonState::Unreachable` means: the control socket did
+/// not answer. Nothing to retry against, so the row that fixes it starts the service. No frame draws
+/// this set — `10-tray.md`'s table has no such state. DEVIATIONS §95.
+const NOT_RUNNING: &[Entry] = &[START, OPEN, SEP, QUIT];
 // An expired session and a daemon that has never synced are both fixed in the window, not by
 // retrying a sync. The panel is keyed by FORM (both wear the struck mark) and the menu by CAUSE.
 // DEVIATIONS §82g.
@@ -147,10 +169,12 @@ pub fn rows_for(state: DaemonState) -> &'static [Entry] {
         DaemonState::Idle => SETTLED,
         DaemonState::Running => SYNCING,
         DaemonState::Paused => PAUSED,
-        // `Try again now`, and this is the one struck state where that row is unambiguously the
-        // right one: the daemon is ANSWERING, so a retry reaches it. The panel groups this with
-        // `authExpired` by form and the menu parts them by cause, exactly as the two above.
-        DaemonState::Unreachable | DaemonState::Failed => UNREACHABLE,
+        // THESE TWO WERE ONE ARM, and splitting them is the fix. `Try again now` is unambiguously
+        // right for `Failed` — the daemon is ANSWERING, so a retry reaches it — and was a dead
+        // control for `Unreachable`, where the control socket is what did not respond. The panel
+        // groups both with `authExpired` by form and the menu parts them by cause, as above.
+        DaemonState::Unreachable => NOT_RUNNING,
+        DaemonState::Failed => OUTAGE,
         DaemonState::AuthExpired | DaemonState::FirstRun => DEFER_TO_WINDOW,
     }
 }
@@ -469,7 +493,7 @@ mod tests {
         // `needsYou` has no Rust counterpart: S1's derivation folds it into the idle state, and the
         // panel's needs-you list IS the settled list — which is itself an invariant worth holding.
         let panel = panel_menu();
-        assert_eq!(panel.len(), 6, "the panel's row sets: {:?}", panel.keys());
+        assert_eq!(panel.len(), 7, "the panel's row sets: {:?}", panel.keys());
 
         let ours = |state: DaemonState| -> Vec<String> {
             rows_for(state)
@@ -485,7 +509,11 @@ mod tests {
             ("needsYou", DaemonState::Idle),
             ("syncing", DaemonState::Running),
             ("paused", DaemonState::Paused),
-            ("unreachable", DaemonState::Unreachable),
+            // The two halves of what was one `unreachable` set on both sides. The names are the
+            // point: `outage` is Proton out of reach with the daemon answering, `notRunning` is the
+            // daemon itself, and each language calls the same state the same thing.
+            ("outage", DaemonState::Failed),
+            ("notRunning", DaemonState::Unreachable),
             ("deferToWindow", DaemonState::AuthExpired),
         ] {
             let theirs = panel
@@ -509,6 +537,7 @@ mod tests {
             (PAUSE, "pause", None),
             (RESUME, "resume", None),
             (TRY_AGAIN, "tryAgain", None),
+            (START, "start", None),
             (CLOSE_WINDOW, "closeWindow", Some("closeWindowSub")),
             (QUIT, "quit", Some("quitSub")),
         ];

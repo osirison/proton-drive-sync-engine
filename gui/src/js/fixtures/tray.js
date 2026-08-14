@@ -126,6 +126,12 @@ export const TRAY_FIXTURES = {
     fids: compactFids({ state: "unreachable", tail: "menu", tailAt: 1 }),
     panel: {
       state: "unreachable",
+      // The FORM is `unreachable` and the ROWS are `outage`, which is the frame being explicit about
+      // a distinction it predates: `10a Offline` is Proton being out of reach — a daemon that is
+      // running and answering — and its `Try again now` is a working control on exactly that state.
+      // The app reaches the same rows through `failed`; the row set a stopped DAEMON gets is
+      // `notRunning`, which no frame draws. DEVIATIONS §95.
+      menuState: "outage",
       family: "tray",
       headline: TRAY.unreachableTitle,
       // Reassurance before the problem (voice rule 3), then the timing in a quieter tier.

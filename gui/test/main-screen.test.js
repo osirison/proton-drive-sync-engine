@@ -19,7 +19,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { heroStateOf, mainView } from "../src/js/screens/main.js";
+import { heroActionsOf, heroStateOf, mainView } from "../src/js/screens/main.js";
 import { MAIN, TRAY } from "../src/js/ui/copy.js";
 import { cardinal } from "../src/js/ui/format.js";
 
@@ -198,4 +198,74 @@ test("cardinal spells the small counts a sentence opens with and hands the rest 
   assert.equal(cardinal(1200), "1,200");
   assert.equal(cardinal(null), "—");
   assert.equal(cardinal(1.5), "1.5");
+});
+
+// ---- a daemon that is not running (DEVIATIONS §95) ----
+//
+// The state has no frame, and until now it had no control either: the hero offered `Try again now`,
+// which is `onSyncNow`, which is a round trip down the control socket — the socket whose silence is
+// the definition of this state. Everything below is a branch the fidelity gate cannot reach.
+
+const view = (over = {}) => mainView({ daemonState: "unreachable", response: null, ...over });
+
+test("a stopped daemon is offered the row that starts it, not the one that retries a sync", () => {
+  const actions = heroActionsOf(view());
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].label, TRAY.start);
+  assert.equal(actions[0].on, "onStartService");
+  // The mistake this replaces, named so a revert reads as a failure rather than a diff.
+  assert.notEqual(actions[0].label, TRAY.tryAgain);
+  assert.notEqual(actions[0].on, "onSyncNow");
+});
+
+test("the two states that ARE answering keep the retry", () => {
+  // `syncnow` reaches a daemon that replies, so `Try again now` does what it says for both of these
+  // — which is why they stayed behind when `unreachable` moved out of the shared branch.
+  for (const hero of ["failed", "authExpired"]) {
+    const actions = heroActionsOf({ hero });
+    assert.equal(actions.length, 1, hero);
+    assert.equal(actions[0].label, TRAY.tryAgain, hero);
+    assert.equal(actions[0].on, "onSyncNow", hero);
+  }
+});
+
+test("the start button goes inert while the start is in flight, and carries no handler when it does", () => {
+  // `systemctl --user start` blocks until the unit reports started, so this is on screen for
+  // seconds. A DISABLED KIND WOULD HAVE DROPPED THE HANDLER SILENTLY (`button` sets `onClick: null`
+  // for one), which is fine here because the button is meant to be inert — but the same fact is why
+  // the armed one must NOT be disabled. Both directions are asserted.
+  const busy = heroActionsOf(view({ starting: true }));
+  assert.equal(busy[0].label, MAIN.starting);
+  assert.equal(busy[0].disabled, true);
+  assert.equal(busy[0].on, null, "an inert button must not also be wired");
+
+  const armed = heroActionsOf(view({ starting: false }));
+  assert.ok(!armed[0].disabled, "the armed button must not be disabled — it would drop its handler");
+  assert.equal(armed[0].on, "onStartService");
+});
+
+test("the headline names the daemon, because the socket is what did not answer", () => {
+  // `Can't reach Proton Drive` is the deck's OUTAGE sentence and it is a claim about the wrong
+  // machine: Proton takes no part in a control-socket round trip. A daemon that is up and cannot
+  // reach Proton derives `failed` or `authExpired`, both of which still say so.
+  assert.equal(MAIN.notRunning, "The sync service isn't running");
+  assert.notEqual(MAIN.notRunning, TRAY.unreachableTitle);
+  assert.doesNotMatch(MAIN.notRunning, /Proton/);
+  // And the sub-line carries no count clause at all, rather than one that has to remember to drop
+  // itself: there is no reply here, so the number was never `0` — it was unknown.
+  assert.doesNotMatch(MAIN.notRunningSub, /\bchanges?\b/);
+  assert.match(MAIN.notRunningSub, /Nothing is lost/);
+});
+
+test("a start that failed is carried to the screen, because the rejection is the only diagnosis", () => {
+  // `start_service` REJECTS — unlike every control-socket command, which folds its failure into the
+  // payload — and its message names which of the two ways it failed (no systemd unit, no config
+  // file). Swallowed, the button is the dead control #224 and #227 record.
+  const failed = view({
+    startError: "couldn't start via systemd (Unit not found) and there is no config file",
+  });
+  assert.match(failed.startError, /systemd/);
+  // It rides the same prop into the block a failed PASS quotes; nothing paraphrases it.
+  assert.equal(view().startError, null);
+  assert.equal(view().starting, false);
 });

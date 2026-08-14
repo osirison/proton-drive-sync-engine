@@ -104,6 +104,23 @@ const NOT_DRAWN = new Map([
   // exemption for something the gate does not look at would subtract one from a denominator it was
   // never in. The check below is what turned that from a guess into a build failure.
   ["MAIN.failed", "no `2a` frame draws a pass that failed — the deck's error table gives the shape in prose"],
+  // S1's stopped SERVICE, and the reason no frame draws it is that the design never had this state:
+  // `14-behaviour-and-state.md`'s `unreachable` is *Proton* unreachable ("entered after a failed
+  // pass and retry"), while `derive_state`'s `Unreachable` is the CONTROL SOCKET not answering. The
+  // deck's one sentence for the former (`TRAY.unreachableTitle`) is a diagnosis of the wrong machine
+  // when it is the daemon that is down, which is a reboot away for anyone without the systemd unit.
+  //
+  // `notRunningSub` IS here and `MAIN.failedSub` is not: that one is a template and `walk` never
+  // collects one, this one is a plain string because the state has no reply to count from.
+  ["MAIN.notRunning", "no frame draws a daemon that is not running — the design's `unreachable` is Proton's"],
+  [
+    "MAIN.notRunningSub",
+    "no frame draws a daemon that is not running — the design's `unreachable` is Proton's",
+  ],
+  ["MAIN.starting", "the busy label on a button no frame draws — it is only on screen mid-click"],
+  // Its tray row. `10a Offline` draws `Try again now` for the same struck panel, because the design
+  // read that panel as an outage; a retry cannot reach a daemon that is not listening. DEVIATIONS §94.
+  ["TRAY.start", "no frame draws a tray row for starting the service — `10a Offline` draws the retry"],
   // S4's empty plan — the safe variant with different words. No frame draws a rehearsal that found
   // nothing to do, and it is the likeliest state a user sees.
   [

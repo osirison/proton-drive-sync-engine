@@ -592,7 +592,13 @@ function mountFramePanel(root) {
     // `menu: true` means "the standard rows for this state". Resolved here rather than in the
     // fixture because fixtures/frames.js cannot import ui/compact.js — that module imports `fid`
     // from it, and the cycle is a lint error.
-    menu: spec.menu === true ? trayMenu(spec.state) : (spec.menu ?? null),
+    //
+    // `menuState` FIRST, and `state` only as the default, because the panel's form and its rows are
+    // two different keys — `screens/tray.js`'s own split ("the panel takes the form and the menu
+    // takes the cause"). `10a Offline` is the frame that needs it: it draws the struck panel, which
+    // is the `unreachable` FORM, over `Try again now`, which is the `outage` row set. A fixture
+    // naming neither would ask `trayMenu` for a set called after a form, and `trayMenu` throws.
+    menu: spec.menu === true ? trayMenu(spec.menuState ?? spec.state) : (spec.menu ?? null),
   });
   panelSurface(root).replaceChildren(dom.panel);
   return true;
@@ -1829,6 +1835,43 @@ function planProps() {
   };
 }
 
+/** A `start_service` asked for and not yet answered. Drives the main screen's busy button. */
+let serviceStarting = false;
+/** Why the last start attempt failed, quoted on the main screen. Cleared by the next attempt. */
+let serviceStartError = null;
+
+/**
+ * Start the sync daemon from the window — the main screen's `Start the sync service`.
+ *
+ * NOT `command(api.startService)`. That helper swallows its rejection into a `console.error`, which
+ * is right for the control-socket commands (they resolve with the failure inside the payload, so a
+ * throw there is a bug rather than a diagnosis) and wrong for this one: `start_service` REJECTS,
+ * and the message it rejects with is the only account of why. A machine with neither a systemd unit
+ * nor a config file gets a sentence naming both; swallowed, that is a button that does nothing
+ * forever with the reason in a console nobody has open.
+ *
+ * The latch is also the double-click guard. `systemctl --user start` blocks until the unit reports
+ * started, so this promise is outstanding for seconds while the button sits there.
+ */
+async function startService() {
+  if (serviceStarting) return;
+  serviceStarting = true;
+  serviceStartError = null;
+  render();
+  try {
+    await api.startService();
+  } catch (error) {
+    serviceStartError = String(error?.message ?? error);
+  }
+  serviceStarting = false;
+  // A RESOLVED PROMISE MEANS "ASKED", NOT "RUNNING" — the same caveat onboarding's merge wait was
+  // built around. Nothing here decides the daemon came up: the poll asks the socket, and the hero
+  // leaves `unreachable` when it answers. Re-polling now rather than waiting out the ~2s tick is
+  // what makes the button feel like it worked, on `command`'s own reasoning.
+  clearTimeout(pollTimer);
+  poll();
+}
+
 /** Everything the main screen reads, plus the actions it can take. */
 function mainProps(localRoot, remoteRoot) {
   return {
@@ -1840,10 +1883,13 @@ function mainProps(localRoot, remoteRoot) {
     deletions: visibleDeletions(),
     localRoot,
     remoteRoot,
+    starting: serviceStarting,
+    startError: serviceStartError,
     handlers: {
       onSyncNow: () => command(api.syncNow),
       onPause: () => command(api.pause),
       onResume: () => command(api.resume),
+      onStartService: startService,
       onConflicts: () => navigate("conflicts"),
       onDeletions: () => navigate("deletions"),
     },

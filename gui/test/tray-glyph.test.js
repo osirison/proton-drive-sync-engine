@@ -40,11 +40,22 @@ test("every glyph form has menu rows behind it", () => {
   // in a state the menu has no rows for, the tray can draw a mark it cannot offer an action for —
   // and `trayMenu` throws on an unknown key, so it would do it by crashing the tray window.
   //
-  // A SUBSET, not an equality: `TRAY_MENU` also carries `deferToWindow`, which is a row set rather
-  // than a form (see ui/compact.js). The direction that matters is this one — every form must have
-  // rows; a row set with no form of its own is how the menu says more than the mark can.
+  // A SUBSET, not an equality: `TRAY_MENU` also carries row sets that are not forms at all (see
+  // ui/compact.js). The direction that matters is this one — every form must have rows; a row set
+  // with no form of its own is how the menu says more than the mark can.
+  //
+  // AND THE FORM IS NO LONGER ALWAYS THE KEY. The struck `unreachable` mark is worn by three daemon
+  // states wanting three menus, so it names none of them: `outage` retries a sync at a daemon that
+  // answers, `notRunning` starts one that does not, `deferToWindow` offers neither. A lookup by form
+  // would have found nothing here and `trayMenu` throws on a miss — which is this test's own stated
+  // failure, reached from the other side.
+  const MENUS_FOR = {
+    unreachable: ["outage", "notRunning", "deferToWindow"],
+  };
   for (const state of TRAY_GLYPH_STATES) {
-    assert.ok(TRAY_MENU[state], `no tray menu rows for the ${state} glyph`);
+    for (const key of MENUS_FOR[state] ?? [state]) {
+      assert.ok(TRAY_MENU[key], `no tray menu rows for the ${state} glyph (${key})`);
+    }
   }
 });
 

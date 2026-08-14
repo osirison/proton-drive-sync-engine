@@ -18,18 +18,30 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TRAY_MENU, trayMenu } from "../src/js/ui/compact.js";
 
-const STATES = ["settled", "syncing", "needsYou", "paused", "unreachable"];
+/** The panel's five FORMS — what `ui/hexagon.js` will draw. `10-tray.md` allows no sixth. */
+const FORMS = ["settled", "syncing", "needsYou", "paused", "unreachable"];
+/** The menu's row SETS, which are keyed by cause and are deliberately not the forms. */
+const STATES = ["settled", "syncing", "needsYou", "paused", "outage", "notRunning", "deferToWindow"];
 const rowsOf = (state) => TRAY_MENU[state].filter((row) => !row.separator);
 const labels = (state) => rowsOf(state).map((row) => row.label);
 
-test("every state the panel has is a state the tray menu has", () => {
-  // S8 ADDED A SIXTH KEY, and it is not a sixth panel form — `10-tray.md` allows no sixth form and
-  // `ui/hexagon.js` refuses to draw one. `deferToWindow` is the row set for the two daemon states
-  // that share the struck hexagon with `unreachable` and share none of its actions: an expired
-  // Proton session and a daemon that has never synced. Both are fixed in the window, not by
-  // `Try again now`. So the panel is keyed by form and the menu by cause, and the two key sets are
-  // deliberately no longer identical — see the note on `deferToWindow` in ui/compact.js.
-  assert.deepEqual(Object.keys(TRAY_MENU).sort(), [...STATES, "deferToWindow"].sort());
+test("the menu is keyed by cause, and three of its sets are causes no form distinguishes", () => {
+  // THE PANEL IS KEYED BY FORM AND THE MENU BY CAUSE, which is `screens/tray.js`'s own sentence and
+  // the reason these two lists differ. Three daemon states wear the struck `unreachable` hexagon and
+  // want three different menus:
+  //
+  //   · `failed`      → `outage`       — Proton is out of reach, the daemon answers, retry it
+  //   · `unreachable` → `notRunning`   — the SOCKET did not answer; the fix is starting the service
+  //   · `authExpired` → `deferToWindow`— signing in happens in a terminal, not on a menu
+  //
+  // The middle one is why `outage` is not called `unreachable` any more: it held both of the first
+  // two, so `Try again now` was offered to a daemon that was not there to retry against.
+  assert.deepEqual(Object.keys(TRAY_MENU).sort(), [...STATES].sort());
+  // Every form still resolves to SOME menu, whether or not it shares the name.
+  for (const form of FORMS) {
+    const menu = form === "unreachable" ? ["outage", "notRunning"] : [form];
+    for (const key of menu) assert.ok(TRAY_MENU[key], `${form} → ${key}`);
+  }
 });
 
 test("Close window and Quit keep their sub-labels wherever they appear", () => {
@@ -43,8 +55,8 @@ test("Close window and Quit keep their sub-labels wherever they appear", () => {
       assert.equal(row.sub, subs[row.label], `${state} · ${row.label}`);
     }
   }
-  // Three states carry both rows, two carry only Quit: 3×2 + 2×1.
-  assert.equal(seen, 8);
+  // Three sets carry both rows, four carry only Quit: 3×2 + 4×1.
+  assert.equal(seen, 10);
 });
 
 test("only those two rows carry a sub-label — a menu is not a place for explanations", () => {
@@ -61,8 +73,8 @@ test("Sync now is absent while syncing, because it would do nothing", () => {
   assert.ok(labels("needsYou").includes("Sync now"));
 });
 
-test("the two stopped states drop Close window rather than promise it keeps syncing", () => {
-  for (const state of ["paused", "unreachable"]) {
+test("the stopped states drop Close window rather than promise it keeps syncing", () => {
+  for (const state of ["paused", "outage", "notRunning", "deferToWindow"]) {
     assert.ok(!labels(state).includes("Close window"), state);
     assert.ok(labels(state).includes("Quit"), state);
   }
@@ -70,7 +82,13 @@ test("the two stopped states drop Close window rather than promise it keeps sync
 
 test("each stopped state leads with the row that fixes it", () => {
   assert.equal(labels("paused")[0], "Resume syncing");
-  assert.equal(labels("unreachable")[0], "Try again now");
+  assert.equal(labels("outage")[0], "Try again now");
+  // AND THE TWO DIFFER, which is the whole point of the split: a retry is a `Syncnow` down the
+  // control socket, and `notRunning` is the state where that socket did not answer. Offering it
+  // there was a row that could not do what its label said.
+  assert.equal(labels("notRunning")[0], "Start the sync service");
+  assert.ok(!labels("notRunning").includes("Try again now"));
+  assert.ok(!labels("outage").includes("Start the sync service"));
 });
 
 test("the panel's own Review them is not repeated in the needs-you menu", () => {
