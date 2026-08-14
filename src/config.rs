@@ -219,22 +219,25 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         .transpose()?
         .map(|path| resolve_path(&local_root, path))
         .unwrap_or_else(|| default_lockfile_path(&local_root));
+    // Resolved before the struct literal because both defaults are now fallible (#74) and must
+    // stay LAZY: an explicit --socket-path must not fail because the /tmp fallback — which this
+    // run never touches — is hostile.
+    let socket_path = match input.socket_path.or(file_config.socket_path) {
+        Some(path) => expand_tilde(path, "socket_path")?,
+        None => default_socket_path()?,
+    };
+    let global_lock_path = default_global_lock_path()?;
     let default_command_policy = CommandPolicy::default();
 
     let config = DaemonConfig {
         local_root,
         remote_root,
         db_path,
-        socket_path: input
-            .socket_path
-            .or(file_config.socket_path)
-            .map(|path| expand_tilde(path, "socket_path"))
-            .transpose()?
-            .unwrap_or_else(default_socket_path),
+        socket_path,
         lockfile_path,
         // Not user-overridable: the single-instance guarantee must key on a fixed per-user path so
         // it holds regardless of --socket-path / --local-root (see `default_global_lock_path`).
-        global_lock_path: default_global_lock_path(),
+        global_lock_path,
         scan_interval: Duration::from_secs(
             input
                 .scan_interval_secs
