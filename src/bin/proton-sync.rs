@@ -75,7 +75,19 @@ enum Commands {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let socket_path = cli.socket_path.clone().unwrap_or_else(default_socket_path);
+    // Lazy: only an unset --socket-path resolves the default, which is fallible since the
+    // shared-/tmp fallback fails closed (#74). `main` returns ExitCode, so the error is reported
+    // here rather than propagated.
+    let socket_path = match cli.socket_path.clone() {
+        Some(path) => path,
+        None => match default_socket_path() {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("cannot resolve the control socket path: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
     let style = Style::for_stdout();
 
     let request = match build_request(&cli.command) {

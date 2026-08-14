@@ -241,10 +241,20 @@ mod unix_tests {
             "an interrupted upload must not leave partial index state: {index:?}"
         );
 
+        // The lockfile is deliberately left behind (#13 — unlinking it re-opens the
+        // flock-over-unlink race); what a clean shutdown must guarantee is that the flock is
+        // RELEASED, i.e. the next start can lock the very same inode.
         assert!(
-            !lockfile_path.exists(),
-            "lockfile should be removed after a clean SIGINT-triggered shutdown"
+            lockfile_path.exists(),
+            "lockfile must persist after shutdown so the next start contends on the same inode"
         );
+        let lockfile = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lockfile_path)
+            .expect("reopen lockfile");
+        fs2::FileExt::try_lock_exclusive(&lockfile)
+            .expect("a clean shutdown must release the flock on the leftover lockfile");
     }
 
     // The core responsiveness guarantee behind the concurrent control-socket task: a status

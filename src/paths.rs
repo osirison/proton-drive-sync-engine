@@ -1,10 +1,12 @@
+use crate::{AppResult, boxed_error};
 use std::env;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use tracing::warn;
 
 const APP_STATE_DIR: &str = "proton-drive-sync";
+/// Mode the fallback runtime directory must end up with: owner-only, no setuid/setgid/sticky.
+const RUNTIME_DIR_MODE: u32 = 0o700;
 const DEFAULT_SOCKET_NAME: &str = "proton-sync.sock";
 const DEFAULT_LOCKFILE_NAME: &str = "proton-sync.lock";
 const DEFAULT_INDEX_NAME: &str = "sync_index.db";
@@ -25,7 +27,10 @@ pub fn sync_state_dir(local_root: &Path) -> PathBuf {
 /// a session-scoped runtime endpoint, not persistent state; it must stay short to respect the
 /// `sun_path` length limit; and the control CLI locates it there without needing to know the sync
 /// root. So, unlike the persistent state, it does *not* move into `.sync`.
-pub fn default_socket_path() -> PathBuf {
+///
+/// Fallible: with `XDG_RUNTIME_DIR` unset this resolves through [`fallback_runtime_dir`], which
+/// fails closed rather than hand back a path in attacker-controlled space (#74).
+pub fn default_socket_path() -> AppResult<PathBuf> {
     default_runtime_path(DEFAULT_SOCKET_NAME, env_path("XDG_RUNTIME_DIR"))
 }
 
@@ -52,8 +57,11 @@ pub fn default_state_db_path(local_root: &Path) -> PathBuf {
 /// across sessions (SSH without pam_systemd, many containers), so a session-keyed lock would let a
 /// second daemon slip through in exactly those cases and still contend on the shared cache. This
 /// complements the *per-root* [`default_lockfile_path`], which stops two daemons on the same root.
-pub fn default_global_lock_path() -> PathBuf {
-    global_lock_path_in(user_state_dir())
+///
+/// Fallible for the same reason as [`default_socket_path`]: with both `XDG_STATE_HOME` and `HOME`
+/// unset it resolves through [`fallback_runtime_dir`], which fails closed (#74).
+pub fn default_global_lock_path() -> AppResult<PathBuf> {
+    Ok(global_lock_path_in(user_state_dir()?))
 }
 
 /// The global lock's layout under a given state directory. Split out so it can be tested without
@@ -64,20 +72,22 @@ fn global_lock_path_in(state_dir: PathBuf) -> PathBuf {
 
 /// `$XDG_STATE_HOME`, falling back to `~/.local/state`, then — if even `HOME` is unset (unusual) —
 /// to the per-uid temp directory so the path stays user-private rather than shared.
-fn user_state_dir() -> PathBuf {
+fn user_state_dir() -> AppResult<PathBuf> {
     if let Some(dir) = env_path("XDG_STATE_HOME") {
-        dir
+        Ok(dir)
     } else if let Some(home) = env_path("HOME") {
-        home.join(".local").join("state")
+        Ok(home.join(".local").join("state"))
     } else {
         fallback_runtime_dir()
     }
 }
 
-fn default_runtime_path(file_name: &str, runtime_dir: Option<PathBuf>) -> PathBuf {
+fn default_runtime_path(file_name: &str, runtime_dir: Option<PathBuf>) -> AppResult<PathBuf> {
     match runtime_dir {
-        Some(dir) => dir.join(file_name),
-        None => fallback_runtime_dir().join(file_name),
+        // A session-manager-provided runtime dir is trusted (and never created by us); only the
+        // shared-/tmp fallback below is attacker-plantable, so only it is validated.
+        Some(dir) => Ok(dir.join(file_name)),
+        None => Ok(fallback_runtime_dir()?.join(file_name)),
     }
 }
 
@@ -89,48 +99,91 @@ fn default_runtime_path(file_name: &str, runtime_dir: Option<PathBuf>) -> PathBu
 /// directly into world-writable `/tmp`, where they would be guessable and could
 /// collide with another local user's daemon instance.
 ///
-/// Directory creation and permission tightening are best-effort: any failure is
-/// logged rather than propagated, since callers still get a concrete path back
-/// and will surface a clear I/O error themselves the moment they actually try to
-/// create the socket or lockfile there.
-fn fallback_runtime_dir() -> PathBuf {
+/// **Fails closed** (#74). The path is predictable and its parent is world-writable, so a local
+/// attacker can pre-create it — as a symlink into their own tree, or as a directory they own —
+/// before the daemon ever runs. Returning it anyway would bind the control socket in attacker
+/// space, where the socket can be unlinked and replaced by an impostor listener that fakes
+/// `status`/`approve` acknowledgements. Creation failure, a non-directory, a foreign owner, or a
+/// mode that cannot be tightened to 0700 are therefore errors, not warnings.
+fn fallback_runtime_dir() -> AppResult<PathBuf> {
     // Suffix the shared-temp fallback with the effective uid so two local users never
     // contend for the same directory: the first user to create a single shared
     // `proton-drive-sync` at mode 0700 would otherwise lock everyone else out of their own
     // fallback runtime path.
-    let dir = env::temp_dir().join(format!("{APP_STATE_DIR}-{}", effective_uid()));
-    if let Err(error) = fs::create_dir_all(&dir) {
-        warn!(
-            path = %dir.display(),
-            %error,
-            "failed to create fallback runtime directory"
-        );
-        return dir;
+    let uid = effective_uid();
+    ensure_private_runtime_dir(env::temp_dir().join(format!("{APP_STATE_DIR}-{uid}")), uid)
+}
+
+/// Create (or adopt) `dir` and prove it is a real directory private to `owner_uid`.
+/// `owner_uid` is a parameter so the refusal paths are testable without a second user account.
+fn ensure_private_runtime_dir(dir: PathBuf, owner_uid: u32) -> AppResult<PathBuf> {
+    fs::create_dir_all(&dir).map_err(|error| {
+        boxed_error(format!(
+            "failed to create fallback runtime directory {}: {error}",
+            dir.display()
+        ))
+    })?;
+    // Check BEFORE chmod: `set_permissions` follows symlinks, so tightening first would re-mode
+    // an attacker's target instead of this path.
+    let mode = require_private_dir(&dir, owner_uid, None)?;
+    // Only chmod when the mode is not already 0700. An unconditional chmod fails closed on a
+    // TMPDIR whose filesystem cannot change permissions (FAT, some network mounts) even though the
+    // directory is already private — a refusal that protects nothing. Skipping a no-op weakens
+    // nothing: the check above already read this mode, which is what the post-chmod re-verify
+    // would assert.
+    if mode != RUNTIME_DIR_MODE {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(RUNTIME_DIR_MODE)).map_err(
+            |error| {
+                boxed_error(format!(
+                    "failed to restrict fallback runtime directory {} to mode \
+                     {RUNTIME_DIR_MODE:o}: {error}",
+                    dir.display()
+                ))
+            },
+        )?;
+        // Re-verify after the chmod: closes the swap window between the check above and the chmod,
+        // and is the only place the mode itself is asserted.
+        require_private_dir(&dir, owner_uid, Some(RUNTIME_DIR_MODE))?;
     }
-    // `set_permissions` follows symlinks, so a symlink (or any non-directory) swapped in at
-    // this predictable path would have its target chmod'd instead. Inspect the link itself
-    // and only tighten permissions on a real directory; otherwise leave it alone and warn.
-    match fs::symlink_metadata(&dir) {
-        Ok(metadata) if metadata.file_type().is_dir() => {
-            if let Err(error) = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)) {
-                warn!(
-                    path = %dir.display(),
-                    %error,
-                    "failed to restrict fallback runtime directory permissions"
-                );
-            }
-        }
-        Ok(_) => warn!(
-            path = %dir.display(),
-            "fallback runtime directory path is not a real directory; leaving permissions unchanged"
-        ),
-        Err(error) => warn!(
-            path = %dir.display(),
-            %error,
-            "failed to inspect fallback runtime directory; leaving permissions unchanged"
-        ),
+    Ok(dir)
+}
+
+/// Fail-closed gate for a directory the engine is about to put private runtime state in.
+/// `expected_mode` is compared against the full permission bits (including setuid/setgid/sticky)
+/// and is only meaningful after this process has set them. Returns the observed permission bits so
+/// a caller can skip a chmod that would be a no-op.
+fn require_private_dir(dir: &Path, owner_uid: u32, expected_mode: Option<u32>) -> AppResult<u32> {
+    let metadata = fs::symlink_metadata(dir).map_err(|error| {
+        boxed_error(format!(
+            "failed to inspect fallback runtime directory {}: {error}",
+            dir.display()
+        ))
+    })?;
+    if !metadata.file_type().is_dir() {
+        return Err(boxed_error(format!(
+            "refusing to use {}: it is not a directory (a symlink or other object is planted at \
+             this predictable path), so private runtime state would land in space this user does \
+             not control",
+            dir.display()
+        )));
     }
-    dir
+    if metadata.uid() != owner_uid {
+        return Err(boxed_error(format!(
+            "refusing to use {}: it is owned by uid {}, not {owner_uid}",
+            dir.display(),
+            metadata.uid()
+        )));
+    }
+    let mode = metadata.permissions().mode() & 0o7777;
+    if let Some(expected) = expected_mode
+        && mode != expected
+    {
+        return Err(boxed_error(format!(
+            "refusing to use {}: mode is {mode:o}, expected {expected:o} (owner-only)",
+            dir.display()
+        )));
+    }
+    Ok(mode)
 }
 
 /// The effective user id, used to give each local user a private fallback runtime
@@ -152,14 +205,15 @@ mod tests {
 
     #[test]
     fn runtime_defaults_use_xdg_runtime_dir_when_available() {
-        let path = default_runtime_path("proton-sync.sock", Some(PathBuf::from("/run/user/1000")));
+        let path = default_runtime_path("proton-sync.sock", Some(PathBuf::from("/run/user/1000")))
+            .expect("a provided runtime dir needs no validation");
 
         assert_eq!(path, PathBuf::from("/run/user/1000/proton-sync.sock"));
     }
 
     #[test]
     fn runtime_defaults_fall_back_to_a_namespaced_temp_subdirectory_when_unset() {
-        let path = default_runtime_path("proton-sync.sock", None);
+        let path = default_runtime_path("proton-sync.sock", None).expect("fallback resolves");
 
         let parent = path.parent().expect("parent directory");
         let parent_name = parent
@@ -226,7 +280,147 @@ mod tests {
     fn socket_stays_in_the_runtime_dir_not_the_sync_state_dir() {
         // The socket is a session-scoped IPC endpoint, not persistent state, so it stays in
         // $XDG_RUNTIME_DIR rather than moving into <local_root>/.sync.
-        let path = default_runtime_path("proton-sync.sock", Some(PathBuf::from("/run/user/1000")));
+        let path = default_runtime_path("proton-sync.sock", Some(PathBuf::from("/run/user/1000")))
+            .expect("a provided runtime dir needs no validation");
         assert_eq!(path, PathBuf::from("/run/user/1000/proton-sync.sock"));
+    }
+
+    // #74: the fallback path is predictable and its parent is world-writable, so a local attacker
+    // can plant it before the daemon runs. Every planted shape below must be REFUSED — the old
+    // code warned and returned the path, which put the control socket in attacker space.
+
+    #[test]
+    fn a_symlink_planted_at_the_fallback_runtime_dir_is_refused() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let attacker_dir = directory.path().join("attacker");
+        fs::create_dir(&attacker_dir).expect("attacker directory");
+        fs::set_permissions(&attacker_dir, fs::Permissions::from_mode(0o777))
+            .expect("attacker mode");
+        let planted = directory.path().join("proton-drive-sync-1000");
+        std::os::unix::fs::symlink(&attacker_dir, &planted).expect("plant symlink");
+
+        let error = ensure_private_runtime_dir(planted, effective_uid())
+            .expect_err("a symlink at the fallback path must be refused, not warned about");
+
+        assert!(
+            error.to_string().contains("not a directory"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            fs::symlink_metadata(&attacker_dir)
+                .expect("attacker metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o777,
+            "the symlink target must not have been chmod'd through the link"
+        );
+    }
+
+    #[test]
+    fn a_regular_file_planted_at_the_fallback_runtime_dir_is_refused() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let planted = directory.path().join("proton-drive-sync-1000");
+        fs::write(&planted, b"").expect("plant regular file");
+
+        // Refused at `create_dir_all` (EEXIST on a non-directory) rather than at the type check,
+        // but refused either way — the point is that no path is handed back.
+        let error = ensure_private_runtime_dir(planted.clone(), effective_uid())
+            .expect_err("a non-directory at the fallback path must be refused");
+
+        assert!(
+            error.to_string().contains(&planted.display().to_string()),
+            "the error must name the refused path: {error}"
+        );
+        assert!(
+            fs::symlink_metadata(&planted)
+                .expect("planted metadata")
+                .file_type()
+                .is_file(),
+            "the planted file must be left alone"
+        );
+    }
+
+    #[test]
+    fn a_foreign_owned_fallback_runtime_dir_is_refused() {
+        // A directory owned by another local user (the ownership check is parameterised so this
+        // needs no second account: the real uid is compared against a different expected owner).
+        let directory = tempfile::tempdir().expect("tempdir");
+        let planted = directory.path().join("proton-drive-sync-1000");
+        fs::create_dir(&planted).expect("planted directory");
+
+        let error = ensure_private_runtime_dir(planted, effective_uid().wrapping_add(1))
+            .expect_err("a foreign-owned fallback directory must be refused");
+
+        assert!(
+            error.to_string().contains("owned by uid"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_fallback_runtime_dir_left_group_or_world_accessible_is_refused() {
+        // The post-chmod gate: if the mode is not owner-only when we re-read it, refuse rather
+        // than proceed. (Reached in production when a swap wins the race with our chmod.)
+        let directory = tempfile::tempdir().expect("tempdir");
+        let dir = directory.path().join("proton-drive-sync-1000");
+        fs::create_dir(&dir).expect("directory");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).expect("hostile mode");
+
+        let error = require_private_dir(&dir, effective_uid(), Some(RUNTIME_DIR_MODE))
+            .expect_err("a group/world-accessible runtime directory must be refused");
+
+        assert!(
+            error.to_string().contains("mode is 777"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_already_private_fallback_runtime_dir_is_adopted_without_a_chmod() {
+        // A chmod that only restates the current mode still fails on a TMPDIR whose filesystem
+        // cannot change permissions (FAT, some network mounts), refusing a directory that is
+        // already private. ctime is the observable: chmod bumps it, adoption must not.
+        let directory = tempfile::tempdir().expect("tempdir");
+        let dir = directory.path().join("proton-drive-sync-1000");
+        fs::create_dir(&dir).expect("directory");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(RUNTIME_DIR_MODE))
+            .expect("private mode");
+        let before = fs::symlink_metadata(&dir).expect("metadata");
+        let stamp = (before.ctime(), before.ctime_nsec());
+
+        let resolved = ensure_private_runtime_dir(dir.clone(), effective_uid())
+            .expect("an already-private directory is adopted");
+
+        assert_eq!(resolved, dir);
+        let after = fs::symlink_metadata(&dir).expect("metadata");
+        assert_eq!(
+            (after.ctime(), after.ctime_nsec()),
+            stamp,
+            "an already-0700 directory must be adopted without a chmod"
+        );
+    }
+
+    #[test]
+    fn an_owned_fallback_runtime_dir_is_adopted_and_tightened() {
+        // The accepted case: a directory this user owns is kept, with a loose mode tightened to
+        // 0700 rather than refused (an upgrade from an earlier version must still start).
+        let directory = tempfile::tempdir().expect("tempdir");
+        let dir = directory.path().join("proton-drive-sync-1000");
+        fs::create_dir(&dir).expect("directory");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("loose mode");
+
+        let resolved = ensure_private_runtime_dir(dir.clone(), effective_uid())
+            .expect("own directory adopted");
+
+        assert_eq!(resolved, dir);
+        assert_eq!(
+            fs::symlink_metadata(&dir)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o7777,
+            RUNTIME_DIR_MODE
+        );
     }
 }
