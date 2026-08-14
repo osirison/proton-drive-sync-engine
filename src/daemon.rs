@@ -3,8 +3,8 @@ use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id
 use crate::index::{
     EntityKind, EventCursor, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
     delete_delete_approval, load_event_cursor, load_existing_index, load_index,
-    load_warm_start_count, local_directory_state, local_file_state, mark_modified,
-    matching_delete_approval, open_database, path_for_proton_id, purge_record,
+    load_sole_event_cursor, load_warm_start_count, local_directory_state, local_file_state,
+    mark_modified, matching_delete_approval, open_database, path_for_proton_id, purge_record,
     scan_local_entities_observed, scan_local_entities_reusing_hashes, store_event_cursor,
     store_warm_start_count, upsert_delete_approval, upsert_record,
 };
@@ -28,12 +28,14 @@ use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -199,6 +201,10 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// full walk (`warm_start.full_walk_every`). Distinct from the in-run
     /// `incremental_passes_since_full_scan`.
     warm_starts_since_full_walk: u64,
+    /// The last reported reason the event-driven path could not resolve a volume + cursor, so a
+    /// standing decline is logged once instead of every pass (and re-logged if the cause changes).
+    /// `None` while the scope resolves. Diagnostic only — see `resolve_event_scope`.
+    event_scope_declined: Option<String>,
     /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
     /// plan; surfaced over IPC (`proton-sync pending`) and in the metrics sidecar.
@@ -683,6 +689,7 @@ impl<C: ProtonClient> Daemon<C> {
             incremental_passes_since_full_scan,
             is_first_reconcile: true,
             warm_starts_since_full_walk,
+            event_scope_declined: None,
             pending_deletions: Vec::new(),
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
@@ -1056,7 +1063,7 @@ impl<C: ProtonClient> Daemon<C> {
     /// exist, and that cursor is fresh enough (unlike steady-state incremental, the first pass adds
     /// the cursor-age gate — it may be replaying a cursor persisted by a previous process across an
     /// unknown amount of downtime).
-    fn warm_start_eligible(&self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
+    fn warm_start_eligible(&mut self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
         let warm = &self.config.warm_start;
         if !warm.enabled || !self.config.events_driven || self.event_source.is_none() {
             return false;
@@ -1065,12 +1072,8 @@ impl<C: ProtonClient> Daemon<C> {
         if self.warm_starts_since_full_walk >= effective_full_scan_every(warm.full_walk_every) {
             return false;
         }
-        let Some(volume) = derive_volume_id(base_records) else {
+        let Some((_, cursor)) = self.resolve_event_scope(base_records) else {
             return false;
-        };
-        let cursor = match load_event_cursor(&self.connection, volume) {
-            Ok(Some(cursor)) => cursor,
-            _ => return false,
         };
         self.cursor_is_fresh(&cursor)
     }
@@ -1138,10 +1141,10 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Whether an incremental (event-stream) pass may be attempted this cycle. Requires the
-    /// feature on with a usable event source, a volume id derivable from a previously-stored
-    /// composed `proton_id`, a stored cursor to replay from, and that the opt-in periodic
-    /// safety resync (disabled by default) is not currently due.
-    fn should_try_incremental(&self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
+    /// feature on with a usable event source, a resolvable event scope (a volume id **and** a
+    /// stored cursor to replay from — see [`Self::resolve_event_scope`]), and that the opt-in
+    /// periodic safety resync (disabled by default) is not currently due.
+    fn should_try_incremental(&mut self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
         if !self.config.events_driven || self.event_source.is_none() {
             return false;
         }
@@ -1154,15 +1157,80 @@ impl<C: ProtonClient> Daemon<C> {
         {
             return false;
         }
-        // Safe degradation: if no base record carries a composed `proton_id` yet — a brand-new sync
-        // that has recorded nothing, or a remote that is entirely Proton-native (unsupported files
-        // get no index row) — the volume cannot be derived and the daemon stays on full-tree walks
-        // (exactly today's behavior). It self-heals the moment any supported file is synced+recorded.
-        // Tracked as #32 (derive the volume from the snapshot for the gate too).
-        let Some(volume) = derive_volume_id(base_records) else {
-            return false;
+        self.resolve_event_scope(base_records).is_some()
+    }
+
+    /// The event scope an incremental pass replays from: `(volume id, its stored cursor)`.
+    ///
+    /// `None` unless a **real cursor** exists, so no caller can engage the event-driven path
+    /// without one. Every `None` records a reason and logs it once (a standing decline used to be
+    /// silent, and "the daemon keeps doing full syncs" is told apart only by the log line);
+    /// resolving again clears the record so a later regression re-reports.
+    fn resolve_event_scope(
+        &mut self,
+        base_records: &HashMap<PathBuf, FileRecord>,
+    ) -> Option<(String, EventCursor)> {
+        let volume = match self.volume_id_for_scope(base_records) {
+            Ok(volume) => volume,
+            Err(reason) => {
+                self.note_event_scope_declined(reason);
+                return None;
+            }
         };
-        matches!(load_event_cursor(&self.connection, volume), Ok(Some(_)))
+        match load_event_cursor(&self.connection, &volume) {
+            Ok(Some(cursor)) => {
+                self.event_scope_declined = None;
+                Some((volume, cursor))
+            }
+            Ok(None) => {
+                self.note_event_scope_declined(format!(
+                    "no stored event cursor for volume {volume}"
+                ));
+                None
+            }
+            Err(error) => {
+                self.note_event_scope_declined(format!(
+                    "the stored event cursor for volume {volume} is unreadable: {error}"
+                ));
+                None
+            }
+        }
+    }
+
+    /// The volume id this root's event stream is scoped to, or a human-readable reason it cannot be
+    /// determined. Derived from any baseline composed `proton_id` first (free, no I/O).
+    fn volume_id_for_scope(
+        &self,
+        base_records: &HashMap<PathBuf, FileRecord>,
+    ) -> Result<String, String> {
+        if let Some(volume) = derive_volume_id(base_records) {
+            return Ok(volume.to_owned());
+        }
+        // No baseline composed id: a brand-new sync that has recorded nothing, or a remote that is
+        // entirely Proton-native (unsupported files get no index row). The sole stored cursor's
+        // scope id *is* the volume a previous bootstrap anchored, so the gate can still engage
+        // (#32 — it used to stay on full-tree walks forever here).
+        match load_sole_event_cursor(&self.connection) {
+            Ok(Some(cursor)) => Ok(cursor.scope_id),
+            Ok(None) => Err(
+                "no event volume: no indexed node carries a composed proton_id, and no single \
+                 stored cursor names one"
+                    .to_owned(),
+            ),
+            Err(error) => Err(format!(
+                "no event volume: the stored event cursor is unreadable: {error}"
+            )),
+        }
+    }
+
+    /// Reports why the event-driven path is unavailable, once per distinct cause. Info level: this
+    /// is the only signal distinguishing "still full-walking because it cannot stream" from the
+    /// other causes of repeated full syncs.
+    fn note_event_scope_declined(&mut self, reason: String) {
+        if self.event_scope_declined.as_deref() != Some(reason.as_str()) {
+            info!(%reason, "event-driven detection unavailable; using full-tree walks");
+            self.event_scope_declined = Some(reason);
+        }
     }
 
     /// One incremental pass: fetch the event delta, reconstruct the complete remote map as
@@ -1179,12 +1247,10 @@ impl<C: ProtonClient> Daemon<C> {
         base_records: &HashMap<PathBuf, FileRecord>,
         force_local_scan: bool,
     ) -> AppResult<IncrementalOutcome> {
-        let volume = derive_volume_id(base_records)
-            .expect("should_try_incremental guarantees a derivable volume id")
-            .to_owned();
-        let cursor = match load_event_cursor(&self.connection, &volume)? {
-            Some(cursor) => cursor,
-            None => return Ok(IncrementalOutcome::Fallback("no stored cursor".to_owned())),
+        let Some((volume, cursor)) = self.resolve_event_scope(base_records) else {
+            return Ok(IncrementalOutcome::Fallback(
+                "no event volume or stored cursor".to_owned(),
+            ));
         };
 
         // Fetch the delta (paginating) *before* the local scan so a fully idle cycle does no work.
@@ -1239,11 +1305,14 @@ impl<C: ProtonClient> Daemon<C> {
         let base_index = filter_base_index(base_records.clone(), &self.scan_options);
 
         let remote_entities = {
+            // Built here and dropped at the end of this block: its listing memo lives exactly as
+            // long as the pass.
             let resolver = TargetedResolver {
                 proton: &self.proton,
                 connection: &self.connection,
                 remote_root: &self.config.remote_root,
                 volume_id: &volume,
+                listings: RefCell::new(HashMap::new()),
             };
             match reconstruct_remote(
                 &base_index,
@@ -1393,8 +1462,8 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Reads the current latest cursor before a snapshot, when event-driven and the volume is
-    /// already derivable from the baseline. Best-effort: a failure just defers cursor capture to
-    /// after the snapshot.
+    /// already known (from the baseline or a previously stored cursor). Best-effort: a failure just
+    /// defers cursor capture to after the snapshot.
     fn capture_pre_snapshot_cursor(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
@@ -1403,7 +1472,7 @@ impl<C: ProtonClient> Daemon<C> {
             return None;
         }
         let source = self.event_source.as_ref()?;
-        let volume = derive_volume_id(base_records)?.to_owned();
+        let volume = self.volume_id_for_scope(base_records).ok()?;
         match source.latest_cursor(&volume) {
             Ok(last_event_id) => Some(CursorUpdate {
                 scope_id: volume,
@@ -3033,6 +3102,41 @@ struct TargetedResolver<'a, C: ProtonClient> {
     connection: &'a Connection,
     remote_root: &'a Path,
     volume_id: &'a str,
+    /// Parent listings already fetched **during this pass**, keyed by composed parent uid
+    /// ([`ROOT_LISTING_KEY`] for the remote root). N events in one folder — a bulk copy, or N
+    /// revisions of one file — then cost one `proton-drive` subprocess instead of N (#70).
+    ///
+    /// Deliberately pass-scoped: the resolver is built inside `try_incremental_reconcile` and
+    /// dropped with it, so a listing can never outlive the pass that read it. Resolution reads
+    /// *current* remote state, so a listing carried into a later pass would plan against a folder
+    /// that has since changed.
+    listings: RefCell<HashMap<String, Rc<HashMap<PathBuf, RemoteEntity>>>>,
+}
+
+/// Memo key for the remote-root listing. Never collides with a composed uid (`volumeId~nodeId`).
+const ROOT_LISTING_KEY: &str = "";
+
+impl<C: ProtonClient> TargetedResolver<'_, C> {
+    /// This pass's listing of `relative_directory`, fetched once and memoized under `key`.
+    fn listing(
+        &self,
+        key: &str,
+        relative_directory: &Path,
+    ) -> AppResult<Rc<HashMap<PathBuf, RemoteEntity>>> {
+        // Read the memo through a borrow that ends before the (possibly long) CLI call below.
+        let cached = self.listings.borrow().get(key).cloned();
+        if let Some(listing) = cached {
+            return Ok(listing);
+        }
+        let listing = Rc::new(
+            self.proton
+                .list_directory(self.remote_root, relative_directory)?,
+        );
+        self.listings
+            .borrow_mut()
+            .insert(key.to_owned(), Rc::clone(&listing));
+        Ok(listing)
+    }
 }
 
 impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
@@ -3043,19 +3147,18 @@ impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
         if let Some(parent_id) = change.parent_id.as_deref() {
             let parent_uid = node_uid(self.volume_id, parent_id);
             if let Some(parent_path) = path_for_proton_id(self.connection, &parent_uid)? {
-                let listing = self.proton.list_directory(self.remote_root, &parent_path)?;
-                // Absent from its stated parent → let the reconstruction drop any stale location.
-                return Ok(find_entity_by_uid(listing, &target_uid));
+                let listing = self.listing(&parent_uid, &parent_path)?;
+                // Absent from its stated parent → the reconstruction drops any stale location
+                // (an update) or re-anchors with a full walk (a create whose listing lags).
+                return Ok(find_entity_by_uid(&listing, &target_uid));
             }
         }
 
         // The parent is not indexed (e.g. a top-level node whose parent is the remote root, which
         // has no index record). Fall back to listing the root; if the node is not there either we
         // cannot place it without a full walk, so signal a snapshot.
-        let root_listing = self
-            .proton
-            .list_directory(self.remote_root, Path::new(""))?;
-        match find_entity_by_uid(root_listing, &target_uid) {
+        let root_listing = self.listing(ROOT_LISTING_KEY, Path::new(""))?;
+        match find_entity_by_uid(&root_listing, &target_uid) {
             Some(resolved) => Ok(Some(resolved)),
             None => Err(boxed_error(format!(
                 "changed node {} is not under any indexed parent or the remote root",
@@ -3066,12 +3169,13 @@ impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
 }
 
 fn find_entity_by_uid(
-    listing: HashMap<PathBuf, RemoteEntity>,
+    listing: &HashMap<PathBuf, RemoteEntity>,
     target_uid: &str,
 ) -> Option<(PathBuf, RemoteEntity)> {
     listing
-        .into_iter()
+        .iter()
         .find(|(_, entity)| entity.remote_id().as_deref() == Some(target_uid))
+        .map(|(path, entity)| (path.clone(), entity.clone()))
 }
 
 /// The periodic full-scan cadence to compare the pass counter against, translating the
@@ -8254,6 +8358,182 @@ mod tests {
             daemon.incremental_passes_since_full_scan, 50,
             "the pass counter keeps climbing without ever tripping a resync"
         );
+    }
+
+    #[test]
+    fn changes_sharing_a_parent_take_one_targeted_listing_per_pass() {
+        // #70: N events in one folder must collapse to ONE `list_directory` subprocess, and the
+        // memo must die with the pass (resolution reads *current* remote state, so reusing a
+        // listing across passes would plan against a stale folder).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("dir")).expect("local dir");
+        let digests: Vec<String> = ["a", "b", "c"]
+            .iter()
+            .map(|name| {
+                let path = local_root.join("dir").join(format!("{name}.txt"));
+                fs::write(&path, name.as_bytes()).expect("local file");
+                sha1_bytes(name.as_bytes())
+            })
+            .collect();
+
+        // Remote matches local everywhere, so the pass plans no actions and every
+        // `list_directory` call counted below comes from targeted event resolution.
+        let mut remote_entities =
+            HashMap::from([(PathBuf::from("dir"), remote_dir("dir", "vol~ndir"))]);
+        for (name, digest) in ["a", "b", "c"].iter().zip(&digests) {
+            remote_entities.insert(
+                PathBuf::from(format!("dir/{name}.txt")),
+                remote_file_entity(&format!("dir/{name}.txt"), &format!("vol~n{name}"), digest),
+            );
+        }
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        let first = one_page(
+            "cursor-1",
+            vec![
+                change(RemoteChangeKind::Updated, "na", Some("ndir"), false),
+                change(RemoteChangeKind::Updated, "nb", Some("ndir"), false),
+            ],
+        );
+        let second = one_page(
+            "cursor-2",
+            vec![change(RemoteChangeKind::Updated, "nc", Some("ndir"), false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-2",
+                vec![first, second],
+            ))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &directory_record("dir", Some("vol~ndir")),
+        )
+        .expect("seed dir record");
+        for (name, digest) in ["a", "b", "c"].iter().zip(&digests) {
+            upsert_record(
+                &daemon.connection,
+                &base_record(
+                    &format!("dir/{name}.txt"),
+                    Some(&format!("vol~n{name}")),
+                    digest,
+                ),
+            )
+            .expect("seed file record");
+        }
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        daemon.is_first_reconcile = false;
+
+        daemon.reconcile_blocking().expect("first incremental pass");
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            1,
+            "two events in one folder must share a single targeted listing"
+        );
+
+        daemon
+            .reconcile_blocking()
+            .expect("second incremental pass");
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            2,
+            "the memo must not survive the pass: a later pass re-lists the same parent"
+        );
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "no fallback walk may inflate or deflate the counts"
+        );
+    }
+
+    #[test]
+    fn the_gate_derives_the_volume_from_the_stored_cursor_when_the_index_has_none() {
+        // #32: an all-Proton-native remote records no `proton_id`, so the volume cannot come from
+        // the base index — but the bootstrap still anchored a cursor, whose scope id *is* the
+        // volume. Without this the daemon full-walks every pass forever.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("new.txt"),
+            remote_file_entity("new.txt", "vol~nn", "h"),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Created, "nn", None, false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![page],
+            ))),
+        )
+        .expect("daemon");
+
+        // No base records at all — only the cursor the bootstrap stored.
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        daemon.is_first_reconcile = false;
+
+        assert!(
+            daemon.should_try_incremental(&load_index(&daemon.connection).expect("load index")),
+            "a stored cursor alone must be enough to engage the event-driven gate"
+        );
+        daemon.reconcile_blocking().expect("incremental reconcile");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "the pass must stream from the cursor instead of walking the whole tree"
+        );
+        assert!(
+            local_root.join("new.txt").exists(),
+            "the created remote file must be downloaded by the incremental pass"
+        );
+        assert!(
+            daemon.event_scope_declined.is_none(),
+            "nothing was declined, so nothing should be reported"
+        );
+    }
+
+    #[test]
+    fn a_gate_with_no_cursor_and_no_volume_reports_why_once() {
+        // "Keeps doing full syncs" is diagnosed by the log line, so the decline must be stated —
+        // and stated once, not every pass.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            EventFakeClient::new(HashMap::new()),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        daemon.is_first_reconcile = false;
+
+        let base = HashMap::new();
+        assert!(!daemon.should_try_incremental(&base));
+        let reported = daemon.event_scope_declined.clone();
+        assert!(
+            reported
+                .as_deref()
+                .is_some_and(|reason| reason.contains("volume")),
+            "the decline must name the volume as the missing input: {reported:?}"
+        );
+        // Same cause next pass → recorded reason is unchanged, so it is logged once.
+        assert!(!daemon.should_try_incremental(&base));
+        assert_eq!(daemon.event_scope_declined, reported);
     }
 
     /// Seeds `local/keep.txt` edited to `edited`, a baseline record + remote entity at `old`, and a

@@ -7,10 +7,10 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::warn;
 use wait_timeout::ChildExt;
@@ -24,6 +24,12 @@ const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 /// takes to notice a cancellation request; it does not change the total timeout
 /// budget enforced by `CommandPolicy::timeout`.
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Minimum window `run_once` gives the output-pipe readers after the child has exited, used when
+/// the command's own deadline has already expired at that moment. Normally the readers hit EOF the
+/// instant the child exits; this only bites when something else (a forked grandchild that inherited
+/// the pipe write ends) still holds the pipe open. Worst case `run_once` therefore returns within
+/// `CommandPolicy::timeout` + this grace instead of blocking forever (issue #56).
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,12 +145,20 @@ impl RemoteListing {
     }
 }
 
+/// Stand-in for `Child::wait_timeout` (see [`ProtonDriveClient::wait_hook`]). A `waitpid` failure
+/// cannot be provoked from outside the process, so this seam is what makes `run_once`'s
+/// terminate-on-wait-failure exit (issue #57) reachable from a test.
+type WaitHook = Arc<dyn Fn(&mut Child, Duration) -> io::Result<Option<ExitStatus>> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct ProtonDriveClient {
     executable: PathBuf,
     command_policy: CommandPolicy,
     cancel_flag: Arc<AtomicBool>,
     progress_sink: Option<Arc<dyn ProgressSink>>,
+    /// Test seam only; always `None` in production, where `run_once` waits via
+    /// `wait_timeout::ChildExt`. See [`WaitHook`].
+    wait_hook: Option<WaitHook>,
 }
 
 // Manual impl: `dyn ProgressSink` has no `Debug`, so the derive is no longer available.
@@ -155,6 +169,7 @@ impl std::fmt::Debug for ProtonDriveClient {
             .field("command_policy", &self.command_policy)
             .field("cancel_flag", &self.cancel_flag)
             .field("progress_sink", &self.progress_sink.is_some())
+            .field("wait_hook", &self.wait_hook.is_some())
             .finish()
     }
 }
@@ -275,6 +290,7 @@ impl ProtonDriveClient {
             command_policy: CommandPolicy::default(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             progress_sink: None,
+            wait_hook: None,
         }
     }
 
@@ -294,6 +310,7 @@ impl ProtonDriveClient {
             command_policy,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             progress_sink: None,
+            wait_hook: None,
         }
     }
 }
@@ -1066,7 +1083,15 @@ impl ProtonDriveClient {
         let stdout_reader = spawn_pipe_reader(child.stdout.take());
         let stderr_reader = spawn_pipe_reader(child.stderr.take());
         let deadline = Instant::now() + timeout;
-        loop {
+        // Child lifecycle — `run_once` has exactly four exits, and each one is bounded:
+        //   * timeout, cancellation, and wait failure leave a command that may still be running,
+        //     so all three SIGKILL the whole process group (`terminate_child_tree`) and drop the
+        //     reader handles *without* collecting them: a rogue grandchild holding the pipe must
+        //     never delay a prompt return.
+        //   * a child that exited is never killed — `wait_timeout` has already reaped the group
+        //     leader, so `kill(-pid)` could now hit an unrelated, pid-reused group — its output is
+        //     drained under a deadline instead (see the drain below).
+        let status = loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 terminate_child_tree(&mut child);
@@ -1081,17 +1106,26 @@ impl ProtonDriveClient {
                 )));
             }
             let poll_interval = remaining.min(CANCELLATION_POLL_INTERVAL);
-            if let Some(status) = child.wait_timeout(poll_interval)? {
-                // The child has exited, so both pipe write ends are closed and the reader threads
-                // have (or will imminently) hit EOF — joining them returns promptly with the full,
-                // untruncated output.
-                let stdout = join_pipe_reader(stdout_reader)?;
-                let stderr = join_pipe_reader(stderr_reader)?;
-                return Ok(Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
+            match self.wait_for_child(&mut child, poll_interval) {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                // Issue #57: a failed `waitpid` says nothing about the child, which keeps running.
+                // Propagating the error bare would leave a *mutating* command (upload/trash) running
+                // detached while the engine records the action as failed and replans it — the double
+                // side effect the never-auto-retry convention exists to prevent. Kill first, then
+                // report: the child has not been reaped here, so the process group is still ours.
+                Err(error) => {
+                    terminate_child_tree(&mut child);
+                    warn!(
+                        operation,
+                        error = %error,
+                        "failed to wait for the proton-drive command; terminated it"
+                    );
+                    return Err(boxed_error(format!(
+                        "proton-drive {operation} could not be waited for ({error}); it was \
+                         terminated and may or may not have completed remotely"
+                    )));
+                }
             }
             if self.cancel_flag.load(Ordering::SeqCst) {
                 terminate_child_tree(&mut child);
@@ -1103,12 +1137,37 @@ impl ProtonDriveClient {
                     "proton-drive {operation} cancelled before completion"
                 )));
             }
+        };
+        // Issue #56: a child's exit does NOT guarantee the readers are at EOF. A grandchild that
+        // inherited the pipe write ends keeps them open, and collecting with no deadline then blocks
+        // forever — past the cancellation poll (the loop is over), past `CommandPolicy::timeout`, and
+        // with the reconcile running under `block_in_place` the whole daemon wedges until SIGKILL.
+        // Bound the drain by the command's own deadline, with a floor for the case where it expired
+        // at the moment of exit, and report expiry like a timeout. Output that arrives within the
+        // command's budget still succeeds, so a CLI that legitimately hands its pipe to a grandchild
+        // is unaffected; only the unbounded wait is gone.
+        let drain_deadline = deadline.max(Instant::now() + PIPE_DRAIN_GRACE);
+        let stdout =
+            collect_pipe_output(stdout_reader, drain_deadline, timeout, operation, "stdout")?;
+        let stderr =
+            collect_pipe_output(stderr_reader, drain_deadline, timeout, operation, "stderr")?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+
+    /// One timed wait on the child, routed through the optional [`WaitHook`] test seam.
+    fn wait_for_child(
+        &self,
+        child: &mut Child,
+        poll_interval: Duration,
+    ) -> io::Result<Option<ExitStatus>> {
+        match &self.wait_hook {
+            Some(hook) => hook(child, poll_interval),
+            None => child.wait_timeout(poll_interval),
         }
-        // Note: the timeout and cancellation paths above intentionally drop the reader handles
-        // without joining. `terminate_child_tree` SIGKILLs the whole process group, closing the
-        // pipe write ends so the detached readers finish on their own; not joining preserves the
-        // guarantee that a rogue grandchild still holding the pipe can never block a prompt
-        // timeout/cancel return (the same reason `terminate_child_tree` avoids `wait_with_output`).
     }
 
     fn spawn_once(&self, args: &[OsString]) -> AppResult<Child> {
@@ -1206,38 +1265,81 @@ fn terminate_child_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// Spawns a thread that reads a child pipe to EOF and returns its full contents. Draining the pipe
-/// concurrently with the running child is what keeps a large (> OS pipe buffer) `proton-drive`
-/// output from blocking and being truncated (issue #40). Returns `None` when the handle is absent
-/// (`Child::stdout`/`stderr` are `Option`; they are always present for a piped child).
-fn spawn_pipe_reader<R: Read + Send + 'static>(
-    reader: Option<R>,
-) -> Option<JoinHandle<io::Result<Vec<u8>>>> {
+/// A pipe-reader thread's one-shot result channel. Deliberately not a `JoinHandle`: joining a
+/// thread cannot be given a deadline, and this read is only guaranteed to finish when *every*
+/// holder of the pipe's write end is gone — not merely the direct child (issue #56).
+type PipeReader = Receiver<io::Result<Vec<u8>>>;
+
+/// Spawns a thread that reads a child pipe to EOF and reports its full contents on a channel.
+/// Draining the pipe concurrently with the running child is what keeps a large (> OS pipe buffer)
+/// `proton-drive` output from blocking and being truncated (issue #40). Returns `None` when the
+/// handle is absent (`Child::stdout`/`stderr` are `Option`; always present for a piped child).
+///
+/// The thread is detached: when the receiver is dropped (every non-success exit of `run_once`, plus
+/// a drain that expired) the send fails harmlessly and the thread ends once its read does.
+fn spawn_pipe_reader<R: Read + Send + 'static>(reader: Option<R>) -> Option<PipeReader> {
     reader.map(|mut reader| {
+        let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let mut buffer = Vec::new();
-            reader.read_to_end(&mut buffer).map(|_| buffer)
-        })
+            let result = reader.read_to_end(&mut buffer).map(|_| buffer);
+            let _ = sender.send(result);
+        });
+        receiver
     })
 }
 
-/// Joins a [`spawn_pipe_reader`] thread, surfacing a read error or a reader-thread panic as an
-/// `AppResult`. Only called once the child has exited (so the read is already complete and the
-/// join returns promptly); the timeout/cancel paths deliberately drop the handle without joining.
+/// Collects a [`spawn_pipe_reader`] thread's output, waiting no later than `deadline`, and surfaces
+/// a read error, a stalled pipe, or a dead reader thread as an `AppResult`. Only called once the
+/// child has exited; the timeout/cancel/wait-failure paths drop the reader without collecting.
 ///
-/// A `None` handle is an invariant violation (`spawn_once` always sets stdout/stderr to
+/// Expiry is not a lost cause the caller can paper over: the output would be truncated mid-JSON, so
+/// it is an error, worded like the timeout it effectively is. Nothing is killed on expiry — the
+/// group leader has already been reaped and its pid may have been reused. The message reports the
+/// drain wait actually served, not `timeout`: `deadline` is floored by `PIPE_DRAIN_GRACE`, so the
+/// two differ whenever the command expired at the instant of exit. `timeout` is carried alongside
+/// it so an operator can still correlate the failure with the command budget.
+///
+/// A `None` reader is an invariant violation (`spawn_once` always sets stdout/stderr to
 /// `Stdio::piped()`, so `child.stdout`/`stderr` are always present) and is reported as an error
 /// rather than silently yielding empty output — the latter would only resurface as a confusing
 /// downstream JSON parse failure.
-fn join_pipe_reader(reader: Option<JoinHandle<io::Result<Vec<u8>>>>) -> AppResult<Vec<u8>> {
-    let handle = reader.ok_or_else(|| {
+fn collect_pipe_output(
+    reader: Option<PipeReader>,
+    deadline: Instant,
+    timeout: Duration,
+    operation: &str,
+    stream: &str,
+) -> AppResult<Vec<u8>> {
+    let reader = reader.ok_or_else(|| {
         boxed_error(
             "proton-drive child output pipe was not captured (expected a piped stdout/stderr)",
         )
     })?;
-    match handle.join() {
+    let started = Instant::now();
+    match reader.recv_timeout(deadline.saturating_duration_since(started)) {
         Ok(result) => Ok(result?),
-        Err(_) => Err(boxed_error("proton-drive output reader thread panicked")),
+        Err(RecvTimeoutError::Timeout) => {
+            let waited = started.elapsed();
+            warn!(
+                operation,
+                stream,
+                waited_ms = waited.as_millis(),
+                timeout_ms = timeout.as_millis(),
+                "proton-drive command exited but its output pipe stayed open"
+            );
+            Err(boxed_error(format!(
+                "proton-drive {operation} exited but its {stream} was still held open after {} \
+                 (a forked grandchild is keeping the pipe alive; the command's own budget was {}), \
+                 so its output could not be collected",
+                format_duration(waited),
+                format_duration(timeout)
+            )))
+        }
+        // The thread dropped its sender without sending: it panicked mid-read.
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(boxed_error("proton-drive output reader thread panicked"))
+        }
     }
 }
 
@@ -2356,6 +2458,169 @@ printf '{"entries":[]}\n'
             elapsed < Duration::from_secs(2),
             "cancellation should be noticed within about one poll interval, not the full \
              30s configured timeout or the fake CLI's 5s sleep; elapsed: {elapsed:?}"
+        );
+    }
+
+    // Regression guard for issue #56: `run_once`'s success path used to join the output-pipe reader
+    // threads with no deadline, assuming a child's exit means EOF is imminent. It does not: the
+    // grandchild backgrounded here inherits the pipe write ends and holds them open long after the
+    // direct child exits, so the old join blocked for the grandchild's whole lifetime — past
+    // `CommandPolicy::timeout`, past the cancellation poll, wedging the daemon (which reconciles
+    // under `block_in_place`) until SIGKILL. The fake CLI prints a complete, valid listing before
+    // exiting, so pre-fix this returns `Ok` after ~30s and both assertions below fail.
+    #[cfg(unix)]
+    #[test]
+    fn a_grandchild_holding_the_output_pipe_cannot_block_the_success_path() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+sleep 30 &
+printf '{"entries":[]}\n'
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_millis(400), 1),
+        );
+
+        let started = Instant::now();
+        let error = client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect_err("a pipe still held open after the child exits must not block forever");
+        let elapsed = started.elapsed();
+
+        assert!(
+            error.to_string().contains("still held open"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the drain must end at the command deadline plus the grace, not when the grandchild \
+             exits 30s later; elapsed: {elapsed:?}"
+        );
+    }
+
+    // The bounded drain itself, without a child: a reader that never reports is exactly what a pipe
+    // held open by a grandchild looks like to `run_once`. Deterministic — the sender is alive and
+    // simply never sends, so the only way out is the deadline.
+    #[test]
+    fn a_pipe_reader_that_never_reports_expires_at_the_drain_deadline() {
+        // Binding (not `_`) keeps the sender alive for the call: dropping it is the panicked-reader
+        // case, not the stalled-pipe case.
+        let (_sender, receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+
+        let started = Instant::now();
+        let error = collect_pipe_output(
+            Some(receiver),
+            Instant::now() + Duration::from_millis(50),
+            Duration::from_millis(50),
+            "list",
+            "stdout",
+        )
+        .expect_err("a reader that never reaches EOF must not block its caller");
+
+        assert!(
+            error.to_string().contains("stdout"),
+            "the error must name the stalled stream: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "collection must return at the deadline; elapsed: {:?}",
+            started.elapsed()
+        );
+    }
+
+    // A reader thread that panics drops its sender without sending. That must keep reporting a
+    // panicked reader (the pre-mpsc `join()` behaviour), not be confused with a stalled pipe.
+    #[test]
+    fn a_dead_pipe_reader_is_still_reported_as_a_panicked_reader() {
+        let (sender, receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+        drop(sender);
+
+        let error = collect_pipe_output(
+            Some(receiver),
+            Instant::now() + Duration::from_secs(30),
+            Duration::from_secs(30),
+            "list",
+            "stdout",
+        )
+        .expect_err("a reader thread that died without reporting must surface as an error");
+
+        assert!(
+            error.to_string().contains("panicked"),
+            "unexpected error: {error}"
+        );
+    }
+
+    // Regression guard for issue #57: `run_once` used to propagate a `wait_timeout` failure with a
+    // bare `?`, unlike the timeout and cancellation exits, leaving the command running detached. For
+    // a mutating call (upload/trash) the side effect then proceeds *after* the engine has recorded
+    // the action as failed and replanned it — the double side effect the never-auto-retry convention
+    // exists to prevent — and the child is never reaped. A real `waitpid` failure cannot be provoked
+    // from outside the process, so the wait is injected through the `wait_hook` seam; the wiring
+    // (not just an extracted helper) is what is under test. Deterministic: the failure is injected
+    // on the first poll that observes the child's pid file, which the child renames into place
+    // atomically, so no timing assumption beyond "the child eventually starts".
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_wait_terminates_the_command_instead_of_leaving_it_running() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+echo $$ > "$0.pid.tmp"
+mv "$0.pid.tmp" "$0.pid"
+sleep 30
+"#,
+        );
+        let pid_path = PathBuf::from(format!("{}.pid", executable.display()));
+        let mut client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(30), 1),
+        );
+        client.wait_hook = Some(Arc::new({
+            let pid_path = pid_path.clone();
+            move |child: &mut Child, poll_interval: Duration| {
+                let outcome = child.wait_timeout(poll_interval);
+                if pid_path.exists() {
+                    return Err(io::Error::other("injected waitpid failure"));
+                }
+                outcome
+            }
+        }));
+
+        let error = client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect_err("a failed wait must fail the command");
+
+        assert!(
+            error.to_string().contains("could not be waited for"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains("may or may not have completed"),
+            "the error must state that the remote outcome is unknown: {error}"
+        );
+        let pid: libc::pid_t = fs::read_to_string(&pid_path)
+            .expect("the fake CLI records its pid")
+            .trim()
+            .parse()
+            .expect("pid");
+        // No polling: `terminate_child_tree` SIGKILLs the group and reaps the direct child before
+        // `run_once` returns, so the pid is already gone. Pre-fix the child is still sleeping here.
+        // SAFETY: signal 0 only probes for the process's existence; it dereferences nothing.
+        let probe = unsafe { libc::kill(pid, 0) };
+        assert_eq!(
+            probe, -1,
+            "the command must not still be running after a failed wait (pid {pid})"
+        );
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH),
+            "the child must be gone and reaped, not merely unsignalable"
         );
     }
 

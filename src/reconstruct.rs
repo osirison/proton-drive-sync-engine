@@ -26,8 +26,10 @@ pub trait RemoteChangeResolver {
     /// Resolve a created/updated node.
     ///
     /// * `Ok(Some((path, entity)))` — the node's current location and metadata.
-    /// * `Ok(None)` — the node is not present in its parent listing (e.g. created then moved or
-    ///   trashed before this pass ran); the reconstruction drops any stale location for it.
+    /// * `Ok(None)` — the node is not present in its parent listing. For an `Updated` node (already
+    ///   tracked) that is a real move/trash and the reconstruction drops its stale location; for a
+    ///   `Created` node it means the listing lags the event stream, and the reconstruction falls
+    ///   back to a full snapshot rather than lose the create (#30).
     /// * `Err(_)` — resolution failed hard (parent unknown, listing failed); the caller falls back
     ///   to a full snapshot rather than plan against an incomplete map.
     fn resolve(&self, change: &RemoteChange) -> AppResult<Option<(PathBuf, RemoteEntity)>>;
@@ -146,7 +148,22 @@ pub fn reconstruct_remote(
                 }
             }
             Ok(None) => {
-                // The node is not present in its parent listing — drop any stale location.
+                // A *created* node missing from its parent listing is almost always the CLI
+                // listing lagging the event stream (observed live: seconds behind), not a node
+                // that vanished. Dropping it would advance the cursor past a create nothing
+                // re-derives — the periodic full-tree resync is off by default and a restart
+                // warm-starts from the cursor — so re-anchor with a full walk instead. This is
+                // symmetric with the resolver's root-listing branch, which already errs here.
+                // The bootstrap that follows captures a fresh cursor past this event, so a node
+                // created then trashed before any listing saw it cannot loop (#30).
+                if matches!(change.kind, RemoteChangeKind::Created) {
+                    return Reconstruction::FallbackToSnapshot(format!(
+                        "created node {} is not in its parent listing yet",
+                        change.node_id
+                    ));
+                }
+                // Updated: the node was already tracked, so absence is a real move/trash — drop
+                // any stale location.
                 if let Some(old_path) = uid_to_path.remove(&uid) {
                     remote.remove(&old_path);
                 }
@@ -490,7 +507,10 @@ mod tests {
     }
 
     #[test]
-    fn a_node_absent_from_its_parent_drops_its_stale_location() {
+    fn an_updated_node_absent_from_its_parent_drops_its_stale_location() {
+        // Updated-only: the node was already tracked, so absence is a real move/trash. (A
+        // *Created* absence is the lagging-listing case and forces a snapshot instead — see
+        // `a_created_node_absent_from_its_parent_forces_a_snapshot`.)
         let base = HashMap::from([(
             PathBuf::from("a.txt"),
             file_record("a.txt", "hash", Some("vol~node-a")),
@@ -507,6 +527,25 @@ mod tests {
             &resolver,
         ));
         assert!(map.is_empty(), "a node no longer in its parent is dropped");
+    }
+
+    #[test]
+    fn a_created_node_absent_from_its_parent_forces_a_snapshot() {
+        // #30: a create absent from its parent listing is the CLI listing lagging the event
+        // stream, not a vanished node. Dropping it would advance the cursor past a create that
+        // nothing re-derives (the periodic resync is off by default, and a restart warm-starts).
+        let resolver = FakeResolver {
+            absent: HashSet::from(["node-new".to_owned()]),
+            ..Default::default()
+        };
+        let outcome = reconstruct_remote(
+            &HashMap::new(),
+            &[change(RemoteChangeKind::Created, "node-new", false)],
+            VOLUME,
+            &scan_options(&[]),
+            &resolver,
+        );
+        expect_fallback(outcome, "node-new");
     }
 
     fn directory_record(path: &str, proton_id: Option<&str>) -> FileRecord {

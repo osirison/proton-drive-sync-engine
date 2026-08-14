@@ -37,7 +37,8 @@ Two known open items, flagged rather than hidden:
 - ~~The `#6D7783` quiet-caption tier measures **4.33:1** on `#0A0B0D` — just under WCAG AA for
   small text.~~ **Decided: keep `#6D7783` exactly as drawn**, as a deliberate quiet tier for mono
   captions at 10.5–12px, rather than lifting to `#767F8C`. Recorded as a known accessibility
-  deviation — see `IMPLEMENTATION-PLAN.md` §Scope decisions. Do not change the token.
+  deviation — see `DECISIONS.md` §1 (and `IMPLEMENTATION-PLAN.md` §Scope decisions, where it was
+  first taken). Do not change the token.
 - Seven of the eleven screens have no light-theme frame drawn yet. `12-light-theme.md` gives the
   complete token mapping needed to finish them mechanically — but see the caveat at the foot of
   that file: two of its rows are ambiguous and must be resolved by measurement first.
@@ -60,6 +61,9 @@ Two known open items, flagged rather than hidden:
 | `12-light-theme.md` | Light palette and the mapping rule |
 | `13-copy-deck.md` | Every user-visible string, verbatim |
 | `14-behaviour-and-state.md` | State model, transitions, daemon fields, error states |
+| `DECISIONS.md` | The five build decisions, and where each is embodied in the tree |
+| `DEVIATIONS.md` | Every doc-vs-frame conflict and every Phase-1 departure, with its resolution |
+| `IMPLEMENTATION-PLAN.md` | The plan of record — fidelity contract, work packages, delivery |
 | `Drive Sync.dc.html` | The design prototype — open in a browser |
 | `Current UI.dc.html` | The existing build, recreated, for before/after |
 | `icon.svg` | The brand hexagon, from `gui/src/assets/icon.svg` |
