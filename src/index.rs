@@ -352,12 +352,39 @@ pub fn initialize_schema(connection: &Connection) -> AppResult<()> {
 /// (The full-table scan in [`load_index`] is unaffected because
 /// [`read_index_key_column`] reads either storage class as raw bytes.)
 ///
-/// Runs on every `initialize_schema` and is idempotent: once no TEXT keys remain, both
-/// statements match nothing. A partially upgraded database can already hold a stale TEXT
+/// Runs on every `initialize_schema` and is idempotent: once no TEXT keys remain, every
+/// statement matches nothing (so the separate screen statement re-runs cleanly after a
+/// crash between it and the batch). A partially upgraded database can already hold a stale TEXT
 /// row and a newer BLOB row for the same logical path (the duplicate an upgraded build
 /// wrote); the delete drops the stale TEXT twin first so the `CAST` cannot hit a PRIMARY
 /// KEY conflict, keeping the newer BLOB row.
+///
+/// Lossy legacy keys are dropped, not migrated (issue #75). [`path_key`] built its TEXT
+/// keys with `to_string_lossy`, so a non-UTF-8 filename was stored with U+FFFD in place
+/// of the offending bytes; `CAST(... AS BLOB)` preserves those replacement bytes, and the
+/// result can never equal `index_key(actual_path)`. That row would be a permanent phantom
+/// baseline: the planner reads it as locally deleted and plans a spurious `RemoteDelete`
+/// of a still-present remote copy. Dropping fails safe instead — a path with no base
+/// record falls through to `plan_bootstrap_entity_action`, which re-adopts an
+/// already-agreeing pair via `AutoLink` and never deletes. The screen is complete by
+/// construction (lossy conversion can only insert U+FFFD) and its one false positive — a
+/// filename that genuinely contains U+FFFD, whose `CAST` would have been correct — costs
+/// a single re-adoption pass. The `typeof` guard keeps BLOB rows whose bytes happen to be
+/// U+FFFD: those were written byte-exactly by current code.
 fn normalize_legacy_text_keys(connection: &Connection) -> AppResult<()> {
+    let dropped = connection.execute(
+        "DELETE FROM file_index \
+          WHERE typeof(file_path) = 'text' AND instr(file_path, char(65533)) > 0",
+        [],
+    )?;
+    if dropped > 0 {
+        tracing::warn!(
+            dropped,
+            "dropped legacy TEXT index rows whose keys were lossily encoded (non-UTF-8 \
+             filenames); their baselines re-derive from ground truth on the next reconcile \
+             rather than planning a spurious remote delete"
+        );
+    }
     connection.execute_batch(
         r#"
         BEGIN;
@@ -2167,13 +2194,13 @@ mod tests {
 
     /// Inserts a row keyed the way pre-BLOB builds did: a Rust `String` bind, stored
     /// under SQLite's TEXT storage class.
-    fn insert_legacy_text_row(connection: &Connection, relative_path: &str, sha1: &str, id: &str) {
+    fn insert_legacy_text_row(connection: &Connection, relative_path: &Path, sha1: &str, id: &str) {
         connection
             .execute(
                 "INSERT INTO file_index \
                  (file_path, entity_kind, file_size, mtime, sha1_hash, proton_id, sync_status) \
                  VALUES (?1, 'file', 3, 7, ?2, ?3, 'synced')",
-                params![path_key(Path::new(relative_path)), sha1, id],
+                params![path_key(relative_path), sha1, id],
             )
             .expect("insert legacy text row");
     }
@@ -2195,7 +2222,7 @@ mod tests {
         {
             let connection = Connection::open(&db_path).expect("open");
             connection.execute_batch(SCHEMA).expect("schema");
-            insert_legacy_text_row(&connection, "dir/notes.txt", "hash", "pid");
+            insert_legacy_text_row(&connection, Path::new("dir/notes.txt"), "hash", "pid");
             assert_eq!(
                 key_storage_class(&connection),
                 "text",
@@ -2257,7 +2284,7 @@ mod tests {
             connection.execute_batch(SCHEMA).expect("schema");
             // A stale TEXT row plus the newer BLOB duplicate an upgraded build wrote for
             // the same logical path.
-            insert_legacy_text_row(&connection, "a.txt", "old", "pid-old");
+            insert_legacy_text_row(&connection, Path::new("a.txt"), "old", "pid-old");
             connection
                 .execute(
                     "INSERT INTO file_index \
@@ -2289,6 +2316,62 @@ mod tests {
             "the newer BLOB row must win the dedup"
         );
         assert_eq!(record.proton_id.as_deref(), Some("pid-new"));
+    }
+
+    #[test]
+    fn migration_drops_lossy_legacy_text_keys_instead_of_casting_them() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        // Doubly-legacy precondition: a pre-BLOB database holding a non-UTF-8 filename,
+        // whose TEXT key path_key wrote through to_string_lossy.
+        let lossy_path = PathBuf::from(OsString::from_vec(b"dir/re\xffport.txt".to_vec()));
+        let legacy_key = path_key(&lossy_path);
+        assert!(
+            legacy_key.contains('\u{fffd}'),
+            "precondition: the legacy TEXT key is the lossy encoding"
+        );
+
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection.execute_batch(SCHEMA).expect("schema");
+            insert_legacy_text_row(&connection, &lossy_path, "lossy", "pid-lossy");
+            insert_legacy_text_row(&connection, Path::new("dir/ok.txt"), "clean", "pid-ok");
+        }
+
+        let connection = open_database(&db_path).expect("open database");
+
+        // CAST(lossy TEXT AS BLOB) keeps the U+FFFD bytes, so the migrated key could never
+        // equal index_key(lossy_path): the row would be a permanent phantom baseline the
+        // planner reads as locally deleted and answers with a spurious RemoteDelete.
+        let phantom: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM file_index WHERE file_path = ?1",
+                params![legacy_key.clone().into_bytes()],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(phantom, 0, "the lossy key must not survive the migration");
+        let total: i64 = connection
+            .query_row("SELECT count(*) FROM file_index", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(total, 1, "only the non-lossy row may remain");
+
+        let index = load_index(&connection).expect("load index");
+        assert!(
+            !index.contains_key(Path::new(&legacy_key)),
+            "no phantom baseline row may reach the planner"
+        );
+
+        // The screen is keyed on U+FFFD, not on "legacy": a losslessly encoded TEXT key
+        // still migrates to BLOB and stays point-queryable.
+        assert_eq!(key_storage_class(&connection), "blob");
+        let record = get_record(&connection, Path::new("dir/ok.txt"))
+            .expect("get_record")
+            .expect("a non-lossy legacy row must survive the migration");
+        assert_eq!(record.sha1_hash.as_deref(), Some("clean"));
     }
 
     #[test]
