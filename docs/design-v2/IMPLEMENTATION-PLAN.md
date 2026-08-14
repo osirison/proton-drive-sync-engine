@@ -320,7 +320,7 @@ Phase-2 issue that closes it.
 | --- | --- |
 | **P0.1** Commit the design bundle | `docs/design-v2/` (including this plan) + `docs/design-v1-old/` tracked; old `docs/design/` deletion committed |
 | **P0.2** Reconciliation sweep | All 14 docs swept against their frames; every numeric/colour/copy conflict in `DEVIATIONS.md` with a resolution under the §1.3 precedence rule. **Includes validating `12-light-theme.md`'s mapping table against the four drawn light windows** — S10 propagates that table to seven screens with no frame to catch an error in it, so a wrong row there is expensive later and cheap to find now |
-| **P0.3** Decisions record | Quiet tier, fixed window, routing back-to-root, precedence rule and the icon set written down — **`DECISIONS.md`**, each entry naming the file or commit that embodies it |
+| **P0.3** Decisions record | Quiet tier, fixed window, precedence rule, the icon set, and how you leave a door route, written down — **`DECISIONS.md`**, each entry naming the file or commit that embodies it. The routing entry records this plan's back-to-root assumption as **superseded**: `Home` is a door and the lit door is a no-op (§4) |
 
 ### Phase 1 — foundations
 

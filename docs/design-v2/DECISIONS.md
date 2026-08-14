@@ -18,8 +18,8 @@ measurements and are cross-referenced below: **§94** (navigation, 2026-08-13) a
 | 1 | Quiet tier stays `#6D7783` | `gui/src/styles/tokens.css` — `--text-5` |
 | 2 | Window fixed at 1040×764 | `gui/src-tauri/tauri.conf.json` — `"resizable": false` |
 | 3 | Doc-vs-frame precedence | `DEVIATIONS.md` header + every numbered section |
-| 4 | Home is a door (supersedes the plan's assumption) | `gui/src/js/routes.js` — `FOOTER_ORDER` |
-| 5 | Ship the Unicode glyphs as drawn | `gui/src/js/ui/bands.js`, `rows.js`, `controls.js` |
+| 4 | Home is a door (supersedes the plan's assumption) | `gui/src/js/routes.js` — `FOOTER_ORDER`; `gui/src/js/fixtures/fids.js` — `doorKeys` |
+| 5 | Ship the Unicode glyphs as drawn | `gui/src/js/ui/` — `bands.js`, `rows.js`, `controls.js`, `dialog.js` |
 
 ---
 
