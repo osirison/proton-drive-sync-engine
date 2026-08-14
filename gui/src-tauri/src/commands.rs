@@ -984,13 +984,21 @@ fn open_target(program: &str, target: &std::ffi::OsStr) -> Result<(), String> {
 /// the boundary rule is about where a path enters a join, not where it came from.
 ///
 /// Every failure is reported, not the first: `Open both` opening one of two and saying nothing about
-/// the other is the same silence the button had before.
+/// the other is the same silence the button had before. Every failure that is ABOUT a path, that is
+/// — see the missing-root check below.
 #[tauri::command]
 pub async fn open_paths(state: Paths<'_>, relative: Vec<String>) -> Result<(), String> {
     let local_root = state.lock().unwrap().effective_local_root();
     tauri::async_runtime::spawn_blocking(move || {
         if relative.is_empty() {
             return Err("nothing to open".to_string());
+        }
+        // ONE ROOT, ONE ANSWER. The root is read once, before the loop, so "there is no sync folder"
+        // is a fact about the app and not one fact per path — resolving each side of a conflict
+        // against `None` pushed the identical sentence twice and joined it to itself. Every OTHER
+        // refusal names the path it is about, so only this one can duplicate. (Copilot, PR #283.)
+        if local_root.is_none() {
+            return Err(gui_core::opener::OpenRefusal::NoLocalRoot.to_string());
         }
         let mut failures = Vec::new();
         for path in &relative {
@@ -1045,12 +1053,41 @@ pub async fn open_remote() -> Result<(), String> {
 
 /// Where the log snapshot is written. One stable name, so clicking twice does not litter.
 fn log_snapshot_path() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
-        })
+    log_snapshot_path_in(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
+}
+
+/// A RELATIVE BASE DIRECTORY IS INVALID AND IS IGNORED, which an emptiness check alone does not do.
+///
+/// The XDG Base Directory specification is explicit: these variables "must be absolute", and "if an
+/// implementation encounters a relative path in any of these variables it should consider the path
+/// invalid and ignore it". Honouring one would drop the snapshot under the GUI's own working
+/// directory — whatever the desktop launcher happened to leave it as — and hand `xdg-open` a path
+/// that resolves somewhere else again. It is the tilde-path bug class one variable over (#135): a
+/// process no shell touched treats `~` as a literal directory component, and `~/.cache` is not
+/// absolute, so it lands here too.
+///
+/// **This is stricter than the rest of the tree, deliberately.** `src/paths.rs`'s `env_path` and
+/// `config_path.rs`'s `gui_config_path`/`default_socket_path` all filter these variables on
+/// emptiness alone and would honour a relative one. That is a pre-existing hole in three readers
+/// this change does not touch; it is filed rather than widened into here.
+///
+/// Taking the two values as arguments rather than reading them is what makes the rule testable:
+/// setting a process environment variable in a test races every other test in the binary (and is
+/// `unsafe` since edition 2024). `config.rs`'s `expand_tilde_with_home` splits itself the same way.
+fn log_snapshot_path_in(
+    cache_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    let absolute = |value: std::ffi::OsString| {
+        let path = std::path::PathBuf::from(value);
+        // Subsumes the emptiness check this used to make on its own: an empty path is not absolute.
+        path.is_absolute().then_some(path)
+    };
+    let base = cache_home
+        .and_then(absolute)
+        // Same rule for `HOME`: a relative one puts the fallback in exactly the unpredictable place
+        // the rule above exists to avoid, and `temp_dir` behind it is always absolute.
+        .or_else(|| home.and_then(absolute).map(|home| home.join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
     base.join("proton-sync").join("proton-syncd-log.txt")
 }
@@ -1738,7 +1775,52 @@ mod tests {
         // none on most desktops.
         let path = super::log_snapshot_path();
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("txt"));
-        assert!(path.is_absolute() || std::env::var_os("HOME").is_none());
+        // Unconditionally absolute now: every branch of `log_snapshot_path_in` ends in an absolute
+        // base, `temp_dir` included.
+        assert!(path.is_absolute(), "got {}", path.display());
+    }
+
+    #[test]
+    fn a_relative_xdg_cache_home_is_ignored_rather_than_resolved_against_the_cwd() {
+        use std::ffi::OsString;
+        // The XDG spec calls a relative value invalid and says to ignore it. Honoured, the snapshot
+        // would land under whatever cwd the desktop launcher left the GUI in — and `~/.cache`, the
+        // literal a shell-less process never expands (#135), is not absolute either.
+        for relative in ["cache", ".cache", "~/.cache", "", "sub/dir"] {
+            let path = super::log_snapshot_path_in(
+                Some(OsString::from(relative)),
+                Some(OsString::from("/home/me")),
+            );
+            assert_eq!(
+                path,
+                std::path::PathBuf::from("/home/me/.cache/proton-sync/proton-syncd-log.txt"),
+                "XDG_CACHE_HOME={relative:?} was honoured"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absolute_xdg_cache_home_is_honoured() {
+        use std::ffi::OsString;
+        let path = super::log_snapshot_path_in(
+            Some(OsString::from("/var/tmp/cache")),
+            Some(OsString::from("/home/me")),
+        );
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/var/tmp/cache/proton-sync/proton-syncd-log.txt")
+        );
+    }
+
+    #[test]
+    fn a_relative_home_falls_through_to_the_temp_dir_rather_than_the_cwd() {
+        use std::ffi::OsString;
+        // Same rule, second variable — and the last fallback is absolute by construction.
+        for home in [None, Some(OsString::from("me")), Some(OsString::from(""))] {
+            let path = super::log_snapshot_path_in(None, home.clone());
+            assert!(path.is_absolute(), "HOME={home:?} gave {}", path.display());
+            assert!(path.starts_with(std::env::temp_dir()), "HOME={home:?}");
+        }
     }
 
     #[test]
@@ -1855,6 +1937,20 @@ mod socket_tests {
             .expect("mock app should build")
     }
 
+    /// A mock app that knows of no sync folder at all — BOTH sources cleared. `RuntimePaths::resolve`
+    /// reads the developer's real GUI config, so leaving `local_root` alone would make this test
+    /// pass or fail depending on whose machine it runs on.
+    fn mock_app_rootless(dir: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
+        let mut paths = RuntimePaths::resolve();
+        paths.socket_path = dir.join("unused.sock");
+        paths.local_root = None;
+        paths.daemon_local_root = None;
+        tauri::test::mock_builder()
+            .manage(Mutex::new(paths))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build")
+    }
+
     // The two below drive the REAL commands through a mock app, which is what proves the guard runs
     // before the spawn: each returns its refusal, and no `xdg-open` is ever reached. A test that
     // called the resolver directly would prove the resolver and not the command.
@@ -1888,6 +1984,31 @@ mod socket_tests {
         .expect_err("both sides are unopenable");
         assert!(error.contains("/etc/passwd"), "got {error}");
         assert!(error.contains("gone.txt"), "got {error}");
+    }
+
+    #[test]
+    fn a_missing_sync_folder_is_said_once_however_many_paths_were_asked_for() {
+        // The root is ONE fact about the app. Resolved per path it was pushed per path, so
+        // `Open both in an editor` — which always sends two — printed the identical sentence twice,
+        // joined to itself with `; `. (Copilot, PR #283.)
+        let dir = tempfile::tempdir().unwrap();
+        let app = mock_app_rootless(dir.path());
+        let error = tauri::async_runtime::block_on(open_paths(
+            app.state::<Mutex<RuntimePaths>>(),
+            vec![
+                "notes/todo.txt".to_string(),
+                "notes/todo.proton-cloud.txt".to_string(),
+            ],
+        ))
+        .expect_err("with no sync folder there is nothing to open");
+        assert_eq!(
+            error,
+            gui_core::opener::OpenRefusal::NoLocalRoot.to_string()
+        );
+        assert!(
+            !error.contains(';'),
+            "one refusal, not a joined list: {error}"
+        );
     }
 
     #[test]
