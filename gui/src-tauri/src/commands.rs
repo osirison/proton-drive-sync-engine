@@ -956,10 +956,10 @@ fn open_target(program: &str, target: &std::ffi::OsStr) -> Result<(), String> {
     };
     match exited {
         None => {
-            // Still running — the handler took over. Reaped off-thread; nothing waits on this.
-            std::thread::spawn(move || {
+            // Still running — the handler took over. Reap it in Tauri's bounded blocking pool.
+            std::mem::drop(tauri::async_runtime::spawn_blocking(move || {
                 let _ = child.wait();
-            });
+            }));
             Ok(())
         }
         Some(status) if status.success() => Ok(()),
@@ -1092,6 +1092,99 @@ fn log_snapshot_path_in(
     base.join("proton-sync").join("proton-syncd-log.txt")
 }
 
+#[cfg(unix)]
+fn write_private_log_snapshot(
+    destination: &std::path::Path,
+    contents: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "log path has no parent")
+        })?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
+    let metadata = std::fs::symlink_metadata(parent)?;
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "log snapshot parent is not a directory: {}",
+                parent.display()
+            ),
+        ));
+    }
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+
+    let base = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("proton-syncd-log");
+    let (mut file, temporary) = loop {
+        let candidate = destination.with_file_name(format!(
+            ".{base}.{}.{}.tmp",
+            std::process::id(),
+            unique_log_snapshot_suffix()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&candidate)
+        {
+            Ok(file) => break (file, candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+
+    let write = (|| {
+        file.write_all(contents)?;
+        file.flush()?;
+        file.sync_all()
+    })();
+    if let Err(error) = write.and_then(|_| std::fs::rename(&temporary, destination)) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unique_log_snapshot_suffix() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos
+        ^ COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+#[cfg(not(unix))]
+fn write_private_log_snapshot(
+    destination: &std::path::Path,
+    contents: &[u8],
+) -> std::io::Result<()> {
+    if let Some(parent) = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(destination, contents)
+}
+
 /// `journalctl --user -u proton-syncd`, as a file the desktop can open (#231 — S5's
 /// `Open the system log`).
 ///
@@ -1142,14 +1235,10 @@ fn write_log_snapshot(journalctl: &str, destination: &std::path::Path) -> Result
              with `journalctl --user -u proton-syncd`"
         ));
     }
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("couldn't create {}: {e}", parent.display()))?;
-    }
     let header =
         "# proton-syncd — the last 1000 journal entries, copied at the moment you clicked.\n\
                   # Live: journalctl --user -u proton-syncd -f\n\n";
-    std::fs::write(destination, format!("{header}{body}"))
+    write_private_log_snapshot(destination, format!("{header}{body}").as_bytes())
         .map_err(|e| format!("couldn't write {}: {e}", destination.display()))
 }
 
@@ -1767,6 +1856,37 @@ mod tests {
             written.contains("journalctl --user -u proton-syncd -f"),
             "got {written}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_journal_snapshot_and_its_cache_directory_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !Path::new("/bin/echo").exists() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir
+            .path()
+            .join("cache")
+            .join("proton-sync")
+            .join("proton-syncd-log.txt");
+        super::write_log_snapshot("/bin/echo", &destination)
+            .expect("a non-empty journal writes a private snapshot");
+
+        let file_mode = std::fs::metadata(&destination)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600, "snapshot must be private");
+        let parent_mode = std::fs::metadata(destination.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(parent_mode, 0o700, "cache directory must be private");
     }
 
     #[test]

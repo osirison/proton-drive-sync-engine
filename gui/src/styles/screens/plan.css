@@ -58,9 +58,14 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
 }
-/* A 30px gutter on the seam's side of each column, so a path never touches the centre line. */
+/* A 30px gutter on the seam's side of each column, so a path never touches the centre line.
+   `min-width: 0` is what makes `1fr` mean 1fr: a grid item's automatic minimum is its content, so a
+   long path — `.side-path` ellipsises, but only inside a column that can be narrower than it — grew
+   the column, the grid, and the document, which measured 2198px wide in a 1040px window that cannot
+   scroll sideways (#267). */
 .pl-side {
   padding-right: 30px;
+  min-width: 0;
 }
 .pl-side.is-arriving {
   padding-right: 0;
@@ -106,6 +111,41 @@
   flex-direction: column;
   gap: 2px;
   margin-top: 16px;
+}
+
+/* THE SAFE BODY'S LISTS ARE BOUNDED, AND THE WINDOW IS THE THING THEY ARE BOUNDED BY (#267).
+   `5a Plan safe` is the one body whose height is the plan's length: a 300px hero, then a row per
+   file under each count, then a `flex: 1` spacer that has already collapsed by the time there are
+   seven. Measured at 1040×764, in a window that cannot be resized and has no scrollbar of its own:
+   six rows a side fit, the seventh puts the four doors 33px below the fold, the eighth takes
+   `Run this sync` with them, and 44 files leave the doors 1254px below it.
+
+   Scrolled rather than capped or clipped, which is 02-shell.md's own rule for a list that can
+   genuinely exceed its space and what `.pl-rows` does on the other body. The seam block is the block
+   with the slack, so it is the one that shrinks; the eyebrow and the 42px count are floored by their
+   own content, so the squeeze lands on the list alone.
+
+   The frame draws a block that cannot shrink and a list that cannot scroll, because it draws three
+   files and two. Both are recorded — DEVIATIONS §96. */
+.pl-seam-block.is-bounded {
+  flex-shrink: 1;
+  min-height: 0;
+}
+/* The grid is what carries the block's height down to the columns: `height: 100%` is auto while the
+   block fits (a percentage of an auto height), and a definite bound the moment flex shrinks it, and
+   `minmax(0, 1fr)` keeps the row from resolving to its max-content and overflowing anyway. */
+.pl-seam-block.is-bounded .pl-sides {
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
+}
+.pl-seam-block.is-bounded .pl-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pl-seam-block.is-bounded .pl-side-list {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* --------------------------------------------------------------------- the destructive band -- */
@@ -290,9 +330,17 @@
 /* The daemon's exact string — the same block `6a Activity passes` gives a failed pass, on
    `--surface` so it reads as a quotation. The mono family is voice rule 4 ("never paraphrase a
    daemon error — exact string, in mono") and is spelled out here because there is no global `.mono`
-   class to inherit it from. */
+   class to inherit it from.
+   ITS LENGTH IS THE DAEMON'S, NOT THE DESIGN'S, so it scrolls — the treatment `.ob-working-error`
+   and `.main-failed-error` already carry (§79f, measured at 10 KB) and the one block quoting a
+   daemon that never got it. Measured here the same way while bounding the side lists (#267): a 10 KB
+   stderr wrapped to 1853px of column and painted its tail over the footer. `min-height: 0` is what
+   the other two spell as a `max-height` — a flex item's automatic minimum is its content, so the
+   block could not shrink into the room it had. No frame draws this body. */
 .pl-failed-error {
   max-width: 440px;
+  min-height: 0;
+  overflow: auto;
   font-family: var(--font-mono);
   margin-top: 16px;
   padding: 9px 12px;

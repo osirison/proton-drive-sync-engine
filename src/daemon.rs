@@ -3,8 +3,8 @@ use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id
 use crate::index::{
     EntityKind, EventCursor, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
     delete_delete_approval, load_event_cursor, load_existing_index, load_index,
-    load_warm_start_count, local_directory_state, local_file_state, mark_modified,
-    matching_delete_approval, open_database, path_for_proton_id, purge_record,
+    load_sole_event_cursor, load_warm_start_count, local_directory_state, local_file_state,
+    mark_modified, matching_delete_approval, open_database, path_for_proton_id, purge_record,
     scan_local_entities_observed, scan_local_entities_reusing_hashes, store_event_cursor,
     store_warm_start_count, upsert_delete_approval, upsert_record,
 };
@@ -28,12 +28,14 @@ use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -199,6 +201,10 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// full walk (`warm_start.full_walk_every`). Distinct from the in-run
     /// `incremental_passes_since_full_scan`.
     warm_starts_since_full_walk: u64,
+    /// The last reported reason the event-driven path could not resolve a volume + cursor, so a
+    /// standing decline is logged once instead of every pass (and re-logged if the cause changes).
+    /// `None` while the scope resolves. Diagnostic only — see `resolve_event_scope`.
+    event_scope_declined: Option<String>,
     /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
     /// plan; surfaced over IPC (`proton-sync pending`) and in the metrics sidecar.
@@ -683,6 +689,7 @@ impl<C: ProtonClient> Daemon<C> {
             incremental_passes_since_full_scan,
             is_first_reconcile: true,
             warm_starts_since_full_walk,
+            event_scope_declined: None,
             pending_deletions: Vec::new(),
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
@@ -1056,7 +1063,7 @@ impl<C: ProtonClient> Daemon<C> {
     /// exist, and that cursor is fresh enough (unlike steady-state incremental, the first pass adds
     /// the cursor-age gate — it may be replaying a cursor persisted by a previous process across an
     /// unknown amount of downtime).
-    fn warm_start_eligible(&self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
+    fn warm_start_eligible(&mut self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
         let warm = &self.config.warm_start;
         if !warm.enabled || !self.config.events_driven || self.event_source.is_none() {
             return false;
@@ -1065,12 +1072,8 @@ impl<C: ProtonClient> Daemon<C> {
         if self.warm_starts_since_full_walk >= effective_full_scan_every(warm.full_walk_every) {
             return false;
         }
-        let Some(volume) = derive_volume_id(base_records) else {
+        let Some((_, cursor)) = self.resolve_event_scope(base_records) else {
             return false;
-        };
-        let cursor = match load_event_cursor(&self.connection, volume) {
-            Ok(Some(cursor)) => cursor,
-            _ => return false,
         };
         self.cursor_is_fresh(&cursor)
     }
@@ -1138,10 +1141,10 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Whether an incremental (event-stream) pass may be attempted this cycle. Requires the
-    /// feature on with a usable event source, a volume id derivable from a previously-stored
-    /// composed `proton_id`, a stored cursor to replay from, and that the opt-in periodic
-    /// safety resync (disabled by default) is not currently due.
-    fn should_try_incremental(&self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
+    /// feature on with a usable event source, a resolvable event scope (a volume id **and** a
+    /// stored cursor to replay from — see [`Self::resolve_event_scope`]), and that the opt-in
+    /// periodic safety resync (disabled by default) is not currently due.
+    fn should_try_incremental(&mut self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
         if !self.config.events_driven || self.event_source.is_none() {
             return false;
         }
@@ -1154,15 +1157,80 @@ impl<C: ProtonClient> Daemon<C> {
         {
             return false;
         }
-        // Safe degradation: if no base record carries a composed `proton_id` yet — a brand-new sync
-        // that has recorded nothing, or a remote that is entirely Proton-native (unsupported files
-        // get no index row) — the volume cannot be derived and the daemon stays on full-tree walks
-        // (exactly today's behavior). It self-heals the moment any supported file is synced+recorded.
-        // Tracked as #32 (derive the volume from the snapshot for the gate too).
-        let Some(volume) = derive_volume_id(base_records) else {
-            return false;
+        self.resolve_event_scope(base_records).is_some()
+    }
+
+    /// The event scope an incremental pass replays from: `(volume id, its stored cursor)`.
+    ///
+    /// `None` unless a **real cursor** exists, so no caller can engage the event-driven path
+    /// without one. Every `None` records a reason and logs it once (a standing decline used to be
+    /// silent, and "the daemon keeps doing full syncs" is told apart only by the log line);
+    /// resolving again clears the record so a later regression re-reports.
+    fn resolve_event_scope(
+        &mut self,
+        base_records: &HashMap<PathBuf, FileRecord>,
+    ) -> Option<(String, EventCursor)> {
+        let volume = match self.volume_id_for_scope(base_records) {
+            Ok(volume) => volume,
+            Err(reason) => {
+                self.note_event_scope_declined(reason);
+                return None;
+            }
         };
-        matches!(load_event_cursor(&self.connection, volume), Ok(Some(_)))
+        match load_event_cursor(&self.connection, &volume) {
+            Ok(Some(cursor)) => {
+                self.event_scope_declined = None;
+                Some((volume, cursor))
+            }
+            Ok(None) => {
+                self.note_event_scope_declined(format!(
+                    "no stored event cursor for volume {volume}"
+                ));
+                None
+            }
+            Err(error) => {
+                self.note_event_scope_declined(format!(
+                    "the stored event cursor for volume {volume} is unreadable: {error}"
+                ));
+                None
+            }
+        }
+    }
+
+    /// The volume id this root's event stream is scoped to, or a human-readable reason it cannot be
+    /// determined. Derived from any baseline composed `proton_id` first (free, no I/O).
+    fn volume_id_for_scope(
+        &self,
+        base_records: &HashMap<PathBuf, FileRecord>,
+    ) -> Result<String, String> {
+        if let Some(volume) = derive_volume_id(base_records) {
+            return Ok(volume.to_owned());
+        }
+        // No baseline composed id: a brand-new sync that has recorded nothing, or a remote that is
+        // entirely Proton-native (unsupported files get no index row). The sole stored cursor's
+        // scope id *is* the volume a previous bootstrap anchored, so the gate can still engage
+        // (#32 — it used to stay on full-tree walks forever here).
+        match load_sole_event_cursor(&self.connection) {
+            Ok(Some(cursor)) => Ok(cursor.scope_id),
+            Ok(None) => Err(
+                "no event volume: no indexed node carries a composed proton_id, and no single \
+                 stored cursor names one"
+                    .to_owned(),
+            ),
+            Err(error) => Err(format!(
+                "no event volume: the stored event cursor is unreadable: {error}"
+            )),
+        }
+    }
+
+    /// Reports why the event-driven path is unavailable, once per distinct cause. Info level: this
+    /// is the only signal distinguishing "still full-walking because it cannot stream" from the
+    /// other causes of repeated full syncs.
+    fn note_event_scope_declined(&mut self, reason: String) {
+        if self.event_scope_declined.as_deref() != Some(reason.as_str()) {
+            info!(%reason, "event-driven detection unavailable; using full-tree walks");
+            self.event_scope_declined = Some(reason);
+        }
     }
 
     /// One incremental pass: fetch the event delta, reconstruct the complete remote map as
@@ -1179,12 +1247,10 @@ impl<C: ProtonClient> Daemon<C> {
         base_records: &HashMap<PathBuf, FileRecord>,
         force_local_scan: bool,
     ) -> AppResult<IncrementalOutcome> {
-        let volume = derive_volume_id(base_records)
-            .expect("should_try_incremental guarantees a derivable volume id")
-            .to_owned();
-        let cursor = match load_event_cursor(&self.connection, &volume)? {
-            Some(cursor) => cursor,
-            None => return Ok(IncrementalOutcome::Fallback("no stored cursor".to_owned())),
+        let Some((volume, cursor)) = self.resolve_event_scope(base_records) else {
+            return Ok(IncrementalOutcome::Fallback(
+                "no event volume or stored cursor".to_owned(),
+            ));
         };
 
         // Fetch the delta (paginating) *before* the local scan so a fully idle cycle does no work.
@@ -1239,11 +1305,14 @@ impl<C: ProtonClient> Daemon<C> {
         let base_index = filter_base_index(base_records.clone(), &self.scan_options);
 
         let remote_entities = {
+            // Built here and dropped at the end of this block: its listing memo lives exactly as
+            // long as the pass.
             let resolver = TargetedResolver {
                 proton: &self.proton,
                 connection: &self.connection,
                 remote_root: &self.config.remote_root,
                 volume_id: &volume,
+                listings: RefCell::new(HashMap::new()),
             };
             match reconstruct_remote(
                 &base_index,
@@ -1393,8 +1462,8 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Reads the current latest cursor before a snapshot, when event-driven and the volume is
-    /// already derivable from the baseline. Best-effort: a failure just defers cursor capture to
-    /// after the snapshot.
+    /// already known (from the baseline or a previously stored cursor). Best-effort: a failure just
+    /// defers cursor capture to after the snapshot.
     fn capture_pre_snapshot_cursor(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
@@ -1403,7 +1472,7 @@ impl<C: ProtonClient> Daemon<C> {
             return None;
         }
         let source = self.event_source.as_ref()?;
-        let volume = derive_volume_id(base_records)?.to_owned();
+        let volume = self.volume_id_for_scope(base_records).ok()?;
         match source.latest_cursor(&volume) {
             Ok(last_event_id) => Some(CursorUpdate {
                 scope_id: volume,
@@ -1854,7 +1923,59 @@ impl<C: ProtonClient> Daemon<C> {
                         None => {}
                     },
                     SyncAction::Conflict => {
-                        if action.remote_id.is_some()
+                        if action.sidecar_from_local_copy {
+                            // The remote node is confirmed gone, so the sidecar is a copy of the
+                            // surviving local file (#46). Recording the conflict without the
+                            // sidecar is the frozen state this action exists to end, so anything
+                            // that stops the copy skips the index write too and re-plans.
+                            let (Some(conflict_path), Some(local)) =
+                                (action.conflict_path.as_ref(), local_files.get(&action.path))
+                            else {
+                                break 'action;
+                            };
+                            let Some(destination) =
+                                safe_local_path(&self.config.local_root, conflict_path)
+                            else {
+                                warn!(
+                                    path = %action.path.display(),
+                                    "skipping conflict: the sidecar destination escapes the sync \
+                                     root (e.g. through a symlinked directory)"
+                                );
+                                break 'action;
+                            };
+                            // Never clobber or write *through* whatever is already at the sidecar
+                            // path. `symlink_metadata` classifies a symlink as itself, so a
+                            // dangling one reads as present here — `Path::exists()` follows the
+                            // link and answers "absent", after which `fs::copy` would push the
+                            // local file's bytes through it, outside the sync root or over
+                            // another file inside it. `local_write_escapes_root` cannot catch
+                            // that either: it canonicalizes the deepest *existing* ancestor, and
+                            // a dangling link has none.
+                            match fs::symlink_metadata(&destination) {
+                                Ok(metadata) => {
+                                    // Occupied. A regular file is an unresolved sidecar from an
+                                    // earlier pass (or the user's own copy) and is left alone;
+                                    // anything else is the user's object and is never replaced.
+                                    // The conflict is still recorded below either way, so the
+                                    // pass converges instead of re-planning this action forever —
+                                    // and removing the squatter emits the same sidecar-removal
+                                    // event that drives the ordinary exit.
+                                    if !metadata.is_file() {
+                                        warn!(
+                                            path = %destination.display(),
+                                            "conflict sidecar not written: the path is already \
+                                             taken by a symlink or directory, which is never \
+                                             replaced"
+                                        );
+                                    }
+                                }
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                    ensure_parent_directory(&destination)?;
+                                    copy_into_new_file(&local.absolute_path, &destination)?;
+                                }
+                                Err(error) => return Err(error.into()),
+                            }
+                        } else if action.remote_id.is_some()
                             && let Some(remote_path) =
                                 safe_remote_path(&self.config.remote_root, &action.path)
                             && let Some(conflict_path) = action.conflict_path.as_ref()
@@ -2981,6 +3102,41 @@ struct TargetedResolver<'a, C: ProtonClient> {
     connection: &'a Connection,
     remote_root: &'a Path,
     volume_id: &'a str,
+    /// Parent listings already fetched **during this pass**, keyed by composed parent uid
+    /// ([`ROOT_LISTING_KEY`] for the remote root). N events in one folder — a bulk copy, or N
+    /// revisions of one file — then cost one `proton-drive` subprocess instead of N (#70).
+    ///
+    /// Deliberately pass-scoped: the resolver is built inside `try_incremental_reconcile` and
+    /// dropped with it, so a listing can never outlive the pass that read it. Resolution reads
+    /// *current* remote state, so a listing carried into a later pass would plan against a folder
+    /// that has since changed.
+    listings: RefCell<HashMap<String, Rc<HashMap<PathBuf, RemoteEntity>>>>,
+}
+
+/// Memo key for the remote-root listing. Never collides with a composed uid (`volumeId~nodeId`).
+const ROOT_LISTING_KEY: &str = "";
+
+impl<C: ProtonClient> TargetedResolver<'_, C> {
+    /// This pass's listing of `relative_directory`, fetched once and memoized under `key`.
+    fn listing(
+        &self,
+        key: &str,
+        relative_directory: &Path,
+    ) -> AppResult<Rc<HashMap<PathBuf, RemoteEntity>>> {
+        // Read the memo through a borrow that ends before the (possibly long) CLI call below.
+        let cached = self.listings.borrow().get(key).cloned();
+        if let Some(listing) = cached {
+            return Ok(listing);
+        }
+        let listing = Rc::new(
+            self.proton
+                .list_directory(self.remote_root, relative_directory)?,
+        );
+        self.listings
+            .borrow_mut()
+            .insert(key.to_owned(), Rc::clone(&listing));
+        Ok(listing)
+    }
 }
 
 impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
@@ -2991,19 +3147,18 @@ impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
         if let Some(parent_id) = change.parent_id.as_deref() {
             let parent_uid = node_uid(self.volume_id, parent_id);
             if let Some(parent_path) = path_for_proton_id(self.connection, &parent_uid)? {
-                let listing = self.proton.list_directory(self.remote_root, &parent_path)?;
-                // Absent from its stated parent → let the reconstruction drop any stale location.
-                return Ok(find_entity_by_uid(listing, &target_uid));
+                let listing = self.listing(&parent_uid, &parent_path)?;
+                // Absent from its stated parent → the reconstruction drops any stale location
+                // (an update) or re-anchors with a full walk (a create whose listing lags).
+                return Ok(find_entity_by_uid(&listing, &target_uid));
             }
         }
 
         // The parent is not indexed (e.g. a top-level node whose parent is the remote root, which
         // has no index record). Fall back to listing the root; if the node is not there either we
         // cannot place it without a full walk, so signal a snapshot.
-        let root_listing = self
-            .proton
-            .list_directory(self.remote_root, Path::new(""))?;
-        match find_entity_by_uid(root_listing, &target_uid) {
+        let root_listing = self.listing(ROOT_LISTING_KEY, Path::new(""))?;
+        match find_entity_by_uid(&root_listing, &target_uid) {
             Some(resolved) => Ok(Some(resolved)),
             None => Err(boxed_error(format!(
                 "changed node {} is not under any indexed parent or the remote root",
@@ -3014,12 +3169,13 @@ impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
 }
 
 fn find_entity_by_uid(
-    listing: HashMap<PathBuf, RemoteEntity>,
+    listing: &HashMap<PathBuf, RemoteEntity>,
     target_uid: &str,
 ) -> Option<(PathBuf, RemoteEntity)> {
     listing
-        .into_iter()
+        .iter()
         .find(|(_, entity)| entity.remote_id().as_deref() == Some(target_uid))
+        .map(|(path, entity)| (path.clone(), entity.clone()))
 }
 
 /// The periodic full-scan cadence to compare the pass counter against, translating the
@@ -3073,6 +3229,38 @@ fn ensure_parent_directory(path: &Path) -> AppResult<()> {
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+/// Copies `source` to `destination`, which must not exist. The destination is opened with
+/// `create_new` (`O_EXCL`), which never follows a symlink and fails on any existing object, so a
+/// planted or stale link at a predictable path cannot redirect the write — and, being one atomic
+/// syscall, it also closes the window between a prior check and this write. An existing object is
+/// therefore not an error here: the caller has already decided that an occupied path is left
+/// alone, and losing the race means the path is occupied. A partially written file is removed
+/// rather than left behind as the artefact of an operation that then failed.
+fn copy_into_new_file(source: &Path, destination: &Path) -> AppResult<()> {
+    let mut reader = File::open(source)?;
+    let mut writer = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            warn!(
+                path = %destination.display(),
+                "not writing file: something appeared at the path first, and it is never replaced"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Err(error) = std::io::copy(&mut reader, &mut writer) {
+        drop(writer);
+        let _ = fs::remove_file(destination);
+        return Err(error.into());
     }
     Ok(())
 }
@@ -3204,9 +3392,14 @@ fn descendant_index_paths(
         .collect()
 }
 
+/// Advisory single-instance lock. The lockfile is **never unlinked** (#13): `flock` binds to the
+/// inode, not the path, so removing the file on drop lets a daemon that adopted the same inode in
+/// the drop window keep running while a later start creates a *fresh* inode and locks it
+/// independently — two live daemons on one root, or (via the user-global lock) one per root, both
+/// racing the shared `proton-drive` SQLite cache (#23). Dropping the guard releases the lock and
+/// leaves an empty file behind; `acquire` reuses it, so a leftover file never blocks a restart.
 struct LockGuard {
-    path: PathBuf,
-    _file: File,
+    file: File,
 }
 
 impl LockGuard {
@@ -3241,17 +3434,14 @@ impl LockGuard {
                 ))
             }
         })?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            _file: file,
-        })
+        Ok(Self { file })
     }
 }
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        let _ = self._file.unlock();
-        let _ = fs::remove_file(&self.path);
+        // Release the flock only — never unlink; see the type comment (#13).
+        let _ = self.file.unlock();
     }
 }
 
@@ -6149,6 +6339,326 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_copies_the_local_edit_into_a_sidecar_when_the_remote_is_deleted() {
+        // (Changed, Missing), issues #46/#15: the remote node is confirmed gone, so nothing may be
+        // downloaded; the local edit is preserved and the sidecar is materialized by COPYING it,
+        // which is the artefact the GUI conflicts list walks for and the handle for the exit.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .iter()
+                .all(|operation| !matches!(
+                    operation,
+                    RecordedOperation::Download { .. } | RecordedOperation::DownloadBatch { .. }
+                )),
+            "a confirmed-missing remote must never be downloaded for a sidecar"
+        );
+        let sidecar_path = local_root.join("notes.proton-cloud.txt");
+        assert_eq!(
+            fs::read(&sidecar_path).expect("sidecar"),
+            b"local edit",
+            "the sidecar must be a copy of the surviving local file"
+        );
+        assert_eq!(
+            fs::read(&local_path).expect("local file"),
+            b"local edit",
+            "the local edit must be preserved untouched"
+        );
+        // The two predicates `gui_core::conflicts::scan_conflicts` walks the disk with: the sidecar
+        // is only in the GUI's conflicts list if both hold for what the daemon actually wrote.
+        assert!(crate::sync::is_conflict_copy(&sidecar_path));
+        assert_eq!(
+            crate::sync::original_from_conflict_copy(&sidecar_path),
+            Some(local_path.clone())
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Conflict);
+        assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
+
+        let operations_after_first = operations.lock().expect("operations lock").len();
+        daemon.reconcile_blocking().expect("second reconcile");
+        assert_eq!(
+            operations.lock().expect("operations lock").len(),
+            operations_after_first,
+            "a parked conflict must not re-run its side effects every pass"
+        );
+    }
+
+    #[test]
+    fn deleting_the_copied_sidecar_uploads_the_preserved_local_edit() {
+        // The exit for the (Changed, Missing) conflict: removing the sidecar re-arms the record and
+        // the next pass uploads the local edit instead of resurrecting the sidecar forever (#46b).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("first reconcile");
+
+        let sidecar_path = local_root.join("notes.proton-cloud.txt");
+        fs::remove_file(&sidecar_path).expect("resolve by removing the sidecar");
+        daemon
+            .handle_fs_event(
+                Event::new(EventKind::Remove(RemoveKind::File)).add_path(sidecar_path.clone()),
+            )
+            .expect("handle sidecar remove event");
+
+        daemon.reconcile_blocking().expect("second reconcile");
+
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .contains(&RecordedOperation::Upload {
+                    local_path,
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from("notes.txt"),
+                }),
+            "deleting the sidecar must resolve the conflict by uploading the local edit"
+        );
+        assert!(
+            !sidecar_path.exists(),
+            "the resolved sidecar must not be resurrected"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn a_replanned_remote_deleted_conflict_never_overwrites_the_existing_sidecar() {
+        // Editing the original (instead of resolving) marks the record `Modified`, which escapes
+        // the Conflict early-return and re-plans the same conflict. That re-plan must leave the
+        // user's sidecar alone: it is the only copy of the content the conflict was raised over,
+        // and clobbering it with newer local bytes would silently destroy the resolution choice.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("first reconcile");
+
+        fs::write(&local_path, b"second local edit").expect("edit the original again");
+        daemon
+            .handle_fs_event(
+                Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Any)))
+                    .add_path(local_path.clone()),
+            )
+            .expect("handle local edit event");
+
+        daemon.reconcile_blocking().expect("second reconcile");
+
+        assert_eq!(
+            fs::read(local_root.join("notes.proton-cloud.txt")).expect("sidecar"),
+            b"local edit",
+            "the existing sidecar must survive a re-planned conflict untouched"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            record.sync_status,
+            SyncStatus::Conflict,
+            "the re-plan re-parks the record, and the sidecar is still its exit"
+        );
+        assert_eq!(
+            record.sha1_hash.as_deref(),
+            Some(sha1_bytes(b"second local edit").as_str()),
+            "the record must track the newest local content"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_sidecar_path_never_receives_the_preserved_local_file() {
+        // The sidecar path is predictable (`notes.proton-cloud.txt` beside `notes.txt`), so
+        // anything already sitting there — a hostile plant or a stale link the user made — must
+        // not be followed. A BROKEN symlink is the dangerous shape: `Path::exists()` follows it
+        // and reports "absent", and `local_write_escapes_root` canonicalizes the deepest EXISTING
+        // ancestor, which a dangling link does not have, so neither guard sees it.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).expect("outside dir");
+        let target = outside.join("target.txt");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let sidecar_path = local_root.join("notes.proton-cloud.txt");
+        std::os::unix::fs::symlink(&target, &sidecar_path).expect("plant a broken symlink");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            !target.exists(),
+            "the preserved local edit must never be written through a symlink at the sidecar path"
+        );
+        assert!(
+            fs::symlink_metadata(&sidecar_path)
+                .expect("sidecar path")
+                .is_symlink(),
+            "the user's own object at the path must be left exactly as it was"
+        );
+        assert_eq!(
+            fs::read_link(&sidecar_path).expect("symlink target"),
+            target,
+            "the symlink must not be retargeted or replaced"
+        );
+        assert_eq!(
+            fs::read(&local_path).expect("local file"),
+            b"local edit",
+            "the local edit must still be preserved"
+        );
+        // Converges rather than wedging: the conflict is recorded, so the record parks instead of
+        // re-planning this action with a warning on every pass.
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Conflict);
+        daemon.reconcile_blocking().expect("second reconcile");
+        assert!(
+            !target.exists(),
+            "a later pass must not write through it either"
+        );
+    }
+
+    #[test]
+    fn a_pre_existing_sidecar_file_is_left_alone_and_the_conflict_is_still_recorded() {
+        // The user (or an interrupted earlier pass) already put a file at the sidecar path: it is
+        // never overwritten, and the conflict is still recorded so the state keeps its exit.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let sidecar_path = local_root.join("notes.proton-cloud.txt");
+        fs::write(&sidecar_path, b"the user's own copy").expect("pre-existing sidecar");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            fs::read(&sidecar_path).expect("sidecar"),
+            b"the user's own copy",
+            "an existing sidecar file must never be overwritten"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sync_status, SyncStatus::Conflict);
+    }
+
+    #[test]
+    fn reconcile_replaces_a_stale_directory_record_with_the_new_remote_file() {
+        // #47: `docs` was a synced directory, deleted on both sides; a remote FILE now holds the
+        // name. Only the BASE kind is stale (no live clash), so the pass must adopt the surviving
+        // remote file instead of warning about a type conflict forever.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let content = b"the new remote file".to_vec();
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("docs"),
+            remote(
+                "docs",
+                "remote-file-id",
+                Some(sha1_bytes(&content).as_str()),
+            ),
+        );
+        let mut remote_contents = HashMap::new();
+        remote_contents.insert(PathBuf::from("/Drive/RemoteFolder/docs"), content.clone());
+        let (client, operations) =
+            RecordingProtonClient::with_remote_contents(remote_files, remote_contents);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("docs", Some("dir-id")),
+        )
+        .expect("stale directory record");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert_eq!(
+            fs::read(local_root.join("docs")).expect("downloaded file"),
+            content,
+            "the surviving remote file must be downloaded over the stale directory record"
+        );
+        let record = get_record(&daemon.connection, Path::new("docs"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            record.entity_kind,
+            EntityKind::File,
+            "the stale directory kind must be replaced, not kept"
+        );
+        assert_eq!(record.sync_status, SyncStatus::Synced);
+        assert_eq!(record.proton_id.as_deref(), Some("remote-file-id"));
+
+        let operations_after_first = operations.lock().expect("operations lock").len();
+        daemon.reconcile_blocking().expect("second reconcile");
+        assert_eq!(
+            operations.lock().expect("operations lock").len(),
+            operations_after_first,
+            "the adopted file must converge instead of re-downloading every pass"
+        );
+    }
+
+    #[test]
     fn reconcile_autolinks_identical_local_and_remote_content_instead_of_conflicting() {
         // Reproduces the state left after a partial reconcile rolls back its deferred
         // index commit (see reconcile_does_not_commit_index_when_later_action_fails):
@@ -6991,9 +7501,39 @@ mod tests {
 
         drop(guard);
         assert!(
-            !lock_path.exists(),
-            "released lock guard should remove stale lockfile"
+            lock_path.exists(),
+            "a released guard must LEAVE the lockfile in place (#13): unlinking it lets a later \
+             start lock a fresh inode independently"
         );
+        LockGuard::acquire(&lock_path).expect("the leftover file must be reusable by a restart");
+    }
+
+    #[test]
+    fn a_dropped_lock_guard_does_not_unlink_the_lockfile_another_guard_now_holds() {
+        // #13, the flock-over-unlink race, made deterministic. Daemon A is inside its drop
+        // window: it has released the flock but has not finished dropping. Daemon B opens the
+        // SAME inode and wins the lock. If A's drop unlinks the path, a third start C creates a
+        // FRESH inode whose flock is independent of B's — two live daemons.
+        let directory = tempdir().expect("tempdir");
+        let lock_path = directory.path().join("daemon.lock");
+
+        let daemon_a = LockGuard::acquire(&lock_path).expect("A locks");
+        daemon_a
+            .file
+            .unlock()
+            .expect("A releases the flock (drop step 1)");
+        let daemon_b = LockGuard::acquire(&lock_path).expect("B adopts the inode in A's window");
+        drop(daemon_a); // drop step 2: must not remove the path
+
+        assert!(
+            lock_path.exists(),
+            "A's drop must not unlink the lockfile B is holding"
+        );
+        assert!(
+            LockGuard::acquire(&lock_path).is_err(),
+            "a third daemon must contend on the same inode B holds and be refused"
+        );
+        drop(daemon_b);
     }
 
     #[test]
@@ -7059,6 +7599,33 @@ mod tests {
         assert!(
             daemon.is_ok(),
             "a stale (unlocked) global lock file must not block startup"
+        );
+    }
+
+    #[test]
+    fn a_stopped_daemon_leaves_both_lockfiles_in_place_and_a_restart_reuses_them() {
+        // #13 at the daemon level: BOTH guards (per-root and user-global) share one Drop, so
+        // neither path may be unlinked on shutdown. Stable inodes are what make the next start
+        // contend on the same flock instead of creating an independent one.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("root");
+        fs::create_dir_all(&local_root).expect("local root");
+        let config = test_config(directory.path(), &local_root);
+        let lockfile_path = config.lockfile_path.clone();
+        let global_lock_path = config.global_lock_path.clone();
+
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(config, client).expect("first daemon starts");
+        drop(daemon);
+
+        assert!(lockfile_path.exists(), "per-root lockfile must persist");
+        assert!(global_lock_path.exists(), "global lockfile must persist");
+
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let restarted = Daemon::with_client(test_config(directory.path(), &local_root), client);
+        assert!(
+            restarted.is_ok(),
+            "the leftover (unlocked) lockfiles must not block a restart"
         );
     }
 
@@ -7850,6 +8417,182 @@ mod tests {
             daemon.incremental_passes_since_full_scan, 50,
             "the pass counter keeps climbing without ever tripping a resync"
         );
+    }
+
+    #[test]
+    fn changes_sharing_a_parent_take_one_targeted_listing_per_pass() {
+        // #70: N events in one folder must collapse to ONE `list_directory` subprocess, and the
+        // memo must die with the pass (resolution reads *current* remote state, so reusing a
+        // listing across passes would plan against a stale folder).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("dir")).expect("local dir");
+        let digests: Vec<String> = ["a", "b", "c"]
+            .iter()
+            .map(|name| {
+                let path = local_root.join("dir").join(format!("{name}.txt"));
+                fs::write(&path, name.as_bytes()).expect("local file");
+                sha1_bytes(name.as_bytes())
+            })
+            .collect();
+
+        // Remote matches local everywhere, so the pass plans no actions and every
+        // `list_directory` call counted below comes from targeted event resolution.
+        let mut remote_entities =
+            HashMap::from([(PathBuf::from("dir"), remote_dir("dir", "vol~ndir"))]);
+        for (name, digest) in ["a", "b", "c"].iter().zip(&digests) {
+            remote_entities.insert(
+                PathBuf::from(format!("dir/{name}.txt")),
+                remote_file_entity(&format!("dir/{name}.txt"), &format!("vol~n{name}"), digest),
+            );
+        }
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        let first = one_page(
+            "cursor-1",
+            vec![
+                change(RemoteChangeKind::Updated, "na", Some("ndir"), false),
+                change(RemoteChangeKind::Updated, "nb", Some("ndir"), false),
+            ],
+        );
+        let second = one_page(
+            "cursor-2",
+            vec![change(RemoteChangeKind::Updated, "nc", Some("ndir"), false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-2",
+                vec![first, second],
+            ))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &directory_record("dir", Some("vol~ndir")),
+        )
+        .expect("seed dir record");
+        for (name, digest) in ["a", "b", "c"].iter().zip(&digests) {
+            upsert_record(
+                &daemon.connection,
+                &base_record(
+                    &format!("dir/{name}.txt"),
+                    Some(&format!("vol~n{name}")),
+                    digest,
+                ),
+            )
+            .expect("seed file record");
+        }
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        daemon.is_first_reconcile = false;
+
+        daemon.reconcile_blocking().expect("first incremental pass");
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            1,
+            "two events in one folder must share a single targeted listing"
+        );
+
+        daemon
+            .reconcile_blocking()
+            .expect("second incremental pass");
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            2,
+            "the memo must not survive the pass: a later pass re-lists the same parent"
+        );
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "no fallback walk may inflate or deflate the counts"
+        );
+    }
+
+    #[test]
+    fn the_gate_derives_the_volume_from_the_stored_cursor_when_the_index_has_none() {
+        // #32: an all-Proton-native remote records no `proton_id`, so the volume cannot come from
+        // the base index — but the bootstrap still anchored a cursor, whose scope id *is* the
+        // volume. Without this the daemon full-walks every pass forever.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("new.txt"),
+            remote_file_entity("new.txt", "vol~nn", "h"),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Created, "nn", None, false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![page],
+            ))),
+        )
+        .expect("daemon");
+
+        // No base records at all — only the cursor the bootstrap stored.
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        daemon.is_first_reconcile = false;
+
+        assert!(
+            daemon.should_try_incremental(&load_index(&daemon.connection).expect("load index")),
+            "a stored cursor alone must be enough to engage the event-driven gate"
+        );
+        daemon.reconcile_blocking().expect("incremental reconcile");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "the pass must stream from the cursor instead of walking the whole tree"
+        );
+        assert!(
+            local_root.join("new.txt").exists(),
+            "the created remote file must be downloaded by the incremental pass"
+        );
+        assert!(
+            daemon.event_scope_declined.is_none(),
+            "nothing was declined, so nothing should be reported"
+        );
+    }
+
+    #[test]
+    fn a_gate_with_no_cursor_and_no_volume_reports_why_once() {
+        // "Keeps doing full syncs" is diagnosed by the log line, so the decline must be stated —
+        // and stated once, not every pass.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            EventFakeClient::new(HashMap::new()),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        daemon.is_first_reconcile = false;
+
+        let base = HashMap::new();
+        assert!(!daemon.should_try_incremental(&base));
+        let reported = daemon.event_scope_declined.clone();
+        assert!(
+            reported
+                .as_deref()
+                .is_some_and(|reason| reason.contains("volume")),
+            "the decline must name the volume as the missing input: {reported:?}"
+        );
+        // Same cause next pass → recorded reason is unchanged, so it is logged once.
+        assert!(!daemon.should_try_incremental(&base));
+        assert_eq!(daemon.event_scope_declined, reported);
     }
 
     /// Seeds `local/keep.txt` edited to `edited`, a baseline record + remote entity at `old`, and a

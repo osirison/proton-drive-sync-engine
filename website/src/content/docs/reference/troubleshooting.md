@@ -29,6 +29,13 @@ single-instance lock can't be bypassed by any flag (for a fully isolated test, r
 separate `$XDG_STATE_HOME`). The daemon fails to start with a clear error naming the locked
 lockfile, rather than failing silently.
 
+A lockfile left on disk after the daemon stops is **normal** and does not mean a daemon is
+running: the lock is an advisory `flock` on the file, released when the process exits, and
+the (empty) file is deliberately kept so every start contends on the same one. Do not delete
+it to "unstick" a start: deleting it lets a second daemon lock a fresh inode and run
+alongside the first. Only a start that fails with the lock error above is being refused by
+the lock — startup failures with any other message have another cause.
+
 ## Remote operations fail
 
 If uploads, downloads, or listings fail, reproduce the underlying `proton-drive` call
