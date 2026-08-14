@@ -6298,6 +6298,58 @@ mod tests {
     }
 
     #[test]
+    fn a_replanned_remote_deleted_conflict_never_overwrites_the_existing_sidecar() {
+        // Editing the original (instead of resolving) marks the record `Modified`, which escapes
+        // the Conflict early-return and re-plans the same conflict. That re-plan must leave the
+        // user's sidecar alone: it is the only copy of the content the conflict was raised over,
+        // and clobbering it with newer local bytes would silently destroy the resolution choice.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("notes.txt");
+        fs::write(&local_path, b"local edit").expect("local file");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("remote-id"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect("first reconcile");
+
+        fs::write(&local_path, b"second local edit").expect("edit the original again");
+        daemon
+            .handle_fs_event(
+                Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Any)))
+                    .add_path(local_path.clone()),
+            )
+            .expect("handle local edit event");
+
+        daemon.reconcile_blocking().expect("second reconcile");
+
+        assert_eq!(
+            fs::read(local_root.join("notes.proton-cloud.txt")).expect("sidecar"),
+            b"local edit",
+            "the existing sidecar must survive a re-planned conflict untouched"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            record.sync_status,
+            SyncStatus::Conflict,
+            "the re-plan re-parks the record, and the sidecar is still its exit"
+        );
+        assert_eq!(
+            record.sha1_hash.as_deref(),
+            Some(sha1_bytes(b"second local edit").as_str()),
+            "the record must track the newest local content"
+        );
+    }
+
+    #[test]
     fn reconcile_replaces_a_stale_directory_record_with_the_new_remote_file() {
         // #47: `docs` was a synced directory, deleted on both sides; a remote FILE now holds the
         // name. Only the BASE kind is stale (no live clash), so the pass must adopt the surviving
