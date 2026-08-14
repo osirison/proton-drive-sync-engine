@@ -3418,9 +3418,14 @@ fn descendant_index_paths(
         .collect()
 }
 
+/// Advisory single-instance lock. The lockfile is **never unlinked** (#13): `flock` binds to the
+/// inode, not the path, so removing the file on drop lets a daemon that adopted the same inode in
+/// the drop window keep running while a later start creates a *fresh* inode and locks it
+/// independently — two live daemons on one root, or (via the user-global lock) one per root, both
+/// racing the shared `proton-drive` SQLite cache (#23). Dropping the guard releases the lock and
+/// leaves an empty file behind; `acquire` reuses it, so a leftover file never blocks a restart.
 struct LockGuard {
-    path: PathBuf,
-    _file: File,
+    file: File,
 }
 
 impl LockGuard {
@@ -3455,17 +3460,14 @@ impl LockGuard {
                 ))
             }
         })?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            _file: file,
-        })
+        Ok(Self { file })
     }
 }
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        let _ = self._file.unlock();
-        let _ = fs::remove_file(&self.path);
+        // Release the flock only — never unlink; see the type comment (#13).
+        let _ = self.file.unlock();
     }
 }
 
@@ -7205,9 +7207,39 @@ mod tests {
 
         drop(guard);
         assert!(
-            !lock_path.exists(),
-            "released lock guard should remove stale lockfile"
+            lock_path.exists(),
+            "a released guard must LEAVE the lockfile in place (#13): unlinking it lets a later \
+             start lock a fresh inode independently"
         );
+        LockGuard::acquire(&lock_path).expect("the leftover file must be reusable by a restart");
+    }
+
+    #[test]
+    fn a_dropped_lock_guard_does_not_unlink_the_lockfile_another_guard_now_holds() {
+        // #13, the flock-over-unlink race, made deterministic. Daemon A is inside its drop
+        // window: it has released the flock but has not finished dropping. Daemon B opens the
+        // SAME inode and wins the lock. If A's drop unlinks the path, a third start C creates a
+        // FRESH inode whose flock is independent of B's — two live daemons.
+        let directory = tempdir().expect("tempdir");
+        let lock_path = directory.path().join("daemon.lock");
+
+        let daemon_a = LockGuard::acquire(&lock_path).expect("A locks");
+        daemon_a
+            .file
+            .unlock()
+            .expect("A releases the flock (drop step 1)");
+        let daemon_b = LockGuard::acquire(&lock_path).expect("B adopts the inode in A's window");
+        drop(daemon_a); // drop step 2: must not remove the path
+
+        assert!(
+            lock_path.exists(),
+            "A's drop must not unlink the lockfile B is holding"
+        );
+        assert!(
+            LockGuard::acquire(&lock_path).is_err(),
+            "a third daemon must contend on the same inode B holds and be refused"
+        );
+        drop(daemon_b);
     }
 
     #[test]
@@ -7273,6 +7305,33 @@ mod tests {
         assert!(
             daemon.is_ok(),
             "a stale (unlocked) global lock file must not block startup"
+        );
+    }
+
+    #[test]
+    fn a_stopped_daemon_leaves_both_lockfiles_in_place_and_a_restart_reuses_them() {
+        // #13 at the daemon level: BOTH guards (per-root and user-global) share one Drop, so
+        // neither path may be unlinked on shutdown. Stable inodes are what make the next start
+        // contend on the same flock instead of creating an independent one.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("root");
+        fs::create_dir_all(&local_root).expect("local root");
+        let config = test_config(directory.path(), &local_root);
+        let lockfile_path = config.lockfile_path.clone();
+        let global_lock_path = config.global_lock_path.clone();
+
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(config, client).expect("first daemon starts");
+        drop(daemon);
+
+        assert!(lockfile_path.exists(), "per-root lockfile must persist");
+        assert!(global_lock_path.exists(), "global lockfile must persist");
+
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let restarted = Daemon::with_client(test_config(directory.path(), &local_root), client);
+        assert!(
+            restarted.is_ok(),
+            "the leftover (unlocked) lockfiles must not block a restart"
         );
     }
 
