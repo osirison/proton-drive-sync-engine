@@ -33,6 +33,12 @@ pub struct PlannedAction {
     pub entity_kind: EntityKind,
     pub conflict_path: Option<PathBuf>,
     pub remote_id: Option<String>,
+    /// How the executor must materialize `conflict_path`: `false` = download the remote node,
+    /// `true` = copy the surviving local file (the remote node is confirmed gone, so a download
+    /// would fail every pass). Only meaningful when `conflict_path` is set.
+    /// `#[serde(default)]` for wire compat with dry-run output written before this field existed.
+    #[serde(default)]
+    pub sidecar_from_local_copy: bool,
 }
 
 /// The direction a deletion propagates, used by the delete-approval guard, the persistent
@@ -175,8 +181,16 @@ pub fn plan_sync_entities(
                     // resolved state, not a fresh conflict to reprocess every pass.
                     return None;
                 }
-                if is_type_conflict(local, remote, base) {
+                if is_live_kind_clash(local, remote) {
                     return Some(plan_type_conflict_action(&path, local, remote, base));
+                }
+                if only_base_kind_is_stale(local, remote, base) {
+                    // No live clash — the surviving side(s) agree and it is the *base* row that
+                    // still describes the old kind (a synced directory deleted everywhere, then a
+                    // file uploaded under the same name, and the mirror cases). Plan the surviving
+                    // entity's bootstrap action: its upsert replaces the stale row wholesale
+                    // (`entity_kind` included), so the path converges in THIS pass (#47).
+                    return plan_bootstrap_entity_action(&path, local, remote);
                 }
                 match base {
                     Some(base) if base.entity_kind == EntityKind::Directory && !bootstrap => {
@@ -486,21 +500,36 @@ fn unique_local_move_destination(
     }
 }
 
-fn is_type_conflict(
+/// True when both sides are live and disagree about the kind — the only genuine type conflict,
+/// since both claimants exist right now and neither can be adopted without losing the other.
+fn is_live_kind_clash(local: Option<&LocalEntityState>, remote: Option<&RemoteEntity>) -> bool {
+    match (
+        local.map(LocalEntityState::kind),
+        remote.map(remote_entity_kind),
+    ) {
+        (Some(local_kind), Some(remote_kind)) => local_kind != remote_kind,
+        _ => false,
+    }
+}
+
+/// True when the live side(s) do not clash with each other but the *base* row records a different
+/// kind — a stale index row, not a conflict. Callers must rule out [`is_live_kind_clash`] first.
+/// Comparing the sole live side against the stale base kind used to emit a `TypeConflict` the
+/// daemon could only warn about, so the path never synced again (#47).
+fn only_base_kind_is_stale(
     local: Option<&LocalEntityState>,
     remote: Option<&RemoteEntity>,
     base: Option<&FileRecord>,
 ) -> bool {
-    let local_kind = local.map(LocalEntityState::kind);
-    let remote_kind = remote.map(remote_entity_kind);
-    if local_kind.is_some() && remote_kind.is_some() && local_kind != remote_kind {
-        return true;
-    }
     let Some(base_kind) = base.map(|record| record.entity_kind) else {
         return false;
     };
-    local_kind.is_some_and(|kind| kind != base_kind)
-        || remote_kind.is_some_and(|kind| kind != base_kind)
+    local
+        .map(LocalEntityState::kind)
+        .is_some_and(|kind| kind != base_kind)
+        || remote
+            .map(remote_entity_kind)
+            .is_some_and(|kind| kind != base_kind)
 }
 
 /// True once a local directory has already permanently claimed `path` against a
@@ -749,9 +778,13 @@ fn plan_ongoing_file_action(
         // Remote is confirmed missing (not merely unknown), so there is nothing to
         // download for a conflict sidecar; `remote_id(remote, base)` would otherwise
         // fall back to the stale base id and guarantee every reconcile attempt fails
-        // trying to download a file that is already gone. Preserve the local edit as
-        // a conflict copy without attempting a download.
-        (FileDelta::Changed, FileDelta::Missing) => Some(PlannedAction::conflict_without_download(
+        // trying to download a file that is already gone. The local edit stays in place
+        // and the sidecar is materialized from a COPY of it instead: the remote delete is
+        // a real user action on another client, so it is never silently reverted by an
+        // implicit re-upload, but the state still gets the ordinary sidecar exit (delete
+        // the sidecar -> `Modified` -> `(Unchanged, Missing)` -> Upload) and the on-disk
+        // artefact the GUI conflicts list walks for. Without it the path froze forever (#46).
+        (FileDelta::Changed, FileDelta::Missing) => Some(PlannedAction::conflict_from_local_copy(
             path,
             base.proton_id.clone(),
         )),
@@ -1101,6 +1134,7 @@ impl PlannedAction {
             entity_kind,
             conflict_path: None,
             remote_id,
+            sidecar_from_local_copy: false,
         }
     }
 
@@ -1112,20 +1146,25 @@ impl PlannedAction {
             entity_kind: EntityKind::File,
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
+            sidecar_from_local_copy: false,
         }
     }
 
-    /// Like `conflict`, but leaves `conflict_path` unset so the daemon's execution
-    /// step skips attempting a sidecar download. Used when the remote side is
-    /// confirmed missing (not merely unknown), so there is nothing to download.
-    fn conflict_without_download(path: &Path, remote_id: Option<String>) -> Self {
+    /// Like `conflict`, but the sidecar is materialized by copying the surviving *local* file:
+    /// the remote node is confirmed missing (not merely unknown), so there is nothing to
+    /// download and `remote_id` only carries the dead base id forward for the index record.
+    /// The sidecar is what gives this state an exit (delete it -> `Modified` -> upload) and the
+    /// artefact the GUI conflicts list finds by walking the disk; without it the path silently
+    /// stops syncing forever (#46).
+    fn conflict_from_local_copy(path: &Path, remote_id: Option<String>) -> Self {
         Self {
             path: path.to_path_buf(),
             destination_path: None,
             action: SyncAction::Conflict,
             entity_kind: EntityKind::File,
-            conflict_path: None,
+            conflict_path: Some(conflict_copy_path(path)),
             remote_id,
+            sidecar_from_local_copy: true,
         }
     }
 
@@ -1141,6 +1180,7 @@ impl PlannedAction {
             entity_kind: EntityKind::Directory,
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
+            sidecar_from_local_copy: false,
         }
     }
 
@@ -1157,6 +1197,7 @@ impl PlannedAction {
             entity_kind,
             conflict_path: None,
             remote_id,
+            sidecar_from_local_copy: false,
         }
     }
 
@@ -1173,6 +1214,7 @@ impl PlannedAction {
             entity_kind,
             conflict_path: None,
             remote_id,
+            sidecar_from_local_copy: false,
         }
     }
 }
@@ -1586,7 +1628,7 @@ mod tests {
     }
 
     #[test]
-    fn locally_edited_file_missing_remotely_conflicts_without_a_download_target() {
+    fn locally_edited_file_missing_remotely_conflicts_with_a_locally_copied_sidecar() {
         let mut local_files = HashMap::new();
         let mut base_index = HashMap::new();
 
@@ -1607,10 +1649,37 @@ mod tests {
             .expect("a conflict must be planned");
         assert_eq!(action.action, SyncAction::Conflict);
         assert_eq!(
-            action.conflict_path, None,
-            "no sidecar download should be attempted when the remote file is confirmed missing"
+            action.conflict_path.as_deref(),
+            Some(Path::new("edited-then-remote-removed.proton-cloud.txt")),
+            "the conflict must have a sidecar, or it has no exit and no user-visible artefact"
+        );
+        assert!(
+            action.sidecar_from_local_copy,
+            "a confirmed-missing remote must be copied from the local file, never downloaded"
         );
         assert_eq!(action.remote_id.as_deref(), Some("id-1"));
+    }
+
+    #[test]
+    fn removing_the_sidecar_of_a_remote_deleted_conflict_plans_the_upload_exit() {
+        // The conflict record carries the LOCAL hash (the daemon upserts `from_local`), so once
+        // the sidecar removal marks it `Modified` the exit is the `(Unchanged, Missing)` arm.
+        let mut local_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(
+            PathBuf::from("edited.txt"),
+            local("edited.txt", "local-hash"),
+        );
+        base_index.insert(
+            PathBuf::from("edited.txt"),
+            modified_base("edited.txt", Some("id-1"), "local-hash"),
+        );
+
+        let planned = plan_sync(&local_files, &HashMap::new(), &base_index);
+
+        assert_eq!(planned.len(), 1, "{planned:?}");
+        assert_eq!(planned[0].action, SyncAction::Upload);
+        assert_eq!(planned[0].path, PathBuf::from("edited.txt"));
     }
 
     #[test]
@@ -2446,6 +2515,128 @@ mod tests {
             "the clashing remote file must be downloadable as a sidecar outside the \
              kept local directory"
         );
+    }
+
+    #[test]
+    fn one_sided_remote_file_over_a_stale_directory_record_downloads_it() {
+        // #47: `docs` was a synced directory, deleted everywhere, and a remote FILE now holds the
+        // name. Only the base row disagrees, so there is no conflict to report — adopt the file.
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            RemoteEntity::File(remote("docs", "file-id", Some("hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("dir-id")),
+        );
+
+        let planned = plan_sync_entities(&HashMap::new(), &remote_entities, &base_index);
+
+        assert_eq!(planned.len(), 1, "{planned:?}");
+        assert_eq!(planned[0].path, PathBuf::from("docs"));
+        assert_eq!(planned[0].action, SyncAction::Download);
+        assert_eq!(planned[0].entity_kind, EntityKind::File);
+        assert_eq!(planned[0].remote_id.as_deref(), Some("file-id"));
+    }
+
+    #[test]
+    fn one_sided_local_file_over_a_stale_directory_record_uploads_it() {
+        // The mirror of the above: the surviving side is local.
+        let mut local_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_entities.insert(
+            PathBuf::from("docs"),
+            LocalEntityState::File(local("docs", "local-hash")),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("dir-id")),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &HashMap::new(), &base_index);
+
+        assert_eq!(planned.len(), 1, "{planned:?}");
+        assert_eq!(planned[0].path, PathBuf::from("docs"));
+        assert_eq!(planned[0].action, SyncAction::Upload);
+        assert_eq!(planned[0].entity_kind, EntityKind::File);
+    }
+
+    #[test]
+    fn one_sided_remote_directory_over_a_stale_file_record_creates_it_locally() {
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("notes"),
+            remote_directory("notes", Some("dir-id")),
+        );
+        base_index.insert(
+            PathBuf::from("notes"),
+            base("notes", Some("file-id"), "old-hash"),
+        );
+
+        let planned = plan_sync_entities(&HashMap::new(), &remote_entities, &base_index);
+
+        assert_eq!(planned.len(), 1, "{planned:?}");
+        assert_eq!(planned[0].action, SyncAction::CreateLocalDirectory);
+        assert_eq!(planned[0].entity_kind, EntityKind::Directory);
+        assert_eq!(planned[0].remote_id.as_deref(), Some("dir-id"));
+    }
+
+    #[test]
+    fn both_sides_agreeing_on_a_new_kind_over_a_stale_record_adopt_it() {
+        // Both live sides agree; only the base row is stale. Nothing clashes, so neither variant
+        // may report a type conflict the daemon can do nothing about.
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        // Stale directory record, both sides now a file with identical content.
+        local_entities.insert(
+            PathBuf::from("docs"),
+            LocalEntityState::File(local("docs", "same-hash")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            RemoteEntity::File(remote("docs", "file-id", Some("same-hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("dir-id")),
+        );
+        // Stale file record, both sides now a directory.
+        local_entities.insert(PathBuf::from("notes"), local_directory("notes"));
+        remote_entities.insert(
+            PathBuf::from("notes"),
+            remote_directory("notes", Some("new-dir-id")),
+        );
+        base_index.insert(
+            PathBuf::from("notes"),
+            base("notes", Some("old-file-id"), "old-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            planned
+                .iter()
+                .all(|action| action.action != SyncAction::TypeConflict),
+            "agreeing live sides over a stale base kind are not a type conflict: {planned:?}"
+        );
+        let file = planned
+            .iter()
+            .find(|action| action.path == Path::new("docs"))
+            .expect("the agreed file must be planned");
+        assert_eq!(file.action, SyncAction::AutoLink);
+        assert_eq!(file.entity_kind, EntityKind::File);
+        assert_eq!(file.remote_id.as_deref(), Some("file-id"));
+        let directory = planned
+            .iter()
+            .find(|action| action.path == Path::new("notes"))
+            .expect("the agreed directory must be planned");
+        assert_eq!(directory.action, SyncAction::AutoLink);
+        assert_eq!(directory.entity_kind, EntityKind::Directory);
+        assert_eq!(directory.remote_id.as_deref(), Some("new-dir-id"));
     }
 
     #[test]
