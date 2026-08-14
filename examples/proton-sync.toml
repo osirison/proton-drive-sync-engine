@@ -2,6 +2,11 @@
 
 local_root = "/home/me/ProtonDrive"
 remote_root = "/Drive/RemoteFolder"
+# How often the daemon reconciles on a timer. With event-driven detection live (the default) a
+# tick is just another incremental — usually idle — pass, NOT a full-tree sweep; full sweeps are
+# opt-in (`events_full_scan_every`) or forced (`proton-sync resync`). This is the full-sweep
+# cadence only when events are off, or when the proton-drive CLI session is unreadable and the
+# daemon has degraded to snapshots (it retries the session on each of these passes too).
 scan_interval_secs = 300
 # A bare name is resolved via PATH. When the daemon runs as a systemd user service it can start
 # before the login PATH is imported and fail to find the CLI ("could not run the proton-drive CLI
