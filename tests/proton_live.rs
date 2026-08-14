@@ -139,10 +139,10 @@ fn report_wrapped_shapes(
                     Some(serde_json::Value::String(_)) => "bare string",
                     Some(serde_json::Value::Object(wrapper)) => {
                         match (wrapper.get("ok"), wrapper.get("value")) {
+                            (Some(serde_json::Value::Bool(false)), _) => "wrapper with ok=false",
                             (_, Some(serde_json::Value::String(_))) => {
                                 "wrapper with a string value"
                             }
-                            (Some(serde_json::Value::Bool(false)), _) => "wrapper with ok=false",
                             _ => "wrapper without a usable value",
                         }
                     }

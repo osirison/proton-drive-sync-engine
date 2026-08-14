@@ -69,10 +69,16 @@ impl<'de> Deserialize<'de> for WrappedString {
         Ok(match Option::<Value>::deserialize(deserializer)? {
             None | Some(Value::Null) => Self::Absent,
             Some(Value::String(value)) => Self::Decoded(value),
-            Some(Value::Object(object)) => match object.get("value").and_then(Value::as_str) {
-                Some(value) => Self::Decoded(value.to_owned()),
-                None => Self::Undecodable,
-            },
+            Some(Value::Object(object)) => {
+                if matches!(object.get("ok"), Some(Value::Bool(false))) {
+                    Self::Undecodable
+                } else {
+                    match object.get("value").and_then(Value::as_str) {
+                        Some(value) => Self::Decoded(value.to_owned()),
+                        None => Self::Undecodable,
+                    }
+                }
+            }
             // A present non-string scalar is a value we cannot read, not an absent one.
             Some(_) => Self::Undecodable,
         })
@@ -2075,6 +2081,14 @@ mod tests {
             file.sha1_hash.as_deref(),
             Some("1111111111111111111111111111111111111111")
         );
+    }
+
+    #[test]
+    fn an_explicitly_failed_wrapper_is_undecodable_even_with_a_string_value() {
+        let value: WrappedString = serde_json::from_str(r#"{"ok": false, "value": "node-id"}"#)
+            .expect("the wrapper shape should deserialize");
+
+        assert_eq!(value, WrappedString::Undecodable);
     }
 
     #[test]
