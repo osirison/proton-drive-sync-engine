@@ -4585,7 +4585,7 @@ outage notification uses it where the cause genuinely is unknown.
 **The failure is quoted, not swallowed.** `start_service` is the only command on the main screen that
 REJECTS rather than folding its failure into a payload, and its message names which of the two ways
 it failed ("no systemd unit … and no config file at …"). It rides `startError` into the block a
-failed pass already uses. Without it the button is the dead control §227 and #224 record: pressed,
+failed pass already uses. Without it the button is the dead control #227 and #224 record: pressed,
 nothing visible, no reason given.
 
 No frame draws any of this, and none could — the design has no state for a stopped service.
