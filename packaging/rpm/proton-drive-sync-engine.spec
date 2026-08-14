@@ -191,7 +191,16 @@ install -Dm0644 packaging/emblems/nemo/proton-sync-nemo.py \
 
 %if %{with tests}
 %check
-cargo test --release --all-targets --all-features --locked
+# `--workspace` is load-bearing: this workspace's root is itself a package, so Cargo's default
+# member selection collapses to that root package alone — without the flag `gui/gui-core` and
+# `gui/src-tauri` are never tested, and the build section above would ship a proton-sync-gui
+# binary whose tests never ran. Same flag, same reason as the `rust` job in
+# .github/workflows/ci.yml. No extra BuildRequires needed: the GUI crates' system dependencies
+# (webkit2gtk4.1/libsoup3/gtk3/glib2 -devel) are already required to build proton-sync-gui above,
+# and the dev-dependencies this adds are pure Rust, fetched from crates.io like the rest of this
+# (deliberately networked) build and pinned by --locked. The GUI tests are headless — they drive
+# Tauri through tauri::test::mock_builder, so no X/Wayland display or session bus is needed.
+cargo test --workspace --release --all-targets --all-features --locked
 %endif
 
 %files
