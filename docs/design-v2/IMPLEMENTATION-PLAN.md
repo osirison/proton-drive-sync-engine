@@ -5,7 +5,8 @@
 How the `docs/design-v2` bundle gets built, and how "100% fidelity on all screens" becomes a
 thing a machine can check rather than a claim.
 
-**Scope decisions taken before writing this plan:**
+**Scope decisions taken before writing this plan** (consolidated, with where each is embodied in the
+tree, in `DECISIONS.md` — which also records the one the build overturned):
 
 | Decision | Choice |
 | --- | --- |
@@ -170,7 +171,8 @@ frame is drawn at 1040×764 and `01-foundations.md` §4 says the design assumes 
 now. Set `resizable: false` and drop the two minimums; leave the dimensions alone. The reflow rules
 for a resizable window (seam stays at 50%, columns stack below ~880px, hairline dropped) are
 written down in §4 — file them as a follow-up issue rather than building against an unfinished
-assumption.
+assumption. **Done:** `tauri.conf.json` ships `"resizable": false` with no minimums, and the reflow
+rules are **#273** (`DECISIONS.md` §2).
 
 **Commit the bundle.** The `ui-design` worktree currently has `docs/design/` deleted-but-uncommitted
 and `docs/design-v2/` + `docs/design-v1-old/` untracked. Land that as commit one so every
@@ -217,6 +219,11 @@ So the router carries three kinds of route:
 > Activity or Settings. Plan assumes: **clicking the active door returns to root**, and the app
 > mark in the header is also a home affordance. `3a Conflicts cleared` has an explicit
 > `Back to sync`. Flagged, cheap to change.
+>
+> **Answered 2026-08-13, and not the way this assumed** (#266, `2032549`): the footer gained a
+> fifth label — `Home` at its head — the lit door is a no-op, and the doors are drawn on every
+> screen but the onboarding takeover. The toggle was silently destructive, because re-entering a
+> screen re-renders it. `DECISIONS.md` §4, `DEVIATIONS.md` §94, `gui/src/js/routes.js`.
 
 ### 3.4 Module layout
 
@@ -313,7 +320,7 @@ Phase-2 issue that closes it.
 | --- | --- |
 | **P0.1** Commit the design bundle | `docs/design-v2/` (including this plan) + `docs/design-v1-old/` tracked; old `docs/design/` deletion committed |
 | **P0.2** Reconciliation sweep | All 14 docs swept against their frames; every numeric/colour/copy conflict in `DEVIATIONS.md` with a resolution under the §1.3 precedence rule. **Includes validating `12-light-theme.md`'s mapping table against the four drawn light windows** — S10 propagates that table to seven screens with no frame to catch an error in it, so a wrong row there is expensive later and cheap to find now |
-| **P0.3** Decisions record | Quiet tier, fixed window, routing back-to-root, precedence rule written down |
+| **P0.3** Decisions record | Quiet tier, fixed window, routing back-to-root, precedence rule and the icon set written down — **`DECISIONS.md`**, each entry naming the file or commit that embodies it |
 
 ### Phase 1 — foundations
 
@@ -474,13 +481,20 @@ else fails. `rgba(255,59,59,…)` tints are a separate, wider allow-list.
 
 ## 9. Open items for the designer
 
-1. **How do you get back to the main screen** from a door route? (§3.3)
+All five decisions below are consolidated in **`DECISIONS.md`**, which names the file or commit each
+one is embodied in.
+
+1. **How do you get back to the main screen** from a door route? (§3.3) — **answered 2026-08-13 by
+   the build, not the drawings**: `Home` is a fifth footer label and the lit door is a no-op
+   (#266, `2032549`). `DECISIONS.md` §4.
 2. **`#6D7783` at 4.33:1** — decided: keep as drawn, logged as a known deviation. Recorded here so
-   it isn't reopened.
+   it isn't reopened. `DECISIONS.md` §1; the contrast gate's two thresholds exist because of it.
 3. **Seven screens have no light frame.** Their light theme is mechanically mapped and cannot be
    compared against a drawn artefact. Flagged, not covered.
 4. **Icon set swap.** `01-foundations.md` §8 recommends replacing the Unicode glyphs with a
    1.5px-stroke line set (Lucide or Phosphor Light). Doing it changes every glyph's computed
-   geometry and so every affected frame's expectations. Recommend shipping Phase 1 with the
-   Unicode glyphs exactly as drawn — that *is* the measured spec — and filing the swap as its own
-   issue with its own regenerated frames.
+   geometry and so every affected frame's expectations. Phase 1 shipped the Unicode glyphs exactly
+   as drawn — that *is* the measured spec — and the swap is filed as **#272**, with regenerated
+   frames as its first step. `DECISIONS.md` §5.
+5. **The fixed window.** §2 set `resizable: false`; §4's reflow rules have no frame drawn at a
+   second width to be asserted against, so they are filed as **#273**. `DECISIONS.md` §2.
