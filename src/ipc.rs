@@ -313,19 +313,25 @@ impl StagingDir {
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     last_error = Some(error);
                 }
+                // Names the SOCKET as well as the staging directory: the commonest cause is a
+                // parent that does not exist, which used to surface as a plain bind failure on
+                // the configured path and must stay as recognisable.
                 Err(error) => {
                     return Err(crate::boxed_error(format!(
-                        "failed to create the control socket's staging directory {}: {error}",
+                        "failed to bind control socket {}: could not create its staging directory \
+                         {}: {error}",
+                        socket_path.display(),
                         directory.display()
                     )));
                 }
             }
         }
         Err(crate::boxed_error(format!(
-            "failed to create a staging directory for the control socket under {}: {} names were \
-             already taken (last: {})",
-            parent.display(),
+            "failed to bind control socket {}: {} staging directory names under {} were already \
+             taken (last: {})",
+            socket_path.display(),
             STAGING_DIR_ATTEMPTS,
+            parent.display(),
             last_error
                 .map(|error| error.to_string())
                 .unwrap_or_else(|| "unknown".to_owned())
