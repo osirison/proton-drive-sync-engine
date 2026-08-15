@@ -183,7 +183,8 @@ proton-syncd --local-root ~/ProtonDrive --remote-root /Drive/RemoteFolder
 proton-sync status      # is it running? what did it just do?
 proton-sync syncnow     # reconcile now
 proton-sync pause       # / resume
-proton-sync history     # recent sync summaries
+proton-sync history     # recorded passes: how long, what kind, how they ended
+proton-sync activity    # what moved recently (or one path's own history)
 ```
 
 State (the SQLite index and its sidecars) lives in `<local-root>/.sync/`, which is always

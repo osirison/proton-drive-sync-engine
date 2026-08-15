@@ -1,18 +1,21 @@
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
-    EntityKind, EventCursor, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
-    delete_delete_approval, load_event_cursor, load_existing_index, load_index,
-    load_sole_event_cursor, load_unsyncable_items, load_warm_start_count, local_directory_state,
-    local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
-    purge_record, replace_unsyncable_items, scan_local_entities_observed,
+    EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, LocalEntityState,
+    LocalFileState, PassKind, PassOutcomeKind, ScanOptions, SyncStatus, begin_pass,
+    byte_totals_since, delete_delete_approval, file_events, finish_pass, insert_file_events,
+    last_full_sweep, load_event_cursor, load_existing_index, load_index, load_sole_event_cursor,
+    load_unsyncable_items, load_warm_start_count, local_directory_state, local_file_state,
+    mark_modified, matching_delete_approval, open_database, path_for_proton_id, prune_history,
+    purge_record, recent_passes, replace_unsyncable_items, scan_local_entities_observed,
     scan_local_entities_reusing_hashes, store_event_cursor, store_warm_start_count,
     upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
-    ControlCommand, ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem, PendingDeletion,
-    RunningConfigInfo, StatusHistoryEntry, SyncActivity, TransferActivity, bind_listener,
-    read_request, write_response,
+    ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ControlCommand, ControlResponse,
+    FAILED_ITEM_ERROR_LIMIT, FailedItem, PASS_HISTORY_REPORTED, PassHistory, PassProgress,
+    PendingDeletion, RunningConfigInfo, StatusHistoryEntry, SyncActivity, TransferActivity,
+    bind_listener, read_request, write_response,
 };
 use crate::proton::{
     CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient, RemoteEntity,
@@ -21,7 +24,7 @@ use crate::proton::{
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
-    DeleteDirection, PlanSummary, PlannedAction, SyncAction, UnsyncableItem,
+    DeleteDirection, PlanSummary, PlannedAction, SyncAction, TransferDirection, UnsyncableItem,
     directory_move_descendant_path_pairs, is_strict_descendant, original_from_conflict_copy,
     plan_sync_entities, unsyncable_items,
 };
@@ -42,12 +45,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-const STATUS_HISTORY_LIMIT: usize = 20;
+pub(crate) const STATUS_HISTORY_LIMIT: usize = 20;
 /// Time budget for a single control-connection read or write. Control connections are served
 /// concurrently on their own task, so a stalled client cannot block the daemon — the timeout
 /// just stops silent clients from accumulating parked connection tasks forever.
@@ -263,6 +266,12 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// noise, and noise is why the old `debug!` line went unread for five months (#295). Pruned
     /// when a path leaves the list, so a recurrence speaks again.
     reported_unsyncable: HashSet<PathBuf>,
+    /// The pass currently in flight (see [`PassLog`]): its history rows, its rollup, and the clock
+    /// behind `duration_ms`. Replaced at the top of every pass.
+    pass_log: PassLog,
+    /// Pass-level history + today's byte totals, re-read from the index after each pass and
+    /// published on every status reply. Cached here so a polling client never queries SQLite.
+    pass_history: Option<PassHistory>,
     /// Per-root instance lock; released on drop. Held for the daemon's whole lifetime.
     _lock_guard: LockGuard,
     /// User-global single-instance lock; released on drop. Held for the daemon's whole lifetime so
@@ -330,6 +339,11 @@ struct ControlShared {
 struct ActivityState {
     current: Option<SyncActivity>,
     download_scratch: Option<PathBuf>,
+    /// The in-flight pass (#213). Held HERE rather than inside `current` because `begin_activity`
+    /// replaces `current` on every phase change: a pass block stored there would restart its own
+    /// clock three times per pass, which is the bug. Stamped onto every activity as it is built,
+    /// so there is exactly one copy and one writer.
+    pass: Option<PassProgress>,
 }
 
 /// Everything a status reply needs beyond the atomics above. Published by the daemon core via
@@ -347,6 +361,9 @@ struct StatusSnapshot {
     failed_item_count: usize,
     unsyncable: Vec<UnsyncableItem>,
     config: RunningConfigInfo,
+    /// Pass-level history + today's byte totals, re-read from the index once per pass. Queried
+    /// there rather than per status reply so a 2s GUI poll never hits SQLite.
+    history: Option<PassHistory>,
 }
 
 impl ControlShared {
@@ -368,6 +385,7 @@ impl ControlShared {
                 failed_item_count: 0,
                 unsyncable: Vec::new(),
                 config,
+                history: None,
             }),
             activity: StdMutex::new(ActivityState::default()),
         }
@@ -379,10 +397,41 @@ impl ControlShared {
 
     /// Starts a new activity phase, replacing whatever was current (and dropping any stale
     /// download staging location from the previous action).
-    fn begin_activity(&self, activity: SyncActivity) {
+    fn begin_activity(&self, mut activity: SyncActivity) {
         let mut state = self.activity.lock().expect("activity lock");
+        activity.pass = state.pass.clone();
         state.current = Some(activity);
         state.download_scratch = None;
+    }
+
+    /// Opens the pass block every subsequent activity carries (#213).
+    fn begin_pass_progress(&self, started_epoch_secs: u64, kind: PassKind) {
+        let mut state = self.activity.lock().expect("activity lock");
+        state.pass = Some(PassProgress {
+            started_epoch_secs,
+            changes: None,
+            kind: kind.as_str().to_owned(),
+        });
+        Self::restamp_pass(&mut state);
+    }
+
+    /// Corrects the pass block once the daemon knows which strategy it is running, or how many
+    /// changes the plan holds. No-op before `begin_pass_progress`.
+    fn update_pass_progress(&self, update: impl FnOnce(&mut PassProgress)) {
+        let mut state = self.activity.lock().expect("activity lock");
+        if let Some(pass) = state.pass.as_mut() {
+            update(pass);
+        }
+        Self::restamp_pass(&mut state);
+    }
+
+    /// Copies the pass block onto the current activity, so a change is visible without waiting for
+    /// the next phase.
+    fn restamp_pass(state: &mut ActivityState) {
+        let pass = state.pass.clone();
+        if let Some(current) = state.current.as_mut() {
+            current.pass = pass;
+        }
     }
 
     /// Applies `update` to the current activity, creating one with `phase` first if none is
@@ -392,7 +441,11 @@ impl ControlShared {
         let mut state = self.activity.lock().expect("activity lock");
         let same_phase = matches!(&state.current, Some(current) if current.phase == phase);
         if !same_phase {
-            state.current = Some(new_activity(phase));
+            let pass = state.pass.clone();
+            state.current = Some(SyncActivity {
+                pass,
+                ..new_activity(phase)
+            });
         }
         let current = state
             .current
@@ -484,6 +537,10 @@ impl ControlShared {
             pending_deletions: snapshot.pending_deletions,
             failed_items: snapshot.failed_items,
             failed_item_count: snapshot.failed_item_count,
+            history: snapshot.history.clone(),
+            // Only an `activity` request answers with the per-file feed; every other reply omits
+            // it rather than paying for the query.
+            file_history: None,
             config: Some(snapshot.config),
             // Gated on `syncing` read above: `syncing` and the activity slot are updated
             // independently at pass end, so without the gate a reply issued between
@@ -514,6 +571,9 @@ impl ControlShared {
             pending_deletions: snapshot.pending_deletions,
             failed_items: snapshot.failed_items,
             failed_item_count: snapshot.failed_item_count,
+            // Deliberately NOT mirrored into the sidecar: the pass history is already durable in
+            // the index's own tables, and a second copy on disk is a second thing to keep in step.
+            // The sidecar keeps counts (`status_history_entries`), not lists.
             unsyncable: snapshot.unsyncable,
         }
     }
@@ -538,6 +598,9 @@ fn new_activity(phase: &str) -> SyncActivity {
         action_total: None,
         transfer: None,
         since_epoch_secs: Some(current_epoch_secs()),
+        // Stamped by `begin_activity` from the shared pass block, never built here: the pass
+        // outlives the phase (#213).
+        pass: None,
     }
 }
 
@@ -782,9 +845,15 @@ impl<C: ProtonClient> Daemon<C> {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             unsyncable,
             reported_unsyncable: HashSet::new(),
+            pass_log: PassLog::new(current_epoch_secs()),
+            pass_history: None,
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
         };
+        let mut daemon = daemon;
+        // Populate the published history before the first pass, so a client polling a
+        // just-started daemon already sees the last full sweep from a previous run.
+        daemon.refresh_pass_history();
         daemon.publish_status();
         daemon.write_metrics_snapshot()?;
         Ok(daemon)
@@ -1046,6 +1115,7 @@ impl<C: ProtonClient> Daemon<C> {
             failed_items: self.last_failed_items.clone(),
             failed_item_count: self.last_failed_item_count,
             unsyncable: self.unsyncable.clone(),
+            history: self.pass_history.clone(),
             config: RunningConfigInfo {
                 local_root: self.config.local_root.clone(),
                 remote_root: self.config.remote_root.clone(),
@@ -1105,24 +1175,39 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     fn reconcile_blocking(&mut self) -> AppResult<PassOutcome> {
+        // Open the pass as a unit (#213): one start time and one clock, both surviving every
+        // phase change below. The kind is corrected by whichever branch `reconcile_blocking_inner`
+        // takes.
+        self.pass_log = PassLog::new(current_epoch_secs());
+        self.shared
+            .begin_pass_progress(self.pass_log.started_epoch_secs, self.pass_log.kind);
         let result = self.reconcile_blocking_inner();
         // Three outcomes, three arms, no fall-through: a pass that landed most of its plan and
         // failed some of it is neither of the other two, and absorbing it into either is how a
-        // failed pass came to render as "everything is up to date" (#246).
+        // failed pass came to render as "everything is up to date" (#246). The history record
+        // takes its outcome from the same three arms, so it can never disagree with the message.
         let message = match &result {
             Ok(PassOutcome::Clean) => {
                 self.last_error = None;
+                self.finalize_pass_record(PassOutcomeKind::Clean, 0, None);
                 "sync completed".to_owned()
             }
             // `last_error` carries the summary so every surface that already reads it — the CLI
             // headline, the GUI's `derive_state`, the tray — reports a partial pass as a problem
             // rather than silently as a success. `failed_items` carries the detail.
             Ok(PassOutcome::Partial { failed }) => {
-                self.last_error = Some(self.failure_summary(*failed));
+                let failed = *failed;
+                let summary = self.failure_summary(failed);
+                self.finalize_pass_record(PassOutcomeKind::Partial, failed, Some(&summary));
+                self.last_error = Some(summary);
                 format!("sync completed with {failed} failed item(s)")
             }
             Err(error) => {
-                self.last_error = Some(error.to_string());
+                let error = error.to_string();
+                // Reachable by a shutdown mid-plan too, which is why `interrupted` never is: every
+                // graceful ending seals the row here.
+                self.finalize_pass_record(PassOutcomeKind::Failed, 0, Some(&error));
+                self.last_error = Some(error);
                 "sync failed".to_owned()
             }
         };
@@ -1192,6 +1277,7 @@ impl<C: ProtonClient> Daemon<C> {
         // error, or an unresolvable node — falls through to the snapshot below, which is exactly
         // today's behavior. When `events_driven` is off this predicate is always false.
         if !resync_requested && self.should_try_incremental(&base_records) {
+            self.set_pass_kind(PassKind::Incremental);
             // A watcher error dropped events (#51): this pass must stat-walk the local tree
             // instead of taking the idle fast-path, which only knows about `pending_changes`.
             match self.try_incremental_reconcile(&base_records, self.force_local_rescan)? {
@@ -1232,6 +1318,7 @@ impl<C: ProtonClient> Daemon<C> {
         force_bootstrap: bool,
     ) -> AppResult<PassOutcome> {
         if !force_bootstrap && self.warm_start_eligible(&base_records) {
+            self.set_pass_kind(PassKind::WarmStart);
             // `true` = force the local stat-walk even if the event delta is empty: on a fresh boot
             // `pending_changes` is empty, so the idle fast-path would otherwise skip the scan and
             // strand a file edited while the daemon was down.
@@ -1643,6 +1730,9 @@ impl<C: ProtonClient> Daemon<C> {
         &mut self,
         base_records: HashMap<PathBuf, FileRecord>,
     ) -> AppResult<PassOutcome> {
+        // Set here rather than at the call sites: a warm start that falls through to a snapshot IS
+        // a full sweep, and `Full sweep now` asks when the last full-tree walk ran (#238).
+        self.set_pass_kind(PassKind::FullSweep);
         // The cursor asserts "every remote change up to this event has been applied", which is only
         // true of a cursor read *before* the walk: a change landing mid-walk in an already-listed
         // folder is missed by this snapshot, so anchoring after the walk skips it in the delta too
@@ -1880,6 +1970,17 @@ impl<C: ProtonClient> Daemon<C> {
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
         let plan_summary = PlanSummary::from_plan(&plan);
         self.last_plan_summary = Some(plan_summary.clone());
+        // The pass's change count, established the moment a plan exists (#213). Counts actions
+        // with a side effect, so an `AutoLink`-heavy adoption pass does not read as thousands of
+        // changes. Until this point the count is honestly `None` — the client omits the clause
+        // rather than printing a `0` it would have to take back.
+        let planned_changes = plan
+            .iter()
+            .filter(|action| action_performs_side_effects(&action.action))
+            .count() as u64;
+        self.pass_log.planned_changes = Some(planned_changes);
+        self.shared
+            .update_pass_progress(|pass| pass.changes = Some(planned_changes));
         self.record_unsyncable(&plan, remote_map.proves_absence());
 
         // Delete-approval gate: decide, per destructive action, whether to execute it now or
@@ -2006,6 +2107,7 @@ impl<C: ProtonClient> Daemon<C> {
             // failed action is never recorded" structural rather than a property of each arm.
             let mutations_before = index_mutations.len();
             let consumptions_before = pending_approval_consumptions.len();
+            let events_before = self.pass_log.pending.len();
             // A closure, not a labeled block, so `?` inside an arm ends THIS action rather than the
             // pass (#136) — `break 'action` (the old loop `continue`) is now `return Ok(())`.
             let mut execute_action = || -> AppResult<()> {
@@ -2063,6 +2165,11 @@ impl<C: ProtonClient> Daemon<C> {
                                 SyncStatus::Synced,
                             );
                             index_mutations.push(IndexMutation::Upsert(record));
+                            self.pass_log.note(
+                                SyncAction::Upload,
+                                &action.path,
+                                Some(local.file_size),
+                            );
                         }
                     }
                     SyncAction::Download => {
@@ -2137,6 +2244,11 @@ impl<C: ProtonClient> Daemon<C> {
                             SyncStatus::Synced,
                         );
                         index_mutations.push(IndexMutation::Upsert(record));
+                        self.pass_log.note(
+                            SyncAction::Download,
+                            &action.path,
+                            Some(local_state.file_size),
+                        );
                     }
                     SyncAction::CreateRemoteDirectory => {
                         if action.path.as_os_str().is_empty() {
@@ -2160,6 +2272,11 @@ impl<C: ProtonClient> Daemon<C> {
                                 SyncStatus::Synced,
                             );
                             index_mutations.push(IndexMutation::Upsert(record));
+                            self.pass_log.note(
+                                SyncAction::CreateRemoteDirectory,
+                                &action.path,
+                                None,
+                            );
                         }
                     }
                     SyncAction::CreateLocalDirectory => {
@@ -2176,6 +2293,11 @@ impl<C: ProtonClient> Daemon<C> {
                                 SyncStatus::Synced,
                             );
                             index_mutations.push(IndexMutation::Upsert(record));
+                            self.pass_log.note(
+                                SyncAction::CreateLocalDirectory,
+                                &action.path,
+                                None,
+                            );
                         }
                     }
                     SyncAction::MoveLocal => {
@@ -2187,6 +2309,11 @@ impl<C: ProtonClient> Daemon<C> {
                         {
                             ensure_parent_directory(&destination)?;
                             fs::rename(&source, &destination)?;
+                            self.pass_log.note_move(
+                                SyncAction::MoveLocal,
+                                &action.path,
+                                destination_path,
+                            );
                             if action.entity_kind == EntityKind::Directory {
                                 // A directory rename relocates untracked descendants that the
                                 // planner deliberately left for the next pass (#12), and inotify
@@ -2265,6 +2392,11 @@ impl<C: ProtonClient> Daemon<C> {
                                 &action.path,
                                 destination_path,
                             )?;
+                            self.pass_log.note_move(
+                                SyncAction::MoveRemote,
+                                &action.path,
+                                destination_path,
+                            );
                             let record = FileRecord::from_local(
                                 destination_path.clone(),
                                 local,
@@ -2297,6 +2429,9 @@ impl<C: ProtonClient> Daemon<C> {
                         None => {}
                     },
                     SyncAction::Conflict => {
+                        // Bytes only when the sidecar came off the network; a local copy moves
+                        // none, and #191's totals count network traffic.
+                        let mut sidecar_bytes = None;
                         if action.sidecar_from_local_copy {
                             // The remote node is confirmed gone, so the sidecar is a copy of the
                             // surviving local file (#46). Recording the conflict without the
@@ -2367,6 +2502,10 @@ impl<C: ProtonClient> Daemon<C> {
                                 vanished_nodes += 1;
                                 return Ok(());
                             }
+                            sidecar_bytes = fs::symlink_metadata(&destination)
+                                .ok()
+                                .filter(|metadata| metadata.is_file())
+                                .map(|metadata| metadata.len());
                         }
                         if let Some(local) = local_files.get(&action.path) {
                             let record = FileRecord::from_local(
@@ -2380,9 +2519,15 @@ impl<C: ProtonClient> Daemon<C> {
                                 SyncStatus::Conflict,
                             );
                             index_mutations.push(IndexMutation::Upsert(record));
+                            // Recorded beside the index mutation, not beside the sidecar write:
+                            // the event this logs is the conflict itself (`Both sides had changed`
+                            // in `7a File lookup`), which is what the record makes true.
+                            self.pass_log
+                                .note(SyncAction::Conflict, &action.path, sidecar_bytes);
                         }
                     }
                     SyncAction::TypeConflict => {
+                        let mut sidecar_bytes = None;
                         if action.entity_kind == EntityKind::Directory
                             && let Some(conflict_path) = action.conflict_path.as_ref()
                             && let Some(LocalEntityState::Directory(local_directory)) =
@@ -2412,6 +2557,7 @@ impl<C: ProtonClient> Daemon<C> {
                                     SyncStatus::Conflict,
                                 );
                                 index_mutations.push(IndexMutation::Upsert(sidecar_record));
+                                sidecar_bytes = Some(local_state.file_size);
                             }
                             let directory_record = FileRecord::from_local_directory(
                                 action.path.clone(),
@@ -2420,6 +2566,11 @@ impl<C: ProtonClient> Daemon<C> {
                                 SyncStatus::Synced,
                             );
                             index_mutations.push(IndexMutation::Upsert(directory_record));
+                            self.pass_log.note(
+                                SyncAction::TypeConflict,
+                                &action.path,
+                                sidecar_bytes,
+                            );
                         } else {
                             warn!(
                                 path = %action.path.display(),
@@ -2447,6 +2598,8 @@ impl<C: ProtonClient> Daemon<C> {
                                 ))
                             })?;
                         self.proton.delete(&remote_path)?;
+                        self.pass_log
+                            .note(SyncAction::RemoteDelete, &action.path, None);
                         index_mutations.push(IndexMutation::Purge(action.path.clone()));
                         if action.entity_kind == EntityKind::Directory {
                             for descendant in descendant_index_paths(&action.path, base_index) {
@@ -2483,6 +2636,8 @@ impl<C: ProtonClient> Daemon<C> {
                                 fs::remove_file(&destination)?;
                             }
                         }
+                        self.pass_log
+                            .note(SyncAction::LocalDelete, &action.path, None);
                         index_mutations.push(IndexMutation::Purge(action.path.clone()));
                         if action.entity_kind == EntityKind::Directory {
                             for descendant in descendant_index_paths(&action.path, base_index) {
@@ -2525,6 +2680,7 @@ impl<C: ProtonClient> Daemon<C> {
                 // pass, from ground truth, exactly as a pass-fatal failure used to.
                 index_mutations.truncate(mutations_before);
                 pending_approval_consumptions.truncate(consumptions_before);
+                self.pass_log.truncate(events_before);
                 failures.record(action, error.as_ref());
                 if failures.breaker_tripped() {
                     return Err(boxed_error(format!(
@@ -2546,6 +2702,7 @@ impl<C: ProtonClient> Daemon<C> {
                     &mut self.connection,
                     &mut index_mutations,
                     &mut pending_approval_consumptions,
+                    &mut self.pass_log,
                 )?;
             }
             action_number += 1;
@@ -2596,7 +2753,11 @@ impl<C: ProtonClient> Daemon<C> {
         for (path, direction) in &pending_approval_consumptions {
             delete_delete_approval(&transaction, path, *direction)?;
         }
+        // Whatever the last checkpoint did not carry (an index-only tail, or the events of an
+        // action that needs no checkpoint of its own).
+        let pass_id = self.pass_log.write_pending(&transaction)?;
         transaction.commit()?;
+        self.pass_log.note_committed(pass_id);
         // `pending_changes` is a wake-up/status hint, not a plan input, and every pass that
         // reaches this commit ran the local stat-walk (the events-mode idle fast-path returns
         // before `execute_plan_and_commit`), so clearing the whole set here cannot lose work: the
@@ -2864,6 +3025,11 @@ impl<C: ProtonClient> Daemon<C> {
                                 SyncStatus::Synced,
                             );
                             index_mutations.push(IndexMutation::Upsert(record));
+                            self.pass_log.note(
+                                SyncAction::Download,
+                                &prepared.action.path,
+                                Some(local_state.file_size),
+                            );
                             debug!(
                                 target: TRANSFER_LOG_TARGET,
                                 path = %prepared.action.path.display(),
@@ -2904,6 +3070,7 @@ impl<C: ProtonClient> Daemon<C> {
             &mut self.connection,
             index_mutations,
             pending_approval_consumptions,
+            &mut self.pass_log,
         )?;
         // A chunk is many actions; one landed file in it clears the breaker's consecutive run
         // exactly as a successful single action would. A vanished node landed nothing.
@@ -2989,6 +3156,90 @@ impl<C: ProtonClient> Daemon<C> {
             false,
             approve,
         )
+    }
+
+    /// Seals this pass's history row and re-reads the published summary.
+    ///
+    /// Called from `reconcile_blocking`'s three-arm outcome match — after every side effect, and
+    /// after `execute_plan_and_commit`'s own final commit. An idle pass writes nothing at all
+    /// (see [`PassLog::is_notable`]). Errors are logged, never propagated: this is display data,
+    /// and a full disk must not turn a successful sync into a failed one.
+    fn finalize_pass_record(
+        &mut self,
+        outcome: PassOutcomeKind,
+        failed: usize,
+        error: Option<&str>,
+    ) {
+        if let Err(problem) = self.write_pass_record(outcome, failed, error) {
+            warn!(error = %problem, "failed to record this pass in the sync history");
+        }
+        self.refresh_pass_history();
+    }
+
+    fn write_pass_record(
+        &mut self,
+        outcome: PassOutcomeKind,
+        failed: usize,
+        error: Option<&str>,
+    ) -> AppResult<()> {
+        if !self.pass_log.is_notable(outcome) {
+            return Ok(());
+        }
+        let id = match self.pass_log.id {
+            Some(id) => id,
+            // A notable pass that committed no event (a clean full sweep, or a pass that failed
+            // before planning) opens its row here instead.
+            None => begin_pass(
+                &self.connection,
+                self.pass_log.started_epoch_secs,
+                self.pass_log.kind,
+            )?,
+        };
+        self.pass_log.id = Some(id);
+        finish_pass(
+            &self.connection,
+            id,
+            self.pass_log.started.elapsed().as_millis() as u64,
+            outcome,
+            self.pass_log.changed,
+            failed,
+            self.pass_log.bytes_uploaded,
+            self.pass_log.bytes_downloaded,
+            error,
+        )?;
+        // Only a pass that wrote rows pays for the prune.
+        prune_history(
+            &self.connection,
+            current_epoch_secs(),
+            HistoryRetention::default(),
+        )?;
+        Ok(())
+    }
+
+    /// Re-reads the three published history queries. Run after **every** pass, idle ones included:
+    /// `today`'s window moves at local midnight, and an idle pass is often the only thing running
+    /// when it does.
+    fn refresh_pass_history(&mut self) {
+        match self.load_pass_history() {
+            Ok(history) => self.pass_history = Some(history),
+            Err(error) => warn!(%error, "failed to read the sync history"),
+        }
+    }
+
+    fn load_pass_history(&self) -> AppResult<PassHistory> {
+        Ok(PassHistory {
+            recent: recent_passes(&self.connection, PASS_HISTORY_REPORTED)?,
+            last_full_sweep: last_full_sweep(&self.connection)?,
+            today: byte_totals_since(&self.connection, local_day_start(current_epoch_secs()))?,
+        })
+    }
+
+    /// Records the strategy this pass is running, on both the durable row and the live pass block.
+    /// One setter, so the two can never disagree.
+    fn set_pass_kind(&mut self, kind: PassKind) {
+        self.pass_log.kind = kind;
+        self.shared
+            .update_pass_progress(|pass| pass.kind = kind.as_str().to_owned());
     }
 
     fn record_status_history(&mut self, message: &str) {
@@ -3276,6 +3527,28 @@ async fn handle_control_connection(
             }
             shared.response(&message)
         }
+        ControlCommand::Activity => {
+            // Answered from the index on this task, like `approve`/`deny` — a bounded, indexed
+            // read over the history tables, not daemon work.
+            let connection = approvals.lock().await;
+            let outcome = query_file_history(&connection, &request);
+            drop(connection);
+            match outcome {
+                Ok(history) => {
+                    let mut response = shared.response("sync activity");
+                    response.file_history = Some(history);
+                    response
+                }
+                // Reported in the reply rather than dropping the connection: history is display
+                // data, and a client that asked for it must be told why it is missing.
+                Err(error) => {
+                    warn!(%error, "failed to read the per-file sync history");
+                    let mut response = shared.response("sync activity unavailable");
+                    response.last_error = Some(error.to_string());
+                    response
+                }
+            }
+        }
         ControlCommand::Shutdown => {
             info!("shutdown requested over control socket");
             // Same teeth as a delivered signal: cancel any in-flight proton-drive command so
@@ -3296,6 +3569,33 @@ async fn handle_control_connection(
         ),
     }
     Ok(())
+}
+
+/// Answers a [`ControlCommand::Activity`] request. The selector is a **relative path** and is
+/// validated like every other externally-sourced path before it reaches a query — it is only ever
+/// a lookup key here, never joined onto a root, but an unvalidated path has no business being
+/// stored or matched either.
+fn query_file_history(
+    connection: &Connection,
+    request: &crate::ipc::ControlRequest,
+) -> AppResult<crate::index::FileHistory> {
+    let path = match request.argument.as_deref() {
+        Some(selector) => Some(
+            crate::validate_relative_path_non_empty(Path::new(selector))
+                .ok_or_else(|| boxed_error(format!("unsafe history path: {selector}")))?,
+        ),
+        None => None,
+    };
+    // `0` and `None` are the same request: everything still retained.
+    let since = match request.window_secs.unwrap_or(0) {
+        0 => 0,
+        window => current_epoch_secs().saturating_sub(window),
+    };
+    let limit = request
+        .limit
+        .unwrap_or(ACTIVITY_EVENTS_DEFAULT_LIMIT)
+        .clamp(1, ACTIVITY_EVENTS_MAX_LIMIT);
+    file_events(connection, path.as_deref(), since, limit)
 }
 
 /// Writes the metrics sidecar from the shared control state, logging (not failing) on error —
@@ -3423,8 +3723,12 @@ fn commit_checkpoint(
     connection: &mut Connection,
     index_mutations: &mut Vec<IndexMutation>,
     pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
+    pass_log: &mut PassLog,
 ) -> AppResult<()> {
-    if index_mutations.is_empty() && pending_approval_consumptions.is_empty() {
+    if index_mutations.is_empty()
+        && pending_approval_consumptions.is_empty()
+        && pass_log.pending.is_empty()
+    {
         return Ok(());
     }
     let transaction = connection.transaction()?;
@@ -3434,9 +3738,14 @@ fn commit_checkpoint(
     for (path, direction) in pending_approval_consumptions.iter() {
         delete_delete_approval(&transaction, path, *direction)?;
     }
+    // History rides in the same transaction as the mutations it describes, so a shutdown between
+    // the two can never leave an index row whose history row vanished (or the reverse).
+    let pass_id = pass_log.write_pending(&transaction)?;
     transaction.commit()?;
     index_mutations.clear();
     pending_approval_consumptions.clear();
+    // Fold the rollup only now: before the commit these events might still have been rolled back.
+    pass_log.note_committed(pass_id);
     Ok(())
 }
 
@@ -3547,6 +3856,28 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> AppResult<()> {
         return Err(error.into());
     }
     Ok(())
+}
+
+/// Start of the current **local** calendar day, in unix seconds.
+///
+/// `386 MB sent · 1.1 GB received today` is a calendar day, not a rolling 24 hours: at 00:30 the
+/// two differ by everything that happened yesterday evening. Nothing in `std` knows where the
+/// boundary is and the engine takes no date-time dependency (it shells `curl` rather than link an
+/// HTTP crate), so this asks libc — which the crate already uses for `geteuid` and `kill`.
+fn local_day_start(now_epoch_secs: u64) -> u64 {
+    let time = now_epoch_secs as libc::time_t;
+    let mut broken_down: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `time` and `broken_down` are live locals for the duration of the call, and
+    // `localtime_r` is the thread-safe form (it writes only into the buffer it is handed).
+    if unsafe { libc::localtime_r(&time, &mut broken_down) }.is_null() {
+        // The boundary is unknown; an empty window reports nothing rather than a confident total
+        // over the wrong span.
+        return now_epoch_secs;
+    }
+    let since_midnight = (broken_down.tm_hour.max(0) as u64) * 3600
+        + (broken_down.tm_min.max(0) as u64) * 60
+        + (broken_down.tm_sec.max(0) as u64);
+    now_epoch_secs.saturating_sub(since_midnight)
 }
 
 fn current_epoch_secs() -> u64 {
@@ -3694,6 +4025,128 @@ pub const FAILED_ITEMS_REPORTED: usize = 20;
 /// doomed round trip per planned action, every pass. Gated on zero successes so it can never
 /// starve anything: a pass that has accomplished nothing loses nothing by stopping.
 const CONSECUTIVE_FAILURE_LIMIT: usize = 20;
+
+/// A pass's history rows: the in-flight event buffer plus the rollup folded from every batch that
+/// actually committed (#213/#229/#238/#230/#190/#191).
+///
+/// The buffer mirrors `index_mutations` exactly — an action that fails truncates it back, a
+/// checkpoint drains it — so a history row can never describe a side effect that did not land, and
+/// it commits in the same transaction as the index mutation it accompanies (ADR 0003). The rollup
+/// is folded only *after* a transaction commits, never from the live buffer: a pass whose last
+/// action failed would otherwise count events the rollback discarded.
+struct PassLog {
+    started_epoch_secs: u64,
+    started: Instant,
+    /// The strategy this pass ran. Starts at [`PassKind::Incremental`] and is corrected by whichever
+    /// branch is taken; a pass that dies before choosing one keeps the default, which asserts only
+    /// that no full-tree walk happened — true, since none did.
+    kind: PassKind,
+    /// The `sync_passes` row, opened by the first checkpoint that committed an event. `None` while
+    /// the pass has landed nothing, which is what keeps an idle pass out of the log entirely.
+    id: Option<i64>,
+    /// Events awaiting the next commit.
+    pending: Vec<FileEvent>,
+    /// Side effects that landed **and committed** — the pass row's `changed`. Distinct from the
+    /// live `planned_changes` below, which is what the plan asked for.
+    changed: usize,
+    bytes_uploaded: u64,
+    bytes_downloaded: u64,
+    /// Side-effecting actions the plan holds, for the live pass block (#213). `None` until the
+    /// plan exists.
+    planned_changes: Option<u64>,
+}
+
+impl PassLog {
+    fn new(now_epoch_secs: u64) -> Self {
+        Self {
+            started_epoch_secs: now_epoch_secs,
+            started: Instant::now(),
+            kind: PassKind::Incremental,
+            id: None,
+            pending: Vec::new(),
+            changed: 0,
+            bytes_uploaded: 0,
+            bytes_downloaded: 0,
+            planned_changes: None,
+        }
+    }
+
+    /// Buffers a side effect that just landed at `path`. `bytes` is set only when bytes actually
+    /// crossed the network (see [`SyncAction::transfer_direction`]).
+    fn note(&mut self, action: SyncAction, path: &Path, bytes: Option<u64>) {
+        self.pending.push(FileEvent {
+            path: path.to_path_buf(),
+            source_path: None,
+            action,
+            bytes,
+            epoch_secs: current_epoch_secs(),
+            pass_id: self.id.unwrap_or_default(),
+        });
+    }
+
+    /// Buffers a move. Recorded at its **destination**, so a later per-path lookup on the file's
+    /// current path finds the move that brought it there (#190) rather than missing its own event.
+    fn note_move(&mut self, action: SyncAction, from: &Path, to: &Path) {
+        self.pending.push(FileEvent {
+            path: to.to_path_buf(),
+            source_path: Some(from.to_path_buf()),
+            action,
+            bytes: None,
+            epoch_secs: current_epoch_secs(),
+            pass_id: self.id.unwrap_or_default(),
+        });
+    }
+
+    /// Discards everything buffered since `mark` — the failed action's rollback point.
+    fn truncate(&mut self, mark: usize) {
+        self.pending.truncate(mark);
+    }
+
+    /// Writes the buffered events (opening the pass row on first use) **inside the caller's
+    /// transaction**. Returns the row id for [`Self::note_committed`], which the caller calls only
+    /// once that transaction has committed.
+    fn write_pending(&self, connection: &Connection) -> AppResult<Option<i64>> {
+        if self.pending.is_empty() {
+            return Ok(self.id);
+        }
+        let id = match self.id {
+            Some(id) => id,
+            None => begin_pass(connection, self.started_epoch_secs, self.kind)?,
+        };
+        insert_file_events(connection, id, &self.pending)?;
+        Ok(Some(id))
+    }
+
+    /// Folds the just-committed batch into the rollup and adopts the row id.
+    fn note_committed(&mut self, id: Option<i64>) {
+        self.id = id;
+        for event in self.pending.drain(..) {
+            self.changed += 1;
+            match (event.action.transfer_direction(), event.bytes) {
+                (Some(TransferDirection::Up), Some(bytes)) => {
+                    self.bytes_uploaded = self.bytes_uploaded.saturating_add(bytes);
+                }
+                (Some(TransferDirection::Down), Some(bytes)) => {
+                    self.bytes_downloaded = self.bytes_downloaded.saturating_add(bytes);
+                }
+                // An action that moves no bytes, or one that moved an unknown number.
+                (Some(_), None) | (None, _) => {}
+            }
+        }
+    }
+
+    /// Whether this pass earns a durable row. An **idle pass writes nothing**: with events-driven
+    /// detection on by default the daemon polls every 30s, so recording every pass identically
+    /// would evict each interesting row within minutes and leave a log of ~2900 "nothing happened"
+    /// entries a day. Nothing is lost — "the daemon is alive and passing" is already answered by
+    /// `reconcile_seq` and `last_sync_epoch_secs` on the live status reply.
+    ///
+    /// A full sweep is recorded even when it changed nothing, because `Full sweep now` asks
+    /// exactly that: when did the last one run, and was anything out of step (#238).
+    fn is_notable(&self, outcome: PassOutcomeKind) -> bool {
+        self.changed > 0 || self.kind == PassKind::FullSweep || outcome != PassOutcomeKind::Clean
+    }
+}
 
 /// A pass's item failures (#136), plus what the next pass must be told to look at again.
 #[derive(Default)]
@@ -11809,5 +12262,301 @@ mod tests {
             }
             std::thread::sleep(Duration::from_secs(2));
         }
+    }
+
+    // ---- pass and path history (#213 / #229 / #238 / #230 / #190 / #191) ---------------------
+
+    fn recorded_passes(daemon: &Daemon<impl ProtonClient>) -> Vec<crate::index::PassRecord> {
+        recent_passes(&daemon.connection, 100).expect("recent passes")
+    }
+
+    fn recorded_events(daemon: &Daemon<impl ProtonClient>) -> Vec<FileEvent> {
+        file_events(&daemon.connection, None, 0, 100)
+            .expect("file events")
+            .events
+    }
+
+    #[test]
+    fn a_full_sweep_that_changed_nothing_is_still_recorded() {
+        // `Full sweep now` asks two things a changeless sweep is the answer to: when did the last
+        // one run, and was anything out of step (#238). A pass row is written for every full
+        // sweep even though the same pass, run incrementally, would write none.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect_clean("empty sweep");
+
+        let passes = recorded_passes(&daemon);
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].kind, "full-sweep");
+        assert_eq!(passes[0].outcome, "clean");
+        assert_eq!(passes[0].changed, 0, "nothing was out of step");
+        assert_eq!(passes[0].failed, 0);
+        assert!(recorded_events(&daemon).is_empty(), "nothing moved");
+        // And it is reachable as the answer to "when was the last full sweep".
+        assert_eq!(
+            last_full_sweep(&daemon.connection)
+                .expect("sweep")
+                .map(|pass| pass.id),
+            Some(passes[0].id)
+        );
+    }
+
+    #[test]
+    fn idle_passes_record_nothing_at_all() {
+        // The load-bearing retention decision. With events-driven detection on by default the
+        // daemon runs a pass every 30s — ~2900 a day — and recording each one identically would
+        // evict every interesting row within minutes. "The daemon is alive" is already answered by
+        // `reconcile_seq` and `last_sync_epoch_secs` on the live status reply.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _walks) = steady_state_event_daemon(&directory);
+        // The shipped default: no periodic safety resync, so nothing after the startup snapshot
+        // full-sweeps and every pass below is a genuinely idle incremental one.
+        daemon.config.events_full_scan_every = 0;
+        let after_bootstrap = recorded_passes(&daemon).len();
+
+        for _ in 0..50 {
+            daemon.reconcile_blocking().expect_clean("idle pass");
+        }
+
+        let passes = recorded_passes(&daemon);
+        assert_eq!(
+            passes.len(),
+            after_bootstrap,
+            "fifty idle passes must add no rows"
+        );
+        assert!(
+            passes.iter().all(|pass| pass.kind == "full-sweep"),
+            "only the startup sweep is recorded: {passes:?}"
+        );
+        // The daemon still reports that it is passing — that is a different surface.
+        assert!(daemon.shared.reconcile_seq.load(Ordering::SeqCst) >= 50);
+    }
+
+    #[test]
+    fn a_pass_that_moved_something_records_it_with_its_bytes() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("note.txt"), b"0123456789").expect("local file");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.reconcile_blocking().expect_clean("upload pass");
+
+        let passes = recorded_passes(&daemon);
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].changed, 1);
+        assert_eq!(passes[0].bytes_uploaded, 10);
+        assert_eq!(passes[0].bytes_downloaded, 0);
+
+        let events = recorded_events(&daemon);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].path, PathBuf::from("note.txt"));
+        assert_eq!(events[0].action, SyncAction::Upload);
+        assert_eq!(events[0].bytes, Some(10));
+        assert_eq!(events[0].pass_id, passes[0].id, "the event names its pass");
+
+        // #191 reads the rollup, over the window the pass started in.
+        let totals = byte_totals_since(&daemon.connection, 0).expect("totals");
+        assert_eq!(totals.uploaded_bytes, 10);
+        // …and it is what the status reply publishes.
+        let status = daemon.status_response("daemon status");
+        let history = status.history.expect("published history");
+        assert_eq!(history.today.uploaded_bytes, 10);
+        assert_eq!(history.recent.len(), 1);
+    }
+
+    #[test]
+    fn a_partial_pass_is_recorded_as_partial_and_only_the_landed_action_has_an_event() {
+        // #304's third outcome is a state of its own: the row says `partial`, carries the failed
+        // count, and counts only what actually landed. A trailing arm folding it into either other
+        // outcome is #246.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("first.txt"), b"first").expect("first");
+        fs::write(local_root.join("second.txt"), b"second").expect("second");
+        let (client, _operations) = RecordingProtonClient::with_failed_uploads(
+            HashMap::new(),
+            BTreeSet::from([PathBuf::from("second.txt")]),
+        );
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect_partial(1, "the second upload fails as an item");
+
+        let passes = recorded_passes(&daemon);
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].outcome, "partial");
+        assert_eq!(passes[0].failed, 1);
+        assert_eq!(passes[0].changed, 1, "only the first upload landed");
+        assert_eq!(passes[0].bytes_uploaded, 5);
+        assert!(passes[0].error.is_some(), "a partial pass says what failed");
+
+        // The failed action's history row is discarded with its index mutation — a history row
+        // never describes a side effect that did not happen.
+        let events = recorded_events(&daemon);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].path, PathBuf::from("first.txt"));
+    }
+
+    #[test]
+    fn a_failed_pass_is_recorded_with_its_error() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut daemon = Daemon::with_client(
+            test_config(directory.path(), &local_root),
+            FailingListProtonClient,
+        )
+        .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect_err("the remote listing fails");
+
+        let passes = recorded_passes(&daemon);
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].outcome, "failed");
+        assert_eq!(passes[0].changed, 0);
+        assert!(
+            passes[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("list failed")),
+            "the failure is named on the row: {:?}",
+            passes[0].error
+        );
+        // `interrupted` is only ever reachable by a crash: every graceful ending, failures
+        // included, seals the row.
+        assert!(
+            recorded_passes(&daemon)
+                .iter()
+                .all(|p| p.outcome != "interrupted")
+        );
+    }
+
+    #[test]
+    fn a_files_own_history_survives_it_being_moved() {
+        // #190 looks history up by the path a file has NOW. Recording the move at its destination
+        // is what keeps the query from missing the very event that moved it.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let new_path = local_root.join("new-name.txt");
+        fs::write(&new_path, b"same content").expect("new local file");
+        let hash = crate::index::compute_sha1(&new_path).expect("new hash");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("old-name.txt"),
+            RemoteEntity::File(remote("old-name.txt", "stable-id", Some(hash.as_str()))),
+        )]);
+        let (client, _operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("old-name.txt", Some("stable-id"), hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect_clean("rename pass");
+
+        let at_destination =
+            file_events(&daemon.connection, Some(Path::new("new-name.txt")), 0, 10)
+                .expect("history for the new path");
+        assert_eq!(at_destination.events.len(), 1);
+        assert_eq!(at_destination.events[0].action, SyncAction::MoveRemote);
+        assert_eq!(
+            at_destination.events[0].source_path,
+            Some(PathBuf::from("old-name.txt")),
+            "where it came from is still on the row"
+        );
+        // A per-path query offers no byte total: the rollup is per pass and holds no paths, so
+        // the only number it could give is the window's whole traffic — which would read as this
+        // file's own.
+        assert!(at_destination.totals.is_none());
+        // Looking it up at the path it LEFT finds nothing, which is the point.
+        assert_eq!(
+            file_events(&daemon.connection, Some(Path::new("old-name.txt")), 0, 10)
+                .expect("history for the old path")
+                .total,
+            0
+        );
+    }
+
+    #[test]
+    fn the_live_pass_block_outlives_every_phase_change() {
+        // #213: `SyncActivity::since_epoch_secs` restarts on each phase, so a client rendering it
+        // as the pass's elapsed time counts backwards three times per pass. The pass block is
+        // stamped onto every activity from one place and never reset by a phase.
+        let shared = ControlShared::new(RunningConfigInfo {
+            local_root: PathBuf::from("/local"),
+            remote_root: PathBuf::from("/Drive/RemoteFolder"),
+            db_path: PathBuf::from("/local/.sync/sync_index.db"),
+        });
+        shared.begin_pass_progress(1_000, PassKind::WarmStart);
+        shared.begin_activity(new_activity(PHASE_SCANNING_LOCAL));
+        shared.update_pass_progress(|pass| pass.changes = Some(3));
+        shared.begin_activity(new_activity(PHASE_EXECUTING));
+        // A phase started by the high-frequency walk callback keeps it too.
+        shared.update_activity(PHASE_COMMITTING, |activity| {
+            activity.folders_listed = Some(1)
+        });
+
+        let activity = shared.activity_for_response().expect("activity");
+        assert_eq!(activity.phase, PHASE_COMMITTING);
+        let pass = activity.pass.expect("pass block");
+        assert_eq!(pass.started_epoch_secs, 1_000);
+        assert_eq!(pass.changes, Some(3));
+        assert_eq!(pass.kind, "warm-start");
+
+        // The pass ending clears it, so a stale pass can never outlive its own reconcile.
+        shared.clear_activity();
+        assert!(shared.activity_for_response().is_none());
+    }
+
+    #[test]
+    fn the_pass_kind_reaches_the_live_block_and_the_row_together() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        daemon.shared.begin_pass_progress(1, PassKind::Incremental);
+        daemon.set_pass_kind(PassKind::FullSweep);
+
+        assert_eq!(daemon.pass_log.kind, PassKind::FullSweep);
+        daemon.shared.begin_activity(new_activity(PHASE_EXECUTING));
+        assert_eq!(
+            daemon
+                .shared
+                .activity_for_response()
+                .and_then(|activity| activity.pass)
+                .map(|pass| pass.kind),
+            Some("full-sweep".to_owned()),
+            "one setter, so the row and the live block cannot disagree"
+        );
+    }
+
+    #[test]
+    fn todays_window_starts_at_local_midnight() {
+        let now = current_epoch_secs();
+        let start = local_day_start(now);
+        assert!(start <= now, "the day started before now");
+        assert!(
+            now - start < 86_400,
+            "and no more than a calendar day ago: {start} vs {now}"
+        );
+        // The boundary is a whole minute past the epoch in every timezone offset in use.
+        assert_eq!(start % 60, 0);
     }
 }

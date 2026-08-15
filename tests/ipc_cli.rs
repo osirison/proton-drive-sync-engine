@@ -71,17 +71,41 @@ mod unix_tests {
             Some(0)
         );
 
+        // `history --json` is the durable pass log, newest first — not the rolling
+        // `status_history` trail (which records every pass, idle ones included, and holds about
+        // ten minutes at the events poll cadence).
         let history = run_control(&socket_path, "history");
-        let history = history.as_array().expect("history JSON array");
-        // Two entries: the startup reconcile, then the manual syncnow after resume. (The syncnow
-        // issued while paused is skipped without scheduling, so it records no history entry.)
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0]["message"], "sync completed");
-        assert_eq!(history[1]["message"], "sync completed");
-        assert_eq!(
-            history[1]["successful_sync_summary"]["total"].as_u64(),
-            Some(0)
+        let recent = history["recent"].as_array().expect("recent passes");
+        // Two passes: the startup reconcile, then the manual syncnow after resume. (The syncnow
+        // issued while paused is skipped without scheduling, so it runs no pass at all.) Both are
+        // full-tree walks against an empty tree — recorded despite changing nothing, because
+        // "when did the last full sweep run, and was anything out of step" is exactly what a full
+        // sweep's row exists to answer (#238).
+        assert_eq!(recent.len(), 2);
+        for pass in recent {
+            assert_eq!(pass["kind"], "full-sweep");
+            assert_eq!(pass["outcome"], "clean");
+            assert_eq!(pass["changed"].as_u64(), Some(0));
+        }
+        // Newest first.
+        assert!(
+            recent[0]["started_epoch_secs"].as_u64().unwrap()
+                >= recent[1]["started_epoch_secs"].as_u64().unwrap()
         );
+        assert_eq!(
+            history["last_full_sweep"]["id"].as_i64(),
+            recent[0]["id"].as_i64(),
+            "the last full sweep is the most recent pass here"
+        );
+        // Nothing moved, so today's totals are zero rather than absent.
+        assert_eq!(history["today"]["uploaded_bytes"].as_u64(), Some(0));
+        assert_eq!(history["today"]["downloaded_bytes"].as_u64(), Some(0));
+
+        // The per-file feed is a separate verb, and this run moved no files.
+        let activity = run_control(&socket_path, "activity");
+        assert_eq!(activity["total"].as_u64(), Some(0));
+        assert_eq!(activity["files"].as_u64(), Some(0));
+        assert!(activity["events"].as_array().expect("events").is_empty());
     }
 
     /// #63: a `socket_path` set in the daemon's config file used to be invisible to the control

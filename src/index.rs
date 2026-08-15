@@ -1,4 +1,4 @@
-use crate::sync::{UnsyncableItem, UnsyncableReason};
+use crate::sync::{SyncAction, UnsyncableItem, UnsyncableReason};
 use crate::{AppResult, boxed_error};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -44,6 +44,30 @@ CREATE TABLE IF NOT EXISTS unsyncable_items (
     reason TEXT NOT NULL,
     first_seen INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sync_passes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    changed INTEGER NOT NULL,
+    failed INTEGER NOT NULL,
+    bytes_up INTEGER NOT NULL,
+    bytes_down INTEGER NOT NULL,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_passes_started_at ON sync_passes(started_at);
+CREATE TABLE IF NOT EXISTS sync_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pass_id INTEGER NOT NULL,
+    path BLOB NOT NULL,
+    source_path BLOB,
+    action TEXT NOT NULL,
+    bytes INTEGER,
+    at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_events_at ON sync_events(at);
+CREATE INDEX IF NOT EXISTS idx_sync_events_path ON sync_events(path);
 "#;
 
 /// Speeds up [`path_for_proton_id`] (turning a volume event's node id into its local path).
@@ -847,6 +871,428 @@ pub fn replace_unsyncable_items(
     }
     transaction.commit()?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pass and path history (#213 / #229 / #238 / #230 / #190 / #191).
+//
+// ONE schema, six queries. `sync_passes` is the retained **rollup** (one row per notable pass);
+// `sync_events` is the expiring **detail** (one row per side effect that landed). Every number a
+// caller can read comes from exactly one of them:
+//
+//   * per-pass duration / kind / outcome  -> `recent_passes`      (#229, #238)
+//   * when the last full sweep ran        -> `last_full_sweep`    (#238)
+//   * byte totals per direction, windowed -> `byte_totals_since`  (#191) — the ROLLUP, always
+//   * what moved and when (global / path) -> `file_events`        (#230, #190)
+//
+// `sync_events.bytes` is per-row display data and is NEVER summed into a total: totals come from
+// the rollup, which outlives the detail (see [`HistoryRetention`]). Two sources for one number is
+// how they drift.
+// ---------------------------------------------------------------------------------------------
+
+/// Which remote-discovery strategy a pass actually ran — the fact `Full sweep now` needs in order
+/// to say when the last full sweep was (#238), and which the daemon already branches on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassKind {
+    /// A full-tree remote walk (`daemon::bootstrap_reconcile`) — O(folders).
+    FullSweep,
+    /// The first pass after boot, replaying the event cursor instead of walking (ADR 0004).
+    WarmStart,
+    /// Steady-state event-driven pass — O(changes).
+    Incremental,
+}
+
+impl PassKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FullSweep => "full-sweep",
+            Self::WarmStart => "warm-start",
+            Self::Incremental => "incremental",
+        }
+    }
+}
+
+/// How a recorded pass ended. Four states, each enumerated everywhere it is read: a trailing arm
+/// absorbing an undrawn one is how a failed pass came to render as "everything is up to date"
+/// (#246). Distinct from [`crate::daemon::PassOutcome`], which is the in-process return value and
+/// has no way to say "failed" (that is its `Err`) or "never finished".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassOutcomeKind {
+    /// Every planned action landed.
+    Clean,
+    /// The plan ran to the end; some items' side effects failed (#136).
+    Partial,
+    /// The pass itself could not proceed (a scan, a listing, a commit, a shutdown mid-plan).
+    Failed,
+    /// Written at the pass's first committed checkpoint and never updated — the process died
+    /// mid-pass. Not reachable from any graceful path; see [`begin_pass`].
+    Interrupted,
+}
+
+impl PassOutcomeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::Partial => "partial",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+/// One recorded pass. `kind` and `outcome` ride as open string tokens rather than enums for the
+/// same reason [`crate::ipc::SyncActivity::phase`] does: a client renders an unrecognized token
+/// verbatim instead of failing to parse the whole reply, so a future variant needs no lockstep
+/// upgrade. The tokens are [`PassKind::as_str`] and [`PassOutcomeKind::as_str`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PassRecord {
+    pub id: i64,
+    pub started_epoch_secs: u64,
+    /// Measured, not `finished - started`: most passes are sub-second and the `6a Activity passes`
+    /// chart draws them as bar heights.
+    pub duration_ms: u64,
+    pub kind: String,
+    pub outcome: String,
+    /// Side-effecting actions that **landed** (committed events). Distinct from
+    /// [`crate::ipc::PassProgress::changes`], which is what the in-flight pass *planned*.
+    pub changed: usize,
+    /// Items whose action failed (#136); `0` unless `outcome` is `partial`.
+    pub failed: usize,
+    pub bytes_uploaded: u64,
+    pub bytes_downloaded: u64,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// One side effect that landed, at the moment it was committed. The unit behind `Last things to
+/// move` (#230) and `This file's history` (#190).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileEvent {
+    /// Where the entity IS after the action — a move records its **destination**, so a per-path
+    /// lookup on the file's current path finds the move that brought it there.
+    #[serde(with = "crate::lossy_path")]
+    pub path: PathBuf,
+    /// Where a move came from; `None` for every other action.
+    #[serde(default, with = "crate::lossy_path::optional")]
+    pub source_path: Option<PathBuf>,
+    pub action: SyncAction,
+    /// Bytes this one action moved, when the action moves bytes and the size is known.
+    /// Per-row display data only — never summed (see the module note above).
+    #[serde(default)]
+    pub bytes: Option<u64>,
+    pub epoch_secs: u64,
+    /// The [`PassRecord::id`] this event belongs to. A correlation key, **not** a foreign key: the
+    /// two tables have independent retention, so a very old event may outlive its pass row.
+    pub pass_id: i64,
+}
+
+/// Bytes moved per direction over a window, from the pass rollup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ByteTotals {
+    /// Start of the window; `0` means "everything retained". A pass is counted in the window it
+    /// *started* in.
+    pub since_epoch_secs: u64,
+    pub uploaded_bytes: u64,
+    pub downloaded_bytes: u64,
+}
+
+/// A slice of the per-file feed, plus the counts a caller renders around it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileHistory {
+    /// Newest first, capped at the requested limit.
+    pub events: Vec<FileEvent>,
+    /// Matching events in the window, past the cap.
+    pub total: usize,
+    /// Distinct paths in the window — the `7 files in the last 3 days` count (#230).
+    pub files: usize,
+    /// Bytes moved over the same window, from the rollup (never from `events`).
+    ///
+    /// `None` for a **path-filtered** query: the rollup is per pass and holds no paths, so the
+    /// only total it can offer there is the window's whole traffic — a number that reads as the
+    /// file's own and is not. Summing the event rows instead would make this the second place
+    /// computing a byte total, which is the thing the module note above forbids.
+    #[serde(default)]
+    pub totals: Option<ByteTotals>,
+}
+
+/// What the history tables keep. An unbounded per-action log is a defect, not a feature: the
+/// events-driven daemon polls every 30s, so a live account runs ~2900 passes/day, and one
+/// bootstrap of a 5000-file account writes 5000 event rows.
+///
+/// Two bounds per table (age and rows) because either alone fails: an age bound lets one bootstrap
+/// dominate, a row bound alone lets a dormant daemon keep rows forever. Passes are kept longer and
+/// wider than events on purpose — the rollup is what answers "2 days ago" and the byte totals after
+/// the detail has aged out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryRetention {
+    pub max_passes: usize,
+    pub max_pass_age_secs: u64,
+    pub max_events: usize,
+    pub max_event_age_secs: u64,
+}
+
+impl Default for HistoryRetention {
+    fn default() -> Self {
+        Self {
+            // ~2000 notable passes and a year: months of a normal account's history, and still
+            // bounded under a failure storm (every failed pass is notable).
+            max_passes: 2_000,
+            max_pass_age_secs: 365 * 24 * 60 * 60,
+            // ~20k rows at roughly 120 bytes is a couple of MB, and survives four full bootstraps
+            // of a 5000-file account.
+            max_events: 20_000,
+            max_event_age_secs: 90 * 24 * 60 * 60,
+        }
+    }
+}
+
+/// Opens a pass row at the pass's first committed checkpoint and returns its id.
+///
+/// Written with `outcome = interrupted` and a zero duration deliberately: those are the true
+/// values for a pass that has started and not finished, so a process killed mid-pass leaves an
+/// honest row and needs no startup repair sweep. [`finish_pass`] overwrites them on every
+/// graceful ending, including a failure — so `interrupted` is only ever reachable by a crash.
+///
+/// Called from inside the checkpoint transaction that carries the events it will own, so a
+/// history row never precedes the side effect it describes (ADR 0003).
+pub fn begin_pass(connection: &Connection, started_at: u64, kind: PassKind) -> AppResult<i64> {
+    connection.execute(
+        "INSERT INTO sync_passes \
+         (started_at, duration_ms, kind, outcome, changed, failed, bytes_up, bytes_down, error) \
+         VALUES (?1, 0, ?2, ?3, 0, 0, 0, 0, NULL)",
+        params![
+            i64::try_from(started_at).unwrap_or(i64::MAX),
+            kind.as_str(),
+            PassOutcomeKind::Interrupted.as_str()
+        ],
+    )?;
+    Ok(connection.last_insert_rowid())
+}
+
+/// Seals the pass row opened by [`begin_pass`] with what the pass turned out to be.
+#[allow(clippy::too_many_arguments)]
+pub fn finish_pass(
+    connection: &Connection,
+    id: i64,
+    duration_ms: u64,
+    outcome: PassOutcomeKind,
+    changed: usize,
+    failed: usize,
+    bytes_uploaded: u64,
+    bytes_downloaded: u64,
+    error: Option<&str>,
+) -> AppResult<()> {
+    connection.execute(
+        "UPDATE sync_passes SET duration_ms = ?2, outcome = ?3, changed = ?4, failed = ?5, \
+         bytes_up = ?6, bytes_down = ?7, error = ?8 WHERE id = ?1",
+        params![
+            id,
+            i64::try_from(duration_ms).unwrap_or(i64::MAX),
+            outcome.as_str(),
+            i64::try_from(changed).unwrap_or(i64::MAX),
+            i64::try_from(failed).unwrap_or(i64::MAX),
+            i64::try_from(bytes_uploaded).unwrap_or(i64::MAX),
+            i64::try_from(bytes_downloaded).unwrap_or(i64::MAX),
+            error
+        ],
+    )?;
+    Ok(())
+}
+
+/// Appends the events a checkpoint is committing. Same transaction as the index mutations they
+/// describe — see [`crate::daemon::commit_checkpoint`].
+pub fn insert_file_events(
+    connection: &Connection,
+    pass_id: i64,
+    events: &[FileEvent],
+) -> AppResult<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut statement = connection.prepare(
+        "INSERT INTO sync_events (pass_id, path, source_path, action, bytes, at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for event in events {
+        statement.execute(params![
+            pass_id,
+            index_key(&event.path),
+            event.source_path.as_deref().map(index_key),
+            event.action.as_str(),
+            event
+                .bytes
+                .map(|bytes| i64::try_from(bytes).unwrap_or(i64::MAX)),
+            i64::try_from(event.epoch_secs).unwrap_or(i64::MAX)
+        ])?;
+    }
+    Ok(())
+}
+
+/// Applies [`HistoryRetention`] to both tables. Cheap enough to run after every pass that wrote
+/// rows (each predicate is an indexed range or a rowid comparison), and never run by a pass that
+/// wrote none.
+///
+/// The newest full sweep is exempt from **both** pass bounds. Without that exemption a chronically
+/// failing daemon — every failed pass is notable, so ~2900 rows/day — evicts the full-sweep row
+/// within hours, and `Full sweep now` loses its "last one N days ago" exactly when the user is
+/// debugging why syncing is broken.
+pub fn prune_history(
+    connection: &Connection,
+    now_epoch_secs: u64,
+    retention: HistoryRetention,
+) -> AppResult<()> {
+    let now = i64::try_from(now_epoch_secs).unwrap_or(i64::MAX);
+    // `IS NOT`, not `<>`: on a database with no full sweep yet the subquery is NULL, and `<>` NULL
+    // is NULL — which would silently delete nothing at all.
+    const KEEP_NEWEST_SWEEP: &str =
+        "AND id IS NOT (SELECT MAX(id) FROM sync_passes WHERE kind = 'full-sweep')";
+    connection.execute(
+        &format!("DELETE FROM sync_passes WHERE started_at < ?1 {KEEP_NEWEST_SWEEP}"),
+        params![now.saturating_sub(i64::try_from(retention.max_pass_age_secs).unwrap_or(i64::MAX))],
+    )?;
+    // "At or below the (N+1)th-newest row", which keeps exactly N. A NULL subquery (fewer than
+    // N+1 rows) makes the predicate NULL and deletes nothing, which is exactly right.
+    connection.execute(
+        &format!(
+            "DELETE FROM sync_passes WHERE id <= \
+             (SELECT id FROM sync_passes ORDER BY id DESC LIMIT 1 OFFSET ?1) {KEEP_NEWEST_SWEEP}"
+        ),
+        params![i64::try_from(retention.max_passes).unwrap_or(i64::MAX)],
+    )?;
+    connection.execute(
+        "DELETE FROM sync_events WHERE at < ?1",
+        params![
+            now.saturating_sub(i64::try_from(retention.max_event_age_secs).unwrap_or(i64::MAX))
+        ],
+    )?;
+    connection.execute(
+        "DELETE FROM sync_events WHERE id <= \
+         (SELECT id FROM sync_events ORDER BY id DESC LIMIT 1 OFFSET ?1)",
+        params![i64::try_from(retention.max_events).unwrap_or(i64::MAX)],
+    )?;
+    Ok(())
+}
+
+/// The most recent passes, newest first (#229).
+pub fn recent_passes(connection: &Connection, limit: usize) -> AppResult<Vec<PassRecord>> {
+    let mut statement = connection.prepare(&format!("{PASS_COLUMNS} ORDER BY id DESC LIMIT ?1"))?;
+    let passes = statement
+        .query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], read_pass)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(passes)
+}
+
+/// The most recent full-tree walk, whenever it ran (#238). A separate query rather than a scan of
+/// [`recent_passes`]: with the periodic resync off by default a full sweep happens at boot and
+/// almost never again, so it is normally far outside any recent window.
+pub fn last_full_sweep(connection: &Connection) -> AppResult<Option<PassRecord>> {
+    let mut statement = connection.prepare(&format!(
+        "{PASS_COLUMNS} WHERE kind = ?1 ORDER BY id DESC LIMIT 1"
+    ))?;
+    let record = statement
+        .query_row(params![PassKind::FullSweep.as_str()], read_pass)
+        .optional()?;
+    Ok(record)
+}
+
+/// Bytes moved per direction since `since_epoch_secs` (#191), summed over the pass rollup. The
+/// single source for a byte total — see the module note.
+pub fn byte_totals_since(connection: &Connection, since_epoch_secs: u64) -> AppResult<ByteTotals> {
+    let (uploaded, downloaded): (i64, i64) = connection.query_row(
+        "SELECT COALESCE(SUM(bytes_up), 0), COALESCE(SUM(bytes_down), 0) \
+         FROM sync_passes WHERE started_at >= ?1",
+        params![i64::try_from(since_epoch_secs).unwrap_or(i64::MAX)],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(ByteTotals {
+        since_epoch_secs,
+        uploaded_bytes: uploaded.max(0) as u64,
+        downloaded_bytes: downloaded.max(0) as u64,
+    })
+}
+
+/// The per-file feed, newest first. `path` filters to one entity's own history (#190) — matching
+/// its move **destinations** as well, so a file's history survives being moved; `None` is the
+/// global recent feed (#230). `since_epoch_secs` of `0` means "everything retained".
+pub fn file_events(
+    connection: &Connection,
+    path: Option<&Path>,
+    since_epoch_secs: u64,
+    limit: usize,
+) -> AppResult<FileHistory> {
+    let since = i64::try_from(since_epoch_secs).unwrap_or(i64::MAX);
+    let key = path.map(index_key);
+    // One predicate, three uses (page, count, distinct paths) — built once so the three numbers
+    // can never describe different sets.
+    let filter = "at >= ?1 AND (?2 IS NULL OR path = ?2)";
+    let mut statement = connection.prepare(&format!(
+        "SELECT pass_id, path, source_path, action, bytes, at FROM sync_events \
+         WHERE {filter} ORDER BY id DESC LIMIT ?3"
+    ))?;
+    let events = statement
+        .query_map(
+            params![since, key, i64::try_from(limit).unwrap_or(i64::MAX)],
+            read_file_event,
+        )?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    let (total, files): (i64, i64) = connection.query_row(
+        &format!("SELECT COUNT(*), COUNT(DISTINCT path) FROM sync_events WHERE {filter}"),
+        params![since, key],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let totals = match path {
+        Some(_) => None,
+        None => Some(byte_totals_since(connection, since_epoch_secs)?),
+    };
+    Ok(FileHistory {
+        events,
+        total: total.max(0) as usize,
+        files: files.max(0) as usize,
+        totals,
+    })
+}
+
+const PASS_COLUMNS: &str = "SELECT id, started_at, duration_ms, kind, outcome, changed, failed, \
+                            bytes_up, bytes_down, error FROM sync_passes";
+
+/// Rows this build cannot name are **skipped, not fatal**: an action token written by a newer
+/// daemon must not make the whole feed unreadable. Display data — nothing here plans anything.
+fn read_file_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<FileEvent>> {
+    let token: String = row.get(3)?;
+    let Some(action) = SyncAction::from_token(&token) else {
+        return Ok(None);
+    };
+    Ok(Some(FileEvent {
+        pass_id: row.get(0)?,
+        path: read_index_key_column(row, 1)?,
+        source_path: match row.get_ref(2)? {
+            rusqlite::types::ValueRef::Null => None,
+            _ => Some(read_index_key_column(row, 2)?),
+        },
+        action,
+        bytes: row
+            .get::<_, Option<i64>>(4)?
+            .map(|bytes| bytes.max(0) as u64),
+        epoch_secs: row.get::<_, i64>(5)?.max(0) as u64,
+    }))
+}
+
+fn read_pass(row: &rusqlite::Row<'_>) -> rusqlite::Result<PassRecord> {
+    Ok(PassRecord {
+        id: row.get(0)?,
+        started_epoch_secs: row.get::<_, i64>(1)?.max(0) as u64,
+        duration_ms: row.get::<_, i64>(2)?.max(0) as u64,
+        kind: row.get(3)?,
+        outcome: row.get(4)?,
+        changed: row.get::<_, i64>(5)?.max(0) as usize,
+        failed: row.get::<_, i64>(6)?.max(0) as usize,
+        bytes_uploaded: row.get::<_, i64>(7)?.max(0) as u64,
+        bytes_downloaded: row.get::<_, i64>(8)?.max(0) as u64,
+        error: row.get(9)?,
+    })
 }
 
 /// A user's standing approval for one pending deletion, from the `delete_approvals` table. The
@@ -2668,5 +3114,432 @@ mod tests {
         // And the new table is fully usable after the upgrade.
         store_warm_start_count(&connection, 7).expect("store count");
         assert_eq!(load_warm_start_count(&connection).expect("reload"), 7);
+    }
+
+    // ---- pass and path history --------------------------------------------------------------
+
+    fn history_db() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        initialize_schema(&connection).expect("schema");
+        connection
+    }
+
+    /// A sealed pass row, `n` seconds ago.
+    fn record_pass(
+        connection: &Connection,
+        started_at: u64,
+        kind: PassKind,
+        outcome: PassOutcomeKind,
+        changed: usize,
+        bytes_up: u64,
+        bytes_down: u64,
+    ) -> i64 {
+        let id = begin_pass(connection, started_at, kind).expect("begin");
+        finish_pass(
+            connection, id, 42, outcome, changed, 0, bytes_up, bytes_down, None,
+        )
+        .expect("finish");
+        id
+    }
+
+    #[test]
+    fn a_pass_starts_interrupted_and_is_sealed_by_finishing() {
+        // The row opens with the values that are TRUE of a pass that has started and not finished,
+        // so a process killed mid-pass leaves an honest row and no startup repair sweep is needed.
+        let connection = history_db();
+        let id = begin_pass(&connection, 100, PassKind::WarmStart).expect("begin");
+        let open = &recent_passes(&connection, 10).expect("recent")[0];
+        assert_eq!(open.outcome, "interrupted");
+        assert_eq!(open.duration_ms, 0);
+        assert_eq!(open.kind, "warm-start");
+
+        finish_pass(
+            &connection,
+            id,
+            1500,
+            PassOutcomeKind::Partial,
+            4,
+            2,
+            10,
+            20,
+            Some("2 item(s) failed to sync"),
+        )
+        .expect("finish");
+        let sealed = &recent_passes(&connection, 10).expect("recent")[0];
+        assert_eq!(sealed.outcome, "partial");
+        assert_eq!(sealed.duration_ms, 1500);
+        assert_eq!(sealed.changed, 4);
+        assert_eq!(sealed.failed, 2);
+        assert_eq!(sealed.bytes_uploaded, 10);
+        assert_eq!(sealed.bytes_downloaded, 20);
+        assert_eq!(sealed.error.as_deref(), Some("2 item(s) failed to sync"));
+    }
+
+    #[test]
+    fn recent_passes_are_newest_first_and_capped() {
+        let connection = history_db();
+        for start in 0..5 {
+            record_pass(
+                &connection,
+                start,
+                PassKind::Incremental,
+                PassOutcomeKind::Clean,
+                1,
+                0,
+                0,
+            );
+        }
+        let recent = recent_passes(&connection, 3).expect("recent");
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].started_epoch_secs, 4);
+        assert_eq!(recent[2].started_epoch_secs, 2);
+    }
+
+    #[test]
+    fn a_failure_storm_never_evicts_the_last_full_sweep() {
+        // Every non-clean pass is notable, so a chronically broken daemon writes thousands of rows
+        // a day. Without the exemption the row cap would prune the full-sweep row within hours —
+        // losing `Last one 2 days ago` exactly when the user is debugging why sync is broken.
+        let connection = history_db();
+        let sweep = record_pass(
+            &connection,
+            1,
+            PassKind::FullSweep,
+            PassOutcomeKind::Clean,
+            0,
+            0,
+            0,
+        );
+        for start in 2..30u64 {
+            record_pass(
+                &connection,
+                start,
+                PassKind::Incremental,
+                PassOutcomeKind::Failed,
+                0,
+                0,
+                0,
+            );
+        }
+        let retention = HistoryRetention {
+            max_passes: 5,
+            ..HistoryRetention::default()
+        };
+        prune_history(&connection, 1_000, retention).expect("prune");
+
+        assert_eq!(
+            last_full_sweep(&connection).expect("sweep").map(|p| p.id),
+            Some(sweep),
+            "the newest full sweep survives the row cap"
+        );
+        // The cap still binds everything else: 5 recent rows plus the pinned sweep.
+        let all = recent_passes(&connection, 100).expect("recent");
+        assert_eq!(all.len(), 6);
+    }
+
+    #[test]
+    fn an_aged_out_full_sweep_also_survives_the_age_bound() {
+        let connection = history_db();
+        let sweep = record_pass(
+            &connection,
+            10,
+            PassKind::FullSweep,
+            PassOutcomeKind::Clean,
+            0,
+            0,
+            0,
+        );
+        record_pass(
+            &connection,
+            11,
+            PassKind::Incremental,
+            PassOutcomeKind::Clean,
+            1,
+            0,
+            0,
+        );
+        let retention = HistoryRetention {
+            max_pass_age_secs: 5,
+            ..HistoryRetention::default()
+        };
+        prune_history(&connection, 1_000, retention).expect("prune");
+        assert_eq!(
+            last_full_sweep(&connection).expect("sweep").map(|p| p.id),
+            Some(sweep)
+        );
+        assert_eq!(recent_passes(&connection, 100).expect("recent").len(), 1);
+    }
+
+    #[test]
+    fn pruning_an_empty_history_deletes_nothing_and_does_not_error() {
+        // The full-sweep exemption is a NULL subquery here; `IS NOT` keeps that from turning the
+        // whole predicate NULL (which `<>` would, silently deleting nothing forever after).
+        let connection = history_db();
+        prune_history(&connection, 1_000, HistoryRetention::default()).expect("prune");
+        record_pass(
+            &connection,
+            1,
+            PassKind::Incremental,
+            PassOutcomeKind::Clean,
+            1,
+            0,
+            0,
+        );
+        prune_history(
+            &connection,
+            1_000,
+            HistoryRetention {
+                max_pass_age_secs: 1,
+                ..HistoryRetention::default()
+            },
+        )
+        .expect("prune");
+        assert!(
+            recent_passes(&connection, 10).expect("recent").is_empty(),
+            "with no full sweep to pin, the age bound still applies"
+        );
+    }
+
+    #[test]
+    fn the_event_log_is_bounded_by_both_age_and_rows() {
+        let connection = history_db();
+        let pass = begin_pass(&connection, 0, PassKind::Incremental).expect("begin");
+        let events: Vec<FileEvent> = (0..10)
+            .map(|n| FileEvent {
+                path: PathBuf::from(format!("f{n}.txt")),
+                source_path: None,
+                action: SyncAction::Upload,
+                bytes: Some(1),
+                epoch_secs: n * 100,
+                pass_id: pass,
+            })
+            .collect();
+        insert_file_events(&connection, pass, &events).expect("insert");
+
+        // Age first: everything before 500 goes.
+        prune_history(
+            &connection,
+            1_000,
+            HistoryRetention {
+                max_event_age_secs: 500,
+                ..HistoryRetention::default()
+            },
+        )
+        .expect("prune");
+        assert_eq!(
+            file_events(&connection, None, 0, 100)
+                .expect("events")
+                .total,
+            5
+        );
+
+        // Then the row cap.
+        prune_history(
+            &connection,
+            1_000,
+            HistoryRetention {
+                max_events: 2,
+                ..HistoryRetention::default()
+            },
+        )
+        .expect("prune");
+        let kept = file_events(&connection, None, 0, 100).expect("events");
+        assert_eq!(kept.total, 2);
+        assert_eq!(kept.events[0].path, PathBuf::from("f9.txt"));
+    }
+
+    #[test]
+    fn a_move_is_found_at_the_path_it_moved_to() {
+        // #190 looks a file's history up by the path it has NOW. A move recorded at its source
+        // would be missing from exactly that query — the file's own move.
+        let connection = history_db();
+        let pass = begin_pass(&connection, 0, PassKind::Incremental).expect("begin");
+        insert_file_events(
+            &connection,
+            pass,
+            &[FileEvent {
+                path: PathBuf::from("archive/notes.md"),
+                source_path: Some(PathBuf::from("notes.md")),
+                action: SyncAction::MoveLocal,
+                bytes: None,
+                epoch_secs: 10,
+                pass_id: pass,
+            }],
+        )
+        .expect("insert");
+
+        let found =
+            file_events(&connection, Some(Path::new("archive/notes.md")), 0, 10).expect("events");
+        assert_eq!(found.total, 1);
+        assert_eq!(
+            found.events[0].source_path,
+            Some(PathBuf::from("notes.md")),
+            "where it came from is still recoverable"
+        );
+        assert_eq!(
+            file_events(&connection, Some(Path::new("notes.md")), 0, 10)
+                .expect("events")
+                .total,
+            0
+        );
+    }
+
+    #[test]
+    fn the_feed_counts_events_and_distinct_files_over_the_same_window() {
+        // `7 files in the last 3 days` is a DISTINCT-path count over the window, not a row count:
+        // a file edited four times is one file.
+        let connection = history_db();
+        let pass = begin_pass(&connection, 0, PassKind::Incremental).expect("begin");
+        let mut events = Vec::new();
+        for n in 0..4 {
+            events.push(FileEvent {
+                path: PathBuf::from("busy.txt"),
+                source_path: None,
+                action: SyncAction::Upload,
+                bytes: Some(10),
+                epoch_secs: 900 + n,
+                pass_id: pass,
+            });
+        }
+        events.push(FileEvent {
+            path: PathBuf::from("old.txt"),
+            source_path: None,
+            action: SyncAction::Download,
+            bytes: Some(5),
+            epoch_secs: 10,
+            pass_id: pass,
+        });
+        insert_file_events(&connection, pass, &events).expect("insert");
+
+        let filtered = file_events(&connection, Some(Path::new("busy.txt")), 0, 100)
+            .expect("path-filtered events");
+        assert_eq!(filtered.total, 4);
+        assert!(
+            filtered.totals.is_none(),
+            "a path-filtered reply carries no byte total: the rollup has no paths, and the \
+             window-wide number would read as this file's own"
+        );
+
+        let window = file_events(&connection, None, 500, 100).expect("events");
+        assert_eq!(window.total, 4, "four events");
+        assert_eq!(window.files, 1, "one file");
+        let everything = file_events(&connection, None, 0, 100).expect("events");
+        assert_eq!(everything.total, 5);
+        assert_eq!(everything.files, 2);
+        // The cap limits the page, never the counts.
+        let paged = file_events(&connection, None, 0, 2).expect("events");
+        assert_eq!(paged.events.len(), 2);
+        assert_eq!(paged.total, 5);
+    }
+
+    #[test]
+    fn byte_totals_come_from_the_rollup_and_outlive_the_detail() {
+        // #191's totals are summed over `sync_passes`, never over `sync_events` — which is what
+        // keeps them right after the per-file detail has aged out. Two sources for one number is
+        // how they drift.
+        let connection = history_db();
+        let pass = record_pass(
+            &connection,
+            1_000,
+            PassKind::Incremental,
+            PassOutcomeKind::Clean,
+            2,
+            4096,
+            8192,
+        );
+        insert_file_events(
+            &connection,
+            pass,
+            &[FileEvent {
+                path: PathBuf::from("a.bin"),
+                source_path: None,
+                action: SyncAction::Upload,
+                bytes: Some(4096),
+                epoch_secs: 1_000,
+                pass_id: pass,
+            }],
+        )
+        .expect("insert");
+
+        let totals = byte_totals_since(&connection, 500).expect("totals");
+        assert_eq!(totals.uploaded_bytes, 4096);
+        assert_eq!(totals.downloaded_bytes, 8192);
+        assert_eq!(totals.since_epoch_secs, 500);
+
+        // Drop every event row; the totals do not move.
+        connection
+            .execute("DELETE FROM sync_events", [])
+            .expect("clear events");
+        let after = byte_totals_since(&connection, 500).expect("totals");
+        assert_eq!(after.uploaded_bytes, 4096);
+        assert_eq!(after.downloaded_bytes, 8192);
+
+        // A pass is counted in the window it STARTED in.
+        assert_eq!(
+            byte_totals_since(&connection, 1_001)
+                .expect("totals")
+                .uploaded_bytes,
+            0
+        );
+    }
+
+    #[test]
+    fn an_action_token_this_build_does_not_know_is_skipped_not_fatal() {
+        // A newer daemon's token must not make the whole feed unreadable — this is display data.
+        let connection = history_db();
+        let pass = begin_pass(&connection, 0, PassKind::Incremental).expect("begin");
+        insert_file_events(
+            &connection,
+            pass,
+            &[FileEvent {
+                path: PathBuf::from("known.txt"),
+                source_path: None,
+                action: SyncAction::Upload,
+                bytes: Some(1),
+                epoch_secs: 5,
+                pass_id: pass,
+            }],
+        )
+        .expect("insert");
+        connection
+            .execute(
+                "INSERT INTO sync_events (pass_id, path, source_path, action, bytes, at) \
+                 VALUES (?1, ?2, NULL, 'teleport', NULL, 6)",
+                params![pass, index_key(Path::new("future.txt"))],
+            )
+            .expect("insert future row");
+
+        let feed = file_events(&connection, None, 0, 100).expect("events");
+        assert_eq!(feed.events.len(), 1);
+        assert_eq!(feed.events[0].path, PathBuf::from("known.txt"));
+        // The counts are SQL-side and still see the row: they describe the window, not this
+        // build's vocabulary.
+        assert_eq!(feed.total, 2);
+    }
+
+    #[test]
+    fn history_survives_a_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let connection = history_db();
+        let pass = begin_pass(&connection, 0, PassKind::Incremental).expect("begin");
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(b"dir/re\xffport.txt"));
+        insert_file_events(
+            &connection,
+            pass,
+            &[FileEvent {
+                path: path.clone(),
+                source_path: None,
+                action: SyncAction::Upload,
+                bytes: Some(1),
+                epoch_secs: 5,
+                pass_id: pass,
+            }],
+        )
+        .expect("insert");
+        let found = file_events(&connection, Some(&path), 0, 10).expect("events");
+        assert_eq!(
+            found.events[0].path, path,
+            "byte-exact through the BLOB key"
+        );
     }
 }

@@ -173,6 +173,16 @@ pub fn unsyncable_items(plan: &[PlannedAction], now: u64) -> Vec<UnsyncableItem>
         .collect()
 }
 
+/// Which way a transfer moves bytes, for the per-direction byte totals (#191).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferDirection {
+    /// Local disk -> Proton Drive.
+    Up,
+    /// Proton Drive -> local disk.
+    Down,
+}
+
 /// The direction a deletion propagates, used by the delete-approval guard, the persistent
 /// approval store, and the control protocol. It is the stable identity that distinguishes the
 /// two data-losing actions (see [`SyncAction::delete_direction`]).
@@ -224,6 +234,75 @@ impl SyncAction {
             _ => None,
         }
     }
+
+    /// The stored token, identical to this enum's serde rendering (pinned by
+    /// `action_tokens_match_the_wire_rendering`) — so `index::sync_events.action` and the control
+    /// protocol can never disagree about what an action is called.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Upload => "upload",
+            Self::Download => "download",
+            Self::CreateRemoteDirectory => "create_remote_directory",
+            Self::CreateLocalDirectory => "create_local_directory",
+            Self::MoveLocal => "move_local",
+            Self::MoveRemote => "move_remote",
+            Self::AutoLink => "auto_link",
+            Self::Conflict => "conflict",
+            Self::TypeConflict => "type_conflict",
+            Self::RemoteDelete => "remote_delete",
+            Self::LocalDelete => "local_delete",
+            Self::Purge => "purge",
+            Self::SkipUnsupported => "skip_unsupported",
+        }
+    }
+
+    /// Which way this action moves bytes over the network, or `None` when it moves none.
+    ///
+    /// The direction is a property of the action, so the history log stores no direction column —
+    /// only an amount, and only when bytes actually crossed. A `Conflict` resolved from a local
+    /// copy (`sidecar_from_local_copy`) transfers nothing and records no amount, which is why the
+    /// amount is the executor's to report and the direction is not.
+    pub fn transfer_direction(self) -> Option<TransferDirection> {
+        match self {
+            Self::Upload => Some(TransferDirection::Up),
+            // A conflict's sidecar is the remote revision, fetched over the network.
+            Self::Download | Self::Conflict | Self::TypeConflict => Some(TransferDirection::Down),
+            Self::CreateRemoteDirectory
+            | Self::CreateLocalDirectory
+            | Self::MoveLocal
+            | Self::MoveRemote
+            | Self::AutoLink
+            | Self::RemoteDelete
+            | Self::LocalDelete
+            | Self::Purge
+            | Self::SkipUnsupported => None,
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]; `None` for a token this build does not know.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|action| action.as_str() == token)
+    }
+
+    /// Every variant, so a mapping over the enum cannot silently miss one.
+    pub const ALL: [Self; 13] = [
+        Self::Upload,
+        Self::Download,
+        Self::CreateRemoteDirectory,
+        Self::CreateLocalDirectory,
+        Self::MoveLocal,
+        Self::MoveRemote,
+        Self::AutoLink,
+        Self::Conflict,
+        Self::TypeConflict,
+        Self::RemoteDelete,
+        Self::LocalDelete,
+        Self::Purge,
+        Self::SkipUnsupported,
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1680,6 +1759,67 @@ mod tests {
     use super::*;
     use crate::index::{EntityKind, FileRecord, LocalDirectoryState, LocalFileState, SyncStatus};
     use crate::proton::{RemoteDirectory, RemoteEntity, RemoteFile};
+
+    #[test]
+    fn action_tokens_match_the_wire_rendering() {
+        // `as_str` is the token stored in `sync_events.action`; the serde derive is the token on
+        // the control protocol. Two hand-written mappings of one enum drift silently, so this is
+        // the gate that says they are the same vocabulary.
+        for action in SyncAction::ALL {
+            let wire = serde_json::to_string(&action).expect("serialize action");
+            assert_eq!(
+                wire,
+                format!("\"{}\"", action.as_str()),
+                "{action:?} renders differently on the wire than it is stored"
+            );
+            assert_eq!(SyncAction::from_token(action.as_str()), Some(action));
+        }
+        assert_eq!(SyncAction::from_token("teleport"), None);
+    }
+
+    #[test]
+    fn every_variant_is_in_all() {
+        // `ALL` drives `from_token`, so a variant missing from it would be unparseable from the
+        // history table while still being writable to it.
+        let mut seen: Vec<&str> = SyncAction::ALL.iter().map(|a| a.as_str()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), SyncAction::ALL.len(), "duplicate token in ALL");
+    }
+
+    #[test]
+    fn only_transfers_carry_a_direction() {
+        // The history log stores no direction column: #191's per-direction totals are derived
+        // from the action. A conflict's sidecar IS fetched from the remote, so it counts down.
+        assert_eq!(
+            SyncAction::Upload.transfer_direction(),
+            Some(TransferDirection::Up)
+        );
+        for action in [
+            SyncAction::Download,
+            SyncAction::Conflict,
+            SyncAction::TypeConflict,
+        ] {
+            assert_eq!(action.transfer_direction(), Some(TransferDirection::Down));
+        }
+        for action in [
+            SyncAction::CreateRemoteDirectory,
+            SyncAction::CreateLocalDirectory,
+            SyncAction::MoveLocal,
+            SyncAction::MoveRemote,
+            SyncAction::AutoLink,
+            SyncAction::RemoteDelete,
+            SyncAction::LocalDelete,
+            SyncAction::Purge,
+            SyncAction::SkipUnsupported,
+        ] {
+            assert_eq!(
+                action.transfer_direction(),
+                None,
+                "{action:?} moves no bytes"
+            );
+        }
+    }
 
     fn local(path: &str, hash: &str) -> LocalFileState {
         LocalFileState {

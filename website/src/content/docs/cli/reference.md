@@ -30,7 +30,8 @@ would resolve against each process's own working directory.
 | Command | What it does |
 | --- | --- |
 | `status` | Show what the daemon is doing right now (see below). |
-| `history` | Show the recent sync history, newest first. |
+| `history` | Show the recorded sync passes, newest first — duration, kind, outcome. |
+| `activity [<path>]` | Show what has moved recently, or one path's own history. |
 | `pause` | Pause automatic **and** manual sync until resumed. |
 | `resume` | Resume sync work. |
 | `syncnow` | Trigger a sync and watch it finish (`--no-wait` to just schedule it). |
@@ -52,9 +53,24 @@ $ proton-sync status
   changes    3 queued locally
 
 $ proton-sync history
-  just now  ✓ sync completed — 2 uploads, 1 download
-   15m ago  ✗ sync failed — proton-drive: request failed …
+Last full sweep 2d ago — nothing was out of step.
+Today: 386 MB sent · 1.1 GB received.
+
+  just now   1.4s  incremental  ✓ 3 change(s), 2.1 MB sent
+   15m ago    12s   full-sweep  ✗ proton-drive: request failed …
+
+$ proton-sync activity
+  just now  sent to Proton Drive     notes/today.md (4.2 kB)
+   3m ago   brought to this computer photos/trip.jpg (2.1 MB)
+
+2 file(s), 2 event(s) in this window · 4.2 kB sent · 2.1 MB received
 ```
+
+`activity` takes an optional path (`proton-sync activity notes/today.md`) to show just that
+file's history, `--days N` to bound the window, and `--limit N` to cap the rows. A
+path-filtered reply carries no byte totals: the totals are per pass and hold no paths, so
+the only number available would be the window's whole traffic — which would read as that
+one file's.
 
 The headline dot reflects the daemon state: **idle** (everything up to date), **syncing**
 (a pass is in flight, with the plan when known), **running** (changes queued for the next
@@ -69,11 +85,10 @@ downloads, sampled from the staging directory while the transfer runs. The same 
 animates in place on the `syncnow` spinner.
 
 Pass `--json` to any command to get the daemon's raw response instead: `status --json`
-prints the full response object (below), `history --json` just the history array, and
-`pending --json` the pending-deletions array. `--json` output is always the daemon's data
-verbatim — so `history --json` keeps the stored **oldest-first** order, while the
-human-readable `history` renders newest first. Scripts that consumed the old JSON output
-should add the flag.
+prints the full response object (below), `history --json` the `history` block, `activity
+--json` the `file_history` block, and `pending --json` the pending-deletions array.
+`--json` output is always the daemon's data verbatim. Scripts that consumed the old JSON
+output should add the flag.
 
 ## `syncnow`
 
@@ -122,7 +137,10 @@ and schedules nothing.
 - `last_error` — the most recent error, if any.
 - `last_plan_summary` / `last_successful_sync_summary` — nullable [plan
   summaries](/safety/dry-run/#the-output-shape) (upload/download/conflict/… counts).
-- `status_history` — the recent history array (also available via `history`).
+- `status_history` — the last 20 reconcile **attempts**, idle ones included: a rolling debug
+  trail, not the pass log. See [Pass history](#pass-history).
+- `history` — the durable pass log: `{ recent, last_full_sweep, today }` (also via
+  `history`). See [Pass history](#pass-history).
 - `pending_deletions` — the items awaiting delete approval (also via `pending`).
 - `activity` — what the daemon is doing right now (`null` when idle): `{ phase, detail,
   folders_listed, files_scanned, action_index, action_total, transfer, since_epoch_secs }`,
@@ -131,14 +149,43 @@ and schedules nothing.
   `path`, `bytes_done` (downloads: sampled live from the staging directory), `bytes_total`
   (uploads only — the remote listing exposes no size), and `started_epoch_secs`. Every
   field is display-only and best-effort; new phases may appear, so render unknown tokens
-  rather than failing.
+  rather than failing. `since_epoch_secs` is when the **phase** began and resets on every
+  phase change; the `pass` block — `{ started_epoch_secs, changes, kind }` — is the pass as
+  a unit and does not, so an elapsed time rendered from it climbs monotonically. `changes`
+  is `null` until the plan exists, which means *unknown*, not zero.
 
-## Status history
+## Pass history
 
-Each `status_history` entry has `epoch_secs`, `message`, `last_error`, `plan_summary`, and
-`successful_sync_summary`. The daemon keeps the most recent **20** entries in a JSON file
-next to the index and reloads them on restart, so recent failures and successes stay visible
-through `status` and `history`. For older history, read the journal:
+Two different records, answering two different questions.
+
+**`status_history`** is the *attempt* trail: every completed reconcile attempt, idle ones
+included, with `epoch_secs`, `message`, `last_error`, `plan_summary`,
+`successful_sync_summary` and `failed_item_count`. The daemon keeps the most recent **20**
+in a JSON file next to the index and reloads them on restart. With event-driven detection on
+by default the daemon runs a pass every 30 seconds, so those twenty entries are roughly ten
+minutes of wall clock and are mostly idle polls — useful for "is it alive and what did the
+last few passes say", useless for anything older.
+
+**`history`** is the durable pass log, stored in the index database:
+
+- `recent` — the last 20 recorded passes, newest first. Each is
+  `{ id, started_epoch_secs, duration_ms, kind, outcome, changed, failed, bytes_uploaded,
+  bytes_downloaded, error }`. `kind` is `full-sweep`, `warm-start` or `incremental`;
+  `outcome` is `clean`, `partial`, `failed`, or `interrupted` (a pass the process died in
+  the middle of). Both are open tokens — render an unfamiliar one verbatim.
+- `last_full_sweep` — the most recent full-tree walk, however long ago.
+- `today` — `{ since_epoch_secs, uploaded_bytes, downloaded_bytes }` since local midnight.
+
+**An idle pass records nothing.** Recording ~2900 "nothing happened" rows a day would evict
+every interesting one within minutes, and "the daemon is alive" is already answered by
+`reconcile_seq` and `last_sync_epoch_secs`. A pass is recorded when it changed something, or
+did not end cleanly, or was a full sweep — a changeless full sweep is recorded precisely
+because "when did the last one run, and was anything out of step" is what it answers.
+
+Retention is bounded in both dimensions: passes keep the newest 2000 rows and one year, the
+per-file event log the newest 20 000 rows and 90 days. The most recent full sweep is exempt
+from both pass bounds, so a chronically failing daemon cannot evict it. For anything older,
+read the journal:
 
 ```bash
 journalctl --user -u proton-syncd.service

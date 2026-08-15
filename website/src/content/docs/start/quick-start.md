@@ -62,7 +62,8 @@ The control CLI talks to the running daemon over its Unix socket:
 
 ```bash
 proton-sync status      # is it running? what did it just do?
-proton-sync history     # recent sync summaries and errors
+proton-sync history     # recorded passes: how long, what kind, how they ended
+proton-sync activity    # what moved recently (or one path's own history)
 proton-sync syncnow     # sync now and watch it finish
 proton-sync pause       # stop automatic + manual sync
 proton-sync resume      # resume

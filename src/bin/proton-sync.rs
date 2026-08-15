@@ -1,10 +1,11 @@
 use clap::{Parser, Subcommand};
 use proton_drive_sync_engine::config::resolve_control_socket_path;
+use proton_drive_sync_engine::index::PassRecord;
 use proton_drive_sync_engine::ipc::{
     ControlCommand, ControlRequest, ControlResponse, PendingDeletion, SyncActivity, send_request,
     wire_path,
 };
-use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, UnsyncableItem};
+use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, SyncAction, UnsyncableItem};
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -41,9 +42,20 @@ struct Cli {
 enum Commands {
     /// Show what the sync daemon is doing right now.
     Status,
-    /// Show the recent sync history, newest first. (--json prints the daemon's raw
-    /// status_history array instead, which is stored oldest-first.)
+    /// Show the recorded sync passes, newest first: how long each took, which strategy it ran,
+    /// and how it ended. Idle passes are not recorded, so these are passes that did something.
     History,
+    /// Show what has moved recently, newest first — or one path's own history when PATH is given.
+    Activity {
+        /// Relative path (as shown by `status`) to show the history of. Omit for the global feed.
+        path: Option<PathBuf>,
+        /// How far back to look. Omit for everything the daemon still keeps.
+        #[arg(long)]
+        days: Option<u64>,
+        /// Cap on the rows shown.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Pause syncing (edits are still tracked while paused).
     Pause,
     /// Resume syncing.
@@ -124,11 +136,23 @@ async fn main() -> ExitCode {
             if cli.json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&response.status_history)
-                        .expect("serialize status history")
+                    serde_json::to_string_pretty(&response.history)
+                        .expect("serialize pass history")
                 );
             } else {
                 print_history(&response, &style);
+            }
+            ExitCode::SUCCESS
+        }
+        Commands::Activity { .. } => {
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response.file_history)
+                        .expect("serialize file history")
+                );
+            } else {
+                print_activity(&response, &style);
             }
             ExitCode::SUCCESS
         }
@@ -193,7 +217,12 @@ async fn main() -> ExitCode {
 /// Maps a subcommand to the control request to send, validating the `approve`/`deny` selector.
 fn build_request(command: &Commands) -> Result<ControlRequest, String> {
     let (control_command, argument) = match command {
+        // `history` reads the pass log, which rides on every status reply — no second verb.
         Commands::Status | Commands::History | Commands::Pending => (ControlCommand::Status, None),
+        Commands::Activity { path, .. } => (
+            ControlCommand::Activity,
+            path.as_ref().map(|path| wire_path(path).into_owned()),
+        ),
         Commands::Pause => (ControlCommand::Pause, None),
         Commands::Resume => (ControlCommand::Resume, None),
         Commands::Syncnow { .. } => (ControlCommand::Syncnow, None),
@@ -207,6 +236,14 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
     // A `<PATH>` selector is always a literal path on the wire: `proton-sync approve all`
     // targets a pending deletion literally named `all` instead of silently becoming the
     // every-item form (which requires the explicit `--all`, exactly as documented).
+    let (window_secs, limit) = match command {
+        // Days, not seconds, at the CLI: the reply's window is in seconds because a GUI slider is
+        // not a calendar.
+        Commands::Activity { days, limit, .. } => {
+            (days.map(|days| days.saturating_mul(86_400)), *limit)
+        }
+        _ => (None, None),
+    };
     let literal_path = matches!(
         command,
         Commands::Approve {
@@ -218,9 +255,11 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         }
     );
     Ok(ControlRequest {
-        command: control_command,
         argument,
         literal_path,
+        window_secs,
+        limit,
+        ..ControlRequest::new(control_command)
     })
 }
 
@@ -501,41 +540,161 @@ fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str,
 }
 
 /// `proton-sync history` — one line per recorded pass, newest first.
+///
+/// Reads the durable pass log, NOT `status_history`: with event-driven detection on by default the
+/// daemon runs a pass every 30s and records every one of them in that rolling 20-entry trail, so
+/// it holds about ten minutes and is almost entirely idle polls. The pass log records only passes
+/// that did something (plus every full sweep, and every pass that did not end clean).
 fn print_history(response: &ControlResponse, style: &Style) {
-    if response.status_history.is_empty() {
+    let Some(history) = &response.history else {
         println!("No sync history yet.");
         return;
+    };
+    if let Some(sweep) = &history.last_full_sweep {
+        println!(
+            "Last full sweep {} — {}.",
+            relative_time(sweep.started_epoch_secs),
+            if sweep.changed == 0 {
+                "nothing was out of step".to_owned()
+            } else {
+                format!("{} change(s)", sweep.changed)
+            }
+        );
     }
-    for entry in response.status_history.iter().rev() {
-        let when = style.dim(&format!("{:>8}", relative_time(entry.epoch_secs)));
-        if entry.failed_item_count > 0 {
-            println!(
-                "{when}  {} {}",
+    if history.today.uploaded_bytes > 0 || history.today.downloaded_bytes > 0 {
+        println!(
+            "Today: {} sent · {} received.",
+            human_bytes(history.today.uploaded_bytes),
+            human_bytes(history.today.downloaded_bytes)
+        );
+    }
+    if history.recent.is_empty() {
+        println!("No passes recorded yet (an idle pass records nothing).");
+        return;
+    }
+    println!();
+    for pass in &history.recent {
+        let when = style.dim(&format!("{:>8}", relative_time(pass.started_epoch_secs)));
+        let took = style.dim(&format!("{:>7}", human_duration(pass.duration_ms)));
+        let kind = style.dim(&format!("{:>11}", pass.kind));
+        // Four outcomes, four arms, and an explicit `other` for a token a newer daemon knows and
+        // this build does not — never a trailing arm that quietly renders one state as another.
+        let (mark, detail) = match pass.outcome.as_str() {
+            "clean" => (style.green("✓"), describe_pass_work(pass)),
+            "partial" => (
                 style.yellow("!"),
-                format_args!(
+                format!(
                     "{} — {} item(s) failed",
-                    entry.message, entry.failed_item_count
-                )
-            );
-            continue;
-        }
-        match &entry.last_error {
-            Some(error) => {
-                println!(
-                    "{when}  {} {}",
-                    style.red("✗"),
-                    format_args!("{} — {error}", entry.message)
-                );
+                    describe_pass_work(pass),
+                    pass.failed
+                ),
+            ),
+            "failed" => (
+                style.red("✗"),
+                pass.error.clone().unwrap_or_else(|| "failed".to_owned()),
+            ),
+            "interrupted" => (
+                style.yellow("!"),
+                "interrupted — the daemon stopped mid-pass".to_owned(),
+            ),
+            other => (style.dim("?"), other.to_owned()),
+        };
+        println!("{when} {took} {kind}  {mark} {detail}");
+    }
+}
+
+/// "3 changes, 1.2 MB sent" — what one recorded pass actually moved.
+fn describe_pass_work(pass: &PassRecord) -> String {
+    if pass.changed == 0 {
+        return "nothing to do".to_owned();
+    }
+    let mut parts = vec![format!("{} change(s)", pass.changed)];
+    if pass.bytes_uploaded > 0 {
+        parts.push(format!("{} sent", human_bytes(pass.bytes_uploaded)));
+    }
+    if pass.bytes_downloaded > 0 {
+        parts.push(format!("{} received", human_bytes(pass.bytes_downloaded)));
+    }
+    parts.join(", ")
+}
+
+/// `proton-sync activity [PATH]` — the per-file feed, newest first.
+fn print_activity(response: &ControlResponse, style: &Style) {
+    let Some(history) = &response.file_history else {
+        println!(
+            "{}",
+            if response.last_error.is_some() {
+                response.message.clone()
+            } else {
+                "This daemon does not report per-file activity.".to_owned()
             }
-            None => {
-                let summary = entry
-                    .successful_sync_summary
-                    .as_ref()
-                    .map(|summary| format!(" — {}", summarize_plan(summary)))
-                    .unwrap_or_default();
-                println!("{when}  {} {}{summary}", style.green("✓"), entry.message);
-            }
-        }
+        );
+        return;
+    };
+    if history.events.is_empty() {
+        println!("Nothing has moved in that window.");
+        return;
+    }
+    for event in &history.events {
+        let when = style.dim(&format!("{:>8}", relative_time(event.epoch_secs)));
+        let size = match event.bytes {
+            Some(bytes) => style.dim(&format!(" ({})", human_bytes(bytes))),
+            None => String::new(),
+        };
+        let path = match &event.source_path {
+            Some(from) => format!("{} ← {}", wire_path(&event.path), wire_path(from)),
+            None => wire_path(&event.path).into_owned(),
+        };
+        println!("{when}  {:<24} {path}{size}", describe_action(event.action));
+    }
+    println!();
+    // The byte clause is present only for the unfiltered feed: a path-filtered reply carries no
+    // totals, because the window-wide number would read as that one file's.
+    let traffic = match &history.totals {
+        Some(totals) => format!(
+            " · {} sent · {} received",
+            human_bytes(totals.uploaded_bytes),
+            human_bytes(totals.downloaded_bytes)
+        ),
+        None => String::new(),
+    };
+    println!(
+        "{}",
+        style.dim(&format!(
+            "{} file(s), {} event(s) in this window{traffic}",
+            history.files, history.total
+        ))
+    );
+}
+
+/// The user-facing sentence for one recorded action. Every variant, no fall-through.
+fn describe_action(action: SyncAction) -> &'static str {
+    match action {
+        SyncAction::Upload => "sent to Proton Drive",
+        SyncAction::Download => "brought to this computer",
+        SyncAction::CreateRemoteDirectory => "folder made on Proton",
+        SyncAction::CreateLocalDirectory => "folder made here",
+        SyncAction::MoveLocal => "moved here",
+        SyncAction::MoveRemote => "moved on Proton Drive",
+        SyncAction::Conflict => "both sides changed",
+        SyncAction::TypeConflict => "file/folder clash",
+        SyncAction::RemoteDelete => "removed from Proton",
+        SyncAction::LocalDelete => "removed here",
+        // Never recorded (no side effect), listed so a future change to that rule shows up here.
+        SyncAction::AutoLink => "linked",
+        SyncAction::Purge => "forgotten",
+        SyncAction::SkipUnsupported => "skipped",
+    }
+}
+
+/// "1.4s" / "830ms" — a pass duration at the precision it deserves.
+fn human_duration(millis: u64) -> String {
+    if millis < 1000 {
+        format!("{millis}ms")
+    } else if millis < 60_000 {
+        format!("{:.1}s", millis as f64 / 1000.0)
+    } else {
+        format!("{}m{:02}s", millis / 60_000, (millis % 60_000) / 1000)
     }
 }
 
@@ -758,11 +917,7 @@ async fn watch_syncnow(
     let mut consecutive_errors = 0u32;
     let outcome = loop {
         tokio::time::sleep(WAIT_POLL_INTERVAL).await;
-        let request = ControlRequest {
-            command: ControlCommand::Status,
-            argument: None,
-            literal_path: false,
-        };
+        let request = ControlRequest::new(ControlCommand::Status);
         match request_with_timeout(socket_path, request).await {
             Ok(status) => {
                 consecutive_errors = 0;
@@ -932,6 +1087,7 @@ mod tests {
             action_total: None,
             transfer: None,
             since_epoch_secs: None,
+            pass: None,
         }
     }
 
@@ -1003,6 +1159,8 @@ mod tests {
             config: None,
             activity: None,
             unsyncable: Vec::new(),
+            history: None,
+            file_history: None,
         }
     }
 

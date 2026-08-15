@@ -144,6 +144,8 @@ mod tests {
             config: None,
             activity: None,
             unsyncable: vec![],
+            history: None,
+            file_history: None,
         }
     }
 

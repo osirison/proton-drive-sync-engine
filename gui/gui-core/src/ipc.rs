@@ -119,15 +119,7 @@ pub fn command(
     command: ControlCommand,
     timeout: Duration,
 ) -> Result<ControlResponse, IpcError> {
-    send_request(
-        socket_path,
-        &ControlRequest {
-            command,
-            argument: None,
-            literal_path: false,
-        },
-        timeout,
-    )
+    send_request(socket_path, &ControlRequest::new(command), timeout)
 }
 
 /// Convenience wrapper for `approve` / `deny`, which take a path (or `"all"`) argument.
@@ -144,9 +136,9 @@ pub fn command_with_argument(
     send_request(
         socket_path,
         &ControlRequest {
-            command,
             argument: Some(argument.into()),
             literal_path,
+            ..ControlRequest::new(command)
         },
         timeout,
     )
