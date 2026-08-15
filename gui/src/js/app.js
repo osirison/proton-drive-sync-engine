@@ -54,6 +54,7 @@ import {
   renderPlanBar,
   updatePlanBar,
   footerKindOf,
+  isGated,
 } from "./screens/plan.js";
 import {
   renderActivity,
@@ -1517,9 +1518,10 @@ const deletionBusy = new Set();
  * WHAT YOU HAVE ALREADY DECIDED, while this app has been open.
  *
  * The daemon keeps a withheld deletion in `pending_deletions` until a pass consumes it, so the ~2s
- * poll would put an approved row straight back on screen — and a KEPT row comes back for ever,
- * because the wire has no way to refuse a deletion at all (#224: `deny` revokes an approval, and
- * withholding is already the default). Keyed by `(path, direction)` and PINNED TO THE FINGERPRINT,
+ * poll would put a decided row straight back on screen for as long as that pass takes. It is a
+ * window now rather than a session-long fiction: both answers are recorded by the daemon (`approve`
+ * a standing approval, `keep` a purge), so the row leaves the queue by itself on the next pass.
+ * Keyed by `(path, direction)` and PINNED TO THE FINGERPRINT,
  * which is what the daemon pins its own approvals to: the same path deleted again with different
  * content is a different question and gets asked again.
  *
@@ -1586,11 +1588,12 @@ async function ensurePathStatus(item) {
  * reconcile. Without the nudge the row sits there until the scan interval comes round, which reads
  * as a button that did not work; `03-main-screen.md` makes the same argument for `Sync now`.
  *
- * KEEPING CANNOT DO WHAT ITS LABEL SAYS, and that is #224 rather than a bug here. `deny` revokes an
- * approval — which is exactly right if you approved this and changed your mind, and a no-op
- * otherwise — but nothing on the wire refuses a deletion durably or puts the file back on the other
- * side. Phase 1 sends the command it has and remembers the decision for this session; DEVIATIONS
- * §75 records what a user actually gets.
+ * KEEPING ASKS FOR NOTHING EXTRA. `keep` (#224) purges the deletion's baseline record, which is what
+ * makes the refusal durable — the planner stops deriving the action instead of the screen
+ * remembering an answer — and the daemon schedules its own pass to put the other side back, so
+ * there is no `syncNow` nudge on this branch. `deny` is still the right command for *revoking an
+ * approval*, and nothing on this screen does that: every button here is about the deletion, not
+ * about a permission.
  */
 async function decideDeletion(item, approve) {
   const key = itemKey(item);
@@ -1600,10 +1603,10 @@ async function decideDeletion(item, approve) {
 
   let settled = false;
   try {
-    const reply = await (approve ? api.approve(item.path) : api.deny(item.path));
+    const reply = await (approve ? api.approve(item.path) : api.keep(item.path));
     settled = acknowledged(reply);
   } catch (error) {
-    console.error(approve ? "approve failed:" : "deny failed:", error);
+    console.error(approve ? "approve failed:" : "keep failed:", error);
   }
   deletionBusy.delete(key);
   if (settled) {
@@ -1628,7 +1631,7 @@ async function decideDeletion(item, approve) {
  *
  * SCOPED TO THE WHOLE PENDING LIST, not to what is on screen, because that is what the wire's
  * `"all"` selector does. The two differ by exactly the items you have already answered this
- * session: approve one, then keep the rest, and `deny all` revokes the approval you just gave —
+ * session: approve one, then keep the rest, and `keep all` refuses the deletion you just approved —
  * which is the right reading of a button that says *keep both files*, but only if the screen
  * remembers it that way too. Marking the visible ones alone would leave the approved item recorded
  * as approved and hidden, while the daemon had just been told to keep it.
@@ -1641,12 +1644,12 @@ async function keepAllDeletions() {
   let settled = false;
   try {
     // `literalPath: false` with the explicit "all" selector. A file literally named `all` is a real
-    // path and would otherwise be the only thing denied (#60); the flag is what keeps the reserved
+    // path and would otherwise be the only thing kept (#60); the flag is what keeps the reserved
     // word and a filename apart on this wire.
-    const reply = await api.deny(BULK_KEY, false);
+    const reply = await api.keep(BULK_KEY, false);
     settled = acknowledged(reply);
   } catch (error) {
-    console.error("deny all failed:", error);
+    console.error("keep all failed:", error);
   }
   deletionBusy.delete(BULK_KEY);
   if (settled) {
@@ -1658,21 +1661,23 @@ async function keepAllDeletions() {
 }
 
 /**
- * Did the daemon actually act on that approve/deny?
+ * Did the daemon actually act on that approve/keep?
  *
  * NOT "did a reply come back". A dead socket resolves rather than rejects — the Tauri commands
- * return a payload either way — and, more subtly, `apply_approval_command` answers `Ok` with
- * `no pending deletion matches '<path>'` when the selector is absent from the snapshot it is
- * holding, which the GUI can reach by acting on a queue that is up to two seconds stale. Treated as
- * a decision, that hides a row nothing was recorded for.
+ * return a payload either way — and, more subtly, the daemon answers `Ok` with `no pending deletion
+ * matches '<path>'` when the selector is absent from the snapshot it is holding, which the GUI can
+ * reach by acting on a queue that is up to two seconds stale. Treated as a decision, that hides a
+ * row nothing was recorded for. `keep` adds two more of exactly that shape — an ambiguous selector
+ * and a fingerprint that has moved both answer `nothing was kept …` — and the positive match
+ * refuses all of them without knowing they exist.
  *
- * Read as a POSITIVE match on the acknowledgement rather than a blacklist of the three `no …`
- * replies, so the failure direction is safe: if the daemon ever rewords them, the GUI stops
- * recording decisions and rows stay visible, instead of hiding deletions that never happened.
+ * Read as a POSITIVE match on the acknowledgement rather than a blacklist of the `no …` replies, so
+ * the failure direction is safe: if the daemon ever rewords them, the GUI stops recording decisions
+ * and rows stay visible, instead of hiding deletions that never happened.
  */
 function acknowledged(reply) {
   if (!reply?.response || reply.error) return false;
-  return /^(approved|denied) /.test(reply.response.message ?? "");
+  return /^(approved|denied|kept) /.test(reply.response.message ?? "");
 }
 
 /** Everything the deletions screen reads, plus the actions it can take. */
@@ -1799,6 +1804,33 @@ async function ensurePlan() {
   render();
 }
 
+/**
+ * Authorise this plan's deletions before the pass that plans them (#227).
+ *
+ * THE DIRECTION COMES FROM THE ACTION, and it has to: nothing is pending yet, so the daemon cannot
+ * look the deletion up to find out which of the two at that path is meant — and a path with no
+ * direction authorises nothing, which is the same rule an ambiguous selector already answers to.
+ * `remote_delete` removes the copy on Proton Drive, `local_delete` the one here; `isGated` is the
+ * one place that pair is enumerated, so this cannot drift from what the typed word is guarding.
+ *
+ * The daemon pins each approval to the path's own baseline fingerprint, so an approval recorded
+ * here authorises exactly the deletion the rehearsal described and nothing the plan changed into
+ * afterwards. It refuses a path it has no record for rather than storing one that could never
+ * match, which is why a failure here is worth nothing more than a log: the pass withholds that one
+ * and it arrives on the Deletions screen.
+ */
+async function approvePlannedDeletions(plan) {
+  for (const row of plan) {
+    if (!isGated(row.action)) continue;
+    const direction = row.action === "remote_delete" ? "remote" : "local";
+    try {
+      await api.approve(String(row.path), true, direction);
+    } catch (error) {
+      console.error("approve failed:", error);
+    }
+  }
+}
+
 /** Everything the plan screen reads, plus the actions it can take. */
 function planProps() {
   // The `ui` block (F9): `5a Checking` carries no `dryRun` at all, so the mock resolves null and the
@@ -1839,12 +1871,21 @@ function planProps() {
         planAnswered = planSeq;
         render();
       },
-      // `Run this sync` asks the daemon for a pass; see `runNow` in screens/plan.js for what the
-      // typed word can and cannot authorise. It leaves whether or not the command landed, which is
-      // deliberate: `sync_now` resolves rather than rejects on a dead socket, so a failure here is
-      // silent, and the main screen is where both outcomes are legible (syncing hero vs
-      // unreachable).
+      // `Run this sync` authorises this plan's deletions and then asks for the pass. The typed word
+      // means what the design says it means (#227): each gated row is approved BEFORE the sync is
+      // scheduled, so the pass that plans the deletion also finds the approval for it and applies
+      // it, instead of withholding it for the Deletions screen to ask a second time.
+      //
+      // Awaited in order and one at a time, because a `syncnow` that overtakes an approval is a
+      // deletion deferred — which is the old behaviour, safe but not what was asked for. A refused
+      // or failed approval is left where it falls: the pass then withholds that one, and the
+      // Deletions screen has it. Nothing is deleted that was not agreed to either way.
+      //
+      // It leaves whether or not the command landed, which is deliberate: `sync_now` resolves
+      // rather than rejects on a dead socket, so a failure here is silent, and the main screen is
+      // where both outcomes are legible (syncing hero vs unreachable).
       onRun: async () => {
+        await approvePlannedDeletions(planDryRun?.report?.plan ?? []);
         await command(api.syncNow);
         navigate("main");
       },
@@ -3342,13 +3383,9 @@ function evaluateNotifications() {
  * `Keep them` — the permanent deletions the banner named, and only those.
  *
  * NOT `keepAllDeletions`, which is the screen's `Keep both files` and sends the reserved `all`
- * selector. On the wire that deletes EVERY row from `delete_approvals`, so a mixed queue would have
- * this banner revoke a standing approval the user granted for a recoverable deletion it never
- * mentioned. Keeping is always safe, but doing more than the button says is not the same as safe.
- *
- * It carries S3's caveat unchanged (#224): `deny` revokes an approval and nothing on the wire
- * refuses a withheld deletion durably. What it does do is true — a withheld deletion is not applied,
- * so the files stay — and the row comes back next pass, on the screen, where the decision belongs.
+ * selector. On the wire that refuses EVERY withheld deletion, so a mixed queue would have this
+ * banner answer for a recoverable deletion it never mentioned. Keeping is always the safe
+ * direction, but doing more than the button says is not the same as safe.
  */
 async function keepPermanentDeletions() {
   const items = visibleDeletions().filter((item) => severityOf(item.direction) === "permanent");
@@ -3358,9 +3395,9 @@ async function keepPermanentDeletions() {
     if (deletionBusy.has(key)) continue;
     deletionBusy.add(key);
     try {
-      if (acknowledged(await api.deny(item.path))) deletionsDecided.set(key, item.fingerprint);
+      if (acknowledged(await api.keep(item.path))) deletionsDecided.set(key, item.fingerprint);
     } catch (error) {
-      console.error("deny failed:", error);
+      console.error("keep failed:", error);
     }
     deletionBusy.delete(key);
   }

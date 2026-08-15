@@ -28,7 +28,7 @@ import {
 } from "../src/js/screens/deletions.js";
 import { DELETIONS } from "../src/js/ui/copy.js";
 import { severityOf, splitEmphasis } from "../src/js/ui/rows.js";
-import { monthYear } from "../src/js/ui/format.js";
+import { monthYear, since } from "../src/js/ui/format.js";
 
 const folder = {
   path: "photos/2019",
@@ -36,6 +36,17 @@ const folder = {
   entity_kind: "directory",
   fingerprint: "vol~node",
   detected_epoch_secs: 1_700_000_000,
+  first_seen_epoch_secs: 1_700_000_000,
+  subtree_files: 1204,
+  subtree_bytes: 8_400_000_000,
+};
+
+/** The same folder as a daemon that predates the lifecycle fields reports it (#208/#225). */
+const olderFolder = {
+  ...folder,
+  first_seen_epoch_secs: 0,
+  subtree_files: null,
+  subtree_bytes: null,
 };
 const file = {
   path: "archive/old-notes.md",
@@ -43,6 +54,9 @@ const file = {
   entity_kind: "file",
   fingerprint: "0b4f",
   detected_epoch_secs: 1_700_000_500,
+  first_seen_epoch_secs: 1_700_000_500,
+  subtree_files: null,
+  subtree_bytes: null,
 };
 
 // ---- which column ---------------------------------------------------------------------------
@@ -164,7 +178,7 @@ test("an item is keyed by path AND direction, as the daemon's own approvals tabl
 test("every consequence emphasises a substring of its own sentence", () => {
   // The contract `splitEmphasis` falls back on. A sentence and an emphasis chosen in two places
   // drift; chosen together they cannot, and this is what says so.
-  for (const item of [folder, file, { ...folder, entity_kind: "file" }]) {
+  for (const item of [folder, olderFolder, file, { ...folder, entity_kind: "file" }]) {
     const { sentence, emphasis } = consequenceOf(item);
     assert.ok(sentence.includes(emphasis), `"${emphasis}" is not in "${sentence}"`);
     assert.equal(splitEmphasis(sentence, emphasis).length, 3, "the split must find it");
@@ -177,12 +191,23 @@ test("a recoverable deletion says where the file goes, not what is lost", () => 
   assert.equal(emphasis, "Proton Drive's Trash");
 });
 
-test("a permanent folder says everything inside it goes, and names no count", () => {
-  const { sentence } = consequenceOf(folder);
-  assert.equal(sentence, DELETIONS.folderConsequenceUnknown);
-  // #208. The drawn sentence's `1,204 photos, 8.4 GB` is a subtree aggregate no command produces,
-  // and a fabricated number on this card is the one thing DEVIATIONS §60 forbids outright.
-  assert.doesNotMatch(sentence, /\d/, "Phase 1 may not put a figure on a folder's loss");
+test("a permanent folder names what its subtree costs, and emphasises that figure", () => {
+  // #208. FILES where the frame says photos: `subtree_files` counts files and no engine knows they
+  // are photographs. The figure is the emphasis, which is voice rule 2 — the loss, in the words a
+  // person weighs it in.
+  const { sentence, emphasis } = consequenceOf(folder);
+  assert.equal(emphasis, "1,204 files, 8.4 GB");
+  assert.equal(sentence, DELETIONS.folderConsequence("1,204 files, 8.4 GB"));
+});
+
+test("a folder with no countable subtree says everything inside it goes, and names no count", () => {
+  // An older daemon, and an EMPTY folder, take the same branch: `Deleting this removes 0 files` is
+  // a sentence about nothing, and a fabricated number is what DEVIATIONS §60 forbids outright.
+  for (const item of [olderFolder, { ...folder, subtree_files: 0, subtree_bytes: 0 }]) {
+    const { sentence } = consequenceOf(item);
+    assert.equal(sentence, DELETIONS.folderConsequenceUnknown);
+    assert.doesNotMatch(sentence, /\d/, "no figure may be invented for a folder's loss");
+  }
 });
 
 test("a permanent FILE gets its own sentence — no frame draws one", () => {
@@ -193,35 +218,52 @@ test("a permanent FILE gets its own sentence — no frame draws one", () => {
 
 // ---- the facts strip ------------------------------------------------------------------------
 
-test("a folder card draws no facts at all, because both of the frame's are unavailable", () => {
-  // #225 — `detected_epoch_secs` is re-stamped on every pass, so `deleted on Proton 22m ago` is the
-  // age of the pass rather than of the deletion. #208 — `last opened` is an atime. Two omissions
-  // leave nothing, and nothing is what is drawn: an em-dash would claim the daemon was asked.
-  assert.deepEqual(factsOf(folder, undefined), []);
-  assert.deepEqual(factsOf(folder, { mtime: 1_767_000_000 }), []);
+test("a folder card draws when it was deleted, and never the atime beside it", () => {
+  // #225 gave the strip its first fact — the first-seen time, which survives passes and restarts.
+  // The second is still `last opened`, an atime the index does not store (#208), so a folder's
+  // strip is one fact and the mtime is not substituted for it: a directory record's mtime is the
+  // directory's own, which is not when anything in it was edited.
+  assert.deepEqual(factsOf(folder, undefined), [
+    { at: 0, text: DELETIONS.deletedOnProton(since(folder.first_seen_epoch_secs, "short")) },
+  ]);
+  assert.deepEqual(factsOf(folder, { mtime: 1_767_000_000 }), factsOf(folder, undefined));
+});
+
+test("a zero first-seen is unknown, not 1970", () => {
+  // `#[serde(default)]` on the wire: a daemon that predates the field sends `0`, and ageing from
+  // the epoch would draw `55y ago` on a deletion from this morning.
+  assert.deepEqual(factsOf(olderFolder, undefined), []);
+  assert.deepEqual(factsOf({ ...file, first_seen_epoch_secs: 0 }, { mtime: 1_767_000_000 }), [
+    { at: 1, text: DELETIONS.lastEdited(monthYear(1_767_000_000)) },
+  ]);
 });
 
 test("a file draws its mtime, and nothing when no record arrived", () => {
   // `at` is the DRAWN slot, not the DOM position: Phase 1 omits the frame's first fact, so its one
   // fact stands for `span[1]`. Stamped by position it would be compared against `deleted here 6m
   // ago` — a different node — and reported as a width failure on a correct card.
+  const deleted = { at: 0, text: DELETIONS.deletedHere(since(file.first_seen_epoch_secs, "short")) };
   assert.deepEqual(factsOf(file, { mtime: 1_767_000_000, file_size: 4096 }), [
+    deleted,
     { at: 1, text: DELETIONS.lastEdited(monthYear(1_767_000_000)) },
   ]);
   // The reply lands a render after the screen does, and may never land at all.
-  assert.deepEqual(factsOf(file, undefined), []);
-  assert.deepEqual(factsOf(file, { mtime: null }), []);
+  assert.deepEqual(factsOf(file, undefined), [deleted]);
+  assert.deepEqual(factsOf(file, { mtime: null }), [deleted]);
 });
 
-test("no fact is rendered from the detected time, in either direction", () => {
-  // The deck still carries both sentences — the frames draw them and the copy gate checks them —
-  // and nothing on the screen may reach for them until #225 lands.
-  for (const item of [folder, file]) {
-    for (const { text } of factsOf(item, { mtime: 1_767_000_000 })) {
-      assert.ok(!text.startsWith("deleted on Proton"), text);
-      assert.ok(!text.startsWith("deleted here"), text);
-    }
-  }
+test("the age is the FIRST-SEEN time and never the pass's own", () => {
+  // The whole of #225 in one assertion. `detected_epoch_secs` is re-stamped every pass — the two
+  // fields are minutes apart here, and only one of them may reach the card.
+  const stale = { ...folder, detected_epoch_secs: 1_900_000_000 };
+  assert.deepEqual(factsOf(stale, undefined), factsOf(folder, undefined));
+});
+
+test("the wording follows the column, so each side names the other one", () => {
+  // Permanent = it went on Proton first; recoverable = it went here first. Reading this backwards
+  // tells the user the deletion happened on the side that still has the file.
+  assert.match(factsOf(folder, undefined)[0].text, /^deleted on Proton /);
+  assert.match(factsOf(file, undefined)[0].text, /^deleted here /);
 });
 
 // ---- the kind note --------------------------------------------------------------------------

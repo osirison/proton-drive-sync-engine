@@ -2137,17 +2137,24 @@ on every overlay screen since F4; S2 is simply the first mapped one.
 
 ### 75. S3 · the deletions screen
 
-**`Keep it` has no command behind it, and it is the safe half of the screen.** `ControlCommand::Deny`
-is documented as _"Revoke a prior approval (before it has applied)"_ and does exactly that — it
-deletes a row from `delete_approvals`. There is no _refusal_: withholding is already the default, so
-denying something nobody approved is a no-op. Two things the button's own sentence promises therefore
-do not happen. The refusal is not durable (the planner re-derives the same withheld action next pass,
-so the row is back on the next status reply and back on the screen at the next launch), and the other
-side is not restored (`put it back on Proton Drive` never uploads anything). One engine primitive
-covers both directions — purge the baseline `file_index` record so the surviving side stops looking
-like a delete and starts looking like a fresh copy — and that is #224. Phase 1 sends `deny`, which is
-right in the one case where it does something, and remembers the decision in `deletionsDecided` for as
-long as the app is open so the queue can still reach its empty state.
+**`Keep it` has a command now, and it is one primitive for both directions (#224, landed).**
+`ControlCommand::Deny` only ever revoked an approval — withholding is already the default, so denying
+something nobody approved was a no-op, and neither half of the button's own sentence happened: the
+refusal was not durable (the planner re-derived the same withheld action next pass, so the row came
+back at the next launch) and the other side was never restored. `ControlCommand::Keep` purges the
+deletion's baseline `file_index` record — its whole **subtree**, because a directory deletion is
+planned recursively with every descendant suppressed — so the surviving side stops looking like a
+delete and starts looking like a fresh copy, which the bootstrap arm adopts back onto the other side.
+The queue empties because the planner stops deriving the action, not because the screen remembers an
+answer. `deletionsDecided` survives as a two-second window over the poll rather than a session-long
+fiction.
+
+It also latches a **full walk**, and that is the half a unit test against a full-snapshot fake would
+have missed: an incremental pass builds its remote map as `reconstruct_remote(base ⊕ delta)`, so the
+baseline IS the remote view. Purge the record and a `direction: remote` survivor is in no
+reconstructed map, and no event re-derives it — the deletion happened *here*, so the volume stream
+never mentioned it. `bring it back to this computer` would have downloaded nothing, ever, with the
+periodic resync off by default and every restart warm-starting from the cursor.
 
 **The screen may not be rebuilt on the poll, and S2's may.** `4a Deletions` puts a typed-`DELETE`
 field on every permanent card, and `14-behaviour-and-state.md` requires it to clear on blur — so the
@@ -2164,9 +2171,24 @@ specific item has no id you could navigate to without naming the item. F4 had pr
 because app.js takes the key ahead of the overlay stack. Left to `closeOverlay`, Esc dismissed the
 whole queue — the frame's own caption doing the opposite of what it says.
 
-**Two numbers and an atime, all #208.** The folder card's `1,204 photos, 8.4 GB` and the armed title's
-`1,204 photos` are one subtree aggregate that no command produces; `last opened Mar 2024` is an atime
-and the index stores mtime only. Four assertions are recorded, and the shapes differ on purpose:
+**Two numbers landed and one word cannot (#208).** `PendingDeletion` now carries `subtree_files` and
+`subtree_bytes`, counted from the already-filtered baseline at gate time, so the folder card's
+consequence wraps to its drawn two lines, the armed title states its own magnitude and `armedBody`
+gets its `— 8.4 GB —` clause back. What no engine can produce is the **noun**: the frame says
+`1,204 photos` because its folder is a photo library, and a UI guessing that from the extensions
+inside would be inventing a fact on the one screen whose job is not to. The app says `1,204 files`,
+which is 17.71px narrower on the card and 37.07px on the armed title — three `decision`-class rows in
+`known-deviations.mjs`, dated 2026-08-15, and not a re-drawn frame's worth of difference. `last
+opened Mar 2024` is still an atime the index does not store at all.
+
+The armed title's row is new, and it is the coincidence below arriving: Phase 1's
+`Delete photos/2019 from this computer?` measured 507.56 against the drawn 507.73 and passed inside
+the tolerance. `Delete 1,204 files from this computer?` does not, so the difference that was always
+there is now visible to the gate.
+
+The shapes below differ on purpose, and two of the four are how the sentence reads when the daemon
+cannot count (an older daemon, or an empty folder — `Deleting this removes 0 files` is a sentence
+about nothing):
 
 - The consequence becomes a _different sentence_ (`Deleting this folder removes everything inside it
 from this computer.`) rather than the drawn one with the figure omitted, which would read "Deleting
@@ -2196,13 +2218,19 @@ which is honest about what it is — one card whose consequence wrapped to five 
 overflow, and no queue produces that. Found by rendering the screen against queues no frame draws;
 that method is worth a gate of its own, and it is not one today.
 
-**`deleted on Proton 22m ago` is the age of the PASS, not of the deletion.** `detected_epoch_secs`
-reads like when the deletion happened; `decide_delete_gate` stamps `now` on every withheld action,
-`self.pending_deletions` is replaced wholesale at the end of every plan, and the incremental
-fast-path explicitly cannot idle-skip while anything is pending — so a deletion that happened three
-days ago reports an age of seconds, refreshed every ~30s. Omitted, and filed as #225. It takes the
-folder card's whole facts strip with it: a folder's other fact is the atime (#208), so there is
-nothing left to draw. A file keeps `last edited <month>` from `path_sync_status`.
+**`deleted on Proton 22m ago` was the age of the PASS, and is the deletion's own now (#225, landed).**
+`detected_epoch_secs` reads like when the deletion happened; `decide_delete_gate` stamps `now` on
+every withheld action, `self.pending_deletions` is replaced wholesale at the end of every plan, and
+the incremental fast-path explicitly cannot idle-skip while anything is pending — so a deletion that
+happened three days ago reported an age of seconds, refreshed every ~30s. That was a live bug, not a
+missing capability: the field was already on the wire and already wrong. `first_seen_epoch_secs` is
+the fact, carried across passes and restarts in the daemon's own `withheld_deletions` table and
+re-stamped only when the fingerprint changes (a different deletion at the same path). `0` on the wire
+means *an older daemon cannot say*, and the clause is omitted rather than aged from 1970.
+
+It gives the folder card a strip again — one fact, since its other is the atime — and puts the file
+card's two facts in the drawn order. `factsOf` still returns each fact with its DRAWN slot, because
+the second is what a folder omits now rather than the first.
 
 That also moved the card's one fact from the frame's `span[0]` to its `span[1]`, which the mapping
 has to state rather than derive. `factsOf` returns each fact with the DRAWN slot it stands for;
@@ -2334,15 +2362,12 @@ computer, permanently` is a fixed string in the deck and drawn in `4a Compact`, 
 happy and the panel reproduces the frame. It is the same #208 number, and the day the tray panel
 renders a live queue (S8) it needs the same treatment the card got here.
 
-| screen | frame          | drawn                                         | Phase 1                                  | gap      |
-| ------ | -------------- | --------------------------------------------- | ---------------------------------------- | -------- |
-| S3     | `4a Deletions` | `Deleting this removes 1,204 photos, 8.4 GB…` | the sentence without a figure            | G8 #208  |
-| S3     | `4a Deletions` | `last opened Mar 2024`                        | the clause omitted                       | G8 #208  |
-| S3     | `4a Deletions` | `deleted on Proton 22m ago`                   | the clause omitted                       | G14 #225 |
-| S3     | `4a Deletions` | `Keep it — put it back on Proton Drive`       | `deny`, remembered for this session      | G13 #224 |
-| S3     | `4a Armed`     | `Delete 1,204 photos from this computer?`     | `Delete photos/2019 from this computer?` | G8 #208  |
-| S3     | `4a Armed`     | `Everything in photos/2019 — 8.4 GB —…`       | the sentence without the size clause     | G8 #208  |
-| S3     | `4a Empty`     | a 522px window                                | a 520px column in a 1040 window          | #221     |
+| screen | frame          | drawn                                     | shipped                                   | gap      |
+| ------ | -------------- | ----------------------------------------- | ----------------------------------------- | -------- |
+| S3     | `4a Deletions` | `1,204 photos, 8.4 GB`                    | `1,204 files, 8.4 GB`                     | decision |
+| S3     | `4a Deletions` | `last opened Mar 2024`                    | the clause omitted                        | G8 #208  |
+| S3     | `4a Armed`     | `Delete 1,204 photos from this computer?` | `Delete 1,204 files from this computer?`  | decision |
+| S3     | `4a Empty`     | a 522px window                            | a 520px column in a 1040 window           | #221     |
 
 ### 76. S4 · the plan screen
 
@@ -2385,20 +2410,25 @@ is `delete_direction().is_some()`, which excludes `purge`. A purge clears an ind
 already gone from both sides — putting the typed-`DELETE` gate in front of somebody for one is how a
 gate stops meaning anything. The screen keys the tint on the first set and the band on the second.
 
-**The typed word authorises nothing, and that is #227 rather than a shortcut.** `apply_approval_command`
-matches against the daemon's **current** `pending_deletions`, and at plan time nothing is pending: a
-deletion becomes pending only when a pass withholds it, and no pass has reached this plan. So
-`approve(path)` before `sync_now` records nothing. `Run this sync` therefore asks for a sync and
-nothing more.
+**The typed word authorises this plan's deletions now (#227, landed).** `approve` used to match only
+against the daemon's **current** `pending_deletions`, and at plan time nothing is pending by
+construction: a deletion becomes pending only when a pass withholds it, and no pass has reached this
+plan. So `approve(path)` before `sync_now` recorded nothing, and the deletion was asked about a second
+time on the Deletions screen — safe, and not what the design says. A selector that matches nothing
+pending now falls through to a **pre-pass approval**, pinned to a fingerprint the daemon derives from
+the index itself, and `onRun` records one per gated row before it asks for the sync.
 
-**What happens next is the daemon's own guard, and it is not one answer.** With delete approval on —
-the default, both directions — the pass withholds the delete exactly as it would have anyway and it
-arrives on the Deletions screen to be answered there: agreed to **twice**, which is safe and is not
-what the design says. With it OFF (`--no-delete-approval`, `[delete_approval] remote/local = false`,
-or a `.proton-sync.toml` turning the guard off for that subtree — `decide_delete_gate` asks the
-per-path resolver first) the pass deletes, and the word typed on this screen is the only thing that
-stood in front of it. So the gate is either a formality or the whole protection depending on a config
-key this screen never reads, which is the sharpest way to say why #227 matters.
+**The direction has to be named, and that is the same rule one step earlier in time.** A path alone
+does not say which of the two deletions at it is meant, and #298 settled that an ambiguous selector
+authorises nothing. The GUI reads the direction off the planned action (`isGated` is the one place
+that pair is enumerated); a pre-approval without one records nothing and says so. A path with no
+baseline record is refused rather than pinned to something that could never match — approving is the
+one place this daemon stores a path a client gave it, so it also clears
+`validate_relative_path_non_empty` first.
+
+Awaited in order, one at a time: a `syncnow` that overtakes an approval is a deletion deferred, which
+is the old behaviour. A failed approval is left where it falls — the pass withholds that one and the
+Deletions screen has it.
 
 **Both filtered-apply buttons are hidden, not drawn-and-inert.** `Run it without the deletion` is G3
 (#192) and `06-plan.md` says outright to hide it rather than fake it. `Leave it alone` — the band's
@@ -2488,7 +2518,6 @@ than one gated deletion) are templates no frame renders, and `NOT_DRAWN` only re
 | S4     | `5a Plan safe` | a size on every row                     | the row without its size                | G2 #191          |
 | S4     | `5a Plan`      | `Run it without the deletion`           | hidden                                  | G3 #192          |
 | S4     | `5a Plan`      | `Leave it alone`                        | hidden                                  | G3 #192          |
-| S4     | `5a Plan`      | typing `DELETE` authorises the deletion | asked again by S3, or applied unguarded | #227             |
 | S4     | `5a Checking`  | `8,431 of 12,480 files`                 | the line omitted                        | G9 #209, G7 #207 |
 | S4     | `5a Checking`  | a 522px window                          | a 520px column in a 1040 window         | #221             |
 

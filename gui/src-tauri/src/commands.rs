@@ -34,7 +34,9 @@
 use crate::config_path::RuntimePaths;
 use gui_core::conflicts::{self, Conflict, Resolution};
 use gui_core::state::derive_state;
-use gui_core::wire::{ControlCommand, ControlResponse, DryRunReport, PendingDeletion};
+use gui_core::wire::{
+    ControlCommand, ControlResponse, DeleteDirection, DryRunReport, PendingDeletion,
+};
 use gui_core::{config_io, index_read, ipc, plan};
 use std::process::Command;
 use std::sync::Mutex;
@@ -199,26 +201,60 @@ async fn approval_round_trip<R: tauri::Runtime>(
     command: ControlCommand,
     target: String,
     literal_path: bool,
+    direction: Option<DeleteDirection>,
 ) -> StatusPayload {
     let socket = match socket_path_for_ipc(&app.state()) {
         Ok(socket) => socket,
         Err(error) => return status_payload(Err(error)),
     };
     let reply = spawn_blocking_ipc(move || {
-        ipc::command_with_argument(&socket, command, target, literal_path, ipc::DEFAULT_TIMEOUT)
+        ipc::command_with_argument(
+            &socket,
+            command,
+            target,
+            literal_path,
+            direction,
+            ipc::DEFAULT_TIMEOUT,
+        )
     })
     .await;
     status_payload_remembering(&app.state(), reply)
 }
 
+/// `direction` is read by the daemon ONLY when nothing pending matches `target` — the Plan screen
+/// approving its own plan's deletion before any pass has withheld it (#227). A pending item's own
+/// direction wins over it, and an approval with neither authorises nothing.
 #[tauri::command]
-pub async fn approve(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
-    approval_round_trip(app, ControlCommand::Approve, target, literal_path).await
+pub async fn approve(
+    app: tauri::AppHandle,
+    target: String,
+    literal_path: bool,
+    direction: Option<DeleteDirection>,
+) -> StatusPayload {
+    approval_round_trip(
+        app,
+        ControlCommand::Approve,
+        target,
+        literal_path,
+        direction,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn deny(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
-    approval_round_trip(app, ControlCommand::Deny, target, literal_path).await
+    approval_round_trip(app, ControlCommand::Deny, target, literal_path, None).await
+}
+
+/// `Keep it` — refuse a withheld deletion (#224). The daemon purges the baseline record for the
+/// target and schedules the pass that puts the surviving copy back on the other side, so unlike
+/// `deny` (which only revokes an approval) the row does not come back.
+///
+/// An older daemon that predates the variant rejects it as an unknown command, and the reply
+/// carries that error rather than the screen recording a decision nothing acted on.
+#[tauri::command]
+pub async fn keep(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
+    approval_round_trip(app, ControlCommand::Keep, target, literal_path, None).await
 }
 
 #[tauri::command]
@@ -2184,6 +2220,7 @@ mod socket_tests {
             ControlCommand::Approve,
             "some/file.txt".to_string(),
             true,
+            None,
         ));
         assert!(
             payload.error.is_none(),

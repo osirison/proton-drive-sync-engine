@@ -144,9 +144,10 @@ export const NOTIFICATION_FIXTURES = {
             return ago(0);
           },
           // ONE QUEUE ITEM, and a directory: the frame's banner is about `photos/2019` being deleted
-          // on Proton, which is one withheld deletion whose subtree holds 1,204 photos. Nothing
-          // counts that subtree (G8 #208), so the title is one line where the frame draws two.
-          event: { kind: "deletion", paths: ["photos/2019"], entity: "folder" },
+          // on Proton, which is one withheld deletion whose subtree holds 1,204 photos. `files` is
+          // the daemon's `subtree_files` (#208) — the same number `4a Deletions` draws on the card,
+          // and what the title counts instead of the queue's own length.
+          event: { kind: "deletion", paths: ["photos/2019"], entity: "folder", files: 1204 },
         },
         {
           get at() {

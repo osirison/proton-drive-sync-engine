@@ -20,10 +20,12 @@ The guard is **directional** — you control each direction independently:
 Index-only cleanup (`purge`, when both sides are already gone) destroys no data and is
 **never** gated.
 
-## Approving and denying
+## Approving, keeping, and denying
 
 While a deletion is guarded, the daemon withholds it — skipping **both** the delete itself
-and its index update, so it re-plans and stays pending next pass — and lists it for you.
+and its index update, so it re-plans and stays pending next pass — and lists it for you. Each
+item also carries **when it was first withheld**, which does not move as the daemon re-derives
+it, and for a folder **how many files are under it and what they weigh**.
 
 From the CLI:
 
@@ -31,13 +33,21 @@ From the CLI:
 proton-sync pending                 # show what's withheld, and in which direction
 proton-sync approve notes/old.txt   # approve one; applies on the next sync
 proton-sync approve --all           # approve everything currently pending
+proton-sync keep notes/old.txt      # refuse it, and put the other side back in step
 proton-sync deny notes/old.txt      # revoke an approval before it applies
 proton-sync syncnow                 # apply approved deletions now
 ```
 
+`keep` and `deny` are not the same thing. `deny` revokes an *approval* — right when you
+approved something and changed your mind, and a no-op otherwise, since withholding is already
+the default. `keep` refuses the *deletion*: the daemon forgets the last-synced record for that
+path (and everything under it, for a folder), so the surviving copy stops looking like a delete
+and is sent back to the side it went missing from on the next sync. The item then leaves the
+queue for good, because nothing derives it any more.
+
 From the desktop app, the **Deletions** screen shows each pending item with plain-language
-copy about exactly what approving will do, and offers per-item **Approve**/**Deny** plus
-**Approve all**/**Deny all**. See [Screens](/desktop/screens/).
+copy about exactly what approving will do, and offers per-item **Approve**/**Keep it** plus a
+**Keep both files** bulk action. See [Screens](/desktop/screens/).
 
 ### Approvals are pinned
 
@@ -46,7 +56,14 @@ directory's remote id. If the entity changes before the delete applies, the fing
 longer matches and the stale approval is inert: nothing is deleted. An approval is consumed
 in the same transaction as its delete's index update — the checkpoint committed right after
 the delete executes — so once a delete has applied, its approval is spent even if a later
-action fails that pass. A *withheld* delete's approval, by contrast, is never touched.
+action fails that pass. A *withheld* delete's approval, by contrast, is never touched. A `keep`
+is pinned the same way, and a refusal that no longer names what you saw does nothing.
+
+An approval can also be recorded **before** the pass that withholds the deletion —
+`proton-sync approve <path> --direction local|remote`, which the desktop app's Plan screen
+sends when you type `DELETE` there. It is pinned to the path's baseline fingerprint like any
+other approval, and it is refused outright for a path the index has no record of, since there
+would be nothing to pin it to.
 
 ## Setting the default
 

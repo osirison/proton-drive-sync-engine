@@ -71,14 +71,23 @@ const PENDING = [
     direction: "local",
     entity_kind: "directory",
     fingerprint: "vol_2QF9xR7k~node_7pK3mD4c",
-    detected_epoch_secs: ago(22 * 60),
+    detected_epoch_secs: ago(30),
+    first_seen_epoch_secs: ago(22 * 60),
+    subtree_files: 1204,
+    // Renders as exactly `8.4 GB` through `format.bytes`, which is the drawn figure. Chosen for
+    // that, and stated here rather than left as a magic number: the frame's own value is what this
+    // fixture exists to reproduce.
+    subtree_bytes: 8_400_000_000,
   },
   {
     path: "archive/old-notes.md",
     direction: "remote",
     entity_kind: "file",
     fingerprint: "0b4f1e7a2c9d6e35a8f0c1b2d3e4f5a6b7c8d9e0",
-    detected_epoch_secs: ago(6 * 60),
+    detected_epoch_secs: ago(30),
+    first_seen_epoch_secs: ago(6 * 60),
+    subtree_files: null,
+    subtree_bytes: null,
   },
 ];
 
