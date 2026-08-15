@@ -1050,8 +1050,14 @@ pub struct PassRecord {
     pub error: Option<String>,
 }
 
-/// One side effect that landed, at the moment it was committed. The unit behind `Last things to
-/// move` (#230) and `This file's history` (#190).
+/// One side effect that landed. The unit behind `Last things to move` (#230) and `This file's
+/// history` (#190).
+///
+/// `epoch_secs` is stamped when the **side effect completed** (`daemon::PassLog::note`), not when
+/// the row was committed — the checkpoint transaction follows, and one checkpoint can carry several
+/// actions, so rows sharing a commit still carry distinct times. Worth stating because
+/// commit-after-side-effects is a load-bearing invariant here (ADR 0003): a reader who took `at`
+/// for the commit boundary would infer an ordering guarantee it does not carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileEvent {
     /// Where the entity IS after the action — a move records its **destination**, so a per-path
