@@ -87,8 +87,12 @@ animates in place on the `syncnow` spinner.
 Pass `--json` to any command to get the daemon's raw response instead: `status --json`
 prints the full response object (below), `history --json` the `history` block, `activity
 --json` the `file_history` block, and `pending --json` the pending-deletions array.
-`--json` output is always the daemon's data verbatim. Scripts that consumed the old JSON
-output should add the flag.
+`--json` output is always the daemon's data verbatim.
+
+`history --json` **changed shape**: it used to be the raw `status_history` array, stored
+oldest-first, and is now the `history` object described under [Pass history](#pass-history).
+Scripts reading it need updating; `status --json` still carries `status_history` unchanged
+for anything that wants the old attempt trail.
 
 ## `syncnow`
 

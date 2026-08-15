@@ -164,7 +164,20 @@ mod unix_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         let status: Value = serde_json::from_slice(&output.stdout).expect("control response JSON");
-        assert_eq!(status["status"], "running");
+        // What this test is about is WHICH daemon the reply came from, so it asserts that — the
+        // resolved local root, which only this daemon can report. It deliberately does not pin
+        // `status`: the socket is bound before the startup reconcile finishes, so `syncing` is a
+        // correct answer here and pinning `running` made the test race its own daemon.
+        assert_eq!(
+            status["config"]["local_root"],
+            Value::String(local_root.display().to_string()),
+            "the reply came from the daemon this config names"
+        );
+        assert!(
+            ["running", "syncing"].contains(&status["status"].as_str().unwrap_or_default()),
+            "an unpaused daemon reports one of the two live states: {}",
+            status["status"]
+        );
 
         // Without --config the same invocation looks in $XDG_RUNTIME_DIR and finds nothing, which
         // is what made the flag necessary.

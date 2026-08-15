@@ -3939,10 +3939,24 @@ fn local_day_start(now_epoch_secs: u64) -> u64 {
         // over the wrong span.
         return now_epoch_secs;
     }
-    let since_midnight = (broken_down.tm_hour.max(0) as u64) * 3600
-        + (broken_down.tm_min.max(0) as u64) * 60
-        + (broken_down.tm_sec.max(0) as u64);
-    now_epoch_secs.saturating_sub(since_midnight)
+    // `mktime`, NOT `now - (h*3600 + m*60 + s)`. On a DST transition day the offset at local
+    // midnight differs from the offset now, so the subtraction lands an hour off: after a
+    // spring-forward the day is 23 hours long, and 12:00 minus twelve hours is 01:00 local, not
+    // midnight. `mktime` applies the zone's own rules for that calendar day; `tm_isdst = -1` tells
+    // it to work out the offset rather than trusting the flag `localtime_r` left behind.
+    broken_down.tm_hour = 0;
+    broken_down.tm_min = 0;
+    broken_down.tm_sec = 0;
+    broken_down.tm_isdst = -1;
+    // SAFETY: `broken_down` is a live local; `mktime` reads and normalizes it in place.
+    let midnight = unsafe { libc::mktime(&mut broken_down) };
+    // `-1` is `mktime`'s error return. A midnight later than `now` means the zone has no 00:00 on
+    // this date and normalization moved forward past it — rare, and still not a reason to publish
+    // a window that has not started.
+    if midnight < 0 || midnight as u64 > now_epoch_secs {
+        return now_epoch_secs;
+    }
+    midnight as u64
 }
 
 fn current_epoch_secs() -> u64 {
@@ -12710,11 +12724,40 @@ mod tests {
         let now = current_epoch_secs();
         let start = local_day_start(now);
         assert!(start <= now, "the day started before now");
+        // 26h, not 24h: a fall-back DST day is 25 hours long, and pinning this at exactly one day
+        // would make the test fail once a year on a correct answer.
         assert!(
-            now - start < 86_400,
-            "and no more than a calendar day ago: {start} vs {now}"
+            now - start < 26 * 3600,
+            "and no more than one calendar day ago: {start} vs {now}"
         );
         // The boundary is a whole minute past the epoch in every timezone offset in use.
         assert_eq!(start % 60, 0);
+    }
+
+    #[test]
+    fn the_day_boundary_survives_a_dst_transition() {
+        // The bug `mktime` replaces: `now - (h*3600 + m*60 + s)` assumes the offset at midnight is
+        // the offset now, so it lands an hour off on both transition days. Driven over a whole
+        // year of local noons, which crosses whatever transitions this machine's zone has.
+        let mut previous = None;
+        for day in 0..366u64 {
+            // 2024-01-01T12:00:00Z plus one day at a time.
+            let noonish = 1_704_110_400 + day * 86_400;
+            let start = local_day_start(noonish);
+            assert!(start <= noonish, "day {day}: boundary is not in the future");
+            assert!(
+                noonish - start < 26 * 3600,
+                "day {day}: boundary more than a long day back ({start} vs {noonish})"
+            );
+            // Consecutive days must land on distinct, increasing boundaries — the failure the old
+            // arithmetic produced was two days sharing one, or a boundary going backwards.
+            if let Some(previous) = previous {
+                assert!(
+                    start > previous,
+                    "day {day}: boundary did not advance ({previous} -> {start})"
+                );
+            }
+            previous = Some(start);
+        }
     }
 }

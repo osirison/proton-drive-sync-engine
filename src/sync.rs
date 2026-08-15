@@ -244,9 +244,10 @@ impl std::str::FromStr for DeleteDirection {
     }
 }
 
-/// Compile-time nudge for [`SyncAction::ALL`]: a new variant makes this match non-exhaustive, so
-/// the build stops one line above the array that must also grow. It cannot check the array itself
-/// — see `ALL`'s own doc for what that costs and why nothing better exists.
+/// Compile-time nudge for [`SyncAction::ALL`]: Rust cannot enumerate an enum's variants, so
+/// nothing can prove that array complete. This match can at least stop the build one line above
+/// it when a variant is added. `ALL` is test-only (see its doc), so the cost of forgetting is
+/// coverage rather than a runtime bug.
 const _: () = {
     #[allow(dead_code)]
     fn every_variant_is_named_beside_all(action: SyncAction) {
@@ -324,23 +325,23 @@ impl SyncAction {
     }
 
     /// Inverse of [`Self::as_str`]; `None` for a token this build does not know.
+    ///
+    /// Goes through **serde**, not through [`Self::ALL`]: the derive is generated from the enum
+    /// itself, so a new variant parses with no list to remember. A hand-maintained lookup would
+    /// have failed silently and one-directionally — the daemon writing rows with the new token
+    /// (`as_str` is an exhaustive match, so it always has one) and `index::read_file_event`
+    /// dropping every one of them from the feed. `StrDeserializer` rather than a
+    /// `serde_json::Value` so an unknown token costs no allocation.
     pub fn from_token(token: &str) -> Option<Self> {
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|action| action.as_str() == token)
+        use serde::de::IntoDeserializer;
+        Self::deserialize(IntoDeserializer::<serde::de::value::Error>::into_deserializer(token))
+            .ok()
     }
 
-    /// Every variant, backing [`Self::from_token`].
-    ///
-    /// **A maintenance requirement, not a guarantee.** Rust cannot enumerate an enum's variants,
-    /// so nothing makes this array complete: `as_str` and `transfer_direction` are exhaustive
-    /// matches and a new variant fails to compile without an arm in each, but a variant left out
-    /// of *this list* compiles. The cost is silent and one-directional — the daemon would write
-    /// history rows carrying the new token and `index::read_file_event` would drop every one of
-    /// them from the feed, because `from_token` scans this array. The `const _` above is the only
-    /// mechanical help available: it fails to compile until the new variant is named one line
-    /// from here.
+    /// Every variant, for **tests** that need to sweep the enum. Nothing at runtime reads it —
+    /// `from_token` goes through serde precisely so no hand-maintained list can drift into a
+    /// silent bug — so a variant missing here costs coverage, not correctness. The `const _` above
+    /// still stops the build one line away when a variant is added, which is the reminder.
     pub const ALL: [Self; 13] = [
         Self::Upload,
         Self::Download,
@@ -1968,10 +1969,9 @@ mod tests {
 
     #[test]
     fn action_tokens_are_unique() {
-        // Only uniqueness — this cannot prove `ALL` is COMPLETE, because Rust cannot enumerate an
-        // enum's variants (see `SyncAction::ALL`'s doc, and the `const _` beside it). A duplicate
-        // would be the other way the array goes wrong: `from_token` returns the first match, so
-        // two variants sharing a token would make one of them unreachable from the history table.
+        // Only uniqueness, and this cannot prove `ALL` is COMPLETE — Rust cannot enumerate an
+        // enum's variants (see `SyncAction::ALL`'s doc and the `const _` beside it). Two variants
+        // sharing a token would still be a real bug: the stored column could not tell them apart.
         let mut seen: Vec<&str> = SyncAction::ALL.iter().map(|a| a.as_str()).collect();
         seen.sort_unstable();
         seen.dedup();
