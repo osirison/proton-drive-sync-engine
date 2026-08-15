@@ -360,7 +360,10 @@ impl std::error::Error for NodeNotFound {}
 /// transfer itself, so this action is **skippable and replanned**, not failed. See
 /// [`NodeNotFound`] for why that is weaker than "this request's node is gone" on the batched
 /// path. Callers must not match message text: only an error constructed at a site that saw the
-/// CLI's stderr classifies here.
+/// CLI's stderr classifies here. Every such site holds an `Output`, so the killing exits of
+/// `run_once` (timeout, cancellation, wait failure, an unreapable child — #275) have no stderr to
+/// read and can never reach this: they stay pass-fatal, which is the only skippability decision
+/// in the client and the only one the executor honours.
 pub fn is_node_not_found_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
     error.downcast_ref::<NodeNotFound>().is_some()
 }
