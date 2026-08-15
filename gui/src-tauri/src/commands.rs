@@ -1056,20 +1056,12 @@ fn log_snapshot_path() -> std::path::PathBuf {
     log_snapshot_path_in(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
 }
 
-/// A RELATIVE BASE DIRECTORY IS INVALID AND IS IGNORED, which an emptiness check alone does not do.
+/// A RELATIVE BASE DIRECTORY IS INVALID AND IS IGNORED (`config_path::absolute_dir`, #286).
 ///
-/// The XDG Base Directory specification is explicit: these variables "must be absolute", and "if an
-/// implementation encounters a relative path in any of these variables it should consider the path
-/// invalid and ignore it". Honouring one would drop the snapshot under the GUI's own working
-/// directory — whatever the desktop launcher happened to leave it as — and hand `xdg-open` a path
-/// that resolves somewhere else again. It is the tilde-path bug class one variable over (#135): a
-/// process no shell touched treats `~` as a literal directory component, and `~/.cache` is not
-/// absolute, so it lands here too.
-///
-/// **This is stricter than the rest of the tree, deliberately.** `src/paths.rs`'s `env_path` and
-/// `config_path.rs`'s `gui_config_path`/`default_socket_path` all filter these variables on
-/// emptiness alone and would honour a relative one. That is a pre-existing hole in three readers
-/// this change does not touch; it is filed rather than widened into here.
+/// Honouring one would drop the snapshot under the GUI's own working directory — whatever the
+/// desktop launcher happened to leave it as — and hand `xdg-open` a path that resolves somewhere
+/// else again. `HOME` carries the same requirement: a relative one puts the fallback in exactly
+/// the unpredictable place the rule exists to avoid, and `temp_dir` behind it is always absolute.
 ///
 /// Taking the two values as arguments rather than reading them is what makes the rule testable:
 /// setting a process environment variable in a test races every other test in the binary (and is
@@ -1078,16 +1070,8 @@ fn log_snapshot_path_in(
     cache_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> std::path::PathBuf {
-    let absolute = |value: std::ffi::OsString| {
-        let path = std::path::PathBuf::from(value);
-        // Subsumes the emptiness check this used to make on its own: an empty path is not absolute.
-        path.is_absolute().then_some(path)
-    };
-    let base = cache_home
-        .and_then(absolute)
-        // Same rule for `HOME`: a relative one puts the fallback in exactly the unpredictable place
-        // the rule above exists to avoid, and `temp_dir` behind it is always absolute.
-        .or_else(|| home.and_then(absolute).map(|home| home.join(".cache")))
+    let base = crate::config_path::absolute_dir(cache_home)
+        .or_else(|| crate::config_path::absolute_dir(home).map(|home| home.join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
     base.join("proton-sync").join("proton-syncd-log.txt")
 }

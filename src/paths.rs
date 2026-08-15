@@ -1,5 +1,6 @@
 use crate::{AppResult, boxed_error};
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -28,10 +29,11 @@ pub fn sync_state_dir(local_root: &Path) -> PathBuf {
 /// `sun_path` length limit; and the control CLI locates it there without needing to know the sync
 /// root. So, unlike the persistent state, it does *not* move into `.sync`.
 ///
-/// Fallible: with `XDG_RUNTIME_DIR` unset this resolves through [`fallback_runtime_dir`], which
+/// Fallible: with `XDG_RUNTIME_DIR` unset — or set to a non-absolute value, which [`absolute_dir`]
+/// discards — this resolves through [`fallback_runtime_dir`], which
 /// fails closed rather than hand back a path in attacker-controlled space (#74).
 pub fn default_socket_path() -> AppResult<PathBuf> {
-    default_runtime_path(DEFAULT_SOCKET_NAME, env_path("XDG_RUNTIME_DIR"))
+    default_runtime_path(DEFAULT_SOCKET_NAME, env::var_os("XDG_RUNTIME_DIR"))
 }
 
 /// The instance lockfile lives in the per-root `.sync` directory, so each sync root locks
@@ -58,8 +60,9 @@ pub fn default_state_db_path(local_root: &Path) -> PathBuf {
 /// second daemon slip through in exactly those cases and still contend on the shared cache. This
 /// complements the *per-root* [`default_lockfile_path`], which stops two daemons on the same root.
 ///
-/// Fallible for the same reason as [`default_socket_path`]: with both `XDG_STATE_HOME` and `HOME`
-/// unset it resolves through [`fallback_runtime_dir`], which fails closed (#74).
+/// Fallible for the same reason as [`default_socket_path`]: with neither `XDG_STATE_HOME` nor
+/// `HOME` usable (unset or non-absolute) it resolves through [`fallback_runtime_dir`], which fails
+/// closed (#74).
 pub fn default_global_lock_path() -> AppResult<PathBuf> {
     Ok(global_lock_path_in(user_state_dir()?))
 }
@@ -70,22 +73,30 @@ fn global_lock_path_in(state_dir: PathBuf) -> PathBuf {
     state_dir.join(APP_STATE_DIR).join(GLOBAL_LOCK_NAME)
 }
 
-/// `$XDG_STATE_HOME`, falling back to `~/.local/state`, then — if even `HOME` is unset (unusual) —
-/// to the per-uid temp directory so the path stays user-private rather than shared.
+/// `$XDG_STATE_HOME`, falling back to `~/.local/state`, then — if even `HOME` is unusable (unset or
+/// non-absolute; unusual) — to the per-uid temp directory so the path stays user-private rather
+/// than shared. Both values go through [`absolute_dir`] first.
 fn user_state_dir() -> AppResult<PathBuf> {
-    if let Some(dir) = env_path("XDG_STATE_HOME") {
-        Ok(dir)
-    } else if let Some(home) = env_path("HOME") {
-        Ok(home.join(".local").join("state"))
-    } else {
-        fallback_runtime_dir()
+    user_state_dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"))
+}
+
+/// Split from [`user_state_dir`] so the [`absolute_dir`] rule is testable without mutating
+/// process-wide environment variables (which races every other test in the binary, and is `unsafe`
+/// since edition 2024). `config.rs`'s `expand_tilde_with_home` splits itself the same way. A
+/// relative `HOME` is the same failure as a relative `XDG_STATE_HOME` and is ignored alike.
+fn user_state_dir_from(state_home: Option<OsString>, home: Option<OsString>) -> AppResult<PathBuf> {
+    match (absolute_dir(state_home), absolute_dir(home)) {
+        (Some(dir), _) => Ok(dir),
+        (None, Some(home)) => Ok(home.join(".local").join("state")),
+        (None, None) => fallback_runtime_dir(),
     }
 }
 
-fn default_runtime_path(file_name: &str, runtime_dir: Option<PathBuf>) -> AppResult<PathBuf> {
-    match runtime_dir {
-        // A session-manager-provided runtime dir is trusted (and never created by us); only the
-        // shared-/tmp fallback below is attacker-plantable, so only it is validated.
+fn default_runtime_path(file_name: &str, runtime_dir: Option<OsString>) -> AppResult<PathBuf> {
+    match absolute_dir(runtime_dir) {
+        // An absolute, session-manager-provided runtime dir is trusted (and never created by us);
+        // only the shared-/tmp fallback below is attacker-plantable, so only it is validated. A
+        // relative value is not a runtime dir at all (see [`absolute_dir`]) and takes the fallback.
         Some(dir) => Ok(dir.join(file_name)),
         None => Ok(fallback_runtime_dir()?.join(file_name)),
     }
@@ -93,7 +104,8 @@ fn default_runtime_path(file_name: &str, runtime_dir: Option<PathBuf>) -> AppRes
 
 /// `XDG_RUNTIME_DIR` is normally set by a login session manager (for example
 /// systemd-logind) to a private, per-user, mode-0700 directory. When it is unset
-/// (minimal environments, some containers, `su`'d shells) fall back to a
+/// (minimal environments, some containers, `su`'d shells) — or holds a
+/// non-absolute value, which [`absolute_dir`] discards — fall back to a
 /// namespaced, owner-only-permission subdirectory of the shared temporary
 /// directory rather than writing predictable filenames (`proton-sync.sock`)
 /// directly into world-writable `/tmp`, where they would be guessable and could
@@ -193,10 +205,28 @@ fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-fn env_path(name: &str) -> Option<PathBuf> {
-    env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+/// A base-directory environment value, honoured **only when it is absolute** (#286). The one rule
+/// every XDG reader in this module goes through; the values are taken as arguments (never read
+/// here) so the rule is testable without mutating process-wide environment variables.
+///
+/// The XDG Base Directory specification is explicit: these variables "must be absolute", and an
+/// implementation that meets a relative one "should consider the path invalid and ignore it". A
+/// relative value is resolved against the *process's* working directory, which for a systemd unit
+/// or a desktop launcher is not something the user chose — and, worse, differs between processes:
+///
+/// * `XDG_STATE_HOME` keys [`default_global_lock_path`], whose entire mechanism is being the *same
+///   path for every daemon this user runs*. Resolved per-cwd it is not one lock but one per launch
+///   directory, so two daemons start and race the `proton-drive` CLI's shared SQLite cache/session
+///   store — the `SQLITE_BUSY` failure the lock exists to prevent (#23).
+/// * `XDG_RUNTIME_DIR` keys [`default_socket_path`], so the daemon binds one path while the
+///   control CLI/GUI dial another and report `unreachable` against a healthy daemon.
+///
+/// Ignoring the value falls through to the documented default, and for `XDG_RUNTIME_DIR` that
+/// means [`fallback_runtime_dir`]'s fail-closed validation (#74) rather than a path nobody vetted.
+/// `is_absolute` subsumes the emptiness check these readers used to make on their own (an empty
+/// path is not absolute) and catches the literal `~` a shell-less process never expands (#135).
+fn absolute_dir(value: Option<OsString>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|path| path.is_absolute())
 }
 
 #[cfg(test)]
@@ -205,7 +235,7 @@ mod tests {
 
     #[test]
     fn runtime_defaults_use_xdg_runtime_dir_when_available() {
-        let path = default_runtime_path("proton-sync.sock", Some(PathBuf::from("/run/user/1000")))
+        let path = default_runtime_path("proton-sync.sock", Some(OsString::from("/run/user/1000")))
             .expect("a provided runtime dir needs no validation");
 
         assert_eq!(path, PathBuf::from("/run/user/1000/proton-sync.sock"));
@@ -280,9 +310,88 @@ mod tests {
     fn socket_stays_in_the_runtime_dir_not_the_sync_state_dir() {
         // The socket is a session-scoped IPC endpoint, not persistent state, so it stays in
         // $XDG_RUNTIME_DIR rather than moving into <local_root>/.sync.
-        let path = default_runtime_path("proton-sync.sock", Some(PathBuf::from("/run/user/1000")))
+        let path = default_runtime_path("proton-sync.sock", Some(OsString::from("/run/user/1000")))
             .expect("a provided runtime dir needs no validation");
         assert_eq!(path, PathBuf::from("/run/user/1000/proton-sync.sock"));
+    }
+
+    // #286: a base-directory variable that is not absolute is invalid per the XDG spec and must be
+    // ignored. The tests below assert the *consequence* — what the resolved path would then be —
+    // not just the predicate, because a relative value does not fail loudly: it silently resolves
+    // against whatever working directory the launcher left behind, per process.
+
+    #[test]
+    fn a_relative_state_home_cannot_split_the_user_global_lock_in_two() {
+        // THE consequence. `default_global_lock_path` admits at most one daemon per user only
+        // because every daemon resolves it to the same path (#23). A honoured relative value is
+        // resolved per-process against cwd, so a daemon started from ~/a and one started from ~/b
+        // take two different locks and both run, racing the proton-drive CLI's shared SQLite
+        // cache/session store. Absoluteness IS that property: an absolute path cannot vary by cwd.
+        let state_dir = user_state_dir_from(
+            Some(OsString::from(".local/state")),
+            Some("/home/me".into()),
+        )
+        .expect("a relative state home falls through, it does not fail");
+        let lock = global_lock_path_in(state_dir);
+
+        assert!(
+            lock.is_absolute(),
+            "a cwd-relative global lock is one lock per launch directory, not one per user: {}",
+            lock.display()
+        );
+        assert_eq!(
+            lock,
+            PathBuf::from("/home/me/.local/state/proton-drive-sync/single-instance.lock"),
+            "an invalid XDG_STATE_HOME must fall through to the documented ~/.local/state default"
+        );
+    }
+
+    #[test]
+    fn a_relative_home_is_ignored_like_a_relative_state_home() {
+        // The fallback carries the same requirement as the value it stands in for: a relative HOME
+        // puts the lock in the same per-cwd place. Falls through to the uid-private temp directory,
+        // which `fallback_runtime_dir` both validates (#74) and derives from an absolute base.
+        let state_dir = user_state_dir_from(None, Some(OsString::from("home/me")))
+            .expect("the private fallback resolves");
+
+        assert!(
+            state_dir.is_absolute(),
+            "a relative HOME must not produce a relative state dir: {}",
+            state_dir.display()
+        );
+        assert_eq!(state_dir, fallback_runtime_dir().expect("fallback"));
+    }
+
+    #[test]
+    fn a_relative_runtime_dir_falls_through_to_the_validated_fallback() {
+        // The socket's half: the daemon binds one resolution of a relative value and the control
+        // CLI/GUI dial another, so a healthy daemon reports as unreachable. Falling through lands
+        // in `fallback_runtime_dir`, which fails closed rather than trusting an unvetted path.
+        let path = default_runtime_path("proton-sync.sock", Some(OsString::from("run/user/1000")))
+            .expect("the fallback resolves");
+
+        assert!(path.is_absolute(), "socket path: {}", path.display());
+        assert_eq!(
+            path,
+            fallback_runtime_dir()
+                .expect("fallback")
+                .join("proton-sync.sock")
+        );
+    }
+
+    #[test]
+    fn only_absolute_env_values_are_honoured() {
+        assert_eq!(
+            absolute_dir(Some(OsString::from("/run/user/1000"))),
+            Some(PathBuf::from("/run/user/1000"))
+        );
+        assert_eq!(absolute_dir(None), None);
+        // Empty: what the old emptiness check caught, still caught (an empty path is not absolute).
+        assert_eq!(absolute_dir(Some(OsString::new())), None);
+        assert_eq!(absolute_dir(Some(OsString::from("state"))), None);
+        assert_eq!(absolute_dir(Some(OsString::from("./state"))), None);
+        // A literal `~` no shell expanded is a relative component, not $HOME (#135).
+        assert_eq!(absolute_dir(Some(OsString::from("~/.local/state"))), None);
     }
 
     // #74: the fallback path is predictable and its parent is world-writable, so a local attacker

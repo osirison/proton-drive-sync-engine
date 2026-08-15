@@ -30,6 +30,11 @@ const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// the pipe write ends) still holds the pipe open. Worst case `run_once` therefore returns within
 /// `CommandPolicy::timeout` + this grace instead of blocking forever (issue #56).
 const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
+/// How long a killing exit waits to collect the child it just SIGKILLed before giving up on the
+/// reap and leaving the child unreaped (issue #275; see [`reap_killed_child`]). Generous relative to
+/// the normal case — a killed child is collected in microseconds — because only a child the kernel
+/// cannot deliver the signal to reaches the deadline.
+const CHILD_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A CLI `{ok, value}`-wrapped string, keeping apart the three states a plain `Option<String>`
 /// collapses into `None`:
@@ -1201,7 +1206,7 @@ impl ProtonDriveClient {
         let status = loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                terminate_child_tree(&mut child);
+                terminate_child_tree(&mut child, operation);
                 warn!(
                     operation,
                     timeout_ms = timeout.as_millis(),
@@ -1222,7 +1227,7 @@ impl ProtonDriveClient {
                 // side effect the never-auto-retry convention exists to prevent. Kill first, then
                 // report: the child has not been reaped here, so the process group is still ours.
                 Err(error) => {
-                    terminate_child_tree(&mut child);
+                    terminate_child_tree(&mut child, operation);
                     warn!(
                         operation,
                         error = %error,
@@ -1235,7 +1240,7 @@ impl ProtonDriveClient {
                 }
             }
             if self.cancel_flag.load(Ordering::SeqCst) {
-                terminate_child_tree(&mut child);
+                terminate_child_tree(&mut child, operation);
                 warn!(
                     operation,
                     "proton-drive command cancelled before completion"
@@ -1346,7 +1351,7 @@ impl ProtonDriveClient {
 }
 
 /// Terminates a spawned `proton-drive` command and every descendant it may have
-/// forked, then reaps the direct child without reading its output.
+/// forked, then reaps the direct child — under a deadline — without reading its output.
 ///
 /// `spawn_once` places the child in its own process group, so on Unix this signals
 /// the whole group (`kill(-pid, SIGKILL)`) instead of only the directly tracked
@@ -1357,7 +1362,7 @@ impl ProtonDriveClient {
 /// write end exits on its own, defeating the purpose of a prompt timeout or
 /// cancellation. Using `wait` (not `wait_with_output`) here avoids that same
 /// blocking read for the direct child's own pipes.
-fn terminate_child_tree(child: &mut Child) {
+fn terminate_child_tree(child: &mut Child, operation: &str) {
     #[cfg(unix)]
     {
         let pid = child.id() as libc::pid_t;
@@ -1369,7 +1374,46 @@ fn terminate_child_tree(child: &mut Child) {
         }
     }
     let _ = child.kill();
-    let _ = child.wait();
+    reap_killed_child(child, CHILD_REAP_TIMEOUT, operation);
+}
+
+/// Reaps an already-killed child within `budget`; `true` when it was collected.
+///
+/// Issue #275: SIGKILL does not remove a process in uninterruptible sleep — a child blocked in a
+/// syscall against hung NFS/FUSE storage stays alive until that syscall returns — so the plain
+/// `wait()` this replaces could block all three killing exits of `run_once` (timeout, cancellation,
+/// wait failure) indefinitely. That is #56's hazard one layer down: the reconcile runs under
+/// `block_in_place`, so the daemon's whole main loop stops with no timeout left to rescue it.
+/// Giving up leaves the child **unreaped**, which is the lesser cost, and logs rather than
+/// swallows that so the leak is attributable. Unreaped is not the same as dead: at the deadline the
+/// signal has been sent but nothing proves it was delivered, and the case this exists for is
+/// exactly the one where it was not — the child is still in the syscall, and only becomes a zombie
+/// when that returns. Either way this process never collects it, so it holds a pid and a kernel
+/// task_struct until the daemon exits. A still-running *mutating* command may therefore still take
+/// effect remotely, which is what the callers' "may or may not have completed" wording covers.
+fn reap_killed_child(child: &mut Child, budget: Duration, operation: &str) -> bool {
+    match child.wait_timeout(budget) {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            warn!(
+                operation,
+                pid = child.id(),
+                budget_ms = budget.as_millis(),
+                "killed proton-drive child could not be reaped (uninterruptible sleep?); leaving \
+                 it unreaped rather than blocking the reconcile"
+            );
+            false
+        }
+        Err(error) => {
+            warn!(
+                operation,
+                pid = child.id(),
+                error = %error,
+                "failed to reap the killed proton-drive child"
+            );
+            false
+        }
+    }
 }
 
 /// A pipe-reader thread's one-shot result channel. Deliberately not a `JoinHandle`: joining a
@@ -2845,6 +2889,71 @@ sleep 30
             io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH),
             "the child must be gone and reaped, not merely unsignalable"
+        );
+    }
+
+    /// A child that outlives any reasonable reap budget, for the two tests below. Not in its own
+    /// process group: `terminate_child_tree`'s `kill(-pid)` then finds no such group (ESRCH) and
+    /// the direct `child.kill()` is what does the work, which is the shape under test here.
+    #[cfg(unix)]
+    fn spawn_long_lived_child() -> Child {
+        Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a long-lived child")
+    }
+
+    // Regression guard for issue #275: `terminate_child_tree` ended in an unbounded `child.wait()`.
+    // SIGKILL does not remove a process in uninterruptible sleep, so a child blocked in a syscall
+    // against hung NFS/FUSE storage kept all three killing exits of `run_once` — and the reconcile
+    // that runs under `block_in_place` — waiting with no timeout left to rescue them. A D state
+    // cannot be produced from a test, so the reap is driven directly against a child that is
+    // deliberately NOT killed: to the reap that is the same "kill issued, child still here" shape,
+    // and pre-fix the call returns when the child exits 30s later instead of at the budget.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_will_not_die_bounds_the_reap_instead_of_blocking() {
+        let mut child = spawn_long_lived_child();
+
+        let started = Instant::now();
+        let reaped = reap_killed_child(&mut child, Duration::from_millis(50), "list");
+        let elapsed = started.elapsed();
+
+        assert!(
+            !reaped,
+            "a child that is still running must not report as reaped"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the reap must end at its budget, not when the child exits 30s later; \
+             elapsed: {elapsed:?}"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    // The ordinary case must still collect the child. Leaking a zombie is the fallback for a child
+    // the kernel cannot deliver the signal to, not the new normal: a zombie holds its pid and a
+    // kernel task_struct for the daemon's whole lifetime, and the daemon spawns a CLI per action.
+    #[cfg(unix)]
+    #[test]
+    fn terminating_a_killable_child_still_reaps_it() {
+        let mut child = spawn_long_lived_child();
+        let pid = child.id() as libc::pid_t;
+
+        terminate_child_tree(&mut child, "list");
+
+        // SAFETY: signal 0 only probes for the process's existence; it dereferences nothing.
+        let probe = unsafe { libc::kill(pid, 0) };
+        assert_eq!(probe, -1, "the child must not still be running (pid {pid})");
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH),
+            "the child must be reaped, not left as a signalable zombie"
         );
     }
 
