@@ -2675,7 +2675,16 @@ fn apply_approval_command(
     let matches: Vec<&PendingDeletion> = pending_deletions
         .iter()
         .filter(|pending| match target {
-            Some(path) => pending.path == Path::new(path),
+            // Compared in the wire form, not against the real `PathBuf`: a client can only ever
+            // have seen the lossy rendering the daemon published (#61), so an exact comparison
+            // would make every non-UTF-8 path permanently unapprovable — exactly the paths whose
+            // withheld deletion motivated the lossy wire. The approval itself is still recorded
+            // against the real path below. Still compared as *paths*, not strings, so the
+            // component-wise leniency of the previous `PathBuf` comparison (a shell-completed
+            // trailing slash on a directory, a `./` prefix) survives.
+            Some(selector) => {
+                Path::new(&*crate::ipc::wire_path(&pending.path)) == Path::new(selector)
+            }
             None => true,
         })
         .collect();
@@ -2685,6 +2694,25 @@ fn apply_approval_command(
             Some(path) => format!("no pending deletion matches '{path}'"),
             None => "no deletions are pending approval".to_owned(),
         });
+    }
+    // The planner emits at most one delete per path, so a targeted selector matches more than one
+    // row only when two real paths differ solely in bytes the lossy wire replaced (#61). Authorising
+    // both from one ambiguous selector would delete a file the user never picked out — and they
+    // cannot pick it out, the rows render identically. Fail closed on the destructive side only:
+    // a `deny` over-revoking is the safe direction, and `--all` remains the deliberate every-item
+    // form.
+    // Names `--all`, NOT the wire's `"all"` selector: this branch is only reachable from a
+    // `<PATH>` argument, which the CLI always sends with `literal_path` set — so `proton-sync
+    // approve all` would be read as a path literally named `all` and do nothing. Telling the user
+    // to type the one thing that provably cannot work is worse than saying nothing.
+    if approve && target.is_some() && matches.len() > 1 {
+        return Ok(format!(
+            "{} pending deletions render as '{}' and cannot be told apart on the wire (their \
+             paths are not valid UTF-8); nothing was approved — approve every pending deletion \
+             instead with `proton-sync approve --all`",
+            matches.len(),
+            target.unwrap_or_default()
+        ));
     }
 
     let now = current_epoch_secs() as i64;
@@ -5004,6 +5032,157 @@ mod tests {
                 .expect("load approvals")
                 .len(),
             2,
+        );
+    }
+
+    #[test]
+    fn a_non_utf8_pending_deletion_is_approvable_through_its_wire_form() {
+        // #61: a non-UTF-8 path cannot survive JSON, so a client only ever sees (and can only ever
+        // send back) `to_string_lossy`. Matching the selector against the real `PathBuf` would make
+        // exactly those paths permanently unapprovable — and they are the ones that motivated the
+        // lossy wire. The approval must still be recorded against the REAL path, or the
+        // execution-time gate would never find it.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let real_path = PathBuf::from(OsStr::from_bytes(b"bad-\xffdir/file.txt"));
+        let pending = vec![PendingDeletion {
+            path: real_path.clone(),
+            direction: DeleteDirection::Remote,
+            entity_kind: EntityKind::File,
+            fingerprint: "fp".to_owned(),
+            detected_epoch_secs: 1,
+        }];
+        let selector = crate::ipc::wire_path(&real_path);
+        assert_ne!(
+            PathBuf::from(&*selector),
+            real_path,
+            "the wire form is lossy"
+        );
+
+        let message =
+            apply_approval_command(&daemon.connection, &pending, Some(&selector), true, true)
+                .expect("approve by wire form");
+
+        assert!(
+            message.contains("approved 1"),
+            "the lossy selector a client can send must match: {message}"
+        );
+        let approvals = crate::index::load_delete_approvals(&daemon.connection).expect("approvals");
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(
+            approvals[0].path, real_path,
+            "the approval must be pinned to the real path the guard checks, not the lossy one"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_lossy_selector_approves_nothing() {
+        // Two real paths differing only in the bytes `to_string_lossy` replaces render as ONE
+        // selector, so a targeted approve cannot say which was meant — and the `pending` list the
+        // user read from shows them identically. Approving both would delete a file nobody picked.
+        // `deny` is not gated: over-revoking is the safe direction.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending: Vec<PendingDeletion> = [&b"bad-\xff.txt"[..], &b"bad-\xfe.txt"[..]]
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| PendingDeletion {
+                path: PathBuf::from(OsStr::from_bytes(bytes)),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::File,
+                fingerprint: format!("fp-{index}"),
+                detected_epoch_secs: 1,
+            })
+            .collect();
+        let selector = crate::ipc::wire_path(&pending[0].path);
+        assert_eq!(selector, crate::ipc::wire_path(&pending[1].path));
+
+        let message =
+            apply_approval_command(&daemon.connection, &pending, Some(&selector), true, true)
+                .expect("ambiguous approve");
+
+        assert!(
+            message.contains("cannot be told apart"),
+            "an ambiguous selector must explain itself: {message}"
+        );
+        // The way out it offers must be one that WORKS from here: this branch is only reached with
+        // `literal_path` set, where the wire's `"all"` selector is read as a path named `all`.
+        assert!(
+            message.contains("proton-sync approve --all"),
+            "the message must name the flag, not the reserved word a literal-path request cannot \
+             use: {message}"
+        );
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("approvals")
+                .is_empty(),
+            "an ambiguous approve must authorize nothing"
+        );
+
+        // "all" is the deliberate every-item form and still works, as does a deny.
+        apply_approval_command(&daemon.connection, &pending, Some("all"), false, true)
+            .expect("approve all");
+        assert_eq!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("approvals")
+                .len(),
+            2
+        );
+        apply_approval_command(&daemon.connection, &pending, Some(&selector), true, false)
+            .expect("ambiguous deny");
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("approvals")
+                .is_empty(),
+            "a deny is not gated: revoking more than asked is the safe direction"
+        );
+    }
+
+    #[test]
+    fn a_selector_with_a_trailing_slash_still_matches_a_pending_directory() {
+        // Shell completion appends `/` to a directory, and pending deletions include directories.
+        // The comparison is component-wise (`Path`), not string equality, so that still matches —
+        // as it did before the selector moved to the wire form (#61).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending = vec![PendingDeletion {
+            path: PathBuf::from("nested/folder"),
+            direction: DeleteDirection::Remote,
+            entity_kind: EntityKind::Directory,
+            fingerprint: "fp-dir".to_owned(),
+            detected_epoch_secs: 1,
+        }];
+
+        let message = apply_approval_command(
+            &daemon.connection,
+            &pending,
+            Some("nested/folder/"),
+            true,
+            true,
+        )
+        .expect("approve by completed path");
+
+        assert!(
+            message.contains("approved 1"),
+            "a trailing slash must not make a pending directory unapprovable: {message}"
         );
     }
 

@@ -84,6 +84,78 @@ mod unix_tests {
         );
     }
 
+    /// #63: a `socket_path` set in the daemon's config file used to be invisible to the control
+    /// CLI, so every invocation had to repeat `--socket-path`. Both ends now read the same file.
+    #[test]
+    fn the_control_cli_finds_a_file_configured_socket_without_repeating_the_flag() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let fake_proton_drive = write_fake_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            format!(
+                "local_root = \"{}\"\nremote_root = \"/Drive/RemoteFolder\"\n\
+                 socket_path = \"{}\"\nlockfile_path = \"{}\"\ndb_path = \"{}\"\n\
+                 proton_cli = \"{}\"\nscan_interval_secs = 60\nevents_driven = false\n",
+                local_root.display(),
+                socket_path.display(),
+                directory.path().join("daemon.lock").display(),
+                directory.path().join("sync_index.db").display(),
+                fake_proton_drive.display(),
+            ),
+        )
+        .expect("write config");
+
+        let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
+            .arg("--config")
+            .arg(&config_path)
+            .env("XDG_STATE_HOME", directory.path())
+            .env("RUST_LOG", "error")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn proton-syncd");
+        let mut daemon = DaemonProcess { child };
+        wait_for_socket(&socket_path, &mut daemon.child);
+
+        // An empty XDG_RUNTIME_DIR, so the default socket path resolves somewhere the daemon is
+        // NOT listening: only the config file can produce a successful round trip here.
+        let empty_runtime_dir = directory.path().join("runtime");
+        fs::create_dir(&empty_runtime_dir).expect("runtime dir");
+        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
+            .arg("--config")
+            .arg(&config_path)
+            .arg("--json")
+            .arg("status")
+            .env("XDG_RUNTIME_DIR", &empty_runtime_dir)
+            .output()
+            .expect("run proton-sync");
+
+        assert!(
+            output.status.success(),
+            "proton-sync --config status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let status: Value = serde_json::from_slice(&output.stdout).expect("control response JSON");
+        assert_eq!(status["status"], "running");
+
+        // Without --config the same invocation looks in $XDG_RUNTIME_DIR and finds nothing, which
+        // is what made the flag necessary.
+        let without_config = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
+            .arg("--json")
+            .arg("status")
+            .env("XDG_RUNTIME_DIR", &empty_runtime_dir)
+            .output()
+            .expect("run proton-sync");
+        assert!(
+            !without_config.status.success(),
+            "the default socket path must not reach this daemon, or the test proves nothing"
+        );
+    }
+
     #[test]
     fn malformed_control_request_does_not_crash_the_daemon() {
         let directory = tempdir().expect("tempdir");

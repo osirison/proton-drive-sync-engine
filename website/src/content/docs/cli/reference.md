@@ -11,12 +11,19 @@ control requests from an in-memory snapshot on a dedicated task, so every comman
 responds immediately — even while a sync pass is running.
 
 ```bash
-proton-sync [--socket-path <PATH>] [--json] <command>
+proton-sync [--config <PATH>] [--socket-path <PATH>] [--json] <command>
 ```
 
 When `--socket-path` is omitted, the CLI uses the same default as the daemon —
 `$XDG_RUNTIME_DIR/proton-sync.sock`, with an OS-temp-directory fallback — so on a normal
 setup you don't need to pass it.
+
+If your daemon runs with a `socket_path` set in its [config file](/daemon/configuration/),
+point the CLI at the same file with `--config` instead of repeating `--socket-path` on
+every command. The precedence matches the daemon's: `--socket-path` beats the config file's
+`socket_path`, which beats the default. Only `socket_path` is read from the file; every other
+key belongs to the daemon. A relative `socket_path` is rejected on both sides, because it
+would resolve against each process's own working directory.
 
 ## Commands
 

@@ -288,6 +288,33 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
     Ok((config, dry_run))
 }
 
+/// The control socket a **client** should talk to, resolved with the daemon's own precedence:
+/// explicit `--socket-path` > the config file's `socket_path` > the XDG default. Shared with
+/// `proton-sync` so a file-configured socket is not invisible to the control CLI, which otherwise
+/// had to repeat `--socket-path` on every invocation (#63).
+///
+/// The default stays **lazy**, like [`resolve_runtime_config`]: an explicit path must not fail
+/// because the fail-closed shared-/tmp fallback (#74) — which this run never touches — is hostile.
+/// A `config_path` is read whenever it is given, so a malformed config is reported rather than
+/// silently ignored.
+pub fn resolve_control_socket_path(
+    explicit: Option<PathBuf>,
+    config_path: Option<&Path>,
+) -> AppResult<PathBuf> {
+    let config_path = config_path
+        .map(|path| expand_tilde(path.to_path_buf(), "--config"))
+        .transpose()?;
+    let from_file = load_file_config(config_path.as_ref())?.socket_path;
+    match explicit.or(from_file) {
+        Some(path) => {
+            let path = expand_tilde(path, "socket_path")?;
+            require_absolute_socket_path(&path)?;
+            Ok(path)
+        }
+        None => default_socket_path(),
+    }
+}
+
 pub fn load_file_config(path: Option<&PathBuf>) -> AppResult<FileConfig> {
     let Some(path) = path else {
         return Ok(FileConfig::default());
@@ -402,6 +429,23 @@ fn resolve_positive_usize(
     Ok(value)
 }
 
+/// Unlike db_path/lockfile_path, a relative socket_path is *not* resolved under local_root — the
+/// control socket must not live under the sync root (see `paths::default_socket_path`). Used
+/// verbatim, a relative value would bind against the daemon's current working directory, so reject
+/// it outright. The XDG default is always absolute; only explicit overrides hit this. Shared with
+/// [`resolve_control_socket_path`] so the control CLI rejects the same values the daemon does.
+fn require_absolute_socket_path(socket_path: &Path) -> AppResult<()> {
+    if !socket_path.is_absolute() {
+        return Err(boxed_error(format!(
+            "socket_path must be an absolute path, got relative `{}`: a relative socket path \
+             would resolve against the daemon's working directory; pass an absolute path (for \
+             example under $XDG_RUNTIME_DIR)",
+            socket_path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
     if config.local_root.as_os_str().is_empty() {
         return Err(boxed_error("local_root must not be empty"));
@@ -409,18 +453,7 @@ fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
     if config.remote_root.as_os_str().is_empty() {
         return Err(boxed_error("remote_root must not be empty"));
     }
-    // Unlike db_path/lockfile_path, a relative socket_path is *not* resolved under local_root —
-    // the control socket must not live under the sync root (see `paths::default_socket_path`).
-    // Used verbatim, a relative value would bind against the daemon's current working directory,
-    // so reject it outright. The XDG default is always absolute; only explicit overrides hit this.
-    if !config.socket_path.is_absolute() {
-        return Err(boxed_error(format!(
-            "socket_path must be an absolute path, got relative `{}`: a relative socket path \
-             would resolve against the daemon's working directory; pass an absolute path (for \
-             example under $XDG_RUNTIME_DIR)",
-            config.socket_path.display()
-        )));
-    }
+    require_absolute_socket_path(&config.socket_path)?;
     ScanOptions::new(
         &config.local_root,
         std::slice::from_ref(&config.db_path),
@@ -773,6 +806,83 @@ socket_path = "run/daemon.sock"
         assert_eq!(
             config.socket_path,
             PathBuf::from("/run/user/1000/custom.sock")
+        );
+    }
+
+    /// #63: a file-configured `socket_path` used to be invisible to `proton-sync`, so every
+    /// invocation had to repeat `--socket-path`. The control CLI now resolves through the same
+    /// precedence and the same validation as the daemon.
+    #[test]
+    fn the_control_socket_resolver_reads_the_config_file_and_the_flag_wins() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "/home/tester/ProtonDrive"
+remote_root = "/Drive/RemoteFolder"
+socket_path = "/run/user/1000/from-file.sock"
+"#,
+        )
+        .expect("write config");
+
+        assert_eq!(
+            resolve_control_socket_path(None, Some(&config_path)).expect("from file"),
+            PathBuf::from("/run/user/1000/from-file.sock"),
+        );
+        assert_eq!(
+            resolve_control_socket_path(
+                Some(PathBuf::from("/run/user/1000/from-flag.sock")),
+                Some(&config_path)
+            )
+            .expect("flag wins"),
+            PathBuf::from("/run/user/1000/from-flag.sock"),
+        );
+    }
+
+    #[test]
+    fn the_control_socket_resolver_rejects_the_same_relative_paths_the_daemon_does() {
+        // A client resolving a relative value against its OWN working directory would look for the
+        // socket somewhere the daemon never bound it, and report an unreachable daemon.
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "/home/tester/ProtonDrive"
+remote_root = "/Drive/RemoteFolder"
+socket_path = "run/daemon.sock"
+"#,
+        )
+        .expect("write config");
+
+        for error in [
+            resolve_control_socket_path(None, Some(&config_path))
+                .expect_err("relative file value must be rejected"),
+            resolve_control_socket_path(Some(PathBuf::from("relative.sock")), None)
+                .expect_err("relative flag value must be rejected"),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .contains("socket_path must be an absolute path"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_control_socket_resolver_reports_a_malformed_config_instead_of_ignoring_it() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(&config_path, "socket_pathh = \"/run/typo.sock\"\n").expect("write config");
+
+        let error = resolve_control_socket_path(None, Some(&config_path))
+            .expect_err("a config the daemon would reject must not be silently ignored");
+
+        assert!(
+            error.to_string().contains("failed to parse config"),
+            "unexpected error: {error}"
         );
     }
 

@@ -34,7 +34,11 @@ pub fn absolute_dir(value: Option<OsString>) -> Option<PathBuf> {
 /// Paths the command layer needs, resolved once at startup and re-resolved after a config write.
 pub struct RuntimePaths {
     pub config_path: PathBuf,
-    pub socket_path: PathBuf,
+    /// `Err` only when the GUI config sets no `socket_path` **and** the engine's default fails
+    /// closed (#74 — `XDG_RUNTIME_DIR` unset and the shared-/tmp fallback is not a directory this
+    /// user owns at 0700). Carried as a `Result` rather than a guessed path so the UI reports the
+    /// real reason instead of a wrong "connect: No such file" (#277).
+    pub socket_path: Result<PathBuf, String>,
     /// From the GUI config file (explicit `db_path`, or derived from `local_root`). `None` when
     /// the config file provides neither — the daemon-reported path may still fill in.
     pub db_path: Option<PathBuf>,
@@ -68,15 +72,16 @@ fn gui_config_path_in(config_home: Option<OsString>, home: Option<OsString>) -> 
 
 use gui_core::config_io::expand_config_path as expand;
 
-fn default_socket_path() -> PathBuf {
-    default_socket_path_in(std::env::var_os("XDG_RUNTIME_DIR"))
-}
-
-fn default_socket_path_in(runtime_dir: Option<OsString>) -> PathBuf {
-    absolute_dir(runtime_dir)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("proton-sync.sock")
-}
+// There is deliberately no `default_socket_path` here any more (#277). This crate had a private
+// copy, and a private copy is how the GUI ended up dialling `<temp>/proton-sync.sock` while the
+// daemon bound `<temp>/proton-drive-sync-<uid>/proton-sync.sock` — a healthy daemon rendered
+// `unreachable`. `RuntimePaths::resolve` delegates to `gui_core::ipc::default_socket_path`, so the
+// #286 absolute-XDG rule reaches the socket through the engine's own `paths::default_socket_path`
+// rather than through a second implementation of it here. What the deleted
+// `a_relative_runtime_dir_does_not_move_the_socket_the_gui_dials` asserted is now asserted where
+// the code is: `paths::a_relative_runtime_dir_falls_through_to_the_validated_fallback` for the
+// rule, and gui-core's `the_default_socket_path_is_never_the_unnamespaced_temp_one_the_gui_used_
+// to_build` for the GUI resolving to exactly the engine's answer.
 
 impl RuntimePaths {
     /// Resolve from the GUI config path, applying engine defaults where a key is unset.
@@ -97,10 +102,17 @@ impl RuntimePaths {
         // `local_root` is expanded BEFORE `db_path` derives from it, or the derived index path
         // inherits the unexpanded root.
         let local_root = get("local_root").map(|value| expand(value, "local_root"));
-        let remote_root = get("remote_root").map(PathBuf::from); // a Proton Drive path, not local
-        let socket_path = get("socket_path")
-            .map(|value| expand(value, "socket_path"))
-            .unwrap_or_else(default_socket_path);
+        // A Proton Drive path, not a local one.
+        let remote_root = get("remote_root").map(PathBuf::from);
+
+        // The default comes from the engine (`gui_core::ipc::default_socket_path`), never from a
+        // private copy here: the copy this replaced pointed at `<temp>/proton-sync.sock` while the
+        // daemon bound `<temp>/proton-drive-sync-<uid>/proton-sync.sock` whenever
+        // `XDG_RUNTIME_DIR` was unset (#277).
+        let socket_path = match get("socket_path") {
+            Some(value) => Ok(expand(value, "socket_path")),
+            None => gui_core::ipc::default_socket_path(),
+        };
         let db_path = get("db_path")
             .map(|value| expand(value, "db_path"))
             .or_else(|| {
@@ -159,22 +171,6 @@ mod tests {
     // #286. Asserted through the resolved paths, not the predicate: a relative value fails nothing
     // loudly — it resolves against whatever working directory the launcher left, per process, so
     // the symptom is two processes disagreeing about one path rather than an error anywhere.
-
-    #[test]
-    fn a_relative_runtime_dir_does_not_move_the_socket_the_gui_dials() {
-        // The daemon resolves the socket by the same rule (`paths::default_socket_path`). Honour a
-        // relative value here and the GUI dials a path under its own cwd while a healthy daemon
-        // listens elsewhere, which the UI can only report as `unreachable`.
-        let socket = default_socket_path_in(Some(OsString::from("run/user/1000")));
-
-        assert!(socket.is_absolute(), "socket path: {}", socket.display());
-        assert_eq!(socket, std::env::temp_dir().join("proton-sync.sock"));
-        assert_eq!(
-            default_socket_path_in(Some(OsString::from("/run/user/1000"))),
-            PathBuf::from("/run/user/1000/proton-sync.sock"),
-            "an absolute runtime dir is still honoured"
-        );
-    }
 
     #[test]
     fn a_relative_config_home_falls_through_to_the_home_default() {

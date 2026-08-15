@@ -2,6 +2,7 @@ use crate::AppResult;
 use crate::index::EntityKind;
 use crate::sync::{DeleteDirection, PlanSummary};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -47,11 +48,48 @@ pub struct ControlRequest {
     pub literal_path: bool,
 }
 
+/// The form of a path as it travels on the wire, and therefore the form an `approve`/`deny`
+/// selector must be matched against: `to_string_lossy`. A client only ever sees this rendering (a
+/// non-UTF-8 path cannot survive JSON), so the daemon compares selectors here rather than against
+/// the real `PathBuf` it keeps internally — otherwise exactly the paths that motivated the lossy
+/// wire (#61) would be unapprovable. Two paths that differ only in invalid bytes collapse to one
+/// selector, which the daemon refuses to *approve* rather than resolve arbitrarily (see
+/// `daemon::apply_approval_command`).
+///
+/// Returns the `Cow` unchanged rather than an owned `String`: these fields ride on every status
+/// reply and the selector match walks every pending deletion, and `to_string_lossy` borrows for a
+/// UTF-8 path — so only a path that actually needs replacing pays for an allocation.
+pub fn wire_path(path: &Path) -> Cow<'_, str> {
+    path.to_string_lossy()
+}
+
+/// Serde for a `PathBuf` field on the wire: **lossy** out, verbatim back.
+///
+/// `impl Serialize for Path` *errors* on a non-UTF-8 path, and the engine deliberately supports
+/// such paths (`index::index_key` is a BLOB for exactly that). Every path below rides on every
+/// `ControlResponse`, so one of them failing used to fail `write_response` for `status`, `pause`,
+/// `pending` and `approve` alike — a control-plane lockout that could not be cleared through the
+/// control plane (#61). The daemon keeps the real `PathBuf`; only the JSON is lossy.
+mod lossy_path {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::{Path, PathBuf};
+
+    pub fn serialize<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::wire_path(path))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
+        Ok(PathBuf::from(String::deserialize(deserializer)?))
+    }
+}
+
 /// One withheld deletion surfaced to the user for review. `path` + `direction` identify it for an
 /// `approve`; `fingerprint` (a file's baseline SHA-1 or a directory's `proton_id`) is what the
 /// approval is pinned to, so it cannot later authorize a different deletion at the same path.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingDeletion {
+    /// Lossy on the wire (see [`lossy_path`]); the daemon keeps the real path in this field.
+    #[serde(with = "lossy_path")]
     pub path: PathBuf,
     pub direction: DeleteDirection,
     pub entity_kind: EntityKind,
@@ -65,8 +103,11 @@ pub struct PendingDeletion {
 /// daemon whose roots it cannot know.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunningConfigInfo {
+    #[serde(with = "lossy_path")]
     pub local_root: PathBuf,
+    #[serde(with = "lossy_path")]
     pub remote_root: PathBuf,
+    #[serde(with = "lossy_path")]
     pub db_path: PathBuf,
 }
 
@@ -112,6 +153,7 @@ pub struct TransferActivity {
     /// `"upload"` or `"download"`.
     pub direction: String,
     /// Root-relative path of the file being transferred.
+    #[serde(with = "lossy_path")]
     pub path: PathBuf,
     /// Total size in bytes when known (uploads: the local file's size; downloads: unknown —
     /// the remote listing carries no size).
@@ -191,9 +233,160 @@ pub async fn bind_listener(socket_path: &Path) -> AppResult<UnixListener> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let listener = UnixListener::bind(socket_path)?;
-    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    // #62: `bind` creates the socket with `0777 & ~umask`, and a chmod at the published path lands
+    // only afterwards — with a permissive umask another local user can connect in that window and
+    // issue any control command (`approve --all` authorises every withheld deletion). Bind inside a
+    // freshly created owner-only directory instead: there the socket is unreachable to anyone else
+    // whatever its own mode, so the loose-mode window is not observable, and the rename into place
+    // preserves the binding (the inode is what is bound; clients resolve the published name to it).
+    // This is the "land via `fs::rename` from a staging dir" shape the path-safety invariant
+    // already requires for a write to a predictable name. Deliberately NOT a process-wide
+    // `libc::umask` flip (the fix the issue proposed): this runs on a multithreaded runtime
+    // alongside the startup sidecar/DB writes, so it would trade this race for a worse one.
+    let staging = StagingDir::create(socket_path)?;
+    let staged_socket = staging.socket_path();
+    // The staged path is LONGER than the published one, so a configured socket that fits
+    // `sun_path` on its own can overflow once staged. `bind`'s own error ("path must be shorter
+    // than SUN_LEN") would name a path the user never configured and give no hint that staging is
+    // why, so check here and say all three things: which socket, how long staged, what the limit
+    // is. Binding in place instead is not an option — that is the vulnerability.
+    let capacity = sun_path_capacity();
+    if staged_socket.as_os_str().len() >= capacity {
+        return Err(crate::boxed_error(format!(
+            "failed to bind control socket {}: it is bound in a private staging directory and \
+             renamed into place (so it is never briefly world-connectable), and that staged path \
+             is {} bytes — past this platform's {}-byte limit for a Unix socket path. Use a \
+             shorter socket_path, or one in a shorter directory.",
+            socket_path.display(),
+            staged_socket.as_os_str().len(),
+            capacity - 1
+        )));
+    }
+    // Errors name the PUBLISHED path: the staging directory is an implementation detail, and a
+    // `sun_path`-too-long or permission failure is about the socket the user configured.
+    let listener = UnixListener::bind(&staged_socket).map_err(|error| {
+        crate::boxed_error(format!(
+            "failed to bind control socket {}: {error}",
+            socket_path.display()
+        ))
+    })?;
+    std::fs::set_permissions(&staged_socket, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::rename(&staged_socket, socket_path).map_err(|error| {
+        crate::boxed_error(format!(
+            "failed to publish control socket at {}: {error}",
+            socket_path.display()
+        ))
+    })?;
     Ok(listener)
+}
+
+/// Maximum `.psb-<pid>-<n>` names tried before giving up. Two things leave one behind: a SIGKILL
+/// that skips [`Drop`], and — by design — a `Drop` that ran and *refused*, because it removes only
+/// an empty directory and another local user planted something inside (see the `Drop` impl). Either
+/// way the loop steps **past** a taken name rather than clearing it, so a leftover costs one attempt
+/// and a start fails only if a reused pid meets this many of them.
+#[cfg(unix)]
+const STAGING_DIR_ATTEMPTS: u64 = 16;
+/// Fixed, short staged socket name. Both this and the staging directory name are charged to the
+/// platform's `sockaddr_un.sun_path` budget on top of the published path, so neither carries
+/// anything beyond what uniqueness needs. **Nothing validates that budget ahead of `bind`** —
+/// `paths::default_socket_path` just joins, and the XDG default happens to land far inside it — so
+/// [`bind_listener`] measures the staged path itself rather than assuming it fits.
+#[cfg(unix)]
+const STAGED_SOCKET_NAME: &str = "s";
+
+/// Bytes the platform gives a Unix socket path, NUL terminator included. Read off the platform's
+/// own `sockaddr_un` rather than hardcoded: it is 108 on Linux and 104 on some BSDs.
+#[cfg(unix)]
+fn sun_path_capacity() -> usize {
+    std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path)
+}
+
+/// The private directory the control socket is bound in before being renamed to its published
+/// path (see [`bind_listener`]). Cleaned up on drop, so every failure path cleans up — but only
+/// ever its own, empty self (see the `Drop` impl).
+#[cfg(unix)]
+struct StagingDir {
+    directory: PathBuf,
+}
+
+#[cfg(unix)]
+impl StagingDir {
+    /// Created as a sibling of `socket_path` so the rename is same-directory (hence atomic and
+    /// never cross-device). `DirBuilder::mode(0o700)` is umask-proof: mkdir's umask can only
+    /// *clear* permission bits, never add them, so the directory is owner-only from the instant it
+    /// exists, and `mkdir` never follows a symlink planted at the name — a leftover is retried
+    /// past, never removed. Together with the non-recursive [`Drop`], nothing here can delete
+    /// anything this process did not put there.
+    fn create(socket_path: &Path) -> AppResult<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let parent = socket_path.parent().ok_or_else(|| {
+            crate::boxed_error(format!(
+                "refusing to bind control socket: {} has no parent directory",
+                socket_path.display()
+            ))
+        })?;
+        // Unique per process *and* per call: one process binds more than one listener over its
+        // lifetime (and many in the test suite), and a reused name would collide.
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        let mut last_error = None;
+        for _ in 0..STAGING_DIR_ATTEMPTS {
+            let directory = parent.join(format!(
+                ".psb-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            match builder.create(&directory) {
+                Ok(()) => return Ok(Self { directory }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                }
+                // Names the SOCKET as well as the staging directory: the commonest cause is a
+                // parent that does not exist, which used to surface as a plain bind failure on
+                // the configured path and must stay as recognisable.
+                Err(error) => {
+                    return Err(crate::boxed_error(format!(
+                        "failed to bind control socket {}: could not create its staging directory \
+                         {}: {error}",
+                        socket_path.display(),
+                        directory.display()
+                    )));
+                }
+            }
+        }
+        Err(crate::boxed_error(format!(
+            "failed to bind control socket {}: {} staging directory names under {} were already \
+             taken (last: {})",
+            socket_path.display(),
+            STAGING_DIR_ATTEMPTS,
+            parent.display(),
+            last_error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "unknown".to_owned())
+        )))
+    }
+
+    fn socket_path(&self) -> PathBuf {
+        self.directory.join(STAGED_SOCKET_NAME)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StagingDir {
+    /// Deliberately **not** `remove_dir_all`. In the very deployment #62 is about — a socket path
+    /// under a directory other local users can write — an attacker can remove this name after
+    /// `create` made it and leave their own tree at it, and a recursive delete would then take
+    /// that tree. `remove_dir` refuses a non-empty directory (`ENOTEMPTY`) and refuses a symlink
+    /// (`ENOTDIR`), so the only thing it can ever remove is the empty directory this process
+    /// created. The staged socket is normally already renamed away by now; removing it first
+    /// covers the path where the bind succeeded and the rename did not.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.socket_path());
+        let _ = std::fs::remove_dir(&self.directory);
+    }
 }
 
 /// Sends a no-argument control command. Thin wrapper over [`send_request`] kept for the commands
@@ -256,6 +449,7 @@ pub async fn write_response(stream: &mut UnixStream, response: &ControlResponse)
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -320,6 +514,252 @@ mod tests {
         assert_eq!(minimal.phase, "listing-remote");
         assert!(minimal.transfer.is_none());
         assert!(minimal.folders_listed.is_none());
+    }
+
+    /// A path whose bytes are not valid UTF-8 (the engine supports them: `index_key` is a BLOB).
+    fn non_utf8_path(suffix: &[u8]) -> PathBuf {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let mut bytes = b"bad-\xff".to_vec();
+        bytes.extend_from_slice(suffix);
+        PathBuf::from(OsStr::from_bytes(&bytes))
+    }
+
+    fn response_with_non_utf8_paths() -> ControlResponse {
+        ControlResponse {
+            status: "running".to_owned(),
+            paused: false,
+            syncing: true,
+            reconcile_seq: 7,
+            pending_changes: 0,
+            message: "daemon status".to_owned(),
+            last_sync_epoch_secs: None,
+            last_error: None,
+            last_plan_summary: None,
+            last_successful_sync_summary: None,
+            status_history: Vec::new(),
+            pending_deletions: vec![PendingDeletion {
+                path: non_utf8_path(b".txt"),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::File,
+                fingerprint: "hash".to_owned(),
+                detected_epoch_secs: 1,
+            }],
+            config: Some(RunningConfigInfo {
+                local_root: non_utf8_path(b"-root"),
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                db_path: non_utf8_path(b"-root/.sync/sync_index.db"),
+            }),
+            activity: Some(SyncActivity {
+                phase: "executing".to_owned(),
+                detail: None,
+                folders_listed: None,
+                files_scanned: None,
+                action_index: Some(1),
+                action_total: Some(1),
+                transfer: Some(TransferActivity {
+                    direction: "download".to_owned(),
+                    path: non_utf8_path(b".bin"),
+                    bytes_total: None,
+                    bytes_done: None,
+                    started_epoch_secs: 2,
+                }),
+                since_epoch_secs: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_non_utf8_path_anywhere_still_serializes_the_whole_response() {
+        // #61: `impl Serialize for Path` ERRORS on non-UTF-8, and every PathBuf here rides on
+        // every reply — one such path used to fail `write_response` for status/pause/approve
+        // alike, locking the control plane out until the pending item cleared.
+        let response = response_with_non_utf8_paths();
+        let json =
+            serde_json::to_string(&response).expect("a non-UTF-8 path must not fail a reply");
+        assert!(
+            json.contains('\u{fffd}'),
+            "the wire form must be the lossy rendering: {json}"
+        );
+
+        let back: ControlResponse = serde_json::from_str(&json).expect("reply parses back");
+        assert_eq!(
+            back.pending_deletions[0].path,
+            PathBuf::from(&*wire_path(&response.pending_deletions[0].path)),
+            "a client sees exactly the lossy form the daemon published"
+        );
+        assert_eq!(
+            back.config.expect("config").local_root,
+            PathBuf::from(&*wire_path(&non_utf8_path(b"-root")))
+        );
+    }
+
+    #[test]
+    fn wire_path_is_the_form_both_ends_match_on() {
+        // The approve/deny selector a client can send is the lossy string it received; a daemon
+        // that compared it against the real PathBuf could never match one (#61).
+        let real = non_utf8_path(b".txt");
+        assert_ne!(real, PathBuf::from(&*wire_path(&real)));
+        assert_eq!(wire_path(&real), real.to_string_lossy());
+        // UTF-8 paths are untouched, so nothing about the ordinary case changes.
+        assert_eq!(wire_path(Path::new("a/b.txt")), "a/b.txt");
+    }
+
+    #[tokio::test]
+    async fn the_socket_is_never_created_in_place_at_the_published_path() {
+        // #62: `bind` creates the socket with `0777 & ~umask` and the chmod lands after, so a
+        // permissive umask leaves a window where any local user can connect and issue commands.
+        // The window is not observable by reading the mode afterwards (both orderings end at
+        // 0600), so watch the parent directory instead: the socket must ARRIVE at the published
+        // path already configured (a rename), never be CREATED there.
+        use notify::{EventKind, RecursiveMode, Watcher};
+
+        let directory = tempdir().expect("tempdir");
+        let socket_path = directory.path().join("daemon.sock");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |event| {
+            let _ = tx.send(event);
+        })
+        .expect("watcher");
+        watcher
+            .watch(directory.path(), RecursiveMode::NonRecursive)
+            .expect("watch the socket's parent directory");
+
+        let listener = bind_listener(&socket_path).await.expect("bind listener");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut arrivals = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(Ok(event)) => {
+                    if event.paths.iter().any(|path| path == &socket_path) {
+                        arrivals.push(event.kind);
+                    }
+                }
+                Ok(Err(_)) => {}
+                Err(_) => {
+                    if !arrivals.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+        drop(watcher);
+        drop(listener);
+
+        assert!(
+            !arrivals.is_empty(),
+            "no filesystem event for the socket path was observed — the test would pass vacuously"
+        );
+        assert!(
+            !arrivals
+                .iter()
+                .any(|kind| matches!(kind, EventKind::Create(_))),
+            "the socket must be renamed into place, not created there with the process umask: \
+             {arrivals:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_socket_path_that_fits_only_unstaged_is_refused_with_the_reason() {
+        // Copilot review: staging makes the bound path LONGER than the configured one, so a socket
+        // path that fits `sun_path` on its own can overflow once staged. `bind`'s own error names
+        // the staged path — which the user never configured — and never mentions staging, so the
+        // check is here. Binding in place instead would be the vulnerability #62 is about.
+        let directory = tempdir().expect("tempdir");
+        let capacity = sun_path_capacity();
+        let name = "s.sock";
+        // The longest published path that still fits unstaged: any staging suffix overflows it,
+        // whatever this run's pid length happens to be.
+        let pad = (capacity - 1)
+            .checked_sub(directory.path().as_os_str().len() + 2 + name.len())
+            .expect("the temp dir must leave room to pad up to the limit");
+        let padded = directory.path().join("p".repeat(pad));
+        std::fs::create_dir(&padded).expect("padding directory");
+        let socket_path = padded.join(name);
+        assert_eq!(
+            socket_path.as_os_str().len(),
+            capacity - 1,
+            "the published path must sit exactly at the limit, or the test proves nothing"
+        );
+
+        let error = bind_listener(&socket_path)
+            .await
+            .expect_err("a staged path past the limit must be refused");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("limit for a Unix socket path")
+                && message.contains(&socket_path.display().to_string()),
+            "the error must name the configured socket and the limit: {message}"
+        );
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(&padded)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the refused bind must leave nothing behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_a_staging_dir_never_deletes_a_tree_it_did_not_create() {
+        // Copilot review, and it holds: `remove_dir_all` on a REAL directory deletes its whole
+        // tree (only a symlink is left unfollowed). In the group-writable parent #62 is about, an
+        // attacker can drop this name after `create` made it and leave their own tree at it, so a
+        // recursive cleanup would take that tree. `remove_dir` refuses a non-empty directory.
+        let directory = tempdir().expect("tempdir");
+        let staging =
+            StagingDir::create(&directory.path().join("daemon.sock")).expect("staging dir");
+        let planted = staging.directory.join("attacker-tree");
+        std::fs::create_dir(&planted).expect("plant a directory");
+        std::fs::write(planted.join("data"), b"not ours").expect("plant a file");
+        let staging_path = staging.directory.clone();
+
+        drop(staging);
+
+        assert!(
+            planted.join("data").exists(),
+            "cleanup must not recurse into content this process did not put there"
+        );
+        assert!(staging_path.is_dir());
+        std::fs::remove_dir_all(&staging_path).expect("test cleanup");
+    }
+
+    #[tokio::test]
+    async fn bind_listener_leaves_no_staging_directory_behind() {
+        let directory = tempdir().expect("tempdir");
+        let socket_path = directory.path().join("daemon.sock");
+
+        let listener = bind_listener(&socket_path).await.expect("bind listener");
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(directory.path())
+            .expect("read dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path != &socket_path)
+            .collect();
+        drop(listener);
+
+        assert!(
+            leftovers.is_empty(),
+            "the private staging directory must be removed: {leftovers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_socket_bound_through_staging_answers_at_the_published_path() {
+        // The rename must preserve the binding: a client connecting to the published path
+        // reaches the listener that was bound inside the staging directory.
+        let directory = tempdir().expect("tempdir");
+        let socket_path = directory.path().join("daemon.sock");
+        let listener = bind_listener(&socket_path).await.expect("bind listener");
+
+        let connect = UnixStream::connect(&socket_path).await;
+        assert!(
+            connect.is_ok(),
+            "the renamed socket must still accept connections: {connect:?}"
+        );
+        drop(listener);
     }
 
     #[tokio::test]

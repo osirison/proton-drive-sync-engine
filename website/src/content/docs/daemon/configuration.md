@@ -46,6 +46,12 @@ defaults to `$XDG_RUNTIME_DIR` (with an OS temp-directory fallback) — see [sta
 disk](/concepts/architecture/#state-on-disk). Keys also accept **hyphenated aliases** (e.g.
 `local-root`), and **unknown keys are rejected** so typos fail fast.
 
+`socket_path` must be **absolute**: unlike `db_path` and `lockfile_path`, it is never
+resolved under `local_root` (the control socket must not live inside the sync root), so a
+relative value would bind against whatever working directory the daemon was started in. If
+you do set it, pass the same file to the control CLI with `proton-sync --config <PATH>` so
+it looks in the right place — see the [CLI reference](/cli/reference/).
+
 Local filesystem paths (`local_root`, `db_path`, `socket_path`, `lockfile_path`,
 `proton_cli`) expand a leading `~` to your home directory, so `local_root =
 "~/ProtonDrive"` works the way it would in a shell. The `~user` form is rejected with an
