@@ -1871,20 +1871,7 @@ impl<C: ProtonClient> Daemon<C> {
                         }
                         let result = self.proton.download(&remote_path, &destination);
                         finish_transfer_spinner(spinner);
-                        if let Err(error) = result {
-                            // TOCTOU (#31): the node was in the listing this plan was built from
-                            // but is gone now (trashed by another client, or listing lag). Skip
-                            // just this action — no side effect, no index mutation — and let the
-                            // next pass re-derive it from ground truth. Every other failure still
-                            // fails the pass.
-                            if !is_node_not_found_error(error.as_ref()) {
-                                return Err(error);
-                            }
-                            warn!(
-                                path = %action.path.display(),
-                                %error,
-                                "skipping download: the remote node is gone since the listing"
-                            );
+                        if !skip_if_node_vanished(result, &action.path)? {
                             vanished_nodes += 1;
                             break 'action;
                         }
@@ -2114,7 +2101,16 @@ impl<C: ProtonClient> Daemon<C> {
                                 safe_local_path(&self.config.local_root, conflict_path)
                         {
                             ensure_parent_directory(&destination)?;
-                            self.proton.download(&remote_path, &destination)?;
+                            let result = self.proton.download(&remote_path, &destination);
+                            // Skipping the sidecar means skipping the `Conflict` record below
+                            // too: a conflict with no sidecar has no exit and is invisible to the
+                            // GUI's conflicts list (#46). Next pass the node is no longer listed,
+                            // so the planner reaches `(Changed, Missing)` and copies the local
+                            // file into the sidecar instead.
+                            if !skip_if_node_vanished(result, &action.path)? {
+                                vanished_nodes += 1;
+                                break 'action;
+                            }
                         }
                         if let Some(local) = local_files.get(&action.path) {
                             let record = FileRecord::from_local(
@@ -2143,7 +2139,14 @@ impl<C: ProtonClient> Daemon<C> {
                                     safe_local_path(&self.config.local_root, conflict_path)
                             {
                                 ensure_parent_directory(&destination)?;
-                                self.proton.download(&remote_path, &destination)?;
+                                let result = self.proton.download(&remote_path, &destination);
+                                // Same whole-action skip as the `Conflict` arm: without its
+                                // sidecar the type clash has no exit, so the directory record is
+                                // not written either and the pass re-plans from ground truth.
+                                if !skip_if_node_vanished(result, &action.path)? {
+                                    vanished_nodes += 1;
+                                    break 'action;
+                                }
                                 let local_state =
                                     local_file_state(&self.config.local_root, &destination)?;
                                 let sidecar_record = FileRecord::from_local(
@@ -2988,6 +2991,25 @@ fn action_performs_side_effects(action: &SyncAction) -> bool {
         action,
         SyncAction::AutoLink | SyncAction::Purge | SyncAction::SkipUnsupported
     )
+}
+
+/// Classifies a finished single-file download. `Ok(false)` is the TOCTOU of issue #31: the node
+/// was in the listing this plan was built from but is gone now (trashed by another client, or
+/// listing lag). The caller then skips the action **whole** — no side effect, no index mutation —
+/// and the next pass re-derives it from ground truth. Every other failure still fails the pass.
+fn skip_if_node_vanished(result: AppResult<()>, path: &Path) -> AppResult<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if is_node_not_found_error(error.as_ref()) => {
+            warn!(
+                path = %path.display(),
+                %error,
+                "skipping download: the remote node is gone since the listing"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Durably commits everything accumulated since the previous checkpoint — the incremental half
@@ -6372,6 +6394,72 @@ mod tests {
                 .expect("vanished index lookup")
                 .is_none(),
             "a skipped node must never be recorded as if it had synced"
+        );
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("load cursor")
+                .is_none(),
+            "a pass that skipped a vanished node must not advance the event cursor"
+        );
+        assert!(daemon.last_sync.is_some(), "the pass succeeded");
+    }
+
+    #[test]
+    fn a_vanished_conflict_sidecar_skips_the_whole_action_including_its_record() {
+        // Issue #31 at the OTHER download site: the conflicting remote revision is trashed before
+        // the sidecar download runs. The `Conflict` record must be skipped along with the
+        // download — recording a conflict whose sidecar was never written leaves it with no exit
+        // and invisible to the GUI's disk-walking conflicts list (#46). Next pass the node is no
+        // longer listed, so the planner reaches `(Changed, Missing)` and copies the local file in.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("notes.txt"), b"local changed").expect("local file");
+        // Sorts after `notes.txt`, so its upload is ordered after the skipped conflict.
+        fs::write(local_root.join("z.txt"), b"local only").expect("local file");
+
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("notes.txt"),
+            RemoteEntity::File(remote("notes.txt", "vol~n1", Some("remote-changed"))),
+        );
+        let (mut client, _operations) =
+            RecordingProtonClient::with_remote_entities(remote_entities);
+        client.vanished_downloads =
+            BTreeSet::from([PathBuf::from("/Drive/RemoteFolder/notes.txt")]);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-1"))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("vol~n1"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon
+            .reconcile_blocking()
+            .expect("a vanished conflict revision must not fail the whole pass");
+
+        assert!(
+            !local_root.join("notes.proton-cloud.txt").exists(),
+            "no sidecar may be written for the vanished revision"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("the base record is untouched, not removed");
+        assert_eq!(
+            record.sync_status,
+            SyncStatus::Synced,
+            "a conflict with no sidecar has no exit, so the record is not written either"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("z.txt"))
+                .expect("upload index lookup")
+                .is_some(),
+            "the upload ordered after the skipped conflict still ran and committed"
         );
         assert!(
             load_event_cursor(&daemon.connection, "vol")
