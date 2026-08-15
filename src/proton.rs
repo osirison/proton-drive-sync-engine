@@ -1576,13 +1576,17 @@ fn promote_staged_download(
             summarize_command_output(&output.stdout),
             summarize_command_output(&output.stderr),
         );
-        // Exit 0 with a node-not-found note and this file missing from staging: the CLI skipped
-        // exactly the vanished node, so attribution here is precise (#31). Without that note the
-        // miss is unexplained and stays fatal.
+        // Exit 0, a node-not-found note somewhere in stderr, and this file missing from staging.
+        // The check reads the whole invocation's stderr and the note names no request, so this is
+        // the BATCH's signal, not this file's: a sibling the CLI skipped for another reason (a
+        // Proton-native document) is classified alongside the vanished node. Skipping is still
+        // the safer read — nothing is recorded, the cursor is held, the action replans — and the
+        // misread lasts only while a vanished node keeps the note in stderr. Without the note the
+        // miss is unexplained and stays fatal (#31).
         if is_node_not_found(output) {
             return Err(Box::new(NodeNotFound {
                 remote_path: request.remote_path.clone(),
-                details: message,
+                details: format!("{message}; the note names no file, so it cannot be attributed"),
             }));
         }
         return Err(boxed_error(message));
@@ -3434,8 +3438,12 @@ exit 1
 
     #[cfg(unix)]
     #[test]
-    fn download_many_classifies_an_unstaged_file_the_cli_reported_missing() {
-        // Exit 0, one file staged, the other announced as missing: attribution is exact.
+    fn download_many_classifies_every_unstaged_file_when_stderr_reports_a_missing_node() {
+        // Exit 0, one file staged, one announced as missing, one unstaged for a reason the CLI
+        // never explains (a Proton-native document). The check reads the whole invocation's
+        // stderr, so BOTH unstaged files classify — the note names no request and attribution is
+        // impossible. Pinned deliberately: skipping is the safer read of an unattributable
+        // signal, and it costs at most a replan.
         let directory = tempdir().expect("tempdir");
         let executable = write_script(
             directory.path(),
@@ -3456,16 +3464,25 @@ exit 0
         let requests = vec![
             batch_request(&local_folder, "alpha.txt", None),
             batch_request(&local_folder, "beta.txt", None),
+            batch_request(&local_folder, "gamma.txt", None),
         ];
 
         let results = client.download_many(&requests);
 
         assert!(results[0].is_ok(), "the staged file succeeds: {results:?}");
-        let error = results[1].as_ref().expect_err("the missing file must fail");
-        assert!(
-            is_node_not_found_error(error.as_ref()),
-            "unexpected error: {error}"
-        );
+        for index in [1, 2] {
+            let error = results[index]
+                .as_ref()
+                .expect_err("an unstaged file must fail");
+            assert!(
+                is_node_not_found_error(error.as_ref()),
+                "unexpected error: {error}"
+            );
+            assert!(
+                error.to_string().contains("cannot be attributed"),
+                "the message must admit the note names no file: {error}"
+            );
+        }
         assert!(
             local_folder.join("alpha.txt").is_file(),
             "the staged sibling still lands at its destination"
