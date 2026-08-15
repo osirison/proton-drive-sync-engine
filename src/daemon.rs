@@ -2221,10 +2221,21 @@ impl<C: ProtonClient> Daemon<C> {
                         index_mutations.push(IndexMutation::Purge(action.path.clone()));
                     }
                     SyncAction::SkipUnsupported => {
+                        // Two causes reach here, and the path is the only thing that tells them
+                        // apart: a Proton-native remote file the CLI cannot download as bytes, and
+                        // a local path that is not valid UTF-8 and so cannot survive the CLI's
+                        // JSON listing (#270). The predicate is the planner's own, not a second
+                        // copy of it.
+                        let reason = if crate::sync::is_representable_remotely(&action.path) {
+                            "proton-drive cannot download this Proton-native file"
+                        } else {
+                            "the path is not valid UTF-8, so the remote listing can never name it"
+                        };
                         debug!(
                             path = %action.path.display(),
                             remote_id = ?action.remote_id,
-                            "skipping Proton-native file that proton-drive cannot download"
+                            reason,
+                            "skipping an entity that cannot be synced"
                         );
                     }
                 }
@@ -2690,11 +2701,15 @@ fn apply_approval_command(
     // cannot pick it out, the rows render identically. Fail closed on the destructive side only:
     // a `deny` over-revoking is the safe direction, and `--all` remains the deliberate every-item
     // form.
+    // Names `--all`, NOT the wire's `"all"` selector: this branch is only reachable from a
+    // `<PATH>` argument, which the CLI always sends with `literal_path` set — so `proton-sync
+    // approve all` would be read as a path literally named `all` and do nothing. Telling the user
+    // to type the one thing that provably cannot work is worse than saying nothing.
     if approve && target.is_some() && matches.len() > 1 {
         return Ok(format!(
             "{} pending deletions render as '{}' and cannot be told apart on the wire (their \
-             paths are not valid UTF-8); nothing was approved — use \"all\" to approve every \
-             pending deletion",
+             paths are not valid UTF-8); nothing was approved — approve every pending deletion \
+             instead with `proton-sync approve --all`",
             matches.len(),
             target.unwrap_or_default()
         ));
@@ -5104,6 +5119,13 @@ mod tests {
             message.contains("cannot be told apart"),
             "an ambiguous selector must explain itself: {message}"
         );
+        // The way out it offers must be one that WORKS from here: this branch is only reached with
+        // `literal_path` set, where the wire's `"all"` selector is read as a path named `all`.
+        assert!(
+            message.contains("proton-sync approve --all"),
+            "the message must name the flag, not the reserved word a literal-path request cannot \
+             use: {message}"
+        );
         assert!(
             crate::index::load_delete_approvals(&daemon.connection)
                 .expect("approvals")
@@ -5789,6 +5811,61 @@ mod tests {
                 .expect("index lookup")
                 .is_none(),
             "recursive local delete should purge descendant index records too"
+        );
+    }
+
+    #[test]
+    fn a_stale_base_kind_does_not_let_a_directory_delete_remove_a_live_local_file() {
+        // #282 end to end, with the delete-approval guard OFF (test_config) so nothing but the
+        // plan itself stands between the file and `remove_dir_all`. The base row still calls
+        // `docs/sub` a directory; it is now a never-uploaded FILE and `docs` is gone remotely.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("docs")).expect("local docs directory");
+        let file_path = local_root.join("docs").join("sub");
+        fs::write(&file_path, b"the only copy").expect("local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("docs", Some("docs-id")),
+        )
+        .expect("directory base record");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("docs/sub", Some("sub-id")),
+        )
+        .expect("stale directory base record over a live file");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            file_path.is_file(),
+            "the live local file must survive: a stale base kind must not prove its parent a \
+             clean recursive delete"
+        );
+        assert_eq!(
+            fs::read(&file_path).expect("surviving file"),
+            b"the only copy",
+            "the surviving file must be untouched"
+        );
+        let recorded = operations.lock().expect("operations lock").clone();
+        assert!(
+            recorded.contains(&RecordedOperation::Upload {
+                local_path: file_path.clone(),
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                relative_path: PathBuf::from("docs/sub"),
+            }),
+            "the never-uploaded file must be uploaded instead: {recorded:?}"
+        );
+        let record = get_record(&daemon.connection, Path::new("docs/sub"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            record.entity_kind,
+            EntityKind::File,
+            "the upload's upsert must replace the stale directory row"
         );
     }
 

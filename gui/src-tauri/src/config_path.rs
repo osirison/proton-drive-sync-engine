@@ -9,7 +9,27 @@
 //! carries its *live* resolved roots (`RunningConfigInfo`); `get_status` caches them here so every
 //! command can fall back to the daemon's ground truth when the GUI config doesn't provide a value.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+/// A base-directory environment value, honoured **only when it is absolute** (#286). Every XDG
+/// reader in this crate goes through it; the value is taken as an argument (never read here) so
+/// the rule is testable without mutating process-wide environment variables, which races every
+/// other test in the binary and is `unsafe` since edition 2024.
+///
+/// The XDG Base Directory specification is explicit: these variables "must be absolute", and an
+/// implementation that meets a relative one "should consider the path invalid and ignore it". A
+/// relative value is resolved against the *process's* working directory — for a desktop launcher,
+/// whatever it happened to leave behind — so the GUI would write its config, dial its socket, and
+/// drop its tray glyphs somewhere neither the user nor the daemon chose. The socket is the one
+/// with a visible symptom: the daemon binds one resolution and the GUI dials another, which reads
+/// as `unreachable` against a healthy daemon.
+///
+/// `is_absolute` subsumes the emptiness check these readers used to make on their own (an empty
+/// path is not absolute) and catches the literal `~` no shell expanded for a GUI process (#135).
+pub fn absolute_dir(value: Option<OsString>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|path| path.is_absolute())
+}
 
 /// Paths the command layer needs, resolved once at startup and re-resolved after a config write.
 pub struct RuntimePaths {
@@ -34,15 +54,34 @@ pub struct RuntimePaths {
 
 /// The GUI's owned config path convention.
 pub fn gui_config_path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"));
+    gui_config_path_in(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn gui_config_path_in(config_home: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    let base = absolute_dir(config_home)
+        // Same rule for `HOME`: a relative one lands the config in the same per-cwd place.
+        .or_else(|| absolute_dir(home).map(|home| home.join(".config")))
+        // Last resort. Was a relative `.config`, which is the very shape the rule above rejects —
+        // the config would be written under, and re-read from, whatever cwd each launch had.
+        .unwrap_or_else(std::env::temp_dir);
     base.join("proton-sync").join("proton-sync.toml")
 }
 
 use gui_core::config_io::expand_config_path as expand;
+
+// There is deliberately no `default_socket_path` here any more (#277). This crate had a private
+// copy, and a private copy is how the GUI ended up dialling `<temp>/proton-sync.sock` while the
+// daemon bound `<temp>/proton-drive-sync-<uid>/proton-sync.sock` — a healthy daemon rendered
+// `unreachable`. `RuntimePaths::resolve` delegates to `gui_core::ipc::default_socket_path`, so the
+// #286 absolute-XDG rule reaches the socket through the engine's own `paths::default_socket_path`
+// rather than through a second implementation of it here. What the deleted
+// `a_relative_runtime_dir_does_not_move_the_socket_the_gui_dials` asserted is now asserted where
+// the code is: `paths::a_relative_runtime_dir_falls_through_to_the_validated_fallback` for the
+// rule, and gui-core's `the_default_socket_path_is_never_the_unnamespaced_temp_one_the_gui_used_
+// to_build` for the GUI resolving to exactly the engine's answer.
 
 impl RuntimePaths {
     /// Resolve from the GUI config path, applying engine defaults where a key is unset.
@@ -122,5 +161,53 @@ impl RuntimePaths {
     /// The index DB for read-only lookups: GUI config first, daemon-reported second.
     pub fn effective_db_path(&self) -> Option<PathBuf> {
         self.db_path.clone().or_else(|| self.daemon_db_path.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // #286. Asserted through the resolved paths, not the predicate: a relative value fails nothing
+    // loudly — it resolves against whatever working directory the launcher left, per process, so
+    // the symptom is two processes disagreeing about one path rather than an error anywhere.
+
+    #[test]
+    fn a_relative_config_home_falls_through_to_the_home_default() {
+        let path = gui_config_path_in(Some(OsString::from(".config")), Some("/home/me".into()));
+
+        assert_eq!(
+            path,
+            PathBuf::from("/home/me/.config/proton-sync/proton-sync.toml")
+        );
+    }
+
+    #[test]
+    fn a_relative_home_leaves_no_relative_config_path_behind() {
+        // Both values invalid: the last resort must still be absolute, or the GUI writes its config
+        // under one cwd and re-reads nothing under the next.
+        let path = gui_config_path_in(Some(OsString::new()), Some(OsString::from("home/me")));
+
+        assert!(path.is_absolute(), "config path: {}", path.display());
+        assert_eq!(
+            path,
+            std::env::temp_dir()
+                .join("proton-sync")
+                .join("proton-sync.toml")
+        );
+    }
+
+    #[test]
+    fn only_absolute_env_values_are_honoured() {
+        assert_eq!(
+            absolute_dir(Some(OsString::from("/run/user/1000"))),
+            Some(PathBuf::from("/run/user/1000"))
+        );
+        assert_eq!(absolute_dir(None), None);
+        // Empty: what the old emptiness checks caught, still caught.
+        assert_eq!(absolute_dir(Some(OsString::new())), None);
+        assert_eq!(absolute_dir(Some(OsString::from(".config"))), None);
+        // A literal `~` no shell expanded is a relative component, not $HOME (#135).
+        assert_eq!(absolute_dir(Some(OsString::from("~/.config"))), None);
     }
 }
