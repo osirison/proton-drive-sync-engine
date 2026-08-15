@@ -1277,8 +1277,9 @@ impl<C: ProtonClient> Daemon<C> {
     ) -> Option<(String, EventCursor)> {
         let volume = match self.volume_id_for_scope(base_records) {
             Ok(volume) => volume,
-            Err(reason) => {
-                self.note_event_scope_declined(reason);
+            // Both failures decline the same way here; only the bootstrap cursor cares which.
+            Err(error) => {
+                self.note_event_scope_declined(error.into_reason());
                 return None;
             }
         };
@@ -1302,12 +1303,12 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
-    /// The volume id this root's event stream is scoped to, or a human-readable reason it cannot be
-    /// determined. Derived from any baseline composed `proton_id` first (free, no I/O).
+    /// The volume id this root's event stream is scoped to, or why it cannot be determined. Derived
+    /// from any baseline composed `proton_id` first (free, no I/O).
     fn volume_id_for_scope(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
-    ) -> Result<String, String> {
+    ) -> Result<String, VolumeScopeError> {
         if let Some(volume) = derive_volume_id(base_records) {
             return Ok(volume.to_owned());
         }
@@ -1317,14 +1318,14 @@ impl<C: ProtonClient> Daemon<C> {
         // (#32 — it used to stay on full-tree walks forever here).
         match load_sole_event_cursor(&self.connection) {
             Ok(Some(cursor)) => Ok(cursor.scope_id),
-            Ok(None) => Err(
+            Ok(None) => Err(VolumeScopeError::Unnameable(
                 "no event volume: no indexed node carries a composed proton_id, and no single \
                  stored cursor names one"
                     .to_owned(),
-            ),
-            Err(error) => Err(format!(
-                "no event volume: the stored event cursor is unreadable: {error}"
             )),
+            Err(error) => Err(VolumeScopeError::Unreadable(format!(
+                "no event volume: the stored event cursor is unreadable: {error}"
+            ))),
         }
     }
 
@@ -1522,14 +1523,15 @@ impl<C: ProtonClient> Daemon<C> {
     /// Full-tree snapshot reconcile — the original behavior, plus (when event-driven) capturing
     /// and persisting the replay cursor `C0`. Resets the periodic-resync counter.
     fn bootstrap_reconcile(&mut self, base_records: HashMap<PathBuf, FileRecord>) -> AppResult<()> {
-        // Market-data recovery: capture the cursor *before* the snapshot when the volume is
-        // already known, so a change landing during the walk is re-delivered (idempotently) by
-        // the next incremental pass. On the first-ever bootstrap the volume is only known after
-        // the walk, so a change landing in an already-listed folder mid-walk is missed by this
-        // snapshot *and* precedes the post-walk cursor — a one-time gap that heals on the next
-        // process restart (the startup floor re-snapshots) or, if the opt-in periodic resync is
-        // enabled (`events_full_scan_every = N`), within N passes. With the default (0) it stays
-        // until restart; enable the periodic resync if that bound matters for your deployment.
+        // The cursor asserts "every remote change up to this event has been applied", which is only
+        // true of a cursor read *before* the walk: a change landing mid-walk in an already-listed
+        // folder is missed by this snapshot, so anchoring after the walk skips it in the delta too
+        // (#294). Read it up front whenever the volume is already known; when that read fails, this
+        // pass persists no cursor rather than a false one — see `resolve_bootstrap_cursor_update`.
+        // The first-ever bootstrap is the one case that still anchors after the walk (the volume is
+        // only knowable from the snapshot). That residual gap does *not* heal on restart — warm
+        // start replays the cursor (ADR 0004) — only via `proton-sync resync` or the opt-in
+        // periodic resync (`events_full_scan_every = N`).
         let pre_snapshot_cursor = self.capture_pre_snapshot_cursor(&base_records);
 
         let local_entities = self.scan_local_entities_reporting_progress(&base_records)?;
@@ -1573,43 +1575,74 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Reads the current latest cursor before a snapshot, when event-driven and the volume is
-    /// already known (from the baseline or a previously stored cursor). Best-effort: a failure just
-    /// defers cursor capture to after the snapshot.
+    /// already known (from the baseline or a previously stored cursor). The distinction the return
+    /// type carries is the point: "nothing names a volume" and "a lookup failed" are different
+    /// answers, and only the former may be repaired after the walk (#294).
     fn capture_pre_snapshot_cursor(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
-    ) -> Option<CursorUpdate> {
+    ) -> PreSnapshotCursor {
         if !self.config.events_driven {
-            return None;
+            return PreSnapshotCursor::Unavailable;
         }
-        let source = self.event_source.as_ref()?;
-        let volume = self.volume_id_for_scope(base_records).ok()?;
+        let Some(source) = self.event_source.as_ref() else {
+            return PreSnapshotCursor::Unavailable;
+        };
+        let volume = match self.volume_id_for_scope(base_records) {
+            Ok(volume) => volume,
+            // Nothing *names* a volume: the first-ever bootstrap, with no prior cursor to lose.
+            Err(VolumeScopeError::Unnameable(_)) => return PreSnapshotCursor::VolumeUnknown,
+            // The lookup itself failed, so a stored cursor may well exist and simply be invisible
+            // right now; anchoring after the walk would overwrite it with a post-walk value.
+            Err(VolumeScopeError::Unreadable(reason)) => {
+                warn!(%reason, "cannot name the event volume before the snapshot; this pass persists no cursor");
+                return PreSnapshotCursor::Unavailable;
+            }
+        };
         match source.latest_cursor(&volume) {
-            Ok(last_event_id) => Some(CursorUpdate {
+            Ok(last_event_id) => PreSnapshotCursor::Captured(CursorUpdate {
                 scope_id: volume,
                 last_event_id,
             }),
             Err(error) => {
-                warn!(%error, "could not capture the pre-snapshot events cursor; deriving it after the snapshot instead");
-                None
+                // Typically an unhealthy events endpoint — the same condition that forced this
+                // snapshot in the first place, so this arm fires exactly when a fabricated cursor
+                // would skip the most.
+                warn!(%error, "could not capture the pre-snapshot events cursor; this pass persists no cursor, so a change made during the walk is re-derived next pass instead of being skipped forever");
+                PreSnapshotCursor::Unavailable
             }
         }
     }
 
-    /// Chooses the cursor to persist with a bootstrap: the pre-snapshot one if captured, else
-    /// (first-ever bootstrap) the volume derived from the fresh snapshot with its latest cursor
-    /// read now. Returns `None` when event-driven is off or nothing can be anchored yet.
+    /// Chooses the cursor to persist with a bootstrap. `Captured` → persist it. `Unavailable` →
+    /// persist **nothing**: a lookup failed while prior state may exist, and a cursor read *after*
+    /// the walk would assert that every change made during it had been applied when the snapshot
+    /// never saw it (#294). `VolumeUnknown` → the first-ever bootstrap, where the volume is only
+    /// knowable from the fresh snapshot and there is no prior state to lose; anchor from a
+    /// post-walk read, or the event path could never engage at all.
+    ///
+    /// This is one of three places that can suppress the cursor, but they are one decision, not
+    /// three that can disagree: all of them only ever force the single `cursor_update` toward
+    /// `None`, and the sole store site is the final commit in [`Self::execute_plan_and_commit`]
+    /// (see the withheld-delete and vanished-node holds there).
     fn resolve_bootstrap_cursor_update(
         &self,
-        pre_snapshot_cursor: Option<CursorUpdate>,
+        pre_snapshot_cursor: PreSnapshotCursor,
         remote_entities: &HashMap<PathBuf, RemoteEntity>,
         remote_root_missing: bool,
     ) -> Option<CursorUpdate> {
         if !self.config.events_driven || remote_root_missing {
             return None;
         }
-        if let Some(cursor) = pre_snapshot_cursor {
-            return Some(cursor);
+        match pre_snapshot_cursor {
+            PreSnapshotCursor::Captured(cursor) => return Some(cursor),
+            // Persist nothing, and deliberately do not *clear* a stored cursor either: an older
+            // cursor is the safer replay point (re-delivered events reconstruct idempotently;
+            // skipped ones are lost outright). The next pass then either streams from that older
+            // cursor or, when none exists, declines the scope and bootstraps again — costly, but it
+            // self-heals on the first pass whose pre-snapshot read succeeds.
+            PreSnapshotCursor::Unavailable => return None,
+            PreSnapshotCursor::VolumeUnknown => {}
         }
         let source = self.event_source.as_ref()?;
         let volume = derive_volume_id_from_entities(remote_entities)?;
@@ -3315,6 +3348,40 @@ struct EventDelta {
 struct CursorUpdate {
     scope_id: String,
     last_event_id: String,
+}
+
+/// Why [`Daemon::volume_id_for_scope`] could not name the event volume. Callers that only log
+/// take [`Self::into_reason`]; the bootstrap cursor is the one caller the distinction matters to.
+enum VolumeScopeError {
+    /// Nothing names a volume: no baseline composed `proton_id` and no sole stored cursor row.
+    Unnameable(String),
+    /// The stored cursor could not be read, so a volume may exist and be invisible right now.
+    Unreadable(String),
+}
+
+impl VolumeScopeError {
+    fn into_reason(self) -> String {
+        match self {
+            Self::Unnameable(reason) | Self::Unreadable(reason) => reason,
+        }
+    }
+}
+
+/// What a bootstrap learned about the event cursor *before* it started walking (#294). The two
+/// `None`-shaped outcomes are deliberately distinct: only one of them may be repaired by a
+/// post-walk read.
+enum PreSnapshotCursor {
+    /// Read before the walk: safe to persist — every event after it still replays next pass.
+    Captured(CursorUpdate),
+    /// No volume nameable yet (no baseline composed `proton_id`, no stored cursor), i.e. the
+    /// first-ever bootstrap. Nothing prior exists to lose, and a post-walk read is the only way
+    /// the event path can ever engage.
+    VolumeUnknown,
+    /// No cursor may be anchored from this pass: the feature is off, there is no event source, or
+    /// a lookup failed (the volume could not be read, or `latest_cursor` did) while prior state
+    /// may exist. That last case is the dangerous one — a post-walk value would claim mid-walk
+    /// changes were applied, and could overwrite a stored cursor that is merely unreadable now.
+    Unavailable,
 }
 
 /// Resolves a created/updated node to its current `(relative path, entity)` by listing just the
@@ -8587,6 +8654,10 @@ mod tests {
     struct FakeEventSource {
         pages: Mutex<Vec<VolumeEventPage>>,
         latest: String,
+        /// Scripted `latest_cursor` answers, consumed front-first; `None` = the read fails. Once
+        /// drained, every call answers `latest` — so an unhealthy endpoint that recovers is one
+        /// script (`AppResult` is not `Clone`, hence the queue rather than a stored result).
+        scripted_latest: Mutex<Vec<Option<String>>>,
         fail_since: bool,
     }
 
@@ -8595,6 +8666,7 @@ mod tests {
             Self {
                 pages: Mutex::new(Vec::new()),
                 latest: latest.to_owned(),
+                scripted_latest: Mutex::new(Vec::new()),
                 fail_since: false,
             }
         }
@@ -8603,6 +8675,18 @@ mod tests {
             Self {
                 pages: Mutex::new(pages),
                 latest: latest.to_owned(),
+                scripted_latest: Mutex::new(Vec::new()),
+                fail_since: false,
+            }
+        }
+
+        /// `scripted` answers the first `latest_cursor` calls (`None` = failure); later calls fall
+        /// through to `latest`.
+        fn with_scripted_latest(latest: &str, scripted: Vec<Option<String>>) -> Self {
+            Self {
+                pages: Mutex::new(Vec::new()),
+                latest: latest.to_owned(),
+                scripted_latest: Mutex::new(scripted),
                 fail_since: false,
             }
         }
@@ -8611,6 +8695,7 @@ mod tests {
             Self {
                 pages: Mutex::new(Vec::new()),
                 latest: "c0".to_owned(),
+                scripted_latest: Mutex::new(Vec::new()),
                 fail_since: true,
             }
         }
@@ -8618,7 +8703,13 @@ mod tests {
 
     impl EventSource for FakeEventSource {
         fn latest_cursor(&self, _volume_id: &str) -> AppResult<String> {
-            Ok(self.latest.clone())
+            let mut scripted = self.scripted_latest.lock().expect("scripted latest lock");
+            if scripted.is_empty() {
+                return Ok(self.latest.clone());
+            }
+            scripted
+                .remove(0)
+                .ok_or_else(|| boxed_error("latest cursor unauthorized"))
         }
 
         fn events_since(&self, _volume_id: &str, cursor: &str) -> AppResult<VolumeEventPage> {
@@ -8790,6 +8881,191 @@ mod tests {
             "an idle incremental pass must not re-walk the whole tree"
         );
         assert_eq!(daemon.incremental_passes_since_full_scan, 1);
+    }
+
+    /// #294: the pre-snapshot cursor read fails (unhealthy events endpoint — the same condition
+    /// that forces the snapshot) and the endpoint then recovers *during* the walk. The old code
+    /// read the cursor after the walk and banked it, skipping every change made while walking.
+    /// Nothing may be persisted here; the next pass finds no cursor, declines the scope, and
+    /// bootstraps again — which is also the recovery path, so the loop terminates on the first
+    /// pass whose pre-snapshot read succeeds.
+    #[test]
+    fn a_failed_pre_snapshot_cursor_read_persists_no_cursor_and_heals_on_the_next_pass() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            // First `latest_cursor` call fails; every later call answers "cursor-live".
+            Some(Box::new(FakeEventSource::with_scripted_latest(
+                "cursor-live",
+                vec![None],
+            ))),
+        )
+        .expect("daemon");
+        // A baseline names the volume, so the cursor *is* readable before the walk — this is the
+        // "prior state exists" case, not a first-ever bootstrap. No cursor stored yet.
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed record");
+
+        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the first pass bootstraps"
+        );
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("load cursor")
+                .is_none(),
+            "a cursor read after the walk asserts mid-walk changes were applied; persist none"
+        );
+
+        // Second pass: no cursor → the scope declines → bootstrap again, and this time the
+        // pre-snapshot read succeeds, so the cursor it banks predates that walk.
+        daemon.reconcile_blocking().expect("second bootstrap");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            2,
+            "without a cursor the next pass must full-walk"
+        );
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor persisted once the endpoint answered");
+        assert_eq!(cursor.last_event_id, "cursor-live");
+
+        // Third pass: streaming resumed, so the repeated bootstrapping stops.
+        daemon.reconcile_blocking().expect("idle incremental");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            2,
+            "a recovered cursor ends the bootstrap-every-pass loop"
+        );
+        assert_eq!(daemon.incremental_passes_since_full_scan, 1);
+    }
+
+    /// #294, the sub-case with a cursor already stored: persisting nothing must also not *clear*
+    /// it. The older cursor is the safer replay point (re-delivered events reconstruct
+    /// idempotently; skipped ones are lost), so the next pass streams from it rather than
+    /// bootstrapping again.
+    #[test]
+    fn a_failed_pre_snapshot_cursor_read_leaves_the_stored_cursor_untouched() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_scripted_latest(
+                "cursor-new",
+                vec![None],
+            ))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-old", 1).expect("seed cursor");
+        // Warm start is off in this fixture, so the first pass bootstraps with a cursor already
+        // stored — exactly the shape of an events-fetch fallback on a long-running daemon.
+        daemon.reconcile_blocking().expect("bootstrap reconcile");
+
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("the stored cursor must survive");
+        assert_eq!(
+            cursor.last_event_id, "cursor-old",
+            "the pass must neither fabricate a post-walk cursor nor clear the stored one"
+        );
+        assert_eq!(cursor.updated_at, 1, "the stored row is untouched");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+
+        // The surviving cursor keeps the next pass incremental: it replays from before the walk
+        // (over-replay is idempotent), so a failed capture costs no extra full walk here.
+        daemon.reconcile_blocking().expect("idle incremental");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the older cursor is still a usable replay point"
+        );
+    }
+
+    /// #294, third door: the volume lookup itself fails. `volume_id_for_scope` falls back to the
+    /// sole stored cursor row when no baseline record carries a composed id, so an unreadable row
+    /// is *not* "first-ever bootstrap" — a cursor exists, it just cannot be seen this pass. Anchor
+    /// after the walk and it is overwritten with a post-walk value.
+    #[test]
+    fn an_unreadable_cursor_row_is_not_treated_as_a_first_ever_bootstrap() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-live"))),
+        )
+        .expect("daemon");
+        // No composed id in the baseline (an all-Proton-native remote, #32), so the volume can only
+        // come from the cursor row — whose `updated_at` is text, making the row unreadable while
+        // leaving it fully writable.
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", None, keep.as_str()),
+        )
+        .expect("seed record");
+        daemon
+            .connection
+            .execute(
+                "INSERT INTO remote_event_cursor (scope_id, last_event_id, updated_at)
+                 VALUES ('vol', 'cursor-old', 'corrupt')",
+                [],
+            )
+            .expect("seed corrupt cursor");
+        assert!(
+            load_sole_event_cursor(&daemon.connection).is_err(),
+            "precondition: the cursor row is unreadable"
+        );
+
+        daemon.reconcile_blocking().expect("bootstrap reconcile");
+
+        let stored: String = daemon
+            .connection
+            .query_row(
+                "SELECT last_event_id FROM remote_event_cursor WHERE scope_id = 'vol'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("cursor row still present");
+        assert_eq!(
+            stored, "cursor-old",
+            "an unreadable row must not be overwritten by a post-walk cursor"
+        );
     }
 
     #[test]
