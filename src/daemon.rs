@@ -3644,23 +3644,61 @@ fn query_file_history(
     connection: &Connection,
     request: &crate::ipc::ControlRequest,
 ) -> AppResult<crate::index::FileHistory> {
-    let path = match request.argument.as_deref() {
-        Some(selector) => Some(
-            crate::validate_relative_path_non_empty(Path::new(selector))
-                .ok_or_else(|| boxed_error(format!("unsafe history path: {selector}")))?,
-        ),
-        None => None,
-    };
     // `0` and `None` are the same request: everything still retained.
     let since = match request.window_secs.unwrap_or(0) {
         0 => 0,
         window => current_epoch_secs().saturating_sub(window),
+    };
+    let path = match request.argument.as_deref() {
+        Some(selector) => Some(resolve_history_path(connection, selector, since)?),
+        None => None,
     };
     let limit = request
         .limit
         .unwrap_or(ACTIVITY_EVENTS_DEFAULT_LIMIT)
         .clamp(1, ACTIVITY_EVENTS_MAX_LIMIT);
     file_events(connection, path.as_deref(), since, limit)
+}
+
+/// Turns an `activity` selector into the stored path to query.
+///
+/// Byte-exact first, which is every UTF-8 path. Failing that, the selector is matched against the
+/// **wire rendering** of the paths in the window, because a non-UTF-8 path reaches the user only as
+/// `to_string_lossy` — so the string they copy off `status` or `activity` no longer carries the
+/// bytes the BLOB key was built from, and a byte-exact lookup answers "nothing moved" for a file
+/// that moved. Same rule `apply_approval_command` follows for `approve`/`deny` (#61): a wire path
+/// is a rendering, and a rendering that maps to more than one stored path resolves to none of them.
+///
+/// Read-only, so an ambiguous selector is an error rather than a silent pick — a wrong feed is a
+/// wrong answer even when nothing is destroyed.
+fn resolve_history_path(
+    connection: &Connection,
+    selector: &str,
+    since_epoch_secs: u64,
+) -> AppResult<PathBuf> {
+    let validated = crate::validate_relative_path_non_empty(Path::new(selector))
+        .ok_or_else(|| boxed_error(format!("unsafe history path: {selector}")))?;
+    // A selector that is already a stored key needs no scan. `distinct_event_paths` is bounded by
+    // retention, but this keeps the common case a point query.
+    if !selector.contains(char::REPLACEMENT_CHARACTER) {
+        return Ok(validated);
+    }
+    let mut matches: Vec<PathBuf> =
+        crate::index::distinct_event_paths(connection, since_epoch_secs)?
+            .into_iter()
+            .filter(|stored| crate::wire_path(stored) == crate::wire_path(&validated))
+            .collect();
+    matches.dedup();
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        // Nothing matched: hand back the validated form so the query runs and reports an empty
+        // window, which is the truthful answer for a path with no recorded events.
+        0 => Ok(validated),
+        count => Err(boxed_error(format!(
+            "{selector} names {count} different recorded paths that render identically; the \
+             history cannot say which one is meant"
+        ))),
+    }
 }
 
 /// Writes the metrics sidecar from the shared control state, logging (not failing) on error —
@@ -12716,6 +12754,87 @@ mod tests {
                 .map(|pass| pass.kind),
             Some("full-sweep".to_owned()),
             "one setter, so the row and the live block cannot disagree"
+        );
+    }
+
+    #[test]
+    fn a_non_utf8_path_is_queryable_through_its_wire_form() {
+        // #61's rule, on the read side: a non-UTF-8 path reaches the user only as
+        // `to_string_lossy`, so the string copied off the screen is not the stored key. A
+        // byte-exact lookup answered "nothing moved" for a file that had moved — the same
+        // "unknown rendered as zero" failure, one surface over.
+        use std::os::unix::ffi::OsStrExt;
+        let connection = Connection::open_in_memory().expect("db");
+        crate::index::initialize_schema(&connection).expect("schema");
+        let stored = PathBuf::from(std::ffi::OsStr::from_bytes(b"dir/re\xffport.txt"));
+        let pass = begin_pass(&connection, 0, PassKind::Incremental).expect("begin");
+        insert_file_events(
+            &connection,
+            pass,
+            &[FileEvent {
+                path: stored.clone(),
+                source_path: None,
+                action: SyncAction::Upload,
+                bytes: Some(7),
+                epoch_secs: 5,
+                pass_id: pass,
+            }],
+        )
+        .expect("insert");
+
+        let selector = crate::wire_path(&stored).into_owned();
+        assert!(
+            selector.contains(char::REPLACEMENT_CHARACTER),
+            "the fixture must actually be lossy on the wire"
+        );
+        let resolved = resolve_history_path(&connection, &selector, 0).expect("resolve");
+        assert_eq!(resolved, stored, "the wire form found the stored key");
+        let found = file_events(&connection, Some(&resolved), 0, 10).expect("events");
+        assert_eq!(found.total, 1);
+
+        // A UTF-8 selector still takes the point-query path, untouched.
+        assert_eq!(
+            resolve_history_path(&connection, "docs/spec.md", 0).expect("utf8"),
+            PathBuf::from("docs/spec.md")
+        );
+        // And the guard still refuses a path that escapes the root.
+        assert!(resolve_history_path(&connection, "../etc/passwd", 0).is_err());
+    }
+
+    #[test]
+    fn an_ambiguous_lossy_history_selector_resolves_to_neither() {
+        // Two different stored paths, one rendering. Read-only or not, picking one arbitrarily
+        // would answer a question the selector did not ask.
+        use std::os::unix::ffi::OsStrExt;
+        let connection = Connection::open_in_memory().expect("db");
+        crate::index::initialize_schema(&connection).expect("schema");
+        let first = PathBuf::from(std::ffi::OsStr::from_bytes(b"re\xffport.txt"));
+        let second = PathBuf::from(std::ffi::OsStr::from_bytes(b"re\xfeport.txt"));
+        let pass = begin_pass(&connection, 0, PassKind::Incremental).expect("begin");
+        let events: Vec<FileEvent> = [first.clone(), second.clone()]
+            .into_iter()
+            .map(|path| FileEvent {
+                path,
+                source_path: None,
+                action: SyncAction::Upload,
+                bytes: Some(1),
+                epoch_secs: 5,
+                pass_id: pass,
+            })
+            .collect();
+        insert_file_events(&connection, pass, &events).expect("insert");
+
+        let selector = crate::wire_path(&first).into_owned();
+        assert_eq!(
+            selector,
+            crate::wire_path(&second),
+            "one rendering, two paths"
+        );
+        let error = resolve_history_path(&connection, &selector, 0)
+            .expect_err("an ambiguous selector must not resolve");
+        assert!(
+            error.to_string().contains("cannot say which one"),
+            "the reason names the ambiguity: {error}"
         );
     }
 

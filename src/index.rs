@@ -1286,6 +1286,26 @@ pub fn file_events(
     })
 }
 
+/// Every distinct path in the event log within a window. Small by construction (the log is bounded
+/// by [`HistoryRetention`]), and the only way to reach a **non-UTF-8** path from the wire: those
+/// are published as `to_string_lossy`, so a selector a user copies off the screen no longer has the
+/// bytes the BLOB key was built from. Callers match the rendering — see
+/// `daemon::resolve_history_path`.
+pub fn distinct_event_paths(
+    connection: &Connection,
+    since_epoch_secs: u64,
+) -> AppResult<Vec<PathBuf>> {
+    let mut statement =
+        connection.prepare("SELECT DISTINCT path FROM sync_events WHERE at >= ?1")?;
+    let paths = statement
+        .query_map(
+            params![i64::try_from(since_epoch_secs).unwrap_or(i64::MAX)],
+            |row| read_index_key_column(row, 0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(paths)
+}
+
 const PASS_COLUMNS: &str = "SELECT id, started_at, duration_ms, kind, outcome, changed, failed, \
                             bytes_up, bytes_down, error FROM sync_passes";
 

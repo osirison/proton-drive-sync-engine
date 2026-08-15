@@ -561,11 +561,7 @@ fn print_history(response: &ControlResponse, style: &Style) {
         println!(
             "Last full sweep {} — {}.",
             relative_time(sweep.started_epoch_secs),
-            if sweep.changed == 0 {
-                "nothing was out of step".to_owned()
-            } else {
-                format!("{} change(s)", sweep.changed)
-            }
+            describe_sweep(sweep)
         );
     }
     if history.today.uploaded_bytes > 0 || history.today.downloaded_bytes > 0 {
@@ -607,6 +603,31 @@ fn print_history(response: &ControlResponse, style: &Style) {
             other => (style.dim("?"), other.to_owned()),
         };
         println!("{when} {took} {kind}  {mark} {detail}");
+    }
+}
+
+/// What the last full sweep found, as a clause for `Last full sweep 2 days ago — …`.
+///
+/// Branches on **outcome first**, and only then on the count. `changed == 0` alone does not mean
+/// "nothing was out of step": a sweep that failed, or was killed mid-pass, also moved nothing, and
+/// reading the count without the outcome prints a confident all-clear over a pass that never
+/// finished — the exact shape of #246, and exactly what #238 warns about ("answering a different
+/// question with a confident number"). Every outcome is enumerated, including an unknown token
+/// from a newer daemon; there is no trailing arm that could absorb a state added later.
+fn describe_sweep(sweep: &PassRecord) -> String {
+    match sweep.outcome.as_str() {
+        "clean" if sweep.changed == 0 => "nothing was out of step".to_owned(),
+        "clean" => format!("{} change(s)", sweep.changed),
+        "partial" => format!(
+            "{} change(s), {} item(s) failed",
+            sweep.changed, sweep.failed
+        ),
+        "failed" => match &sweep.error {
+            Some(error) => format!("it failed: {error}"),
+            None => "it failed".to_owned(),
+        },
+        "interrupted" => "it did not finish".to_owned(),
+        other => format!("it ended `{other}`"),
     }
 }
 
@@ -1185,6 +1206,56 @@ mod tests {
             history: None,
             file_history: None,
             index_totals: None,
+        }
+    }
+
+    fn sweep(outcome: &str, changed: usize, failed: usize) -> PassRecord {
+        PassRecord {
+            id: 1,
+            started_epoch_secs: 100,
+            duration_ms: 1000,
+            kind: "full-sweep".to_owned(),
+            outcome: outcome.to_owned(),
+            changed,
+            failed,
+            bytes_uploaded: 0,
+            bytes_downloaded: 0,
+            error: Some("proton-drive: request failed".to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_full_sweep_that_did_not_finish_is_never_an_all_clear() {
+        // #246's shape, in the one sentence #238 asks for. A failed or interrupted sweep also has
+        // `changed == 0`, so keying the clause off the count alone printed "nothing was out of
+        // step" over a pass that never got far enough to know.
+        assert_eq!(
+            describe_sweep(&sweep("clean", 0, 0)),
+            "nothing was out of step"
+        );
+        assert_eq!(describe_sweep(&sweep("clean", 3, 0)), "3 change(s)");
+        assert_eq!(
+            describe_sweep(&sweep("partial", 2, 1)),
+            "2 change(s), 1 item(s) failed"
+        );
+        assert_eq!(
+            describe_sweep(&sweep("failed", 0, 0)),
+            "it failed: proton-drive: request failed"
+        );
+        assert_eq!(
+            describe_sweep(&sweep("interrupted", 0, 0)),
+            "it did not finish"
+        );
+        // A token this build does not know is rendered, never silently treated as clean.
+        assert_eq!(
+            describe_sweep(&sweep("quiesced", 0, 0)),
+            "it ended `quiesced`"
+        );
+        for outcome in ["failed", "interrupted", "quiesced"] {
+            assert!(
+                !describe_sweep(&sweep(outcome, 0, 0)).contains("nothing was out of step"),
+                "{outcome} must not read as an all-clear"
+            );
         }
     }
 
