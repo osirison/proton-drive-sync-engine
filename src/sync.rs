@@ -1654,11 +1654,14 @@ mod tests {
         );
     }
 
-    // The verdict function calls the leaf planners directly, so it does not inherit the gate in
-    // `plan_sync_entities`. Pre-fix, the tracked non-UTF-8 child below read as remotely deleted
-    // (its lossy remote key never matches), the descendant proof passed, and the recursive
-    // `LocalDelete` it authorised swallowed the child's own action — deleting the only copy of a
-    // file this engine had never been able to upload.
+    // What the gate's placement buys. `compute_directory_deletion_verdicts` proves a subtree
+    // through `plan_entity_action`, so gating inside that function — rather than at its
+    // `plan_sync_entities` call site — is what makes the proof inherit the gate: `SkipUnsupported`
+    // is not a delete, so the subtree never scores clean. Ungated, the tracked non-UTF-8 child
+    // below reads as remotely deleted (its lossy remote key never matches), the proof passes, and
+    // the recursive `LocalDelete` it authorises swallows the child's own action — deleting the only
+    // copy of a file this engine has never been able to upload. This test is the guard on that
+    // inheritance, and fails with exactly that `LocalDelete` of the parent when the gate is gone.
     #[cfg(unix)]
     #[test]
     fn a_directory_holding_a_non_utf8_file_is_never_proved_safe_to_delete() {
