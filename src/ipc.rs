@@ -81,11 +81,13 @@ pub struct FailedItem {
     #[serde(with = "crate::lossy_path")]
     pub path: PathBuf,
     pub action: SyncAction,
-    /// The failure, truncated to [`FAILED_ITEM_ERROR_LIMIT`]; these ride on every status reply.
+    /// The failure. At most [`FAILED_ITEM_ERROR_LIMIT`] bytes, ellipsis included — these ride on
+    /// every status reply.
     pub error: String,
 }
 
-/// Cap on a [`FailedItem::error`] string: a CLI failure can carry kilobytes of stderr.
+/// Hard cap on a [`FailedItem::error`] string in bytes, *inclusive* of the truncation ellipsis: a
+/// CLI failure can carry kilobytes of stderr.
 pub const FAILED_ITEM_ERROR_LIMIT: usize = 500;
 
 /// The daemon's resolved folder pair + index location, surfaced over IPC so a UI can reflect the

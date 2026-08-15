@@ -3747,17 +3747,22 @@ impl PassFailures {
     }
 }
 
-/// Bounds an error string to [`FAILED_ITEM_ERROR_LIMIT`] on a char boundary.
+/// Bounds an error string to [`FAILED_ITEM_ERROR_LIMIT`] **bytes, inclusive of the ellipsis**, cut
+/// on a char boundary — so the documented cap is the real one and no consumer has to budget for an
+/// overshoot.
 fn truncate_error(error: &str) -> String {
     if error.len() <= FAILED_ITEM_ERROR_LIMIT {
         return error.to_owned();
     }
-    let end = (0..=FAILED_ITEM_ERROR_LIMIT)
+    let budget = FAILED_ITEM_ERROR_LIMIT - ELLIPSIS.len();
+    let end = (0..=budget)
         .rev()
         .find(|index| error.is_char_boundary(*index))
         .unwrap_or(0);
-    format!("{}…", &error[..end])
+    format!("{}{ELLIPSIS}", &error[..end])
 }
+
+const ELLIPSIS: &str = "…";
 
 /// A concatenated, paginated volume event delta plus the cursor to persist afterwards.
 struct EventDelta {
@@ -6604,6 +6609,10 @@ mod tests {
         let file_hash = crate::index::compute_sha1(&file_path).expect("nested file hash");
         fs::write(local_root.join("old-docs").join("fresh.txt"), b"brand new")
             .expect("untracked nested local file");
+        // Two levels down, so the suppression is proved for a whole subtree and not just the
+        // moved directory's immediate children.
+        fs::create_dir(local_root.join("old-docs").join("nested")).expect("untracked directory");
+        fs::write(local_root.join("old-docs/nested/deep.txt"), b"deeper").expect("deep file");
         let mut remote_entities = HashMap::new();
         remote_entities.insert(
             PathBuf::from("new-docs"),
@@ -6650,9 +6659,17 @@ mod tests {
             !recorded.iter().any(|operation| matches!(
                 operation,
                 RecordedOperation::Upload { relative_path, .. }
-                    if relative_path == Path::new("old-docs/fresh.txt")
+                    if relative_path.starts_with("old-docs")
             )),
-            "nothing may be uploaded from the pre-move path: {recorded:?}"
+            "nothing in the moved subtree may be uploaded from its pre-move path: {recorded:?}"
+        );
+        assert!(
+            !recorded.iter().any(|operation| matches!(
+                operation,
+                RecordedOperation::EnsureDirectory { relative_path, .. }
+                    if relative_path.starts_with("old-docs")
+            )),
+            "nor may any of its directories be created remotely there: {recorded:?}"
         );
         assert!(
             local_root.join("new-docs").join("fresh.txt").is_file(),
@@ -6663,14 +6680,16 @@ mod tests {
         daemon.reconcile_blocking().expect_clean("second reconcile");
 
         let recorded = operations.lock().expect("operations lock").clone();
-        assert!(
-            recorded.contains(&RecordedOperation::Upload {
-                local_path: local_root.join("new-docs").join("fresh.txt"),
-                remote_root: PathBuf::from("/Drive/RemoteFolder"),
-                relative_path: PathBuf::from("new-docs/fresh.txt"),
-            }),
-            "the untracked file uploads from its post-move path: {recorded:?}"
-        );
+        for relative in ["new-docs/fresh.txt", "new-docs/nested/deep.txt"] {
+            assert!(
+                recorded.contains(&RecordedOperation::Upload {
+                    local_path: local_root.join(relative),
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from(relative),
+                }),
+                "{relative} uploads from its post-move path: {recorded:?}"
+            );
+        }
     }
 
     #[test]
@@ -7054,11 +7073,16 @@ mod tests {
         assert_eq!(truncate_error("short"), "short");
         let long = "e".repeat(FAILED_ITEM_ERROR_LIMIT * 3);
         let truncated = truncate_error(&long);
-        assert!(truncated.len() <= FAILED_ITEM_ERROR_LIMIT + '…'.len_utf8());
+        assert!(
+            truncated.len() <= FAILED_ITEM_ERROR_LIMIT,
+            "the cap includes the ellipsis, so the documented bound is the real one"
+        );
         assert!(truncated.ends_with('…'));
         // A multi-byte char straddling the limit must not panic or split.
         let multibyte = "é".repeat(FAILED_ITEM_ERROR_LIMIT);
-        assert!(truncate_error(&multibyte).ends_with('…'));
+        let truncated = truncate_error(&multibyte);
+        assert!(truncated.len() <= FAILED_ITEM_ERROR_LIMIT);
+        assert!(truncated.ends_with('…'));
 
         let mut failures = PassFailures::default();
         for index in 0..(FAILED_ITEMS_REPORTED + 7) {
