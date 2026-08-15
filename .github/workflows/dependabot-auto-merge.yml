@@ -1,13 +1,29 @@
 name: Dependabot auto-merge
 
-# Runs only for PRs opened by Dependabot. Approves and enables GitHub auto-merge for
-# security fixes (any semver) and semver-patch version bumps; GitHub then merges each once
-# all required status checks are green. Minor/major NON-security bumps are intentionally
-# left for manual review.
+# Runs only for PRs opened by Dependabot. Enables GitHub auto-merge for security fixes (any
+# semver) and semver-patch version bumps; GitHub then merges each once all required status
+# checks are green. Minor/major NON-security bumps are intentionally left for manual review.
 #
 # Prerequisites (set outside this file): "Allow auto-merge" in repo settings, and branch
 # protection on main with the CI + security-audit checks required — the required checks are
 # what make `--auto` wait for green rather than merge immediately.
+#
+# There is deliberately NO `gh pr review --approve` step. Under the default repo setting
+# `actions/permissions/workflow` → `can_approve_pull_request_reviews: false`, it fails with
+#
+#   failed to create review: GraphQL: GitHub Actions is not permitted to approve pull
+#   requests. (addPullRequestReview)
+#
+# `run:` uses `bash -e`, so that aborted the step *before* `gh pr merge --auto` — leaving
+# every eligible bump open and un-armed, and showing as a red `auto-merge` check that reads
+# like the PR failed rather than like the automation never started. (Found 2026-08-15, after
+# it had silently stalled every Dependabot PR since the workflow landed in #144.)
+#
+# The approval is also unnecessary here: main's protection sets
+# `required_pull_request_reviews: null`, so `--auto` waits only on the required checks.
+# If required reviews are ever enabled, do NOT restore this step and flip that repo setting
+# to buy it — that grants Actions approval rights over every PR in the repo. Use a PAT or a
+# GitHub App instead.
 on: pull_request
 
 # Default to read-only; only the auto-merge job (and only for Dependabot PRs) elevates.
@@ -27,10 +43,9 @@ jobs:
         uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Approve and enable auto-merge (security fixes + patch bumps)
+      - name: Enable auto-merge (security fixes + patch bumps)
         if: steps.meta.outputs.ghsa-id != '' || steps.meta.outputs.update-type == 'version-update:semver-patch'
         run: |
-          gh pr review --approve "$PR_URL"
           gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
