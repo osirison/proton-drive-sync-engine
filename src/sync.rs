@@ -198,6 +198,22 @@ fn plan_entity_action(
     bootstrap: bool,
     deletion_verdicts: &HashMap<PathBuf, bool>,
 ) -> Option<PlannedAction> {
+    if !is_representable_remotely(path) {
+        // #270. The path cannot cross the CLI's JSON boundary intact, so nothing that touches the
+        // remote may be planned for it — not an upload (whose copy comes back under the lossy key
+        // and forks), not a delete of a node this key can never name, not a conflict whose sidecar
+        // has no remote revision to fetch. Reported rather than dropped: the entity is real and a
+        // user has to know it is not being synced (#232). Gating HERE rather than at the call site
+        // is what makes the deletion proof inherit it — `SkipUnsupported` is not a delete, so a
+        // subtree holding one can never be proved clean, and the recursive delete that would
+        // otherwise destroy this file's only copy is never authorised.
+        return Some(PlannedAction::new(
+            path,
+            SyncAction::SkipUnsupported,
+            entity_kind_for_path(local, remote, base),
+            None,
+        ));
+    }
     if is_reconciled_directory_file_clash(local, remote, base) {
         // A directory already permanently claimed this path against a clashing remote file on a
         // prior reconcile (see SD-09); the remote file's continued presence is a tolerated,
@@ -271,6 +287,24 @@ fn plan_file_path_transitions(
                         base_index,
                         base,
                     )
+                })
+                // #270: a `MoveRemote` renames the remote node to the *local* path's name, so an
+                // unrepresentable destination would put a name on the remote that the listing can
+                // only echo back lossily — the same fork, one move over. Dropping the pairing
+                // hands both halves back to ordinary planning: the new path is reported
+                // unsyncable, and the old one takes the approval-gated deletion path any
+                // vanished local file takes. A `MoveLocal`'s destination comes from the remote map
+                // and is UTF-8 by construction, so this never drops one. That leaves one
+                // intentional case: an already-forked legacy pair (a base row on the real bytes,
+                // its `proton_id` on the lossily-named node) plans a MoveLocal that renames the
+                // local file onto the remote's name. The engine renaming a user's file is
+                // deliberate here — it is what makes the file syncable again, under the only name
+                // both sides can agree on, and the id match is what proves the pair.
+                .filter(|action| {
+                    action
+                        .destination_path
+                        .as_deref()
+                        .is_none_or(is_representable_remotely)
                 });
         if let Some(action) = action {
             suppressed_paths.insert(action.path.clone());
@@ -591,6 +625,27 @@ fn plan_type_conflict_action(
         entity_kind_for_path(local, remote, base),
         remote.and_then(RemoteEntity::remote_id),
     )
+}
+
+/// Whether a relative path can survive a round trip through the remote side (#270).
+///
+/// The `proton-drive` CLI reports the remote tree as JSON, so every path in the remote map is a
+/// UTF-8 string by construction. A local path that is not valid UTF-8 — legal on every Unix
+/// filesystem, where a name is bytes — therefore comes back with U+FFFD in place of the offending
+/// bytes, under a key that can never equal the one the local scan produced. That is not a CLI
+/// limitation a better upload would fix: whatever the bytes do on the way out, the listing can
+/// only ever echo a UTF-8 string back, so the engine has no way to match the uploaded copy to the
+/// local file. Left ungated the planner saw two unrelated paths — the real one local-only
+/// (`Upload`), the lossy one remote-only (`Download`) — and multiplied the pair every pass.
+///
+/// So such a path is *unsyncable*, and the planner says so (`SkipUnsupported`) instead of planning
+/// transfers that cannot converge. The check is one-sided on purpose: it constrains the local
+/// side, never the remote one. A remote name containing a genuine U+FFFD is indistinguishable
+/// from a lossily-reported one, and refusing both would strand a real file — while allowing them
+/// is what lets an already-forked pair settle, since the lossy copy downloads to a UTF-8 local
+/// name and auto-links from then on.
+pub(crate) fn is_representable_remotely(path: &Path) -> bool {
+    path.to_str().is_some()
 }
 
 fn entity_kind_for_path(
@@ -1506,6 +1561,180 @@ mod tests {
             proton_id: id.map(ToOwned::to_owned),
             sync_status: SyncStatus::Synced,
         }
+    }
+
+    /// A relative path holding a byte sequence that is not valid UTF-8, and the path the remote
+    /// listing reports for the same file: the CLI speaks JSON, so the name comes back with U+FFFD
+    /// where those bytes were. The two are different keys, which is the whole of #270.
+    #[cfg(unix)]
+    fn non_utf8_and_lossy_paths() -> (PathBuf, PathBuf) {
+        use std::os::unix::ffi::OsStrExt;
+
+        let real = PathBuf::from(OsStr::from_bytes(b"caf\xe9.txt"));
+        let lossy = PathBuf::from(real.to_string_lossy().into_owned());
+        assert_ne!(real, lossy, "the two keys must actually differ");
+        (real, lossy)
+    }
+
+    #[cfg(unix)]
+    fn local_at(path: &Path, hash: &str) -> LocalFileState {
+        LocalFileState {
+            relative_path: path.to_path_buf(),
+            absolute_path: Path::new("/tmp").join(path),
+            file_size: 1,
+            mtime: 1,
+            sha1_hash: hash.to_owned(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn base_at(path: &Path, id: Option<&str>, hash: &str) -> FileRecord {
+        FileRecord {
+            file_path: path.to_path_buf(),
+            ..base("placeholder", id, hash)
+        }
+    }
+
+    // #270: the remote listing arrives as JSON, so a non-UTF-8 filename comes back lossy and the
+    // planner saw two unrelated paths — the real one local-only (Upload) and the lossy one
+    // remote-only (Download). Each pass then uploaded a second copy under the lossy name and
+    // downloaded it back. The round trip is impossible by construction, not by CLI limitation:
+    // whatever the upload does with the bytes, the listing can only ever echo a UTF-8 string, so
+    // the engine could never match the result back to the local file. Such a path is unsyncable.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_filename_is_skipped_instead_of_forking_into_an_upload_and_a_download() {
+        let (real, lossy) = non_utf8_and_lossy_paths();
+        let mut local_files = HashMap::new();
+        local_files.insert(real.clone(), local_at(&real, "hash-a"));
+
+        let planned = plan_sync(&local_files, &HashMap::new(), &HashMap::new());
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].path, real);
+        assert_eq!(
+            planned[0].action,
+            SyncAction::SkipUnsupported,
+            "an unrepresentable path must not be uploaded: the copy it creates comes back under a \
+             different key and forks"
+        );
+
+        // The lossy copy an earlier build already uploaded is an ordinary remote-only file: it
+        // downloads and then auto-links, which is how a forked pair stops multiplying. No
+        // heuristic hunts for U+FFFD in remote names — a name that genuinely contains one is
+        // indistinguishable from a lossy one, and refusing both would strand a real file.
+        let mut remote_files = HashMap::new();
+        let lossy_name = lossy
+            .to_str()
+            .expect("a lossy path is UTF-8 by construction");
+        remote_files.insert(
+            lossy.clone(),
+            remote(lossy_name, "remote-id", Some("hash-a")),
+        );
+
+        let planned = plan_sync(&local_files, &remote_files, &HashMap::new());
+
+        let actions: Vec<_> = planned
+            .iter()
+            .map(|planned| (planned.path.clone(), planned.action))
+            .collect();
+        assert!(
+            actions.contains(&(real.clone(), SyncAction::SkipUnsupported)),
+            "unexpected plan: {actions:?}"
+        );
+        assert!(
+            actions.contains(&(lossy, SyncAction::Download)),
+            "unexpected plan: {actions:?}"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|(_, action)| *action == SyncAction::Upload),
+            "the fork's upload half must be gone: {actions:?}"
+        );
+    }
+
+    // What the gate's placement buys. `compute_directory_deletion_verdicts` proves a subtree
+    // through `plan_entity_action`, so gating inside that function — rather than at its
+    // `plan_sync_entities` call site — is what makes the proof inherit the gate: `SkipUnsupported`
+    // is not a delete, so the subtree never scores clean. Ungated, the tracked non-UTF-8 child
+    // below reads as remotely deleted (its lossy remote key never matches), the proof passes, and
+    // the recursive `LocalDelete` it authorises swallows the child's own action — deleting the only
+    // copy of a file this engine has never been able to upload. This test is the guard on that
+    // inheritance, and fails with exactly that `LocalDelete` of the parent when the gate is gone.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_holding_a_non_utf8_file_is_never_proved_safe_to_delete() {
+        let (real, _) = non_utf8_and_lossy_paths();
+        let nested = PathBuf::from("docs").join(&real);
+        let mut local_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_entities.insert(PathBuf::from("docs"), local_directory("docs"));
+        local_entities.insert(
+            nested.clone(),
+            LocalEntityState::File(local_at(&nested, "hash-a")),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("dir-id")),
+        );
+        base_index.insert(nested.clone(), base_at(&nested, Some("file-id"), "hash-a"));
+
+        let planned = plan_sync_entities(&local_entities, &HashMap::new(), &base_index);
+
+        assert!(
+            !planned
+                .iter()
+                .any(|action| action.action == SyncAction::LocalDelete),
+            "the local file is the only copy — nothing here may delete it: {planned:?}"
+        );
+        assert!(
+            planned.iter().any(|action| action.path == nested
+                && action.action == SyncAction::SkipUnsupported),
+            "the unsyncable child must still be reported: {planned:?}"
+        );
+    }
+
+    // A local rename onto an unrepresentable name used to pair into a `MoveRemote`, which would
+    // rename the remote node to a name the next listing can only echo back lossily — the same fork
+    // one move over. Dropping the pairing hands both halves to ordinary planning.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_onto_a_non_utf8_name_is_not_moved_onto_the_remote() {
+        let (real, _) = non_utf8_and_lossy_paths();
+        let mut local_files = HashMap::new();
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(real.clone(), local_at(&real, "hash-a"));
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some("hash-a")),
+        );
+        base_index.insert(
+            PathBuf::from("notes.txt"),
+            base("notes.txt", Some("remote-id"), "hash-a"),
+        );
+
+        let planned = plan_sync(&local_files, &remote_files, &base_index);
+
+        let actions: Vec<_> = planned
+            .iter()
+            .map(|planned| (planned.path.clone(), planned.action))
+            .collect();
+        assert!(
+            !actions
+                .iter()
+                .any(|(_, action)| *action == SyncAction::MoveRemote),
+            "unexpected plan: {actions:?}"
+        );
+        assert!(
+            actions.contains(&(real, SyncAction::SkipUnsupported)),
+            "unexpected plan: {actions:?}"
+        );
+        assert!(
+            actions.contains(&(PathBuf::from("notes.txt"), SyncAction::RemoteDelete)),
+            "the vanished local file takes the ordinary, approval-gated deletion path: {actions:?}"
+        );
     }
 
     #[test]
