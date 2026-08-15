@@ -68,6 +68,21 @@ go through a double-quoted `-f body="…"`: the shell runs the backticks as comm
 substitution and the identifiers vanish from the posted comment, silently. Write
 the body to a JSON file and use `--input`, or a single-quoted heredoc.
 
+**Suppressed comments are in the review BODY, not the comments endpoint.** A round
+can report "generated no new comments" and still carry findings, inside a
+`<details><summary>Suppressed comments (N)</summary>` block in the review body.
+`gh api pulls/N/comments` never returns them, so a check that only counts inline
+comments reads such a round as clean. Read the body:
+
+```bash
+gh api repos/OWNER/REPO/pulls/N/reviews \
+  --jq '.[] | select(.user.login=="copilot-pull-request-reviewer[bot]") | .body' \
+  | grep -A20 -i 'suppressed comments'
+```
+
+They have been real every time in this repo. There is also no thread to reply to —
+answer in a normal PR comment (`gh pr comment`) quoting the file and line.
+
 **Order matters: request LAST.** A push **clears** a pending bot review request —
 `reviewRequests` goes back to `[]` and no review is ever posted. So the sequence is
 always *finish pushing, then request*, never the other way round. A request made

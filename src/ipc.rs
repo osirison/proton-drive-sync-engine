@@ -286,7 +286,8 @@ impl StagingDir {
     /// never cross-device). `DirBuilder::mode(0o700)` is umask-proof: mkdir's umask can only
     /// *clear* permission bits, never add them, so the directory is owner-only from the instant it
     /// exists, and `mkdir` never follows a symlink planted at the name — a leftover is retried
-    /// past, never removed, so nothing here can delete a directory this process did not create.
+    /// past, never removed. Together with the non-recursive [`Drop`], nothing here can delete
+    /// anything this process did not put there.
     fn create(socket_path: &Path) -> AppResult<Self> {
         use std::os::unix::fs::DirBuilderExt;
 
@@ -345,8 +346,16 @@ impl StagingDir {
 
 #[cfg(unix)]
 impl Drop for StagingDir {
+    /// Deliberately **not** `remove_dir_all`. In the very deployment #62 is about — a socket path
+    /// under a directory other local users can write — an attacker can remove this name after
+    /// `create` made it and leave their own tree at it, and a recursive delete would then take
+    /// that tree. `remove_dir` refuses a non-empty directory (`ENOTEMPTY`) and refuses a symlink
+    /// (`ENOTDIR`), so the only thing it can ever remove is the empty directory this process
+    /// created. The staged socket is normally already renamed away by now; removing it first
+    /// covers the path where the bind succeeded and the rename did not.
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.directory);
+        let _ = std::fs::remove_file(self.socket_path());
+        let _ = std::fs::remove_dir(&self.directory);
     }
 }
 
@@ -619,6 +628,30 @@ mod tests {
             "the socket must be renamed into place, not created there with the process umask: \
              {arrivals:?}"
         );
+    }
+
+    #[test]
+    fn dropping_a_staging_dir_never_deletes_a_tree_it_did_not_create() {
+        // Copilot review, and it holds: `remove_dir_all` on a REAL directory deletes its whole
+        // tree (only a symlink is left unfollowed). In the group-writable parent #62 is about, an
+        // attacker can drop this name after `create` made it and leave their own tree at it, so a
+        // recursive cleanup would take that tree. `remove_dir` refuses a non-empty directory.
+        let directory = tempdir().expect("tempdir");
+        let staging =
+            StagingDir::create(&directory.path().join("daemon.sock")).expect("staging dir");
+        let planted = staging.directory.join("attacker-tree");
+        std::fs::create_dir(&planted).expect("plant a directory");
+        std::fs::write(planted.join("data"), b"not ours").expect("plant a file");
+        let staging_path = staging.directory.clone();
+
+        drop(staging);
+
+        assert!(
+            planted.join("data").exists(),
+            "cleanup must not recurse into content this process did not put there"
+        );
+        assert!(staging_path.is_dir());
+        std::fs::remove_dir_all(&staging_path).expect("test cleanup");
     }
 
     #[tokio::test]
