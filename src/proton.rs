@@ -31,17 +31,74 @@ const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// `CommandPolicy::timeout` + this grace instead of blocking forever (issue #56).
 const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
 
+/// A CLI `{ok, value}`-wrapped string, keeping apart the three states a plain `Option<String>`
+/// collapses into `None`:
+///
+/// * [`Self::Absent`] — the field is missing or `null`. Legitimate and common (`path` and `id`
+///   are routinely not sent), so it keeps the historical silent-drop behaviour.
+/// * [`Self::Undecodable`] — a value was **present** but carries no usable string (`{"ok": false,
+///   ...}`, `{}`, `{"value": null}`, or a non-string scalar). The node exists remotely and this
+///   listing cannot describe it, which is *not* the same as the node being absent (issue #59).
+/// * [`Self::Decoded`] — a usable string, from either a bare string or the wrapper's `value`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WrappedString {
+    #[default]
+    Absent,
+    Undecodable,
+    Decoded(String),
+}
+
+impl WrappedString {
+    pub fn as_deref(&self) -> Option<&str> {
+        match self {
+            Self::Decoded(value) => Some(value.as_str()),
+            Self::Absent | Self::Undecodable => None,
+        }
+    }
+
+    fn is_undecodable(&self) -> bool {
+        matches!(self, Self::Undecodable)
+    }
+}
+
+impl<'de> Deserialize<'de> for WrappedString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match Option::<Value>::deserialize(deserializer)? {
+            None | Some(Value::Null) => Self::Absent,
+            Some(Value::String(value)) => Self::Decoded(value),
+            Some(Value::Object(object)) => {
+                if matches!(object.get("ok"), Some(Value::Bool(false))) {
+                    Self::Undecodable
+                } else {
+                    match object.get("value").and_then(Value::as_str) {
+                        Some(value) => Self::Decoded(value.to_owned()),
+                        None => Self::Undecodable,
+                    }
+                }
+            }
+            // A present non-string scalar is a value we cannot read, not an absent one.
+            Some(_) => Self::Undecodable,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtonNode {
-    #[serde(default, deserialize_with = "deserialize_optional_string")]
-    pub id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_string")]
-    pub uid: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_string")]
-    pub name: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_string")]
-    pub path: Option<String>,
+    // Identity and locator fields carry the three-state wrapper: an undecodable one fails the
+    // listing rather than silently dropping the node (#59). Non-structural metadata below stays
+    // on the lenient `Option<String>` parse — an unreadable media type cannot lose a node.
+    #[serde(default)]
+    pub id: WrappedString,
+    #[serde(default)]
+    pub uid: WrappedString,
+    #[serde(default)]
+    pub name: WrappedString,
+    #[serde(default)]
+    pub path: WrappedString,
     #[serde(default)]
     pub children: Vec<ProtonNode>,
     #[serde(default)]
@@ -1746,11 +1803,33 @@ fn collect_node(
     listing: &mut RemoteListing,
     is_root: bool,
 ) -> AppResult<()> {
+    // #59: a wrapped value that is PRESENT but undecodable means the node exists remotely and
+    // this listing cannot describe it. Dropping it silently is indistinguishable from a deletion
+    // to the planner (an omitted node reads as `Missing` -> LocalDelete), so a node whose
+    // identity or locator is unusable *because* it failed to decode fails the whole listing:
+    // `list`/`list_entities_or_missing_root` abort the pass, and `list_directory` makes
+    // `TargetedResolver` error, which the caller turns into `Reconstruction::FallbackToSnapshot`.
+    // Either way the planner never sees a map that is missing a node still present remotely.
+    let id = node.id.as_deref().or(node.uid.as_deref());
+    if id.is_none() && (node.id.is_undecodable() || node.uid.is_undecodable()) {
+        // Never placeholder an unidentifiable node: `find_entity_by_uid` would not match it, the
+        // targeted resolver would report it absent from its parent, and the reconstruction would
+        // drop its location — #59 again, through the incremental path.
+        return Err(incomplete_listing_error("id", parent_path));
+    }
+
     let candidate_path = node
         .path
         .as_deref()
         .map(PathBuf::from)
         .or_else(|| node.name.as_deref().map(|name| parent_path.join(name)));
+
+    if candidate_path.is_none() && (node.path.is_undecodable() || node.name.is_undecodable()) {
+        // Unplaceable: neither locator decoded, so no placeholder can be positioned either.
+        // (A node with *both* locators merely absent is a structural container — see below —
+        // and stays a silent, byte-identical pass-through.)
+        return Err(incomplete_listing_error("name/path", parent_path));
+    }
 
     // The root-basename strip must collapse only the genuine depth-0 wrapper node,
     // never a descendant that merely shares the root's basename (issue #54). A
@@ -1773,11 +1852,11 @@ fn collect_node(
         || matches!(node.kind.as_deref(), Some("folder" | "directory"))
         || (!node.children.is_empty() || !node.entries.is_empty() || !node.files.is_empty());
 
-    let id = node.id.as_deref().or(node.uid.as_deref());
     if is_folder && !relative_path.as_os_str().is_empty() {
         let name = node
             .name
-            .clone()
+            .as_deref()
+            .map(ToOwned::to_owned)
             .or_else(|| {
                 relative_path
                     .file_name()
@@ -1795,21 +1874,56 @@ fn collect_node(
         );
     }
 
-    if !is_folder && let (Some(id), Some(name)) = (id, node.name.as_deref()) {
-        listing.files.insert(
-            relative_path.clone(),
-            RemoteFile {
-                path: relative_path.clone(),
-                id: id.to_owned(),
-                name: name.to_owned(),
-                sha1_hash: node
-                    .active_revision
-                    .as_ref()
-                    .and_then(|revision| revision.claimed_digests.as_ref())
-                    .and_then(|digests| digests.sha1.clone()),
-                downloadable: is_downloadable_media_type(node.media_type.as_deref()),
-            },
-        );
+    if !is_folder {
+        if relative_path.as_os_str().is_empty() {
+            // #72: an empty relative path IS the remote root, never a file within it. Keyed
+            // under "" it passes every downstream filter and resolves to the roots themselves,
+            // so the planner would download the remote root onto the local root and fail every
+            // pass. The directory branch above has always rejected it. Expected for the depth-0
+            // wrapper of a folder listed without a type marker; anything else is malformed.
+            if !is_root_wrapper {
+                warn!(
+                    remote_id = ?id,
+                    "skipping remote file entry that resolves to the remote root itself"
+                );
+            }
+        } else if let Some(id) = id {
+            // #59: an undecodable (not absent) locator that another locator still placed. Keep
+            // the node in the map — never read as a deletion — but inert: no digest and not
+            // downloadable, which routes it into the planner's existing `Unsupported` arm
+            // instead of a blind download of a node the CLI could not decode.
+            let degraded = node.name.is_undecodable() || node.path.is_undecodable();
+            let name = node.name.as_deref().map(ToOwned::to_owned).or_else(|| {
+                degraded
+                    .then(|| {
+                        relative_path
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                            .map(ToOwned::to_owned)
+                    })
+                    .flatten()
+            });
+            if let Some(name) = name {
+                listing.files.insert(
+                    relative_path.clone(),
+                    RemoteFile {
+                        path: relative_path.clone(),
+                        id: id.to_owned(),
+                        name,
+                        sha1_hash: (!degraded)
+                            .then(|| {
+                                node.active_revision
+                                    .as_ref()
+                                    .and_then(|revision| revision.claimed_digests.as_ref())
+                                    .and_then(|digests| digests.sha1.clone())
+                            })
+                            .flatten(),
+                        downloadable: !degraded
+                            && is_downloadable_media_type(node.media_type.as_deref()),
+                    },
+                );
+            }
+        }
     }
 
     let next_parent = if relative_path.as_os_str().is_empty() {
@@ -1836,6 +1950,24 @@ fn collect_node(
     }
 
     Ok(())
+}
+
+/// The listing describes a node it cannot identify or place (#59). Erroring is the conservative
+/// outcome: an incomplete listing must never reach the planner, because a node missing from the
+/// remote map is indistinguishable from one that was deleted remotely.
+fn incomplete_listing_error(
+    field: &str,
+    parent_path: &Path,
+) -> Box<dyn std::error::Error + Send + Sync> {
+    let parent = if parent_path.as_os_str().is_empty() {
+        "the remote root".to_owned()
+    } else {
+        parent_path.display().to_string()
+    };
+    boxed_error(format!(
+        "remote listing is incomplete: a node under {parent} has an undecodable {field}; \
+         refusing to plan against a listing in which it would read as a deletion"
+    ))
 }
 
 fn is_downloadable_media_type(media_type: Option<&str>) -> bool {
@@ -2021,6 +2153,14 @@ mod tests {
             file.sha1_hash.as_deref(),
             Some("1111111111111111111111111111111111111111")
         );
+    }
+
+    #[test]
+    fn an_explicitly_failed_wrapper_is_undecodable_even_with_a_string_value() {
+        let value: WrappedString = serde_json::from_str(r#"{"ok": false, "value": "node-id"}"#)
+            .expect("the wrapper shape should deserialize");
+
+        assert_eq!(value, WrappedString::Undecodable);
     }
 
     #[test]
@@ -4221,6 +4361,260 @@ exit 75
         assert_eq!(
             fs::read_to_string(attempt_counter_path(&executable)).expect("attempt counter"),
             "1\n"
+        );
+    }
+
+    // --- degraded / malformed remote node guards (#72 empty path, #59 undecodable wrapper) ---
+
+    #[test]
+    fn a_file_entry_that_resolves_to_the_remote_root_is_not_listed() {
+        // #72: a file node named `.`, or one whose path IS the remote root, normalizes to the
+        // empty relative path. Keyed under "" it passes every downstream filter and makes the
+        // planner download the remote root onto the local root, failing every pass. The
+        // directory branch has always rejected the empty path; the file branch must too.
+        let json = r#"
+                [
+                    { "uid": "dot-file", "name": ".", "type": "file" },
+                    {
+                        "uid": "root-shaped-file",
+                        "name": "RemoteFolder",
+                        "path": "/Drive/RemoteFolder",
+                        "type": "file"
+                    },
+                    { "uid": "real-file", "name": "keep.txt", "type": "file" }
+                ]
+                "#;
+
+        let files =
+            parse_remote_files(json, Path::new("/Drive/RemoteFolder")).expect("parse remote files");
+
+        assert!(
+            !files.contains_key(Path::new("")),
+            "a remote entry resolving to the remote root must never be listed as a file: {files:?}"
+        );
+        assert!(files.contains_key(Path::new("keep.txt")));
+    }
+
+    #[test]
+    fn an_undecodable_name_fails_the_listing_instead_of_dropping_the_node() {
+        // #59: `{"ok": false, ...}` is a value that is PRESENT but unreadable. Dropping the node
+        // is indistinguishable from a deletion to the planner, which would then plan a
+        // LocalDelete for content that still exists remotely.
+        let json = r#"
+                [
+                    {
+                        "uid": "degraded",
+                        "name": { "ok": false, "error": "cannot decrypt node name" },
+                        "type": "file"
+                    },
+                    { "uid": "sibling", "name": "keep.txt", "type": "file" }
+                ]
+                "#;
+
+        let error = parse_remote_files(json, Path::new("/Drive/RemoteFolder"))
+            .expect_err("an undecodable name must fail the listing");
+
+        assert!(
+            error.to_string().contains("remote listing is incomplete"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_undecodable_folder_name_fails_the_listing_instead_of_dropping_its_subtree() {
+        // A name-less folder is worse than a name-less file: the BFS only queues
+        // `listing.directories`, so the whole subtree disappears from the remote map.
+        let json = r#"
+                [
+                    {
+                        "uid": "degraded-folder",
+                        "name": { "ok": false },
+                        "type": "folder",
+                        "entries": [
+                            { "uid": "buried", "name": "notes.txt", "type": "file" }
+                        ]
+                    }
+                ]
+                "#;
+
+        let error = parse_remote_entities(json, Path::new("/Drive/RemoteFolder"))
+            .expect_err("an undecodable folder name must fail the listing");
+
+        assert!(
+            error.to_string().contains("remote listing is incomplete"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_undecodable_node_id_fails_the_listing() {
+        // Identity, not just location: a placeholder whose id cannot match makes
+        // `find_entity_by_uid` report the node as absent from its parent, and the
+        // reconstruction then drops its location — #59 through the incremental path.
+        let json = r#"
+                [
+                    {
+                        "uid": { "ok": false },
+                        "name": "notes.txt",
+                        "type": "file"
+                    }
+                ]
+                "#;
+
+        let error = parse_remote_files(json, Path::new("/Drive/RemoteFolder"))
+            .expect_err("an undecodable node id must fail the listing");
+
+        assert!(
+            error.to_string().contains("remote listing is incomplete"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_non_string_name_fails_the_listing() {
+        // A present-but-unreadable value need not be the `{ok, value}` wrapper.
+        let json = r#"[ { "uid": "weird", "name": 42, "type": "file" } ]"#;
+
+        let error = parse_remote_files(json, Path::new("/Drive/RemoteFolder"))
+            .expect_err("a non-string name must fail the listing");
+
+        assert!(
+            error.to_string().contains("remote listing is incomplete"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_undecodable_name_with_a_decodable_path_is_listed_inert() {
+        // The locator survived, so the node keeps its place in the remote map — never read as a
+        // deletion — but stays inert: no digest and not downloadable, which routes it into the
+        // planner's existing `Unsupported` arm instead of a blind download.
+        let json = r#"
+                [
+                    {
+                        "uid": "degraded",
+                        "name": { "ok": false },
+                        "path": "/Drive/RemoteFolder/sub/notes.txt",
+                        "type": "file",
+                        "activeRevision": {
+                            "claimedDigests": {
+                                "sha1": "1111111111111111111111111111111111111111"
+                            }
+                        }
+                    }
+                ]
+                "#;
+
+        let files =
+            parse_remote_files(json, Path::new("/Drive/RemoteFolder")).expect("parse remote files");
+
+        let file = files
+            .get(Path::new("sub/notes.txt"))
+            .expect("a degraded node with a usable path stays in the map");
+        assert_eq!(file.name, "notes.txt");
+        assert_eq!(file.sha1_hash, None);
+        assert!(!file.downloadable);
+    }
+
+    #[test]
+    fn an_undecodable_folder_name_with_a_decodable_path_stays_queueable() {
+        // The BFS only descends into `listing.directories`, so a degraded folder that a locator
+        // still places must land there under its real path — otherwise its whole subtree is
+        // missing from the remote map even though the listing itself succeeded.
+        let json = r#"
+                [
+                    {
+                        "uid": "folder-id",
+                        "name": { "ok": false },
+                        "path": "/Drive/RemoteFolder/Reports",
+                        "type": "folder"
+                    }
+                ]
+                "#;
+
+        let entities = parse_remote_entities(json, Path::new("/Drive/RemoteFolder"))
+            .expect("parse remote entities");
+
+        let directory = entities
+            .get(Path::new("Reports"))
+            .and_then(RemoteEntity::as_directory)
+            .expect("a degraded folder with a usable path stays queueable");
+        assert_eq!(directory.name, "Reports");
+        assert_eq!(directory.id.as_deref(), Some("folder-id"));
+    }
+
+    #[test]
+    fn an_absent_or_null_field_keeps_todays_silent_drop() {
+        // The guard's blind spot, pinned deliberately: a field that is missing entirely or null
+        // is indistinguishable from "the CLI does not send this field", which is legitimate and
+        // common (`path` and `id` are routinely absent). Only a PRESENT-but-unreadable value
+        // fails the listing. If the real CLI reports an undecryptable name by omitting the field
+        // or sending null, #59's shape survives this fix — unverifiable offline; the `#[ignore]`d
+        // `live_wrapped_value_shapes_for_the_undecodable_node_guard` in `tests/proton_live.rs`
+        // reports which shapes a real account emits.
+        let json = r#"
+                [
+                    { "uid": "no-name", "type": "file" },
+                    { "uid": "null-name", "name": null, "type": "file" }
+                ]
+                "#;
+
+        let files =
+            parse_remote_files(json, Path::new("/Drive/RemoteFolder")).expect("parse remote files");
+
+        assert!(files.is_empty(), "unexpected files: {files:?}");
+    }
+
+    #[test]
+    fn an_undecodable_media_type_does_not_fail_the_listing() {
+        // Scope check: only the identity and locator wrappers gate the listing. A node whose
+        // non-structural metadata fails to decode is still fully placeable.
+        let json = r#"
+                [
+                    {
+                        "uid": "file-id",
+                        "name": "notes.txt",
+                        "type": "file",
+                        "mediaType": { "ok": false }
+                    }
+                ]
+                "#;
+
+        let files =
+            parse_remote_files(json, Path::new("/Drive/RemoteFolder")).expect("parse remote files");
+
+        let file = files.get(Path::new("notes.txt")).expect("listed file");
+        assert!(file.downloadable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_fails_when_a_listed_directory_contains_an_undecodable_node() {
+        // The guard must reach the BFS driver (and therefore the daemon), not just the pure
+        // parser: an incomplete listing aborts the pass instead of handing the planner a map
+        // that is missing a node which still exists remotely.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+cat <<'JSON'
+[
+    { "uid": "degraded", "name": { "ok": false }, "type": "file" }
+]
+JSON
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::new(executable);
+
+        let error = client
+            .list(Path::new("/Drive/RemoteFolder"))
+            .expect_err("an incomplete listing must not be returned as a complete map");
+
+        assert!(
+            error.to_string().contains("remote listing is incomplete"),
+            "unexpected error: {error}"
         );
     }
 

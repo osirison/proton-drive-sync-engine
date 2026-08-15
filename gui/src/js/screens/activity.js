@@ -24,9 +24,13 @@
 //   · the pending dialog's progress bar — no fraction is computable in EITHER direction. An upload
 //     has `bytes_total` and never `bytes_done`; a download has `bytes_done` and never `bytes_total`
 //     (`daemon.rs`, `ipc.rs`). §63's rule applies: no track at all, never a bar reading zero.
-//   · `Open folder` · `Open on Proton Drive` · `Open the system log` — no opener command exists and
-//     no opener plugin is a dependency (G18). Omitted rather than painted dead: a live-looking
-//     button that does nothing is the trap this project has already recorded twice (#224, #227).
+//   · `Open folder` · `Open on Proton Drive` · `Open the system log` — WERE omitted for want of an
+//     opener command (G18), and are drawn since #231, which added the four `open_*` commands. Two
+//     carry a caveat rather than a gap. `Open on Proton Drive` opens the Drive web app and NOT the
+//     file: a per-file link needs a share id and a link id, and nothing on the wire carries either
+//     (`proton_id` is `volumeId~nodeId`, an API identity the web app does not route on).
+//     `Open the system log` opens a snapshot of `journalctl --user -u proton-syncd`, because a
+//     journal has no path to hand a file manager — and says so when there is no journal to read.
 //   · the never-synced `Can't be synced` group — a socket or a symlink never enters the index at
 //     all, so there is nothing to enumerate (G19). Its GROUP goes; the rule-matched group stays,
 //     and is the one block on this screen that a Phase-1 command gained rather than lost.
@@ -73,9 +77,26 @@ function filledSecondary(label, onClick, extra = {}) {
   });
 }
 
-/** The `All 7 files` / `Sync passes` / `Change this rule` / `Open the system log` rung. */
+/** The `All 7 files` / `Sync passes` / `Change this rule` rung. */
 function smallSecondary(label, onClick, { padding = "6px 13px", radius = "var(--r-8)" } = {}) {
   return button({ kind: "secondary", label, onClick, padding, radius, fontSize: "12px" });
+}
+
+/**
+ * The openers' own padding (#220/#231) — one pixel roomier than the rung above, in every frame that
+ * draws one. Measured from `6a Activity passes`, `7a File lookup` and `7a File pending`, which all
+ * put their opener at 31px tall; `6a Details` alone draws 33, and passes its own.
+ */
+const OPENER_PAD = { padding: "7px 14px" };
+
+/**
+ * WHY NOTHING OPENED, under the button that did not open it. No frame draws this — no frame draws a
+ * failure — and without it the four openers fail the way they behaved before they were wired: a
+ * click, and nothing. Machine text in mono, like every other quoted reason in this app (voice
+ * rule 4). Returns `null` when there is nothing to say, so callers omit it by not appending.
+ */
+function openErrorLine(message) {
+  return message ? el("div", { class: "activity-open-error" }, message) : null;
 }
 
 // ------------------------------------------------------------------------------ the model ----
@@ -667,24 +688,36 @@ function lookupBody(props) {
   // `07-activity.md` prescribes omitting them. The id line is the one thing in the block that is
   // sourced today, so it survives — in a rung of its own, because its `border-top` used to be the
   // rule closing the last history row and there is no last row now.
-  const tail = status?.proton_id
-    ? el(
-        "div",
-        { class: "activity-content" },
-        fid(
-          el(
-            "div",
-            { class: "activity-history-foot" },
-            el("span", { class: "activity-spacer" }),
-            fid(
-              el("span", { class: "activity-linked" }, ACTIVITY.lookup.linked(elideId(status.proton_id))),
-              "linked",
-            ),
-          ),
-          "historyFoot",
-        ),
-      )
-    : el("div", { class: "activity-content" });
+  //
+  // THE TWO OPENERS ARE DRAWN ON WHAT PROVES THEM, one condition each, and not on the frame's
+  // happy path. `Open folder` needs the index to say the file is here; `Open on Proton Drive` needs
+  // the same `proton_id` the remote card needs, because without one there is no copy over there to
+  // go and look at. A missing one is omitted by not appending it — `append(null)` writes the word.
+  const footRow = [
+    status?.tracked
+      ? fid(
+          smallSecondary(ACTIVITY.lookup.openFolder, () => props.onOpenFolder?.(lookup.path), OPENER_PAD),
+          "openFolder",
+        )
+      : null,
+    status?.proton_id
+      ? fid(smallSecondary(ACTIVITY.lookup.openRemote, props.onOpenRemote, OPENER_PAD), "openRemote")
+      : null,
+    el("span", { class: "activity-spacer" }),
+    status?.proton_id
+      ? fid(
+          el("span", { class: "activity-linked" }, ACTIVITY.lookup.linked(elideId(status.proton_id))),
+          "linked",
+        )
+      : null,
+  ].filter(Boolean);
+  const tail = el("div", { class: "activity-content" });
+  // The spacer on its own is not a row.
+  if (footRow.length > 1) {
+    tail.append(fid(el("div", { class: "activity-history-foot" }, ...footRow), "historyFoot"));
+  }
+  const lookupOpenError = openErrorLine(props.openError);
+  if (lookupOpenError) tail.append(lookupOpenError);
 
   tail.style.marginTop = "34px";
   // The way back to a list this file was chosen out of. Drawn only when there IS one: a search that
@@ -953,7 +986,9 @@ function passesTab(props) {
       { class: "activity-passes-foot" },
       fid(el("span", { class: "activity-retention" }, ACTIVITY.passes.retention), "retention"),
       el("span", { class: "activity-spacer" }),
-      // `Open the system log` omitted with the other two openers — G18.
+      // 7px/14px, not the rung's 6px/13px: the four openers are drawn a pixel roomier than the
+      // navigation buttons beside them in every frame that has one. `OPENER_PAD` is measured.
+      fid(smallSecondary(ACTIVITY.passes.openLog, props.onOpenLog, OPENER_PAD), "openLog"),
     ),
     "passesFoot",
   );
@@ -961,7 +996,16 @@ function passesTab(props) {
   return [
     titleBlock(props.passesSub, { paddingTop: "6px", subGap: "7px" }),
     tabs,
-    fid(el("div", { class: "activity-passes" }, ...rows, history.length ? foot : null), "passes"),
+    fid(
+      el(
+        "div",
+        { class: "activity-passes" },
+        ...rows,
+        history.length ? foot : null,
+        history.length ? openErrorLine(props.openError) : null,
+      ),
+      "passes",
+    ),
   ];
 }
 
@@ -1091,19 +1135,37 @@ export function renderDetailsBody(props) {
     );
 
   return [
-    fid(dialogBody({ padding: "16px 22px 0", overflow: "hidden", children: rows.map(kvRow) }), "dlgBody"),
+    fid(
+      dialogBody({
+        padding: "16px 22px 0",
+        overflow: "hidden",
+        // INSIDE THE BODY, not after the foot. `details` is the one dialog with a fixed height, and
+        // `.dialog` clips what overflows it — a row appended below the foot would be invisible,
+        // which is the failure this line exists to prevent. The body is `flex:1`, so it is 338 tall
+        // either way and the message fits in the slack the eight rows leave.
+        children: [...rows.map(kvRow), openErrorLine(props.openError)].filter(Boolean),
+      }),
+      "dlgBody",
+    ),
     fid(
       dialogFoot({
         padding: "14px 22px 16px",
         marginTop: "12px",
         gap: "8px",
         children: [
-          // `Copy all` stays. It needs no command — the clipboard is the webview's own — so it is
-          // the one footer control on this screen not gated on a gap. `Open the system log` goes
-          // with the other two openers (G18).
+          // `Copy all` needs no command — the clipboard is the webview's own. `Open the system log`
+          // needs one, and has had it since #231: it snapshots `journalctl --user -u proton-syncd`
+          // and opens that, because a journal is a binary store with no path to hand a file manager.
+          //
+          // 8px/14px on BOTH, not the 7px the same label wears on the passes tab: this dialog draws
+          // its footer buttons 33 tall and that screen draws them 31.
           fid(
             smallSecondary(ACTIVITY.copyAll, () => copyDetails(rows), { padding: "8px 14px" }),
             "copyAll",
+          ),
+          fid(
+            smallSecondary(ACTIVITY.passes.openLog, props.onOpenLog, { padding: "8px 14px" }),
+            "detailsOpenLog",
           ),
         ],
       }),
@@ -1173,9 +1235,16 @@ export function renderFilePendingBody(props) {
         { class: "activity-pending-foot" },
         fid(el("span", { class: "activity-pending-note" }, ACTIVITY.lookup.onlyLocal), "pendingNote"),
         el("span", { class: "activity-spacer" }),
-        // `Open folder` omitted — G18.
+        // The folder of the file being sent — the backend takes the file's own relative path and
+        // computes the parent itself, so this never sends a directory it derived in JS.
+        fid(
+          smallSecondary(ACTIVITY.lookup.openFolder, () => props.onOpenFolder?.(t.path), OPENER_PAD),
+          "pendingOpenFolder",
+        ),
       ),
       "pendingFoot",
     ),
-  ];
+    // This dialog is CONTENT-SIZED (`routes.js`), so the reason grows it rather than being clipped.
+    openErrorLine(props.openError),
+  ].filter(Boolean);
 }

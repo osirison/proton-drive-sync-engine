@@ -48,9 +48,20 @@ const STATUS_HISTORY_LIMIT: usize = 20;
 /// concurrently on their own task, so a stalled client cannot block the daemon — the timeout
 /// just stops silent clients from accumulating parked connection tasks forever.
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
-/// How often the daemon polls the volume event stream when `events_driven` is enabled. Matches
-/// the ~30s cadence Proton's own client uses (ADR 0001). Only the incremental (O(changes)) path
-/// runs this often; full-tree snapshots stay on `scan_interval` and the periodic safety resync.
+/// How often the daemon polls the volume event stream while event-driven detection is **live** —
+/// `events_driven` on *and* an event source built. Matches the ~30s cadence Proton's own client
+/// uses (ADR 0001). Only the incremental (O(changes)) path runs at this cadence: the select arm is
+/// gated on `event_source.is_some()`, so a daemon degraded to snapshots (unreadable CLI session)
+/// does not turn this fast poll into a full-tree walk every 30s (#50) — it reconciles on
+/// `scan_interval` instead, which is also when it retries the session.
+///
+/// This interval is **not** a snapshot cadence, and neither is `scan_interval` in events mode
+/// (#52): a `scan_interval` tick is just another incremental — usually idle — pass. The only
+/// remote-tree walks in events mode are a startup bootstrap (when warm start is ineligible), an
+/// event-stream fallback (no cursor / no volume / fetch error / server refresh / unresolvable
+/// node / incomplete remote listing), `proton-sync resync` / `--full-walk`, the opt-in periodic
+/// `events_full_scan_every`, the across-restart `warm_start_full_walk_every`, and the degraded
+/// session above. A warm start instead replays the cursor and scans the local tree only.
 const EVENTS_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Dedicated `tracing` target for the per-file upload/download log lines, so operators can filter
 /// or silence the (potentially high-volume, filename-bearing) transfer trace independently of the
@@ -119,6 +130,13 @@ pub struct DaemonConfig {
     /// daemon anywhere for this user, because they all shell the same `proton-drive` CLI whose
     /// shared SQLite cache/session store is not concurrency-safe (`SQLITE_BUSY`; #23).
     pub global_lock_path: PathBuf,
+    /// Timer cadence for an automatic reconcile. What a tick *does* depends on the mode:
+    /// - events off → a full-tree snapshot (the historical meaning of this option).
+    /// - events on with a live event source → another incremental (usually idle) pass, exactly
+    ///   like an [`EVENTS_POLL_INTERVAL`] tick. It does **not** force a snapshot (#52): that would
+    ///   reinstate the periodic full walk `events_full_scan_every = 0` disables by default.
+    /// - events on with an unusable session → the snapshot cadence *and* the session-retry
+    ///   cadence, because the fast event poll is gated off while degraded (#50).
     pub scan_interval: Duration,
     pub proton_cli: PathBuf,
     pub proton_timeout: Duration,
@@ -131,9 +149,11 @@ pub struct DaemonConfig {
     pub download_batch_size: usize,
     pub include_patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
-    /// Opt-in: detect remote changes from Proton's volume event stream (O(changes)) instead of
-    /// re-walking the whole remote tree (O(folders)) every pass. Default `false` keeps today's
-    /// full-scan behavior byte-for-byte. See `docs/adr/0001-*`.
+    /// Detect remote changes from Proton's volume event stream (O(changes)) instead of re-walking
+    /// the whole remote tree (O(folders)) every pass. **Default `true`** (`src/config.rs`); opt out
+    /// with `--no-events-driven` / `events_driven = false` for the byte-identical snapshot-only
+    /// path. On with an unusable CLI session the daemon degrades to snapshots on `scan_interval`
+    /// (see [`EVENTS_POLL_INTERVAL`]). See `docs/adr/0001-*`.
     pub events_driven: bool,
     /// When event-driven, force a full-tree reconvergence snapshot every N incremental passes.
     /// Bounds any completeness gap inherited from a missed snapshot item or the reuse-session
@@ -164,6 +184,12 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// still queues it in `pending_changes`); it is cleared at the top of every pass, so the
     /// suppression lasts exactly one echo window and a later genuine user edit is never affected.
     authored_writes: HashSet<PathBuf>,
+    /// Set when the filesystem watcher reported an error (typically an inotify queue overflow =
+    /// events were dropped), so `pending_changes` under-reports and the events-mode idle
+    /// fast-path must not skip the local stat-walk — the lost events would otherwise never be
+    /// re-derived (#51). Forces `force_local_scan` on the next incremental pass; cleared only when
+    /// a pass succeeds, so a failed pass keeps the rescan pending.
+    force_local_rescan: bool,
     scan_options: ScanOptions,
     /// State shared with the concurrently-running control-socket server task (see
     /// [`ControlShared`]). The daemon core is the only writer of the snapshot; `paused` is
@@ -177,6 +203,9 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     metrics_path: PathBuf,
     status_history: Vec<StatusHistoryEntry>,
     ipc_io_timeout: Duration,
+    /// Poll cadence of the events select arm ([`EVENTS_POLL_INTERVAL`]); a field so tests can drive
+    /// the run loop at a cadence they can observe, exactly like [`Self::ipc_io_timeout`].
+    events_poll_interval: Duration,
     /// Remote change detection via the volume event stream. `None` when `events_driven` is off
     /// (or the session could not be read), in which case every reconcile is a full-tree snapshot
     /// exactly as before this feature.
@@ -674,6 +703,7 @@ impl<C: ProtonClient> Daemon<C> {
             proton,
             pending_changes: BTreeSet::new(),
             authored_writes: HashSet::new(),
+            force_local_rescan: false,
             scan_options,
             shared,
             last_sync: None,
@@ -684,6 +714,7 @@ impl<C: ProtonClient> Daemon<C> {
             metrics_path,
             status_history,
             ipc_io_timeout: IPC_IO_TIMEOUT,
+            events_poll_interval: EVENTS_POLL_INTERVAL,
             event_source,
             event_source_factory,
             incremental_passes_since_full_scan,
@@ -757,13 +788,19 @@ impl<C: ProtonClient> Daemon<C> {
 
         // A faster poll cadence for event-driven mode: an incremental pass is O(changes) and
         // usually idle, so polling the stream often keeps remote-change latency low without the
-        // cost of a full-tree walk. The arm is gated on `events_driven`, so with the feature off
-        // it never fires and the loop behaves exactly as before. Using an interval arm (rather
-        // than a separate event-fetching task) keeps the single owner of `event_source` and the
-        // SQLite connection inside the loop, avoiding shared-state hazards.
-        let mut events_poll = tokio::time::interval(EVENTS_POLL_INTERVAL);
+        // cost of a full-tree walk. The arm is gated on `events_driven` *and* a live event source,
+        // so with the feature off — or degraded to snapshots — it never fires and the loop behaves
+        // exactly as before. Using an interval arm (rather than a separate event-fetching task)
+        // keeps the single owner of `event_source` and the SQLite connection inside the loop,
+        // avoiding shared-state hazards.
+        let mut events_poll = tokio::time::interval(self.events_poll_interval);
         events_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         events_poll.tick().await;
+
+        // Why this daemon may behave like an events-off one is reported by
+        // `note_degraded_session_if_needed`, from inside every pass — one message family with one
+        // reason per cause (see `note_event_scope_declined`), not a second line here saying
+        // something adjacent.
 
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
@@ -810,7 +847,7 @@ impl<C: ProtonClient> Daemon<C> {
                                 }
                             }
                             Some(Err(error)) => {
-                                warn!(%error, "filesystem watcher reported an error");
+                                self.note_watch_error(&error);
                             }
                             None => break,
                         }
@@ -827,7 +864,10 @@ impl<C: ProtonClient> Daemon<C> {
                     _ = interval.tick() => {
                         self.reconcile_if_needed().await?;
                     }
-                    _ = events_poll.tick(), if self.config.events_driven => {
+                    // #50: `events_driven` alone is not enough — without a source every pass is a
+                    // full-tree walk, and this fast cadence would run one every 30s forever.
+                    _ = events_poll.tick(),
+                        if self.config.events_driven && self.event_source.is_some() => {
                         self.reconcile_if_needed().await?;
                     }
                     _ = &mut shutdown => {
@@ -843,9 +883,37 @@ impl<C: ProtonClient> Daemon<C> {
         Ok(())
     }
 
+    /// The filesystem watcher failed. On Linux that is usually an inotify queue overflow, which
+    /// means events were **dropped**: the files they described are absent from `pending_changes`
+    /// and, in events mode, produce no remote event either — so the idle fast-path would skip the
+    /// local stat-walk and strand them (#51). Force the next pass to scan the local tree.
+    /// The whole run-loop arm is this call, so the loop cannot drift from what the tests drive.
+    fn note_watch_error(&mut self, error: &notify::Error) {
+        warn!(
+            %error,
+            "filesystem watcher reported an error; forcing a local rescan on the next pass \
+             because events may have been dropped"
+        );
+        self.force_local_rescan = true;
+    }
+
     fn handle_fs_event(&mut self, event: Event) -> AppResult<()> {
         for path in event.paths {
             if path.is_dir() {
+                // #51: an empty `mkdir` emits a directory event and nothing else. Dropping it left
+                // `pending_changes` empty, so every events-mode pass idle-skipped planning and the
+                // folder was never mirrored. Queue the path so the pass plans (it re-scans and
+                // emits `CreateRemoteDirectory`); never `mark_modified` — a directory has no
+                // file-content record semantics. The empty relative path is the watched root
+                // itself, not a syncable entity.
+                if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
+                    && !crate::sync::is_conflict_copy(&path)
+                    && let Ok(relative_path) = path.strip_prefix(&self.config.local_root)
+                    && !relative_path.as_os_str().is_empty()
+                    && self.scan_options.allows_relative_directory(relative_path)
+                {
+                    self.pending_changes.insert(relative_path.to_path_buf());
+                }
                 continue;
             }
             if crate::sync::is_conflict_copy(&path) {
@@ -982,6 +1050,10 @@ impl<C: ProtonClient> Daemon<C> {
         // Recover event-driven detection if it was disabled at startup because the keyring was
         // still locked (the boot race). No-op once a source exists or when the feature is off.
         self.reacquire_event_source_if_needed();
+        // Still no source → report that cause through the same once-per-cause latch the scope
+        // reasons use, so an operator reading "keeps doing full syncs" gets exactly one line
+        // naming exactly one cause.
+        self.note_degraded_session_if_needed();
         // Start each pass with an empty authored-writes set: it only needs to survive from a
         // download/move to the watcher echo of that same write (which drains after this pass
         // returns from `block_in_place`, before the next pass runs). Clearing here bounds the
@@ -1010,6 +1082,9 @@ impl<C: ProtonClient> Daemon<C> {
             let result = self.first_reconcile(base_records, force_bootstrap);
             if result.is_ok() {
                 self.is_first_reconcile = false;
+                // Both first-pass branches full-scan the local tree, so any pending
+                // watcher-error rescan is satisfied here.
+                self.force_local_rescan = false;
             }
             return result;
         }
@@ -1019,15 +1094,25 @@ impl<C: ProtonClient> Daemon<C> {
         // error, or an unresolvable node — falls through to the snapshot below, which is exactly
         // today's behavior. When `events_driven` is off this predicate is always false.
         if !resync_requested && self.should_try_incremental(&base_records) {
-            match self.try_incremental_reconcile(&base_records, false)? {
-                IncrementalOutcome::Committed | IncrementalOutcome::Idle => return Ok(()),
+            // A watcher error dropped events (#51): this pass must stat-walk the local tree
+            // instead of taking the idle fast-path, which only knows about `pending_changes`.
+            match self.try_incremental_reconcile(&base_records, self.force_local_rescan)? {
+                IncrementalOutcome::Committed | IncrementalOutcome::Idle => {
+                    self.force_local_rescan = false;
+                    return Ok(());
+                }
                 IncrementalOutcome::Fallback(reason) => {
                     info!(%reason, "event-driven pass fell back to a full-tree snapshot");
                 }
             }
         }
 
-        self.bootstrap_reconcile(base_records)
+        // A snapshot always full-scans the local tree, so it too clears the pending rescan.
+        let result = self.bootstrap_reconcile(base_records);
+        if result.is_ok() {
+            self.force_local_rescan = false;
+        }
+        result
     }
 
     /// The first reconcile after this process booted. Warm-starts when eligible (an event-driven
@@ -1140,6 +1225,26 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
+    /// Reports the one cause [`Self::resolve_event_scope`] can never see: `events_driven` is on but
+    /// there is no event source (locked keyring, headless host, CLI not logged in), so the scope is
+    /// never even consulted. Every pass is then a full-tree snapshot and the fast events-poll arm
+    /// is gated off, so both those snapshots and the per-pass session retry ride `scan_interval`
+    /// (#50). Routed through the scope latch on purpose: "event-driven detection unavailable" stays
+    /// **one** message family with one reason per cause, and a later scope decline — or a recovery,
+    /// which clears the latch — re-reports correctly.
+    fn note_degraded_session_if_needed(&mut self) {
+        if !self.config.events_driven || self.event_source.is_some() {
+            return;
+        }
+        self.note_event_scope_declined(format!(
+            "no usable proton-drive CLI session (locked keyring, headless host, or the CLI is not \
+             logged in); the {}s event poll is off, so full-tree snapshots and the session retry \
+             both run on the {}s scan interval",
+            self.events_poll_interval.as_secs(),
+            self.config.scan_interval.as_secs(),
+        ));
+    }
+
     /// Whether an incremental (event-stream) pass may be attempted this cycle. Requires the
     /// feature on with a usable event source, a resolvable event scope (a volume id **and** a
     /// stored cursor to replay from — see [`Self::resolve_event_scope`]), and that the opt-in
@@ -1226,6 +1331,11 @@ impl<C: ProtonClient> Daemon<C> {
     /// Reports why the event-driven path is unavailable, once per distinct cause. Info level: this
     /// is the only signal distinguishing "still full-walking because it cannot stream" from the
     /// other causes of repeated full syncs.
+    ///
+    /// The reasons that reach here are the *standing* ones — no session
+    /// ([`Self::note_degraded_session_if_needed`]), no volume, no/unreadable cursor. A pass that
+    /// started streaming and then gave up logs the separate per-pass line ("event-driven pass fell
+    /// back to a full-tree snapshot"), which is deliberately a different message.
     fn note_event_scope_declined(&mut self, reason: String) {
         if self.event_scope_declined.as_deref() != Some(reason.as_str()) {
             info!(%reason, "event-driven detection unavailable; using full-tree walks");
@@ -1238,10 +1348,11 @@ impl<C: ProtonClient> Daemon<C> {
     /// Returns [`IncrementalOutcome::Fallback`] (without committing) whenever the delta cannot be
     /// turned into a complete map, so the caller re-bootstraps.
     ///
-    /// `force_local_scan` skips the idle fast-path so the local stat-walk always runs. The warm
-    /// start (first pass after boot) sets it: `pending_changes` is empty on a fresh process, so the
-    /// idle fast-path would otherwise skip the scan and strand a file edited while the daemon was
-    /// down. Steady-state passes leave it `false` to keep the O(1) idle poll cheap.
+    /// `force_local_scan` skips the idle fast-path so the local stat-walk always runs. Two callers
+    /// set it: the warm start (first pass after boot — `pending_changes` is empty on a fresh
+    /// process, so the fast-path would strand a file edited while the daemon was down), and a
+    /// steady-state pass after a watcher error dropped events (#51, `force_local_rescan`).
+    /// Otherwise steady-state passes leave it `false` to keep the O(1) idle poll cheap.
     fn try_incremental_reconcile(
         &mut self,
         base_records: &HashMap<PathBuf, FileRecord>,
@@ -2191,15 +2302,14 @@ impl<C: ProtonClient> Daemon<C> {
             delete_delete_approval(&transaction, path, *direction)?;
         }
         transaction.commit()?;
-        // `pending_changes` only drives status reporting - planning always performs a
-        // fresh full scan regardless of its contents - so it is safe, simpler, and
-        // leak-free to clear it unconditionally after every successful reconcile
-        // rather than removing entries one at a time keyed on the paths that happened
-        // to appear in this pass's plan. Per-path removal could miss paths that were
-        // inserted by a filesystem event but never produced a corresponding planned
-        // action (for example a misclassified directory removal, a non-regular-file
-        // event, or a path whose plan outcome was `None`), leaking them until the
-        // process restarted.
+        // `pending_changes` is a wake-up/status hint, not a plan input, and every pass that
+        // reaches this commit ran the local stat-walk (the events-mode idle fast-path returns
+        // before `execute_plan_and_commit`), so clearing the whole set here cannot lose work: the
+        // scan already observed every queued path. An event that arrived *during* the pass is
+        // still sitting in the watcher channel — the loop drains it only after this blocking
+        // reconcile returns — so it re-inserts itself afterwards. Clearing unconditionally rather
+        // than per planned path also avoids leaking entries that produced no action (a directory
+        // event, a misclassified removal, a non-regular-file event, a `None` plan outcome).
         self.pending_changes.clear();
 
         self.last_sync = Some(SystemTime::now());
@@ -3388,11 +3498,12 @@ fn remove_control_socket(socket_path: &Path) {
 /// Join `relative` onto `local_root` only when it is safe to do so.
 ///
 /// Returns `None` (and the caller should skip the action) when `relative`
-/// contains components that could escape `local_root`.  Delegates to
-/// [`crate::validate_relative_path`] for consistent security semantics with
-/// the remote-path normalization in `proton.rs`.
+/// contains components that could escape `local_root`, or is the root itself.
+/// Delegates to [`crate::validate_relative_path_non_empty`] for consistent security semantics
+/// with the remote-path normalization in `proton.rs`: an empty relative path resolves to
+/// `local_root`, turning a per-entry download or delete into a whole-root one (#72).
 fn safe_local_path(local_root: &Path, relative: &Path) -> Option<PathBuf> {
-    let destination = local_root.join(crate::validate_relative_path(relative)?);
+    let destination = local_root.join(crate::validate_relative_path_non_empty(relative)?);
     if local_write_escapes_root(local_root, &destination) {
         return None;
     }
@@ -3426,8 +3537,11 @@ fn local_write_escapes_root(local_root: &Path, destination: &Path) -> bool {
     }
 }
 
+/// The remote-side counterpart of [`safe_local_path`]: rejects the empty path too, so a planned
+/// action can never address the remote root itself (#72). `CreateRemoteDirectory` handles the
+/// root through `ensure_root_directory` before reaching here.
 fn safe_remote_path(remote_root: &Path, relative: &Path) -> Option<PathBuf> {
-    crate::validate_relative_path(relative).map(|safe| remote_root.join(safe))
+    crate::validate_relative_path_non_empty(relative).map(|safe| remote_root.join(safe))
 }
 
 /// Returns every base-index path strictly nested under `directory_path`, used to purge
@@ -4646,6 +4760,66 @@ mod tests {
                 .iter()
                 .any(|op| matches!(op, RecordedOperation::Download { .. })),
             "no download should run for a path that escapes the sync root"
+        );
+    }
+
+    #[test]
+    fn safe_paths_reject_the_empty_relative_path() {
+        // #72: `validate_relative_path` maps "" and "." to Some("") — load-bearing for the
+        // remote root itself (the listing's root wrapper node, and `CreateRemoteDirectory`'s
+        // empty-path arm, which never reaches these helpers). Every path-keyed *side effect*
+        // must refuse it: joined onto a root it resolves to the root, turning a per-file
+        // download or delete into a whole-root one.
+        let root = Path::new("/tmp/sync-root");
+        assert_eq!(safe_remote_path(root, Path::new("")), None);
+        assert_eq!(safe_remote_path(root, Path::new(".")), None);
+        assert_eq!(safe_local_path(root, Path::new("")), None);
+        assert_eq!(safe_local_path(root, Path::new(".")), None);
+        assert_eq!(
+            safe_remote_path(root, Path::new("notes.txt")),
+            Some(root.join("notes.txt"))
+        );
+    }
+
+    #[test]
+    fn reconcile_never_downloads_a_remote_entry_that_resolves_to_the_sync_roots() {
+        // #72, second layer: even if an empty-path entry reached the planner, the executor must
+        // refuse it rather than run a download whose destination is the local root itself.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(PathBuf::from(""), remote("", "root-id", Some("root-hash")));
+        let (client, operations) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        let error = daemon
+            .reconcile_blocking()
+            .expect_err("an empty-path download must be refused, not executed");
+
+        assert!(
+            error.to_string().contains("unsafe remote path"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !operations
+                .lock()
+                .expect("operations lock")
+                .iter()
+                .any(|op| matches!(
+                    op,
+                    RecordedOperation::Download { .. } | RecordedOperation::DownloadBatch { .. }
+                )),
+            "no download may run for an entry that resolves to the sync roots"
+        );
+        assert!(
+            local_root
+                .read_dir()
+                .expect("local root listing")
+                .next()
+                .is_none(),
+            "the local root must be untouched"
         );
     }
 
@@ -7974,6 +8148,9 @@ mod tests {
         /// single pass fail and have the retry succeed (used to prove a failed first pass retries
         /// as a first pass rather than idle-skipping the local scan).
         fail_next_upload: Arc<AtomicBool>,
+        /// When `true`, every targeted single-directory listing fails the way `proton::collect_node`
+        /// fails an incomplete listing (a node present remotely that this listing cannot describe).
+        fail_directory_lists: bool,
     }
 
     impl EventFakeClient {
@@ -7984,6 +8161,7 @@ mod tests {
                 directory_lists: Arc::new(AtomicUsize::new(0)),
                 failed_uploads: BTreeSet::new(),
                 fail_next_upload: Arc::new(AtomicBool::new(false)),
+                fail_directory_lists: false,
             }
         }
     }
@@ -8014,6 +8192,12 @@ mod tests {
             relative_directory: &Path,
         ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
             self.directory_lists.fetch_add(1, Ordering::SeqCst);
+            if self.fail_directory_lists {
+                return Err(boxed_error(
+                    "remote listing is incomplete: a node under the remote root has an \
+                     undecodable name/path",
+                ));
+            }
             Ok(self
                 .remote_entities
                 .iter()
@@ -8580,6 +8764,77 @@ mod tests {
     }
 
     #[test]
+    fn an_incomplete_directory_listing_falls_back_instead_of_planning_a_deletion() {
+        // `list_directory` can now fail (#59's incomplete-listing guard). That error must travel
+        // resolver -> `Reconstruction::FallbackToSnapshot` -> a full-tree snapshot, and must never
+        // become a plan: the whole point of failing the listing is that a node missing from it is
+        // indistinguishable from a deleted one. The pass-scoped listing memo (#70) sits on that
+        // path — it caches the `Rc` only after a successful call, so a failure is never memoized.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]);
+        let mut client = EventFakeClient::new(remote_entities);
+        client.fail_directory_lists = true;
+        let full_walks = Arc::clone(&client.full_walks);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        // An update to a node whose parent is not indexed sends the resolver to the root listing.
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Updated, "nk", None, false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![page],
+            ))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        daemon.is_first_reconcile = false;
+
+        daemon
+            .reconcile_blocking()
+            .expect("an incomplete listing falls back cleanly");
+
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            1,
+            "the failed listing must abandon the incremental pass, not be retried"
+        );
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "an incomplete targeted listing must fall back to a full-tree snapshot"
+        );
+        assert!(
+            local_root.join("keep.txt").exists(),
+            "an incomplete listing must never delete local content"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("keep.txt"))
+                .expect("index lookup")
+                .is_some(),
+            "an incomplete listing must not purge the index record either"
+        );
+    }
+
+    #[test]
     fn periodic_safety_resync_forces_a_full_snapshot() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
@@ -8677,6 +8932,258 @@ mod tests {
             daemon.incremental_passes_since_full_scan, 50,
             "the pass counter keeps climbing without ever tripping a resync"
         );
+    }
+
+    /// Bootstraps an event-driven daemon into the steady state the idle gate lives in: `local/a.txt`
+    /// already matching remote `a.txt` (so the startup snapshot only adopts it), which leaves a base
+    /// record carrying the composed `proton_id` the volume is derived from plus a stored cursor to
+    /// replay from. Returns the daemon and its full-walk counter, both past the one startup walk.
+    fn steady_state_event_daemon(
+        directory: &tempfile::TempDir,
+    ) -> (Daemon<EventFakeClient>, Arc<AtomicUsize>) {
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("a.txt"), b"a").expect("local file");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("a.txt"),
+            remote_file_entity("a.txt", "vol~na", sha1_bytes(b"a").as_str()),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        daemon.reconcile_blocking().expect("startup snapshot");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "precondition: the first pass after boot full-walks exactly once"
+        );
+        (daemon, full_walks)
+    }
+
+    #[test]
+    fn an_empty_directory_create_is_mirrored_by_the_next_event_driven_pass() {
+        // #51: `mkdir photos` (empty) emits ONLY a directory event, which the watcher handler
+        // dropped — so `pending_changes` stayed empty, every events-mode pass took the idle
+        // fast-path, and the folder never reached Proton Drive. Nothing healed it either: the
+        // periodic resync is off by default (PR #138) and a restart warm-starts from the cursor
+        // rather than bootstrapping (PR #160).
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
+        let created = daemon.config.local_root.join("photos");
+        fs::create_dir(&created).expect("empty local directory");
+
+        daemon
+            .handle_fs_event(Event::new(EventKind::Create(CreateKind::Folder)).add_path(created))
+            .expect("handle directory create event");
+        assert!(
+            daemon.pending_changes.contains(Path::new("photos")),
+            "a directory create must queue the path so the pass is not idle"
+        );
+
+        daemon
+            .reconcile_blocking()
+            .expect("incremental reconcile after the directory create");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the directory must be mirrored by the incremental pass, not by a full-tree walk"
+        );
+        let summary = daemon
+            .last_successful_sync_summary
+            .as_ref()
+            .expect("successful pass summary");
+        assert_eq!(
+            summary.remote_directories_created, 1,
+            "the empty directory must be created remotely"
+        );
+        let record = get_record(&daemon.connection, Path::new("photos"))
+            .expect("index lookup")
+            .expect("the created directory must be recorded");
+        assert_eq!(record.entity_kind, EntityKind::Directory);
+    }
+
+    #[test]
+    fn a_watcher_error_forces_the_next_event_driven_pass_to_scan_locally() {
+        // #51: an inotify queue overflow drops events, so `pending_changes` under-reports. A local
+        // edit produces no remote event either, so an idle-skipping pass strands it — and with the
+        // periodic resync off by default there is no later full walk to re-derive it from.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
+        let edited = daemon.config.local_root.join("a.txt");
+        let contents = b"edited while the watcher was deaf";
+        fs::write(&edited, contents).expect("local edit");
+        // Deliberately no `handle_fs_event`: this is the event the overflow dropped.
+        assert!(daemon.pending_changes.is_empty());
+
+        daemon.note_watch_error(&notify::Error::generic("inotify queue overflow"));
+        daemon
+            .reconcile_blocking()
+            .expect("incremental reconcile after the watcher error");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the forced rescan is local-only; the remote stays on the event stream"
+        );
+        let summary = daemon
+            .last_successful_sync_summary
+            .as_ref()
+            .expect("successful pass summary");
+        assert_eq!(
+            summary.uploads, 1,
+            "the edit whose watcher event was lost must still upload"
+        );
+        let record = get_record(&daemon.connection, Path::new("a.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sha1_hash, Some(sha1_bytes(contents)));
+        assert!(
+            !daemon.force_local_rescan,
+            "a successful pass clears the pending rescan"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_degraded_session_does_not_full_walk_on_the_events_poll_cadence() {
+        // #50: with `events_driven` on but no usable CLI session, every pass is a full-tree walk —
+        // and the poll arm, gated only on `events_driven`, ran one every EVENTS_POLL_INTERVAL
+        // (30s) forever: 10x the configured scan interval, in the one configuration where the fast
+        // cadence buys nothing.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let client = EventFakeClient::new(HashMap::new());
+        let full_walks = Arc::clone(&client.full_walks);
+        let config = DaemonConfig {
+            // Far longer than the window below, so inside it only the startup reconcile and the
+            // events poll can fire.
+            scan_interval: Duration::from_secs(3600),
+            ..event_config(directory.path(), &local_root)
+        };
+        // `with_client` injects no event source — a keyring-locked / headless startup.
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+        // The real factory reads this machine's keyring; pin it degraded so the test measures the
+        // degraded cadence rather than the developer's desktop session.
+        daemon.event_source_factory = Box::new(|| None);
+        daemon.events_poll_interval = Duration::from_millis(20);
+
+        let handle = tokio::spawn(daemon.run());
+        // Wait for the startup reconcile, then leave the loop running for ~30 poll ticks.
+        for _ in 0..100 {
+            if full_walks.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        handle.abort();
+        let _ = handle.await;
+
+        let walks = full_walks.load(Ordering::SeqCst);
+        assert_eq!(
+            walks, 1,
+            "a degraded session must not walk the whole remote tree on the event-poll cadence: \
+             {walks} full-tree walks in ~30 ticks"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_degraded_session_still_reconciles_on_the_scan_interval() {
+        // The other half of #50's gate: degraded must mean "snapshot cadence", not "no cadence".
+        // Each of these passes also re-attempts the session (`reacquire_event_source_if_needed`),
+        // so keyring recovery still happens without a restart — just at the scan interval.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let client = EventFakeClient::new(HashMap::new());
+        let full_walks = Arc::clone(&client.full_walks);
+        let config = DaemonConfig {
+            scan_interval: Duration::from_millis(150),
+            ..event_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+        daemon.event_source_factory = Box::new(|| None);
+        daemon.events_poll_interval = Duration::from_millis(15);
+
+        let handle = tokio::spawn(daemon.run());
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        handle.abort();
+        let _ = handle.await;
+
+        let walks = full_walks.load(Ordering::SeqCst);
+        assert!(
+            (2..=20).contains(&walks),
+            "a degraded daemon must keep reconciling on its ~150ms scan interval (a handful of \
+             walks) and not on the ~15ms event poll (dozens): saw {walks}"
+        );
+    }
+
+    #[test]
+    fn a_degraded_session_reports_that_cause_once_without_masking_the_scope_causes() {
+        // "Keeps doing full syncs" is told apart only by the log line, so the causes must form one
+        // message family with one reason each: no session (invisible to `resolve_event_scope`,
+        // which is never reached without a source) vs no volume / no cursor. Neither may
+        // double-report the other's condition, and neither may be silent.
+        // Driven through `reconcile_blocking` (not the reporter directly) so the wiring is part of
+        // what is asserted.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        // One remote file whose digest matches what the fake's download writes, so the tree
+        // converges after the first pass and later passes are about the reporting, not transfers.
+        let remote_entities = HashMap::from([(
+            PathBuf::from("a.txt"),
+            remote_file_entity("a.txt", "vol~na", sha1_bytes(b"downloaded").as_str()),
+        )]);
+        // `with_client...(None)` = no event source: a keyring-locked / headless startup.
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            EventFakeClient::new(remote_entities),
+            None,
+        )
+        .expect("daemon");
+        // `reacquire_event_source_if_needed` runs the real factory at the start of every pass and
+        // would read this machine's keyring; pin it degraded so the test measures the degraded
+        // daemon and not the developer's desktop session.
+        daemon.event_source_factory = Box::new(|| None);
+
+        daemon.reconcile_blocking().expect("degraded first pass");
+        let session_cause = daemon.event_scope_declined.clone();
+        let reported = session_cause
+            .as_deref()
+            .expect("a degraded pass must report why it is full-walking");
+        assert!(
+            reported.contains("no usable proton-drive CLI session")
+                && reported.contains("scan interval"),
+            "the session cause must name itself and the cadence it implies: {reported}"
+        );
+
+        // Same cause next pass → the recorded reason is unchanged, so it is logged once.
+        daemon.reconcile_blocking().expect("degraded second pass");
+        assert_eq!(daemon.event_scope_declined, session_cause);
+
+        // Session recovers: the session reporter goes quiet and the *next* cause — the scope, which
+        // no degraded pass could anchor a cursor for — is reported in its own words, not masked.
+        daemon.event_source = Some(Box::new(FakeEventSource::new("cursor-0")));
+        daemon.reconcile_blocking().expect("recovered pass");
+        let scope_cause = daemon.event_scope_declined.clone();
+        assert!(
+            scope_cause
+                .as_deref()
+                .is_some_and(|reason| reason.contains("no stored event cursor")),
+            "a scope decline must replace the session cause, not compete with it: {scope_cause:?}"
+        );
+
+        // That pass anchored a cursor, so the scope now resolves: the record clears, and a later
+        // regression of either cause reports again instead of being swallowed by a stale latch.
+        daemon.reconcile_blocking().expect("incremental pass");
+        assert_eq!(daemon.event_scope_declined, None);
     }
 
     #[test]
