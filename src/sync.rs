@@ -953,67 +953,116 @@ fn subtree_is_deletion_consistent(
 /// auto-link, a directory recreate, an unsupported skip, or a path transition — fails the
 /// proof so the caller falls back to the non-destructive recreate).
 ///
-/// Directories are processed deepest-first so that when a directory is evaluated, every
-/// descendant directory already has a cached verdict; evaluating a descendant directory
-/// via `plan_ongoing_directory_action` then reads that verdict instead of re-planning its
-/// whole subtree. This replaces a mutual recursion that re-planned each subtree once per
-/// ancestor — Θ(2^depth) on a nested one-sided deletion, enough to hang the daemon — with
-/// a single bottom-up pass.
+/// One bottom-up pass over the base index: entries are visited deepest-first and each one's own
+/// resolution is folded into its nearest *tracked* ancestor, so every entry is planned exactly
+/// once and a failure propagates up the ancestor chain of its own accord. The previous shape
+/// re-scanned the whole base index per directory and re-planned every descendant once per
+/// ancestor level — Θ(D·N) path-prefix checks on every reconcile, idle ones included (#48).
 fn compute_directory_deletion_verdicts(
     local_entities: &HashMap<PathBuf, LocalEntityState>,
     remote_entities: &HashMap<PathBuf, RemoteEntity>,
     base_index: &HashMap<PathBuf, FileRecord>,
     suppressed_paths: &BTreeSet<PathBuf>,
 ) -> HashMap<PathBuf, bool> {
-    let mut directories: Vec<&PathBuf> = base_index
-        .iter()
-        .filter(|(_, record)| record.entity_kind == EntityKind::Directory)
-        .map(|(path, _)| path)
-        .collect();
-    // Deepest first: a strict descendant always has more path components than its ancestor.
-    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    if !any_base_directory_is_one_sided(local_entities, remote_entities, base_index) {
+        // Nothing can read a verdict this pass, so proving anything is dead work. This is the
+        // common case: an idle pass has no one-sided directory at all (#48).
+        return HashMap::new();
+    }
 
-    let mut verdicts: HashMap<PathBuf, bool> = HashMap::new();
-    for directory_path in directories {
-        // An entity present on the surviving side with no base record (created since the
-        // last sync) resolves to a bootstrap Upload/Download, which fails the proof — but
-        // it would never be seen by the base-index scan below, and its bootstrap action
-        // would then be suppressed as "covered" by the recursive delete, destroying the
-        // only copy. Any untracked descendant therefore fails the verdict outright.
-        let has_untracked_descendant =
-            local_entities
-                .keys()
-                .chain(remote_entities.keys())
-                .any(|path| {
-                    is_strict_descendant(directory_path, path) && !base_index.contains_key(path)
-                });
-        if has_untracked_descendant {
-            verdicts.insert(directory_path.clone(), false);
+    // `subtree_clean[P]`: every base entry under `P` resolves to a one-sided delete/purge and no
+    // live entity under it is untracked. Seeded optimistic, falsified by a failing descendant.
+    let mut subtree_clean: HashMap<&Path, bool> = base_index
+        .keys()
+        .map(|path| (path.as_path(), true))
+        .collect();
+
+    // An entity live on either side with no base record (created since the last sync) resolves to
+    // a bootstrap Upload/Download, and suppression would then drop that action as "covered" by
+    // the recursive delete, destroying the only copy. Falsify its nearest tracked ancestor; every
+    // ancestor above inherits it when that entry is folded in below.
+    for path in local_entities.keys().chain(remote_entities.keys()) {
+        if base_index.contains_key(path) {
             continue;
         }
-        let consistent = base_index
-            .iter()
-            .filter(|(path, _)| is_strict_descendant(directory_path, path))
-            .all(|(path, base)| {
-                if suppressed_paths.contains(path) {
-                    return false;
-                }
-                let action = plan_entity_action(
+        if let Some(ancestor) = nearest_tracked_ancestor(path, base_index) {
+            subtree_clean.insert(ancestor, false);
+        }
+    }
+
+    let mut entries: Vec<(&PathBuf, &FileRecord)> = base_index.iter().collect();
+    // Deepest first: an entry always has more path components than its nearest tracked ancestor,
+    // so every entry is final before the ancestor that folds it in is visited.
+    entries.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+
+    let bootstrap = base_index.is_empty();
+    let mut verdicts: HashMap<PathBuf, bool> = HashMap::new();
+    for (path, base) in entries {
+        let clean = subtree_clean.get(path.as_path()).copied().unwrap_or(false);
+        // Publish before planning: a one-sided directory's own resolution reads THIS verdict.
+        if base.entity_kind == EntityKind::Directory {
+            verdicts.insert(path.clone(), clean);
+        }
+        let resolves_to_deletion = !suppressed_paths.contains(path)
+            && matches!(
+                plan_entity_action(
                     path,
                     local_entities.get(path),
                     remote_entities.get(path),
                     Some(base),
-                    base_index.is_empty(),
+                    bootstrap,
                     &verdicts,
-                );
-                matches!(
-                    action.map(|planned| planned.action),
-                    Some(SyncAction::RemoteDelete | SyncAction::LocalDelete | SyncAction::Purge)
                 )
-            });
-        verdicts.insert(directory_path.clone(), consistent);
+                .map(|planned| planned.action),
+                Some(SyncAction::RemoteDelete | SyncAction::LocalDelete | SyncAction::Purge)
+            );
+        if !(clean && resolves_to_deletion)
+            && let Some(ancestor) = nearest_tracked_ancestor(path, base_index)
+        {
+            subtree_clean.insert(ancestor, false);
+        }
     }
     verdicts
+}
+
+/// True when some base directory is live on exactly one side — the only shape that reads a
+/// deletion verdict, since `plan_ongoing_directory_action`'s one-sided arms are the sole callers
+/// of [`subtree_is_deletion_consistent`]. It narrows the two sides exactly as those arms do, so
+/// it can only over-approximate what is actually consumed, and an unconsulted verdict reads as
+/// `false` — the non-destructive recreate. A third consumer would have to widen this gate.
+fn any_base_directory_is_one_sided(
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> bool {
+    base_index
+        .iter()
+        .filter(|(_, record)| record.entity_kind == EntityKind::Directory)
+        .any(|(path, _)| {
+            local_entities
+                .get(path)
+                .and_then(LocalEntityState::as_directory)
+                .is_some()
+                != remote_entities
+                    .get(path)
+                    .and_then(RemoteEntity::as_directory)
+                    .is_some()
+        })
+}
+
+/// The closest strict ancestor of `path` carrying a base record. Selective-sync filters can leave
+/// gaps in the base index, so this walks past untracked intermediate directories instead of
+/// assuming the immediate parent is tracked — a gap would otherwise detach a whole subtree from
+/// the proof and let it be deleted unexamined.
+fn nearest_tracked_ancestor<'a>(
+    path: &Path,
+    base_index: &'a HashMap<PathBuf, FileRecord>,
+) -> Option<&'a Path> {
+    path.ancestors().skip(1).find_map(|ancestor| {
+        base_index
+            .get_key_value(ancestor)
+            .map(|(tracked, _)| tracked.as_path())
+    })
 }
 
 /// Returns true when `candidate` is strictly nested under `ancestor` (never equal to it).
@@ -2367,6 +2416,180 @@ mod tests {
                 .any(|action| action.path == Path::new("docs/sub")
                     && action.action == SyncAction::CreateRemoteDirectory),
             "the live local directory must still be created remotely: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn a_descendant_under_an_untracked_gap_still_blocks_the_recursive_directory_delete() {
+        // Selective-sync filters drop base rows independently of the entries under them, so a
+        // tracked descendant can sit under an untracked intermediate directory. The bottom-up
+        // proof folds each entry into its nearest *tracked* ancestor: stopping at an absent
+        // immediate parent would detach `docs/gap/report.txt` from the proof entirely and delete
+        // the remote edit unexamined.
+        let local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/gap/report.txt"),
+            RemoteEntity::File(remote(
+                "docs/gap/report.txt",
+                "report-id",
+                Some("changed-hash"),
+            )),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs/gap/report.txt"),
+            base("docs/gap/report.txt", Some("report-id"), "original-hash"),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            !planned.iter().any(|action| action.path == Path::new("docs")
+                && action.action == SyncAction::RemoteDelete),
+            "a diverging descendant reached through an untracked gap must veto the recursive \
+             directory delete: {planned:?}"
+        );
+        assert!(
+            planned
+                .iter()
+                .any(|action| action.path == Path::new("docs/gap/report.txt")
+                    && action.action == SyncAction::Download),
+            "the remotely-edited descendant must still be restored: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn a_nested_untracked_descendant_blocks_the_recursive_directory_delete() {
+        // As `untracked_local_descendant_blocks_*`, but the never-synced file sits two levels down
+        // under an equally untracked directory: the veto must reach `docs` from the whole chain.
+        let mut local_entities = HashMap::new();
+        let remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("docs"), local_directory("docs"));
+        local_entities.insert(PathBuf::from("docs/new"), local_directory("docs/new"));
+        local_entities.insert(
+            PathBuf::from("docs/new/deep.txt"),
+            LocalEntityState::File(local("docs/new/deep.txt", "new-hash")),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        assert!(
+            !planned.iter().any(|action| action.path == Path::new("docs")
+                && action.action == SyncAction::LocalDelete),
+            "a nested untracked descendant must veto the recursive directory delete: {planned:?}"
+        );
+        assert!(
+            planned
+                .iter()
+                .any(|action| action.path == Path::new("docs/new/deep.txt")
+                    && action.action == SyncAction::Upload),
+            "the never-synced nested file must still be uploaded: {planned:?}"
+        );
+    }
+
+    #[test]
+    fn a_diverging_leaf_vetoes_every_directory_level_above_it() {
+        // The fold carries a failure up one edge at a time, so a leaf three levels down must
+        // still reach the top. Nothing in the chain may be deleted.
+        let local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        for dir in ["top", "top/mid", "top/mid/leaf"] {
+            remote_entities.insert(PathBuf::from(dir), remote_directory(dir, Some(dir)));
+            base_index.insert(PathBuf::from(dir), directory_base(dir, Some(dir)));
+        }
+        remote_entities.insert(
+            PathBuf::from("top/mid/leaf/report.txt"),
+            RemoteEntity::File(remote(
+                "top/mid/leaf/report.txt",
+                "report-id",
+                Some("changed-hash"),
+            )),
+        );
+        base_index.insert(
+            PathBuf::from("top/mid/leaf/report.txt"),
+            base(
+                "top/mid/leaf/report.txt",
+                Some("report-id"),
+                "original-hash",
+            ),
+        );
+
+        let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+
+        for level in ["top", "top/mid", "top/mid/leaf"] {
+            assert!(
+                !planned.iter().any(|action| action.path == Path::new(level)
+                    && matches!(
+                        action.action,
+                        SyncAction::RemoteDelete | SyncAction::LocalDelete
+                    )),
+                "{level} must not be deleted over a diverging leaf: {planned:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pass_with_no_one_sided_directory_skips_the_deletion_proof() {
+        // The gate that makes an idle pass cheap (#48): with every directory live on both sides
+        // nothing can consume a verdict, so none are computed — and the plan is unchanged.
+        let mut local_entities = HashMap::new();
+        let mut remote_entities = HashMap::new();
+        let mut base_index = HashMap::new();
+
+        local_entities.insert(PathBuf::from("docs"), local_directory("docs"));
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+        local_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            LocalEntityState::File(local("docs/report.txt", "same-hash")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            RemoteEntity::File(remote("docs/report.txt", "report-id", Some("same-hash"))),
+        );
+        base_index.insert(
+            PathBuf::from("docs/report.txt"),
+            base("docs/report.txt", Some("report-id"), "same-hash"),
+        );
+
+        let verdicts = compute_directory_deletion_verdicts(
+            &local_entities,
+            &remote_entities,
+            &base_index,
+            &BTreeSet::new(),
+        );
+
+        assert!(
+            verdicts.is_empty(),
+            "no directory is live on exactly one side, so no verdict can be read: {verdicts:?}"
+        );
+        assert!(
+            plan_sync_entities(&local_entities, &remote_entities, &base_index).is_empty(),
+            "a fully converged tree still plans nothing"
         );
     }
 
