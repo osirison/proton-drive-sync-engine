@@ -5636,6 +5636,61 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_base_kind_does_not_let_a_directory_delete_remove_a_live_local_file() {
+        // #282 end to end, with the delete-approval guard OFF (test_config) so nothing but the
+        // plan itself stands between the file and `remove_dir_all`. The base row still calls
+        // `docs/sub` a directory; it is now a never-uploaded FILE and `docs` is gone remotely.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("docs")).expect("local docs directory");
+        let file_path = local_root.join("docs").join("sub");
+        fs::write(&file_path, b"the only copy").expect("local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("docs", Some("docs-id")),
+        )
+        .expect("directory base record");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("docs/sub", Some("sub-id")),
+        )
+        .expect("stale directory base record over a live file");
+
+        daemon.reconcile_blocking().expect("reconcile");
+
+        assert!(
+            file_path.is_file(),
+            "the live local file must survive: a stale base kind must not prove its parent a \
+             clean recursive delete"
+        );
+        assert_eq!(
+            fs::read(&file_path).expect("surviving file"),
+            b"the only copy",
+            "the surviving file must be untouched"
+        );
+        let recorded = operations.lock().expect("operations lock").clone();
+        assert!(
+            recorded.contains(&RecordedOperation::Upload {
+                local_path: file_path.clone(),
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                relative_path: PathBuf::from("docs/sub"),
+            }),
+            "the never-uploaded file must be uploaded instead: {recorded:?}"
+        );
+        let record = get_record(&daemon.connection, Path::new("docs/sub"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(
+            record.entity_kind,
+            EntityKind::File,
+            "the upload's upsert must replace the stale directory row"
+        );
+    }
+
+    #[test]
     fn reconcile_moves_local_directory_and_rewrites_descendant_index_rows() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
