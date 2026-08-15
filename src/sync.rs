@@ -453,8 +453,15 @@ fn plan_file_path_transitions(
                         suppressed_paths.insert(new_descendant);
                     }
                     // …and the descendants NO base row tracks — collected here, resolved once
-                    // after the loop (#12).
-                    directory_move_sources.insert(action.path.clone());
+                    // after the loop (#12). Explicitly `MoveLocal`, not "any directory move":
+                    // suppressing them is only right because the LOCAL tree is what moves, and it
+                    // is the executor's `MoveLocal` arm that re-queues the destination for the next
+                    // pass. Today a directory transition can only be a `MoveLocal` (the inverse
+                    // direction is a deliberate non-goal — see `plan_remote_directory_move`), so
+                    // the guard is documentation until that changes.
+                    if action.action == SyncAction::MoveLocal {
+                        directory_move_sources.insert(action.path.clone());
+                    }
                 }
             }
             actions.push(action);
