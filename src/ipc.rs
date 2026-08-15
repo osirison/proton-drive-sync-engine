@@ -245,6 +245,23 @@ pub async fn bind_listener(socket_path: &Path) -> AppResult<UnixListener> {
     // alongside the startup sidecar/DB writes, so it would trade this race for a worse one.
     let staging = StagingDir::create(socket_path)?;
     let staged_socket = staging.socket_path();
+    // The staged path is LONGER than the published one, so a configured socket that fits
+    // `sun_path` on its own can overflow once staged. `bind`'s own error ("path must be shorter
+    // than SUN_LEN") would name a path the user never configured and give no hint that staging is
+    // why, so check here and say all three things: which socket, how long staged, what the limit
+    // is. Binding in place instead is not an option — that is the vulnerability.
+    let capacity = sun_path_capacity();
+    if staged_socket.as_os_str().len() >= capacity {
+        return Err(crate::boxed_error(format!(
+            "failed to bind control socket {}: it is bound in a private staging directory and \
+             renamed into place (so it is never briefly world-connectable), and that staged path \
+             is {} bytes — past this platform's {}-byte limit for a Unix socket path. Use a \
+             shorter socket_path, or one in a shorter directory.",
+            socket_path.display(),
+            staged_socket.as_os_str().len(),
+            capacity - 1
+        )));
+    }
     // Errors name the PUBLISHED path: the staging directory is an implementation detail, and a
     // `sun_path`-too-long or permission failure is about the socket the user configured.
     let listener = UnixListener::bind(&staged_socket).map_err(|error| {
@@ -270,11 +287,20 @@ pub async fn bind_listener(socket_path: &Path) -> AppResult<UnixListener> {
 /// and a start fails only if a reused pid meets this many of them.
 #[cfg(unix)]
 const STAGING_DIR_ATTEMPTS: u64 = 16;
-/// Fixed, short staged socket name. Both this and the directory name are charged to the
-/// `sockaddr_un.sun_path` budget (108 bytes) that `paths::default_socket_path` keeps the published
-/// path inside, so neither carries anything but what uniqueness needs.
+/// Fixed, short staged socket name. Both this and the staging directory name are charged to the
+/// platform's `sockaddr_un.sun_path` budget on top of the published path, so neither carries
+/// anything beyond what uniqueness needs. **Nothing validates that budget ahead of `bind`** —
+/// `paths::default_socket_path` just joins, and the XDG default happens to land far inside it — so
+/// [`bind_listener`] measures the staged path itself rather than assuming it fits.
 #[cfg(unix)]
 const STAGED_SOCKET_NAME: &str = "s";
+
+/// Bytes the platform gives a Unix socket path, NUL terminator included. Read off the platform's
+/// own `sockaddr_un` rather than hardcoded: it is 108 on Linux and 104 on some BSDs.
+#[cfg(unix)]
+fn sun_path_capacity() -> usize {
+    std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path)
+}
 
 /// The private directory the control socket is bound in before being renamed to its published
 /// path (see [`bind_listener`]). Cleaned up on drop, so every failure path cleans up — but only
@@ -631,6 +657,49 @@ mod tests {
                 .any(|kind| matches!(kind, EventKind::Create(_))),
             "the socket must be renamed into place, not created there with the process umask: \
              {arrivals:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_socket_path_that_fits_only_unstaged_is_refused_with_the_reason() {
+        // Copilot review: staging makes the bound path LONGER than the configured one, so a socket
+        // path that fits `sun_path` on its own can overflow once staged. `bind`'s own error names
+        // the staged path — which the user never configured — and never mentions staging, so the
+        // check is here. Binding in place instead would be the vulnerability #62 is about.
+        let directory = tempdir().expect("tempdir");
+        let capacity = sun_path_capacity();
+        let name = "s.sock";
+        // The longest published path that still fits unstaged: any staging suffix overflows it,
+        // whatever this run's pid length happens to be.
+        let pad = (capacity - 1)
+            .checked_sub(directory.path().as_os_str().len() + 2 + name.len())
+            .expect("the temp dir must leave room to pad up to the limit");
+        let padded = directory.path().join("p".repeat(pad));
+        std::fs::create_dir(&padded).expect("padding directory");
+        let socket_path = padded.join(name);
+        assert_eq!(
+            socket_path.as_os_str().len(),
+            capacity - 1,
+            "the published path must sit exactly at the limit, or the test proves nothing"
+        );
+
+        let error = bind_listener(&socket_path)
+            .await
+            .expect_err("a staged path past the limit must be refused");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("limit for a Unix socket path")
+                && message.contains(&socket_path.display().to_string()),
+            "the error must name the configured socket and the limit: {message}"
+        );
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(&padded)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the refused bind must leave nothing behind: {leftovers:?}"
         );
     }
 
