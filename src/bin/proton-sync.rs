@@ -68,12 +68,28 @@ enum Commands {
         /// Approve every currently-pending deletion.
         #[arg(long)]
         all: bool,
+        /// Which deletion at PATH to authorize when the daemon has *planned* it but not yet
+        /// withheld it (nothing is pending yet, e.g. straight after a dry run). `local` deletes
+        /// the copy on this computer, `remote` the copy on Proton Drive. Ignored when PATH is
+        /// already pending — that item's own direction wins.
+        #[arg(long, value_parser = ["local", "remote"])]
+        direction: Option<String>,
     },
     /// Revoke a prior approval before it has applied.
     Deny {
         /// Relative path of the approval to revoke.
         path: Option<PathBuf>,
         /// Revoke approval for every currently-pending deletion.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Refuse a withheld deletion and put the two sides back in step: the surviving copy is sent
+    /// back to the side it was deleted from on the next sync, and the item leaves the queue for
+    /// good (unlike `deny`, which only revokes an approval and leaves it waiting).
+    Keep {
+        /// Relative path of the pending deletion to keep (as shown by `pending`).
+        path: Option<PathBuf>,
+        /// Keep every currently-pending deletion.
         #[arg(long)]
         all: bool,
     },
@@ -179,7 +195,7 @@ async fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Commands::Approve { .. } | Commands::Deny { .. } => {
+        Commands::Approve { .. } | Commands::Deny { .. } | Commands::Keep { .. } => {
             if cli.json {
                 print_pretty_json(&response);
             } else {
@@ -199,10 +215,11 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         Commands::Syncnow { .. } => (ControlCommand::Syncnow, None),
         Commands::Resync => (ControlCommand::Resync, None),
         Commands::Stop => (ControlCommand::Shutdown, None),
-        Commands::Approve { path, all } => {
+        Commands::Approve { path, all, .. } => {
             (ControlCommand::Approve, approval_selector(path, *all)?)
         }
         Commands::Deny { path, all } => (ControlCommand::Deny, approval_selector(path, *all)?),
+        Commands::Keep { path, all } => (ControlCommand::Keep, approval_selector(path, *all)?),
     };
     // A `<PATH>` selector is always a literal path on the wire: `proton-sync approve all`
     // targets a pending deletion literally named `all` instead of silently becoming the
@@ -211,16 +228,34 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         command,
         Commands::Approve {
             path: Some(_),
-            all: false
+            all: false,
+            ..
         } | Commands::Deny {
+            path: Some(_),
+            all: false
+        } | Commands::Keep {
             path: Some(_),
             all: false
         }
     );
+    // Only `approve` carries one, and only its pre-approval branch reads it (#227). Parsed here
+    // rather than passed as a string so an unknown word is a CLI error, not a silent no-op.
+    let direction = match command {
+        Commands::Approve {
+            direction: Some(value),
+            ..
+        } => Some(
+            value
+                .parse::<DeleteDirection>()
+                .map_err(|error| error.to_string())?,
+        ),
+        _ => None,
+    };
     Ok(ControlRequest {
         command: control_command,
         argument,
         literal_path,
+        direction,
     })
 }
 
@@ -762,6 +797,7 @@ async fn watch_syncnow(
             command: ControlCommand::Status,
             argument: None,
             literal_path: false,
+            direction: None,
         };
         match request_with_timeout(socket_path, request).await {
             Ok(status) => {

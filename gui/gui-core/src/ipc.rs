@@ -125,6 +125,7 @@ pub fn command(
             command,
             argument: None,
             literal_path: false,
+            direction: None,
         },
         timeout,
     )
@@ -147,6 +148,7 @@ pub fn command_with_argument(
             command,
             argument: Some(argument.into()),
             literal_path,
+            direction: None,
         },
         timeout,
     )
