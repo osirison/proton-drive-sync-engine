@@ -18,6 +18,7 @@
 //! that sets `deletion_policy` and `[delete_approval]` together, so a writer with a favourite key
 //! would brick every config written the other way — see [`ConfigDoc::set_deletion_policy`].
 
+use std::borrow::Cow;
 use std::path::Path;
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
@@ -100,19 +101,53 @@ impl ConfigDoc {
         self.doc.to_string()
     }
 
+    /// The spelling **this document** uses for `key`, which is not always the one the caller
+    /// asked for.
+    ///
+    /// `FileConfig` gives every key a kebab-case alias (`log-level` for `log_level`,
+    /// `local-root` for `local_root`, …), so a hand-written config may legitimately use either.
+    /// A reader that knows only the snake_case spelling draws a setting that is *in force* as
+    /// though it were unset — and a writer that knows only the snake_case spelling then adds a
+    /// **second** spelling of the same field, which serde rejects outright:
+    ///
+    /// ```text
+    /// log_level = "debug"
+    /// log-level = "debug"   # duplicate field `log_level`
+    /// ```
+    ///
+    /// That is a config the daemon will not parse and [`Self::save`] therefore refuses to write,
+    /// so the user's saves fail forever with an error naming a key they never typed twice. Same
+    /// rule as [`Self::set_deletion_policy`], for the same reason: read either spelling, write
+    /// back the one the file already uses, and only default to snake_case when it uses neither.
+    fn key_in_use<'a>(&self, key: &'a str) -> Cow<'a, str> {
+        if self.doc.get(key).is_some() || !key.contains('_') {
+            return Cow::Borrowed(key);
+        }
+        let kebab = key.replace('_', "-");
+        if self.doc.get(&kebab).is_some() {
+            return Cow::Owned(kebab);
+        }
+        Cow::Borrowed(key)
+    }
+
     // ---- getters (top-level scalars) ----
     pub fn get_str(&self, key: &str) -> Option<String> {
-        self.doc.get(key).and_then(Item::as_str).map(str::to_string)
+        self.doc
+            .get(&self.key_in_use(key))
+            .and_then(Item::as_str)
+            .map(str::to_string)
     }
     pub fn get_int(&self, key: &str) -> Option<i64> {
-        self.doc.get(key).and_then(Item::as_integer)
+        self.doc
+            .get(&self.key_in_use(key))
+            .and_then(Item::as_integer)
     }
     pub fn get_bool(&self, key: &str) -> Option<bool> {
-        self.doc.get(key).and_then(Item::as_bool)
+        self.doc.get(&self.key_in_use(key)).and_then(Item::as_bool)
     }
     pub fn get_string_array(&self, key: &str) -> Vec<String> {
         self.doc
-            .get(key)
+            .get(&self.key_in_use(key))
             .and_then(Item::as_array)
             .map(|arr| {
                 arr.iter()
@@ -124,45 +159,45 @@ impl ConfigDoc {
 
     // ---- setters (edit in place) ----
     pub fn set_str(&mut self, key: &str, v: &str) {
-        self.doc[key] = value(v);
+        let key = self.key_in_use(key).into_owned();
+        self.doc[&key] = value(v);
     }
     pub fn set_int(&mut self, key: &str, v: i64) {
-        self.doc[key] = value(v);
+        let key = self.key_in_use(key).into_owned();
+        self.doc[&key] = value(v);
     }
     pub fn set_bool(&mut self, key: &str, v: bool) {
-        self.doc[key] = value(v);
+        let key = self.key_in_use(key).into_owned();
+        self.doc[&key] = value(v);
     }
     pub fn set_string_array(&mut self, key: &str, items: &[String]) {
         let mut array = Array::new();
         for item in items {
             array.push(item.as_str());
         }
-        self.doc[key] = value(array);
+        let key = self.key_in_use(key).into_owned();
+        self.doc[&key] = value(array);
     }
     /// Remove a top-level key entirely (e.g. clearing an override so the daemon default applies).
     pub fn remove(&mut self, key: &str) {
-        self.doc.remove(key);
+        let key = self.key_in_use(key).into_owned();
+        self.doc.remove(&key);
     }
 
     // ---- the nested `[delete_approval]` table (`remote` / `local` booleans) ----
     pub fn get_delete_approval(&self, direction: &str) -> Option<bool> {
         self.doc
-            .get("delete_approval")
+            .get(&self.key_in_use("delete_approval"))
             .and_then(Item::as_table)
             .and_then(|t| t.get(direction))
             .and_then(Item::as_bool)
     }
     pub fn set_delete_approval(&mut self, direction: &str, enabled: bool) {
-        if self
-            .doc
-            .get("delete_approval")
-            .and_then(Item::as_table)
-            .is_none()
-        {
-            self.doc
-                .insert("delete_approval", Item::Table(Table::new()));
+        let table_key = self.key_in_use("delete_approval").into_owned();
+        if self.doc.get(&table_key).and_then(Item::as_table).is_none() {
+            self.doc.insert(&table_key, Item::Table(Table::new()));
         }
-        if let Some(table) = self.doc["delete_approval"].as_table_mut() {
+        if let Some(table) = self.doc[&table_key].as_table_mut() {
             table.insert(direction, value(enabled));
         }
     }
@@ -213,8 +248,8 @@ impl ConfigDoc {
     /// ways in two different files, and the tab's promise is that the radio you can see is the rule
     /// that is running.
     pub fn set_deletion_policy(&mut self, policy: DeletionPolicy) {
-        let has_policy_key = self.doc.get("deletion_policy").is_some();
-        let has_table = self.doc.get("delete_approval").is_some();
+        let has_policy_key = self.doc.get(&self.key_in_use("deletion_policy")).is_some();
+        let has_table = self.doc.get(&self.key_in_use("delete_approval")).is_some();
         if has_policy_key || !has_table {
             self.set_str("deletion_policy", policy.as_str());
             if has_table {
@@ -770,6 +805,61 @@ local = true
             reparsed.get_str("conflict_suffix").as_deref(),
             Some("from-cloud")
         );
+    }
+
+    #[test]
+    fn a_kebab_case_config_is_read_and_written_in_its_own_spelling() {
+        // `FileConfig` aliases every key, so `log-level` is a setting genuinely IN FORCE. Reading
+        // only the snake_case spelling drew it as unset; writing only the snake_case spelling then
+        // added a second spelling of the same field, and serde rejects that outright as
+        // `duplicate field` — so `save` refused, and the user's saves failed forever with an error
+        // naming a key they never typed twice. Pre-existing for `local_root` and friends; the
+        // Advanced keys just made it three more.
+        let mut doc = ConfigDoc::from_toml_str(
+            "local-root = \"/home/u/Drive\"\nlog-level = \"debug\"\nscan-interval-secs = 120\n\
+             conflict-suffix = \"from-cloud\"\n[delete-approval]\nremote = false\n",
+        )
+        .unwrap();
+
+        assert_eq!(doc.get_str("local_root").as_deref(), Some("/home/u/Drive"));
+        assert_eq!(doc.get_str("log_level").as_deref(), Some("debug"));
+        assert_eq!(doc.get_int("scan_interval_secs"), Some(120));
+        assert_eq!(doc.get_delete_approval("remote"), Some(false));
+        assert_eq!(doc.get_deletion_policy(), DeletionPolicy::OnlyPermanent);
+
+        doc.set_str("log_level", "warn");
+        doc.set_int("scan_interval_secs", 300);
+        doc.set_delete_approval("local", false);
+        let rendered = doc.to_toml_string();
+
+        assert!(rendered.contains("log-level = \"warn\""), "{rendered}");
+        assert!(
+            !rendered.contains("log_level"),
+            "a second spelling of one field is a config the daemon will not parse:\n{rendered}"
+        );
+        assert!(!rendered.contains("scan_interval_secs"), "{rendered}");
+        assert!(!rendered.contains("[delete_approval]"), "{rendered}");
+        doc.validate()
+            .expect("a kebab-case config must still be saveable after an edit");
+        assert_eq!(
+            ConfigDoc::from_toml_str(&rendered)
+                .unwrap()
+                .get_deletion_policy(),
+            DeletionPolicy::Never
+        );
+    }
+
+    #[test]
+    fn a_snake_case_config_is_untouched_by_the_alias_rule() {
+        // The common case must not change: with no kebab spelling present, snake_case is written.
+        let mut doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
+        doc.set_str("log_level", "warn");
+        doc.set_deletion_policy(DeletionPolicy::Never);
+        let rendered = doc.to_toml_string();
+        assert!(rendered.contains("log_level = \"warn\""), "{rendered}");
+        assert!(!rendered.contains("log-level"), "{rendered}");
+        assert!(rendered.contains("deletion_policy"), "{rendered}");
+        doc.validate().expect("daemon parser");
     }
 
     #[test]
