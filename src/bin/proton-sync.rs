@@ -4,7 +4,8 @@ use proton_drive_sync_engine::ipc::{
     ControlCommand, ControlRequest, ControlResponse, PendingDeletion, SyncActivity, send_request,
     wire_path,
 };
-use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary};
+use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, UnsyncableItem};
+use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -357,6 +358,12 @@ fn print_status(response: &ControlResponse, style: &Style) {
             ),
         ));
     }
+    if !response.unsyncable.is_empty() {
+        rows.push((
+            "can't sync",
+            format!("{} item(s) — listed below", response.unsyncable.len()),
+        ));
+    }
     if let Some(error) = &response.last_error {
         rows.push(("error", style.red(error)));
     }
@@ -365,6 +372,50 @@ fn print_status(response: &ControlResponse, style: &Style) {
     for (label, value) in rows {
         println!("  {} {value}", style.dim(&format!("{label:<width$}")));
     }
+    print_unsyncable(&response.unsyncable, style);
+}
+
+/// The entities the daemon cannot sync, by name and cause. A count alone is unactionable: the
+/// account behind #295 carried one such file for five months, and `skipped_unsupported: 1` was the
+/// only trace of it. Grouped by cause so a Docs-heavy account reads as one fact, not N.
+fn print_unsyncable(items: &[UnsyncableItem], style: &Style) {
+    if items.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "{}",
+        style.bold(&format!("{} item(s) cannot be synced:", items.len()))
+    );
+    // `reason` is a wire token an older client may not know, so group on the token itself and
+    // render an unfamiliar one verbatim rather than dropping the row.
+    let mut groups: BTreeMap<&str, Vec<&UnsyncableItem>> = BTreeMap::new();
+    for item in items {
+        groups.entry(item.reason.as_str()).or_default().push(item);
+    }
+    for (token, group) in groups {
+        println!(
+            "  {}",
+            style.dim(&format!("{token} — {}", group[0].reason.describe()))
+        );
+        for item in group {
+            println!(
+                "    {}  {}",
+                item.path.display(),
+                style.dim(&format!(
+                    "(since {})",
+                    relative_time(item.first_seen_epoch_secs)
+                ))
+            );
+        }
+    }
+    println!(
+        "{}",
+        style.dim(
+            "These are skipped on every pass; nothing transfers in either direction until the \
+             cause changes."
+        )
+    );
 }
 
 /// The status headline: a coloured state dot, the state word, and a one-line detail.

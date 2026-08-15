@@ -1,8 +1,7 @@
 use crate::AppResult;
 use crate::index::EntityKind;
-use crate::sync::{DeleteDirection, PlanSummary};
+use crate::sync::{DeleteDirection, PlanSummary, UnsyncableItem};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -48,48 +47,19 @@ pub struct ControlRequest {
     pub literal_path: bool,
 }
 
-/// The form of a path as it travels on the wire, and therefore the form an `approve`/`deny`
-/// selector must be matched against: `to_string_lossy`. A client only ever sees this rendering (a
-/// non-UTF-8 path cannot survive JSON), so the daemon compares selectors here rather than against
-/// the real `PathBuf` it keeps internally — otherwise exactly the paths that motivated the lossy
-/// wire (#61) would be unapprovable. Two paths that differ only in invalid bytes collapse to one
-/// selector, which the daemon refuses to *approve* rather than resolve arbitrarily (see
-/// `daemon::apply_approval_command`).
-///
-/// Returns the `Cow` unchanged rather than an owned `String`: these fields ride on every status
-/// reply and the selector match walks every pending deletion, and `to_string_lossy` borrows for a
-/// UTF-8 path — so only a path that actually needs replacing pays for an allocation.
-pub fn wire_path(path: &Path) -> Cow<'_, str> {
-    path.to_string_lossy()
-}
-
-/// Serde for a `PathBuf` field on the wire: **lossy** out, verbatim back.
-///
-/// `impl Serialize for Path` *errors* on a non-UTF-8 path, and the engine deliberately supports
-/// such paths (`index::index_key` is a BLOB for exactly that). Every path below rides on every
-/// `ControlResponse`, so one of them failing used to fail `write_response` for `status`, `pause`,
-/// `pending` and `approve` alike — a control-plane lockout that could not be cleared through the
-/// control plane (#61). The daemon keeps the real `PathBuf`; only the JSON is lossy.
-mod lossy_path {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::path::{Path, PathBuf};
-
-    pub fn serialize<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&super::wire_path(path))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
-        Ok(PathBuf::from(String::deserialize(deserializer)?))
-    }
-}
+/// The wire form of a path, and the form an `approve`/`deny` selector is matched against. One
+/// definition for every wire this engine publishes — see [`crate::wire_path`], which also states
+/// the rule a client may act on a lossy path under.
+pub use crate::wire_path;
 
 /// One withheld deletion surfaced to the user for review. `path` + `direction` identify it for an
 /// `approve`; `fingerprint` (a file's baseline SHA-1 or a directory's `proton_id`) is what the
 /// approval is pinned to, so it cannot later authorize a different deletion at the same path.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingDeletion {
-    /// Lossy on the wire (see [`lossy_path`]); the daemon keeps the real path in this field.
-    #[serde(with = "lossy_path")]
+    /// Lossy on the wire (see [`crate::lossy_path`]); the daemon keeps the real path in this
+    /// field.
+    #[serde(with = "crate::lossy_path")]
     pub path: PathBuf,
     pub direction: DeleteDirection,
     pub entity_kind: EntityKind,
@@ -103,11 +73,11 @@ pub struct PendingDeletion {
 /// daemon whose roots it cannot know.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunningConfigInfo {
-    #[serde(with = "lossy_path")]
+    #[serde(with = "crate::lossy_path")]
     pub local_root: PathBuf,
-    #[serde(with = "lossy_path")]
+    #[serde(with = "crate::lossy_path")]
     pub remote_root: PathBuf,
-    #[serde(with = "lossy_path")]
+    #[serde(with = "crate::lossy_path")]
     pub db_path: PathBuf,
 }
 
@@ -153,7 +123,7 @@ pub struct TransferActivity {
     /// `"upload"` or `"download"`.
     pub direction: String,
     /// Root-relative path of the file being transferred.
-    #[serde(with = "lossy_path")]
+    #[serde(with = "crate::lossy_path")]
     pub path: PathBuf,
     /// Total size in bytes when known (uploads: the local file's size; downloads: unknown —
     /// the remote listing carries no size).
@@ -200,6 +170,14 @@ pub struct ControlResponse {
     /// older daemon (`#[serde(default)]` keeps both directions of the wire compatible).
     #[serde(default)]
     pub activity: Option<SyncActivity>,
+    /// Entities the engine cannot sync and never will without user action (see
+    /// [`UnsyncableItem`]) — a skipped entity used to be nothing but an anonymous
+    /// `skipped_unsupported` counter, so a cloud-only file could sit unsynced for months with
+    /// nothing naming it (#295). Display-only: like [`SyncActivity`], nothing here participates in
+    /// any sync decision — the planner re-derives every skip from ground truth. `#[serde(default)]`
+    /// so a reply from an older daemon still parses.
+    #[serde(default)]
+    pub unsyncable: Vec<UnsyncableItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -449,6 +427,7 @@ pub async fn write_response(stream: &mut UnixStream, response: &ControlResponse)
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::sync::UnsyncableReason;
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -566,6 +545,12 @@ mod tests {
                 }),
                 since_epoch_secs: None,
             }),
+            unsyncable: vec![UnsyncableItem {
+                path: non_utf8_path(b"-doc"),
+                entity_kind: EntityKind::File,
+                reason: UnsyncableReason::RemoteNotDownloadable,
+                first_seen_epoch_secs: 3,
+            }],
         }
     }
 
@@ -591,6 +576,12 @@ mod tests {
         assert_eq!(
             back.config.expect("config").local_root,
             PathBuf::from(&*wire_path(&non_utf8_path(b"-root")))
+        );
+        // #295's list rides the same reply, so it is bound by the same rule: a non-UTF-8 path is
+        // exactly the kind of entity that lands on it.
+        assert_eq!(
+            back.unsyncable[0].path,
+            PathBuf::from(&*wire_path(&non_utf8_path(b"-doc")))
         );
     }
 
