@@ -1,6 +1,6 @@
 use crate::AppResult;
 use crate::index::EntityKind;
-use crate::sync::{DeleteDirection, PlanSummary};
+use crate::sync::{DeleteDirection, PlanSummary, SyncAction};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 #[cfg(unix)]
@@ -96,6 +96,26 @@ pub struct PendingDeletion {
     pub fingerprint: String,
     pub detected_epoch_secs: u64,
 }
+
+/// One action whose side effect failed during the last pass (#136). The executor keeps going past
+/// it — the rest of the plan still runs — so a pass can end with some items failed and everything
+/// else synced. That is a **third** pass outcome, not a flavour of either other one: it is reported
+/// as itself here and in [`crate::daemon::PassOutcome`], never folded into success or failure.
+///
+/// Reported, never acted on: the failed action is not recorded in the index and simply re-plans
+/// next pass. This is not a retry queue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FailedItem {
+    /// Lossy on the wire (see [`lossy_path`]); the daemon keeps the real path in this field.
+    #[serde(with = "lossy_path")]
+    pub path: PathBuf,
+    pub action: SyncAction,
+    /// The failure, truncated to [`FAILED_ITEM_ERROR_LIMIT`]; these ride on every status reply.
+    pub error: String,
+}
+
+/// Cap on a [`FailedItem::error`] string: a CLI failure can carry kilobytes of stderr.
+pub const FAILED_ITEM_ERROR_LIMIT: usize = 500;
 
 /// The daemon's resolved folder pair + index location, surfaced over IPC so a UI can reflect the
 /// *live* configuration no matter how the daemon was launched (config file, flags, or defaults).
@@ -200,6 +220,16 @@ pub struct ControlResponse {
     /// older daemon (`#[serde(default)]` keeps both directions of the wire compatible).
     #[serde(default)]
     pub activity: Option<SyncActivity>,
+    /// Items whose action failed during the last pass, **bounded** to the first
+    /// `daemon::FAILED_ITEMS_REPORTED` in plan order (#136). `failed_item_count` is the untruncated
+    /// total, so `failed_items.len() <= failed_item_count` always. A non-zero count is the wire form
+    /// of the partial-failure pass outcome: some items failed, everything else synced.
+    /// `#[serde(default)]` for replies from older daemons.
+    #[serde(default)]
+    pub failed_items: Vec<FailedItem>,
+    /// How many items failed in the last pass, counting past the bound on `failed_items`.
+    #[serde(default)]
+    pub failed_item_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -209,6 +239,11 @@ pub struct StatusHistoryEntry {
     pub last_error: Option<String>,
     pub plan_summary: Option<PlanSummary>,
     pub successful_sync_summary: Option<PlanSummary>,
+    /// How many items failed in this pass (#136); `0` for a clean or wholly-failed pass, so a
+    /// history reader can tell a partial pass from either. `#[serde(default)]` for entries written
+    /// by an older daemon (the sidecar is read back across upgrades).
+    #[serde(default)]
+    pub failed_item_count: usize,
 }
 
 #[cfg(unix)]
@@ -545,6 +580,12 @@ mod tests {
                 fingerprint: "hash".to_owned(),
                 detected_epoch_secs: 1,
             }],
+            failed_items: vec![FailedItem {
+                path: non_utf8_path(b"-failed.txt"),
+                action: SyncAction::Upload,
+                error: "upload failed".to_owned(),
+            }],
+            failed_item_count: 1,
             config: Some(RunningConfigInfo {
                 local_root: non_utf8_path(b"-root"),
                 remote_root: PathBuf::from("/Drive/RemoteFolder"),
@@ -587,6 +628,11 @@ mod tests {
             back.pending_deletions[0].path,
             PathBuf::from(&*wire_path(&response.pending_deletions[0].path)),
             "a client sees exactly the lossy form the daemon published"
+        );
+        assert_eq!(
+            back.failed_items[0].path,
+            PathBuf::from(&*wire_path(&response.failed_items[0].path)),
+            "a failed item's path is lossy on the wire like every other path"
         );
         assert_eq!(
             back.config.expect("config").local_root,

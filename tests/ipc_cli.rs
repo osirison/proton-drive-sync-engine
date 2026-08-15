@@ -222,18 +222,30 @@ mod unix_tests {
         );
         wait_for_socket(&socket_path, &mut daemon.child);
 
-        // The watched pass fails, so `syncnow --json` exits non-zero while still printing the
-        // final status payload.
+        // The watched pass ends with a failed item, so `syncnow --json` exits non-zero while
+        // still printing the final status payload.
         let synced = run_control_any_exit(&socket_path, "syncnow");
 
         assert_eq!(synced["status"], "running");
         assert_eq!(synced["syncing"], false);
+        // #136: the pass is reported as partial — a summary in `last_error` (so every older
+        // client still sees a problem) and the per-item detail in `failed_items`.
+        assert_eq!(synced["failed_item_count"], 1, "{synced}");
+        assert_eq!(synced["failed_items"][0]["path"], "second.txt", "{synced}");
+        assert_eq!(synced["failed_items"][0]["action"], "upload", "{synced}");
+        assert!(
+            synced["failed_items"][0]["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("proton-drive upload failed"),
+            "daemon should expose the upload failure per item: {synced}"
+        );
         assert!(
             synced["last_error"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("proton-drive upload failed"),
-            "daemon should expose upload failure: {synced}"
+                .contains("1 item(s) failed to sync"),
+            "daemon should summarise the partial pass in last_error: {synced}"
         );
         let index = load_existing_index(&db_path).expect("load index after failed upload");
         assert!(

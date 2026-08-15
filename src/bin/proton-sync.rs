@@ -357,6 +357,15 @@ fn print_status(response: &ControlResponse, style: &Style) {
             ),
         ));
     }
+    if response.failed_item_count > 0 {
+        rows.push((
+            "failed",
+            style.red(&format!(
+                "{} item(s) did not sync; everything else did",
+                response.failed_item_count
+            )),
+        ));
+    }
     if let Some(error) = &response.last_error {
         rows.push(("error", style.red(error)));
     }
@@ -364,6 +373,16 @@ fn print_status(response: &ControlResponse, style: &Style) {
     let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     for (label, value) in rows {
         println!("  {} {value}", style.dim(&format!("{label:<width$}")));
+    }
+    // The per-item detail behind the `failed` row (#136). Bounded by the daemon, so a pass that
+    // failed thousands of items still prints a handful plus the count above.
+    for item in &response.failed_items {
+        println!(
+            "    {} {} — {}",
+            style.red("✗"),
+            item.path.display(),
+            item.error
+        );
     }
 }
 
@@ -392,6 +411,19 @@ fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str,
             .map(|summary| format!("{} planned", summarize_plan(summary)))
             .unwrap_or_else(|| "reconciling changes".to_owned());
         return (style.cyan("●"), "syncing", detail);
+    }
+    // Before the error arm, and that placement is the whole point (#136/#246): a partial pass
+    // sets `last_error` too, so an `error`-first order would report a pass that synced everything
+    // but three files as a sync that did not happen.
+    if response.failed_item_count > 0 {
+        return (
+            style.yellow("●"),
+            "partial",
+            format!(
+                "the last sync completed with {} failed item(s); details below",
+                response.failed_item_count
+            ),
+        );
     }
     if response.last_error.is_some() {
         return (
@@ -425,6 +457,17 @@ fn print_history(response: &ControlResponse, style: &Style) {
     }
     for entry in response.status_history.iter().rev() {
         let when = style.dim(&format!("{:>8}", relative_time(entry.epoch_secs)));
+        if entry.failed_item_count > 0 {
+            println!(
+                "{when}  {} {}",
+                style.yellow("!"),
+                format_args!(
+                    "{} — {} item(s) failed",
+                    entry.message, entry.failed_item_count
+                )
+            );
+            continue;
+        }
         match &entry.last_error {
             Some(error) => {
                 println!(
@@ -698,11 +741,31 @@ async fn watch_syncnow(
         Ok(status) => {
             if json {
                 print_pretty_json(&status);
-                return if status.last_error.is_none() {
+                // A partial pass sets `last_error` too, but say so explicitly rather than rely on
+                // that: "some items failed" is its own outcome, and it is not a success.
+                return if status.last_error.is_none() && status.failed_item_count == 0 {
                     ExitCode::SUCCESS
                 } else {
                     ExitCode::FAILURE
                 };
+            }
+            // Three outcomes, three arms (#136). A partial pass exits non-zero — something did
+            // not sync — but says which state it is in, and names the items.
+            if status.failed_item_count > 0 {
+                println!(
+                    "{} sync completed with {} failed item(s):",
+                    style.yellow("!"),
+                    status.failed_item_count
+                );
+                for item in &status.failed_items {
+                    println!(
+                        "  {} {} — {}",
+                        style.red("✗"),
+                        item.path.display(),
+                        item.error
+                    );
+                }
+                return ExitCode::FAILURE;
             }
             match &status.last_error {
                 None => {
@@ -868,6 +931,48 @@ mod tests {
         let mut unknown = blank_activity("defragmenting-flux");
         unknown.detail = Some("x".to_owned());
         assert_eq!(describe_activity(&unknown), "defragmenting-flux · x");
+    }
+
+    fn blank_response() -> ControlResponse {
+        ControlResponse {
+            status: "running".to_owned(),
+            paused: false,
+            syncing: false,
+            reconcile_seq: 1,
+            pending_changes: 0,
+            message: "daemon status".to_owned(),
+            last_sync_epoch_secs: None,
+            last_error: None,
+            last_plan_summary: None,
+            last_successful_sync_summary: None,
+            status_history: Vec::new(),
+            pending_deletions: Vec::new(),
+            failed_items: Vec::new(),
+            failed_item_count: 0,
+            config: None,
+            activity: None,
+        }
+    }
+
+    #[test]
+    fn a_partial_pass_headlines_as_itself_not_as_a_failed_one() {
+        // #136: the daemon sets `last_error` on a partial pass so older clients still see a
+        // problem, which means this client must check the item count FIRST or it would report a
+        // pass that synced everything but three files as a sync that did not happen (#246).
+        let style = Style { enabled: false };
+        let mut partial = blank_response();
+        partial.failed_item_count = 3;
+        partial.last_error = Some("3 item(s) failed to sync (first: a.txt)".to_owned());
+        let (_, state, detail) = headline(&partial, &style);
+        assert_eq!(state, "partial");
+        assert!(detail.contains("3 failed item(s)"), "unexpected: {detail}");
+
+        // A wholly-failed pass is still its own state...
+        let mut failed = blank_response();
+        failed.last_error = Some("list failed".to_owned());
+        assert_eq!(headline(&failed, &style).1, "error");
+        // ...and a clean one is not dragged into either.
+        assert_eq!(headline(&blank_response(), &style).1, "idle");
     }
 
     #[test]

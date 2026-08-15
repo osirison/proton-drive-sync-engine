@@ -319,6 +319,23 @@ fn plan_file_path_transitions(
                         suppressed_paths.insert(old_descendant);
                         suppressed_paths.insert(new_descendant);
                     }
+                    // …and the descendants NO base row tracks (#12). A `MoveLocal` renames the
+                    // directory on disk before the per-path actions run, so anything planned for a
+                    // live descendant at the OLD path is planned against a local state that will
+                    // not be there: the upload would first recreate the moved-away parent remotely
+                    // (its parent is a move source, not a planned create) and then read a file that
+                    // has moved. There is nothing to re-plan at the new path either — the pre-move
+                    // scan does not know that key — so the whole subtree is left to the next pass,
+                    // which sees it where it now is. The executor re-queues the destination so that
+                    // pass cannot idle-skip.
+                    for descendant in local_entities.keys() {
+                        if !base_index.contains_key(descendant)
+                            && descendant.starts_with(&action.path)
+                            && descendant != &action.path
+                        {
+                            suppressed_paths.insert(descendant.clone());
+                        }
+                    }
                 }
             }
             actions.push(action);
