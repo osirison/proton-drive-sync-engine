@@ -783,7 +783,14 @@ pub fn store_warm_start_count(connection: &Connection, count: u64) -> AppResult<
     Ok(())
 }
 
-/// The entities the last full-tree walk found unsyncable, oldest-first-seen preserved.
+/// Every entity the daemon currently holds as unsyncable, **ordered by path**.
+///
+/// The list is maintained by `daemon::record_unsyncable`, and a full-tree walk is not its only
+/// writer: any pass may add a skip it planned or drop a path it planned a real action for, while
+/// only a full walk may prune by absence. Each row keeps the epoch it was *first* seen at rather
+/// than the epoch of the pass that last re-derived it, which is what makes "stuck since March"
+/// answerable. Path order is deliberate — it is stable across passes and independent of when a row
+/// joined, and it is the order `proton-sync status` renders within each cause.
 ///
 /// Persisted because a skipped entity is never recorded in `file_index`: it is absent from the
 /// baseline `reconstruct::reconstruct_remote` overlays, so an incremental pass simply does not plan
