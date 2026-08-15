@@ -13,6 +13,7 @@
 //! [`DirectorySettings`] a new optional field and [`EffectiveSettings`] a resolved counterpart —
 //! the ancestor-walk merge in [`DirectoryConfigResolver::resolve`] needs no other change.
 
+use crate::config::DeletionPolicy;
 use crate::sync::DeleteDirection;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -31,6 +32,12 @@ pub const DIRECTORY_CONFIG_FILE_NAME: &str = ".proton-sync.toml";
 struct DirectorySettings {
     #[serde(alias = "delete-approval")]
     delete_approval: Option<DeleteApprovalSettings>,
+    /// The same guard as one named setting — the daemon-wide `deletion_policy` key (#194),
+    /// available here so a subtree can be re-policied without spelling out both directions.
+    /// **Mutually exclusive with `delete_approval` in the same file**, exactly as in the daemon
+    /// config; a file setting both is treated as malformed (see [`DirectorySettings::conflicts`]).
+    #[serde(alias = "deletion-policy")]
+    deletion_policy: Option<DeletionPolicy>,
 }
 
 /// The directional delete-approval guard, as configured in a directory file. `remote`/`local`
@@ -47,9 +54,22 @@ struct DeleteApprovalSettings {
 }
 
 impl DirectorySettings {
+    /// Whether this file spells one setting two ways. The daemon config makes this a startup
+    /// error; a directory file cannot stop the daemon, so [`DirectoryConfigResolver::load_directory`]
+    /// routes it into the malformed path instead — warn, contribute nothing, keep the inherited
+    /// guard. Fail-safe both times: the ambiguous file never weakens protection.
+    fn conflicts(&self) -> bool {
+        self.delete_approval.is_some() && self.deletion_policy.is_some()
+    }
+
     /// Overlay this directory's set options onto the inherited `effective` value. Only fields that
     /// are `Some` override; unset fields leave the inherited value untouched.
     fn apply_to(&self, effective: &mut EffectiveSettings) {
+        if let Some(policy) = self.deletion_policy {
+            let (remote, local) = policy.directions();
+            effective.require_remote_delete_approval = remote;
+            effective.require_local_delete_approval = local;
+        }
         if let Some(delete_approval) = &self.delete_approval {
             if let Some(remote) = delete_approval.remote {
                 effective.require_remote_delete_approval = remote;
@@ -133,6 +153,14 @@ impl DirectoryConfigResolver {
             .join(DIRECTORY_CONFIG_FILE_NAME);
         match fs::read_to_string(&path) {
             Ok(contents) => match toml::from_str::<DirectorySettings>(&contents) {
+                Ok(settings) if settings.conflicts() => {
+                    warn!(
+                        path = %path.display(),
+                        "per-directory config sets both `deletion_policy` and `delete_approval`; \
+                         ignoring it — keep whichever you prefer and delete the other"
+                    );
+                    DirectorySettings::default()
+                }
                 Ok(settings) => settings,
                 Err(error) => {
                     warn!(
@@ -274,6 +302,48 @@ mod tests {
             resolver
                 .resolve(Path::new("sub"), false)
                 .require_local_delete_approval
+        );
+    }
+
+    #[test]
+    fn a_deletion_policy_in_a_directory_file_sets_both_directions() {
+        // #194's key composes with the per-directory layer instead of being a second mechanism: it
+        // is the same overlay, at the same precedence, in the same nearest-wins chain.
+        let root = tempdir().expect("tempdir");
+        write_config(root.path(), "loose", "deletion_policy = \"never\"\n");
+        write_config(
+            root.path(),
+            "loose/keep",
+            "deletion_policy = \"ask_every_time\"\n",
+        );
+        let mut resolver = DirectoryConfigResolver::new(root.path(), PROTECTED);
+
+        let loose = resolver.resolve(Path::new("loose/file.txt"), false);
+        assert!(!loose.require_remote_delete_approval && !loose.require_local_delete_approval);
+
+        let kept = resolver.resolve(Path::new("loose/keep/file.txt"), false);
+        assert!(
+            kept.require_remote_delete_approval && kept.require_local_delete_approval,
+            "a deeper file must override a shallower one, policy spelling included"
+        );
+    }
+
+    #[test]
+    fn a_directory_file_using_both_spellings_is_ignored_rather_than_guessed() {
+        // The daemon config makes this a startup error; a directory file cannot stop the daemon, so
+        // it takes the malformed path — contribute nothing, keep the inherited guard. Fail-safe:
+        // the ambiguous file never weakens protection.
+        let root = tempdir().expect("tempdir");
+        write_config(
+            root.path(),
+            "sub",
+            "deletion_policy = \"never\"\n[delete_approval]\nlocal = false\n",
+        );
+        let mut resolver = DirectoryConfigResolver::new(root.path(), PROTECTED);
+        let effective = resolver.resolve(Path::new("sub/file.txt"), false);
+        assert!(
+            effective.require_remote_delete_approval && effective.require_local_delete_approval,
+            "a file spelling one setting two ways must never weaken the guard"
         );
     }
 

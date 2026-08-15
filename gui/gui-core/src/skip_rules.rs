@@ -29,6 +29,7 @@
 //! beside it.
 
 use proton_drive_sync_engine::index::ScanOptions;
+use proton_drive_sync_engine::sync::ConflictNaming;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -139,11 +140,18 @@ pub struct SkipRuleReport {
 /// `exclude_patterns` is whatever the tab currently shows — the **staged** rule set, not the saved
 /// config. `8a Skip rules` is drawn mid-edit with a pending removal, and the Add row implies
 /// pricing a pattern that has never been saved, so the caller passes what is on screen.
+///
+/// `naming` must be the daemon's configured [`ConflictNaming`], because the baseline below is the
+/// DENOMINATOR — "would the daemon sync this file" — and a conflict sidecar is one of the things it
+/// answers no to. Holding the default while `conflict_suffix` says otherwise counts every sidecar
+/// as a syncable file and credits some skip rule with hiding it, while a user's own
+/// `.proton-cloud`-named file drops out of the count it belongs in.
 pub fn measure(
     local_root: &Path,
     exclude_patterns: &[String],
     include_patterns: &[String],
     ignored_paths: &[PathBuf],
+    naming: &ConflictNaming,
 ) -> Result<SkipRuleReport, String> {
     let to_error = |e: Box<dyn std::error::Error + Send + Sync>| e.to_string();
 
@@ -161,8 +169,8 @@ pub fn measure(
     //   per-rule  — one rule alone: that rule's own row.
     //
     // Only the baseline is fatal, because a failure there is not about any rule the user typed.
-    let baseline =
-        ScanOptions::new(local_root, ignored_paths, include_patterns, &[]).map_err(to_error)?;
+    let baseline = ScanOptions::new(local_root, ignored_paths, include_patterns, &[], naming)
+        .map_err(to_error)?;
 
     let mut rules = Vec::with_capacity(exclude_patterns.len());
     let mut per_rule = Vec::with_capacity(exclude_patterns.len());
@@ -172,6 +180,7 @@ pub fn measure(
             ignored_paths,
             include_patterns,
             std::slice::from_ref(pattern),
+            naming,
         );
         let error = compiled.as_ref().err().map(|e| e.to_string());
         rules.push(RuleUsage {
@@ -193,8 +202,8 @@ pub fn measure(
         .filter(|(_, compiled)| compiled.is_some())
         .map(|(pattern, _)| pattern.clone())
         .collect();
-    let combined =
-        ScanOptions::new(local_root, ignored_paths, include_patterns, &valid).map_err(to_error)?;
+    let combined = ScanOptions::new(local_root, ignored_paths, include_patterns, &valid, naming)
+        .map_err(to_error)?;
 
     let mut report = SkipRuleReport {
         rules,
@@ -432,7 +441,7 @@ mod tests {
 
     fn measure_at(root: &Path, patterns: &[&str]) -> SkipRuleReport {
         let owned: Vec<String> = patterns.iter().map(|p| (*p).to_string()).collect();
-        measure(root, &owned, &[], &[]).expect("valid globs")
+        measure(root, &owned, &[], &[], &ConflictNaming::default()).expect("valid globs")
     }
 
     #[test]
@@ -448,6 +457,39 @@ mod tests {
         assert_eq!(report.considered_files, 3);
         assert_eq!(report.total_files, 2);
         assert_eq!(report.total_bytes, 300);
+    }
+
+    #[test]
+    fn the_denominator_ignores_sidecars_under_the_configured_suffix() {
+        // The baseline is "would the daemon sync this file", so it has to ask under the daemon's
+        // OWN suffix. With the default naming here, `notes.from-cloud.txt` would count as an
+        // ordinary syncable file and `legacy.proton-cloud.txt` would drop out of a count it
+        // belongs in — the tab would then credit a rule with hiding the engine's own sidecar.
+        //
+        // The counts are deliberately ASYMMETRIC — two sidecars under the configured suffix
+        // against one file under the default. With one of each the two answers coincide at 2 and
+        // the test passes whether or not the naming is threaded at all.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes.txt", 10);
+        write(dir.path(), "a.from-cloud.txt", 20);
+        write(dir.path(), "b.from-cloud.txt", 20);
+        write(dir.path(), "legacy.proton-cloud.txt", 30);
+
+        let naming = ConflictNaming::new("from-cloud").unwrap();
+        let report = measure(dir.path(), &[], &[], &[], &naming).expect("valid globs");
+        assert_eq!(
+            report.considered_files, 2,
+            "the two sidecars are not files any rule could hide; the `.proton-cloud`-named one is"
+        );
+
+        // The same tree under the DEFAULT naming, which is what this parameter exists to stop:
+        // the sidecars become syncable files and the user's own file stops being one.
+        let wrong =
+            measure(dir.path(), &[], &[], &[], &ConflictNaming::default()).expect("valid globs");
+        assert_eq!(
+            wrong.considered_files, 3,
+            "the miscount, pinned so it stays distinguishable"
+        );
     }
 
     #[test]
@@ -692,7 +734,14 @@ mod tests {
 
         let excludes = vec!["**/*.psd".to_string()];
         let includes = vec!["Documents/**".to_string()];
-        let report = measure(dir.path(), &excludes, &includes, &[]).expect("valid globs");
+        let report = measure(
+            dir.path(),
+            &excludes,
+            &includes,
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("valid globs");
         assert_eq!(
             report.rules[0].files, 1,
             "only the file inside the include scope"
@@ -760,7 +809,14 @@ mod tests {
         // A missing root cannot be canonicalized, so the walk records it instead of reporting an
         // empty, clean tree.
         let missing = dir.path().join("gone");
-        let report = measure(&missing, &["*.psd".to_string()], &[], &[]).unwrap();
+        let report = measure(
+            &missing,
+            &["*.psd".to_string()],
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .unwrap();
         assert_eq!(report.unreadable_directories, 1);
         assert_eq!(report.considered_files, 0);
     }

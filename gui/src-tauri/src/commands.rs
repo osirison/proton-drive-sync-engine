@@ -34,7 +34,9 @@
 use crate::config_path::RuntimePaths;
 use gui_core::conflicts::{self, Conflict, Resolution};
 use gui_core::state::derive_state;
-use gui_core::wire::{ControlCommand, ControlResponse, DryRunReport, PendingDeletion};
+use gui_core::wire::{
+    ControlCommand, ControlResponse, DeleteDirection, DryRunReport, PendingDeletion,
+};
 use gui_core::{config_io, index_read, ipc, plan};
 use std::process::Command;
 use std::sync::Mutex;
@@ -199,26 +201,60 @@ async fn approval_round_trip<R: tauri::Runtime>(
     command: ControlCommand,
     target: String,
     literal_path: bool,
+    direction: Option<DeleteDirection>,
 ) -> StatusPayload {
     let socket = match socket_path_for_ipc(&app.state()) {
         Ok(socket) => socket,
         Err(error) => return status_payload(Err(error)),
     };
     let reply = spawn_blocking_ipc(move || {
-        ipc::command_with_argument(&socket, command, target, literal_path, ipc::DEFAULT_TIMEOUT)
+        ipc::command_with_argument(
+            &socket,
+            command,
+            target,
+            literal_path,
+            direction,
+            ipc::DEFAULT_TIMEOUT,
+        )
     })
     .await;
     status_payload_remembering(&app.state(), reply)
 }
 
+/// `direction` is read by the daemon ONLY when nothing pending matches `target` — the Plan screen
+/// approving its own plan's deletion before any pass has withheld it (#227). A pending item's own
+/// direction wins over it, and an approval with neither authorises nothing.
 #[tauri::command]
-pub async fn approve(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
-    approval_round_trip(app, ControlCommand::Approve, target, literal_path).await
+pub async fn approve(
+    app: tauri::AppHandle,
+    target: String,
+    literal_path: bool,
+    direction: Option<DeleteDirection>,
+) -> StatusPayload {
+    approval_round_trip(
+        app,
+        ControlCommand::Approve,
+        target,
+        literal_path,
+        direction,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn deny(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
-    approval_round_trip(app, ControlCommand::Deny, target, literal_path).await
+    approval_round_trip(app, ControlCommand::Deny, target, literal_path, None).await
+}
+
+/// `Keep it` — refuse a withheld deletion (#224). The daemon purges the baseline record for the
+/// target and schedules the pass that puts the surviving copy back on the other side, so unlike
+/// `deny` (which only revokes an approval) the row does not come back.
+///
+/// An older daemon that predates the variant rejects it as an unknown command, and the reply
+/// carries that error rather than the screen recording a decision nothing acted on.
+#[tauri::command]
+pub async fn keep(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
+    approval_round_trip(app, ControlCommand::Keep, target, literal_path, None).await
 }
 
 #[tauri::command]
@@ -245,6 +281,13 @@ pub struct ConfigPayload {
     proton_cli: Option<String>,
     proton_timeout_secs: Option<i64>,
     proton_list_attempts: Option<i64>,
+    /// The Advanced tab's remaining file keys (G23/#237). Each is the **file's literal value**, not
+    /// the effective one: an absent key means the daemon default applies, and reporting the
+    /// resolved value here would let the next save bake a default — or a value that came from a
+    /// command-line flag — into the file as if the user had typed it.
+    socket_path: Option<String>,
+    log_level: Option<String>,
+    conflict_suffix: Option<String>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
     /// The same two booleans as the Settings → Deletions radio (C1, #174).
@@ -275,6 +318,9 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
         proton_cli: doc.get_str("proton_cli"),
         proton_timeout_secs: doc.get_int("proton_timeout_secs"),
         proton_list_attempts: doc.get_int("proton_list_attempts"),
+        socket_path: doc.get_str("socket_path"),
+        log_level: doc.get_str("log_level"),
+        conflict_suffix: doc.get_str("conflict_suffix"),
         delete_approval_remote: doc.get_delete_approval("remote"),
         delete_approval_local: doc.get_delete_approval("local"),
         deletion_policy: doc.get_deletion_policy(),
@@ -294,10 +340,14 @@ pub struct ConfigUpdate {
     proton_cli: Option<String>,
     proton_timeout_secs: Option<i64>,
     proton_list_attempts: Option<i64>,
+    socket_path: Option<String>,
+    log_level: Option<String>,
+    conflict_suffix: Option<String>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
     /// Applied AFTER the two raw booleans, so a screen that sends both cannot end up half-written:
     /// the policy always sets both directions, which is what makes a radio selection unambiguous.
+    /// `set_deletion_policy` writes it back in whichever spelling the file already uses.
     deletion_policy: Option<config_io::DeletionPolicy>,
 }
 
@@ -331,6 +381,20 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     }
     if let Some(v) = update.proton_list_attempts {
         doc.set_int("proton_list_attempts", v);
+    }
+    // An EMPTY string clears the key rather than writing `key = ""` — for all three of these an
+    // empty value is either rejected outright (`conflict_suffix`) or means something the user did
+    // not ask for, while an absent key is exactly "use the daemon default".
+    for (key, value) in [
+        ("socket_path", &update.socket_path),
+        ("log_level", &update.log_level),
+        ("conflict_suffix", &update.conflict_suffix),
+    ] {
+        match value.as_deref().map(str::trim) {
+            Some("") => doc.remove(key),
+            Some(v) => doc.set_str(key, v),
+            None => {}
+        }
     }
     if let Some(v) = update.delete_approval_remote {
         doc.set_delete_approval("remote", v);
@@ -542,17 +606,21 @@ pub async fn list_remote(state: Paths<'_>, path: Option<String>) -> Result<Strin
     .map_err(|error| format!("remote-list task failed: {error}"))?
 }
 
-/// Async so a full local-tree conflict scan (the `.proton-cloud` sidecar walk) never blocks the
-/// GTK main loop on a large folder.
+/// Async so a full local-tree conflict scan (the sidecar walk) never blocks the GTK main loop on a
+/// large folder.
 #[tauri::command]
 pub async fn scan_conflicts(state: Paths<'_>) -> Result<Vec<Conflict>, String> {
-    let local_root = state
-        .lock()
-        .unwrap()
-        .effective_local_root()
-        .ok_or_else(|| "local_root is not configured".to_string())?;
+    // Root and naming come out of the SAME guard: the scanner must look for the suffix this config
+    // makes the daemon write, not the compiled-in default (`conflict_suffix`, G23/#237).
+    let (local_root, naming) = {
+        let paths = state.lock().unwrap();
+        let local_root = paths
+            .effective_local_root()
+            .ok_or_else(|| "local_root is not configured".to_string())?;
+        (local_root, paths.conflict_naming.clone())
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        conflicts::scan_conflicts(&local_root).map_err(|e| e.to_string())
+        conflicts::scan_conflicts(&local_root, &naming).map_err(|e| e.to_string())
     })
     .await
     .map_err(|error| format!("conflict-scan task failed: {error}"))?
@@ -572,7 +640,7 @@ pub fn resolve_conflict(
     conflicts::apply_resolution(&local_root, &conflict, choice).map_err(|e| e.to_string())
 }
 
-/// Read both sides of a conflict (the local file + its `.proton-cloud` sidecar) for the compare
+/// Read both sides of a conflict (the local file + its sidecar) for the compare
 /// view. Path-safe and size-bounded — see `gui_core::conflicts::read_conflict_pair`.
 #[tauri::command]
 pub fn read_conflict_pair(
@@ -1401,10 +1469,17 @@ pub async fn skip_rule_usage(
     patterns: Vec<String>,
     include: Option<Vec<String>>,
 ) -> Result<gui_core::skip_rules::SkipRuleReport, String> {
-    let (local_root, db_path) = {
+    let (local_root, db_path, naming) = {
         let paths = app.state::<Mutex<RuntimePaths>>();
         let paths = paths.lock().unwrap();
-        (paths.effective_local_root(), paths.effective_db_path())
+        (
+            paths.effective_local_root(),
+            paths.effective_db_path(),
+            // The baseline `measure` builds is the denominator — "would the daemon sync this
+            // file" — and a conflict sidecar is one of the things it answers no to, so it has to
+            // ask under the daemon's configured suffix rather than the compiled-in one.
+            paths.conflict_naming.clone(),
+        )
     };
     // Two different "no" answers, and only one of them makes a rule safe to remove.
     //
@@ -1427,6 +1502,7 @@ pub async fn skip_rule_usage(
             &patterns,
             &include.unwrap_or_default(),
             &daemon_ignored_paths(db_path.as_ref()),
+            &naming,
         )
     })
     .await
@@ -2223,6 +2299,7 @@ mod socket_tests {
             ControlCommand::Approve,
             "some/file.txt".to_string(),
             true,
+            None,
         ));
         assert!(
             payload.error.is_none(),

@@ -1,4 +1,4 @@
-use crate::sync::{SyncAction, UnsyncableItem, UnsyncableReason};
+use crate::sync::{ConflictNaming, SyncAction, UnsyncableItem, UnsyncableReason};
 use crate::{AppResult, boxed_error};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -68,6 +68,13 @@ CREATE TABLE IF NOT EXISTS sync_events (
 );
 CREATE INDEX IF NOT EXISTS idx_sync_events_at ON sync_events(at);
 CREATE INDEX IF NOT EXISTS idx_sync_events_path ON sync_events(path);
+CREATE TABLE IF NOT EXISTS withheld_deletions (
+    path BLOB NOT NULL,
+    direction TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    first_seen INTEGER NOT NULL,
+    PRIMARY KEY (path, direction)
+);
 "#;
 
 /// Speeds up [`path_for_proton_id`] (turning a volume event's node id into its local path).
@@ -252,14 +259,22 @@ pub struct ScanOptions {
     include_pattern_strings: Vec<String>,
     has_include_patterns: bool,
     exclude_patterns: GlobSet,
+    /// How conflict sidecars are spelled, so the scanner ignores exactly what the planner writes.
+    /// Carried here rather than read from a constant because `conflict_suffix` is configurable —
+    /// a scanner using a different suffix from the planner uploads the engine's own sidecars.
+    conflict_naming: ConflictNaming,
 }
 
 impl ScanOptions {
+    /// `naming` must be the one the planner is running with (`DaemonConfig::conflict_naming`);
+    /// [`ConflictNaming::default`] is correct only where nothing on disk is being classified —
+    /// glob validation, and tests that never write a sidecar.
     pub fn new(
         root: &Path,
         ignored_paths: &[PathBuf],
         include_patterns: &[String],
         exclude_patterns: &[String],
+        naming: &ConflictNaming,
     ) -> AppResult<Self> {
         let ignored_relative_paths = ignored_paths
             .iter()
@@ -280,11 +295,14 @@ impl ScanOptions {
             include_pattern_strings: include_patterns.to_vec(),
             has_include_patterns: !include_patterns.is_empty(),
             exclude_patterns: build_glob_set(exclude_patterns)?,
+            conflict_naming: naming.clone(),
         })
     }
 
     pub fn allows_relative_file(&self, relative_path: &Path) -> bool {
-        if should_ignore_relative_path(relative_path) || self.is_configured_ignored(relative_path) {
+        if should_ignore_relative_path(relative_path, &self.conflict_naming)
+            || self.is_configured_ignored(relative_path)
+        {
             return false;
         }
         if self.matches(&self.exclude_patterns, relative_path) {
@@ -800,6 +818,43 @@ pub fn clear_event_cursor(connection: &Connection, scope_id: &str) -> AppResult<
         "DELETE FROM remote_event_cursor WHERE scope_id = ?1",
         params![scope_id],
     )?;
+    Ok(())
+}
+
+/// Drops every row the daemon derives sync decisions from, in one transaction: the baseline
+/// (`file_index`), the event cursors, the persisted warm-start counter, the standing delete
+/// approvals, and the display-only unsyncable list.
+///
+/// This is `proton-sync reset-index` (G23/#237's *Reset the index*), and it **truncates rather
+/// than removes the database file**: the file is open in a running daemon, and unlinking it under
+/// a live connection leaves that daemon writing to an orphaned inode. Truncating in-process, from
+/// the main loop between passes, keeps every invariant instead — an empty baseline *is* the
+/// bootstrap condition, and a cleared cursor makes the next pass a full walk, not a warm start.
+///
+/// Not destructive to user data: with an empty index the next pass plans a bootstrap, which
+/// `AutoLink`s an already-agreeing local/remote pair rather than re-transferring it. The approvals
+/// go with it because each is pinned to a `fingerprint` derived from the baseline this erases —
+/// keeping them would leave standing consent for a deletion nothing can still describe.
+pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
+    // A guarded transaction, not a `BEGIN; …; COMMIT;` batch. `execute_batch` returns on the first
+    // failing statement with the `BEGIN` still open — SQLite does not implicitly roll back — and
+    // this runs on the DAEMON'S LIVE CONNECTION mid-life, where the failure does not stop the
+    // process: `reconcile_blocking` records the error and the loop carries on, so every later
+    // `commit_checkpoint` would then fail with "cannot start a transaction within a transaction"
+    // until a restart. The guard rolls back on drop, leaving the connection usable and the state
+    // whole. `unchecked_transaction` because the caller holds `&Connection`, matching
+    // `replace_unsyncable_items`.
+    let transaction = connection.unchecked_transaction()?;
+    for table in [
+        "file_index",
+        "remote_event_cursor",
+        "warm_start_state",
+        "delete_approvals",
+        "unsyncable_items",
+    ] {
+        transaction.execute(&format!("DELETE FROM {table}"), [])?;
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -1441,8 +1496,114 @@ pub fn load_delete_approvals(connection: &Connection) -> AppResult<Vec<DeleteApp
     Ok(approvals)
 }
 
+/// When a withheld deletion was **first** held, from the `withheld_deletions` table.
+///
+/// `PendingDeletion::detected_epoch_secs` is the age of the *pass* that re-derived the withheld
+/// action, not of the deletion (#225): the gate stamps `now` on every item it withholds, and a pass
+/// cannot idle-skip while anything is pending, so a three-day-old deletion reported an age of
+/// seconds. This row is the missing fact, and it is persisted for the same reason
+/// [`load_unsyncable_items`] is — a queue that survives restarts must have an age that does too.
+///
+/// Keyed like `delete_approvals` on `(path, direction)` and pinned to the same `fingerprint`: a
+/// different fingerprint at the same path is a *different* deletion, so it re-stamps rather than
+/// inheriting the previous one's age. `index_key` BLOB keys, byte-exact like every other path
+/// column here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithheldDeletion {
+    pub path: PathBuf,
+    pub direction: crate::sync::DeleteDirection,
+    pub fingerprint: String,
+    pub first_seen_epoch_secs: u64,
+}
+
+/// Every stored withheld-deletion row (unordered — the caller keys them by `(path, direction)`).
+pub fn load_withheld_deletions(connection: &Connection) -> AppResult<Vec<WithheldDeletion>> {
+    let mut statement = connection
+        .prepare("SELECT path, direction, fingerprint, first_seen FROM withheld_deletions")?;
+    let items = statement
+        .query_map([], |row| {
+            let direction: String = row.get(1)?;
+            Ok(WithheldDeletion {
+                path: read_index_key_column(row, 0)?,
+                direction: direction.parse().map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, err)
+                })?,
+                fingerprint: row.get(2)?,
+                first_seen_epoch_secs: row.get::<_, i64>(3)?.max(0) as u64,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// Replaces the stored withheld-deletion set wholesale (see [`WithheldDeletion`]). The gate's output
+/// **is** the complete set of currently-withheld deletions, so a replace is the honest write and it
+/// also clears the table on the first pass that withholds nothing. Carrying `first_seen` forward is
+/// the caller's job (it holds the previous rows). One transaction, and display-only data — written
+/// outside the reconcile's checkpoint transactions, recording no side effect.
+pub fn replace_withheld_deletions(
+    connection: &Connection,
+    items: &[WithheldDeletion],
+) -> AppResult<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute("DELETE FROM withheld_deletions", [])?;
+    {
+        let mut statement = transaction.prepare(
+            "INSERT INTO withheld_deletions (path, direction, fingerprint, first_seen) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for item in items {
+            statement.execute(params![
+                index_key(&item.path),
+                item.direction.as_str(),
+                item.fingerprint,
+                i64::try_from(item.first_seen_epoch_secs).unwrap_or(i64::MAX)
+            ])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Purges the baseline record at `root` **and every record beneath it**, returning how many rows
+/// went. This is how a refused deletion (`keep`) stops being a deletion: with no baseline record the
+/// surviving side is no longer "a thing that was deleted", it is a thing the engine has never seen,
+/// and the bootstrap arm adopts it back onto the other side.
+///
+/// A subtree, not one row, because a directory deletion is planned **recursively** — one
+/// `LocalDelete`/`RemoteDelete` for the folder with every descendant action suppressed. Purging the
+/// folder alone would re-adopt the folder while each surviving child record went on deriving its own
+/// withheld delete.
+///
+/// Component-wise via [`Path::starts_with`], never a byte prefix: `photos/2019x` is not under
+/// `photos/2019`.
+///
+/// Returns the paths it purged, because the caller has to answer for each of them: a purged record
+/// leaves any standing approval at that path pointing at nothing the user can see (see
+/// `daemon::apply_keep_command`).
+///
+/// Opens **no transaction of its own** — the caller wraps it, because a refusal also revokes the
+/// approvals it replaces and the two must land together.
+pub fn purge_subtree_records(connection: &Connection, root: &Path) -> AppResult<Vec<PathBuf>> {
+    let paths: Vec<PathBuf> = {
+        let mut statement = connection.prepare("SELECT file_path FROM file_index")?;
+        let rows = statement
+            .query_map([], |row| read_index_key_column(row, 0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .filter(|path| path.starts_with(root))
+            .collect()
+    };
+    for path in &paths {
+        purge_record(connection, path)?;
+    }
+    Ok(paths)
+}
+
+/// Unfiltered scan with the **default** sidecar naming. Only for callers that classify nothing —
+/// tests and the live smoke test; the daemon always goes through `scan_options_from_config`.
 pub fn scan_local_files(root: &Path) -> AppResult<HashMap<PathBuf, LocalFileState>> {
-    let options = ScanOptions::new(root, &[], &[], &[])?;
+    let options = ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default())?;
     scan_local_files_with_options(root, &options)
 }
 
@@ -1507,8 +1668,9 @@ pub fn scan_local_entities_observed(
     Ok(entities)
 }
 
+/// See [`scan_local_files`] for the default-naming caveat.
 pub fn scan_local_entities(root: &Path) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
-    let options = ScanOptions::new(root, &[], &[], &[])?;
+    let options = ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default())?;
     scan_local_entities_with_options(root, &options)
 }
 
@@ -1599,12 +1761,12 @@ fn vanished_entry_to_skip<T>(result: AppResult<T>) -> AppResult<Option<T>> {
     }
 }
 
-pub fn should_ignore_path(path: &Path) -> bool {
-    should_ignore_relative_path(path)
+pub fn should_ignore_path(path: &Path, naming: &ConflictNaming) -> bool {
+    should_ignore_relative_path(path, naming)
 }
 
-fn should_ignore_relative_path(relative_path: &Path) -> bool {
-    if crate::sync::is_conflict_copy(relative_path)
+fn should_ignore_relative_path(relative_path: &Path, naming: &ConflictNaming) -> bool {
+    if naming.is_conflict_copy(relative_path)
         || is_download_scratch_path(relative_path)
         || is_sync_state_path(relative_path)
     {
@@ -1932,13 +2094,114 @@ mod tests {
     }
 
     #[test]
+    fn reset_index_state_clears_every_table_the_daemon_decides_from() {
+        // `proton-sync reset-index` (G23/#237). Written against the table list rather than one
+        // sample row, because the failure mode is a table someone forgets to add here when they add
+        // it to the schema — a stale cursor or a stale approval surviving a "reset" is worse than
+        // no reset at all.
+        let directory = tempdir().expect("tempdir");
+        let connection = open_database(&directory.path().join("index.db")).expect("db");
+        upsert_record(&connection, &known_file_record("keep.txt", 1, 1, "hash")).expect("record");
+        store_event_cursor(&connection, "vol", "cursor-0", 1).expect("cursor");
+        store_warm_start_count(&connection, 7).expect("warm start count");
+        upsert_delete_approval(
+            &connection,
+            Path::new("keep.txt"),
+            crate::sync::DeleteDirection::Local,
+            "fingerprint",
+            1,
+        )
+        .expect("approval");
+
+        reset_index_state(&connection).expect("reset");
+
+        assert!(load_index(&connection).expect("index").is_empty());
+        assert!(
+            load_event_cursor(&connection, "vol")
+                .expect("cursor")
+                .is_none()
+        );
+        assert_eq!(load_warm_start_count(&connection).expect("count"), 0);
+        assert!(
+            !matching_delete_approval(
+                &connection,
+                Path::new("keep.txt"),
+                crate::sync::DeleteDirection::Local,
+                "fingerprint",
+            )
+            .expect("approval"),
+        );
+        // And the file is still a working database, not a removed one: the daemon holds this
+        // connection open across the reset.
+        upsert_record(&connection, &known_file_record("again.txt", 1, 1, "hash"))
+            .expect("still writable");
+        assert_eq!(load_index(&connection).expect("index").len(), 1);
+    }
+
+    #[test]
+    fn a_failed_reset_rolls_back_and_leaves_the_connection_usable() {
+        // The daemon does not exit on a failed pass, so a half-applied reset would leave its live
+        // connection inside an open transaction and every later checkpoint would fail with
+        // "cannot start a transaction within a transaction". Forced here by removing a table the
+        // reset deletes from, which makes the fourth statement fail with the first three applied.
+        let directory = tempdir().expect("tempdir");
+        let connection = open_database(&directory.path().join("index.db")).expect("db");
+        upsert_record(&connection, &known_file_record("keep.txt", 1, 1, "hash")).expect("record");
+        connection
+            .execute_batch("DROP TABLE delete_approvals")
+            .expect("drop");
+
+        reset_index_state(&connection).expect_err("the reset must fail");
+
+        assert_eq!(
+            load_index(&connection).expect("index").len(),
+            1,
+            "the rows deleted before the failure must roll back, not vanish half-way"
+        );
+        // The decisive half: a connection left mid-transaction cannot open another one.
+        let transaction = connection
+            .unchecked_transaction()
+            .expect("the connection must not be stuck inside a transaction");
+        transaction.commit().expect("commit");
+    }
+
+    #[test]
+    fn a_scan_ignores_the_sidecars_its_own_configured_suffix_names() {
+        // The scanner and the planner have to agree about what a sidecar looks like, or the engine
+        // uploads the file it just wrote. `ScanOptions` carries the naming for exactly that reason,
+        // and the second half of this test is what the old compiled-in constant could not express:
+        // under a custom suffix a `.proton-cloud` file is ORDINARY USER DATA and must sync.
+        let directory = tempdir().expect("tempdir");
+        for name in ["keep.txt", "keep.from-cloud.txt", "legacy.proton-cloud.txt"] {
+            std::fs::write(directory.path().join(name), b"x").expect("write");
+        }
+
+        let naming = ConflictNaming::new("from-cloud").expect("suffix");
+        let options =
+            ScanOptions::new(directory.path(), &[], &[], &[], &naming).expect("scan options");
+        let files = scan_local_files_with_options(directory.path(), &options).expect("scan");
+
+        assert!(
+            !files.contains_key(Path::new("keep.from-cloud.txt")),
+            "the configured suffix must be ignored: {files:?}"
+        );
+        assert!(
+            files.contains_key(Path::new("legacy.proton-cloud.txt")),
+            "a name matching only the DEFAULT suffix is ordinary data here — the orphaning that \
+             `sync::changing_the_suffix_orphans_sidecars_written_under_the_old_one` records"
+        );
+        assert!(files.contains_key(Path::new("keep.txt")));
+    }
+
+    #[test]
     fn scan_observer_reports_each_visited_file_with_a_running_count() {
         let directory = tempdir().expect("tempdir");
         let nested = directory.path().join("sub");
         std::fs::create_dir(&nested).expect("nested dir");
         std::fs::write(directory.path().join("one.txt"), b"one").expect("write one");
         std::fs::write(nested.join("two.txt"), b"two").expect("write two");
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("options");
 
         let seen = std::cell::RefCell::new(Vec::new());
         let observer = |count: u64, path: &Path| {
@@ -2002,7 +2265,14 @@ mod tests {
 
     #[test]
     fn scan_options_reject_download_scratch_paths() {
-        let options = ScanOptions::new(Path::new("/root"), &[], &[], &[]).expect("scan options");
+        let options = ScanOptions::new(
+            Path::new("/root"),
+            &[],
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
         let scratch_file =
             PathBuf::from(format!("{}9-9/budget.xlsx", crate::DOWNLOAD_SCRATCH_PREFIX));
         let scratch_dir = PathBuf::from(format!("{}9-9", crate::DOWNLOAD_SCRATCH_PREFIX));
@@ -2069,7 +2339,8 @@ mod tests {
                 .is_none()
         );
         // A child directory that vanished before its own read_dir (the recursion call site).
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("options");
         let mut entities = HashMap::new();
         assert!(
             vanished_entry_to_skip(visit_directory(
@@ -2111,6 +2382,7 @@ mod tests {
             std::slice::from_ref(&custom_db_path),
             &[],
             &[],
+            &ConflictNaming::default(),
         )
         .expect("scan options");
 
@@ -2131,6 +2403,7 @@ mod tests {
             &[PathBuf::from("sync-root/state/custom.db")],
             &[],
             &[],
+            &ConflictNaming::default(),
         )
         .expect("scan options");
 
@@ -2154,8 +2427,14 @@ mod tests {
         // issue #73 shape (relative/`..`/symlink root vs absolute db path). Without canonical
         // matching the ignore silently drops and the engine scans/uploads its own live DB.
         let dotted_root = directory.path().join("x").join("..").join("x");
-        let options = ScanOptions::new(&dotted_root, std::slice::from_ref(&db_path), &[], &[])
-            .expect("scan options");
+        let options = ScanOptions::new(
+            &dotted_root,
+            std::slice::from_ref(&db_path),
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
         assert!(
             !options.allows_relative_file(Path::new(".state/custom.db")),
             "a db path that only matches the root after canonicalization must still be ignored"
@@ -2174,8 +2453,14 @@ mod tests {
             .join("..")
             .join(".state")
             .join("other.db");
-        let options = ScanOptions::new(&root, std::slice::from_ref(&dotted_db), &[], &[])
-            .expect("scan options");
+        let options = ScanOptions::new(
+            &root,
+            std::slice::from_ref(&dotted_db),
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
         assert!(
             !options.allows_relative_file(Path::new(".state/other.db")),
             "a not-yet-created db path spelled with `..` must normalize into the ignore set"
@@ -2194,8 +2479,14 @@ mod tests {
         std::fs::write(state.join("custom.db-shm"), b"s").expect("write shm");
         std::fs::write(directory.path().join("keep.txt"), b"keep").expect("write keep");
 
-        let options = ScanOptions::new(directory.path(), std::slice::from_ref(&db_path), &[], &[])
-            .expect("scan options");
+        let options = ScanOptions::new(
+            directory.path(),
+            std::slice::from_ref(&db_path),
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
 
         assert!(!options.allows_relative_file(Path::new(".state/custom.db-journal")));
         assert!(!options.allows_relative_file(Path::new(".state/custom.db-wal")));
@@ -2224,7 +2515,8 @@ mod tests {
         std::fs::write(nested.join("notes.txt"), b"notes").expect("nested file");
         std::fs::write(directory.path().join("keep.txt"), b"keep").expect("keep");
 
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("scan options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("scan options");
         let files = scan_local_files_with_options(directory.path(), &options).expect("scan files");
 
         assert!(files.contains_key(Path::new("keep.txt")));
@@ -2241,7 +2533,9 @@ mod tests {
 
     #[test]
     fn scan_options_reject_the_sync_state_dir_and_its_contents() {
-        let options = ScanOptions::new(Path::new("root"), &[], &[], &[]).expect("scan options");
+        let options =
+            ScanOptions::new(Path::new("root"), &[], &[], &[], &ConflictNaming::default())
+                .expect("scan options");
 
         assert!(!options.allows_relative_directory(Path::new(".sync")));
         assert!(!options.allows_relative_file(Path::new(".sync/sync_index.db")));
@@ -2267,6 +2561,7 @@ mod tests {
             &[],
             &["docs/**".to_owned()],
             &["**/*.tmp".to_owned()],
+            &ConflictNaming::default(),
         )
         .expect("scan options");
 
@@ -2438,11 +2733,23 @@ mod tests {
 
     #[test]
     fn per_directory_config_file_is_ignored_at_any_depth() {
-        assert!(should_ignore_path(Path::new(".proton-sync.toml")));
-        assert!(should_ignore_path(Path::new("a/b/.proton-sync.toml")));
+        assert!(should_ignore_path(
+            Path::new(".proton-sync.toml"),
+            &ConflictNaming::default()
+        ));
+        assert!(should_ignore_path(
+            Path::new("a/b/.proton-sync.toml"),
+            &ConflictNaming::default()
+        ));
         // A same-named directory or unrelated file is not ignored.
-        assert!(!should_ignore_path(Path::new("a/proton-sync.toml")));
-        assert!(!should_ignore_path(Path::new("notes.txt")));
+        assert!(!should_ignore_path(
+            Path::new("a/proton-sync.toml"),
+            &ConflictNaming::default()
+        ));
+        assert!(!should_ignore_path(
+            Path::new("notes.txt"),
+            &ConflictNaming::default()
+        ));
     }
 
     #[cfg(unix)]
@@ -2822,7 +3129,8 @@ mod tests {
                 "reused-sentinel",
             ),
         );
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("options");
         let entities =
             scan_local_entities_reusing_hashes(directory.path(), &options, &known).expect("scan");
 
@@ -2853,7 +3161,8 @@ mod tests {
                 "stale-sentinel",
             ),
         );
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("options");
         let entities =
             scan_local_entities_reusing_hashes(directory.path(), &options, &known).expect("scan");
 
@@ -3153,6 +3462,110 @@ mod tests {
             load_unsyncable_items(&connection).expect("load"),
             items[1..]
         );
+    }
+
+    #[test]
+    fn withheld_deletions_round_trip_and_an_old_database_gains_the_table() {
+        // The queue survives restarts, so its age has to (#225) — including on a database written
+        // before this table existed, which `CREATE TABLE IF NOT EXISTS` must add cleanly.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db_path = directory.path().join("index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE file_index (
+                        file_path TEXT PRIMARY KEY,
+                        entity_kind TEXT NOT NULL DEFAULT 'file',
+                        file_size INTEGER NOT NULL,
+                        mtime INTEGER NOT NULL,
+                        sha1_hash TEXT,
+                        proton_id TEXT,
+                        sync_status TEXT NOT NULL
+                    );
+                    "#,
+                )
+                .expect("pre-existing schema");
+        }
+        let connection = open_database(&db_path).expect("open database upgrades cleanly");
+        assert!(
+            load_withheld_deletions(&connection)
+                .expect("load")
+                .is_empty(),
+            "an upgraded database has no withheld deletions"
+        );
+
+        let items = vec![
+            WithheldDeletion {
+                path: PathBuf::from(OsStr::from_bytes(b"caf\xe9.txt")),
+                direction: crate::sync::DeleteDirection::Local,
+                fingerprint: "sha1-of-the-file".to_owned(),
+                first_seen_epoch_secs: 100,
+            },
+            // Same path, other direction — the key is the pair, so both rows coexist.
+            WithheldDeletion {
+                path: PathBuf::from(OsStr::from_bytes(b"caf\xe9.txt")),
+                direction: crate::sync::DeleteDirection::Remote,
+                fingerprint: "sha1-of-the-file".to_owned(),
+                first_seen_epoch_secs: 200,
+            },
+        ];
+        replace_withheld_deletions(&connection, &items).expect("store");
+        let mut loaded = load_withheld_deletions(&connection).expect("load");
+        loaded.sort_by_key(|item| item.first_seen_epoch_secs);
+        assert_eq!(loaded, items, "byte-exact path, both directions, both ages");
+
+        // Wholesale replacement: the empty write is how a pass that withholds nothing clears it.
+        replace_withheld_deletions(&connection, &[]).expect("clear");
+        assert!(
+            load_withheld_deletions(&connection)
+                .expect("load")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn purging_a_subtree_takes_the_descendants_and_nothing_that_merely_shares_a_prefix() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let connection = open_database(&directory.path().join("index.db")).expect("open");
+        for path in ["photos", "photos/2019/a.jpg", "photosx", "photosx/b.jpg"] {
+            upsert_record(
+                &connection,
+                &FileRecord {
+                    file_path: PathBuf::from(path),
+                    entity_kind: EntityKind::File,
+                    file_size: 1,
+                    mtime: 1,
+                    sha1_hash: Some("hash".to_owned()),
+                    proton_id: None,
+                    sync_status: SyncStatus::Synced,
+                },
+            )
+            .expect("record");
+        }
+
+        let purged = purge_subtree_records(&connection, Path::new("photos")).expect("purge");
+
+        assert_eq!(purged.len(), 2, "the folder and its one descendant");
+        for gone in ["photos", "photos/2019/a.jpg"] {
+            assert!(
+                get_record(&connection, Path::new(gone))
+                    .expect("lookup")
+                    .is_none()
+            );
+        }
+        for kept in ["photosx", "photosx/b.jpg"] {
+            assert!(
+                get_record(&connection, Path::new(kept))
+                    .expect("lookup")
+                    .is_some(),
+                "{kept} shares a byte prefix and is not under photos"
+            );
+        }
     }
 
     #[test]

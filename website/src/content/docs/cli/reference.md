@@ -39,6 +39,7 @@ would resolve against each process's own working directory.
 | `pending` | List deletions currently withheld by the [delete-approval guard](/safety/delete-approval/). |
 | `approve <path>` \| `approve --all` | Approve a withheld deletion (or all) so it applies next sync. |
 | `deny <path>` \| `deny --all` | Revoke a prior approval before it applies. |
+| `keep <path>` \| `keep --all` | Refuse a withheld deletion and put the surviving copy back on the other side. |
 
 ## Human-readable by default, `--json` for scripts
 
@@ -197,7 +198,7 @@ journalctl --user -u proton-syncd.service
 
 ## Delete approval
 
-The `pending`, `approve`, and `deny` commands drive the [delete-approval
+The `pending`, `approve`, `deny` and `keep` commands drive the [delete-approval
 guard](/safety/delete-approval/). `pending` labels each item with its direction — a
 **LOCAL DELETE** (removed on Proton Drive; approving removes your local copy) or a
 **REMOTE DELETE** (removed locally; approving removes it on Proton Drive) — so you always
@@ -207,12 +208,18 @@ know which way a deletion runs before approving.
 proton-sync pending
 proton-sync approve notes/old.txt   # one item
 proton-sync approve --all           # everything pending
-proton-sync deny notes/old.txt      # revoke before it applies
+proton-sync deny notes/old.txt      # revoke an approval before it applies
+proton-sync keep notes/old.txt      # refuse it: put the surviving copy back on the other side
 proton-sync syncnow                 # apply now
 ```
 
-`approve`/`deny` require either a `<path>` **or** `--all`, never both and never neither — a
-bare `approve` won't silently approve everything.
+`approve`/`deny`/`keep` require either a `<path>` **or** `--all`, never both and never
+neither — a bare `approve` won't silently approve everything.
+
+`approve` also takes `--direction local|remote`, which is read **only** when nothing pending
+matches the path: that is how a deletion is approved *before* the pass that withholds it (the
+desktop app's Plan screen does exactly this when you type `DELETE`). A path alone does not say
+which of the two deletions at it you mean, so without the flag nothing is recorded.
 
 ## Stopping the daemon
 

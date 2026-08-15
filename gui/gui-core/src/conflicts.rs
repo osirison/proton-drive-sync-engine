@@ -8,11 +8,13 @@
 //! disk, after which the daemon reconciles from the resulting on-disk state.
 //!
 //! The sidecar name has two forms and a correct scanner must match **both**:
-//! `{stem}.proton-cloud.{ext}` (files with an extension) and the extensionless `{name}.proton-cloud`
-//! (dotfiles / no extension). We reuse the engine's own [`is_conflict_copy`] /
-//! [`original_from_conflict_copy`] so detection can never disagree with what the daemon wrote.
+//! `{stem}.{suffix}.{ext}` (files with an extension) and the extensionless `{name}.{suffix}`
+//! (dotfiles / no extension). We reuse the engine's own [`ConflictNaming`] so detection can never
+//! disagree with what the daemon wrote — **including which suffix it wrote**, which
+//! `conflict_suffix` makes configurable. The caller passes the naming read from the same config
+//! file the daemon runs on; a scanner holding a different suffix silently finds no conflicts.
 
-use proton_drive_sync_engine::sync::{is_conflict_copy, original_from_conflict_copy};
+use proton_drive_sync_engine::sync::ConflictNaming;
 use std::path::{Path, PathBuf};
 
 /// What kind of disagreement a sidecar records.
@@ -43,7 +45,7 @@ pub enum ConflictKind {
 pub struct Conflict {
     /// The user's local file the sidecar sits beside (relative to the local root).
     pub original: PathBuf,
-    /// The `*.proton-cloud[.ext]` sidecar the engine wrote (relative to the local root).
+    /// The `*.{suffix}[.ext]` sidecar the engine wrote (relative to the local root).
     pub sidecar: PathBuf,
     /// Whether this is a content disagreement or a type one. See [`ConflictKind`].
     ///
@@ -76,14 +78,22 @@ pub enum Resolution {
 /// Scan `local_root` for unresolved conflict sidecars (both name forms), skipping the top-level
 /// `.sync/` state directory and not following symlinked directories. Results are sorted for a
 /// deterministic order.
-pub fn scan_conflicts(local_root: &Path) -> std::io::Result<Vec<Conflict>> {
+pub fn scan_conflicts(
+    local_root: &Path,
+    naming: &ConflictNaming,
+) -> std::io::Result<Vec<Conflict>> {
     let mut out = Vec::new();
-    walk(local_root, local_root, &mut out)?;
+    walk(local_root, local_root, naming, &mut out)?;
     out.sort();
     Ok(out)
 }
 
-fn walk(root: &Path, dir: &Path, out: &mut Vec<Conflict>) -> std::io::Result<()> {
+fn walk(
+    root: &Path,
+    dir: &Path,
+    naming: &ConflictNaming,
+    out: &mut Vec<Conflict>,
+) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         // A directory that vanished or is unreadable mid-scan is skipped, not fatal.
@@ -104,10 +114,10 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<Conflict>) -> std::io::Result<()>
             if dir == root && entry.file_name() == std::ffi::OsStr::new(".sync") {
                 continue;
             }
-            walk(root, &path, out)?;
-        } else if file_type.is_file() && is_conflict_copy(&path) {
+            walk(root, &path, naming, out)?;
+        } else if file_type.is_file() && naming.is_conflict_copy(&path) {
             let sidecar = relative(root, &path);
-            if let Some(original_abs) = original_from_conflict_copy(&path) {
+            if let Some(original_abs) = naming.original_from_conflict_copy(&path) {
                 // The one moment the kind is knowable. `symlink_metadata` rather than `metadata`
                 // for the same reason the walk above uses `file_type()`: a symlink is classified as
                 // itself, never as whatever it points at. An unreadable original falls back to
@@ -319,6 +329,37 @@ mod tests {
     }
 
     #[test]
+    fn the_walker_finds_the_configured_suffix_and_only_that_one() {
+        // The GUI's conflicts list is a DISK WALK, so it is the one consumer that can silently
+        // disagree with the daemon about what a sidecar is called: a scanner holding the default
+        // while `conflict_suffix` says otherwise reports "no conflicts" on a folder full of them,
+        // and reports the user's own `.proton-cloud`-named files as conflicts on top. Both halves
+        // are asserted here because a naming threaded to only one of them passes the other.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("notes.txt"), "mine");
+        write(&root.join("notes.from-cloud.txt"), "theirs");
+        write(&root.join("legacy.txt"), "mine");
+        write(
+            &root.join("legacy.proton-cloud.txt"),
+            "an ordinary file under this suffix",
+        );
+
+        let naming = ConflictNaming::new("from-cloud").unwrap();
+        let conflicts = scan_conflicts(root, &naming).unwrap();
+
+        assert_eq!(
+            conflicts,
+            vec![Conflict {
+                original: "notes.txt".into(),
+                sidecar: "notes.from-cloud.txt".into(),
+                kind: ConflictKind::Content,
+            }],
+            "only the configured suffix names a conflict"
+        );
+    }
+
+    #[test]
     fn scan_finds_both_sidecar_forms_and_skips_dot_sync() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -333,7 +374,7 @@ mod tests {
             "not a conflict",
         ); // must be ignored
 
-        let conflicts = scan_conflicts(root).unwrap();
+        let conflicts = scan_conflicts(root, &ConflictNaming::default()).unwrap();
         let originals: Vec<_> = conflicts.iter().map(|c| c.original.clone()).collect();
         assert!(originals.contains(&PathBuf::from("notes.txt")));
         assert!(originals.contains(&PathBuf::from("README")));
@@ -360,7 +401,7 @@ mod tests {
         write(&root.join("notes.txt"), "mine");
         write(&root.join("notes.proton-cloud.txt"), "theirs");
 
-        let conflicts = scan_conflicts(root).unwrap();
+        let conflicts = scan_conflicts(root, &ConflictNaming::default()).unwrap();
         let kind_of = |p: &str| {
             conflicts
                 .iter()
@@ -381,7 +422,7 @@ mod tests {
         let root = dir.path();
         write(&root.join("gone.proton-cloud.txt"), "theirs");
 
-        let conflicts = scan_conflicts(root).unwrap();
+        let conflicts = scan_conflicts(root, &ConflictNaming::default()).unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].kind, ConflictKind::Content);
     }
@@ -397,7 +438,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
         write(&root.join("link.proton-cloud"), "theirs");
 
-        let conflicts = scan_conflicts(root).unwrap();
+        let conflicts = scan_conflicts(root, &ConflictNaming::default()).unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].kind, ConflictKind::Content);
     }

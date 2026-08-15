@@ -87,6 +87,27 @@ const isPermanent = (deletion) => severityOf(deletion?.direction) === "permanent
 const sig = (parts) => parts.slice().sort().join("\u0000");
 
 /**
+ * Files at stake across a queue of permanent deletions, or null when one of them cannot be counted.
+ *
+ * A directory's `subtree_files` is the daemon's own count of what is under it (#208); a file is one
+ * file. `null` PROPAGATES rather than being skipped — a banner saying `4 files` about a queue whose
+ * uncounted folder holds a thousand is worse than one saying `2 folders`, which is the fallback the
+ * caller keeps.
+ */
+function subtreeFileCount(deletions) {
+  let total = 0;
+  for (const deletion of deletions) {
+    if (deletion.entity_kind !== "directory") {
+      total += 1;
+      continue;
+    }
+    if (deletion.subtree_files == null) return null;
+    total += Number(deletion.subtree_files);
+  }
+  return total;
+}
+
+/**
  * What the world would interrupt about, in severity order. Pure: no clock, no policy, no memory.
  *
  * `nowSecs` is passed rather than read so the outage threshold is testable at a boundary.
@@ -103,6 +124,11 @@ export function candidates({ response, conflicts = [], daemonState = null, lastS
       kind: "deletion",
       paths,
       entity,
+      // HOW MANY FILES WOULD ACTUALLY GO, which is the banner's drawn count (#208) and not the
+      // queue's length: one row can be a folder holding a thousand of them. A file counts as
+      // itself, a folder as its subtree — and `null` the moment any folder cannot be counted (an
+      // older daemon), because a total missing one row's contents is not a total.
+      files: subtreeFileCount(deletions),
       // The fingerprint, not the path: an approval is pinned to one, so a path whose queued deletion
       // was decided and came back is genuinely a new thing to say.
       signature: sig(deletions.map((d) => `${d.path}\u0001${d.fingerprint ?? ""}`)),

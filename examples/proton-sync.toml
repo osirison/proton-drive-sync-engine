@@ -46,3 +46,26 @@ dry_run = false
 # db_path = "/home/me/Proton/.sync/sync_index.db"
 # lockfile_path = "/home/me/Proton/.sync/proton-sync.lock"
 # socket_path = "/run/user/1000/proton-sync.sock"
+# The delete-approval guard as ONE named setting, instead of the two booleans above.
+#   ask_every_time  every deletion waits for you (the default, and what both booleans on means)
+#   only_permanent  let the recoverable Drive-side deletions through; hold the ones that
+#                   remove a file from this disk for good
+#   never           nothing waits
+#   only_recoverable  the remaining combination; no UI draws it
+# THE TWO SPELLINGS ARE MUTUALLY EXCLUSIVE. Setting `deletion_policy` and `[delete_approval]` in
+# the same file is a startup error naming both keys — they are one setting written two ways, and
+# there is no defensible precedence between them. A `.proton-sync.toml` accepts either spelling
+# too, under the same rule (an ambiguous directory file is ignored and the guard stays on).
+# deletion_policy = "ask_every_time"
+
+# Daemon log verbosity. `RUST_LOG` overrides this; `--log-level` overrides both. Either a bare
+# level (off/error/warn/info/debug/trace) or explicit `target=level` directives, e.g.
+# "proton_drive_sync_engine::transfer=warn,info". A bare word that is not a level is refused
+# rather than silently read as a target filter that logs nothing.
+# log_level = "info"
+
+# How conflict sidecars are named: `{stem}.{suffix}.{ext}`, or `{name}.{suffix}` when there is no
+# extension. CHANGING THIS ORPHANS SIDECARS ALREADY ON DISK — they stop being recognized as
+# sidecars, so they are no longer ignored by the scanner and upload as ordinary files, and they no
+# longer resolve back to the file they belong to. Rename them yourself before changing it.
+# conflict_suffix = "proton-cloud"

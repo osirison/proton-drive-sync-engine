@@ -526,6 +526,78 @@ mod unix_tests {
         );
     }
 
+    #[test]
+    fn keeping_a_withheld_deletion_restores_the_other_side_over_ipc() {
+        // #224. `deny` only revokes an approval, so refusing a deletion used to be nothing at all:
+        // the planner re-derived the same withheld action every pass and the row came back at the
+        // next launch. `keep` purges the baseline record, and the surviving remote copy is adopted
+        // back onto this computer by the pass the command schedules.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_delete_approval_proton_drive(directory.path());
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+
+        // The startup reconcile downloads keep.txt and records a synced baseline; removing the
+        // local copy makes the next pass plan a RemoteDelete, which the guard withholds.
+        let local_file = local_root.join("keep.txt");
+        wait_for_marker(&local_file, &mut daemon.child);
+        fs::remove_file(&local_file).expect("remove local file");
+        let trash_marker = PathBuf::from(format!("{}.trash", fake_proton_drive.display()));
+
+        let withheld = run_control(&socket_path, "syncnow");
+        let pending = withheld["pending_deletions"]
+            .as_array()
+            .expect("pending_deletions array");
+        assert_eq!(
+            pending.len(),
+            1,
+            "the remote delete is withheld: {withheld}"
+        );
+        // The age is the deletion's own, carried across passes (#225), and a real epoch rather
+        // than the zero an older daemon would leave.
+        assert!(
+            pending[0]["first_seen_epoch_secs"].as_u64().unwrap_or(0) > 0,
+            "a withheld deletion reports when it was first seen: {withheld}"
+        );
+
+        // Keep it: the local copy comes back and the remote is never trashed.
+        let kept = run_control_raw(&socket_path, &["keep", "keep.txt"]);
+        assert!(kept.contains("kept 1"), "keep should confirm: {kept}");
+        wait_for_marker(&local_file, &mut daemon.child);
+        assert!(
+            !trash_marker.exists(),
+            "keeping must never delete the surviving copy"
+        );
+
+        // And it is durable: nothing is pending any more, because the planner no longer derives
+        // the deletion at all.
+        let after = run_control(&socket_path, "syncnow");
+        assert!(
+            after["pending_deletions"]
+                .as_array()
+                .expect("pending array")
+                .is_empty(),
+            "a kept deletion does not come back on the next pass: {after}"
+        );
+        assert!(
+            load_existing_index(&db_path)
+                .expect("load index")
+                .contains_key(Path::new("keep.txt")),
+            "the restored file is tracked again, as a fresh copy"
+        );
+    }
+
     struct DaemonProcess {
         child: Child,
     }

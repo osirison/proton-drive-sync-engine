@@ -7,7 +7,7 @@
 //! missing socket, a refused connection, or a timeout to [`IpcError::Unreachable`] — which the UI
 //! must render as its own state, **never as zeroes**.
 
-use crate::wire::{ControlCommand, ControlRequest, ControlResponse};
+use crate::wire::{ControlCommand, ControlRequest, ControlResponse, DeleteDirection};
 use std::path::Path;
 use std::time::Duration;
 
@@ -131,6 +131,7 @@ pub fn command_with_argument(
     command: ControlCommand,
     argument: impl Into<String>,
     literal_path: bool,
+    direction: Option<DeleteDirection>,
     timeout: Duration,
 ) -> Result<ControlResponse, IpcError> {
     send_request(
@@ -138,6 +139,8 @@ pub fn command_with_argument(
         &ControlRequest {
             argument: Some(argument.into()),
             literal_path,
+            // Only `approve` reads it, and only when nothing pending matches the selector (#227).
+            direction,
             ..ControlRequest::new(command)
         },
         timeout,
@@ -231,6 +234,7 @@ mod tests {
             ControlCommand::Approve,
             "all",
             false,
+            None,
             DEFAULT_TIMEOUT,
         );
         let request = seen.lock().unwrap().clone();

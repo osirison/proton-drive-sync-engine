@@ -3,13 +3,15 @@ use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id
 use crate::index::{
     EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals,
     LocalEntityState, LocalFileState, PassKind, PassOutcomeKind, ScanOptions, SyncStatus,
-    begin_pass, byte_totals_since, delete_delete_approval, file_events, finish_pass, index_totals,
-    insert_file_events, last_full_sweep, load_event_cursor, load_existing_index, load_index,
-    load_sole_event_cursor, load_unsyncable_items, load_warm_start_count, local_directory_state,
-    local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
-    prune_history, purge_record, recent_passes, replace_unsyncable_items,
-    scan_local_entities_observed, scan_local_entities_reusing_hashes, store_event_cursor,
-    store_warm_start_count, upsert_delete_approval, upsert_record,
+    WithheldDeletion, begin_pass, byte_totals_since, delete_delete_approval, file_events,
+    finish_pass, get_record, index_totals, insert_file_events, last_full_sweep, load_event_cursor,
+    load_existing_index, load_index, load_sole_event_cursor, load_unsyncable_items,
+    load_warm_start_count, load_withheld_deletions, local_directory_state, local_file_state,
+    mark_modified, matching_delete_approval, open_database, path_for_proton_id, prune_history,
+    purge_record, purge_subtree_records, recent_passes, replace_unsyncable_items,
+    replace_withheld_deletions, reset_index_state, scan_local_entities_observed,
+    scan_local_entities_reusing_hashes, store_event_cursor, store_warm_start_count,
+    upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ControlCommand, ControlResponse,
@@ -24,9 +26,9 @@ use crate::proton::{
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
-    DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction, TransferDirection,
-    UnsyncableItem, directory_move_descendant_path_pairs, is_strict_descendant,
-    original_from_conflict_copy, plan_sync_entities_with_stats, unsyncable_items,
+    ConflictNaming, DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction,
+    TransferDirection, UnsyncableItem, directory_move_descendant_path_pairs, is_strict_descendant,
+    plan_sync_entities_with_stats, unsyncable_items,
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -175,6 +177,14 @@ pub struct DaemonConfig {
     pub delete_approval_local: bool,
     /// Startup-reconcile tuning (warm start; see [`WarmStartConfig`]).
     pub warm_start: WarmStartConfig,
+    /// How conflict sidecars are named (`conflict_suffix`, default `proton-cloud`). One value for
+    /// the planner that writes them and the scanner/watcher that must not sync them — see
+    /// [`crate::sync::ConflictNaming`], including what changing it does to sidecars already on disk.
+    pub conflict_naming: ConflictNaming,
+    /// The resolved `tracing` filter directive (`--log-level` > `RUST_LOG` > file > `info`; see
+    /// [`crate::config::resolve_log_filter`]). Applied by the binary at startup — the daemon holds
+    /// it so the value that is running is the value the config resolved, not a second env read.
+    pub log_filter: String,
 }
 
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
@@ -338,6 +348,11 @@ struct ControlShared {
     /// (rather than a warm start / incremental pass). The daemon core consumes it with a `swap`
     /// at the top of each pass. Written by the IPC task, read-and-cleared by the core.
     force_full_walk: AtomicBool,
+    /// Set by the IPC `reset_index` command to discard the learned state before the next pass.
+    /// Same shape as [`Self::force_full_walk`] and for the same reason: the truncation must happen
+    /// on the main loop between passes, never from the IPC task under an in-flight reconcile.
+    /// Written by the IPC task, read-and-cleared by the core.
+    reset_index: AtomicBool,
     /// The daemon core's most recently published status. The IPC task only ever reads it.
     snapshot: StdMutex<StatusSnapshot>,
     /// Live activity for the in-flight pass (see [`SyncActivity`]). Written from inside the
@@ -394,6 +409,7 @@ impl ControlShared {
             syncing: AtomicBool::new(false),
             reconcile_seq: AtomicU64::new(0),
             force_full_walk: AtomicBool::new(false),
+            reset_index: AtomicBool::new(false),
             snapshot: StdMutex::new(StatusSnapshot {
                 pending_changes: 0,
                 last_sync_epoch_secs: None,
@@ -727,7 +743,12 @@ pub fn preview_plan_with_client(
     if remote_root_missing {
         base_index.clear();
     }
-    let mut outcome = plan_sync_entities_with_stats(&local_entities, &remote_entities, &base_index);
+    let mut outcome = plan_sync_entities_with_stats(
+        &local_entities,
+        &remote_entities,
+        &base_index,
+        &config.conflict_naming,
+    );
     prepend_remote_root_creation_if_missing(&mut outcome.actions, remote_root_missing);
     info!(
         planned_actions = outcome.actions.len(),
@@ -1073,7 +1094,7 @@ impl<C: ProtonClient> Daemon<C> {
                 // file-content record semantics. The empty relative path is the watched root
                 // itself, not a syncable entity.
                 if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
-                    && !crate::sync::is_conflict_copy(&path)
+                    && !self.config.conflict_naming.is_conflict_copy(&path)
                     && let Ok(relative_path) = path.strip_prefix(&self.config.local_root)
                     && !relative_path.as_os_str().is_empty()
                     && self.scan_options.allows_relative_directory(relative_path)
@@ -1082,9 +1103,12 @@ impl<C: ProtonClient> Daemon<C> {
                 }
                 continue;
             }
-            if crate::sync::is_conflict_copy(&path) {
+            if self.config.conflict_naming.is_conflict_copy(&path) {
                 if matches!(event.kind, EventKind::Remove(_))
-                    && let Some(original) = original_from_conflict_copy(&path)
+                    && let Some(original) = self
+                        .config
+                        .conflict_naming
+                        .original_from_conflict_copy(&path)
                     && let Ok(relative_path) = original.strip_prefix(&self.config.local_root)
                     && self.scan_options.allows_relative_file(relative_path)
                 {
@@ -1299,14 +1323,37 @@ impl<C: ProtonClient> Daemon<C> {
         // publish the previous pass's items beside its own "sync failed".
         self.last_failed_items.clear();
         self.last_failed_item_count = 0;
-        // Load the baseline before scanning so the scan can reuse each unchanged file's
-        // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
-        let base_records = load_index(&self.connection)?;
-
         // A runtime `resync` forces this pass to a full-tree walk, overriding both the warm start
         // and the steady-state incremental path. Consume it exactly once (a `swap`), so a later
         // pass is not also forced. (The startup `--full-walk` flag is separate — see below.)
         let resync_requested = self.shared.force_full_walk.swap(false, Ordering::SeqCst);
+
+        // `reset_index` is applied BEFORE the baseline is loaded, or this pass would plan against
+        // the very rows it just erased. Consumed with the same `swap`-once discipline as the
+        // resync latch, and on the main loop — never from the IPC task, which holds its own
+        // connection to this database.
+        if self.shared.reset_index.swap(false, Ordering::SeqCst) {
+            // RE-LATCH ON FAILURE. `reset-index` is a typed confirmation the user already gave and
+            // the IPC reply already promised; a truncation that fails (a locked database, a disk
+            // error) must not consume it, or the request evaporates and the daemon carries on with
+            // the state the user asked to discard.
+            if let Err(error) = reset_index_state(&self.connection) {
+                self.shared.reset_index.store(true, Ordering::SeqCst);
+                return Err(error);
+            }
+            // A reset makes this a first pass in every sense that matters: an empty baseline is
+            // the bootstrap condition, and the cleared cursor has to be re-seeded by a full walk
+            // before any later pass may replay from it. `is_first_reconcile` also restores the
+            // "always full-scan the local tree" floor the empty baseline now depends on.
+            self.is_first_reconcile = true;
+            self.force_local_rescan = true;
+            self.incremental_passes_since_full_scan = 0;
+            warn!("index reset: baseline, event cursors and delete approvals discarded");
+        }
+
+        // Load the baseline before scanning so the scan can reuse each unchanged file's
+        // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
+        let base_records = load_index(&self.connection)?;
 
         // The first reconcile after boot is special: `notify` has replayed nothing, so it must
         // full-scan the local tree. `first_reconcile` either full-walks or warm-starts (both do
@@ -2026,7 +2073,12 @@ impl<C: ProtonClient> Daemon<C> {
         cursor_update: Option<CursorUpdate>,
     ) -> AppResult<PassOutcome> {
         let remote_root_missing = remote_map.remote_root_missing;
-        let outcome = plan_sync_entities_with_stats(local_entities, remote_entities, base_index);
+        let outcome = plan_sync_entities_with_stats(
+            local_entities,
+            remote_entities,
+            base_index,
+            &self.config.conflict_naming,
+        );
         let matched_files = outcome.matched_files;
         let mut plan = outcome.actions;
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
@@ -2055,6 +2107,7 @@ impl<C: ProtonClient> Daemon<C> {
             withheld_paths,
             pending,
             consumed_approvals: approved_deletes,
+            withheld: _,
         } = self.decide_delete_gate(&plan, base_index)?;
         // A withheld deletion originates from ground truth (a remote-delete event, or a missing
         // local file). If any deletion is withheld this pass, do NOT advance the event cursor:
@@ -3173,6 +3226,18 @@ impl<C: ProtonClient> Daemon<C> {
         );
         let mut gate = DeleteGate::default();
         let now = current_epoch_secs();
+        // The ages carried over from earlier passes, keyed exactly as the table is. A read failure
+        // degrades to "no history": every item then reads as first seen now, which is the same
+        // answer this surface gave before the table existed.
+        let previous: HashMap<(PathBuf, DeleteDirection), WithheldDeletion> =
+            load_withheld_deletions(&self.connection)
+                .unwrap_or_else(|error| {
+                    warn!(%error, "failed to read the withheld-deletion ages; reporting them as new");
+                    Vec::new()
+                })
+                .into_iter()
+                .map(|item| ((item.path.clone(), item.direction), item))
+                .collect();
         for action in plan {
             let Some(direction) = action.action.delete_direction() else {
                 continue;
@@ -3189,15 +3254,53 @@ impl<C: ProtonClient> Daemon<C> {
                 gate.consumed_approvals
                     .push((action.path.clone(), direction));
             } else {
+                // The stored age applies only while the fingerprint still matches: a different
+                // fingerprint at the same path is a different deletion, and inheriting the old
+                // one's age would date it from something that already resolved.
+                let first_seen = previous
+                    .get(&(action.path.clone(), direction))
+                    .filter(|stored| stored.fingerprint == fingerprint)
+                    .map_or(now, |stored| stored.first_seen_epoch_secs);
+                let (subtree_files, subtree_bytes) = if is_directory {
+                    let (files, bytes) = subtree_totals(base_index, &action.path);
+                    (Some(files), Some(bytes))
+                } else {
+                    (None, None)
+                };
                 gate.withheld_paths.insert(action.path.clone());
                 gate.pending.push(PendingDeletion {
                     path: action.path.clone(),
                     direction,
                     entity_kind: action.entity_kind,
-                    fingerprint,
+                    fingerprint: fingerprint.clone(),
                     detected_epoch_secs: now,
+                    first_seen_epoch_secs: first_seen,
+                    subtree_files,
+                    subtree_bytes,
+                });
+                gate.withheld.push(WithheldDeletion {
+                    path: action.path.clone(),
+                    direction,
+                    fingerprint,
+                    first_seen_epoch_secs: first_seen,
                 });
             }
+        }
+        // The gate's output IS the complete withheld set for this pass, so this replace is also what
+        // clears the table on the first pass that withholds nothing. Skipped when nothing moved —
+        // the steady state of a queue nobody has answered is the SAME set every ~30s, and an
+        // unchanged set is a DELETE+INSERT+fsync saying nothing (`record_unsyncable` guards the
+        // identical shape). Display-only either way, hence warn rather than fail: a pass must not
+        // die because an age could not be filed.
+        let unchanged = gate.withheld.len() == previous.len()
+            && gate
+                .withheld
+                .iter()
+                .all(|item| previous.get(&(item.path.clone(), item.direction)) == Some(item));
+        if !unchanged
+            && let Err(error) = replace_withheld_deletions(&self.connection, &gate.withheld)
+        {
+            warn!(%error, "failed to persist the withheld-deletion ages");
         }
         Ok(gate)
     }
@@ -3220,6 +3323,7 @@ impl<C: ProtonClient> Daemon<C> {
             selector,
             false,
             approve,
+            None,
         )
     }
 
@@ -3307,6 +3411,12 @@ impl<C: ProtonClient> Daemon<C> {
             .update_pass_progress(|pass| pass.kind = kind.as_str().to_owned());
     }
 
+    /// Test-only convenience wrapper over the free [`apply_keep_command`].
+    #[cfg(test)]
+    fn apply_keep_command(&self, selector: Option<&str>) -> AppResult<(String, bool)> {
+        apply_keep_command(&self.connection, &self.pending_deletions, selector, true)
+    }
+
     fn record_status_history(&mut self, message: &str) {
         let entry = StatusHistoryEntry {
             epoch_secs: current_epoch_secs(),
@@ -3370,6 +3480,7 @@ fn apply_approval_command(
     selector: Option<&str>,
     literal_path: bool,
     approve: bool,
+    direction: Option<DeleteDirection>,
 ) -> AppResult<String> {
     let Some(selector) = selector else {
         return Ok(
@@ -3377,54 +3488,26 @@ fn apply_approval_command(
                 .to_owned(),
         );
     };
-    // `None` here means the explicit "all" selector (every pending item); a plain path filters
-    // to that one item. A literal-path request never gets the "all" interpretation.
-    let target = if literal_path {
-        Some(selector)
-    } else {
-        Some(selector).filter(|value| !value.eq_ignore_ascii_case("all"))
-    };
-    let matches: Vec<&PendingDeletion> = pending_deletions
-        .iter()
-        .filter(|pending| match target {
-            // Compared in the wire form, not against the real `PathBuf`: a client can only ever
-            // have seen the lossy rendering the daemon published (#61), so an exact comparison
-            // would make every non-UTF-8 path permanently unapprovable — exactly the paths whose
-            // withheld deletion motivated the lossy wire. The approval itself is still recorded
-            // against the real path below. Still compared as *paths*, not strings, so the
-            // component-wise leniency of the previous `PathBuf` comparison (a shell-completed
-            // trailing slash on a directory, a `./` prefix) survives.
-            Some(selector) => {
-                Path::new(&*crate::ipc::wire_path(&pending.path)) == Path::new(selector)
-            }
-            None => true,
-        })
-        .collect();
+    let Selection { target, matches } = select_pending(pending_deletions, selector, literal_path);
 
     if matches.is_empty() {
         return Ok(match target {
+            // Nothing pending answers to this path. For an `approve` that is not necessarily a
+            // typo: a plan can name a deletion no pass has withheld yet, which is the Plan
+            // screen's typed-`DELETE` gate (#227). Falls through to a pre-approval, which is
+            // stricter than this path — it names the direction and pins to the index itself.
+            Some(path) if approve => {
+                return pre_approve_planned_deletion(connection, path, direction);
+            }
             Some(path) => format!("no pending deletion matches '{path}'"),
+            // NEVER a pre-approval: "all" means every currently-pending item, never everything
+            // for ever, and there is nothing to enumerate ahead of a pass.
             None => "no deletions are pending approval".to_owned(),
         });
     }
-    // The planner emits at most one delete per path, so a targeted selector matches more than one
-    // row only when two real paths differ solely in bytes the lossy wire replaced (#61). Authorising
-    // both from one ambiguous selector would delete a file the user never picked out — and they
-    // cannot pick it out, the rows render identically. Fail closed on the destructive side only:
-    // a `deny` over-revoking is the safe direction, and `--all` remains the deliberate every-item
-    // form.
-    // Names `--all`, NOT the wire's `"all"` selector: this branch is only reachable from a
-    // `<PATH>` argument, which the CLI always sends with `literal_path` set — so `proton-sync
-    // approve all` would be read as a path literally named `all` and do nothing. Telling the user
-    // to type the one thing that provably cannot work is worse than saying nothing.
-    if approve && target.is_some() && matches.len() > 1 {
-        return Ok(format!(
-            "{} pending deletions render as '{}' and cannot be told apart on the wire (their \
-             paths are not valid UTF-8); nothing was approved — approve every pending deletion \
-             instead with `proton-sync approve --all`",
-            matches.len(),
-            target.unwrap_or_default()
-        ));
+    // Fail closed on the destructive side only: a `deny` over-revoking is the safe direction.
+    if approve && let Some(message) = ambiguous_selector_message(&matches, target, "approve") {
+        return Ok(message);
     }
 
     let now = current_epoch_secs() as i64;
@@ -3446,6 +3529,239 @@ fn apply_approval_command(
     Ok(format!(
         "{verb} {} pending deletion(s); run `proton-sync syncnow` to apply now",
         matches.len()
+    ))
+}
+
+/// Records an approval for a deletion this daemon has **planned but not yet withheld** (#227) — the
+/// Plan screen authorises its plan's deletion before the pass runs, and by construction nothing is
+/// pending at that moment (an action becomes pending only when `decide_delete_gate` withholds it).
+/// `decide_delete_gate` needs no change to consume it: the approval it looks for is
+/// `(path, direction, fingerprint)`, and this writes exactly that row.
+///
+/// Three things make it as safe as approving a pending item, and each of them refuses rather than
+/// guesses:
+///
+/// * **The direction must be named.** A path alone does not say which of the two deletions at it is
+///   authorised, and an ambiguous selector authorises nothing (#298, one step earlier in time).
+/// * **The path is validated before it is stored.** This is the first place `approve` writes a path
+///   the daemon did not itself publish, so it clears `validate_relative_path_non_empty` — the plain
+///   form maps `""`/`.` to the root, and an approval for the root is an approval for everything.
+/// * **The fingerprint comes from the index, not from the client.** It is derived exactly as
+///   `delete_fingerprint` derives it from a baseline record, so the pass matches it or the approval
+///   is inert. A path with no baseline record (or a record carrying neither digest nor remote id)
+///   has no fingerprint to pin to and is refused: `delete_fingerprint`'s remaining fallback is the
+///   *action's* remote id, which cannot be known before the plan exists, so a row written here
+///   could never match and would be a standing authorisation that only looks like one.
+fn pre_approve_planned_deletion(
+    connection: &Connection,
+    selector: &str,
+    direction: Option<DeleteDirection>,
+) -> AppResult<String> {
+    let Some(direction) = direction else {
+        return Ok(format!(
+            "no pending deletion matches '{selector}'; to approve a deletion that is planned but \
+             not yet withheld, name its direction (`--direction local` to delete it here, \
+             `--direction remote` to delete it on Proton Drive)"
+        ));
+    };
+    let Some(path) = crate::validate_relative_path_non_empty(Path::new(selector)) else {
+        return Ok(format!(
+            "'{selector}' is not a valid relative path inside the sync root"
+        ));
+    };
+    let Some(fingerprint) = get_record(connection, &path)?.and_then(|record| {
+        record
+            .sha1_hash
+            .clone()
+            .or_else(|| record.proton_id.clone())
+    }) else {
+        return Ok(format!(
+            "'{selector}' has no synced record to pin an approval to; nothing was approved — \
+             approve it from the deletions queue once the daemon has planned it"
+        ));
+    };
+    upsert_delete_approval(
+        connection,
+        &path,
+        direction,
+        &fingerprint,
+        current_epoch_secs() as i64,
+    )?;
+    Ok(format!(
+        "approved 1 planned deletion(s); it applies when the daemon plans it, and only while \
+         '{selector}' still matches what you approved"
+    ))
+}
+
+/// Refuses withheld deletions: purge the baseline record for each (and its whole subtree) so the
+/// surviving side is adopted back onto the other one, and revoke any standing approval for it.
+///
+/// **Why a purge is the whole primitive.** A withheld deletion is a triangle — one side has the
+/// entity, the other does not, and the baseline says both used to. Remove the baseline row and the
+/// remaining side is simply new: `plan_ongoing_action` never sees a deletion again, the bootstrap
+/// arm uploads (`direction: local`) or downloads (`direction: remote`) it, and the queue empties
+/// because the planner stops deriving the action rather than because anything remembers a refusal.
+///
+/// **This is not an index write ahead of a side effect.** It records nothing that happened; it
+/// *forgets* state so the next pass re-derives from ground truth, the same class as the approval
+/// writes that already run on this connection.
+///
+/// Returns the reply and whether anything changed, because a refusal that did change something
+/// needs a pass — and a full-walk one (see the caller).
+fn apply_keep_command(
+    connection: &Connection,
+    pending_deletions: &[PendingDeletion],
+    selector: Option<&str>,
+    literal_path: bool,
+) -> AppResult<(String, bool)> {
+    let Some(selector) = selector else {
+        return Ok((
+            "no target: pass a relative path, or \"all\" to keep every pending deletion".to_owned(),
+            false,
+        ));
+    };
+    let Selection { target, matches } = select_pending(pending_deletions, selector, literal_path);
+    if matches.is_empty() {
+        return Ok((
+            match target {
+                Some(path) => format!("no pending deletion matches '{path}'"),
+                None => "no deletions are pending approval".to_owned(),
+            },
+            false,
+        ));
+    }
+    // Fail closed exactly as `approve` does, and for a reason `deny` does not share: `deny` only
+    // revokes — its effect is that nothing happens — while keeping MUTATES the index and puts
+    // content back on a side the user may have deliberately cleared, on rows they provably cannot
+    // tell apart.
+    if let Some(message) = ambiguous_selector_message(&matches, target, "keep") {
+        return Ok((message, false));
+    }
+
+    let transaction = connection.unchecked_transaction()?;
+    let mut kept = 0usize;
+    let mut stale = 0usize;
+    for pending in &matches {
+        // Pinned like an approval is. The published queue can be a pass stale, so re-derive the
+        // fingerprint from the index and refuse when it has moved: a refusal that no longer names
+        // what the user saw is inert, not "close enough".
+        let current = get_record(&transaction, &pending.path)?.and_then(|record| {
+            record
+                .sha1_hash
+                .clone()
+                .or_else(|| record.proton_id.clone())
+        });
+        if current.as_deref() != Some(pending.fingerprint.as_str()) {
+            stale += 1;
+            continue;
+        }
+        // EVERY purged path, in BOTH directions, and that is the same argument the root's own
+        // approval makes one level up: a purged record leaves any approval at that path pointing at
+        // nothing the user can see. It is reachable — a descendant can carry an approval from an
+        // earlier pass that queued it individually, or from a pre-pass `approve --direction`
+        // (#227) — and it is not inert, because the fingerprint an approval is pinned to is the
+        // content's own: re-adopt the file unchanged and the stale approval matches the new record
+        // exactly, so the next deletion of that path would execute without ever being shown.
+        // Over-revoking is the safe direction here, as it is for `deny`.
+        for purged in purge_subtree_records(&transaction, &pending.path)? {
+            for direction in [DeleteDirection::Local, DeleteDirection::Remote] {
+                delete_delete_approval(&transaction, &purged, direction)?;
+            }
+        }
+        kept += 1;
+    }
+    transaction.commit()?;
+
+    if kept == 0 {
+        return Ok((
+            format!(
+                "nothing was kept: {stale} pending deletion(s) no longer match what was shown; \
+                 check `proton-sync pending` and try again"
+            ),
+            false,
+        ));
+    }
+    let stale_note = if stale > 0 {
+        format!("; {stale} no longer matched what was shown and were left alone")
+    } else {
+        String::new()
+    };
+    Ok((
+        format!(
+            "kept {kept} pending deletion(s); the other side is put back on the next sync{stale_note}"
+        ),
+        true,
+    ))
+}
+
+/// Which pending deletions a selector names. Shared by `approve`/`deny` and `keep` so one rule
+/// decides what a selector means; a second copy is what eventually disagrees.
+struct Selection<'a> {
+    /// `None` for the explicit `"all"` form (every pending item); `Some` for a literal path.
+    target: Option<&'a str>,
+    matches: Vec<&'a PendingDeletion>,
+}
+
+fn select_pending<'a>(
+    pending_deletions: &'a [PendingDeletion],
+    selector: &'a str,
+    literal_path: bool,
+) -> Selection<'a> {
+    // A literal-path request never gets the "all" interpretation.
+    let target = if literal_path {
+        Some(selector)
+    } else {
+        Some(selector).filter(|value| !value.eq_ignore_ascii_case("all"))
+    };
+    let matches: Vec<&PendingDeletion> = pending_deletions
+        .iter()
+        .filter(|pending| match target {
+            // Compared in the wire form, not against the real `PathBuf`: a client can only ever
+            // have seen the lossy rendering the daemon published (#61), so an exact comparison
+            // would make every non-UTF-8 path permanently unapprovable — exactly the paths whose
+            // withheld deletion motivated the lossy wire. The approval itself is still recorded
+            // against the real path below. Still compared as *paths*, not strings, so the
+            // component-wise leniency of the previous `PathBuf` comparison (a shell-completed
+            // trailing slash on a directory, a `./` prefix) survives.
+            Some(selector) => {
+                Path::new(&*crate::ipc::wire_path(&pending.path)) == Path::new(selector)
+            }
+            None => true,
+        })
+        .collect();
+    Selection { target, matches }
+}
+
+/// The reply for a targeted selector that names more than one pending deletion, or `None` when it
+/// names at most one.
+///
+/// The planner emits at most one delete per path, so this happens only when two real paths differ
+/// solely in bytes the lossy wire replaced (#61). Acting on both would touch an item the user never
+/// picked out — and they cannot pick it out, the rows render identically.
+///
+/// Names `--all`, NOT the wire's `"all"` selector: this branch is only reachable from a `<PATH>`
+/// argument, which the CLI always sends with `literal_path` set — so `proton-sync approve all`
+/// would be read as a path literally named `all` and do nothing. Telling the user to type the one
+/// thing that provably cannot work is worse than saying nothing.
+fn ambiguous_selector_message(
+    matches: &[&PendingDeletion],
+    target: Option<&str>,
+    command: &str,
+) -> Option<String> {
+    let target = target?;
+    if matches.len() < 2 {
+        return None;
+    }
+    let past_tense = if command == "keep" {
+        "kept"
+    } else {
+        "approved"
+    };
+    Some(format!(
+        "{} pending deletions render as '{target}' and cannot be told apart on the wire (their \
+         paths are not valid UTF-8); nothing was {past_tense} — {command} every pending deletion \
+         instead with `proton-sync {command} --all`",
+        matches.len(),
     ))
 }
 
@@ -3568,6 +3884,21 @@ async fn handle_control_connection(
                 }
             }
         }
+        ControlCommand::ResetIndex => {
+            // Latched, not applied here: this task holds a *second* connection to the same
+            // database and a reconcile may be mid-checkpoint on the first one. Order matters —
+            // latch the reset before scheduling the pass that consumes it, and latch the full walk
+            // with it so a cleared cursor cannot be mistaken for a warm-start opportunity.
+            shared.reset_index.store(true, Ordering::SeqCst);
+            shared.force_full_walk.store(true, Ordering::SeqCst);
+            if shared.is_paused() {
+                shared.response("index reset queued; it will run when syncing resumes")
+            } else if loop_tx.send(LoopCommand::SyncNow).is_ok() {
+                shared.response("index reset scheduled; the next pass rebuilds from scratch")
+            } else {
+                shared.response("daemon is shutting down; index reset not scheduled")
+            }
+        }
         ControlCommand::Approve | ControlCommand::Deny => {
             let approve = request.command == ControlCommand::Approve;
             let pending = shared
@@ -3583,6 +3914,7 @@ async fn handle_control_connection(
                 request.argument.as_deref(),
                 request.literal_path,
                 approve,
+                request.direction,
             )?;
             drop(connection);
             if approve {
@@ -3613,6 +3945,47 @@ async fn handle_control_connection(
                     response
                 }
             }
+        }
+        ControlCommand::Keep => {
+            let pending = shared
+                .snapshot
+                .lock()
+                .expect("control snapshot lock")
+                .pending_deletions
+                .clone();
+            let connection = approvals.lock().await;
+            let (message, changed) = apply_keep_command(
+                &connection,
+                &pending,
+                request.argument.as_deref(),
+                request.literal_path,
+            )?;
+            drop(connection);
+            // Nothing purged (no match, an ambiguous selector, a stale fingerprint) means nothing
+            // to put back, and no reason to spend a full walk on it.
+            let message = if !changed {
+                message
+            } else {
+                info!(argument = ?request.argument, "withheld deletion refused");
+                // A FULL WALK, not just a pass, and this is what makes the `remote` direction work
+                // at all. An incremental pass builds its remote map as
+                // `reconstruct_remote(base ⊕ delta)`, so the baseline IS the remote view: the
+                // record this refusal just purged is gone from every reconstructed map, and no
+                // remote event will ever re-derive it (the deletion happened HERE, so the volume
+                // stream never mentioned it). Without this latch, "bring it back to this computer"
+                // downloads nothing, ever, until something else forces a full walk — and the
+                // periodic resync is off by default. Latched for both directions: one rule, and it
+                // costs one full walk on a rare user click.
+                shared.force_full_walk.store(true, Ordering::SeqCst);
+                if shared.is_paused() {
+                    format!("{message} (queued: syncing is paused)")
+                } else if loop_tx.send(LoopCommand::SyncNow).is_ok() {
+                    message
+                } else {
+                    format!("{message} (the daemon is shutting down; no sync was scheduled)")
+                }
+            };
+            shared.response(&message)
         }
         ControlCommand::Shutdown => {
             info!("shutdown requested over control socket");
@@ -3723,6 +4096,24 @@ struct DeleteGate {
     withheld_paths: HashSet<PathBuf>,
     pending: Vec<PendingDeletion>,
     consumed_approvals: Vec<(PathBuf, DeleteDirection)>,
+    /// The same items as `pending`, in the shape the `withheld_deletions` table stores — the ages
+    /// this pass carried forward, ready to be written back (see [`WithheldDeletion`]).
+    withheld: Vec<WithheldDeletion>,
+}
+
+/// Files beneath `root` in the baseline index, and their total size (#208). Files only: a
+/// directory record's `file_size` is its own, never a subtree total, and counting directories would
+/// make "1,204 files" answer a question nobody asked. Component-wise containment, and `root` itself
+/// is excluded — it is the folder being deleted, not something inside it.
+fn subtree_totals(base_index: &HashMap<PathBuf, FileRecord>, root: &Path) -> (u64, u64) {
+    base_index
+        .iter()
+        .filter(|(path, record)| {
+            record.entity_kind == EntityKind::File && is_strict_descendant(root, path)
+        })
+        .fold((0u64, 0u64), |(files, bytes), (_, record)| {
+            (files + 1, bytes.saturating_add(record.file_size))
+        })
 }
 
 /// The stable identity of the entity a deletion would remove, used to pin an approval to exactly
@@ -3885,6 +4276,7 @@ fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
         &ignored_paths,
         &config.include_patterns,
         &config.exclude_patterns,
+        &config.conflict_naming,
     )
 }
 
@@ -5341,6 +5733,8 @@ mod tests {
             delete_approval_remote: false,
             delete_approval_local: false,
             warm_start: WarmStartConfig::default(),
+            conflict_naming: ConflictNaming::default(),
+            log_filter: "info".to_owned(),
         };
 
         let plan = preview_plan_with_client(&config, &FakeProtonClient { remote_files })
@@ -6229,6 +6623,9 @@ mod tests {
                 entity_kind: EntityKind::File,
                 fingerprint: "fp-all".to_owned(),
                 detected_epoch_secs: 1,
+                first_seen_epoch_secs: 1,
+                subtree_files: None,
+                subtree_bytes: None,
             },
             PendingDeletion {
                 path: PathBuf::from("other.txt"),
@@ -6236,11 +6633,15 @@ mod tests {
                 entity_kind: EntityKind::File,
                 fingerprint: "fp-other".to_owned(),
                 detected_epoch_secs: 1,
+                first_seen_epoch_secs: 1,
+                subtree_files: None,
+                subtree_bytes: None,
             },
         ];
 
-        let message = apply_approval_command(&daemon.connection, &pending, Some("All"), true, true)
-            .expect("literal-path approve");
+        let message =
+            apply_approval_command(&daemon.connection, &pending, Some("All"), true, true, None)
+                .expect("literal-path approve");
         assert!(
             message.contains("approved 1"),
             "a literal-path selector must approve only the file named \"All\": {message}"
@@ -6253,7 +6654,7 @@ mod tests {
         );
 
         let message =
-            apply_approval_command(&daemon.connection, &pending, Some("All"), false, true)
+            apply_approval_command(&daemon.connection, &pending, Some("All"), false, true, None)
                 .expect("legacy approve");
         assert!(
             message.contains("approved 2"),
@@ -6290,6 +6691,9 @@ mod tests {
             entity_kind: EntityKind::File,
             fingerprint: "fp".to_owned(),
             detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
         }];
         let selector = crate::ipc::wire_path(&real_path);
         assert_ne!(
@@ -6298,9 +6702,15 @@ mod tests {
             "the wire form is lossy"
         );
 
-        let message =
-            apply_approval_command(&daemon.connection, &pending, Some(&selector), true, true)
-                .expect("approve by wire form");
+        let message = apply_approval_command(
+            &daemon.connection,
+            &pending,
+            Some(&selector),
+            true,
+            true,
+            None,
+        )
+        .expect("approve by wire form");
 
         assert!(
             message.contains("approved 1"),
@@ -6338,14 +6748,23 @@ mod tests {
                 entity_kind: EntityKind::File,
                 fingerprint: format!("fp-{index}"),
                 detected_epoch_secs: 1,
+                first_seen_epoch_secs: 1,
+                subtree_files: None,
+                subtree_bytes: None,
             })
             .collect();
         let selector = crate::ipc::wire_path(&pending[0].path);
         assert_eq!(selector, crate::ipc::wire_path(&pending[1].path));
 
-        let message =
-            apply_approval_command(&daemon.connection, &pending, Some(&selector), true, true)
-                .expect("ambiguous approve");
+        let message = apply_approval_command(
+            &daemon.connection,
+            &pending,
+            Some(&selector),
+            true,
+            true,
+            None,
+        )
+        .expect("ambiguous approve");
 
         assert!(
             message.contains("cannot be told apart"),
@@ -6366,7 +6785,7 @@ mod tests {
         );
 
         // "all" is the deliberate every-item form and still works, as does a deny.
-        apply_approval_command(&daemon.connection, &pending, Some("all"), false, true)
+        apply_approval_command(&daemon.connection, &pending, Some("all"), false, true, None)
             .expect("approve all");
         assert_eq!(
             crate::index::load_delete_approvals(&daemon.connection)
@@ -6374,8 +6793,15 @@ mod tests {
                 .len(),
             2
         );
-        apply_approval_command(&daemon.connection, &pending, Some(&selector), true, false)
-            .expect("ambiguous deny");
+        apply_approval_command(
+            &daemon.connection,
+            &pending,
+            Some(&selector),
+            true,
+            false,
+            None,
+        )
+        .expect("ambiguous deny");
         assert!(
             crate::index::load_delete_approvals(&daemon.connection)
                 .expect("approvals")
@@ -6401,6 +6827,9 @@ mod tests {
             entity_kind: EntityKind::Directory,
             fingerprint: "fp-dir".to_owned(),
             detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
         }];
 
         let message = apply_approval_command(
@@ -6409,6 +6838,7 @@ mod tests {
             Some("nested/folder/"),
             true,
             true,
+            None,
         )
         .expect("approve by completed path");
 
@@ -6650,6 +7080,561 @@ mod tests {
             cursor.last_event_id, "cursor-0",
             "the cursor must NOT advance while a destructive action is withheld, so the pending \
              delete keeps re-deriving from ground truth every pass"
+        );
+    }
+
+    // --- the withheld-deletion lifecycle: first-seen, subtree totals, keep, pre-approval ------
+
+    /// A daemon whose local root holds `keep.txt`, with a matching baseline record and an empty
+    /// remote — the shape that plans a withheld `LocalDelete`. Returns the daemon and the file.
+    fn daemon_withholding_a_local_delete(
+        directory: &Path,
+        local_root: &Path,
+    ) -> (Daemon<RecordingProtonClient>, PathBuf) {
+        let local_path = local_root.join("keep.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon =
+            Daemon::with_client(guarded_config(directory, local_root), client).expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+        (daemon, local_path)
+    }
+
+    #[test]
+    fn a_withheld_deletion_keeps_the_age_it_was_first_seen_at_across_restarts() {
+        // #225. `detected_epoch_secs` is the age of the PASS — the gate stamps `now` on everything
+        // it withholds, and a pass cannot idle-skip while anything is pending — so a three-day-old
+        // deletion reported an age of seconds. The stored first-seen is the fact that survives.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (mut daemon, _) = daemon_withholding_a_local_delete(directory.path(), &local_root);
+
+        daemon.reconcile_blocking().expect_clean("first reconcile");
+        assert_eq!(daemon.pending_deletions.len(), 1);
+        let fingerprint = daemon.pending_deletions[0].fingerprint.clone();
+
+        // Age the stored row to three days ago and start a FRESH daemon over the same database:
+        // the queue survives a restart, so its age has to as well.
+        const THREE_DAYS_AGO: u64 = 1_700_000_000;
+        replace_withheld_deletions(
+            &daemon.connection,
+            &[WithheldDeletion {
+                path: PathBuf::from("keep.txt"),
+                direction: DeleteDirection::Local,
+                fingerprint,
+                first_seen_epoch_secs: THREE_DAYS_AGO,
+            }],
+        )
+        .expect("age the stored row");
+        drop(daemon);
+
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("restarted daemon");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
+
+        let pending = &daemon.pending_deletions[0];
+        assert_eq!(
+            pending.first_seen_epoch_secs, THREE_DAYS_AGO,
+            "the first-seen time must be carried forward, not re-stamped"
+        );
+        assert!(
+            pending.detected_epoch_secs > THREE_DAYS_AGO,
+            "detected_epoch_secs is still this pass's own clock: {pending:?}"
+        );
+    }
+
+    #[test]
+    fn a_different_deletion_at_the_same_path_re_stamps_its_age() {
+        // The carryover is keyed on the fingerprint as well as the path: a new deletion at a path
+        // that already had one is a different thing, and dating it from the old one would age it
+        // from something that already resolved.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (mut daemon, _) = daemon_withholding_a_local_delete(directory.path(), &local_root);
+        replace_withheld_deletions(
+            &daemon.connection,
+            &[WithheldDeletion {
+                path: PathBuf::from("keep.txt"),
+                direction: DeleteDirection::Local,
+                fingerprint: "a-fingerprint-from-some-earlier-deletion".to_owned(),
+                first_seen_epoch_secs: 1_700_000_000,
+            }],
+        )
+        .expect("seed a stale row");
+
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        let pending = &daemon.pending_deletions[0];
+        assert_eq!(
+            pending.first_seen_epoch_secs, pending.detected_epoch_secs,
+            "a fingerprint that does not match the stored row starts the clock again"
+        );
+    }
+
+    #[test]
+    fn a_withheld_directory_deletion_reports_what_the_subtree_costs() {
+        // #208. The confirmation names what you would lose, and a directory's own `file_size` in
+        // `file_index` is not a subtree total. Files only, strict descendants only.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::create_dir(local_root.join("photos")).expect("local directory");
+        fs::write(local_root.join("photos/a.jpg"), b"aaaa").expect("child a");
+        fs::write(local_root.join("photos/b.jpg"), b"bbbbbb").expect("child b");
+        fs::write(local_root.join("outside.txt"), b"z").expect("sibling");
+
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("photos", Some("dir-id")),
+        )
+        .expect("directory record");
+        // A sibling OUTSIDE the folder, and the folder's own record, must not be counted.
+        for (path, bytes) in [
+            ("photos/a.jpg", 4u64),
+            ("photos/b.jpg", 6u64),
+            ("outside.txt", 1u64),
+        ] {
+            let hash = crate::index::compute_sha1(&local_root.join(path)).expect("hash");
+            let mut record = base_record(path, Some(path), hash.as_str());
+            record.file_size = bytes;
+            upsert_record(&daemon.connection, &record).expect("record");
+        }
+
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        let folder = daemon
+            .pending_deletions
+            .iter()
+            .find(|pending| pending.path == Path::new("photos"))
+            .expect("the folder deletion is withheld");
+        assert_eq!(folder.subtree_files, Some(2));
+        assert_eq!(folder.subtree_bytes, Some(10));
+        // A file's own size is a lookup the client already has, so it reports no subtree at all
+        // rather than a total of one.
+        let file = daemon
+            .pending_deletions
+            .iter()
+            .find(|pending| pending.path == Path::new("outside.txt"))
+            .expect("the file deletion is withheld");
+        assert_eq!((file.subtree_files, file.subtree_bytes), (None, None));
+    }
+
+    #[test]
+    fn keeping_a_withheld_local_delete_puts_the_file_back_on_proton() {
+        // #224. `Keep it — put it back on Proton Drive`: purging the baseline record turns the
+        // surviving local file from "a deletion nobody approved" into a file the engine has never
+        // seen, which the bootstrap arm uploads.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("keep.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        daemon.reconcile_blocking().expect_clean("first reconcile");
+        assert_eq!(daemon.pending_deletions.len(), 1);
+
+        let (message, changed) = daemon
+            .apply_keep_command(Some("keep.txt"))
+            .expect("keep the deletion");
+        assert!(changed, "the refusal purged something: {message}");
+        assert!(message.contains("kept 1"), "{message}");
+        assert!(
+            get_record(&daemon.connection, Path::new("keep.txt"))
+                .expect("lookup")
+                .is_none(),
+            "the baseline record is what made this a deletion; keeping it removes that"
+        );
+
+        daemon.reconcile_blocking().expect_clean("second reconcile");
+        assert!(
+            operations
+                .lock()
+                .expect("ops")
+                .iter()
+                .any(|operation| matches!(
+                    operation,
+                    RecordedOperation::Upload { relative_path, .. }
+                        if relative_path == Path::new("keep.txt")
+                )),
+            "the kept file must be uploaded back: {:?}",
+            operations.lock().expect("ops")
+        );
+        assert!(
+            daemon.pending_deletions.is_empty(),
+            "the queue empties because the planner stops deriving the deletion"
+        );
+    }
+
+    #[test]
+    fn keeping_a_folder_purges_its_whole_subtree() {
+        // A directory deletion is planned RECURSIVELY — one action for the folder, every
+        // descendant suppressed — so purging the folder alone would re-adopt it while each
+        // surviving child record went on deriving its own withheld delete.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::create_dir(local_root.join("photos")).expect("local directory");
+        fs::write(local_root.join("photos/a.jpg"), b"aaaa").expect("child");
+        // `photosx` shares a byte prefix with `photos` and is NOT under it.
+        fs::write(local_root.join("photosx"), b"z").expect("prefix sibling");
+
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("photos", Some("dir-id")),
+        )
+        .expect("directory record");
+        for path in ["photos/a.jpg", "photosx"] {
+            let hash = crate::index::compute_sha1(&local_root.join(path)).expect("hash");
+            upsert_record(
+                &daemon.connection,
+                &base_record(path, Some(path), hash.as_str()),
+            )
+            .expect("record");
+        }
+
+        daemon.reconcile_blocking().expect_clean("reconcile");
+        let (_, changed) = daemon
+            .apply_keep_command(Some("photos"))
+            .expect("keep the folder");
+
+        assert!(changed);
+        for path in ["photos", "photos/a.jpg"] {
+            assert!(
+                get_record(&daemon.connection, Path::new(path))
+                    .expect("lookup")
+                    .is_none(),
+                "{path} must be purged with the subtree"
+            );
+        }
+        assert!(
+            get_record(&daemon.connection, Path::new("photosx"))
+                .expect("lookup")
+                .is_some(),
+            "containment is component-wise: photosx is not under photos"
+        );
+    }
+
+    #[test]
+    fn keeping_a_folder_revokes_the_approvals_under_it_too() {
+        // Copilot, PR #309. A descendant can carry a standing approval the folder card never showed
+        // — an earlier pass that queued it individually, or a pre-pass `approve --direction` — and
+        // the purge alone would leave it pointing at a record that no longer exists. It is not
+        // inert: the fingerprint is the content's own, so re-adopting the file unchanged makes the
+        // stale approval match the NEW record exactly, and the next deletion of that path would
+        // execute without ever being shown.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::create_dir(local_root.join("photos")).expect("local directory");
+        fs::write(local_root.join("photos/a.jpg"), b"aaaa").expect("child");
+
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("photos", Some("dir-id")),
+        )
+        .expect("directory record");
+        let child_hash =
+            crate::index::compute_sha1(&local_root.join("photos/a.jpg")).expect("hash");
+        upsert_record(
+            &daemon.connection,
+            &base_record("photos/a.jpg", Some("child-id"), child_hash.as_str()),
+        )
+        .expect("child record");
+        upsert_delete_approval(
+            &daemon.connection,
+            Path::new("photos/a.jpg"),
+            DeleteDirection::Local,
+            child_hash.as_str(),
+            1,
+        )
+        .expect("a standing approval for the descendant");
+
+        daemon.reconcile_blocking().expect_clean("reconcile");
+        let (_, changed) = daemon
+            .apply_keep_command(Some("photos"))
+            .expect("keep the folder");
+
+        assert!(changed);
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "an approval under a kept folder must go with the record it was pinned to"
+        );
+    }
+
+    #[test]
+    fn a_keep_whose_fingerprint_moved_is_inert() {
+        // The published queue can be a pass stale, and a refusal is pinned exactly as an approval
+        // is: it names one exact thing, or it does nothing.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (mut daemon, _) = daemon_withholding_a_local_delete(directory.path(), &local_root);
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        // The user saw one thing; the index now says another.
+        daemon.pending_deletions[0].fingerprint = "what-the-user-saw".to_owned();
+        let (message, changed) = daemon
+            .apply_keep_command(Some("keep.txt"))
+            .expect("keep the deletion");
+
+        assert!(!changed, "{message}");
+        assert!(message.contains("nothing was kept"), "{message}");
+        assert!(
+            get_record(&daemon.connection, Path::new("keep.txt"))
+                .expect("lookup")
+                .is_some(),
+            "a stale refusal must not purge anything"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_keep_selector_keeps_nothing() {
+        // The same rule `approve` fails closed on (#298/#61), for a reason `deny` does not share:
+        // keeping MUTATES the index and puts content back on a side the user may have cleared.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending: Vec<PendingDeletion> = [&b"bad-\xff.txt"[..], &b"bad-\xfe.txt"[..]]
+            .iter()
+            .map(|bytes| PendingDeletion {
+                path: PathBuf::from(OsStr::from_bytes(bytes)),
+                direction: DeleteDirection::Local,
+                entity_kind: EntityKind::File,
+                fingerprint: "fp".to_owned(),
+                detected_epoch_secs: 1,
+                first_seen_epoch_secs: 1,
+                subtree_files: None,
+                subtree_bytes: None,
+            })
+            .collect();
+        let selector = crate::ipc::wire_path(&pending[0].path).into_owned();
+        assert_eq!(selector, crate::ipc::wire_path(&pending[1].path));
+
+        let (message, changed) =
+            apply_keep_command(&daemon.connection, &pending, Some(&selector), true)
+                .expect("ambiguous keep");
+
+        assert!(!changed);
+        assert!(
+            message.contains("nothing was kept") && message.contains("proton-sync keep --all"),
+            "an ambiguous selector must keep nothing and name the deliberate form: {message}"
+        );
+    }
+
+    #[test]
+    fn a_planned_deletion_can_be_approved_before_any_pass_withholds_it() {
+        // #227. The Plan screen authorises the plan's deletion BEFORE the pass runs, when nothing
+        // is pending by construction. The gate needs no change to honour it: the row this writes
+        // is the `(path, direction, fingerprint)` triple it already looks for.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("keep.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        // Nothing pending yet — no pass has run at all.
+        let message = apply_approval_command(
+            &daemon.connection,
+            &[],
+            Some("keep.txt"),
+            true,
+            true,
+            Some(DeleteDirection::Local),
+        )
+        .expect("pre-approve");
+        assert!(message.contains("approved 1"), "{message}");
+
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        assert!(
+            !local_path.exists(),
+            "the pre-approved local delete must apply on the pass that plans it"
+        );
+        assert!(
+            daemon.pending_deletions.is_empty(),
+            "nothing was withheld, so nothing is pending"
+        );
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "the approval is consumed in the same checkpoint as the delete's purge"
+        );
+    }
+
+    #[test]
+    fn a_pre_approval_with_no_direction_authorises_nothing() {
+        // A path alone does not say WHICH of the two deletions at it is meant, and an ambiguous
+        // selector authorises nothing (#298, one step earlier in time).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (daemon, _) = daemon_withholding_a_local_delete(directory.path(), &local_root);
+
+        let message =
+            apply_approval_command(&daemon.connection, &[], Some("keep.txt"), true, true, None)
+                .expect("pre-approve without a direction");
+
+        assert!(message.contains("name its direction"), "{message}");
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "nothing may be recorded from a selector that does not name a deletion"
+        );
+    }
+
+    #[test]
+    fn a_pre_approval_is_refused_for_a_path_with_nothing_to_pin_to() {
+        // The fingerprint comes from the INDEX, not from the client. With no record there is
+        // nothing to pin to, and `delete_fingerprint`'s remaining fallback is the *action's*
+        // remote id — unknowable before the plan exists — so a row written here could never match.
+        // Also the first place `approve` would store a client-supplied path, hence the guard.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (daemon, _) = daemon_withholding_a_local_delete(directory.path(), &local_root);
+
+        for (selector, expected) in [
+            ("never-synced.txt", "no synced record"),
+            ("../escape.txt", "not a valid relative path"),
+            (".", "not a valid relative path"),
+        ] {
+            let message = apply_approval_command(
+                &daemon.connection,
+                &[],
+                Some(selector),
+                true,
+                true,
+                Some(DeleteDirection::Local),
+            )
+            .expect("pre-approve");
+            assert!(
+                message.contains(expected),
+                "'{selector}' should be refused with '{expected}': {message}"
+            );
+        }
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+        );
+    }
+
+    #[test]
+    fn a_kept_remote_direction_deletion_comes_back_only_on_a_full_walk() {
+        // THE REASON `Keep` LATCHES `force_full_walk`. An incremental pass builds its remote map as
+        // `reconstruct_remote(base ⊕ delta)`, so the baseline IS the remote view: once the refusal
+        // purges the record, the surviving remote file is in no reconstructed map, and no event
+        // will ever re-derive it — the deletion happened HERE, so the volume stream never mentioned
+        // it. Without the latch `bring it back to this computer` downloads nothing, ever (the
+        // periodic resync is off by default and a restart warm-starts from the cursor).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let base = sha1_bytes(b"base");
+
+        // Local copy absent, remote node still present, synced baseline → RemoteDelete.
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("a.txt"),
+            remote_file_entity("a.txt", "vol~na", base.as_str()),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                delete_approval_local: true,
+                delete_approval_remote: true,
+                ..event_config(directory.path(), &local_root)
+            },
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![one_page("cursor-1", vec![]); 3],
+            ))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("a.txt", Some("vol~na"), base.as_str()),
+        )
+        .expect("seed base record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        daemon.is_first_reconcile = false;
+        // The local deletion is what this pass has to notice, and no remote event announces it —
+        // the same clause a dropped watcher event takes (#51).
+        daemon.force_local_rescan = true;
+
+        daemon.reconcile_blocking().expect_clean("first reconcile");
+        assert_eq!(daemon.pending_deletions.len(), 1);
+        assert_eq!(
+            daemon.pending_deletions[0].direction,
+            DeleteDirection::Remote
+        );
+
+        let (_, changed) = daemon.apply_keep_command(Some("a.txt")).expect("keep");
+        assert!(changed);
+
+        // An incremental pass cannot see the survivor at all: this is the failure the latch exists
+        // to prevent, asserted rather than assumed.
+        daemon.reconcile_blocking().expect_clean("incremental pass");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0, "stayed incremental");
+        assert!(
+            !local_root.join("a.txt").exists(),
+            "an incremental pass has no remote map that holds the kept file"
+        );
+
+        // The latch the `keep` control command sets alongside the purge.
+        daemon.shared.force_full_walk.store(true, Ordering::SeqCst);
+        daemon.reconcile_blocking().expect_clean("full-walk pass");
+
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+        assert!(
+            local_root.join("a.txt").exists(),
+            "the full walk sees the surviving remote file and downloads it back"
         );
     }
 
@@ -8767,9 +9752,17 @@ mod tests {
         );
         // The two predicates `gui_core::conflicts::scan_conflicts` walks the disk with: the sidecar
         // is only in the GUI's conflicts list if both hold for what the daemon actually wrote.
-        assert!(crate::sync::is_conflict_copy(&sidecar_path));
+        assert!(
+            daemon
+                .config
+                .conflict_naming
+                .is_conflict_copy(&sidecar_path)
+        );
         assert_eq!(
-            crate::sync::original_from_conflict_copy(&sidecar_path),
+            daemon
+                .config
+                .conflict_naming
+                .original_from_conflict_copy(&sidecar_path),
             Some(local_path.clone())
         );
         let record = get_record(&daemon.connection, Path::new("notes.txt"))
@@ -10049,6 +11042,8 @@ mod tests {
                 enabled: false,
                 ..WarmStartConfig::default()
             },
+            conflict_naming: ConflictNaming::default(),
+            log_filter: "info".to_owned(),
         }
     }
 
@@ -12188,6 +13183,103 @@ mod tests {
             full_walks.load(Ordering::SeqCst),
             1,
             "the force-full-walk latch is consumed after one pass"
+        );
+    }
+
+    #[test]
+    fn a_reset_index_request_discards_the_learned_state_and_rebuilds_by_adoption() {
+        // G23/#237's *Reset the index*. Three claims at once: the baseline, cursor and approvals
+        // are gone; the next pass full-walks (an empty index is the bootstrap condition, and the
+        // cleared cursor must not be mistaken for a warm-start opportunity); and the user's files
+        // are untouched — an already-agreeing pair is re-adopted, not re-transferred.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("local file");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut config = event_config(directory.path(), &local_root);
+        config.warm_start.enabled = true;
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(
+            &daemon.connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+        upsert_delete_approval(
+            &daemon.connection,
+            Path::new("keep.txt"),
+            DeleteDirection::Local,
+            "fingerprint",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed approval");
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("warm-start first pass");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+        daemon.is_first_reconcile = false;
+
+        // Only the reset latch — NOT `force_full_walk`, which the IPC handler also sets. The full
+        // walk below therefore proves the reset's own doing: a cleared cursor leaves nothing to
+        // warm-start from, so the pass has to walk.
+        daemon.shared.reset_index.store(true, Ordering::SeqCst);
+        daemon.reconcile_blocking().expect_clean("reset pass");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "a reset pass rebuilds from a full walk, never from the cursor it just cleared"
+        );
+        // The cursor was cleared and then RE-SEEDED by this pass, which is the point: a reset must
+        // not leave the daemon permanently cursorless and full-walking. That the truncation itself
+        // happens is pinned at the layer that does it —
+        // `index::reset_index_state_clears_every_table_the_daemon_decides_from`.
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("cursor query")
+                .is_some(),
+            "a successful reset pass re-seeds the cursor from the walk it just did"
+        );
+        assert!(
+            !matching_delete_approval(
+                &daemon.connection,
+                Path::new("keep.txt"),
+                DeleteDirection::Local,
+                "fingerprint",
+            )
+            .expect("approval query"),
+            "a standing approval is pinned to a baseline the reset erased"
+        );
+        assert!(
+            local_root.join("keep.txt").exists(),
+            "resetting the index must not touch the user's files"
+        );
+        let record = get_record(&daemon.connection, Path::new("keep.txt"))
+            .expect("record query")
+            .expect("the rebuilt baseline re-adopts the already-agreeing pair");
+        assert_eq!(record.sha1_hash.as_deref(), Some(keep.as_str()));
+        assert!(
+            !daemon.shared.reset_index.load(Ordering::SeqCst),
+            "the reset latch is consumed exactly once"
         );
     }
 
