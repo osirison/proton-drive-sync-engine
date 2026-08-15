@@ -196,7 +196,7 @@ pub fn unsyncable_items(plan: &[PlannedAction], now: u64) -> Vec<UnsyncableItem>
 /// The direction a deletion propagates, used by the delete-approval guard, the persistent
 /// approval store, and the control protocol. It is the stable identity that distinguishes the
 /// two data-losing actions (see [`SyncAction::delete_direction`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeleteDirection {
     /// Propagate a *local* deletion by deleting the copy on Proton Drive (`RemoteDelete`).

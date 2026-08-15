@@ -25,8 +25,16 @@ export const api = {
   // `literalPath: true` (the default) marks `target` as a row's actual relative path, so a file
   // literally named "all" can never be mistaken for the every-item selector; the Approve-all /
   // Deny-all buttons pass `false` with the explicit "all" argument.
-  approve: (target, literalPath = true) => invoke("approve", { target, literalPath }),
+  // `direction` is only read when NOTHING PENDING matches `target` — the Plan screen approving its
+  // own plan's deletion before any pass has withheld it (#227). A pending item's own direction wins,
+  // and an approval with neither authorises nothing.
+  approve: (target, literalPath = true, direction = null) =>
+    invoke("approve", { target, literalPath, direction }),
   deny: (target, literalPath = true) => invoke("deny", { target, literalPath }),
+  // `Keep it` / `Keep both files` (#224). NOT `deny`, which only revokes an approval: this refuses
+  // the deletion — the daemon purges the baseline record and puts the surviving copy back on the
+  // other side — so the row does not return on the next poll.
+  keep: (target, literalPath = true) => invoke("keep", { target, literalPath }),
   listPendingDeletions: () => invoke("list_pending_deletions"),
   readConfig: () => invoke("read_config"),
   writeConfig: (update) => invoke("write_config", { update }),
@@ -388,22 +396,25 @@ function mockInvoke(cmd, args) {
       return Promise.resolve(null);
     case "approve":
     case "deny":
+    case "keep":
       // Simulate the daemon round trip so the Deletions screen's busy → settled flow is visible in
       // browser preview. Shaped like a real StatusPayload, INCLUDING the acknowledgement message:
-      // the screen requires the daemon's own `approved N …` / `denied N …` wording before it treats
-      // anything as decided, because `apply_approval_command` answers `Ok("no pending deletion
-      // matches …")` for a selector it cannot find. A mock without the message is a mock the screen
-      // correctly refuses, which would look like a broken preview.
+      // the screen requires the daemon's own `approved N …` / `denied N …` / `kept N …` wording
+      // before it treats anything as decided, because `apply_approval_command` answers
+      // `Ok("no pending deletion matches …")` for a selector it cannot find. A mock without the
+      // message is a mock the screen correctly refuses, which would look like a broken preview.
       return new Promise((resolve) => {
-        const verb = cmd === "approve" ? "approved" : "denied";
+        // `kept` has its own tail, as the daemon's does: keeping restores the other side on the
+        // next pass rather than asking for a `syncnow` (the command schedules one itself).
+        const message =
+          cmd === "keep"
+            ? "kept 1 pending deletion(s); the other side is put back on the next sync"
+            : `${cmd === "approve" ? "approved" : "denied"} 1 pending deletion(s); run \`proton-sync syncnow\` to apply now`;
         setTimeout(
           () =>
             resolve({
               state: "running",
-              response: {
-                paused: false,
-                message: `${verb} 1 pending deletion(s); run \`proton-sync syncnow\` to apply now`,
-              },
+              response: { paused: false, message },
               error: null,
             }),
           800,
