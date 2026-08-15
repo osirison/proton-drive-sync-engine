@@ -931,14 +931,16 @@ impl Spinner {
     }
 }
 
-/// How long a withheld deletion has been waiting, or `None` when the daemon did not say (an older
-/// daemon sends `0`, and a clock skewed backwards would otherwise read as a negative age).
+/// How long a withheld deletion has been waiting, or `None` when the age cannot be stated: the
+/// daemon did not say (an older daemon sends `0`), or the stamp is in the future. The latter is a
+/// skewed clock, and `saturating_sub` would render it `0s` — asserting the item was first seen just
+/// now, which is the one answer a stale-age display must never give.
 fn relative_age(first_seen_epoch_secs: u64) -> Option<String> {
     if first_seen_epoch_secs == 0 {
         return None;
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let seconds = now.saturating_sub(first_seen_epoch_secs);
+    let seconds = now.checked_sub(first_seen_epoch_secs)?;
     Some(match seconds {
         0..=59 => format!("{seconds}s"),
         60..=3599 => format!("{}m", seconds / 60),
@@ -1110,5 +1112,29 @@ mod tests {
         assert_eq!(human_bytes(2048), "2.0 KiB");
         assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
         assert_eq!(human_bytes(1_500_000_000), "1.4 GiB");
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock is after the epoch")
+            .as_secs()
+    }
+
+    #[test]
+    fn relative_age_scales_and_refuses_what_it_cannot_state() {
+        let now = now_secs();
+        assert_eq!(relative_age(now - 5).as_deref(), Some("5s"));
+        assert_eq!(relative_age(now - 600).as_deref(), Some("10m"));
+        assert_eq!(relative_age(now - 7200).as_deref(), Some("2h"));
+        assert_eq!(relative_age(now - 3 * 86_400).as_deref(), Some("3d"));
+
+        // An older daemon omits the field, which deserializes to 0.
+        assert_eq!(relative_age(0), None);
+
+        // A stamp in the future is a skewed clock. `saturating_sub` would render it "0s" —
+        // "first seen just now" is the one answer this display must never invent, since the whole
+        // point of the field (#225) is that the age was previously re-stamped to now every pass.
+        assert_eq!(relative_age(now + 3600), None);
     }
 }
