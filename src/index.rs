@@ -1,3 +1,4 @@
+use crate::sync::{UnsyncableItem, UnsyncableReason};
 use crate::{AppResult, boxed_error};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -36,6 +37,12 @@ CREATE TABLE IF NOT EXISTS delete_approvals (
 CREATE TABLE IF NOT EXISTS warm_start_state (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     warm_starts_since_full_walk INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS unsyncable_items (
+    path BLOB PRIMARY KEY,
+    entity_kind TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    first_seen INTEGER NOT NULL
 );
 "#;
 
@@ -773,6 +780,72 @@ pub fn store_warm_start_count(connection: &Connection, count: u64) -> AppResult<
         "#,
         params![stored],
     )?;
+    Ok(())
+}
+
+/// Every entity the daemon currently holds as unsyncable, **ordered by path**.
+///
+/// The list is maintained by `daemon::record_unsyncable`, and a full-tree walk is not its only
+/// writer: any pass may add a skip it planned or drop a path it planned a real action for, while
+/// only a full walk may prune by absence. Each row keeps the epoch it was *first* seen at rather
+/// than the epoch of the pass that last re-derived it, which is what makes "stuck since March"
+/// answerable. Path order is deliberate — it is stable across passes and independent of when a row
+/// joined, and it is the order `proton-sync status` renders within each cause.
+///
+/// Persisted because a skipped entity is never recorded in `file_index`: it is absent from the
+/// baseline `reconstruct::reconstruct_remote` overlays, so an incremental pass simply does not plan
+/// it and cannot re-derive it. With event-driven detection on by default and a warm start on boot,
+/// a purely in-memory list would be empty for most of a daemon's life and every restart would
+/// re-hide exactly what #295 is about.
+///
+/// Keyed on the byte-exact [`index_key`] BLOB encoding, not TEXT: the `unrepresentable_path`
+/// reason is *precisely* the non-UTF-8 paths a lossy TEXT key mangles (see
+/// [`normalize_legacy_text_keys`] for what that cost `file_index`).
+pub fn load_unsyncable_items(connection: &Connection) -> AppResult<Vec<UnsyncableItem>> {
+    let mut statement = connection.prepare(
+        "SELECT path, entity_kind, reason, first_seen FROM unsyncable_items ORDER BY path",
+    )?;
+    let items = statement
+        .query_map([], |row| {
+            let entity_kind: String = row.get(1)?;
+            let reason: String = row.get(2)?;
+            Ok(UnsyncableItem {
+                path: read_index_key_column(row, 0)?,
+                entity_kind: entity_kind.parse().map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, err)
+                })?,
+                reason: UnsyncableReason::from_token(&reason),
+                first_seen_epoch_secs: row.get::<_, i64>(3)?.max(0) as u64,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// Replaces the stored unsyncable list wholesale (see [`load_unsyncable_items`]). One transaction,
+/// so a crash mid-write cannot leave a half list; display-only data, so it is written outside the
+/// reconcile's checkpoint transactions and records no side effect.
+pub fn replace_unsyncable_items(
+    connection: &Connection,
+    items: &[UnsyncableItem],
+) -> AppResult<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute("DELETE FROM unsyncable_items", [])?;
+    {
+        let mut statement = transaction.prepare(
+            "INSERT INTO unsyncable_items (path, entity_kind, reason, first_seen) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for item in items {
+            statement.execute(params![
+                index_key(&item.path),
+                item.entity_kind.as_str(),
+                item.reason.as_str(),
+                i64::try_from(item.first_seen_epoch_secs).unwrap_or(i64::MAX)
+            ])?;
+        }
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -2492,6 +2565,53 @@ mod tests {
         assert_eq!(record.sha1_hash.as_deref(), Some("hash"));
         assert_eq!(record.proton_id.as_deref(), Some("pid"));
         assert_eq!(record.sync_status, SyncStatus::Synced);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsyncable_items_round_trip_including_a_non_utf8_path() {
+        // The `unrepresentable_path` reason is PRECISELY the non-UTF-8 paths a lossy TEXT key
+        // mangles, so the list is keyed on the byte-exact BLOB encoding like `file_index` — see
+        // `normalize_legacy_text_keys` for what the TEXT key cost the baseline (#75).
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let connection = open_database(&directory.path().join("index.db")).expect("open");
+        assert!(
+            load_unsyncable_items(&connection).expect("load").is_empty(),
+            "a fresh database has no unsyncable items"
+        );
+
+        let items = vec![
+            UnsyncableItem {
+                path: PathBuf::from(OsStr::from_bytes(b"caf\xe9.txt")),
+                entity_kind: EntityKind::File,
+                reason: UnsyncableReason::UnrepresentablePath,
+                first_seen_epoch_secs: 100,
+            },
+            UnsyncableItem {
+                path: PathBuf::from("Unsorted/Networth"),
+                entity_kind: EntityKind::File,
+                reason: UnsyncableReason::RemoteNotDownloadable,
+                first_seen_epoch_secs: 200,
+            },
+        ];
+        replace_unsyncable_items(&connection, &items).expect("store");
+        let loaded = load_unsyncable_items(&connection).expect("load");
+        assert_eq!(loaded.len(), 2);
+        assert!(
+            loaded.iter().any(|item| item.path == items[0].path),
+            "the non-UTF-8 path must come back byte-exact, not lossily: {loaded:?}"
+        );
+        assert!(loaded.contains(&items[1]));
+
+        // Wholesale replacement, so a shrinking list actually shrinks.
+        replace_unsyncable_items(&connection, &items[1..]).expect("replace");
+        assert_eq!(
+            load_unsyncable_items(&connection).expect("load"),
+            items[1..]
+        );
     }
 
     #[test]

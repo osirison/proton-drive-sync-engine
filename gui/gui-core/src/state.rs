@@ -143,6 +143,7 @@ mod tests {
             failed_item_count: 0,
             config: None,
             activity: None,
+            unsyncable: vec![],
         }
     }
 

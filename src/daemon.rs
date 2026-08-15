@@ -3,10 +3,11 @@ use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id
 use crate::index::{
     EntityKind, EventCursor, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
     delete_delete_approval, load_event_cursor, load_existing_index, load_index,
-    load_sole_event_cursor, load_warm_start_count, local_directory_state, local_file_state,
-    mark_modified, matching_delete_approval, open_database, path_for_proton_id, purge_record,
-    scan_local_entities_observed, scan_local_entities_reusing_hashes, store_event_cursor,
-    store_warm_start_count, upsert_delete_approval, upsert_record,
+    load_sole_event_cursor, load_unsyncable_items, load_warm_start_count, local_directory_state,
+    local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
+    purge_record, replace_unsyncable_items, scan_local_entities_observed,
+    scan_local_entities_reusing_hashes, store_event_cursor, store_warm_start_count,
+    upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ControlCommand, ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem, PendingDeletion,
@@ -20,8 +21,9 @@ use crate::proton::{
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
-    DeleteDirection, PlanSummary, PlannedAction, SyncAction, directory_move_descendant_path_pairs,
-    is_strict_descendant, original_from_conflict_copy, plan_sync_entities,
+    DeleteDirection, PlanSummary, PlannedAction, SyncAction, UnsyncableItem,
+    directory_move_descendant_path_pairs, is_strict_descendant, original_from_conflict_copy,
+    plan_sync_entities, unsyncable_items,
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -30,6 +32,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -250,6 +253,16 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// still stop dead on shutdown, or it would spawn (and immediately kill) one CLI child per
     /// remaining action. Owned here so `run` can install the same flag on the client.
     cancel_flag: Arc<AtomicBool>,
+    /// Entities the engine cannot sync, standing across passes and restarts (see
+    /// [`Self::record_unsyncable`] for why it is not simply recomputed, and
+    /// `index::load_unsyncable_items` for why it is persisted). Display-only: surfaced over IPC and
+    /// in the metrics sidecar, read by no sync decision.
+    unsyncable: Vec<UnsyncableItem>,
+    /// Paths already named at `warn` this run, so a permanent condition is reported once per
+    /// process instead of once per pass — a pass-rate log on a condition that never changes is
+    /// noise, and noise is why the old `debug!` line went unread for five months (#295). Pruned
+    /// when a path leaves the list, so a recurrence speaks again.
+    reported_unsyncable: HashSet<PathBuf>,
     /// Per-root instance lock; released on drop. Held for the daemon's whole lifetime.
     _lock_guard: LockGuard,
     /// User-global single-instance lock; released on drop. Held for the daemon's whole lifetime so
@@ -279,6 +292,10 @@ pub struct MetricsSnapshot {
     pub failed_items: Vec<FailedItem>,
     #[serde(default)]
     pub failed_item_count: usize,
+    /// Entities that cannot be synced (see [`UnsyncableItem`]). `#[serde(default)]` so a sidecar
+    /// written by an older daemon still parses.
+    #[serde(default)]
+    pub unsyncable: Vec<UnsyncableItem>,
 }
 
 /// State shared between the daemon core and the control-socket server task so control requests
@@ -328,6 +345,7 @@ struct StatusSnapshot {
     pending_deletions: Vec<PendingDeletion>,
     failed_items: Vec<FailedItem>,
     failed_item_count: usize,
+    unsyncable: Vec<UnsyncableItem>,
     config: RunningConfigInfo,
 }
 
@@ -348,6 +366,7 @@ impl ControlShared {
                 pending_deletions: Vec::new(),
                 failed_items: Vec::new(),
                 failed_item_count: 0,
+                unsyncable: Vec::new(),
                 config,
             }),
             activity: StdMutex::new(ActivityState::default()),
@@ -475,6 +494,7 @@ impl ControlShared {
             } else {
                 None
             },
+            unsyncable: snapshot.unsyncable,
         }
     }
 
@@ -494,6 +514,7 @@ impl ControlShared {
             pending_deletions: snapshot.pending_deletions,
             failed_items: snapshot.failed_items,
             failed_item_count: snapshot.failed_item_count,
+            unsyncable: snapshot.unsyncable,
         }
     }
 }
@@ -700,6 +721,13 @@ impl<C: ProtonClient> Daemon<C> {
                 warn!(%error, "ignoring unreadable warm-start counter; treating it as zero");
                 0
             });
+        // Standing across restarts, because an incremental pass cannot re-derive it (see
+        // `record_unsyncable`). A read failure degrades to empty: the next full-tree walk rebuilds
+        // the list, and nothing but display depends on it.
+        let unsyncable = load_unsyncable_items(&connection).unwrap_or_else(|error| {
+            warn!(%error, "ignoring an unreadable unsyncable-items list");
+            Vec::new()
+        });
         // Captured by value so the closure re-reads the keyring at runtime without holding the
         // config. Only the feature flag is needed — `CliKeyringSession::from_cli_keyring` sources
         // the session from the keyring itself. Quiet on failure (unlike the startup
@@ -752,6 +780,8 @@ impl<C: ProtonClient> Daemon<C> {
             last_failed_items: Vec::new(),
             last_failed_item_count: 0,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            unsyncable,
+            reported_unsyncable: HashSet::new(),
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
         };
@@ -1015,6 +1045,7 @@ impl<C: ProtonClient> Daemon<C> {
             pending_deletions: self.pending_deletions.clone(),
             failed_items: self.last_failed_items.clone(),
             failed_item_count: self.last_failed_item_count,
+            unsyncable: self.unsyncable.clone(),
             config: RunningConfigInfo {
                 local_root: self.config.local_root.clone(),
                 remote_root: self.config.remote_root.clone(),
@@ -1360,8 +1391,9 @@ impl<C: ProtonClient> Daemon<C> {
     ) -> Option<(String, EventCursor)> {
         let volume = match self.volume_id_for_scope(base_records) {
             Ok(volume) => volume,
-            Err(reason) => {
-                self.note_event_scope_declined(reason);
+            // Both failures decline the same way here; only the bootstrap cursor cares which.
+            Err(error) => {
+                self.note_event_scope_declined(error.into_reason());
                 return None;
             }
         };
@@ -1385,12 +1417,12 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
-    /// The volume id this root's event stream is scoped to, or a human-readable reason it cannot be
-    /// determined. Derived from any baseline composed `proton_id` first (free, no I/O).
+    /// The volume id this root's event stream is scoped to, or why it cannot be determined. Derived
+    /// from any baseline composed `proton_id` first (free, no I/O).
     fn volume_id_for_scope(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
-    ) -> Result<String, String> {
+    ) -> Result<String, VolumeScopeError> {
         if let Some(volume) = derive_volume_id(base_records) {
             return Ok(volume.to_owned());
         }
@@ -1400,14 +1432,14 @@ impl<C: ProtonClient> Daemon<C> {
         // (#32 — it used to stay on full-tree walks forever here).
         match load_sole_event_cursor(&self.connection) {
             Ok(Some(cursor)) => Ok(cursor.scope_id),
-            Ok(None) => Err(
+            Ok(None) => Err(VolumeScopeError::Unnameable(
                 "no event volume: no indexed node carries a composed proton_id, and no single \
                  stored cursor names one"
                     .to_owned(),
-            ),
-            Err(error) => Err(format!(
-                "no event volume: the stored event cursor is unreadable: {error}"
             )),
+            Err(error) => Err(VolumeScopeError::Unreadable(format!(
+                "no event volume: the stored event cursor is unreadable: {error}"
+            ))),
         }
     }
 
@@ -1527,7 +1559,10 @@ impl<C: ProtonClient> Daemon<C> {
             &local_files,
             &remote_entities,
             &base_index,
-            false,
+            RemoteMapShape {
+                remote_root_missing: false,
+                full_snapshot: false,
+            },
             Some(CursorUpdate {
                 scope_id: volume,
                 last_event_id: delta.latest_event_id,
@@ -1608,14 +1643,15 @@ impl<C: ProtonClient> Daemon<C> {
         &mut self,
         base_records: HashMap<PathBuf, FileRecord>,
     ) -> AppResult<PassOutcome> {
-        // Market-data recovery: capture the cursor *before* the snapshot when the volume is
-        // already known, so a change landing during the walk is re-delivered (idempotently) by
-        // the next incremental pass. On the first-ever bootstrap the volume is only known after
-        // the walk, so a change landing in an already-listed folder mid-walk is missed by this
-        // snapshot *and* precedes the post-walk cursor — a one-time gap that heals on the next
-        // process restart (the startup floor re-snapshots) or, if the opt-in periodic resync is
-        // enabled (`events_full_scan_every = N`), within N passes. With the default (0) it stays
-        // until restart; enable the periodic resync if that bound matters for your deployment.
+        // The cursor asserts "every remote change up to this event has been applied", which is only
+        // true of a cursor read *before* the walk: a change landing mid-walk in an already-listed
+        // folder is missed by this snapshot, so anchoring after the walk skips it in the delta too
+        // (#294). Read it up front whenever the volume is already known; when that read fails, this
+        // pass persists no cursor rather than a false one — see `resolve_bootstrap_cursor_update`.
+        // The first-ever bootstrap is the one case that still anchors after the walk (the volume is
+        // only knowable from the snapshot). That residual gap does *not* heal on restart — warm
+        // start replays the cursor (ADR 0004) — only via `proton-sync resync` or the opt-in
+        // periodic resync (`events_full_scan_every = N`).
         let pre_snapshot_cursor = self.capture_pre_snapshot_cursor(&base_records);
 
         let local_entities = self.scan_local_entities_reporting_progress(&base_records)?;
@@ -1642,7 +1678,10 @@ impl<C: ProtonClient> Daemon<C> {
             &local_files,
             &remote_entities,
             &base_index,
-            remote_root_missing,
+            RemoteMapShape {
+                remote_root_missing,
+                full_snapshot: true,
+            },
             cursor_update,
         )?;
         self.incremental_passes_since_full_scan = 0;
@@ -1659,43 +1698,74 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Reads the current latest cursor before a snapshot, when event-driven and the volume is
-    /// already known (from the baseline or a previously stored cursor). Best-effort: a failure just
-    /// defers cursor capture to after the snapshot.
+    /// already known (from the baseline or a previously stored cursor). The distinction the return
+    /// type carries is the point: "nothing names a volume" and "a lookup failed" are different
+    /// answers, and only the former may be repaired after the walk (#294).
     fn capture_pre_snapshot_cursor(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
-    ) -> Option<CursorUpdate> {
+    ) -> PreSnapshotCursor {
         if !self.config.events_driven {
-            return None;
+            return PreSnapshotCursor::Unavailable;
         }
-        let source = self.event_source.as_ref()?;
-        let volume = self.volume_id_for_scope(base_records).ok()?;
+        let Some(source) = self.event_source.as_ref() else {
+            return PreSnapshotCursor::Unavailable;
+        };
+        let volume = match self.volume_id_for_scope(base_records) {
+            Ok(volume) => volume,
+            // Nothing *names* a volume: the first-ever bootstrap, with no prior cursor to lose.
+            Err(VolumeScopeError::Unnameable(_)) => return PreSnapshotCursor::VolumeUnknown,
+            // The lookup itself failed, so a stored cursor may well exist and simply be invisible
+            // right now; anchoring after the walk would overwrite it with a post-walk value.
+            Err(VolumeScopeError::Unreadable(reason)) => {
+                warn!(%reason, "cannot name the event volume before the snapshot; this pass persists no cursor");
+                return PreSnapshotCursor::Unavailable;
+            }
+        };
         match source.latest_cursor(&volume) {
-            Ok(last_event_id) => Some(CursorUpdate {
+            Ok(last_event_id) => PreSnapshotCursor::Captured(CursorUpdate {
                 scope_id: volume,
                 last_event_id,
             }),
             Err(error) => {
-                warn!(%error, "could not capture the pre-snapshot events cursor; deriving it after the snapshot instead");
-                None
+                // Typically an unhealthy events endpoint — the same condition that forced this
+                // snapshot in the first place, so this arm fires exactly when a fabricated cursor
+                // would skip the most.
+                warn!(%error, "could not capture the pre-snapshot events cursor; this pass persists no cursor, so a change made during the walk is re-derived next pass instead of being skipped forever");
+                PreSnapshotCursor::Unavailable
             }
         }
     }
 
-    /// Chooses the cursor to persist with a bootstrap: the pre-snapshot one if captured, else
-    /// (first-ever bootstrap) the volume derived from the fresh snapshot with its latest cursor
-    /// read now. Returns `None` when event-driven is off or nothing can be anchored yet.
+    /// Chooses the cursor to persist with a bootstrap. `Captured` → persist it. `Unavailable` →
+    /// persist **nothing**: a lookup failed while prior state may exist, and a cursor read *after*
+    /// the walk would assert that every change made during it had been applied when the snapshot
+    /// never saw it (#294). `VolumeUnknown` → the first-ever bootstrap, where the volume is only
+    /// knowable from the fresh snapshot and there is no prior state to lose; anchor from a
+    /// post-walk read, or the event path could never engage at all.
+    ///
+    /// This is one of three places that can suppress the cursor, but they are one decision, not
+    /// three that can disagree: all of them only ever force the single `cursor_update` toward
+    /// `None`, and the sole store site is the final commit in [`Self::execute_plan_and_commit`]
+    /// (see the withheld-delete and vanished-node holds there).
     fn resolve_bootstrap_cursor_update(
         &self,
-        pre_snapshot_cursor: Option<CursorUpdate>,
+        pre_snapshot_cursor: PreSnapshotCursor,
         remote_entities: &HashMap<PathBuf, RemoteEntity>,
         remote_root_missing: bool,
     ) -> Option<CursorUpdate> {
         if !self.config.events_driven || remote_root_missing {
             return None;
         }
-        if let Some(cursor) = pre_snapshot_cursor {
-            return Some(cursor);
+        match pre_snapshot_cursor {
+            PreSnapshotCursor::Captured(cursor) => return Some(cursor),
+            // Persist nothing, and deliberately do not *clear* a stored cursor either: an older
+            // cursor is the safer replay point (re-delivered events reconstruct idempotently;
+            // skipped ones are lost outright). The next pass then either streams from that older
+            // cursor or, when none exists, declines the scope and bootstraps again — costly, but it
+            // self-heals on the first pass whose pre-snapshot read succeeds.
+            PreSnapshotCursor::Unavailable => return None,
+            PreSnapshotCursor::VolumeUnknown => {}
         }
         let source = self.event_source.as_ref()?;
         let volume = derive_volume_id_from_entities(remote_entities)?;
@@ -1708,6 +1778,75 @@ impl<C: ProtonClient> Daemon<C> {
                 warn!(%error, "could not capture the post-snapshot events cursor; incremental sync stays off until the next successful bootstrap");
                 None
             }
+        }
+    }
+
+    /// Folds this pass's `SkipUnsupported` rows into the standing unsyncable list, names each new
+    /// one at `warn` exactly once per run, and persists the result (#295).
+    ///
+    /// A merge rather than a replacement, because a skipped entity is **never recorded in
+    /// `file_index`**: it is absent from the baseline `reconstruct_remote` overlays, so an
+    /// incremental pass does not plan it at all and its `skipped_unsupported` count is 0. Replacing
+    /// the list every pass would therefore blank it on the cadence the daemon normally runs at
+    /// (event-driven by default, warm start on boot), which is the invisibility being fixed. The
+    /// three clauses:
+    ///
+    /// * every skip this pass planned is added (first-seen preserved for one already listed);
+    /// * a path this pass planned some *other* action for is dropped — it became syncable, and any
+    ///   pass can prove that;
+    /// * only a `full_snapshot` pass drops the paths it did not re-derive, since only a full-tree
+    ///   walk can prove a path is unsyncable no longer by its *absence*.
+    ///
+    /// So an entity that disappears remotely between full walks lingers in the list until the next
+    /// one (`proton-sync resync` forces it). Display-only data: a stale row misleads nobody into a
+    /// side effect, and the planner re-derives every skip from ground truth regardless.
+    fn record_unsyncable(&mut self, plan: &[PlannedAction], full_snapshot: bool) {
+        // `destination_path` counts as much as `path`: a move's destination is a path this pass
+        // planned a real action ONTO, so a stale entry there is contradicted by the same evidence.
+        let superseded: HashSet<&Path> = plan
+            .iter()
+            .filter(|action| action.action != SyncAction::SkipUnsupported)
+            .flat_map(|action| {
+                std::iter::once(action.path.as_path()).chain(action.destination_path.as_deref())
+            })
+            .collect();
+        let skips = unsyncable_items(plan, current_epoch_secs());
+        let rederived: HashSet<&Path> = skips.iter().map(|item| item.path.as_path()).collect();
+        let mut merged: BTreeMap<PathBuf, UnsyncableItem> = self
+            .unsyncable
+            .iter()
+            .filter(|item| {
+                !superseded.contains(item.path.as_path())
+                    && (!full_snapshot || rederived.contains(item.path.as_path()))
+            })
+            .map(|item| (item.path.clone(), item.clone()))
+            .collect();
+        for item in skips {
+            // `or_insert`, so a path already listed keeps the epoch it was FIRST seen at.
+            merged.entry(item.path.clone()).or_insert(item);
+        }
+        let merged: Vec<UnsyncableItem> = merged.into_values().collect();
+
+        for item in &merged {
+            if self.reported_unsyncable.insert(item.path.clone()) {
+                warn!(
+                    path = %item.path.display(),
+                    reason = item.reason.as_str(),
+                    "cannot sync this entity: {}. It is skipped on every pass and will not \
+                     transfer in either direction until that changes",
+                    item.reason.describe()
+                );
+            }
+        }
+        self.reported_unsyncable
+            .retain(|path| merged.iter().any(|item| &item.path == path));
+
+        if merged == self.unsyncable {
+            return;
+        }
+        self.unsyncable = merged;
+        if let Err(error) = replace_unsyncable_items(&self.connection, &self.unsyncable) {
+            warn!(%error, "failed to persist the unsyncable-items list");
         }
     }
 
@@ -1733,13 +1872,15 @@ impl<C: ProtonClient> Daemon<C> {
         local_files: &HashMap<PathBuf, LocalFileState>,
         remote_entities: &HashMap<PathBuf, RemoteEntity>,
         base_index: &HashMap<PathBuf, FileRecord>,
-        remote_root_missing: bool,
+        remote_map: RemoteMapShape,
         cursor_update: Option<CursorUpdate>,
     ) -> AppResult<PassOutcome> {
+        let remote_root_missing = remote_map.remote_root_missing;
         let mut plan = plan_sync_entities(local_entities, remote_entities, base_index);
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
         let plan_summary = PlanSummary::from_plan(&plan);
         self.last_plan_summary = Some(plan_summary.clone());
+        self.record_unsyncable(&plan, remote_map.proves_absence());
 
         // Delete-approval gate: decide, per destructive action, whether to execute it now or
         // withhold it pending the user's approval (see `decide_delete_gate`). This filters the
@@ -2359,20 +2500,13 @@ impl<C: ProtonClient> Daemon<C> {
                         index_mutations.push(IndexMutation::Purge(action.path.clone()));
                     }
                     SyncAction::SkipUnsupported => {
-                        // Two causes reach here, and the path is the only thing that tells them
-                        // apart: a Proton-native remote file the CLI cannot download as bytes, and
-                        // a local path that is not valid UTF-8 and so cannot survive the CLI's
-                        // JSON listing (#270). The predicate is the planner's own, not a second
-                        // copy of it.
-                        let reason = if crate::sync::is_representable_remotely(&action.path) {
-                            "proton-drive cannot download this Proton-native file"
-                        } else {
-                            "the path is not valid UTF-8, so the remote listing can never name it"
-                        };
+                        // Per-pass trace only. The user-facing report is `record_unsyncable`
+                        // above: one `warn` per path per run, plus the standing list on the
+                        // status payload.
                         debug!(
                             path = %action.path.display(),
                             remote_id = ?action.remote_id,
-                            reason,
+                            reason = action.unsyncable_reason().as_str(),
                             "skipping an entity that cannot be synced"
                         );
                     }
@@ -3218,6 +3352,26 @@ impl IndexMutation {
     }
 }
 
+/// What this pass's remote map is. Both facts are about the *map*, which is why they travel
+/// together rather than as two loose booleans.
+#[derive(Debug, Clone, Copy)]
+struct RemoteMapShape {
+    /// The remote root itself is missing: the map is empty and the baseline was cleared, so the
+    /// map describes nothing about the remote tree.
+    remote_root_missing: bool,
+    /// The map came from a full-tree walk rather than an event-driven reconstruction.
+    full_snapshot: bool,
+}
+
+impl RemoteMapShape {
+    /// Whether a path's **absence** from this map is evidence. Only a full-tree walk that actually
+    /// found the root proves it; a reconstruction can only ever prove presence, since a node with
+    /// no index record is not in the baseline it overlays (see [`Daemon::record_unsyncable`]).
+    fn proves_absence(self) -> bool {
+        self.full_snapshot && !self.remote_root_missing
+    }
+}
+
 /// One planned download prepared for batched execution: boundary-validated paths plus the
 /// remote's claimed digest (for salvage verification when a chunk fails midway).
 struct PreparedDownload<'plan> {
@@ -3619,6 +3773,40 @@ struct CursorUpdate {
     last_event_id: String,
 }
 
+/// Why [`Daemon::volume_id_for_scope`] could not name the event volume. Callers that only log
+/// take [`Self::into_reason`]; the bootstrap cursor is the one caller the distinction matters to.
+enum VolumeScopeError {
+    /// Nothing names a volume: no baseline composed `proton_id` and no sole stored cursor row.
+    Unnameable(String),
+    /// The stored cursor could not be read, so a volume may exist and be invisible right now.
+    Unreadable(String),
+}
+
+impl VolumeScopeError {
+    fn into_reason(self) -> String {
+        match self {
+            Self::Unnameable(reason) | Self::Unreadable(reason) => reason,
+        }
+    }
+}
+
+/// What a bootstrap learned about the event cursor *before* it started walking (#294). The two
+/// `None`-shaped outcomes are deliberately distinct: only one of them may be repaired by a
+/// post-walk read.
+enum PreSnapshotCursor {
+    /// Read before the walk: safe to persist — every event after it still replays next pass.
+    Captured(CursorUpdate),
+    /// No volume nameable yet (no baseline composed `proton_id`, no stored cursor), i.e. the
+    /// first-ever bootstrap. Nothing prior exists to lose, and a post-walk read is the only way
+    /// the event path can ever engage.
+    VolumeUnknown,
+    /// No cursor may be anchored from this pass: the feature is off, there is no event source, or
+    /// a lookup failed (the volume could not be read, or `latest_cursor` did) while prior state
+    /// may exist. That last case is the dangerous one — a post-walk value would claim mid-walk
+    /// changes were applied, and could overwrite a stored cursor that is merely unreadable now.
+    Unavailable,
+}
+
 /// Resolves a created/updated node to its current `(relative path, entity)` by listing just the
 /// node's parent directory (an O(1) call), the targeted alternative to a full-tree walk.
 struct TargetedResolver<'a, C: ProtonClient> {
@@ -3997,6 +4185,7 @@ mod tests {
     use crate::index::EntityKind;
     use crate::index::get_record;
     use crate::proton::{NodeNotFound, RemoteDirectory, RemoteFile};
+    use crate::sync::UnsyncableReason;
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
     use sha1::{Digest, Sha1};
     use std::collections::HashMap;
@@ -9315,6 +9504,10 @@ mod tests {
     struct FakeEventSource {
         pages: Mutex<Vec<VolumeEventPage>>,
         latest: String,
+        /// Scripted `latest_cursor` answers, consumed front-first; `None` = the read fails. Once
+        /// drained, every call answers `latest` — so an unhealthy endpoint that recovers is one
+        /// script (`AppResult` is not `Clone`, hence the queue rather than a stored result).
+        scripted_latest: Mutex<Vec<Option<String>>>,
         fail_since: bool,
     }
 
@@ -9323,6 +9516,7 @@ mod tests {
             Self {
                 pages: Mutex::new(Vec::new()),
                 latest: latest.to_owned(),
+                scripted_latest: Mutex::new(Vec::new()),
                 fail_since: false,
             }
         }
@@ -9331,6 +9525,18 @@ mod tests {
             Self {
                 pages: Mutex::new(pages),
                 latest: latest.to_owned(),
+                scripted_latest: Mutex::new(Vec::new()),
+                fail_since: false,
+            }
+        }
+
+        /// `scripted` answers the first `latest_cursor` calls (`None` = failure); later calls fall
+        /// through to `latest`.
+        fn with_scripted_latest(latest: &str, scripted: Vec<Option<String>>) -> Self {
+            Self {
+                pages: Mutex::new(Vec::new()),
+                latest: latest.to_owned(),
+                scripted_latest: Mutex::new(scripted),
                 fail_since: false,
             }
         }
@@ -9339,6 +9545,7 @@ mod tests {
             Self {
                 pages: Mutex::new(Vec::new()),
                 latest: "c0".to_owned(),
+                scripted_latest: Mutex::new(Vec::new()),
                 fail_since: true,
             }
         }
@@ -9346,7 +9553,13 @@ mod tests {
 
     impl EventSource for FakeEventSource {
         fn latest_cursor(&self, _volume_id: &str) -> AppResult<String> {
-            Ok(self.latest.clone())
+            let mut scripted = self.scripted_latest.lock().expect("scripted latest lock");
+            if scripted.is_empty() {
+                return Ok(self.latest.clone());
+            }
+            scripted
+                .remove(0)
+                .ok_or_else(|| boxed_error("latest cursor unauthorized"))
         }
 
         fn events_since(&self, _volume_id: &str, cursor: &str) -> AppResult<VolumeEventPage> {
@@ -9365,6 +9578,172 @@ mod tests {
                 Ok(pages.remove(0))
             }
         }
+    }
+
+    #[test]
+    fn an_unsyncable_entity_is_named_persisted_and_outlives_the_passes_that_cannot_replan_it() {
+        // #295: a Proton-native remote file plans `SkipUnsupported` every pass and was reported
+        // only as an anonymous counter. It must be named, and it must SURVIVE — a skip is never
+        // recorded in `file_index`, so it is absent from the baseline an incremental pass
+        // reconstructs the remote from, and a per-pass list would blank on the daemon's normal
+        // cadence (event-driven, warm start on boot).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("Unsorted/Networth"),
+            RemoteFile {
+                downloadable: false,
+                ..remote("Unsorted/Networth", "vol~node", None)
+            },
+        );
+        let (client, _ops) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
+
+        assert_eq!(daemon.unsyncable.len(), 1, "the skip must be named");
+        assert_eq!(
+            daemon.unsyncable[0].path,
+            PathBuf::from("Unsorted/Networth")
+        );
+        assert_eq!(
+            daemon.unsyncable[0].reason,
+            UnsyncableReason::RemoteNotDownloadable,
+            "a node the CLI cannot fetch as bytes — NOT the missing claimed digest #295 blamed"
+        );
+        assert_eq!(
+            daemon.status_response("status").unsyncable,
+            daemon.unsyncable,
+            "and it rides the status payload a client reads"
+        );
+        let first_seen = daemon.unsyncable[0].first_seen_epoch_secs;
+        assert_eq!(
+            load_unsyncable_items(&daemon.connection).expect("reload"),
+            daemon.unsyncable,
+            "persisted, so a restart that warm-starts does not re-hide it"
+        );
+
+        // An incremental pass cannot re-derive the node at all: an empty plan must not drop it,
+        // and the first-seen epoch must not restart.
+        daemon.record_unsyncable(&[], false);
+        assert_eq!(daemon.unsyncable.len(), 1, "an incremental pass only adds");
+        assert_eq!(daemon.unsyncable[0].first_seen_epoch_secs, first_seen);
+
+        // A full-tree walk is the only pass whose silence is evidence.
+        daemon.record_unsyncable(&[], true);
+        assert!(
+            daemon.unsyncable.is_empty(),
+            "a full snapshot that no longer plans the skip clears it"
+        );
+        assert!(
+            load_unsyncable_items(&daemon.connection)
+                .expect("reload")
+                .is_empty(),
+            "and the cleared list is persisted too"
+        );
+    }
+
+    #[test]
+    fn a_path_that_becomes_syncable_leaves_the_unsyncable_list_on_any_pass() {
+        // The one thing an incremental pass CAN prove: it planned a real action for the path, so
+        // whatever made it unsyncable is gone. Waiting for a full walk would leave a stale row
+        // contradicting a transfer the user just watched happen.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _ops) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.record_unsyncable(
+            &[PlannedAction::skip_unsupported(
+                Path::new("doc"),
+                EntityKind::File,
+                Some("vol~node".to_owned()),
+                UnsyncableReason::RemoteNotDownloadable,
+            )],
+            true,
+        );
+        assert_eq!(daemon.unsyncable.len(), 1);
+
+        daemon.record_unsyncable(
+            &[PlannedAction::new(
+                Path::new("doc"),
+                SyncAction::Download,
+                EntityKind::File,
+                Some("vol~node".to_owned()),
+            )],
+            false,
+        );
+        assert!(daemon.unsyncable.is_empty());
+
+        // A move's DESTINATION is proof of the same kind: the pass planned a real action onto that
+        // path, so an entry sitting there is already contradicted.
+        daemon.record_unsyncable(
+            &[PlannedAction::skip_unsupported(
+                Path::new("doc"),
+                EntityKind::File,
+                None,
+                UnsyncableReason::RemoteNotDownloadable,
+            )],
+            true,
+        );
+        assert_eq!(daemon.unsyncable.len(), 1);
+        daemon.record_unsyncable(
+            &[PlannedAction {
+                destination_path: Some(PathBuf::from("doc")),
+                ..PlannedAction::new(
+                    Path::new("elsewhere"),
+                    SyncAction::MoveLocal,
+                    EntityKind::File,
+                    None,
+                )
+            }],
+            false,
+        );
+        assert!(daemon.unsyncable.is_empty());
+    }
+
+    #[test]
+    fn a_standing_unsyncable_entity_is_reported_once_per_run_not_once_per_pass() {
+        // A permanent condition logged every pass is noise, and noise is why the pre-existing
+        // per-pass `debug!` line went unread for five months (#295). The dedup set is the guard;
+        // a path that leaves the list and comes back speaks again.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _ops) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let skip = || {
+            vec![PlannedAction::skip_unsupported(
+                Path::new("doc"),
+                EntityKind::File,
+                None,
+                UnsyncableReason::RemoteNotDownloadable,
+            )]
+        };
+
+        daemon.record_unsyncable(&skip(), true);
+        daemon.record_unsyncable(&skip(), true);
+        assert_eq!(
+            daemon.reported_unsyncable.len(),
+            1,
+            "the second pass must not re-report the same standing path"
+        );
+
+        daemon.record_unsyncable(&[], true);
+        assert!(
+            daemon.reported_unsyncable.is_empty(),
+            "a path that leaves the list is un-reported, so a recurrence is announced again"
+        );
+        daemon.record_unsyncable(&skip(), true);
+        assert_eq!(daemon.reported_unsyncable.len(), 1);
     }
 
     fn event_config(directory: &Path, local_root: &Path) -> DaemonConfig {
@@ -9520,6 +9899,197 @@ mod tests {
             "an idle incremental pass must not re-walk the whole tree"
         );
         assert_eq!(daemon.incremental_passes_since_full_scan, 1);
+    }
+
+    /// #294: the pre-snapshot cursor read fails (unhealthy events endpoint — the same condition
+    /// that forces the snapshot) and the endpoint then recovers *during* the walk. The old code
+    /// read the cursor after the walk and banked it, skipping every change made while walking.
+    /// Nothing may be persisted here; the next pass finds no cursor, declines the scope, and
+    /// bootstraps again — which is also the recovery path, so the loop terminates on the first
+    /// pass whose pre-snapshot read succeeds.
+    #[test]
+    fn a_failed_pre_snapshot_cursor_read_persists_no_cursor_and_heals_on_the_next_pass() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            // First `latest_cursor` call fails; every later call answers "cursor-live".
+            Some(Box::new(FakeEventSource::with_scripted_latest(
+                "cursor-live",
+                vec![None],
+            ))),
+        )
+        .expect("daemon");
+        // A baseline names the volume, so the cursor *is* readable before the walk — this is the
+        // "prior state exists" case, not a first-ever bootstrap. No cursor stored yet.
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed record");
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the first pass bootstraps"
+        );
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("load cursor")
+                .is_none(),
+            "a cursor read after the walk asserts mid-walk changes were applied; persist none"
+        );
+
+        // Second pass: no cursor → the scope declines → bootstrap again, and this time the
+        // pre-snapshot read succeeds, so the cursor it banks predates that walk.
+        daemon.reconcile_blocking().expect_clean("second bootstrap");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            2,
+            "without a cursor the next pass must full-walk"
+        );
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor persisted once the endpoint answered");
+        assert_eq!(cursor.last_event_id, "cursor-live");
+
+        // Third pass: streaming resumed, so the repeated bootstrapping stops.
+        daemon.reconcile_blocking().expect_clean("idle incremental");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            2,
+            "a recovered cursor ends the bootstrap-every-pass loop"
+        );
+        assert_eq!(daemon.incremental_passes_since_full_scan, 1);
+    }
+
+    /// #294, the sub-case with a cursor already stored: persisting nothing must also not *clear*
+    /// it. The older cursor is the safer replay point (re-delivered events reconstruct
+    /// idempotently; skipped ones are lost), so the next pass streams from it rather than
+    /// bootstrapping again.
+    #[test]
+    fn a_failed_pre_snapshot_cursor_read_leaves_the_stored_cursor_untouched() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::with_scripted_latest(
+                "cursor-new",
+                vec![None],
+            ))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-old", 1).expect("seed cursor");
+        // Warm start is off in this fixture, so the first pass bootstraps with a cursor already
+        // stored — exactly the shape of an events-fetch fallback on a long-running daemon.
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
+
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("the stored cursor must survive");
+        assert_eq!(
+            cursor.last_event_id, "cursor-old",
+            "the pass must neither fabricate a post-walk cursor nor clear the stored one"
+        );
+        assert_eq!(cursor.updated_at, 1, "the stored row is untouched");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+
+        // The surviving cursor keeps the next pass incremental: it replays from before the walk
+        // (over-replay is idempotent), so a failed capture costs no extra full walk here.
+        daemon.reconcile_blocking().expect_clean("idle incremental");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the older cursor is still a usable replay point"
+        );
+    }
+
+    /// #294, third door: the volume lookup itself fails. `volume_id_for_scope` falls back to the
+    /// sole stored cursor row when no baseline record carries a composed id, so an unreadable row
+    /// is *not* "first-ever bootstrap" — a cursor exists, it just cannot be seen this pass. Anchor
+    /// after the walk and it is overwritten with a post-walk value.
+    #[test]
+    fn an_unreadable_cursor_row_is_not_treated_as_a_first_ever_bootstrap() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-live"))),
+        )
+        .expect("daemon");
+        // No composed id in the baseline (an all-Proton-native remote, #32), so the volume can only
+        // come from the cursor row — whose `updated_at` is text, making the row unreadable while
+        // leaving it fully writable.
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", None, keep.as_str()),
+        )
+        .expect("seed record");
+        daemon
+            .connection
+            .execute(
+                "INSERT INTO remote_event_cursor (scope_id, last_event_id, updated_at)
+                 VALUES ('vol', 'cursor-old', 'corrupt')",
+                [],
+            )
+            .expect("seed corrupt cursor");
+        assert!(
+            load_sole_event_cursor(&daemon.connection).is_err(),
+            "precondition: the cursor row is unreadable"
+        );
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
+
+        let stored: String = daemon
+            .connection
+            .query_row(
+                "SELECT last_event_id FROM remote_event_cursor WHERE scope_id = 'vol'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("cursor row still present");
+        assert_eq!(
+            stored, "cursor-old",
+            "an unreadable row must not be overwritten by a post-walk cursor"
+        );
     }
 
     #[test]

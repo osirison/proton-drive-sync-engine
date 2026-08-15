@@ -27,10 +27,17 @@ pub enum SyncAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedAction {
+    /// Lossy on the wire (see [`crate::lossy_path`]); the daemon keeps the real path here. One
+    /// non-UTF-8 path used to fail the entire `--dry-run` report — exit 1, nothing printed, and a
+    /// blank GUI plan screen — and #270 made such a path *certain* to reach the report by planning
+    /// it rather than dropping it (#300).
+    #[serde(with = "crate::lossy_path")]
     pub path: PathBuf,
+    #[serde(with = "crate::lossy_path::optional")]
     pub destination_path: Option<PathBuf>,
     pub action: SyncAction,
     pub entity_kind: EntityKind,
+    #[serde(with = "crate::lossy_path::optional")]
     pub conflict_path: Option<PathBuf>,
     pub remote_id: Option<String>,
     /// How the executor must materialize `conflict_path`: `false` = download the remote node,
@@ -39,6 +46,131 @@ pub struct PlannedAction {
     /// `#[serde(default)]` for wire compat with dry-run output written before this field existed.
     #[serde(default)]
     pub sidecar_from_local_copy: bool,
+    /// Why a [`SyncAction::SkipUnsupported`] row is unsyncable; `None` for every other action.
+    /// Omitted from the JSON when absent, so a plan without one is byte-identical to what earlier
+    /// builds emitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<UnsyncableReason>,
+}
+
+/// Why an entity cannot be synced — the reason behind a [`SyncAction::SkipUnsupported`] row, and
+/// the reason carried on an [`UnsyncableItem`].
+///
+/// On the wire this is a snake_case token, and a client that meets an unfamiliar one must render
+/// it verbatim rather than fail (the `ipc::SyncActivity::phase` rule). That is what makes #232's
+/// local kinds — sockets, symlinks, devices — addable without a lockstep client upgrade;
+/// [`Self::Other`] is the parse side of it and is never constructed by the planner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnsyncableReason {
+    /// The local path is not valid UTF-8, so the CLI's JSON listing can never name it: an upload's
+    /// copy comes back under a lossy key and forks into a perpetual Upload+Download pair (#270).
+    /// Locally sourced, so any pass that scans locally can see it.
+    UnrepresentablePath,
+    /// The remote node cannot be fetched as bytes: a Proton-native Docs/Sheets file, or a node the
+    /// listing could not fully decode and so deliberately kept inert (#59).
+    ///
+    /// This is also the real cause behind #295, whose evidence read the node's missing
+    /// `activeRevision.claimedDigests.sha1` as the reason. It is not: a digest-less but
+    /// *downloadable* remote file plans a `Download` (bootstrap) or nothing at all — no
+    /// `FileDelta::Unknown` arm plans a skip. A Proton-native document carries no claimed digest
+    /// *because* it is not a byte blob, so both facts are symptoms of this one.
+    RemoteNotDownloadable,
+    /// A token from a newer build, preserved verbatim so a downgrade renders it instead of failing
+    /// the whole document.
+    Other(String),
+}
+
+impl UnsyncableReason {
+    /// The reason a `SkipUnsupported` at `path` carries when the row itself does not say (a report
+    /// from a build predating [`PlannedAction::skip_reason`]). The two planner-produced causes are
+    /// told apart by the path alone, through the planner's own predicate rather than a second copy
+    /// of it.
+    pub fn for_path(path: &Path) -> Self {
+        if is_representable_remotely(path) {
+            Self::RemoteNotDownloadable
+        } else {
+            Self::UnrepresentablePath
+        }
+    }
+
+    /// The wire/storage token.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::UnrepresentablePath => "unrepresentable_path",
+            Self::RemoteNotDownloadable => "remote_not_downloadable",
+            Self::Other(token) => token,
+        }
+    }
+
+    /// One sentence naming what the user would have to change. `skipped_unsupported=1` with no
+    /// path and no cause is unactionable (#295).
+    pub fn describe(&self) -> &str {
+        match self {
+            Self::UnrepresentablePath => {
+                "its name is not valid UTF-8, so the remote listing can never name it"
+            }
+            Self::RemoteNotDownloadable => {
+                "proton-drive cannot download it as a file — a Proton Docs/Sheets document, or a \
+                 node the remote listing could not fully decode"
+            }
+            Self::Other(_) => "the daemon reported a reason this build does not know",
+        }
+    }
+
+    pub fn from_token(token: &str) -> Self {
+        match token {
+            "unrepresentable_path" => Self::UnrepresentablePath,
+            "remote_not_downloadable" => Self::RemoteNotDownloadable,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+}
+
+// Hand-written so an unknown token deserializes to `Other` instead of failing the enclosing
+// document: a derived enum would make one new variant break an older client's entire status reply,
+// and #232 is queued to add variants.
+impl Serialize for UnsyncableReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for UnsyncableReason {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::from_token(&String::deserialize(deserializer)?))
+    }
+}
+
+/// One entity the engine cannot sync, surfaced by name so it stops being invisible (#295).
+///
+/// Display-only, exactly like `ipc::SyncActivity`: nothing here participates in a sync decision.
+/// The planner re-derives every skip from ground truth each pass; this list only remembers what it
+/// derived, so a stale or lost list changes no behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsyncableItem {
+    /// Lossy on the wire (see [`crate::lossy_path`]) — and an unsyncable path is disproportionately
+    /// likely to be exactly the kind that needs it.
+    #[serde(with = "crate::lossy_path")]
+    pub path: PathBuf,
+    pub entity_kind: EntityKind,
+    pub reason: UnsyncableReason,
+    /// When the daemon first saw this path as unsyncable (unix seconds). Persisted across
+    /// restarts, so it answers "how long has this been stuck" — on the account that motivated #295
+    /// the answer was five months.
+    pub first_seen_epoch_secs: u64,
+}
+
+/// Every [`SyncAction::SkipUnsupported`] row of `plan`, as items first seen at `now`.
+pub fn unsyncable_items(plan: &[PlannedAction], now: u64) -> Vec<UnsyncableItem> {
+    plan.iter()
+        .filter(|action| action.action == SyncAction::SkipUnsupported)
+        .map(|action| UnsyncableItem {
+            path: action.path.clone(),
+            entity_kind: action.entity_kind,
+            reason: action.unsyncable_reason(),
+            first_seen_epoch_secs: now,
+        })
+        .collect()
 }
 
 /// The direction a deletion propagates, used by the delete-approval guard, the persistent
@@ -207,11 +339,11 @@ fn plan_entity_action(
         // is what makes the deletion proof inherit it — `SkipUnsupported` is not a delete, so a
         // subtree holding one can never be proved clean, and the recursive delete that would
         // otherwise destroy this file's only copy is never authorised.
-        return Some(PlannedAction::new(
+        return Some(PlannedAction::skip_unsupported(
             path,
-            SyncAction::SkipUnsupported,
             entity_kind_for_path(local, remote, base),
             None,
+            UnsyncableReason::UnrepresentablePath,
         ));
     }
     if is_reconciled_directory_file_clash(local, remote, base) {
@@ -744,11 +876,11 @@ fn plan_bootstrap_file_action(
             EntityKind::File,
             Some(remote.id.clone()),
         )),
-        (None, Some(remote)) => Some(PlannedAction::new(
+        (None, Some(remote)) => Some(PlannedAction::skip_unsupported(
             path,
-            SyncAction::SkipUnsupported,
             EntityKind::File,
             Some(remote.id.clone()),
+            UnsyncableReason::RemoteNotDownloadable,
         )),
         (Some(local), Some(remote)) => {
             if remote.sha1_hash.as_deref() == Some(local.sha1_hash.as_str()) {
@@ -761,11 +893,11 @@ fn plan_bootstrap_file_action(
             } else if remote.downloadable {
                 Some(PlannedAction::conflict(path, Some(remote.id.clone())))
             } else {
-                Some(PlannedAction::new(
+                Some(PlannedAction::skip_unsupported(
                     path,
-                    SyncAction::SkipUnsupported,
                     EntityKind::File,
                     Some(remote.id.clone()),
+                    UnsyncableReason::RemoteNotDownloadable,
                 ))
             }
         }
@@ -915,11 +1047,11 @@ fn plan_ongoing_file_action(
         (FileDelta::Missing, FileDelta::Unknown) => None,
         (FileDelta::Unchanged, FileDelta::Unsupported)
         | (FileDelta::Changed, FileDelta::Unsupported)
-        | (FileDelta::Missing, FileDelta::Unsupported) => Some(PlannedAction::new(
+        | (FileDelta::Missing, FileDelta::Unsupported) => Some(PlannedAction::skip_unsupported(
             path,
-            SyncAction::SkipUnsupported,
             EntityKind::File,
             remote_id(remote, base),
+            UnsyncableReason::RemoteNotDownloadable,
         )),
         // Unknown is only ever produced for the remote delta; this arm is unreachable.
         (FileDelta::Unknown | FileDelta::Unsupported, _) => {
@@ -1207,11 +1339,11 @@ fn plan_modified_record_action(
         (FileDelta::Unchanged, FileDelta::Unknown) => {
             Some(PlannedAction::conflict(path, remote_id(remote, base)))
         }
-        (FileDelta::Unchanged, FileDelta::Unsupported) => Some(PlannedAction::new(
+        (FileDelta::Unchanged, FileDelta::Unsupported) => Some(PlannedAction::skip_unsupported(
             path,
-            SyncAction::SkipUnsupported,
             EntityKind::File,
             remote_id(remote, base),
+            UnsyncableReason::RemoteNotDownloadable,
         )),
         _ => None,
     }
@@ -1265,7 +1397,32 @@ impl PlannedAction {
             conflict_path: None,
             remote_id,
             sidecar_from_local_copy: false,
+            skip_reason: None,
         }
+    }
+
+    /// The one constructor for a skip, so a `SkipUnsupported` row can never be planned without
+    /// saying why. The reason is what makes the skip nameable downstream: the daemon logs it once
+    /// per path per run and publishes it on the status payload (#295).
+    pub(crate) fn skip_unsupported(
+        path: &Path,
+        entity_kind: EntityKind,
+        remote_id: Option<String>,
+        reason: UnsyncableReason,
+    ) -> Self {
+        Self {
+            skip_reason: Some(reason),
+            ..Self::new(path, SyncAction::SkipUnsupported, entity_kind, remote_id)
+        }
+    }
+
+    /// Why this row is unsyncable. Only meaningful for a [`SyncAction::SkipUnsupported`] row;
+    /// falls back to the path predicate for a report deserialized from a build that predates
+    /// [`Self::skip_reason`].
+    pub fn unsyncable_reason(&self) -> UnsyncableReason {
+        self.skip_reason
+            .clone()
+            .unwrap_or_else(|| UnsyncableReason::for_path(&self.path))
     }
 
     fn conflict(path: &Path, remote_id: Option<String>) -> Self {
@@ -1277,6 +1434,7 @@ impl PlannedAction {
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: false,
+            skip_reason: None,
         }
     }
 
@@ -1295,6 +1453,7 @@ impl PlannedAction {
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: true,
+            skip_reason: None,
         }
     }
 
@@ -1311,6 +1470,7 @@ impl PlannedAction {
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: false,
+            skip_reason: None,
         }
     }
 
@@ -1328,6 +1488,7 @@ impl PlannedAction {
             conflict_path: None,
             remote_id,
             sidecar_from_local_copy: false,
+            skip_reason: None,
         }
     }
 
@@ -1345,6 +1506,7 @@ impl PlannedAction {
             conflict_path: None,
             remote_id,
             sidecar_from_local_copy: false,
+            skip_reason: None,
         }
     }
 }
@@ -1610,6 +1772,124 @@ mod tests {
             file_path: path.to_path_buf(),
             ..base("placeholder", id, hash)
         }
+    }
+
+    // #300: `impl Serialize for Path` errors on a non-UTF-8 path and `serde_json` is
+    // all-or-nothing, so ONE such path used to fail the whole `--dry-run` report: exit 1, nothing
+    // printed, and a blank GUI plan screen. #270 made that certain rather than incidental by
+    // guaranteeing such a path is always PLANNED (reported rather than dropped), which is right —
+    // and jointly with the raw `PathBuf` fields it disabled the feature.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_path_anywhere_still_serializes_the_whole_dry_run_report() {
+        let (real, lossy) = non_utf8_and_lossy_paths();
+        let mut local_files = HashMap::new();
+        local_files.insert(real.clone(), local_at(&real, "hash-a"));
+        let report = DryRunReport::new(plan_sync(&local_files, &HashMap::new(), &HashMap::new()));
+
+        let json = serde_json::to_string(&report)
+            .expect("one unsyncable filename must not fail the entire report");
+        assert!(
+            json.contains('\u{fffd}'),
+            "the wire form is the lossy rendering: {json}"
+        );
+
+        let back: DryRunReport = serde_json::from_str(&json).expect("the report parses back");
+        assert_eq!(
+            back.plan[0].path, lossy,
+            "a client sees the lossy rendering, and it is NOT the real path — nothing may promote \
+             one back into a path it then acts on (see `crate::wire_path`)"
+        );
+        assert_ne!(back.plan[0].path, real);
+    }
+
+    // The lossy wire is a rescue for paths that could not serialize at all; it must not change
+    // the output for anyone else, or every dry-run consumer sees a format change for a bug they
+    // do not have.
+    #[test]
+    fn an_ordinary_plan_serializes_byte_identically() {
+        let mut local_files = HashMap::new();
+        local_files.insert(
+            PathBuf::from("notes/todo.txt"),
+            local_at(Path::new("notes/todo.txt"), "hash-a"),
+        );
+        let report = DryRunReport::new(plan_sync(&local_files, &HashMap::new(), &HashMap::new()));
+
+        let json = serde_json::to_string(&report).expect("serialize");
+        assert!(json.contains(r#""path":"notes/todo.txt""#), "{json}");
+        assert!(json.contains(r#""destination_path":null"#), "{json}");
+        assert!(
+            !json.contains("skip_reason"),
+            "a non-skip row must not grow a field: {json}"
+        );
+    }
+
+    // #295: `skipped_unsupported: 1` with no path and no cause is unactionable. Two different
+    // facts reach the same action, and only the reason tells them apart.
+    #[test]
+    fn a_skip_row_carries_the_reason_it_cannot_be_synced() {
+        let mut remote_files = HashMap::new();
+        remote_files.insert(
+            PathBuf::from("Unsorted/Networth"),
+            RemoteFile {
+                path: PathBuf::from("Unsorted/Networth"),
+                id: "vol~node".to_owned(),
+                name: "Networth".to_owned(),
+                // A Proton-native document: no claimed digest BECAUSE it is not a byte blob.
+                sha1_hash: None,
+                downloadable: false,
+            },
+        );
+
+        let planned = plan_sync(&HashMap::new(), &remote_files, &HashMap::new());
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].action, SyncAction::SkipUnsupported);
+        assert_eq!(
+            planned[0].skip_reason,
+            Some(UnsyncableReason::RemoteNotDownloadable)
+        );
+        let items = unsyncable_items(&planned, 1_700_000_000);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, PathBuf::from("Unsorted/Networth"));
+        assert_eq!(items[0].first_seen_epoch_secs, 1_700_000_000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unrepresentable_local_path_is_skipped_for_the_other_reason() {
+        let (real, _) = non_utf8_and_lossy_paths();
+        let mut local_files = HashMap::new();
+        local_files.insert(real.clone(), local_at(&real, "hash-a"));
+
+        let planned = plan_sync(&local_files, &HashMap::new(), &HashMap::new());
+
+        assert_eq!(
+            planned[0].skip_reason,
+            Some(UnsyncableReason::UnrepresentablePath),
+            "locally sourced, so any pass that scans locally can see it — unlike the remote cause"
+        );
+        // The fallback for a report from a build predating the field agrees with the planner.
+        let legacy = PlannedAction {
+            skip_reason: None,
+            ..planned[0].clone()
+        };
+        assert_eq!(
+            legacy.unsyncable_reason(),
+            UnsyncableReason::UnrepresentablePath
+        );
+    }
+
+    // #232 will add local kinds (sockets, symlinks, devices) to this vocabulary. A derived enum
+    // would make the first new token fail an older client's whole status reply, so an unknown one
+    // must survive verbatim instead.
+    #[test]
+    fn an_unknown_reason_token_survives_instead_of_failing_the_document() {
+        let json = r#""local_socket""#;
+        let reason: UnsyncableReason = serde_json::from_str(json).expect("parses");
+        assert_eq!(reason, UnsyncableReason::Other("local_socket".to_owned()));
+        assert_eq!(serde_json::to_string(&reason).expect("serialize"), json);
+        assert_eq!(reason.as_str(), "local_socket");
     }
 
     // #270: the remote listing arrives as JSON, so a non-UTF-8 filename comes back lossy and the

@@ -57,7 +57,16 @@ socket, take the daemon lock, or run any side effect.
 
 Every field is **always present**, so scripts can rely on a fixed shape. Unused summary
 counters are `0`, and the optional plan fields (`destination_path`, `conflict_path`,
-`remote_id`) are `null` when they don't apply.
+`remote_id`) are `null` when they don't apply. One field is the exception:
+`skip_reason` appears **only** on a `skip_unsupported` row.
+
+:::note[Paths that are not valid UTF-8]
+A filename is bytes on Linux and does not have to be valid UTF-8, but JSON strings do.
+Such a path is written with `U+FFFD` (`�`) in place of the offending bytes, exactly as
+`proton-sync` and the control socket report it. That rendering is for **display**: it is
+not a round-trippable name, so two paths differing only in invalid bytes look identical.
+Never feed one back to a command as a selector.
+:::
 
 ### Reading a plan row
 
@@ -69,6 +78,11 @@ counters are `0`, and the optional plan fields (`destination_path`, `conflict_pa
 - `destination_path` — populated only for the two move actions.
 - `conflict_path` — populated only for a `conflict`, naming the `.proton-cloud` sidecar.
 - `remote_id` — the Proton Drive node id, when known.
+- `skip_reason` — present only on `skip_unsupported`: `remote_not_downloadable` (a Proton
+  Docs/Sheets document, or a node the remote listing could not fully decode) or
+  `unrepresentable_path` (a name that is not valid UTF-8). Render an unfamiliar token
+  verbatim; more may be added. `proton-sync status` lists the same items under
+  `can't sync`.
 
 ## The number that matters: `destructive_actions`
 
