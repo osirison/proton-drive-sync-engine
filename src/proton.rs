@@ -326,11 +326,17 @@ pub struct DownloadRequest {
     pub expected_sha1: Option<String>,
 }
 
-/// A per-node "not found" from the CLI: the node was present in the listing this pass planned
-/// against, but is gone (trashed or deleted by another client, or eventual-consistency lag) by the
-/// time its transfer ran — the TOCTOU of issue #31. Typed so the executor classifies it by
-/// downcast instead of re-matching stderr text: stderr is inspected exactly once, here, where the
-/// CLI's output is in hand. Carries the message it replaces so nothing is lost from the log.
+/// The CLI reported a missing node for an operation that covered this request — the TOCTOU of
+/// issue #31: the node was in the listing this pass planned against, but is gone (trashed or
+/// deleted by another client, or eventual-consistency lag) by the time its transfer ran. Typed so
+/// the executor classifies it by downcast instead of re-matching stderr text: stderr is inspected
+/// exactly once, here, where the CLI's output is in hand. Carries the message it replaces so
+/// nothing is lost from the log.
+///
+/// **Not proof that `remote_path` itself is gone.** `download` covers one file and is exact, but
+/// `download_many` runs one invocation over a whole batch and the CLI's note names no request, so
+/// there every unstaged/unsalvaged file carries this type. Read it as "skip and replan", not as a
+/// confirmed remote delete — nothing may be purged on it.
 #[derive(Debug)]
 pub struct NodeNotFound {
     pub remote_path: PathBuf,
@@ -345,9 +351,11 @@ impl std::fmt::Display for NodeNotFound {
 
 impl std::error::Error for NodeNotFound {}
 
-/// True when `error` is a [`NodeNotFound`] — i.e. the operation failed because the remote node is
-/// gone, not because the transfer itself failed. Callers must not match message text: only an
-/// error constructed at a site that saw the CLI's stderr classifies here.
+/// True when `error` is a [`NodeNotFound`] — i.e. the CLI blamed a missing node rather than the
+/// transfer itself, so this action is **skippable and replanned**, not failed. See
+/// [`NodeNotFound`] for why that is weaker than "this request's node is gone" on the batched
+/// path. Callers must not match message text: only an error constructed at a site that saw the
+/// CLI's stderr classifies here.
 pub fn is_node_not_found_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
     error.downcast_ref::<NodeNotFound>().is_some()
 }
