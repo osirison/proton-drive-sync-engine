@@ -144,6 +144,7 @@ mod tests {
             config: None,
             activity: None,
             unsyncable: vec![],
+            index_totals: None,
         }
     }
 

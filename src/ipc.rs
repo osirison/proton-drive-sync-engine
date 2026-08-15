@@ -1,5 +1,5 @@
 use crate::AppResult;
-use crate::index::EntityKind;
+use crate::index::{EntityKind, IndexTotals};
 use crate::sync::{DeleteDirection, PlanSummary, SyncAction, UnsyncableItem};
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
@@ -219,6 +219,19 @@ pub struct ControlResponse {
     /// so a reply from an older daemon still parses.
     #[serde(default)]
     pub unsyncable: Vec<UnsyncableItem>,
+    /// How many files the index tracks and how many bytes they come to (#207) — the *corpus* size,
+    /// as distinct from `pending_changes`, which is work outstanding.
+    ///
+    /// Counts **files only**: `file_index` stores directories as rows too, so a count including
+    /// them would describe no set a user recognises.
+    ///
+    /// Read straight from the published snapshot, so a status reply stays O(1) however large the
+    /// index grows; the daemon recomputes it at most once per pass, and only after a pass whose
+    /// plan could have mutated the index. `None` = not computed yet, or a reply from a daemon
+    /// predating the field — distinct from `Some(IndexTotals { files: 0, bytes: 0 })`, which is a
+    /// genuinely empty index. `#[serde(default)]` keeps both directions of the wire compatible.
+    #[serde(default)]
+    pub index_totals: Option<IndexTotals>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -623,6 +636,10 @@ mod tests {
                 reason: UnsyncableReason::RemoteNotDownloadable,
                 first_seen_epoch_secs: 3,
             }],
+            index_totals: Some(IndexTotals {
+                files: 12_480,
+                bytes: 41_200_000_000,
+            }),
         }
     }
 

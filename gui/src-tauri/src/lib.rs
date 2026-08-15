@@ -64,6 +64,7 @@ pub fn run() {
             commands::free_space,
             commands::check_cli,
             commands::skip_rule_usage,
+            commands::probe_folder,
             // The openers (#220/#231): the one capability behind `Open both in an editor`,
             // `Open folder`, `Open on Proton Drive` and `Open the system log`. No plugin and no
             // capability grant — these are app-defined commands shelling `xdg-open`, so the webview
