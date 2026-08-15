@@ -2664,7 +2664,16 @@ fn apply_approval_command(
     let matches: Vec<&PendingDeletion> = pending_deletions
         .iter()
         .filter(|pending| match target {
-            Some(path) => pending.path == Path::new(path),
+            // Compared in the wire form, not against the real `PathBuf`: a client can only ever
+            // have seen the lossy rendering the daemon published (#61), so an exact comparison
+            // would make every non-UTF-8 path permanently unapprovable — exactly the paths whose
+            // withheld deletion motivated the lossy wire. The approval itself is still recorded
+            // against the real path below. Still compared as *paths*, not strings, so the
+            // component-wise leniency of the previous `PathBuf` comparison (a shell-completed
+            // trailing slash on a directory, a `./` prefix) survives.
+            Some(selector) => {
+                Path::new(crate::ipc::wire_path(&pending.path).as_str()) == Path::new(selector)
+            }
             None => true,
         })
         .collect();
@@ -4993,6 +5002,87 @@ mod tests {
                 .expect("load approvals")
                 .len(),
             2,
+        );
+    }
+
+    #[test]
+    fn a_non_utf8_pending_deletion_is_approvable_through_its_wire_form() {
+        // #61: a non-UTF-8 path cannot survive JSON, so a client only ever sees (and can only ever
+        // send back) `to_string_lossy`. Matching the selector against the real `PathBuf` would make
+        // exactly those paths permanently unapprovable — and they are the ones that motivated the
+        // lossy wire. The approval must still be recorded against the REAL path, or the
+        // execution-time gate would never find it.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let real_path = PathBuf::from(OsStr::from_bytes(b"bad-\xffdir/file.txt"));
+        let pending = vec![PendingDeletion {
+            path: real_path.clone(),
+            direction: DeleteDirection::Remote,
+            entity_kind: EntityKind::File,
+            fingerprint: "fp".to_owned(),
+            detected_epoch_secs: 1,
+        }];
+        let selector = crate::ipc::wire_path(&real_path);
+        assert_ne!(
+            PathBuf::from(&selector),
+            real_path,
+            "the wire form is lossy"
+        );
+
+        let message =
+            apply_approval_command(&daemon.connection, &pending, Some(&selector), true, true)
+                .expect("approve by wire form");
+
+        assert!(
+            message.contains("approved 1"),
+            "the lossy selector a client can send must match: {message}"
+        );
+        let approvals = crate::index::load_delete_approvals(&daemon.connection).expect("approvals");
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(
+            approvals[0].path, real_path,
+            "the approval must be pinned to the real path the guard checks, not the lossy one"
+        );
+    }
+
+    #[test]
+    fn a_selector_with_a_trailing_slash_still_matches_a_pending_directory() {
+        // Shell completion appends `/` to a directory, and pending deletions include directories.
+        // The comparison is component-wise (`Path`), not string equality, so that still matches —
+        // as it did before the selector moved to the wire form (#61).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending = vec![PendingDeletion {
+            path: PathBuf::from("nested/folder"),
+            direction: DeleteDirection::Remote,
+            entity_kind: EntityKind::Directory,
+            fingerprint: "fp-dir".to_owned(),
+            detected_epoch_secs: 1,
+        }];
+
+        let message = apply_approval_command(
+            &daemon.connection,
+            &pending,
+            Some("nested/folder/"),
+            true,
+            true,
+        )
+        .expect("approve by completed path");
+
+        assert!(
+            message.contains("approved 1"),
+            "a trailing slash must not make a pending directory unapprovable: {message}"
         );
     }
 

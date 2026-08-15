@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use proton_drive_sync_engine::ipc::{
     ControlCommand, ControlRequest, ControlResponse, PendingDeletion, SyncActivity, send_request,
+    wire_path,
 };
 use proton_drive_sync_engine::paths::default_socket_path;
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary};
@@ -243,7 +244,9 @@ async fn request_with_timeout(
 fn approval_selector(path: &Option<PathBuf>, all: bool) -> Result<Option<String>, String> {
     match (path, all) {
         (Some(_), true) => Err("specify either a PATH or --all, not both".to_owned()),
-        (Some(path), false) => Ok(Some(path.to_string_lossy().into_owned())),
+        // `wire_path`, not an ad-hoc `to_string_lossy`: the daemon matches selectors in exactly
+        // this form, so the two sides must name the same function (#61).
+        (Some(path), false) => Ok(Some(wire_path(path))),
         (None, true) => Ok(Some("all".to_owned())),
         (None, false) => {
             Err("specify a PATH, or --all to act on every pending deletion".to_owned())
