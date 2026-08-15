@@ -970,9 +970,15 @@ fn print_pending(pending: &[PendingDeletion]) {
         // cannot say, so the line is omitted rather than aged from 1970. The subtree line is what a
         // folder would actually cost (#208); a file's own size is not repeated here.
         let waiting = relative_age(item.first_seen_epoch_secs);
-        let subtree = item
-            .subtree_files
-            .map(|files| format!("{files} file(s), {} bytes", item.subtree_bytes.unwrap_or(0)));
+        let subtree = item.subtree_files.map(|files| {
+            match item.subtree_bytes {
+                // `human_bytes`, the same formatter the activity line uses — a raw byte count is
+                // the one number on this line nobody reads. A missing total is dropped rather than
+                // printed as `0 B`, which is a real answer for an empty folder.
+                Some(bytes) => format!("{files} file(s), {}", human_bytes(bytes)),
+                None => format!("{files} file(s)"),
+            }
+        });
         match (waiting, subtree) {
             (Some(waiting), Some(subtree)) => {
                 println!("                 waiting {waiting} · holds {subtree}")
