@@ -3712,22 +3712,33 @@ struct PassFailures {
 
 impl PassFailures {
     fn record(&mut self, action: &PlannedAction, error: &(dyn std::error::Error + Send + Sync)) {
-        warn!(
-            path = %action.path.display(),
-            action = ?action.action,
-            %error,
-            "sync action failed; continuing with the rest of the plan"
-        );
-        self.count += 1;
-        self.consecutive += 1;
-        self.rescan_next_pass.insert(action.path.clone());
+        // Named at `warn` only while the reported list has room, then dropped to `debug`: a pass
+        // that fails thousands of actions must not bury its own summary line (and everything else
+        // in the journal) under thousands of copies of it. The count is always exact — the
+        // post-loop line reports the total, and `failed_item_count` rides on every status reply.
         if self.items.len() < FAILED_ITEMS_REPORTED {
+            warn!(
+                path = %action.path.display(),
+                action = ?action.action,
+                %error,
+                "sync action failed; continuing with the rest of the plan"
+            );
             self.items.push(FailedItem {
                 path: action.path.clone(),
                 action: action.action,
                 error: truncate_error(&error.to_string()),
             });
+        } else {
+            debug!(
+                path = %action.path.display(),
+                action = ?action.action,
+                %error,
+                "sync action failed (past the reported limit); continuing with the rest of the plan"
+            );
         }
+        self.count += 1;
+        self.consecutive += 1;
+        self.rescan_next_pass.insert(action.path.clone());
     }
 
     fn note_success(&mut self) {
