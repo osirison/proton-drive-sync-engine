@@ -2596,8 +2596,18 @@ impl<C: ProtonClient> Daemon<C> {
         let batch_size = self.config.download_batch_size.max(1);
         let mut vanished_nodes = 0usize;
         for (parent, members) in &groups {
-            if let Some(first) = members.first() {
-                ensure_parent_directory(&first.request.destination)?;
+            if let Some(first) = members.first()
+                && let Err(error) = ensure_parent_directory(&first.request.destination)
+            {
+                // This group's destination directory cannot be made (a file squatting on the name,
+                // a permissions problem). That is a failure of THIS group's files, not of the pass:
+                // the single-file arm fails per item here, so failing the pass would make the same
+                // local-FS problem behave differently at `download_batch_size = 1` — and a
+                // persistent one would starve every download ordered after it (#136).
+                for member in members {
+                    failures.record(member.action, error.as_ref());
+                }
+                continue;
             }
             for chunk in members.chunks(batch_size) {
                 // Same shutdown rule as the per-action loop: a batched run is one iteration there,
@@ -7037,6 +7047,70 @@ mod tests {
         );
         for path in ["docs/a.txt", "docs/sub/x.txt", "docs/z.txt"] {
             assert!(local_root.join(path).is_file(), "{path} must land");
+        }
+    }
+
+    #[test]
+    fn an_unmakeable_destination_directory_fails_only_its_own_group_of_downloads() {
+        // The batched path's own `ensure_parent_directory` used to be pass-fatal, so the same
+        // local-FS problem behaved differently at `download_batch_size = 1` (where it is the
+        // item's failure) — and a persistent one starved every download ordered after it (#136).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        // A regular file squatting where `docs/` must be: its group's mkdir cannot succeed.
+        fs::write(local_root.join("docs"), b"not a directory").expect("squatter");
+
+        let mut remote_entities = HashMap::new();
+        for name in ["docs", "media"] {
+            remote_entities.insert(
+                PathBuf::from(name),
+                RemoteEntity::Directory(RemoteDirectory {
+                    path: PathBuf::from(name),
+                    id: Some(format!("{name}-id")),
+                    name: name.to_owned(),
+                }),
+            );
+        }
+        for (path, id, hash) in [
+            ("docs/a.txt", "id-a", "ha"),
+            ("docs/b.txt", "id-b", "hb"),
+            ("media/d.txt", "id-d", "hd"),
+        ] {
+            remote_entities.insert(
+                PathBuf::from(path),
+                RemoteEntity::File(remote(path, id, Some(hash))),
+            );
+        }
+        let (client, _operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let config = DaemonConfig {
+            download_batch_size: 2,
+            ..test_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+
+        daemon.reconcile_blocking().expect_partial(
+            2,
+            "both files under the unmakeable directory fail, and only those",
+        );
+
+        assert!(
+            local_root.join("media/d.txt").is_file(),
+            "a later group's download must still land"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("media/d.txt"))
+                .expect("index lookup")
+                .is_some(),
+            "and must be recorded"
+        );
+        for path in ["docs/a.txt", "docs/b.txt"] {
+            assert!(
+                get_record(&daemon.connection, Path::new(path))
+                    .expect("index lookup")
+                    .is_none(),
+                "{path} never landed, so it must not be recorded"
+            );
         }
     }
 
