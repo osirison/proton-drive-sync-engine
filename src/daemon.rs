@@ -4035,12 +4035,19 @@ fn query_file_history(
 
 /// Turns an `activity` selector into the stored path to query.
 ///
-/// Byte-exact first, which is every UTF-8 path. Failing that, the selector is matched against the
-/// **wire rendering** of the paths in the window, because a non-UTF-8 path reaches the user only as
-/// `to_string_lossy` — so the string they copy off `status` or `activity` no longer carries the
-/// bytes the BLOB key was built from, and a byte-exact lookup answers "nothing moved" for a file
-/// that moved. Same rule `apply_approval_command` follows for `approve`/`deny` (#61): a wire path
-/// is a rendering, and a rendering that maps to more than one stored path resolves to none of them.
+/// A **dispatch on the selector, not a fallback chain**: a selector free of U+FFFD is used as the
+/// stored key directly, and only one containing U+FFFD is matched against the **wire rendering** of
+/// the paths in the window. So a UTF-8 selector that matches nothing reports an empty window rather
+/// than falling through to the scan — which is right, since its own bytes *are* the key and a
+/// rendering scan could only return the same row or the wrong one.
+///
+/// The U+FFFD branch exists because a non-UTF-8 path reaches the user only as `to_string_lossy`:
+/// the string they copy off `status` or `activity` no longer carries the bytes the BLOB key was
+/// built from, so a byte-exact lookup would answer "nothing moved" for a file that moved. A file
+/// legitimately *named* with U+FFFD takes that branch too and still resolves, just via the scan.
+///
+/// Same rule `apply_approval_command` follows for `approve`/`deny` (#61): a wire path is a
+/// rendering, and a rendering that maps to more than one stored path resolves to none of them.
 ///
 /// Read-only, so an ambiguous selector is an error rather than a silent pick — a wrong feed is a
 /// wrong answer even when nothing is destroyed.
