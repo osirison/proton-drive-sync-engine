@@ -82,7 +82,7 @@ A plan is a list of typed actions. These are the `action` values you'll see in a
 | `remote_delete` | Propagate a local deletion by trashing the file on Proton Drive. |
 | `local_delete` | Propagate a remote deletion by permanently removing the local file. |
 | `purge` | Drop a stale index row when both sides are already gone. No data is lost. |
-| `skip_unsupported` | A Proton Docs/Sheets file the CLI can't download as a file; left untouched. (Symlinks are silently skipped by the scanner and never appear as an action.) |
+| `skip_unsupported` | Something that cannot be synced at all: a Proton Docs/Sheets file the CLI can't download as a file, or a local name that is not valid UTF-8 (the remote listing speaks JSON and could never name it back). The row carries a `skip_reason`, and `proton-sync status` lists every such item under `can't sync`. (Symlinks are silently skipped by the scanner and never appear as an action.) |
 
 `move_local`/`move_remote` carry a `destination_path`; `conflict` carries a
 `conflict_path`. The two **destructive** directions — `remote_delete` and `local_delete` —
