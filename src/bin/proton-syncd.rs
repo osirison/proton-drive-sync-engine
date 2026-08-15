@@ -1,7 +1,6 @@
 use clap::Parser;
 use proton_drive_sync_engine::config::{DaemonConfigInput, resolve_runtime_config};
 use proton_drive_sync_engine::daemon::{Daemon, preview_plan};
-use proton_drive_sync_engine::sync::DryRunReport;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing::{error, info};
@@ -103,7 +102,7 @@ async fn main() -> ExitCode {
     if dry_run {
         info!("running dry-run sync plan");
         return match preview_plan(&config) {
-            Ok(plan) => match serde_json::to_string_pretty(&DryRunReport::new(plan)) {
+            Ok(report) => match serde_json::to_string_pretty(&report) {
                 Ok(json) => {
                     println!("{json}");
                     ExitCode::SUCCESS

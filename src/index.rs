@@ -496,6 +496,37 @@ fn table_column_not_null(
     Ok(false)
 }
 
+/// Corpus size of the index: how many files it tracks and how many bytes they come to (#207).
+///
+/// `Eq` + `Copy` so a caller can cheaply tell a recomputed value from the cached one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexTotals {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Reads [`IndexTotals`] with one aggregate query.
+///
+/// **`entity_kind = 'file'` is load-bearing, not a tidy-up.** `file_index` stores directories as
+/// rows too (with `file_size` 0), so a bare `COUNT(*)` reports the corpus as larger than it is —
+/// the exact trap an earlier investigation fell into. `SUM` is unaffected by them, but the two must
+/// agree on what they are counting or the pair describes no single set.
+///
+/// Daemon-side on purpose: a legacy `file_index` predating the `entity_kind` column would make this
+/// predicate a hard error, and only the daemon runs the migration that adds it (a read-only GUI
+/// connection cannot). By the time the daemon queries, the column exists.
+pub fn index_totals(connection: &Connection) -> AppResult<IndexTotals> {
+    let (files, bytes) = connection.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(file_size), 0) FROM file_index WHERE entity_kind = 'file'",
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    )?;
+    Ok(IndexTotals {
+        files: files.max(0) as u64,
+        bytes: bytes.max(0) as u64,
+    })
+}
+
 pub fn load_index(connection: &Connection) -> AppResult<HashMap<PathBuf, FileRecord>> {
     let columns = table_columns(connection, "file_index")?;
     if !columns.iter().any(|column| column == "entity_kind") {
@@ -2223,6 +2254,50 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert!(files.contains_key(Path::new("docs/keep.md")));
+    }
+
+    #[test]
+    fn index_totals_count_files_only_and_never_the_directory_rows() {
+        // The trap this predicate exists for: `file_index` stores directories as rows too, so a
+        // bare COUNT(*) reports a corpus larger than any set the user recognises. An earlier
+        // investigation was misled by exactly that.
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+        for (path, kind, size) in [
+            ("a.txt", EntityKind::File, 1_000u64),
+            ("b.txt", EntityKind::File, 2_500),
+            ("docs", EntityKind::Directory, 0),
+            ("docs/c.txt", EntityKind::File, 500),
+        ] {
+            upsert_record(
+                &connection,
+                &FileRecord {
+                    file_path: PathBuf::from(path),
+                    entity_kind: kind,
+                    file_size: size,
+                    mtime: 1,
+                    sha1_hash: Some("hash".to_owned()),
+                    proton_id: None,
+                    sync_status: SyncStatus::Synced,
+                },
+            )
+            .expect("upsert");
+        }
+
+        let totals = index_totals(&connection).expect("totals");
+        assert_eq!(totals.files, 3, "the directory row is not a file");
+        assert_eq!(totals.bytes, 4_000);
+    }
+
+    #[test]
+    fn index_totals_are_zero_rather_than_an_error_on_an_empty_index() {
+        let connection = Connection::open_in_memory().expect("connection");
+        initialize_schema(&connection).expect("schema");
+        assert_eq!(
+            index_totals(&connection).expect("totals"),
+            IndexTotals { files: 0, bytes: 0 },
+            "an empty index is a real answer; COALESCE is what keeps SUM from returning NULL"
+        );
     }
 
     #[test]

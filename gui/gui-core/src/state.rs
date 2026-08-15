@@ -146,6 +146,7 @@ mod tests {
             unsyncable: vec![],
             history: None,
             file_history: None,
+            index_totals: None,
         }
     }
 

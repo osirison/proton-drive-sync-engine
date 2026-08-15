@@ -1161,6 +1161,7 @@ mod tests {
             unsyncable: Vec::new(),
             history: None,
             file_history: None,
+            index_totals: None,
         }
     }
 

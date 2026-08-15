@@ -12,12 +12,21 @@
 //
 // WHAT IS DELIBERATELY MISSING, and it is the most important thing in this file. `5a Plan` draws
 // `3 files, 4.1 MB` leaving and `2 files, 2.6 MB` arriving; `5a Plan safe` draws a size on every
-// row (`1.2 MB`, `2.8 MB`, `96 KB`, `2.4 MB`, `184 KB`). **No byte total exists anywhere in the
-// dry-run surface.** `PlanSummary` counts actions and `PlannedAction` carries `path`,
-// `destination_path`, `action`, `entity_kind`, `conflict_path`, `remote_id` — and no size. That is
-// the substance of engine gap G2 (per-direction byte totals, #191), landing on a `5a` frame rather
-// than on the `2a`/`7a` frames IMPLEMENTATION-PLAN.md lists for it. Inventing a `bytes` field on a
-// planned action here would pre-empt that design, so the counts are pinned and the sizes are not.
+// row (`1.2 MB`, `2.8 MB`, `96 KB`, `2.4 MB`, `184 KB`).
+//
+// G6 (#206) landed HALF of that, and the half it could not land is why these stay absent.
+// `PlannedAction` now carries `size_bytes`, set from the local scan wherever the local file IS the
+// payload — an `upload`, and a conflict whose sidecar is a local copy — and
+// `PlanSummary.upload_bytes` totals them. So **`4.1 MB` leaving is now sourceable**. `2.6 MB`
+// arriving is NOT, and cannot be: a remote listing exposes no usable file size (`totalStorageSize`
+// reads `0` on a large minority of perfectly healthy files), so a `download` row's `size_bytes` is
+// `null` — unknown, never `0` — and there is deliberately no `download_bytes` counterpart to invite
+// a fabricated one. `5a Plan safe`'s per-row sizes are available on its upload rows only.
+//
+// The sizes therefore stay off these fixtures: drawing the half that exists would leave the other
+// half reading as zero beside it, and settling that needs a re-drawn frame which says WHICH side is
+// unknown. G2 (#191) — bytes per direction per time WINDOW, what a pass actually moved — remains a
+// separate open question, and is not what `size_bytes` answers.
 //
 // `Run it without the deletion` (drawn in `5a Plan`'s footer) is G3 (#192), the filtered apply. It
 // is not a data question at all — nothing in `DryRunPayload` says whether a partial apply is
