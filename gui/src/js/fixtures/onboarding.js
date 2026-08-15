@@ -194,17 +194,19 @@ export const ONBOARDING_FIXTURES = {
     // opposite half is the one that can go missing; DEVIATIONS §71 has the whole knot.
     neededBytes: 38_400_000_000,
     // `11,798 files already match on both sides` — a count of files the plan does NOT act on, so it
-    // is absent from `PlanSummary` by construction rather than by omission. Carried because the
-    // number has nowhere else to come from and no possible field shape to pre-empt: it is a scalar,
-    // not a structure.
+    // is absent from the plan ROWS by construction rather than by omission. G27 (#242) landed it as
+    // `PlanSummary.matched_files`, counted in the planner (the one place holding both sides) rather
+    // than derived from the rows, which cannot express it: at bootstrap — and `9a Review` IS a
+    // bootstrap, being onboarding — a matching pair is an `auto_link` row indistinguishable from an
+    // id backfill, and in the ongoing case it is no row at all. `null` from a daemon that predates
+    // the field, so a real `0` stays tellable from "not answered".
     //
-    // THE TWO BYTE TOTALS ARE NOT CARRIED. The frame draws `files · 1.4 GB` going up and
-    // `files · 38.4 GB` coming down, and `PlannedAction` has `path`, `destination_path`, `action`,
-    // `entity_kind`, `conflict_path`, `remote_id` — no size, at any level of the dry-run surface. An
-    // earlier version of this fixture minted `{ upBytes, downBytes }` for them, which is the one
-    // thing the F9 contract forbids: `plan.js` refuses the identical numbers on `5a Plan` and names
-    // G2 (#191) as the reason, so the family would have carried two answers to one question and the
-    // fixture would have settled a Phase-2 design. Left absent; DEVIATIONS carries it.
+    // THE TWO BYTE TOTALS ARE STILL NOT CARRIED, and only one of them ever can be. The frame draws
+    // `files · 1.4 GB` going up and `files · 38.4 GB` coming down. G6 (#206) makes the UP total
+    // sourceable (`PlanSummary.upload_bytes`, summed from the local scan). The DOWN total is not
+    // obtainable at all — a remote listing exposes no usable file size — and `Needs 38.4 GB free`
+    // rests on it, which is why §71's inversion still stands: the *needs* half is the one that goes
+    // missing, not the *have* half. Left absent rather than half-drawn; DEVIATIONS carries it.
     planTotals: { alreadyMatching: 11_798 },
     // `worked out 40 seconds ago · about 25 minutes to finish` (`ONBOARDING.workedOut`). The first
     // half is relative, so it is an offset per the clock convention; the second is an estimate no
