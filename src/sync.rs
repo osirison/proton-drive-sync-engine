@@ -51,6 +51,26 @@ pub struct PlannedAction {
     /// builds emitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<UnsyncableReason>,
+    /// Bytes this row moves, when knowable **without I/O** — i.e. when the payload is a local file
+    /// the scan already sized ([`LocalFileState::file_size`], already in the planner's input, so
+    /// this costs the pure planner nothing).
+    ///
+    /// `None` means *unknown*, and is never interchangeable with `0`: a remote listing exposes no
+    /// usable file size. The CLI's `totalStorageSize` reads `0` on a large minority of perfectly
+    /// healthy files (873 of 5424 on a live account, including a 132 MB archive that downloads
+    /// byte-perfect), so it is a reporting quirk and must never be used as a size — hence it is not
+    /// parsed at all (see [`crate::proton::RemoteFile`], which carries no size field). A consumer
+    /// must render `None` as "unknown", never as `0 bytes` (#206).
+    ///
+    /// Set only where the local size IS the payload: [`SyncAction::Upload`], and a
+    /// [`SyncAction::Conflict`] whose sidecar is a copy of the local file. A `Download` is always
+    /// `None`, even when a local file exists at the path — that file's size is not the size of the
+    /// bytes arriving.
+    ///
+    /// Omitted from the JSON when absent, so a plan of sizeless rows stays byte-identical to what
+    /// earlier builds emitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
 }
 
 /// Why an entity cannot be synced — the reason behind a [`SyncAction::SkipUnsupported`] row, and
@@ -249,6 +269,30 @@ pub struct PlanSummary {
     pub purges: usize,
     pub skipped_unsupported: usize,
     pub destructive_actions: usize,
+    /// Total bytes the plan's uploads would send — the "leaving" half of a direction total.
+    ///
+    /// `Some` only when *every* upload row carries a [`PlannedAction::size_bytes`] (vacuously so
+    /// when there are no uploads, where `Some(0)` is a true fact rather than a guess); `None` the
+    /// moment one does not, so a partial sum can never be mistaken for a complete one.
+    ///
+    /// **There is deliberately no `download_bytes` counterpart.** The arriving total is not
+    /// computable: no remote size is available (see [`PlannedAction::size_bytes`]), and a summary
+    /// field would only invite a fabricated one (#206).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_bytes: Option<u64>,
+    /// Files whose local and remote content are byte-identical, which the plan therefore leaves
+    /// alone — the `9a Review` reassurance ("N files already match on both sides") (#242).
+    ///
+    /// Absent from the plan rows *by construction*, so [`PlanSummary::from_plan`] cannot derive it
+    /// and leaves it `None`: a matching file either produces no row at all (the ongoing
+    /// `(Unchanged, Unchanged)` arm) or an index-only [`SyncAction::AutoLink`] row indistinguishable
+    /// from an id backfill. Only [`plan_sync_entities_with_stats`] counts it, at the one place that
+    /// already holds both sides.
+    ///
+    /// `Option`, not a bare count, so a consumer can tell "no daemon told me" from a real zero — a
+    /// defaulted `0` would be the same lie as rendering an unknown size as `0 bytes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_files: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,11 +322,35 @@ pub fn plan_sync(
     plan_sync_entities(&local_entities, &remote_entities, base_index)
 }
 
+/// A plan plus the facts about the paths that produced **no** row. See
+/// [`plan_sync_entities_with_stats`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanOutcome {
+    pub actions: Vec<PlannedAction>,
+    /// Files byte-identical on both sides; see [`PlanSummary::matched_files`].
+    pub matched_files: u64,
+}
+
 pub fn plan_sync_entities(
     local_entities: &HashMap<PathBuf, LocalEntityState>,
     remote_entities: &HashMap<PathBuf, RemoteEntity>,
     base_index: &HashMap<PathBuf, FileRecord>,
 ) -> Vec<PlannedAction> {
+    plan_sync_entities_with_stats(local_entities, remote_entities, base_index).actions
+}
+
+/// [`plan_sync_entities`] plus the count of files it deliberately left alone.
+///
+/// The count cannot be recovered from the returned plan (a matching file is either absent from it
+/// or an `AutoLink` indistinguishable from an id backfill), and re-deriving it from the three maps
+/// at a call site would be a second implementation of the planner's own comparison — the shape
+/// that has to be kept in agreement forever. So it is counted **here**, in the one loop that
+/// already resolves every path, and against the action that was really planned.
+pub fn plan_sync_entities_with_stats(
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+) -> PlanOutcome {
     let mut paths = BTreeSet::new();
     paths.extend(local_entities.keys().cloned());
     paths.extend(remote_entities.keys().cloned());
@@ -298,22 +366,53 @@ pub fn plan_sync_entities(
         &suppressed_paths,
     );
     let mut plan = transition_actions;
-    plan.extend(
-        paths
-            .into_iter()
-            .filter(|path| !suppressed_paths.contains(path))
-            .filter_map(|path| {
-                plan_entity_action(
-                    &path,
-                    local_entities.get(&path),
-                    remote_entities.get(&path),
-                    base_index.get(&path),
-                    bootstrap,
-                    &deletion_verdicts,
-                )
-            }),
-    );
-    suppress_actions_covered_by_directory_deletes(plan)
+    let mut matched_files = 0u64;
+    for path in paths
+        .into_iter()
+        .filter(|path| !suppressed_paths.contains(path))
+    {
+        let local = local_entities.get(&path);
+        let remote = remote_entities.get(&path);
+        let action = plan_entity_action(
+            &path,
+            local,
+            remote,
+            base_index.get(&path),
+            bootstrap,
+            &deletion_verdicts,
+        );
+        // Counted against the action actually planned, so the tally can never contradict the plan:
+        // a matching pair that nonetheless produced real work (an unrepresentable path's
+        // `SkipUnsupported`, a type clash) is not "left alone" and is not counted. A suppressed
+        // path is a move — data relocates, so it is excluded above.
+        if is_matching_file_pair(local, remote)
+            && matches!(
+                action.as_ref().map(|action| action.action),
+                None | Some(SyncAction::AutoLink)
+            )
+        {
+            matched_files += 1;
+        }
+        plan.extend(action);
+    }
+    PlanOutcome {
+        actions: suppress_actions_covered_by_directory_deletes(plan),
+        matched_files,
+    }
+}
+
+/// Both sides hold the same file, with a **known** digest on each, and the digests agree.
+///
+/// Deliberately strict about the unknown: a remote file with no usable SHA-1 (`FileDelta::Unknown`,
+/// the non-destructive arm) is *unverified*, not matching. Counting it would inflate the one number
+/// on `9a Review` whose whole job is reassurance. Directories are excluded — the frame says files,
+/// and a directory has no content to compare.
+fn is_matching_file_pair(local: Option<&LocalEntityState>, remote: Option<&RemoteEntity>) -> bool {
+    let (Some(LocalEntityState::File(local)), Some(RemoteEntity::File(remote))) = (local, remote)
+    else {
+        return false;
+    };
+    remote.sha1_hash.as_deref() == Some(local.sha1_hash.as_str())
 }
 
 /// Resolves a single path from the live entities and the base row together. This is the one
@@ -885,12 +984,10 @@ fn plan_bootstrap_file_action(
     remote: Option<&RemoteFile>,
 ) -> Option<PlannedAction> {
     match (local, remote) {
-        (Some(_), None) => Some(PlannedAction::new(
-            path,
-            SyncAction::Upload,
-            EntityKind::File,
-            None,
-        )),
+        (Some(local), None) => Some(
+            PlannedAction::new(path, SyncAction::Upload, EntityKind::File, None)
+                .with_local_size(local),
+        ),
         (None, Some(remote)) if remote.downloadable => Some(PlannedAction::new(
             path,
             SyncAction::Download,
@@ -960,12 +1057,20 @@ fn plan_ongoing_file_action(
     }
 
     match (local_delta, remote_delta) {
-        (FileDelta::Changed, FileDelta::Unchanged) => Some(PlannedAction::new(
-            path,
-            SyncAction::Upload,
-            EntityKind::File,
-            base.proton_id.clone(),
-        )),
+        // `local_delta == Changed` proves the local file exists, so the `and_then` never misses;
+        // it stays fallible rather than unwrapping because the type does not encode that.
+        (FileDelta::Changed, FileDelta::Unchanged) => Some({
+            let action = PlannedAction::new(
+                path,
+                SyncAction::Upload,
+                EntityKind::File,
+                base.proton_id.clone(),
+            );
+            match local {
+                Some(local) => action.with_local_size(local),
+                None => action,
+            }
+        }),
         (FileDelta::Unchanged, FileDelta::Changed) => Some(PlannedAction::new(
             path,
             SyncAction::Download,
@@ -1029,10 +1134,15 @@ fn plan_ongoing_file_action(
         // implicit re-upload, but the state still gets the ordinary sidecar exit (delete
         // the sidecar -> `Modified` -> `(Unchanged, Missing)` -> Upload) and the on-disk
         // artefact the GUI conflicts list walks for. Without it the path froze forever (#46).
-        (FileDelta::Changed, FileDelta::Missing) => Some(PlannedAction::conflict_from_local_copy(
-            path,
-            base.proton_id.clone(),
-        )),
+        (FileDelta::Changed, FileDelta::Missing) => Some({
+            // The sidecar is materialized by copying the local file, so the local size IS this
+            // row's payload — the one Conflict arm that can carry a real size.
+            let action = PlannedAction::conflict_from_local_copy(path, base.proton_id.clone());
+            match local {
+                Some(local) => action.with_local_size(local),
+                None => action,
+            }
+        }),
         (FileDelta::Missing, FileDelta::Missing) => Some(PlannedAction::new(
             path,
             SyncAction::Purge,
@@ -1331,15 +1441,17 @@ fn plan_modified_record_action(
     local_delta: FileDelta,
     remote_delta: FileDelta,
 ) -> Option<PlannedAction> {
-    local?;
+    // Bound rather than discarded: every arm below that plans an upload sends exactly THIS file,
+    // so the scan's size is that row's payload size (#206). The sidecar exit (delete the sidecar ->
+    // `Modified` -> upload) reaches here, and leaving these rows unsized would lose their own size
+    // *and* collapse the whole plan's `upload_bytes` to `None`.
+    let local = local?;
 
     if base.proton_id.is_none() && remote.is_none() {
-        return Some(PlannedAction::new(
-            path,
-            SyncAction::Upload,
-            EntityKind::File,
-            None,
-        ));
+        return Some(
+            PlannedAction::new(path, SyncAction::Upload, EntityKind::File, None)
+                .with_local_size(local),
+        );
     }
 
     match (local_delta, remote_delta) {
@@ -1349,14 +1461,15 @@ fn plan_modified_record_action(
             EntityKind::File,
             remote_id(remote, base),
         )),
-        (FileDelta::Unchanged, FileDelta::Changed | FileDelta::Missing) => {
-            Some(PlannedAction::new(
+        (FileDelta::Unchanged, FileDelta::Changed | FileDelta::Missing) => Some(
+            PlannedAction::new(
                 path,
                 SyncAction::Upload,
                 EntityKind::File,
                 remote_id(remote, base),
-            ))
-        }
+            )
+            .with_local_size(local),
+        ),
         (FileDelta::Unchanged, FileDelta::Unknown) => {
             Some(PlannedAction::conflict(path, remote_id(remote, base)))
         }
@@ -1418,8 +1531,17 @@ impl PlannedAction {
             conflict_path: None,
             remote_id,
             sidecar_from_local_copy: false,
+            size_bytes: None,
             skip_reason: None,
         }
+    }
+
+    /// Attaches the local payload size (see [`Self::size_bytes`]). Takes the whole
+    /// [`LocalFileState`] rather than a bare `u64` so a caller cannot pass a size that is not a
+    /// scanned local file's — a remote size does not exist to pass.
+    fn with_local_size(mut self, local: &LocalFileState) -> Self {
+        self.size_bytes = Some(local.file_size);
+        self
     }
 
     /// The one constructor for a skip, so a `SkipUnsupported` row can never be planned without
@@ -1455,6 +1577,7 @@ impl PlannedAction {
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: false,
+            size_bytes: None,
             skip_reason: None,
         }
     }
@@ -1474,6 +1597,7 @@ impl PlannedAction {
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: true,
+            size_bytes: None,
             skip_reason: None,
         }
     }
@@ -1491,6 +1615,7 @@ impl PlannedAction {
             conflict_path: Some(conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: false,
+            size_bytes: None,
             skip_reason: None,
         }
     }
@@ -1509,6 +1634,7 @@ impl PlannedAction {
             conflict_path: None,
             remote_id,
             sidecar_from_local_copy: false,
+            size_bytes: None,
             skip_reason: None,
         }
     }
@@ -1527,6 +1653,7 @@ impl PlannedAction {
             conflict_path: None,
             remote_id,
             sidecar_from_local_copy: false,
+            size_bytes: None,
             skip_reason: None,
         }
     }
@@ -1537,6 +1664,15 @@ impl DryRunReport {
         Self {
             summary: PlanSummary::from_plan(&plan),
             plan,
+        }
+    }
+
+    /// The reporting form of a [`PlanOutcome`]: carries the planner's `matched_files` through to
+    /// the summary, which [`Self::new`] cannot recover from the rows alone.
+    pub fn from_outcome(outcome: PlanOutcome) -> Self {
+        Self {
+            summary: PlanSummary::from_outcome(&outcome.actions, outcome.matched_files),
+            plan: outcome.actions,
         }
     }
 }
@@ -1566,8 +1702,28 @@ impl PlanSummary {
         }
         summary.destructive_actions =
             summary.remote_deletes + summary.local_deletes + summary.purges;
+        summary.upload_bytes = total_upload_bytes(plan);
         summary
     }
+
+    /// [`Self::from_plan`] plus the planner's [`Self::matched_files`], which no plan row carries.
+    pub fn from_outcome(plan: &[PlannedAction], matched_files: u64) -> Self {
+        Self {
+            matched_files: Some(matched_files),
+            ..Self::from_plan(plan)
+        }
+    }
+}
+
+/// Sums [`PlannedAction::size_bytes`] over the upload rows, or `None` if any upload row lacks one
+/// — an incomplete total must not pass as a complete one. Vacuously `Some(0)` for a plan with no
+/// uploads, which is a true statement about the bytes leaving, not a stand-in for unknown.
+fn total_upload_bytes(plan: &[PlannedAction]) -> Option<u64> {
+    plan.iter()
+        .filter(|action| action.action == SyncAction::Upload)
+        .try_fold(0u64, |total, action| {
+            Some(total.saturating_add(action.size_bytes?))
+        })
 }
 
 pub fn conflict_copy_path(path: &Path) -> PathBuf {
@@ -1842,6 +1998,232 @@ mod tests {
         assert!(
             !json.contains("skip_reason"),
             "a non-skip row must not grow a field: {json}"
+        );
+        // This row IS an upload, so it deliberately grew a size (#206) — the byte-identical claim
+        // holds for a row with nothing to report, which
+        // `a_plan_row_without_a_size_stays_byte_identical_on_the_wire` covers.
+        assert!(json.contains(r#""size_bytes":1"#), "{json}");
+    }
+
+    /// Sizes a local file the way the scan would, so a test can tell one size from another.
+    fn local_sized(path: &str, hash: &str, file_size: u64) -> LocalFileState {
+        LocalFileState {
+            file_size,
+            ..local(path, hash)
+        }
+    }
+
+    #[test]
+    fn an_upload_carries_the_local_size_and_a_download_carries_none() {
+        // #206's whole point: the local scan already knows what an upload weighs, and NOTHING
+        // knows what a download weighs, so the two rows must not be given the same treatment.
+        let local_files = HashMap::from([(
+            PathBuf::from("up.txt"),
+            local_sized("up.txt", "hash-a", 4096),
+        )]);
+        let remote_files = HashMap::from([(
+            PathBuf::from("down.txt"),
+            remote("down.txt", "remote-id", Some("hash-b")),
+        )]);
+        let plan = plan_sync(&local_files, &remote_files, &HashMap::new());
+
+        let upload = plan
+            .iter()
+            .find(|action| action.action == SyncAction::Upload)
+            .expect("an upload");
+        assert_eq!(upload.size_bytes, Some(4096));
+
+        let download = plan
+            .iter()
+            .find(|action| action.action == SyncAction::Download)
+            .expect("a download");
+        assert_eq!(
+            download.size_bytes, None,
+            "a remote listing exposes no size; None is the answer, and 0 would be a lie"
+        );
+    }
+
+    #[test]
+    fn a_download_over_an_existing_local_file_still_reports_no_size() {
+        // The tempting bug: a local file IS present at the path, so a size is at hand — but it is
+        // the size of what is being replaced, not of what is arriving.
+        let local_files = HashMap::from([(
+            PathBuf::from("doc.txt"),
+            local_sized("doc.txt", "hash-base", 999),
+        )]);
+        let remote_files = HashMap::from([(
+            PathBuf::from("doc.txt"),
+            remote("doc.txt", "remote-id", Some("hash-new")),
+        )]);
+        let base_index = HashMap::from([(
+            PathBuf::from("doc.txt"),
+            base("doc.txt", Some("remote-id"), "hash-base"),
+        )]);
+        let plan = plan_sync(&local_files, &remote_files, &base_index);
+
+        let download = plan
+            .iter()
+            .find(|action| action.action == SyncAction::Download)
+            .expect("a download");
+        assert_eq!(download.size_bytes, None);
+    }
+
+    #[test]
+    fn upload_bytes_totals_the_uploads_and_refuses_a_partial_sum() {
+        let local_files = HashMap::from([
+            (
+                PathBuf::from("a.txt"),
+                local_sized("a.txt", "hash-a", 1_000),
+            ),
+            (
+                PathBuf::from("b.txt"),
+                local_sized("b.txt", "hash-b", 2_500),
+            ),
+        ]);
+        let plan = plan_sync(&local_files, &HashMap::new(), &HashMap::new());
+        assert_eq!(PlanSummary::from_plan(&plan).upload_bytes, Some(3_500));
+
+        // A row deserialized from a build that predates the field: the total is no longer
+        // complete, and a complete-looking number is exactly what must not be produced.
+        let mut partial = plan.clone();
+        partial[0].size_bytes = None;
+        assert_eq!(PlanSummary::from_plan(&partial).upload_bytes, None);
+
+        // No uploads at all really is zero bytes leaving — that is a fact, not an unknown.
+        assert_eq!(PlanSummary::from_plan(&[]).upload_bytes, Some(0));
+    }
+
+    #[test]
+    fn a_bootstrap_counts_files_that_already_match_on_both_sides() {
+        // `9a Review` is an ONBOARDING screen, so its plan is a BOOTSTRAP plan — where a matching
+        // pair is an `AutoLink` ROW, not an absent one. A counter that only noticed the ongoing
+        // no-op arm would render 0 on the exact screen the issue is about.
+        let local_files = HashMap::from([
+            (PathBuf::from("same.txt"), local("same.txt", "hash-same")),
+            (PathBuf::from("diff.txt"), local("diff.txt", "hash-local")),
+        ]);
+        let remote_files = HashMap::from([
+            (
+                PathBuf::from("same.txt"),
+                remote("same.txt", "id-same", Some("hash-same")),
+            ),
+            (
+                PathBuf::from("diff.txt"),
+                remote("diff.txt", "id-diff", Some("hash-remote")),
+            ),
+        ]);
+        let local_entities = local_files
+            .iter()
+            .map(|(path, file)| (path.clone(), LocalEntityState::File(file.clone())))
+            .collect();
+        let remote_entities = remote_files
+            .iter()
+            .map(|(path, file)| (path.clone(), RemoteEntity::File(file.clone())))
+            .collect();
+
+        let outcome =
+            plan_sync_entities_with_stats(&local_entities, &remote_entities, &HashMap::new());
+        assert_eq!(outcome.matched_files, 1, "only `same.txt` matches");
+        assert!(
+            outcome
+                .actions
+                .iter()
+                .any(|action| action.path == Path::new("same.txt")
+                    && action.action == SyncAction::AutoLink),
+            "the matching file is still an AutoLink row, which is why from_plan cannot derive this"
+        );
+    }
+
+    #[test]
+    fn an_ongoing_pass_counts_the_files_it_leaves_alone() {
+        let local_files = HashMap::from([(PathBuf::from("same.txt"), local("same.txt", "hash-x"))]);
+        let remote_files = HashMap::from([(
+            PathBuf::from("same.txt"),
+            remote("same.txt", "id-x", Some("hash-x")),
+        )]);
+        let base_index = HashMap::from([(
+            PathBuf::from("same.txt"),
+            base("same.txt", Some("id-x"), "hash-x"),
+        )]);
+        let local_entities = local_files
+            .iter()
+            .map(|(path, file)| (path.clone(), LocalEntityState::File(file.clone())))
+            .collect();
+        let remote_entities = remote_files
+            .iter()
+            .map(|(path, file)| (path.clone(), RemoteEntity::File(file.clone())))
+            .collect();
+
+        let outcome = plan_sync_entities_with_stats(&local_entities, &remote_entities, &base_index);
+        assert!(outcome.actions.is_empty(), "nothing to do");
+        assert_eq!(
+            outcome.matched_files, 1,
+            "a file that produces no row at all is precisely what this counts"
+        );
+    }
+
+    #[test]
+    fn a_remote_file_with_no_digest_is_not_counted_as_matching() {
+        // `FileDelta::Unknown` is the non-destructive arm: the remote exposes no usable SHA-1, so
+        // the two sides are UNVERIFIED, not equal. Counting it would inflate the one number on
+        // `9a Review` whose entire job is reassurance.
+        let local_files = HashMap::from([(PathBuf::from("x.txt"), local("x.txt", "hash-x"))]);
+        let remote_files = HashMap::from([(PathBuf::from("x.txt"), remote("x.txt", "id-x", None))]);
+        let base_index = HashMap::from([(
+            PathBuf::from("x.txt"),
+            base("x.txt", Some("id-x"), "hash-x"),
+        )]);
+        let local_entities = local_files
+            .iter()
+            .map(|(path, file)| (path.clone(), LocalEntityState::File(file.clone())))
+            .collect();
+        let remote_entities = remote_files
+            .iter()
+            .map(|(path, file)| (path.clone(), RemoteEntity::File(file.clone())))
+            .collect();
+
+        let outcome = plan_sync_entities_with_stats(&local_entities, &remote_entities, &base_index);
+        assert_eq!(outcome.matched_files, 0);
+    }
+
+    #[test]
+    fn matching_directories_are_not_counted_as_matching_files() {
+        let local_entities = HashMap::from([(PathBuf::from("dir"), local_directory("dir"))]);
+        let remote_entities =
+            HashMap::from([(PathBuf::from("dir"), remote_directory("dir", Some("id-d")))]);
+        let outcome =
+            plan_sync_entities_with_stats(&local_entities, &remote_entities, &HashMap::new());
+        assert_eq!(
+            outcome.matched_files, 0,
+            "the frame says files, and a directory has no content to compare"
+        );
+    }
+
+    #[test]
+    fn a_summary_without_the_new_facts_stays_off_the_wire() {
+        // Wire compat: a summary that knows neither number must serialize exactly as before.
+        let json = serde_json::to_string(&PlanSummary::default()).expect("serialize");
+        assert!(!json.contains("matched_files"), "{json}");
+        assert!(!json.contains("upload_bytes"), "{json}");
+
+        let with_facts = PlanSummary::from_outcome(&[], 7);
+        let json = serde_json::to_string(&with_facts).expect("serialize");
+        assert!(json.contains(r#""matched_files":7"#), "{json}");
+        let back: PlanSummary = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.matched_files, Some(7));
+    }
+
+    #[test]
+    fn a_plan_row_without_a_size_stays_byte_identical_on_the_wire() {
+        let remote_files = HashMap::from([(
+            PathBuf::from("down.txt"),
+            remote("down.txt", "remote-id", Some("hash-b")),
+        )]);
+        let report = DryRunReport::new(plan_sync(&HashMap::new(), &remote_files, &HashMap::new()));
+        let json = serde_json::to_string(&report).expect("serialize");
+        assert!(
+            !json.contains("size_bytes"),
+            "an unsized row must not grow a field: {json}"
         );
     }
 

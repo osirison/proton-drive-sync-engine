@@ -1,12 +1,12 @@
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
-    EntityKind, EventCursor, FileRecord, LocalEntityState, LocalFileState, ScanOptions, SyncStatus,
-    WithheldDeletion, delete_delete_approval, get_record, load_event_cursor, load_existing_index,
-    load_index, load_sole_event_cursor, load_unsyncable_items, load_warm_start_count,
-    load_withheld_deletions, local_directory_state, local_file_state, mark_modified,
-    matching_delete_approval, open_database, path_for_proton_id, purge_record,
-    purge_subtree_records, replace_unsyncable_items, replace_withheld_deletions,
+    EntityKind, EventCursor, FileRecord, IndexTotals, LocalEntityState, LocalFileState,
+    ScanOptions, SyncStatus, WithheldDeletion, delete_delete_approval, get_record, index_totals,
+    load_event_cursor, load_existing_index, load_index, load_sole_event_cursor,
+    load_unsyncable_items, load_warm_start_count, load_withheld_deletions, local_directory_state,
+    local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
+    purge_record, purge_subtree_records, replace_unsyncable_items, replace_withheld_deletions,
     scan_local_entities_observed, scan_local_entities_reusing_hashes, store_event_cursor,
     store_warm_start_count, upsert_delete_approval, upsert_record,
 };
@@ -22,9 +22,9 @@ use crate::proton::{
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
-    DeleteDirection, PlanSummary, PlannedAction, SyncAction, UnsyncableItem,
+    DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction, UnsyncableItem,
     directory_move_descendant_path_pairs, is_strict_descendant, original_from_conflict_copy,
-    plan_sync_entities, unsyncable_items,
+    plan_sync_entities_with_stats, unsyncable_items,
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -259,6 +259,17 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// `index::load_unsyncable_items` for why it is persisted). Display-only: surfaced over IPC and
     /// in the metrics sidecar, read by no sync decision.
     unsyncable: Vec<UnsyncableItem>,
+    /// Cached corpus size (#207), republished on every `publish_status` so a status reply never
+    /// queries SQLite. `None` until the first refresh.
+    index_totals: Option<IndexTotals>,
+    /// Whether [`Self::index_totals`] may be out of date. Set when a pass plans any action (only a
+    /// planned action mutates the index, so an empty plan cannot change the totals — that is what
+    /// keeps an idle event-driven pass free of the aggregate query), and cleared by a refresh.
+    ///
+    /// Deliberately **not** gated on the pass succeeding: checkpoint commits are durable even when
+    /// a later action fails the pass (ADR 0003), so a failed pass can still have changed the index,
+    /// and waiting for a clean one would serve a stale count indefinitely.
+    index_totals_stale: bool,
     /// Paths already named at `warn` this run, so a permanent condition is reported once per
     /// process instead of once per pass — a pass-rate log on a condition that never changes is
     /// noise, and noise is why the old `debug!` line went unread for five months (#295). Pruned
@@ -297,6 +308,11 @@ pub struct MetricsSnapshot {
     /// written by an older daemon still parses.
     #[serde(default)]
     pub unsyncable: Vec<UnsyncableItem>,
+    /// Corpus size (#207), mirrored from the status snapshot so the sidecar answers it too — the
+    /// GUI falls back to the sidecars when the socket is down. `#[serde(default)]` so a sidecar
+    /// written by an older daemon still parses.
+    #[serde(default)]
+    pub index_totals: Option<IndexTotals>,
 }
 
 /// State shared between the daemon core and the control-socket server task so control requests
@@ -347,6 +363,11 @@ struct StatusSnapshot {
     failed_items: Vec<FailedItem>,
     failed_item_count: usize,
     unsyncable: Vec<UnsyncableItem>,
+    /// Cached corpus size (#207). Cached *here*, in the snapshot the IPC task reads, so answering
+    /// `status` never touches SQLite — the whole point of publishing a snapshot is that status stays
+    /// instant while a reconcile blocks the main task, and a per-reply `COUNT(*)`/`SUM()` would
+    /// undo that (cf. #48, a per-pass Θ(dirs × index) walk that was too expensive).
+    index_totals: Option<IndexTotals>,
     config: RunningConfigInfo,
 }
 
@@ -368,6 +389,7 @@ impl ControlShared {
                 failed_items: Vec::new(),
                 failed_item_count: 0,
                 unsyncable: Vec::new(),
+                index_totals: None,
                 config,
             }),
             activity: StdMutex::new(ActivityState::default()),
@@ -496,6 +518,9 @@ impl ControlShared {
                 None
             },
             unsyncable: snapshot.unsyncable,
+            // A clone of an `Option<IndexTotals>` (two `u64`s, `Copy`) — the reply path never
+            // queries the index. See `StatusSnapshot::index_totals`.
+            index_totals: snapshot.index_totals,
         }
     }
 
@@ -516,6 +541,7 @@ impl ControlShared {
             failed_items: snapshot.failed_items,
             failed_item_count: snapshot.failed_item_count,
             unsyncable: snapshot.unsyncable,
+            index_totals: snapshot.index_totals,
         }
     }
 }
@@ -610,7 +636,9 @@ enum LoopCommand {
     Shutdown,
 }
 
-pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
+/// The `--dry-run` report. Returns the whole [`DryRunReport`] rather than the bare plan because
+/// `summary.matched_files` is a planner fact no plan row carries (#242).
+pub fn preview_plan(config: &DaemonConfig) -> AppResult<DryRunReport> {
     let client = ProtonDriveClient::with_command_policy(
         config.proton_cli.clone(),
         command_policy_from_config(config),
@@ -621,7 +649,7 @@ pub fn preview_plan(config: &DaemonConfig) -> AppResult<Vec<PlannedAction>> {
 pub fn preview_plan_with_client(
     config: &DaemonConfig,
     proton: &impl ProtonClient,
-) -> AppResult<Vec<PlannedAction>> {
+) -> AppResult<DryRunReport> {
     info!(
         local_root = %config.local_root.display(),
         remote_root = %config.remote_root.display(),
@@ -637,10 +665,14 @@ pub fn preview_plan_with_client(
     if remote_root_missing {
         base_index.clear();
     }
-    let mut plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
-    prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
-    info!(planned_actions = plan.len(), "dry-run sync plan computed");
-    Ok(plan)
+    let mut outcome = plan_sync_entities_with_stats(&local_entities, &remote_entities, &base_index);
+    prepend_remote_root_creation_if_missing(&mut outcome.actions, remote_root_missing);
+    info!(
+        planned_actions = outcome.actions.len(),
+        matched_files = outcome.matched_files,
+        "dry-run sync plan computed"
+    );
+    Ok(DryRunReport::from_outcome(outcome))
 }
 
 impl Daemon<ProtonDriveClient> {
@@ -753,7 +785,7 @@ impl<C: ProtonClient> Daemon<C> {
             remote_root: config.remote_root.clone(),
             db_path: config.db_path.clone(),
         }));
-        let daemon = Self {
+        let mut daemon = Self {
             config,
             connection,
             proton,
@@ -782,10 +814,16 @@ impl<C: ProtonClient> Daemon<C> {
             last_failed_item_count: 0,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             unsyncable,
+            index_totals: None,
+            // Stale from the start: the index already has contents at boot (a warm start replays
+            // against them), so the first refresh must run rather than publish `None` until the
+            // first pass that happens to plan something.
+            index_totals_stale: true,
             reported_unsyncable: HashSet::new(),
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
         };
+        daemon.refresh_index_totals();
         daemon.publish_status();
         daemon.write_metrics_snapshot()?;
         Ok(daemon)
@@ -1047,6 +1085,7 @@ impl<C: ProtonClient> Daemon<C> {
             failed_items: self.last_failed_items.clone(),
             failed_item_count: self.last_failed_item_count,
             unsyncable: self.unsyncable.clone(),
+            index_totals: self.index_totals,
             config: RunningConfigInfo {
                 local_root: self.config.local_root.clone(),
                 remote_root: self.config.remote_root.clone(),
@@ -1054,6 +1093,24 @@ impl<C: ProtonClient> Daemon<C> {
             },
         };
         *self.shared.snapshot.lock().expect("control snapshot lock") = snapshot;
+    }
+
+    /// Recomputes the cached corpus size (#207) if a pass may have changed it, then clears the
+    /// stale flag. No-op when nothing planned since the last refresh, so the steady-state idle
+    /// event-driven pass costs no query at all.
+    ///
+    /// A read failure leaves the previous value in place and clears the flag: the totals are
+    /// display-only, so a stale number beats both a spurious `None` (which a client renders as "no
+    /// answer") and a retry loop on a connection the pass itself is using.
+    fn refresh_index_totals(&mut self) {
+        if !self.index_totals_stale {
+            return;
+        }
+        self.index_totals_stale = false;
+        match index_totals(&self.connection) {
+            Ok(totals) => self.index_totals = Some(totals),
+            Err(error) => warn!(%error, "failed to read index totals"),
+        }
     }
 
     /// Test-only convenience: publish and build a status reply exactly as the IPC task would.
@@ -1127,6 +1184,10 @@ impl<C: ProtonClient> Daemon<C> {
                 "sync failed".to_owned()
             }
         };
+        // Before `record_status_history`, which snapshots into the metrics sidecar: refreshing
+        // after it would publish this pass's history beside the previous pass's corpus size.
+        // Runs on every outcome, not just `Ok` — see `index_totals_stale`.
+        self.refresh_index_totals();
         self.record_status_history(&message);
         // The attempt is complete (recorded either way): bump the sequence a waiting client
         // watches, then publish the final state of this pass.
@@ -1877,9 +1938,14 @@ impl<C: ProtonClient> Daemon<C> {
         cursor_update: Option<CursorUpdate>,
     ) -> AppResult<PassOutcome> {
         let remote_root_missing = remote_map.remote_root_missing;
-        let mut plan = plan_sync_entities(local_entities, remote_entities, base_index);
+        let outcome = plan_sync_entities_with_stats(local_entities, remote_entities, base_index);
+        let matched_files = outcome.matched_files;
+        let mut plan = outcome.actions;
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
-        let plan_summary = PlanSummary::from_plan(&plan);
+        let plan_summary = PlanSummary::from_outcome(&plan, matched_files);
+        // Only a planned action mutates the index, so an empty plan provably cannot move the
+        // totals — that is what keeps an idle pass free of the aggregate query.
+        self.index_totals_stale |= !plan.is_empty();
         self.last_plan_summary = Some(plan_summary.clone());
         self.record_unsyncable(&plan, remote_map.proves_absence());
 
@@ -5086,7 +5152,8 @@ mod tests {
         };
 
         let plan = preview_plan_with_client(&config, &FakeProtonClient { remote_files })
-            .expect("preview plan");
+            .expect("preview plan")
+            .plan;
 
         assert!(
             plan.iter()
@@ -8760,6 +8827,96 @@ mod tests {
     }
 
     #[test]
+    fn the_status_reply_carries_index_totals_without_querying_the_index() {
+        // #207. Two claims, and the second is the load-bearing one:
+        //   1. a pass publishes the corpus size, files only;
+        //   2. the reply is served from the published snapshot, so it is unaffected by the index
+        //      the daemon actually holds — which is what "O(1) status" MEANS here. Emptying the
+        //      table and re-asking proves the reply never reaches SQLite: a per-reply
+        //      COUNT(*)/SUM() would now answer 0.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("a.txt"), b"12345").expect("write");
+        fs::write(local_root.join("b.txt"), b"1234567890").expect("write");
+        fs::create_dir(local_root.join("sub")).expect("mkdir");
+        fs::write(local_root.join("sub/c.txt"), b"xyz").expect("write");
+
+        let config = test_config(directory.path(), &local_root);
+        let (client, _) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+        let _ = daemon.reconcile_blocking().expect("reconcile");
+
+        let totals = daemon
+            .status_response("daemon status")
+            .index_totals
+            .expect("a pass must publish the corpus size");
+        assert_eq!(
+            totals.files, 3,
+            "three files; `sub/` is a row in file_index but is not a file"
+        );
+        assert_eq!(totals.bytes, 18);
+
+        daemon
+            .connection
+            .execute("DELETE FROM file_index", [])
+            .expect("empty the index");
+        assert_eq!(
+            daemon.status_response("daemon status").index_totals,
+            Some(totals),
+            "the reply is a snapshot read, not a query"
+        );
+    }
+
+    #[test]
+    fn an_idle_pass_does_not_recompute_the_index_totals() {
+        // The cache invariant: only a planned action can mutate the index, so an empty plan must
+        // leave the totals alone. Proven by planting a sentinel and running an idle pass — a pass
+        // that recomputed would overwrite it.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("a.txt"), b"12345").expect("write");
+
+        // The remote already holds the same bytes, so the first pass adopts it (`AutoLink`) and the
+        // second has nothing at all to plan — a genuine idle pass, which is the steady state under
+        // event-driven reconcile and therefore the case that must stay free of the query.
+        let remote_files = HashMap::from([(
+            PathBuf::from("a.txt"),
+            RemoteFile {
+                path: PathBuf::from("a.txt"),
+                id: "remote-a".to_owned(),
+                name: "a.txt".to_owned(),
+                sha1_hash: Some(
+                    crate::index::compute_sha1(&local_root.join("a.txt")).expect("sha1"),
+                ),
+                downloadable: true,
+            },
+        )]);
+
+        let config = test_config(directory.path(), &local_root);
+        let (client, _) = RecordingProtonClient::new(remote_files);
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+        let _ = daemon.reconcile_blocking().expect("first pass");
+        assert_eq!(
+            daemon.index_totals,
+            Some(IndexTotals { files: 1, bytes: 5 })
+        );
+
+        let sentinel = IndexTotals {
+            files: 42,
+            bytes: 42,
+        };
+        daemon.index_totals = Some(sentinel);
+        let _ = daemon.reconcile_blocking().expect("idle pass");
+        assert_eq!(
+            daemon.index_totals,
+            Some(sentinel),
+            "an idle pass plans nothing, so it must not spend the aggregate query"
+        );
+    }
+
+    #[test]
     fn daemon_loads_persisted_status_history_on_restart() {
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
@@ -8810,7 +8967,8 @@ mod tests {
                 remote_files: HashMap::new(),
             },
         )
-        .expect("preview plan");
+        .expect("preview plan")
+        .plan;
 
         assert!(
             plan.is_empty(),
@@ -8837,7 +8995,8 @@ mod tests {
                 remote_files: HashMap::new(),
             },
         )
-        .expect("preview plan");
+        .expect("preview plan")
+        .plan;
 
         assert!(
             plan.is_empty(),

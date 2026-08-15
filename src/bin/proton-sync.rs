@@ -1072,6 +1072,7 @@ mod tests {
             config: None,
             activity: None,
             unsyncable: Vec::new(),
+            index_totals: None,
         }
     }
 
