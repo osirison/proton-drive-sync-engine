@@ -244,6 +244,30 @@ impl std::str::FromStr for DeleteDirection {
     }
 }
 
+/// Compile-time nudge for [`SyncAction::ALL`]: a new variant makes this match non-exhaustive, so
+/// the build stops one line above the array that must also grow. It cannot check the array itself
+/// — see `ALL`'s own doc for what that costs and why nothing better exists.
+const _: () = {
+    #[allow(dead_code)]
+    fn every_variant_is_named_beside_all(action: SyncAction) {
+        match action {
+            SyncAction::Upload
+            | SyncAction::Download
+            | SyncAction::CreateRemoteDirectory
+            | SyncAction::CreateLocalDirectory
+            | SyncAction::MoveLocal
+            | SyncAction::MoveRemote
+            | SyncAction::AutoLink
+            | SyncAction::Conflict
+            | SyncAction::TypeConflict
+            | SyncAction::RemoteDelete
+            | SyncAction::LocalDelete
+            | SyncAction::Purge
+            | SyncAction::SkipUnsupported => {}
+        }
+    }
+};
+
 impl SyncAction {
     /// The deletion direction this action propagates, or `None` for non-destructive actions and
     /// for `Purge` (index-only cleanup that destroys no user data and is never gated).
@@ -307,7 +331,16 @@ impl SyncAction {
             .find(|action| action.as_str() == token)
     }
 
-    /// Every variant, so a mapping over the enum cannot silently miss one.
+    /// Every variant, backing [`Self::from_token`].
+    ///
+    /// **A maintenance requirement, not a guarantee.** Rust cannot enumerate an enum's variants,
+    /// so nothing makes this array complete: `as_str` and `transfer_direction` are exhaustive
+    /// matches and a new variant fails to compile without an arm in each, but a variant left out
+    /// of *this list* compiles. The cost is silent and one-directional — the daemon would write
+    /// history rows carrying the new token and `index::read_file_event` would drop every one of
+    /// them from the feed, because `from_token` scans this array. The `const _` above is the only
+    /// mechanical help available: it fails to compile until the new variant is named one line
+    /// from here.
     pub const ALL: [Self; 13] = [
         Self::Upload,
         Self::Download,
@@ -1934,9 +1967,11 @@ mod tests {
     }
 
     #[test]
-    fn every_variant_is_in_all() {
-        // `ALL` drives `from_token`, so a variant missing from it would be unparseable from the
-        // history table while still being writable to it.
+    fn action_tokens_are_unique() {
+        // Only uniqueness — this cannot prove `ALL` is COMPLETE, because Rust cannot enumerate an
+        // enum's variants (see `SyncAction::ALL`'s doc, and the `const _` beside it). A duplicate
+        // would be the other way the array goes wrong: `from_token` returns the first match, so
+        // two variants sharing a token would make one of them unreachable from the history table.
         let mut seen: Vec<&str> = SyncAction::ALL.iter().map(|a| a.as_str()).collect();
         seen.sort_unstable();
         seen.dedup();

@@ -546,8 +546,15 @@ fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str,
 /// it holds about ten minutes and is almost entirely idle polls. The pass log records only passes
 /// that did something (plus every full sweep, and every pass that did not end clean).
 fn print_history(response: &ControlResponse, style: &Style) {
+    // `None` is NOT "no history": the daemon publishes this block before its first pass, so an
+    // absent one means the daemon is older than the field or its history read failed (the daemon
+    // logs that). Saying "no sync history yet" here would answer a question this reply cannot
+    // answer, with a confident wrong number — the `unknown is not zero` rule.
     let Some(history) = &response.history else {
-        println!("No sync history yet.");
+        println!(
+            "This daemon does not report pass history. Upgrade it, or check its log for a \
+             history read failure."
+        );
         return;
     };
     if let Some(sweep) = &history.last_full_sweep {
