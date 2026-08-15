@@ -390,6 +390,7 @@ fn plan_file_path_transitions(
 ) -> (Vec<PlannedAction>, BTreeSet<PathBuf>) {
     let mut actions = Vec::new();
     let mut suppressed_paths = BTreeSet::new();
+    let mut directory_move_sources: BTreeSet<PathBuf> = BTreeSet::new();
     let mut paths: Vec<_> = base_index.keys().cloned().collect();
     paths.sort();
 
@@ -451,9 +452,46 @@ fn plan_file_path_transitions(
                         suppressed_paths.insert(old_descendant);
                         suppressed_paths.insert(new_descendant);
                     }
+                    // …and the descendants NO base row tracks — collected here, resolved once
+                    // after the loop (#12). Explicitly `MoveLocal`, not "any directory move":
+                    // suppressing them is only right because the LOCAL tree is what moves, and it
+                    // is the executor's `MoveLocal` arm that re-queues the destination for the next
+                    // pass. Today a directory transition can only be a `MoveLocal` (the inverse
+                    // direction is a deliberate non-goal — see `plan_remote_directory_move`), so
+                    // the guard is documentation until that changes.
+                    if action.action == SyncAction::MoveLocal {
+                        directory_move_sources.insert(action.path.clone());
+                    }
                 }
             }
             actions.push(action);
+        }
+    }
+
+    // A `MoveLocal` renames the directory on disk before the per-path actions run, so anything
+    // planned for a live descendant at the OLD path is planned against a local state that will not
+    // be there: the upload would first recreate the moved-away parent remotely (its parent is a
+    // move source, not a planned create) and then read a file that has moved. Base-tracked
+    // descendants are re-keyed above; the ones no base row tracks cannot be — the pre-move scan
+    // does not hold their new key — so the subtree is left to the next pass, which sees it where it
+    // now is. The executor re-queues the destination so that pass cannot idle-skip.
+    //
+    // ONE walk of the local map for ALL moves, checking each path's ancestors against the source
+    // set, rather than a walk per move: a mass reorganisation plans many moves, and the per-move
+    // form is O(local entities × moves).
+    if !directory_move_sources.is_empty() {
+        for path in local_entities.keys() {
+            if base_index.contains_key(path) {
+                continue;
+            }
+            // `skip(1)` = strict descendants; the source itself is already suppressed above.
+            if path
+                .ancestors()
+                .skip(1)
+                .any(|ancestor| directory_move_sources.contains(ancestor))
+            {
+                suppressed_paths.insert(path.clone());
+            }
         }
     }
 

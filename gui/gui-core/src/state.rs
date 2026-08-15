@@ -139,6 +139,8 @@ mod tests {
             last_successful_sync_summary: None,
             status_history: vec![],
             pending_deletions: vec![],
+            failed_items: vec![],
+            failed_item_count: 0,
             config: None,
             activity: None,
             unsyncable: vec![],
@@ -212,6 +214,20 @@ mod tests {
         assert_ne!(derive_state(Ok(&r)), DaemonState::Idle);
         // Counters stay KNOWN, unlike unreachable and first-run: the reply is the daemon's own.
         assert!(!DaemonState::Failed.counters_unknown());
+    }
+
+    #[test]
+    fn a_partial_pass_is_not_idle_either() {
+        // #136 adds a THIRD pass outcome: most of the plan landed, some items failed. The GUI has
+        // no drawn state for it, so it must land on the nearest honest one — never on the
+        // fall-through. The daemon makes that work by setting `last_error` on a partial pass too;
+        // this pins that the mapping holds, because a partial pass reaching `Idle` would draw
+        // `Everything is up to date` over failed items.
+        let mut r = response();
+        r.failed_item_count = 3;
+        r.last_error = Some("3 item(s) failed to sync (first: docs/a.txt)".into());
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Failed);
+        assert_ne!(derive_state(Ok(&r)), DaemonState::Idle);
     }
 
     #[test]

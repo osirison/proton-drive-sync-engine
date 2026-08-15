@@ -10,8 +10,9 @@ use crate::index::{
     upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
-    ControlCommand, ControlResponse, PendingDeletion, RunningConfigInfo, StatusHistoryEntry,
-    SyncActivity, TransferActivity, bind_listener, read_request, write_response,
+    ControlCommand, ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem, PendingDeletion,
+    RunningConfigInfo, StatusHistoryEntry, SyncActivity, TransferActivity, bind_listener,
+    read_request, write_response,
 };
 use crate::proton::{
     CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient, RemoteEntity,
@@ -241,6 +242,17 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
     /// plan; surfaced over IPC (`proton-sync pending`) and in the metrics sidecar.
     pending_deletions: Vec<PendingDeletion>,
+    /// Items whose action failed during the most recent pass, bounded to
+    /// [`FAILED_ITEMS_REPORTED`] in plan order (#136). Reset at the start of every pass's
+    /// execution; `last_failed_item_count` keeps the untruncated total.
+    last_failed_items: Vec<FailedItem>,
+    /// Untruncated count behind `last_failed_items`.
+    last_failed_item_count: usize,
+    /// Shared with the `proton-drive` client and flipped by a shutdown signal or the IPC
+    /// `shutdown` command. The executor polls it: a pass that keeps going past item failures must
+    /// still stop dead on shutdown, or it would spawn (and immediately kill) one CLI child per
+    /// remaining action. Owned here so `run` can install the same flag on the client.
+    cancel_flag: Arc<AtomicBool>,
     /// Entities the engine cannot sync, standing across passes and restarts (see
     /// [`Self::record_unsyncable`] for why it is not simply recomputed, and
     /// `index::load_unsyncable_items` for why it is persisted). Display-only: surfaced over IPC and
@@ -273,6 +285,13 @@ pub struct MetricsSnapshot {
     pub last_successful_sync_summary: Option<PlanSummary>,
     pub status_history_entries: usize,
     pub pending_deletions: Vec<PendingDeletion>,
+    /// Items whose action failed in the last pass (#136); bounded like the IPC reply's, with
+    /// `failed_item_count` the untruncated total. `#[serde(default)]` so a sidecar written by an
+    /// older daemon still deserializes.
+    #[serde(default)]
+    pub failed_items: Vec<FailedItem>,
+    #[serde(default)]
+    pub failed_item_count: usize,
     /// Entities that cannot be synced (see [`UnsyncableItem`]). `#[serde(default)]` so a sidecar
     /// written by an older daemon still parses.
     #[serde(default)]
@@ -324,6 +343,8 @@ struct StatusSnapshot {
     last_successful_sync_summary: Option<PlanSummary>,
     status_history: Vec<StatusHistoryEntry>,
     pending_deletions: Vec<PendingDeletion>,
+    failed_items: Vec<FailedItem>,
+    failed_item_count: usize,
     unsyncable: Vec<UnsyncableItem>,
     config: RunningConfigInfo,
 }
@@ -343,6 +364,8 @@ impl ControlShared {
                 last_successful_sync_summary: None,
                 status_history: Vec::new(),
                 pending_deletions: Vec::new(),
+                failed_items: Vec::new(),
+                failed_item_count: 0,
                 unsyncable: Vec::new(),
                 config,
             }),
@@ -459,6 +482,8 @@ impl ControlShared {
             last_successful_sync_summary: snapshot.last_successful_sync_summary,
             status_history: snapshot.status_history,
             pending_deletions: snapshot.pending_deletions,
+            failed_items: snapshot.failed_items,
+            failed_item_count: snapshot.failed_item_count,
             config: Some(snapshot.config),
             // Gated on `syncing` read above: `syncing` and the activity slot are updated
             // independently at pass end, so without the gate a reply issued between
@@ -487,6 +512,8 @@ impl ControlShared {
             last_successful_sync_summary: snapshot.last_successful_sync_summary,
             status_history_entries: snapshot.status_history.len(),
             pending_deletions: snapshot.pending_deletions,
+            failed_items: snapshot.failed_items,
+            failed_item_count: snapshot.failed_item_count,
             unsyncable: snapshot.unsyncable,
         }
     }
@@ -750,6 +777,9 @@ impl<C: ProtonClient> Daemon<C> {
             warm_starts_since_full_walk,
             event_scope_declined: None,
             pending_deletions: Vec::new(),
+            last_failed_items: Vec::new(),
+            last_failed_item_count: 0,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
             unsyncable,
             reported_unsyncable: HashSet::new(),
             _lock_guard: lock_guard,
@@ -767,7 +797,7 @@ impl<C: ProtonClient> Daemon<C> {
             socket_path = %self.config.socket_path.display(),
             "starting daemon"
         );
-        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&self.cancel_flag);
         self.proton.install_cancel_flag(Arc::clone(&cancel_flag));
         // Live-progress plumbing: the client reports per-folder walk progress and download
         // staging locations straight into `ControlShared`, so status replies stay alive while
@@ -1013,6 +1043,8 @@ impl<C: ProtonClient> Daemon<C> {
             last_successful_sync_summary: self.last_successful_sync_summary.clone(),
             status_history: self.status_history.clone(),
             pending_deletions: self.pending_deletions.clone(),
+            failed_items: self.last_failed_items.clone(),
+            failed_item_count: self.last_failed_item_count,
             unsyncable: self.unsyncable.clone(),
             config: RunningConfigInfo {
                 local_root: self.config.local_root.clone(),
@@ -1035,17 +1067,33 @@ impl<C: ProtonClient> Daemon<C> {
         self.shared.is_paused()
     }
 
+    /// One-line `last_error` for a partial pass (#136): terse on purpose — it rides on every
+    /// status reply, and the per-item detail is in `failed_items`.
+    fn failure_summary(&self, failed: usize) -> String {
+        match self.last_failed_items.first() {
+            Some(first) => format!(
+                "{failed} item(s) failed to sync (first: {})",
+                first.path.display()
+            ),
+            None => format!("{failed} item(s) failed to sync"),
+        }
+    }
+
     async fn reconcile_if_needed(&mut self) -> AppResult<()> {
         if self.is_paused() {
             return Ok(());
         }
-        if let Err(error) = self.reconcile().await {
-            error!(%error, "scheduled reconciliation failed");
+        match self.reconcile().await {
+            // Not silence: `execute_plan_and_commit` already warned per item and once with the
+            // total, and the outcome is on every status reply. Logging it again here would be a
+            // second, differently-worded report of the same pass.
+            Ok(PassOutcome::Clean | PassOutcome::Partial { .. }) => {}
+            Err(error) => error!(%error, "scheduled reconciliation failed"),
         }
         Ok(())
     }
 
-    async fn reconcile(&mut self) -> AppResult<()> {
+    async fn reconcile(&mut self) -> AppResult<PassOutcome> {
         // Flag the pass for status replies before blocking this task; the IPC task keeps
         // serving (and reporting `syncing`) for the whole duration.
         self.shared.syncing.store(true, Ordering::SeqCst);
@@ -1056,19 +1104,29 @@ impl<C: ProtonClient> Daemon<C> {
         result
     }
 
-    fn reconcile_blocking(&mut self) -> AppResult<()> {
+    fn reconcile_blocking(&mut self) -> AppResult<PassOutcome> {
         let result = self.reconcile_blocking_inner();
+        // Three outcomes, three arms, no fall-through: a pass that landed most of its plan and
+        // failed some of it is neither of the other two, and absorbing it into either is how a
+        // failed pass came to render as "everything is up to date" (#246).
         let message = match &result {
-            Ok(()) => {
+            Ok(PassOutcome::Clean) => {
                 self.last_error = None;
-                "sync completed"
+                "sync completed".to_owned()
+            }
+            // `last_error` carries the summary so every surface that already reads it — the CLI
+            // headline, the GUI's `derive_state`, the tray — reports a partial pass as a problem
+            // rather than silently as a success. `failed_items` carries the detail.
+            Ok(PassOutcome::Partial { failed }) => {
+                self.last_error = Some(self.failure_summary(*failed));
+                format!("sync completed with {failed} failed item(s)")
             }
             Err(error) => {
                 self.last_error = Some(error.to_string());
-                "sync failed"
+                "sync failed".to_owned()
             }
         };
-        self.record_status_history(message);
+        self.record_status_history(&message);
         // The attempt is complete (recorded either way): bump the sequence a waiting client
         // watches, then publish the final state of this pass.
         self.shared.reconcile_seq.fetch_add(1, Ordering::SeqCst);
@@ -1076,7 +1134,7 @@ impl<C: ProtonClient> Daemon<C> {
         result
     }
 
-    fn reconcile_blocking_inner(&mut self) -> AppResult<()> {
+    fn reconcile_blocking_inner(&mut self) -> AppResult<PassOutcome> {
         info!("starting reconciliation");
         // Recover event-driven detection if it was disabled at startup because the keyring was
         // still locked (the boot race). No-op once a source exists or when the feature is off.
@@ -1091,6 +1149,11 @@ impl<C: ProtonClient> Daemon<C> {
         // `mark_modified` suppression in `handle_fs_event` to a single echo window, so a genuine
         // user edit that arrives in any later pass is never mistaken for the daemon's own echo.
         self.authored_writes.clear();
+        // This pass's failures start empty (#136), and they are cleared HERE rather than in the
+        // executor so a pass that dies before planning — a failed scan, a failed listing — cannot
+        // publish the previous pass's items beside its own "sync failed".
+        self.last_failed_items.clear();
+        self.last_failed_item_count = 0;
         // Load the baseline before scanning so the scan can reuse each unchanged file's
         // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
         let base_records = load_index(&self.connection)?;
@@ -1111,7 +1174,11 @@ impl<C: ProtonClient> Daemon<C> {
             // force across a failed first pass, so the requested full walk still happens on retry.
             let force_bootstrap = resync_requested || self.config.warm_start.force_full_walk;
             let result = self.first_reconcile(base_records, force_bootstrap);
-            if result.is_ok() {
+            // CLEAN only — a partial pass is not a success (#136). The re-queued failed paths
+            // would keep the next pass non-idle anyway, but the "startup snapshots first" floor is
+            // the wrong place to start relying on that: a pass that did not land everything leaves
+            // the next one with the same job the first pass exists to do.
+            if matches!(result, Ok(PassOutcome::Clean)) {
                 self.is_first_reconcile = false;
                 // Both first-pass branches full-scan the local tree, so any pending
                 // watcher-error rescan is satisfied here.
@@ -1128,9 +1195,17 @@ impl<C: ProtonClient> Daemon<C> {
             // A watcher error dropped events (#51): this pass must stat-walk the local tree
             // instead of taking the idle fast-path, which only knows about `pending_changes`.
             match self.try_incremental_reconcile(&base_records, self.force_local_rescan)? {
-                IncrementalOutcome::Committed | IncrementalOutcome::Idle => {
+                IncrementalOutcome::Committed(outcome) => {
+                    // Same rule as the first-pass floor above: only a clean pass discharges a
+                    // pending rescan, because only a clean pass acted on everything it scanned.
+                    if outcome == PassOutcome::Clean {
+                        self.force_local_rescan = false;
+                    }
+                    return Ok(outcome);
+                }
+                IncrementalOutcome::Idle => {
                     self.force_local_rescan = false;
-                    return Ok(());
+                    return Ok(PassOutcome::Clean);
                 }
                 IncrementalOutcome::Fallback(reason) => {
                     info!(%reason, "event-driven pass fell back to a full-tree snapshot");
@@ -1140,7 +1215,7 @@ impl<C: ProtonClient> Daemon<C> {
 
         // A snapshot always full-scans the local tree, so it too clears the pending rescan.
         let result = self.bootstrap_reconcile(base_records);
-        if result.is_ok() {
+        if matches!(result, Ok(PassOutcome::Clean)) {
             self.force_local_rescan = false;
         }
         result
@@ -1155,16 +1230,24 @@ impl<C: ProtonClient> Daemon<C> {
         &mut self,
         base_records: HashMap<PathBuf, FileRecord>,
         force_bootstrap: bool,
-    ) -> AppResult<()> {
+    ) -> AppResult<PassOutcome> {
         if !force_bootstrap && self.warm_start_eligible(&base_records) {
             // `true` = force the local stat-walk even if the event delta is empty: on a fresh boot
             // `pending_changes` is empty, so the idle fast-path would otherwise skip the scan and
             // strand a file edited while the daemon was down.
             match self.try_incremental_reconcile(&base_records, true)? {
-                IncrementalOutcome::Committed | IncrementalOutcome::Idle => {
+                // The warm start itself worked either way — it replayed the cursor instead of
+                // walking the tree — so it counts toward the every-N-warm-starts full walk even
+                // when items inside it failed.
+                IncrementalOutcome::Committed(outcome) => {
                     self.record_successful_warm_start();
                     info!("warm start completed; skipped the full-tree remote walk");
-                    return Ok(());
+                    return Ok(outcome);
+                }
+                IncrementalOutcome::Idle => {
+                    self.record_successful_warm_start();
+                    info!("warm start completed; skipped the full-tree remote walk");
+                    return Ok(PassOutcome::Clean);
                 }
                 IncrementalOutcome::Fallback(reason) => {
                     info!(%reason, "warm start fell back to a full-tree snapshot");
@@ -1471,7 +1554,7 @@ impl<C: ProtonClient> Daemon<C> {
             }
         };
 
-        self.execute_plan_and_commit(
+        let outcome = self.execute_plan_and_commit(
             &local_entities,
             &local_files,
             &remote_entities,
@@ -1487,7 +1570,7 @@ impl<C: ProtonClient> Daemon<C> {
         )?;
         self.incremental_passes_since_full_scan =
             self.incremental_passes_since_full_scan.saturating_add(1);
-        Ok(IncrementalOutcome::Committed)
+        Ok(IncrementalOutcome::Committed(outcome))
     }
 
     /// Fetches and concatenates the volume event delta from `from_cursor`, following `more`
@@ -1556,7 +1639,10 @@ impl<C: ProtonClient> Daemon<C> {
 
     /// Full-tree snapshot reconcile — the original behavior, plus (when event-driven) capturing
     /// and persisting the replay cursor `C0`. Resets the periodic-resync counter.
-    fn bootstrap_reconcile(&mut self, base_records: HashMap<PathBuf, FileRecord>) -> AppResult<()> {
+    fn bootstrap_reconcile(
+        &mut self,
+        base_records: HashMap<PathBuf, FileRecord>,
+    ) -> AppResult<PassOutcome> {
         // The cursor asserts "every remote change up to this event has been applied", which is only
         // true of a cursor read *before* the walk: a change landing mid-walk in an already-listed
         // folder is missed by this snapshot, so anchoring after the walk skips it in the delta too
@@ -1587,7 +1673,7 @@ impl<C: ProtonClient> Daemon<C> {
             remote_root_missing,
         );
 
-        self.execute_plan_and_commit(
+        let outcome = self.execute_plan_and_commit(
             &local_entities,
             &local_files,
             &remote_entities,
@@ -1608,7 +1694,7 @@ impl<C: ProtonClient> Daemon<C> {
                 warn!(%error, "failed to reset the warm-start counter after a full walk");
             }
         }
-        Ok(())
+        Ok(outcome)
     }
 
     /// Reads the current latest cursor before a snapshot, when event-driven and the volume is
@@ -1774,6 +1860,12 @@ impl<C: ProtonClient> Daemon<C> {
     /// effect. The event cursor is the deliberate exception — it advances only in the final
     /// commit of a fully-successful pass, because it asserts "every remote change up to this
     /// event has been applied", which holds only when the whole plan landed.
+    ///
+    /// A failing action does **not** end the pass (#136): its own mutations are discarded, it is
+    /// recorded as a [`FailedItem`], and execution continues with its successors — otherwise one
+    /// poisoned file starves every action ordered after it, on every pass, forever. Such a pass
+    /// returns [`PassOutcome::Partial`]. This is not a retry: the action is attempted once per
+    /// pass, exactly as before, and is never re-attempted within one.
     fn execute_plan_and_commit(
         &mut self,
         local_entities: &HashMap<PathBuf, LocalEntityState>,
@@ -1782,7 +1874,7 @@ impl<C: ProtonClient> Daemon<C> {
         base_index: &HashMap<PathBuf, FileRecord>,
         remote_map: RemoteMapShape,
         cursor_update: Option<CursorUpdate>,
-    ) -> AppResult<()> {
+    ) -> AppResult<PassOutcome> {
         let remote_root_missing = remote_map.remote_root_missing;
         let mut plan = plan_sync_entities(local_entities, remote_entities, base_index);
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
@@ -1850,9 +1942,20 @@ impl<C: ProtonClient> Daemon<C> {
         // Nodes skipped because the remote said they are gone (#31). Counted, never recorded:
         // see the cursor hold after the loop.
         let mut vanished_nodes = 0usize;
+        // Per-item failures this pass, and the paths to re-queue for the next one (#136).
+        let mut failures = PassFailures::default();
 
         let mut action_number = 0usize;
         while action_number < plan.len() {
+            // Shutdown beats failure tolerance: the cancel flag makes every remaining action fail
+            // instantly (after spawning and killing a CLI child), so continuing past failures
+            // would turn a prompt exit into thousands of pointless round trips. Stop dead — the
+            // checkpoints already landed, and the remainder re-plans on the next start.
+            if self.cancel_flag.load(Ordering::SeqCst) {
+                return Err(boxed_error(
+                    "reconciliation cancelled: the daemon is shutting down",
+                ));
+            }
             let action = &plan[action_number];
             // A run of two-plus consecutive planned downloads executes as chunked multi-file
             // CLI invocations instead of one subprocess per file (grouped by destination
@@ -1874,6 +1977,7 @@ impl<C: ProtonClient> Daemon<C> {
                         interactive_progress,
                         &mut index_mutations,
                         &mut pending_approval_consumptions,
+                        &mut failures,
                     )?;
                     action_number += run_length;
                     continue;
@@ -1897,9 +2001,14 @@ impl<C: ProtonClient> Daemon<C> {
                 action_total: Some(action_total),
                 ..new_activity(PHASE_EXECUTING)
             });
-            // Labeled so an arm can bail out of just this action (`break 'action`, the old
-            // loop `continue`) while still reaching the per-action checkpoint below.
-            'action: {
+            // Everything this action may mutate, so a failure can roll back to exactly here: no
+            // arm records anything before its own side effect lands, but truncating makes "the
+            // failed action is never recorded" structural rather than a property of each arm.
+            let mutations_before = index_mutations.len();
+            let consumptions_before = pending_approval_consumptions.len();
+            // A closure, not a labeled block, so `?` inside an arm ends THIS action rather than the
+            // pass (#136) — `break 'action` (the old loop `continue`) is now `return Ok(())`.
+            let mut execute_action = || -> AppResult<()> {
                 match action.action {
                     SyncAction::Upload => {
                         if let Some(local) = local_files.get(&action.path) {
@@ -1978,7 +2087,7 @@ impl<C: ProtonClient> Daemon<C> {
                                 "skipping download: local destination escapes the sync root \
                                  (e.g. through a symlinked directory)"
                             );
-                            break 'action;
+                            return Ok(());
                         };
                         ensure_parent_directory(&destination)?;
                         transfer_index += 1;
@@ -2014,7 +2123,7 @@ impl<C: ProtonClient> Daemon<C> {
                         finish_transfer_spinner(spinner);
                         if !skip_if_node_vanished(result, &action.path)? {
                             vanished_nodes += 1;
-                            break 'action;
+                            return Ok(());
                         }
                         // The write we just landed will echo back through the watcher; record it so
                         // `handle_fs_event` does not flip this fresh `Synced` record to `Modified`
@@ -2033,7 +2142,7 @@ impl<C: ProtonClient> Daemon<C> {
                         if action.path.as_os_str().is_empty() {
                             self.proton
                                 .ensure_root_directory(&self.config.remote_root)?;
-                            break 'action;
+                            return Ok(());
                         }
                         if let Some(LocalEntityState::Directory(local)) =
                             local_entities.get(&action.path)
@@ -2079,6 +2188,12 @@ impl<C: ProtonClient> Daemon<C> {
                             ensure_parent_directory(&destination)?;
                             fs::rename(&source, &destination)?;
                             if action.entity_kind == EntityKind::Directory {
+                                // A directory rename relocates untracked descendants that the
+                                // planner deliberately left for the next pass (#12), and inotify
+                                // emits nothing for the children of a renamed directory — so
+                                // without this hint an event-driven pass with an empty delta would
+                                // idle-skip the local scan and never discover them.
+                                failures.rescan_next_pass.insert(destination_path.clone());
                                 let local_state =
                                     local_directory_state(&self.config.local_root, &destination)?;
                                 let record = FileRecord::from_local_directory(
@@ -2190,7 +2305,7 @@ impl<C: ProtonClient> Daemon<C> {
                             let (Some(conflict_path), Some(local)) =
                                 (action.conflict_path.as_ref(), local_files.get(&action.path))
                             else {
-                                break 'action;
+                                return Ok(());
                             };
                             let Some(destination) =
                                 safe_local_path(&self.config.local_root, conflict_path)
@@ -2200,7 +2315,7 @@ impl<C: ProtonClient> Daemon<C> {
                                     "skipping conflict: the sidecar destination escapes the sync \
                                      root (e.g. through a symlinked directory)"
                                 );
-                                break 'action;
+                                return Ok(());
                             };
                             // Never clobber or write *through* whatever is already at the sidecar
                             // path. `symlink_metadata` classifies a symlink as itself, so a
@@ -2250,7 +2365,7 @@ impl<C: ProtonClient> Daemon<C> {
                             // file into the sidecar instead.
                             if !skip_if_node_vanished(result, &action.path)? {
                                 vanished_nodes += 1;
-                                break 'action;
+                                return Ok(());
                             }
                         }
                         if let Some(local) = local_files.get(&action.path) {
@@ -2286,7 +2401,7 @@ impl<C: ProtonClient> Daemon<C> {
                                 // not written either and the pass re-plans from ground truth.
                                 if !skip_if_node_vanished(result, &action.path)? {
                                     vanished_nodes += 1;
-                                    break 'action;
+                                    return Ok(());
                                 }
                                 let local_state =
                                     local_file_state(&self.config.local_root, &destination)?;
@@ -2316,7 +2431,7 @@ impl<C: ProtonClient> Daemon<C> {
                         if withheld_paths.contains(&action.path) {
                             // Guard on here and not yet approved: skip the deletion AND its index
                             // mutation, so nothing is lost and it re-plans (still pending) next pass.
-                            break 'action;
+                            return Ok(());
                         }
                         action.remote_id.as_deref().ok_or_else(|| {
                             boxed_error(format!(
@@ -2349,7 +2464,7 @@ impl<C: ProtonClient> Daemon<C> {
                         if withheld_paths.contains(&action.path) {
                             // Guard on here and not yet approved: skip the deletion AND its index
                             // mutation, so nothing is lost and it re-plans (still pending) next pass.
-                            break 'action;
+                            return Ok(());
                         }
                         let Some(destination) =
                             safe_local_path(&self.config.local_root, &action.path)
@@ -2359,7 +2474,7 @@ impl<C: ProtonClient> Daemon<C> {
                                 "skipping local delete: path escapes the sync root \
                                  (e.g. through a symlinked directory)"
                             );
-                            break 'action;
+                            return Ok(());
                         };
                         if destination.exists() {
                             if action.entity_kind == EntityKind::Directory {
@@ -2396,6 +2511,31 @@ impl<C: ProtonClient> Daemon<C> {
                         );
                     }
                 }
+                Ok(())
+            };
+            let action_result = execute_action();
+            if let Err(error) = action_result {
+                // A shutdown makes every remaining action fail the same way; that is not this
+                // action's fault and the pass must end now, not record 6000 items.
+                if self.cancel_flag.load(Ordering::SeqCst) {
+                    return Err(error);
+                }
+                // Discard whatever this action queued: its side effect did not land, so its index
+                // write must not either (the commit-after-side-effects invariant). It re-plans next
+                // pass, from ground truth, exactly as a pass-fatal failure used to.
+                index_mutations.truncate(mutations_before);
+                pending_approval_consumptions.truncate(consumptions_before);
+                failures.record(action, error.as_ref());
+                if failures.breaker_tripped() {
+                    return Err(boxed_error(format!(
+                        "reconciliation abandoned: {} actions in a row failed and nothing in this \
+                         pass succeeded (last: {error}); the failure looks systemic rather than \
+                         per-item, so the rest of the plan is not attempted",
+                        failures.consecutive
+                    )));
+                }
+            } else {
+                failures.note_success();
             }
             if checkpoint_after {
                 // Land this action's outcome durably before moving on: a later failure — or a
@@ -2411,18 +2551,25 @@ impl<C: ProtonClient> Daemon<C> {
             action_number += 1;
         }
 
-        // A node the remote reported gone mid-pass is a remote change this pass did NOT confirm:
-        // "not found" can equally be a transient listing error or a permissions change, so the
-        // skip records nothing. Hold the cursor for exactly the reason a withheld delete does —
-        // an advanced cursor would drop the skipped node's originating event from future deltas,
-        // and `reconstruct_remote` would then plan against a remote map that still shows it (or
-        // no longer explains it). Held, the next pass re-derives it from ground truth, which also
-        // keeps that pass non-idle.
+        // ONE cursor policy, three causes. A withheld delete (above), a node that vanished
+        // mid-pass, and an item whose action failed are all the same statement: this pass did not
+        // apply everything the remote delta describes. Advancing past it would drop the originating
+        // event from every future delta — `reconstruct_remote` overlays only the *new* delta onto
+        // the surviving baseline — so the unapplied change would never be re-derived. Held, the
+        // next pass re-derives it from ground truth, which also keeps that pass non-idle.
         if vanished_nodes > 0 {
             warn!(
                 skipped = vanished_nodes,
                 "skipped node(s) that vanished remotely mid-pass; holding the event cursor so the \
                  next pass re-derives them from ground truth"
+            );
+            cursor_update = None;
+        }
+        if failures.count > 0 {
+            warn!(
+                failed = failures.count,
+                "action(s) failed; the rest of the plan still ran, and the event cursor is held so \
+                 the next pass re-derives them from ground truth"
             );
             cursor_update = None;
         }
@@ -2459,11 +2606,35 @@ impl<C: ProtonClient> Daemon<C> {
         // than per planned path also avoids leaking entries that produced no action (a directory
         // event, a misclassified removal, a non-regular-file event, a `None` plan outcome).
         self.pending_changes.clear();
+        // …except what this pass left undone. A failed item is local-side work no remote event
+        // describes (a failed upload has none), so the held cursor alone would not re-derive it:
+        // with an empty delta the next event-driven pass would take the idle fast-path, skip the
+        // local scan entirely, and never re-plan it. Re-queueing keeps that pass non-idle. Same for
+        // a path a directory move relocated out from under its own plan (#12).
+        self.pending_changes.append(&mut failures.rescan_next_pass);
 
-        self.last_sync = Some(SystemTime::now());
-        self.last_successful_sync_summary = Some(plan_summary);
-        info!("reconciliation completed");
-        Ok(())
+        let outcome = failures.outcome();
+        self.last_failed_items = std::mem::take(&mut failures.items);
+        self.last_failed_item_count = failures.count;
+        match outcome {
+            PassOutcome::Clean => {
+                self.last_sync = Some(SystemTime::now());
+                self.last_successful_sync_summary = Some(plan_summary);
+                info!("reconciliation completed");
+            }
+            // Deliberately NOT a sync for `last_sync` / `last_successful_sync_summary` purposes:
+            // both mean "the last pass that landed everything", and this one did not. The pass is
+            // reported as itself instead — through the returned outcome, `failed_items`, and the
+            // status-history message.
+            PassOutcome::Partial { failed } => {
+                info!(
+                    failed,
+                    planned_actions = plan_summary.total,
+                    "reconciliation completed with failed items"
+                );
+            }
+        }
+        Ok(outcome)
     }
 
     /// Executes one run of consecutive planned `Download` actions as chunked multi-file CLI
@@ -2473,9 +2644,10 @@ impl<C: ProtonClient> Daemon<C> {
     /// subdirectory's downloads, so execution order is exactly plan order — and each segment
     /// is split into chunks of at most `download_batch_size`. Every chunk is
     /// checkpoint-committed as soon as it lands, so a failure — or a daemon shutdown — never
-    /// discards transfers that already completed; the first failed file aborts the pass after
-    /// its chunk's survivors are committed. Returns how many files were skipped because their
-    /// remote node has vanished (#31) — those neither fail the pass nor get recorded.
+    /// discards transfers that already completed. A failed file is recorded into `failures` and
+    /// costs only itself: the rest of its chunk still lands, and the run continues (#136).
+    /// Returns how many files were skipped because their remote node has vanished (#31) — those
+    /// neither fail the pass nor get recorded.
     #[allow(clippy::too_many_arguments)]
     fn execute_download_run(
         &mut self,
@@ -2488,22 +2660,34 @@ impl<C: ProtonClient> Daemon<C> {
         interactive_progress: bool,
         index_mutations: &mut Vec<IndexMutation>,
         pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
+        failures: &mut PassFailures,
     ) -> AppResult<usize> {
         let mut groups: Vec<(PathBuf, Vec<PreparedDownload<'_>>)> = Vec::new();
         for (offset, action) in run.iter().enumerate() {
-            let remote_id = action.remote_id.as_deref().ok_or_else(|| {
-                boxed_error(format!(
-                    "planned download for {} is missing a remote id",
-                    action.path.display()
-                ))
-            })?;
-            let remote_path =
-                safe_remote_path(&self.config.remote_root, &action.path).ok_or_else(|| {
+            // A malformed plan entry is that item's failure, not the run's: it can no more starve
+            // its successors than a failed transfer can.
+            let Some(remote_id) = action.remote_id.as_deref() else {
+                failures.record(
+                    action,
+                    boxed_error(format!(
+                        "planned download for {} is missing a remote id",
+                        action.path.display()
+                    ))
+                    .as_ref(),
+                );
+                continue;
+            };
+            let Some(remote_path) = safe_remote_path(&self.config.remote_root, &action.path) else {
+                failures.record(
+                    action,
                     boxed_error(format!(
                         "planned download for {} has an unsafe remote path",
                         action.path.display()
                     ))
-                })?;
+                    .as_ref(),
+                );
+                continue;
+            };
             let Some(destination) = safe_local_path(&self.config.local_root, &action.path) else {
                 warn!(
                     path = %action.path.display(),
@@ -2546,10 +2730,27 @@ impl<C: ProtonClient> Daemon<C> {
         let batch_size = self.config.download_batch_size.max(1);
         let mut vanished_nodes = 0usize;
         for (parent, members) in &groups {
-            if let Some(first) = members.first() {
-                ensure_parent_directory(&first.request.destination)?;
+            if let Some(first) = members.first()
+                && let Err(error) = ensure_parent_directory(&first.request.destination)
+            {
+                // This group's destination directory cannot be made (a file squatting on the name,
+                // a permissions problem). That is a failure of THIS group's files, not of the pass:
+                // the single-file arm fails per item here, so failing the pass would make the same
+                // local-FS problem behave differently at `download_batch_size = 1` — and a
+                // persistent one would starve every download ordered after it (#136).
+                for member in members {
+                    failures.record(member.action, error.as_ref());
+                }
+                continue;
             }
             for chunk in members.chunks(batch_size) {
+                // Same shutdown rule as the per-action loop: a batched run is one iteration there,
+                // so without this a cancelled 1000-file run would keep issuing doomed batches.
+                if self.cancel_flag.load(Ordering::SeqCst) {
+                    return Err(boxed_error(
+                        "reconciliation cancelled: the daemon is shutting down",
+                    ));
+                }
                 vanished_nodes += self.execute_download_chunk(
                     parent,
                     chunk,
@@ -2559,6 +2760,7 @@ impl<C: ProtonClient> Daemon<C> {
                     interactive_progress,
                     index_mutations,
                     pending_approval_consumptions,
+                    failures,
                 )?;
             }
         }
@@ -2566,10 +2768,10 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Executes one chunk of prepared downloads via a single [`ProtonClient::download_many`]
-    /// call, records every landed file, checkpoint-commits, and only then fails the pass if any
-    /// file in the chunk failed — completed transfers in a failing chunk stay durable. A file
-    /// whose remote node has vanished (#31) is not a failure: it is skipped (nothing recorded)
-    /// and counted into the returned tally, so one trashed node cannot cost the chunk's others.
+    /// call, records every landed file, and checkpoint-commits — completed transfers in a failing
+    /// chunk stay durable. Every file that failed is recorded into `failures` individually and
+    /// costs only itself (#136). A file whose remote node has vanished (#31) is not a failure at
+    /// all: it is skipped (nothing recorded) and counted into the returned tally.
     #[allow(clippy::too_many_arguments)]
     fn execute_download_chunk(
         &mut self,
@@ -2581,6 +2783,7 @@ impl<C: ProtonClient> Daemon<C> {
         interactive_progress: bool,
         index_mutations: &mut Vec<IndexMutation>,
         pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
+        failures: &mut PassFailures,
     ) -> AppResult<usize> {
         let display_parent = if parent.as_os_str().is_empty() {
             Path::new(".")
@@ -2640,15 +2843,8 @@ impl<C: ProtonClient> Daemon<C> {
         let results = self.proton.download_many(&requests);
         finish_transfer_spinner(spinner);
 
-        let mut first_failure: Option<(PathBuf, String)> = None;
         let mut vanished_nodes = 0usize;
-        let record_item_failure =
-            |first_failure: &mut Option<(PathBuf, String)>, path: &Path, error: String| {
-                warn!(path = %path.display(), error = %error, "batched download failed for file");
-                if first_failure.is_none() {
-                    *first_failure = Some((path.to_path_buf(), error));
-                }
-            };
+        let mut chunk_failures = 0usize;
         for (prepared, result) in chunk.iter().zip(results) {
             match result {
                 // A stat/hash failure on a landed file (e.g. deleted out from under us the
@@ -2674,11 +2870,16 @@ impl<C: ProtonClient> Daemon<C> {
                                 "downloaded file from Proton Drive (batched)"
                             );
                         }
-                        Err(error) => record_item_failure(
-                            &mut first_failure,
-                            &prepared.action.path,
-                            format!("downloaded but could not be recorded: {error}"),
-                        ),
+                        Err(error) => {
+                            chunk_failures += 1;
+                            failures.record(
+                                prepared.action,
+                                boxed_error(format!(
+                                    "downloaded but could not be recorded: {error}"
+                                ))
+                                .as_ref(),
+                            );
+                        }
                     }
                 }
                 // The node is gone since the listing (#31): skip this file alone — no record, no
@@ -2691,27 +2892,33 @@ impl<C: ProtonClient> Daemon<C> {
                     );
                     vanished_nodes += 1;
                 }
-                Err(error) => record_item_failure(
-                    &mut first_failure,
-                    &prepared.action.path,
-                    error.to_string(),
-                ),
+                Err(error) => {
+                    chunk_failures += 1;
+                    failures.record(prepared.action, error.as_ref());
+                }
             }
         }
-        // Land this chunk's completed downloads durably before deciding the pass's fate: even
-        // when the chunk failed, its survivors are recorded and never re-transferred.
+        // Land this chunk's completed downloads durably: a failing chunk's survivors are recorded
+        // and never re-transferred.
         commit_checkpoint(
             &mut self.connection,
             index_mutations,
             pending_approval_consumptions,
         )?;
-        match first_failure {
-            None => Ok(vanished_nodes),
-            Some((path, error)) => Err(boxed_error(format!(
-                "download failed for {}: {error}",
-                path.display()
-            ))),
+        // A chunk is many actions; one landed file in it clears the breaker's consecutive run
+        // exactly as a successful single action would. A vanished node landed nothing.
+        if chunk_failures + vanished_nodes < chunk.len() {
+            failures.note_success();
         }
+        if failures.breaker_tripped() {
+            return Err(boxed_error(format!(
+                "reconciliation abandoned: {} actions in a row failed and nothing in this pass \
+                 succeeded; the failure looks systemic rather than per-item, so the rest of the \
+                 plan is not attempted",
+                failures.consecutive
+            )));
+        }
+        Ok(vanished_nodes)
     }
 
     /// Decides, for every destructive action in `plan`, whether to execute it now or withhold it
@@ -2791,6 +2998,7 @@ impl<C: ProtonClient> Daemon<C> {
             last_error: self.last_error.clone(),
             plan_summary: self.last_plan_summary.clone(),
             successful_sync_summary: self.last_successful_sync_summary.clone(),
+            failed_item_count: self.last_failed_item_count,
         };
         self.status_history.push(entry);
         if self.status_history.len() > STATUS_HISTORY_LIMIT {
@@ -3448,14 +3656,124 @@ fn build_event_source(config: &DaemonConfig) -> Option<Box<dyn EventSource>> {
 
 /// Result of an attempted incremental (event-driven) reconcile pass.
 enum IncrementalOutcome {
-    /// Changes were planned, executed, and committed with the cursor advanced.
-    Committed,
+    /// Changes were planned, executed, and committed. Carries the pass's own outcome, because a
+    /// committed pass is not necessarily a clean one (#136).
+    Committed(PassOutcome),
     /// Nothing to do (no remote or local changes); the cursor was advanced without side effects.
     Idle,
     /// The delta could not be turned into a complete map; the caller must full-tree snapshot. The
     /// string is a human-readable reason for logging.
     Fallback(String),
 }
+
+/// How a reconcile pass that ran to the end came out. `Err` from the same call is the fourth
+/// possibility and a different thing entirely: the pass itself could not proceed (a scan, a remote
+/// listing, a commit).
+///
+/// [`PassOutcome::Partial`] is a **state of its own** (#136), not a flavour of either other one:
+/// the plan ran to completion, some items' side effects failed. It is enumerated at every branch
+/// on pass outcome rather than falling through one — a trailing arm silently absorbing an
+/// undrawn state is how a failed pass came to render as "everything is up to date" (#246).
+/// `#[must_use]` so no caller can drop the distinction by ignoring the value.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassOutcome {
+    /// Every planned action landed (or was deliberately skipped: withheld, unsupported, vanished).
+    Clean,
+    /// `failed` actions failed; the rest of the plan still executed and committed.
+    Partial { failed: usize },
+}
+
+/// How many failed items a status reply carries (the count is untruncated). Enough to see the
+/// shape of a failure without unbounded replies.
+pub const FAILED_ITEMS_REPORTED: usize = 20;
+
+/// Consecutive failures that abandon a pass in which **nothing** has succeeded yet. Not a
+/// quarantine (#136 D1): it is the difference between "this item is poisoned" and "this daemon
+/// cannot talk to Proton right now" — an expired session or a missing CLI otherwise costs one
+/// doomed round trip per planned action, every pass. Gated on zero successes so it can never
+/// starve anything: a pass that has accomplished nothing loses nothing by stopping.
+const CONSECUTIVE_FAILURE_LIMIT: usize = 20;
+
+/// A pass's item failures (#136), plus what the next pass must be told to look at again.
+#[derive(Default)]
+struct PassFailures {
+    /// Bounded to [`FAILED_ITEMS_REPORTED`], in plan order.
+    items: Vec<FailedItem>,
+    /// Untruncated total.
+    count: usize,
+    /// Failures since the last success, for [`CONSECUTIVE_FAILURE_LIMIT`].
+    consecutive: usize,
+    /// Whether any action succeeded this pass.
+    any_success: bool,
+    /// Paths to re-queue into `pending_changes` once the pass clears it.
+    rescan_next_pass: BTreeSet<PathBuf>,
+}
+
+impl PassFailures {
+    fn record(&mut self, action: &PlannedAction, error: &(dyn std::error::Error + Send + Sync)) {
+        // Named at `warn` only while the reported list has room, then dropped to `debug`: a pass
+        // that fails thousands of actions must not bury its own summary line (and everything else
+        // in the journal) under thousands of copies of it. The count is always exact — the
+        // post-loop line reports the total, and `failed_item_count` rides on every status reply.
+        if self.items.len() < FAILED_ITEMS_REPORTED {
+            warn!(
+                path = %action.path.display(),
+                action = ?action.action,
+                %error,
+                "sync action failed; continuing with the rest of the plan"
+            );
+            self.items.push(FailedItem {
+                path: action.path.clone(),
+                action: action.action,
+                error: truncate_error(&error.to_string()),
+            });
+        } else {
+            debug!(
+                path = %action.path.display(),
+                action = ?action.action,
+                %error,
+                "sync action failed (past the reported limit); continuing with the rest of the plan"
+            );
+        }
+        self.count += 1;
+        self.consecutive += 1;
+        self.rescan_next_pass.insert(action.path.clone());
+    }
+
+    fn note_success(&mut self) {
+        self.any_success = true;
+        self.consecutive = 0;
+    }
+
+    fn breaker_tripped(&self) -> bool {
+        !self.any_success && self.consecutive >= CONSECUTIVE_FAILURE_LIMIT
+    }
+
+    fn outcome(&self) -> PassOutcome {
+        match self.count {
+            0 => PassOutcome::Clean,
+            failed => PassOutcome::Partial { failed },
+        }
+    }
+}
+
+/// Bounds an error string to [`FAILED_ITEM_ERROR_LIMIT`] **bytes, inclusive of the ellipsis**, cut
+/// on a char boundary — so the documented cap is the real one and no consumer has to budget for an
+/// overshoot.
+fn truncate_error(error: &str) -> String {
+    if error.len() <= FAILED_ITEM_ERROR_LIMIT {
+        return error.to_owned();
+    }
+    let budget = FAILED_ITEM_ERROR_LIMIT - ELLIPSIS.len();
+    let end = (0..=budget)
+        .rev()
+        .find(|index| error.is_char_boundary(*index))
+        .unwrap_or(0);
+    format!("{}{ELLIPSIS}", &error[..end])
+}
+
+const ELLIPSIS: &str = "…";
 
 /// A concatenated, paginated volume event delta plus the cursor to persist afterwards.
 struct EventDelta {
@@ -3891,6 +4209,36 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
+    /// Unwraps a pass and pins it CLEAN. Every test that is not specifically about item failures
+    /// says this, so a partial pass (#136) can never be waved through as "it returned Ok" — the
+    /// shape of bug that once let a failed pass render as success (#246).
+    trait ExpectCleanPass {
+        fn expect_clean(self, context: &str);
+        /// The counterpart: the pass ran to the end with exactly `failed` item failures.
+        fn expect_partial(self, failed: usize, context: &str);
+    }
+
+    impl ExpectCleanPass for AppResult<PassOutcome> {
+        #[track_caller]
+        fn expect_clean(self, context: &str) {
+            match self.unwrap_or_else(|error| panic!("{context}: {error}")) {
+                PassOutcome::Clean => {}
+                PassOutcome::Partial { failed } => {
+                    panic!("{context}: expected a clean pass, got {failed} failed item(s)")
+                }
+            }
+        }
+
+        #[track_caller]
+        fn expect_partial(self, failed: usize, context: &str) {
+            assert_eq!(
+                self.unwrap_or_else(|error| panic!("{context}: {error}")),
+                PassOutcome::Partial { failed },
+                "{context}"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn sidecar_write_is_owner_only_0600() {
@@ -4084,6 +4432,14 @@ mod tests {
                 return Err(boxed_error(format!(
                     "upload failed for {}",
                     relative_path.display()
+                )));
+            }
+            // The real client hands `local_path` to the CLI, which cannot read a file that is not
+            // there. Modelling that is what makes a stale pre-move source path observable (#12).
+            if !local_path.exists() {
+                return Err(boxed_error(format!(
+                    "upload source is missing: {}",
+                    local_path.display()
                 )));
             }
             Ok(())
@@ -4441,7 +4797,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let operations = operations.lock().expect("operations lock");
         assert_eq!(
@@ -4489,7 +4845,7 @@ mod tests {
         )
         .expect("base index record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let operations = operations.lock().expect("operations lock");
         assert!(
@@ -4524,7 +4880,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations
@@ -4555,7 +4911,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             *operations.lock().expect("operations lock"),
@@ -4595,7 +4951,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             *operations.lock().expect("operations lock"),
@@ -4630,7 +4986,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations.lock().expect("operations lock").is_empty(),
@@ -4663,7 +5019,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let conflict_path = local_root.join("same-name.proton-cloud");
         assert_eq!(
@@ -4687,7 +5043,7 @@ mod tests {
         assert_eq!(sidecar_record.sync_status, SyncStatus::Conflict);
         assert_eq!(sidecar_record.proton_id.as_deref(), Some("remote-file-id"));
 
-        daemon.reconcile_blocking().expect("second reconcile");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
 
         assert_eq!(
             operations.lock().expect("operations lock").len(),
@@ -4719,7 +5075,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations.lock().expect("operations lock").is_empty(),
@@ -4763,7 +5119,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             operations.lock().expect("operations lock").as_slice(),
@@ -4824,7 +5180,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let ops = operations.lock().expect("operations lock");
         let move_index = ops
@@ -4871,7 +5227,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations.lock().expect("operations lock").is_empty(),
@@ -4907,7 +5263,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations
@@ -4941,7 +5297,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let destination = local_root.join("remote-only.txt");
         assert_eq!(
@@ -4991,7 +5347,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("reconcile skips the unsafe entry rather than erroring");
+            .expect_clean("reconcile skips the unsafe entry rather than erroring");
 
         assert!(
             !outside.join("secret.txt").exists(),
@@ -5044,13 +5400,17 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        let error = daemon
-            .reconcile_blocking()
-            .expect_err("an empty-path download must be refused, not executed");
+        daemon.reconcile_blocking().expect_partial(
+            1,
+            "an empty-path download must be refused, not executed — as that item's failure",
+        );
 
         assert!(
-            error.to_string().contains("unsafe remote path"),
-            "unexpected error: {error}"
+            daemon.last_failed_items[0]
+                .error
+                .contains("unsafe remote path"),
+            "unexpected failure: {:?}",
+            daemon.last_failed_items
         );
         assert!(
             !operations
@@ -5100,7 +5460,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             fs::read(&local_path).expect("downloaded local file"),
@@ -5134,7 +5494,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let destination = local_root.join("nested/remote-only.txt");
         assert_eq!(
@@ -5169,7 +5529,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             !local_path.exists(),
@@ -5206,7 +5566,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations
@@ -5252,7 +5612,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             local_path.exists(),
@@ -5499,7 +5859,7 @@ mod tests {
             &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
         assert_eq!(daemon.pending_deletions.len(), 1, "a deletion is pending");
 
         // No selector → no-op: nothing is approved even though something is pending.
@@ -5550,7 +5910,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("first reconcile");
+        daemon.reconcile_blocking().expect_clean("first reconcile");
         assert!(
             operations.lock().expect("ops").is_empty(),
             "the remote delete must be withheld pending approval"
@@ -5569,7 +5929,7 @@ mod tests {
         )
         .expect("approve");
 
-        daemon.reconcile_blocking().expect("second reconcile");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
         assert!(
             operations
                 .lock()
@@ -5619,7 +5979,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             !local_path.exists(),
@@ -5648,7 +6008,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             local_path.exists() && daemon.pending_deletions.len() == 1,
@@ -5696,7 +6056,9 @@ mod tests {
         // bootstrap branch so this test drives the ongoing incremental path directly.
         daemon.is_first_reconcile = false;
 
-        daemon.reconcile_blocking().expect("incremental reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental reconcile");
 
         assert_eq!(full_walks.load(Ordering::SeqCst), 0, "stayed incremental");
         assert!(
@@ -5791,7 +6153,7 @@ mod tests {
         // vol~nx; LocalDelete(a.txt) is withheld, so a.txt keeps its vol~nx row → duplicate id.
         daemon
             .reconcile_blocking()
-            .expect("pass 1 (incremental takeover)");
+            .expect_clean("pass 1 (incremental takeover)");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             0,
@@ -5833,7 +6195,7 @@ mod tests {
         // LocalDelete, a.txt survives, and the cursor is held.
         daemon
             .reconcile_blocking()
-            .expect("pass 2 (fallback re-derives the withheld delete)");
+            .expect_clean("pass 2 (fallback re-derives the withheld delete)");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -5907,7 +6269,7 @@ mod tests {
         // Pass 1: withhold.
         daemon
             .reconcile_blocking()
-            .expect("first incremental reconcile");
+            .expect_clean("first incremental reconcile");
         assert_eq!(full_walks.load(Ordering::SeqCst), 0, "stayed incremental");
         assert_eq!(daemon.pending_deletions.len(), 1);
         let pending = daemon.pending_deletions[0].clone();
@@ -5917,7 +6279,7 @@ mod tests {
         // (not idle-skip), so the queue stays fresh.
         daemon
             .reconcile_blocking()
-            .expect("second incremental reconcile");
+            .expect_clean("second incremental reconcile");
         assert_eq!(
             daemon.pending_deletions.len(),
             1,
@@ -5942,7 +6304,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("third incremental reconcile");
+            .expect_clean("third incremental reconcile");
         assert!(
             get_record(&daemon.connection, Path::new("keep.txt"))
                 .expect("lookup")
@@ -5978,7 +6340,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations.lock().expect("operations lock").is_empty(),
@@ -6032,7 +6394,7 @@ mod tests {
         )
         .expect("file base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             *operations.lock().expect("operations lock"),
@@ -6085,7 +6447,7 @@ mod tests {
         )
         .expect("file base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations.lock().expect("operations lock").is_empty(),
@@ -6133,7 +6495,7 @@ mod tests {
         )
         .expect("stale directory base record over a live file");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             file_path.is_file(),
@@ -6203,7 +6565,7 @@ mod tests {
         )
         .expect("nested file base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations.lock().expect("operations lock").is_empty(),
@@ -6241,6 +6603,104 @@ mod tests {
             Some(file_hash.as_str())
         );
         assert_eq!(descendant_record.sync_status, SyncStatus::Synced);
+    }
+
+    #[test]
+    fn a_remote_directory_move_never_acts_on_an_untracked_descendant_at_its_pre_move_path() {
+        // #12. `old-docs` was renamed to `new-docs` remotely, and the local `old-docs` also holds
+        // `fresh.txt`, which no base row tracks. The MoveLocal runs first and physically relocates
+        // `fresh.txt`, so anything planned for it at the OLD path is planned against a local state
+        // that no longer exists: the upload would recreate a spurious remote `old-docs` (its parent
+        // is a move source, not a planned create) and then read a vanished file.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("old-docs")).expect("local old-docs directory");
+        let file_path = local_root.join("old-docs").join("report.txt");
+        fs::write(&file_path, b"same content").expect("nested local file");
+        let file_hash = crate::index::compute_sha1(&file_path).expect("nested file hash");
+        fs::write(local_root.join("old-docs").join("fresh.txt"), b"brand new")
+            .expect("untracked nested local file");
+        // Two levels down, so the suppression is proved for a whole subtree and not just the
+        // moved directory's immediate children.
+        fs::create_dir(local_root.join("old-docs").join("nested")).expect("untracked directory");
+        fs::write(local_root.join("old-docs/nested/deep.txt"), b"deeper").expect("deep file");
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("new-docs"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("new-docs"),
+                id: Some("docs-id".to_owned()),
+                name: "new-docs".to_owned(),
+            }),
+        );
+        let (client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &FileRecord {
+                file_path: PathBuf::from("old-docs"),
+                entity_kind: EntityKind::Directory,
+                file_size: 0,
+                mtime: 1,
+                sha1_hash: None,
+                proton_id: Some("docs-id".to_owned()),
+                sync_status: SyncStatus::Synced,
+            },
+        )
+        .expect("directory base record");
+        upsert_record(
+            &daemon.connection,
+            &base_record("old-docs/report.txt", Some("report-id"), file_hash.as_str()),
+        )
+        .expect("nested file base record");
+
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        let recorded = operations.lock().expect("operations lock").clone();
+        assert!(
+            !recorded.iter().any(|operation| matches!(
+                operation,
+                RecordedOperation::EnsureDirectory { relative_path, .. }
+                    if relative_path == Path::new("old-docs")
+            )),
+            "the moved-away parent must never be recreated remotely: {recorded:?}"
+        );
+        assert!(
+            !recorded.iter().any(|operation| matches!(
+                operation,
+                RecordedOperation::Upload { relative_path, .. }
+                    if relative_path.starts_with("old-docs")
+            )),
+            "nothing in the moved subtree may be uploaded from its pre-move path: {recorded:?}"
+        );
+        assert!(
+            !recorded.iter().any(|operation| matches!(
+                operation,
+                RecordedOperation::EnsureDirectory { relative_path, .. }
+                    if relative_path.starts_with("old-docs")
+            )),
+            "nor may any of its directories be created remotely there: {recorded:?}"
+        );
+        assert!(
+            local_root.join("new-docs").join("fresh.txt").is_file(),
+            "the untracked file rides along with the directory rename"
+        );
+
+        // Re-derived from ground truth on the next pass, now at its post-move path.
+        daemon.reconcile_blocking().expect_clean("second reconcile");
+
+        let recorded = operations.lock().expect("operations lock").clone();
+        for relative in ["new-docs/fresh.txt", "new-docs/nested/deep.txt"] {
+            assert!(
+                recorded.contains(&RecordedOperation::Upload {
+                    local_path: local_root.join(relative),
+                    remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                    relative_path: PathBuf::from(relative),
+                }),
+                "{relative} uploads from its post-move path: {recorded:?}"
+            );
+        }
     }
 
     #[test]
@@ -6284,15 +6744,20 @@ mod tests {
         )
         .expect("nested file base record");
 
-        let error = daemon
+        daemon
             .reconcile_blocking()
-            .expect_err("later upload should fail");
+            .expect_partial(1, "the later upload fails as an item, not as the pass");
 
+        assert_eq!(
+            daemon.last_failed_items[0].path,
+            PathBuf::from("will-fail.txt")
+        );
         assert!(
-            error
-                .to_string()
+            daemon.last_failed_items[0]
+                .error
                 .contains("upload failed for will-fail.txt"),
-            "unexpected error: {error}"
+            "unexpected failure: {:?}",
+            daemon.last_failed_items
         );
         assert!(
             operations
@@ -6342,7 +6807,7 @@ mod tests {
         );
         assert!(
             daemon.last_sync.is_none(),
-            "a failed pass must not count as a successful sync even with checkpoints committed"
+            "a partial pass must not count as a successful sync even with checkpoints committed"
         );
     }
 
@@ -6362,14 +6827,10 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        let error = daemon
+        daemon
             .reconcile_blocking()
-            .expect_err("second upload should fail");
+            .expect_partial(1, "the second upload fails as an item, not as the pass");
 
-        assert!(
-            error.to_string().contains("upload failed for second.txt"),
-            "unexpected error: {error}"
-        );
         assert_eq!(
             *operations.lock().expect("operations lock"),
             vec![
@@ -6399,11 +6860,13 @@ mod tests {
         );
         assert!(
             daemon.last_sync.is_none(),
-            "failed reconciliation must not advance last_sync"
+            "a partial pass must not advance last_sync"
         );
         assert_eq!(
             daemon.last_error.as_deref(),
-            Some("upload failed for second.txt")
+            Some("1 item(s) failed to sync (first: second.txt)"),
+            "a partial pass still sets last_error, so every surface that reads it reports the \
+             pass as a problem instead of drawing 'up to date' over it (#246)"
         );
         assert_eq!(
             daemon
@@ -6416,7 +6879,17 @@ mod tests {
         let status = daemon.status_response("daemon status");
         assert_eq!(
             status.last_error.as_deref(),
-            Some("upload failed for second.txt")
+            Some("1 item(s) failed to sync (first: second.txt)")
+        );
+        assert_eq!(status.failed_item_count, 1);
+        assert_eq!(
+            status.failed_items,
+            vec![FailedItem {
+                path: PathBuf::from("second.txt"),
+                action: SyncAction::Upload,
+                error: "upload failed for second.txt".to_owned(),
+            }],
+            "the partial-failure state is reported as itself, per item"
         );
         assert_eq!(
             status
@@ -6426,6 +6899,220 @@ mod tests {
             Some(2)
         );
         assert!(status.last_successful_sync_summary.is_none());
+        assert_eq!(
+            status
+                .status_history
+                .last()
+                .map(|entry| (entry.message.as_str(), entry.failed_item_count)),
+            Some(("sync completed with 1 failed item(s)", 1)),
+            "the history entry names the third state rather than either of the other two"
+        );
+    }
+
+    #[test]
+    fn a_failing_action_no_longer_starves_the_actions_ordered_after_it() {
+        // #136. The failing file sorts FIRST, which is exactly the incident shape: a fail-fast
+        // executor attempted 0 of the remaining 2 uploads, every pass, forever.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        for name in ["a-poisoned.txt", "b.txt", "c.txt"] {
+            fs::write(local_root.join(name), name.as_bytes()).expect("local file");
+        }
+        let (client, operations) = RecordingProtonClient::with_failed_uploads(
+            HashMap::new(),
+            BTreeSet::from([PathBuf::from("a-poisoned.txt")]),
+        );
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect_partial(1, "one poisoned item, two good ones");
+
+        let uploaded: Vec<PathBuf> = operations
+            .lock()
+            .expect("operations lock")
+            .iter()
+            .filter_map(|operation| match operation {
+                RecordedOperation::Upload { relative_path, .. } => Some(relative_path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            uploaded,
+            vec![
+                PathBuf::from("a-poisoned.txt"),
+                PathBuf::from("b.txt"),
+                PathBuf::from("c.txt"),
+            ],
+            "every successor of the failing action must still be attempted, in plan order"
+        );
+        for name in ["b.txt", "c.txt"] {
+            assert!(
+                get_record(&daemon.connection, Path::new(name))
+                    .expect("index lookup")
+                    .is_some(),
+                "{name} must be checkpoint-committed despite the earlier failure"
+            );
+        }
+        assert!(
+            get_record(&daemon.connection, Path::new("a-poisoned.txt"))
+                .expect("index lookup")
+                .is_none(),
+            "the failed action itself is never recorded (it re-plans next pass)"
+        );
+        assert_eq!(daemon.last_failed_item_count, 1);
+        assert_eq!(
+            daemon.last_failed_items[0].path,
+            PathBuf::from("a-poisoned.txt")
+        );
+        assert!(
+            daemon.pending_changes.contains(Path::new("a-poisoned.txt")),
+            "the failed path is re-queued for the next pass"
+        );
+    }
+
+    #[test]
+    fn a_systemically_failing_pass_is_abandoned_rather_than_ground_through() {
+        // The breaker: nothing has succeeded and the failures keep coming (an expired session, a
+        // missing CLI), so the remaining actions are doomed round trips rather than per-item
+        // problems. Distinct from #136's poisoned file, which has successes around it.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let doomed = CONSECUTIVE_FAILURE_LIMIT + 5;
+        let mut failing = BTreeSet::new();
+        for index in 0..doomed {
+            let name = format!("file-{index:03}.txt");
+            fs::write(local_root.join(&name), b"x").expect("local file");
+            failing.insert(PathBuf::from(&name));
+        }
+        let (client, operations) =
+            RecordingProtonClient::with_failed_uploads(HashMap::new(), failing);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        let error = daemon
+            .reconcile_blocking()
+            .expect_err("a pass that accomplishes nothing must be abandoned");
+
+        assert!(
+            error.to_string().contains("looks systemic"),
+            "unexpected error: {error}"
+        );
+        let attempts = operations.lock().expect("operations lock").len();
+        assert_eq!(
+            attempts, CONSECUTIVE_FAILURE_LIMIT,
+            "the breaker must stop at the limit rather than attempt all {doomed}"
+        );
+    }
+
+    #[test]
+    fn a_shutdown_stops_the_pass_instead_of_failing_every_remaining_action() {
+        // Shutdown beats failure tolerance: the cancel flag makes every in-flight command fail, so
+        // continuing past those failures would spawn and kill one CLI child per remaining action.
+        struct CancellingClient {
+            cancel: Arc<AtomicBool>,
+            uploads: Arc<Mutex<Vec<PathBuf>>>,
+        }
+        impl ProtonClient for CancellingClient {
+            fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+                Ok(HashMap::new())
+            }
+            fn ensure_directory(&self, _root: &Path, _relative: &Path) -> AppResult<()> {
+                Ok(())
+            }
+            fn upload(&self, _local: &Path, _root: &Path, relative: &Path) -> AppResult<()> {
+                self.uploads
+                    .lock()
+                    .expect("uploads lock")
+                    .push(relative.to_path_buf());
+                // The shutdown lands during this transfer, which is how the real client reports a
+                // cancellation: the command it was running fails.
+                self.cancel.store(true, Ordering::SeqCst);
+                Err(boxed_error(
+                    "proton-drive upload cancelled before completion",
+                ))
+            }
+            fn download(&self, _remote: &Path, _destination: &Path) -> AppResult<()> {
+                Ok(())
+            }
+            fn delete(&self, _remote: &Path) -> AppResult<()> {
+                Ok(())
+            }
+        }
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(local_root.join(name), b"x").expect("local file");
+        }
+        let uploads = Arc::new(Mutex::new(Vec::new()));
+        let mut daemon = Daemon::with_client(
+            test_config(directory.path(), &local_root),
+            CancellingClient {
+                cancel: Arc::new(AtomicBool::new(false)),
+                uploads: Arc::clone(&uploads),
+            },
+        )
+        .expect("daemon");
+        daemon.cancel_flag = Arc::clone(&daemon.proton.cancel);
+
+        let error = daemon
+            .reconcile_blocking()
+            .expect_err("a cancelled pass is a failed pass, not a partial one");
+
+        assert!(
+            error.to_string().contains("cancelled"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            uploads.lock().expect("uploads lock").len(),
+            1,
+            "the pass must stop dead on the cancellation, not attempt the remaining actions"
+        );
+        assert_eq!(
+            daemon.last_failed_item_count, 0,
+            "a cancellation is not the item's failure and is not reported as one"
+        );
+    }
+
+    #[test]
+    fn a_reported_failure_is_bounded_in_both_count_and_message_length() {
+        assert_eq!(truncate_error("short"), "short");
+        let long = "e".repeat(FAILED_ITEM_ERROR_LIMIT * 3);
+        let truncated = truncate_error(&long);
+        assert!(
+            truncated.len() <= FAILED_ITEM_ERROR_LIMIT,
+            "the cap includes the ellipsis, so the documented bound is the real one"
+        );
+        assert!(truncated.ends_with('…'));
+        // A multi-byte char straddling the limit must not panic or split.
+        let multibyte = "é".repeat(FAILED_ITEM_ERROR_LIMIT);
+        let truncated = truncate_error(&multibyte);
+        assert!(truncated.len() <= FAILED_ITEM_ERROR_LIMIT);
+        assert!(truncated.ends_with('…'));
+
+        let mut failures = PassFailures::default();
+        for index in 0..(FAILED_ITEMS_REPORTED + 7) {
+            let action = PlannedAction::new(
+                &PathBuf::from(format!("file-{index}.txt")),
+                SyncAction::Upload,
+                EntityKind::File,
+                None,
+            );
+            failures.record(&action, boxed_error("boom").as_ref());
+        }
+        assert_eq!(failures.items.len(), FAILED_ITEMS_REPORTED);
+        assert_eq!(failures.count, FAILED_ITEMS_REPORTED + 7);
+        assert_eq!(
+            failures.outcome(),
+            PassOutcome::Partial {
+                failed: FAILED_ITEMS_REPORTED + 7
+            }
+        );
     }
 
     #[test]
@@ -6463,7 +7150,9 @@ mod tests {
         };
         let mut daemon = Daemon::with_client(config, client).expect("daemon");
 
-        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
 
         // The three consecutive `docs/` downloads form one run: grouped under their shared
         // parent and chunked to the batch size (2 + 1). The `media/` download is separated
@@ -6558,7 +7247,9 @@ mod tests {
             .expect("directory base record");
         }
 
-        daemon.reconcile_blocking().expect("ongoing reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("ongoing reconcile");
 
         // docs/a.txt and docs/z.txt share a parent but are separated in plan order by
         // docs/sub/x.txt; merging them into one batch would reorder execution relative to
@@ -6580,6 +7271,70 @@ mod tests {
         );
         for path in ["docs/a.txt", "docs/sub/x.txt", "docs/z.txt"] {
             assert!(local_root.join(path).is_file(), "{path} must land");
+        }
+    }
+
+    #[test]
+    fn an_unmakeable_destination_directory_fails_only_its_own_group_of_downloads() {
+        // The batched path's own `ensure_parent_directory` used to be pass-fatal, so the same
+        // local-FS problem behaved differently at `download_batch_size = 1` (where it is the
+        // item's failure) — and a persistent one starved every download ordered after it (#136).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        // A regular file squatting where `docs/` must be: its group's mkdir cannot succeed.
+        fs::write(local_root.join("docs"), b"not a directory").expect("squatter");
+
+        let mut remote_entities = HashMap::new();
+        for name in ["docs", "media"] {
+            remote_entities.insert(
+                PathBuf::from(name),
+                RemoteEntity::Directory(RemoteDirectory {
+                    path: PathBuf::from(name),
+                    id: Some(format!("{name}-id")),
+                    name: name.to_owned(),
+                }),
+            );
+        }
+        for (path, id, hash) in [
+            ("docs/a.txt", "id-a", "ha"),
+            ("docs/b.txt", "id-b", "hb"),
+            ("media/d.txt", "id-d", "hd"),
+        ] {
+            remote_entities.insert(
+                PathBuf::from(path),
+                RemoteEntity::File(remote(path, id, Some(hash))),
+            );
+        }
+        let (client, _operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let config = DaemonConfig {
+            download_batch_size: 2,
+            ..test_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+
+        daemon.reconcile_blocking().expect_partial(
+            2,
+            "both files under the unmakeable directory fail, and only those",
+        );
+
+        assert!(
+            local_root.join("media/d.txt").is_file(),
+            "a later group's download must still land"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("media/d.txt"))
+                .expect("index lookup")
+                .is_some(),
+            "and must be recorded"
+        );
+        for path in ["docs/a.txt", "docs/b.txt"] {
+            assert!(
+                get_record(&daemon.connection, Path::new(path))
+                    .expect("index lookup")
+                    .is_none(),
+                "{path} never landed, so it must not be recorded"
+            );
         }
     }
 
@@ -6621,12 +7376,12 @@ mod tests {
         )
         .expect("daemon");
 
-        let error = daemon
+        daemon
             .reconcile_blocking()
-            .expect_err("a failed file in the batch must fail the pass");
-        assert!(
-            error.to_string().contains("download failed for docs/b.txt"),
-            "unexpected error: {error}"
+            .expect_partial(1, "a failed file in the batch costs only itself");
+        assert_eq!(
+            daemon.last_failed_items[0].path,
+            PathBuf::from("docs/b.txt")
         );
 
         // The chunk's survivor was checkpoint-committed before the pass failed...
@@ -6652,12 +7407,13 @@ mod tests {
                 .is_none(),
             "the failed file must never be recorded"
         );
-        // ...but the pass-level outcomes are still those of a failure: no cursor, no last_sync.
+        // ...but the pass-level outcomes are those of a pass that did not land everything: no
+        // cursor, no last_sync.
         assert!(
             load_event_cursor(&daemon.connection, "vol")
                 .expect("load cursor")
                 .is_none(),
-            "a failed pass must never advance the event cursor, checkpoints notwithstanding"
+            "a partial pass must never advance the event cursor, checkpoints notwithstanding"
         );
         assert!(daemon.last_sync.is_none());
     }
@@ -6699,7 +7455,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("a vanished node must not fail the whole pass");
+            .expect_clean("a vanished node must not fail the whole pass");
 
         assert!(
             operations
@@ -6794,7 +7550,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("a vanished node in a batch must not fail the pass");
+            .expect_clean("a vanished node in a batch must not fail the pass");
 
         assert_eq!(
             *operations.lock().expect("operations lock"),
@@ -6875,7 +7631,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("a vanished conflict revision must not fail the whole pass");
+            .expect_clean("a vanished conflict revision must not fail the whole pass");
 
         assert!(
             !local_root.join("notes.proton-cloud.txt").exists(),
@@ -6940,12 +7696,15 @@ mod tests {
         };
         let mut daemon = Daemon::with_client(config, client).expect("daemon");
 
-        let error = daemon
+        daemon
             .reconcile_blocking()
-            .expect_err("an unrecordable batch item must fail the pass");
+            .expect_partial(1, "an unrecordable batch item fails alone");
         assert!(
-            error.to_string().contains("could not be recorded"),
-            "unexpected error: {error}"
+            daemon.last_failed_items[0]
+                .error
+                .contains("could not be recorded"),
+            "unexpected failure: {:?}",
+            daemon.last_failed_items
         );
         assert!(
             get_record(&daemon.connection, Path::new("docs/a.txt"))
@@ -6986,11 +7745,11 @@ mod tests {
         )
         .expect("base record");
 
-        // Pass 1: the remote delete is withheld pending approval; the pass then fails on the
-        // upload. The pending deletion is still published.
+        // Pass 1: the remote delete is withheld pending approval; the upload then fails as an
+        // item. The pending deletion is still published.
         daemon
             .reconcile_blocking()
-            .expect_err("the failing upload fails the pass");
+            .expect_partial(1, "the failing upload is this pass's one failed item");
         assert_eq!(daemon.pending_deletions.len(), 1);
         let pending = daemon.pending_deletions[0].clone();
         upsert_delete_approval(
@@ -7003,10 +7762,10 @@ mod tests {
         .expect("approve");
 
         // Pass 2: the approved delete executes and checkpoints — its index purge and the
-        // approval consumption commit together — before the later upload fails the pass again.
+        // approval consumption commit together — and the later upload still fails as an item.
         daemon
             .reconcile_blocking()
-            .expect_err("the failing upload still fails the pass");
+            .expect_partial(1, "the failing upload still fails as an item");
         assert!(
             operations
                 .lock()
@@ -7026,7 +7785,7 @@ mod tests {
             crate::index::load_delete_approvals(&daemon.connection)
                 .expect("load approvals")
                 .is_empty(),
-            "the consumed approval must not survive the failed pass"
+            "the consumed approval must not survive the partial pass"
         );
     }
 
@@ -7153,7 +7912,7 @@ mod tests {
             let (client, _) = RecordingProtonClient::new(HashMap::new());
             let mut daemon = Daemon::with_client(config.clone(), client).expect("daemon");
 
-            daemon.reconcile_blocking().expect("reconcile");
+            daemon.reconcile_blocking().expect_clean("reconcile");
 
             let status = daemon.status_response("daemon status");
             assert_eq!(status.status_history.len(), 1);
@@ -7239,7 +7998,7 @@ mod tests {
         let (client, _) = RecordingProtonClient::new(HashMap::new());
         let mut daemon = Daemon::with_client(config, client).expect("daemon");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let metrics = fs::read_to_string(metrics_path).expect("metrics snapshot");
         let metrics: serde_json::Value = serde_json::from_str(&metrics).expect("metrics JSON");
@@ -7275,7 +8034,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let conflict_path = local_root.join("notes.proton-cloud.txt");
         assert_eq!(
@@ -7313,7 +8072,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations
@@ -7351,7 +8110,7 @@ mod tests {
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
 
         let operations_after_first = operations.lock().expect("operations lock").len();
-        daemon.reconcile_blocking().expect("second reconcile");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
         assert_eq!(
             operations.lock().expect("operations lock").len(),
             operations_after_first,
@@ -7377,7 +8136,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("first reconcile");
+        daemon.reconcile_blocking().expect_clean("first reconcile");
 
         let sidecar_path = local_root.join("notes.proton-cloud.txt");
         fs::remove_file(&sidecar_path).expect("resolve by removing the sidecar");
@@ -7387,7 +8146,7 @@ mod tests {
             )
             .expect("handle sidecar remove event");
 
-        daemon.reconcile_blocking().expect("second reconcile");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
 
         assert!(
             operations
@@ -7430,7 +8189,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("first reconcile");
+        daemon.reconcile_blocking().expect_clean("first reconcile");
 
         fs::write(&local_path, b"second local edit").expect("edit the original again");
         daemon
@@ -7440,7 +8199,7 @@ mod tests {
             )
             .expect("handle local edit event");
 
-        daemon.reconcile_blocking().expect("second reconcile");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
 
         assert_eq!(
             fs::read(local_root.join("notes.proton-cloud.txt")).expect("sidecar"),
@@ -7489,7 +8248,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             !target.exists(),
@@ -7517,7 +8276,7 @@ mod tests {
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Conflict);
-        daemon.reconcile_blocking().expect("second reconcile");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
         assert!(
             !target.exists(),
             "a later pass must not write through it either"
@@ -7544,7 +8303,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             fs::read(&sidecar_path).expect("sidecar"),
@@ -7587,7 +8346,7 @@ mod tests {
         )
         .expect("stale directory record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             fs::read(local_root.join("docs")).expect("downloaded file"),
@@ -7606,7 +8365,7 @@ mod tests {
         assert_eq!(record.proton_id.as_deref(), Some("remote-file-id"));
 
         let operations_after_first = operations.lock().expect("operations lock").len();
-        daemon.reconcile_blocking().expect("second reconcile");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
         assert_eq!(
             operations.lock().expect("operations lock").len(),
             operations_after_first,
@@ -7641,7 +8400,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations.lock().expect("operations lock").is_empty(),
@@ -7702,7 +8461,7 @@ mod tests {
         )
         .expect("base record");
 
-        daemon.reconcile_blocking().expect("first reconcile");
+        daemon.reconcile_blocking().expect_clean("first reconcile");
 
         let restored = local_root.join("notes.txt");
         assert_eq!(
@@ -7732,7 +8491,7 @@ mod tests {
             "the first reconcile restores the remote edit with exactly one download"
         );
 
-        daemon.reconcile_blocking().expect("second reconcile");
+        daemon.reconcile_blocking().expect_clean("second reconcile");
 
         assert_eq!(
             downloads(&operations),
@@ -8015,7 +8774,7 @@ mod tests {
                 Event::new(EventKind::Create(CreateKind::File)).add_path(local_path.clone()),
             )
             .expect("handle create event");
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(local_path.exists(), "new local file must not be deleted");
         assert!(
@@ -8080,7 +8839,7 @@ mod tests {
         assert_eq!(queued_record.sha1_hash, Some(base_hash));
         assert_eq!(queued_record.sync_status, SyncStatus::Modified);
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             operations
@@ -8131,7 +8890,7 @@ mod tests {
         // forever.
         daemon.pending_changes.insert(PathBuf::from("stable.txt"));
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
             daemon.pending_changes.is_empty(),
@@ -8174,7 +8933,7 @@ mod tests {
         .expect("base record");
 
         // Pass: local Unchanged vs base, remote Changed → the daemon downloads and commits Synced.
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
         let record = get_record(&daemon.connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
@@ -8246,7 +9005,7 @@ mod tests {
         )
         .expect("b base record");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
         assert!(
             daemon.authored_writes.contains(Path::new("a.txt")),
             "the downloaded file must be recorded as an authored write, so the guard is exercised"
@@ -8313,7 +9072,9 @@ mod tests {
         )
         .expect("base record");
 
-        daemon1.reconcile_blocking().expect("pass 1 reconcile");
+        daemon1
+            .reconcile_blocking()
+            .expect_clean("pass 1 reconcile");
         assert_eq!(
             fs::read(&local_path).expect("local after download"),
             content_v1,
@@ -8348,7 +9109,9 @@ mod tests {
         let mut daemon2 = Daemon::with_client(test_config(directory.path(), &local_root), client2)
             .expect("daemon2");
 
-        daemon2.reconcile_blocking().expect("pass 2 reconcile");
+        daemon2
+            .reconcile_blocking()
+            .expect_clean("pass 2 reconcile");
 
         // The newer remote edit wins: v2 is downloaded, and the stale local copy is never uploaded.
         assert_eq!(
@@ -8425,7 +9188,7 @@ mod tests {
         daemon
             .handle_fs_event(Event::new(EventKind::Remove(RemoveKind::File)).add_path(sidecar_path))
             .expect("handle sidecar remove event");
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         let operations = operations.lock().expect("operations lock");
         assert!(operations.contains(&RecordedOperation::Upload {
@@ -8874,7 +9637,9 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
 
         assert_eq!(daemon.unsyncable.len(), 1, "the skip must be named");
         assert_eq!(
@@ -9145,7 +9910,9 @@ mod tests {
         .expect("daemon");
 
         // First pass: no baseline → bootstrap snapshot, which captures and stores the cursor.
-        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -9160,7 +9927,7 @@ mod tests {
         // Second pass: stored cursor + derivable volume + no changes → idle incremental, no walk.
         daemon
             .reconcile_blocking()
-            .expect("idle incremental reconcile");
+            .expect_clean("idle incremental reconcile");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -9205,7 +9972,9 @@ mod tests {
         )
         .expect("seed record");
 
-        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -9220,7 +9989,7 @@ mod tests {
 
         // Second pass: no cursor → the scope declines → bootstrap again, and this time the
         // pre-snapshot read succeeds, so the cursor it banks predates that walk.
-        daemon.reconcile_blocking().expect("second bootstrap");
+        daemon.reconcile_blocking().expect_clean("second bootstrap");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             2,
@@ -9232,7 +10001,7 @@ mod tests {
         assert_eq!(cursor.last_event_id, "cursor-live");
 
         // Third pass: streaming resumed, so the repeated bootstrapping stops.
-        daemon.reconcile_blocking().expect("idle incremental");
+        daemon.reconcile_blocking().expect_clean("idle incremental");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             2,
@@ -9274,7 +10043,9 @@ mod tests {
         store_event_cursor(&daemon.connection, "vol", "cursor-old", 1).expect("seed cursor");
         // Warm start is off in this fixture, so the first pass bootstraps with a cursor already
         // stored — exactly the shape of an events-fetch fallback on a long-running daemon.
-        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
 
         let cursor = load_event_cursor(&daemon.connection, "vol")
             .expect("load cursor")
@@ -9288,7 +10059,7 @@ mod tests {
 
         // The surviving cursor keeps the next pass incremental: it replays from before the walk
         // (over-replay is idempotent), so a failed capture costs no extra full walk here.
-        daemon.reconcile_blocking().expect("idle incremental");
+        daemon.reconcile_blocking().expect_clean("idle incremental");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -9338,7 +10109,9 @@ mod tests {
             "precondition: the cursor row is unreadable"
         );
 
-        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
 
         let stored: String = daemon
             .connection
@@ -9405,7 +10178,9 @@ mod tests {
         // bootstrap branch so this test drives the ongoing incremental path directly.
         daemon.is_first_reconcile = false;
 
-        daemon.reconcile_blocking().expect("incremental reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental reconcile");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -9447,10 +10222,15 @@ mod tests {
         )]));
         client.failed_uploads = BTreeSet::from([PathBuf::from("new.txt")]);
         let full_walks = Arc::clone(&client.full_walks);
+        // The stream offers a NEW cursor with no changes in it, so the hold below is observable:
+        // without it this pass would persist `cursor-1`.
         let mut daemon = Daemon::with_client_and_event_source(
             event_config(directory.path(), &local_root),
             client,
-            Some(Box::new(FakeEventSource::new("cursor-0"))),
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![one_page("cursor-1", Vec::new())],
+            ))),
         )
         .expect("daemon");
 
@@ -9468,8 +10248,10 @@ mod tests {
         // Make the pass non-idle so it scans + plans the failing upload.
         daemon.pending_changes.insert(PathBuf::from("new.txt"));
 
-        let result = daemon.reconcile_blocking();
-        assert!(result.is_err(), "a failed upload must fail the reconcile");
+        daemon.reconcile_blocking().expect_partial(
+            1,
+            "the failed upload is an item failure, not a pass failure",
+        );
 
         // Neither the index nor the cursor advanced; the events replay next pass.
         assert!(
@@ -9483,13 +10265,168 @@ mod tests {
             .expect("cursor present");
         assert_eq!(
             cursor.last_event_id, "cursor-0",
-            "cursor must NOT advance on failure"
+            "cursor must NOT advance while an item failed"
         );
-        assert_eq!(daemon.incremental_passes_since_full_scan, 0);
+        assert!(
+            daemon.pending_changes.contains(Path::new("new.txt")),
+            "the failed path is re-queued: no remote event describes a failed upload, so the \
+             held cursor alone would let the next pass idle-skip it"
+        );
+        assert_eq!(
+            daemon.incremental_passes_since_full_scan, 1,
+            "a partial pass is still an incremental pass for the periodic-resync counter"
+        );
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             0,
             "the incremental path took no full walk"
+        );
+    }
+
+    #[test]
+    fn a_partial_pass_re_queues_its_failed_paths_so_the_next_event_driven_pass_retries_them() {
+        // #136's starvation, one layer down: with the periodic resync off by default, the ONLY
+        // thing that makes the next event-driven pass look at a failed upload again is the
+        // re-queue. A failed upload produces no remote event, so the held cursor cannot help: an
+        // empty delta plus an empty `pending_changes` takes the idle fast-path, which skips the
+        // local scan entirely.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        fs::write(local_root.join("new.txt"), b"new").expect("new file");
+
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        // Fails once, then clears itself: pass 2's upload succeeds, so the record it writes is
+        // proof that pass 2 planned and executed rather than idle-skipping.
+        let fail_next_upload = Arc::clone(&client.fail_next_upload);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.incremental_passes_since_full_scan = 0;
+        daemon.is_first_reconcile = false;
+        daemon.pending_changes.insert(PathBuf::from("new.txt"));
+
+        fail_next_upload.store(true, Ordering::SeqCst);
+        daemon
+            .reconcile_blocking()
+            .expect_partial(1, "pass 1's upload fails");
+
+        // Pass 2 sees the same empty delta. Nothing else can wake it: no watcher runs in this
+        // test, and the previous pass cleared `pending_changes` before re-queueing.
+        daemon
+            .reconcile_blocking()
+            .expect_clean("pass 2 retries the failed upload from ground truth");
+
+        assert!(
+            get_record(&daemon.connection, Path::new("new.txt"))
+                .expect("get record")
+                .is_some(),
+            "the re-queued path must be re-planned and uploaded by the next event-driven pass"
+        );
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "and it must do so incrementally — no full walk rescued it"
+        );
+        assert!(
+            daemon.pending_changes.is_empty(),
+            "a clean pass clears the queue again"
+        );
+    }
+
+    #[test]
+    fn an_untracked_descendant_of_a_moved_directory_uploads_on_the_next_event_driven_pass() {
+        // #12's other half. The move pass is CLEAN, so the cursor advances and the next pass has
+        // an empty delta; inotify emits nothing for the children of a renamed directory, so the
+        // re-queued destination is the only reason that pass looks at `fresh.txt` at all.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir_all(local_root.join("old-docs")).expect("local old-docs directory");
+        let report = local_root.join("old-docs").join("report.txt");
+        fs::write(&report, b"same content").expect("nested local file");
+        let report_hash = crate::index::compute_sha1(&report).expect("nested file hash");
+        fs::write(local_root.join("old-docs").join("fresh.txt"), b"brand new")
+            .expect("untracked nested local file");
+
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("new-docs"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("new-docs"),
+                id: Some("vol~nd".to_owned()),
+                name: "new-docs".to_owned(),
+            }),
+        )]));
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-1"))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &FileRecord {
+                file_path: PathBuf::from("old-docs"),
+                entity_kind: EntityKind::Directory,
+                file_size: 0,
+                mtime: 1,
+                sha1_hash: None,
+                proton_id: Some("vol~nd".to_owned()),
+                sync_status: SyncStatus::Synced,
+            },
+        )
+        .expect("directory base record");
+        upsert_record(
+            &daemon.connection,
+            &base_record("old-docs/report.txt", Some("vol~nr"), report_hash.as_str()),
+        )
+        .expect("nested file base record");
+
+        // Pass 1 is the startup snapshot: it converges the directory move and captures a cursor.
+        daemon
+            .reconcile_blocking()
+            .expect_clean("the move pass plans nothing for the untracked descendant");
+        assert!(
+            get_record(&daemon.connection, Path::new("new-docs/fresh.txt"))
+                .expect("get record")
+                .is_none(),
+            "the untracked descendant is deliberately left for the next pass"
+        );
+
+        // Pass 2 streams: empty delta, so only the re-queued destination keeps it non-idle.
+        daemon
+            .reconcile_blocking()
+            .expect_clean("the next pass uploads it from its post-move path");
+
+        let record = get_record(&daemon.connection, Path::new("new-docs/fresh.txt"))
+            .expect("get record")
+            .expect("the untracked descendant is finally recorded");
+        assert_eq!(record.entity_kind, EntityKind::File);
+        assert!(
+            get_record(&daemon.connection, Path::new("old-docs/fresh.txt"))
+                .expect("get record")
+                .is_none(),
+            "nothing may ever be recorded at the pre-move path"
+        );
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "only the startup snapshot walked the tree; the second pass stayed incremental"
         );
     }
 
@@ -9545,7 +10482,9 @@ mod tests {
         // bootstrap branch so this test drives the ongoing incremental path directly.
         daemon.is_first_reconcile = false;
 
-        daemon.reconcile_blocking().expect("incremental reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental reconcile");
 
         assert!(
             !local_root.join("secret/x.txt").exists(),
@@ -9604,7 +10543,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("reconcile falls back cleanly");
+            .expect_clean("reconcile falls back cleanly");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -9649,7 +10588,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("reconcile falls back cleanly");
+            .expect_clean("reconcile falls back cleanly");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -9705,7 +10644,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("an incomplete listing falls back cleanly");
+            .expect_clean("an incomplete listing falls back cleanly");
 
         assert_eq!(
             directory_lists.load(Ordering::SeqCst),
@@ -9765,7 +10704,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("forced resync reconcile");
+            .expect_clean("forced resync reconcile");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -9804,7 +10743,9 @@ mod tests {
         // The first pass after boot still full-scans exactly once even with the resync disabled:
         // `first_reconcile` bootstraps (there is no stored cursor/baseline to warm-start from here),
         // then hands off to the event-driven steady state, which stays incremental forever.
-        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -9816,7 +10757,7 @@ mod tests {
         for _ in 0..50 {
             daemon
                 .reconcile_blocking()
-                .expect("idle incremental reconcile");
+                .expect_clean("idle incremental reconcile");
         }
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -9851,7 +10792,7 @@ mod tests {
             Some(Box::new(FakeEventSource::new("cursor-0"))),
         )
         .expect("daemon");
-        daemon.reconcile_blocking().expect("startup snapshot");
+        daemon.reconcile_blocking().expect_clean("startup snapshot");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -9882,7 +10823,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("incremental reconcile after the directory create");
+            .expect_clean("incremental reconcile after the directory create");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -9919,7 +10860,7 @@ mod tests {
         daemon.note_watch_error(&notify::Error::generic("inotify queue overflow"));
         daemon
             .reconcile_blocking()
-            .expect("incremental reconcile after the watcher error");
+            .expect_clean("incremental reconcile after the watcher error");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -10048,7 +10989,9 @@ mod tests {
         // daemon and not the developer's desktop session.
         daemon.event_source_factory = Box::new(|| None);
 
-        daemon.reconcile_blocking().expect("degraded first pass");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("degraded first pass");
         let session_cause = daemon.event_scope_declined.clone();
         let reported = session_cause
             .as_deref()
@@ -10060,13 +11003,15 @@ mod tests {
         );
 
         // Same cause next pass → the recorded reason is unchanged, so it is logged once.
-        daemon.reconcile_blocking().expect("degraded second pass");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("degraded second pass");
         assert_eq!(daemon.event_scope_declined, session_cause);
 
         // Session recovers: the session reporter goes quiet and the *next* cause — the scope, which
         // no degraded pass could anchor a cursor for — is reported in its own words, not masked.
         daemon.event_source = Some(Box::new(FakeEventSource::new("cursor-0")));
-        daemon.reconcile_blocking().expect("recovered pass");
+        daemon.reconcile_blocking().expect_clean("recovered pass");
         let scope_cause = daemon.event_scope_declined.clone();
         assert!(
             scope_cause
@@ -10077,7 +11022,7 @@ mod tests {
 
         // That pass anchored a cursor, so the scope now resolves: the record clears, and a later
         // regression of either cause reports again instead of being swallowed by a stale latch.
-        daemon.reconcile_blocking().expect("incremental pass");
+        daemon.reconcile_blocking().expect_clean("incremental pass");
         assert_eq!(daemon.event_scope_declined, None);
     }
 
@@ -10152,7 +11097,9 @@ mod tests {
         daemon.incremental_passes_since_full_scan = 0;
         daemon.is_first_reconcile = false;
 
-        daemon.reconcile_blocking().expect("first incremental pass");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("first incremental pass");
         assert_eq!(
             directory_lists.load(Ordering::SeqCst),
             1,
@@ -10161,7 +11108,7 @@ mod tests {
 
         daemon
             .reconcile_blocking()
-            .expect("second incremental pass");
+            .expect_clean("second incremental pass");
         assert_eq!(
             directory_lists.load(Ordering::SeqCst),
             2,
@@ -10211,7 +11158,9 @@ mod tests {
             daemon.should_try_incremental(&load_index(&daemon.connection).expect("load index")),
             "a stored cursor alone must be enough to engage the event-driven gate"
         );
-        daemon.reconcile_blocking().expect("incremental reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental reconcile");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -10318,7 +11267,9 @@ mod tests {
         )
         .expect("seed fresh cursor");
 
-        daemon.reconcile_blocking().expect("warm-start reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("warm-start reconcile");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -10360,7 +11311,9 @@ mod tests {
         // updated_at = 1 (1970): far past the 7-day default age gate.
         store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed stale cursor");
 
-        daemon.reconcile_blocking().expect("startup reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("startup reconcile");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -10398,15 +11351,14 @@ mod tests {
         )
         .expect("seed fresh cursor");
 
-        // Pass 1: the warm start scans, plans the upload, and the upload fails → the pass errors.
+        // Pass 1: the warm start scans, plans the upload, and the upload fails → a partial pass.
         fail_next_upload.store(true, Ordering::SeqCst);
-        assert!(
-            daemon.reconcile_blocking().is_err(),
-            "the first pass must fail when its upload fails"
-        );
+        daemon
+            .reconcile_blocking()
+            .expect_partial(1, "the first pass's upload fails");
         assert!(
             daemon.is_first_reconcile,
-            "a failed first pass must stay a first pass"
+            "a first pass that did not land everything must stay a first pass"
         );
         let record = get_record(&daemon.connection, Path::new("keep.txt"))
             .expect("get record")
@@ -10414,12 +11366,12 @@ mod tests {
         assert_eq!(
             record.sha1_hash,
             Some(old),
-            "the failed pass committed nothing; the record keeps the old digest"
+            "the failed action committed nothing; the record keeps the old digest"
         );
 
         // Pass 2: still a first pass → warm-starts again, forcing the local scan; the upload now
         // succeeds and the edit lands. It never bootstrapped and never idle-skipped.
-        daemon.reconcile_blocking().expect("retry reconcile");
+        daemon.reconcile_blocking().expect_clean("retry reconcile");
         assert!(
             !daemon.is_first_reconcile,
             "a successful pass finally clears the first-pass flag"
@@ -10458,7 +11410,7 @@ mod tests {
         daemon.warm_starts_since_full_walk = 3;
         store_warm_start_count(&daemon.connection, 3).expect("seed count");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -10491,7 +11443,7 @@ mod tests {
         )
         .expect("seed fresh cursor");
 
-        daemon.reconcile_blocking().expect("reconcile");
+        daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
@@ -10539,7 +11491,9 @@ mod tests {
         .expect("seed fresh cursor");
 
         // First pass warm-starts (no walk).
-        daemon.reconcile_blocking().expect("warm-start first pass");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("warm-start first pass");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             0,
@@ -10548,7 +11502,9 @@ mod tests {
 
         // A resync request → the next pass full-walks.
         daemon.shared.force_full_walk.store(true, Ordering::SeqCst);
-        daemon.reconcile_blocking().expect("forced resync pass");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("forced resync pass");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -10556,7 +11512,9 @@ mod tests {
         );
 
         // The latch was consumed: the following pass is incremental again.
-        daemon.reconcile_blocking().expect("back to steady state");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("back to steady state");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -10740,7 +11698,9 @@ mod tests {
         // Phase A — bootstrap ("get truth"): the startup floor forces exactly one full-tree
         // snapshot, which downloads + records the seed (base now carries a proton_id → the volume is
         // derivable), captures the replay cursor, and resets the resync counter.
-        daemon.reconcile_blocking().expect("bootstrap reconcile");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("bootstrap reconcile");
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
             1,
@@ -10782,7 +11742,9 @@ mod tests {
         let dir_lists_before = directory_lists.load(Ordering::SeqCst);
         let mut picked_up_on_pass = None;
         for pass in 1..=10 {
-            daemon.reconcile_blocking().expect("incremental reconcile");
+            daemon
+                .reconcile_blocking()
+                .expect_clean("incremental reconcile");
             if local_probe.exists() {
                 picked_up_on_pass = Some(pass);
                 break;

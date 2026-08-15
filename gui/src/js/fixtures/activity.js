@@ -108,10 +108,11 @@ function fileConfig(overrides = {}) {
 /**
  * One `StatusHistoryEntry`, as `record_status_history` writes it.
  *
- * `message` is the daemon's, and it only ever says `sync completed` or `sync failed` — the row's
- * `Finished cleanly` / `Couldn't reach Proton Drive` are the deck's words for those two outcomes,
- * chosen by S5 from `last_error` being absent or present. A fixture that put the drawn sentence in
- * `message` would be feeding the screen its own answer.
+ * `message` is the daemon's: `sync completed`, `sync failed`, or (since #136) `sync completed with
+ * N failed item(s)` — the row's `Finished cleanly` / `Couldn't reach Proton Drive` are the deck's
+ * words, chosen by S5 from `last_error` being absent or present. A partial pass sets `last_error`
+ * too, so it draws as a failed row until S5 gains a state for it. A fixture that put the drawn
+ * sentence in `message` would be feeding the screen its own answer.
  */
 function pass(epochSecs, { error = null, planned = null, done = null } = {}) {
   return {

@@ -1,6 +1,7 @@
 # ADR 0003 — Batched downloads + per-action checkpoint commits
 
-- **Status:** Accepted
+- **Status:** Accepted (amended in part by #136 — a failed action no longer ends the pass; see the
+  amendment note below)
 - **Date:** 2026-07-31
 - **Relations:** amends ADR 0002 in part (approval consumption moves from the end-of-pass
   transaction into the executing delete's checkpoint transaction)
@@ -78,3 +79,20 @@ two compounding pathologies:
   (`reconcile_checkpoints_*` in `src/daemon.rs`).
 - Conflict-sidecar downloads never batch (their destination basename differs from the remote's
   by design), and non-downloadable files never reach the executor as `Download` actions.
+
+## Amendment 2026-08-15 (#136) — a failed action no longer ends the pass
+
+This ADR left execution fail-fast: a failed action (or a failed file in a chunk) aborted the pass
+after its checkpoints, so "unexecuted actions" above meant *everything ordered after the failure*.
+That was the remaining half of the same incident this ADR cites — one poisoned file starved every
+action behind it, on every pass, indefinitely.
+
+The executor now rolls back the failed action's queued mutations, records it as a `FailedItem`, and
+continues with its successors; the pass returns `PassOutcome::Partial { failed }`, a third outcome
+enumerated at every branch on pass outcome. Nothing above is weakened: an index write still never
+precedes its side effect, the failed action is still never recorded (now structurally, by
+truncating to the pre-action mutation length), and the event cursor still advances only in the
+final commit of a pass that landed everything — item failures join withheld deletes and vanished
+nodes as a cause to hold it. Failed paths are re-queued into `pending_changes` so the next
+event-driven pass cannot idle-skip them. A shutdown and a wholly-unproductive pass (20 consecutive
+failures with no success) stay pass-fatal. See the partial-pass invariant in `CLAUDE.md`.
