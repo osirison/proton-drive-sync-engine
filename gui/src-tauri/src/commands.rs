@@ -1433,6 +1433,45 @@ pub async fn skip_rule_usage(
     .map_err(|error| format!("skip-rule scan failed: {error}"))?
 }
 
+/// Prices a **candidate** folder before the pair is configured (G25, #240): `9a Folders` shows what
+/// is under each side so a wrong folder is caught by its size rather than by its name.
+///
+/// `side` selects which walk runs, because the two are not the same operation and only one of them
+/// answers both numbers:
+///
+/// - `"local"` — a metadata walk; `files` and `bytes` are both real.
+/// - `"remote"` — a bounded listing walk; `files` is real (a lower bound once `truncated`), and
+///   **`bytes` is always `null`**, because a remote listing exposes no usable size. Render that as
+///   unknown, never as `0 bytes`. [`gui_core::folder_probe`] documents why `totalStorageSize`
+///   cannot stand in for it.
+///
+/// Takes the candidate `path` outright rather than reading the configured roots — this runs during
+/// onboarding, before either root exists.
+///
+/// Async: the local side walks a tree and the remote side spawns subprocesses, and either on the
+/// GTK main loop would freeze the window.
+#[tauri::command]
+pub async fn probe_folder(
+    app: tauri::AppHandle,
+    side: String,
+    path: String,
+) -> Result<gui_core::folder_probe::FolderProbe, String> {
+    let proton_cli = {
+        let paths = app.state::<Mutex<RuntimePaths>>();
+        let cli = paths.lock().unwrap().proton_cli.clone();
+        cli
+    };
+    tauri::async_runtime::spawn_blocking(move || match side.as_str() {
+        "local" => gui_core::folder_probe::probe_local(std::path::Path::new(&path)),
+        "remote" => {
+            gui_core::folder_probe::probe_remote_via_cli(&proton_cli, std::path::Path::new(&path))
+        }
+        other => Err(format!("unknown side: {other}")),
+    })
+    .await
+    .map_err(|error| format!("folder probe failed: {error}"))?
+}
+
 /// The state files the daemon keeps out of its own scan, so a relocated index inside the sync root
 /// is not reported as user data some rule is hiding.
 ///
