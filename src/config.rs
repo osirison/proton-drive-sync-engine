@@ -518,19 +518,30 @@ pub fn resolve_log_filter(
 /// target filter — see [`resolve_log_filter`].
 const LOG_LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "trace"];
 
-/// Syntax check plus the bare-word rule. `target=level` (and comma-joined lists of them) go through
-/// `EnvFilter` untouched, so `proton_drive_sync_engine::transfer=warn` still works.
+/// Syntax check plus the bare-word rule. `target=level` directives go through `EnvFilter`
+/// untouched, so `proton_drive_sync_engine::transfer=warn` still works.
+///
+/// The bare-word rule is applied **per comma-separated segment**, not to the string as a whole.
+/// `EnvFilter` reads a bare word it does not recognise as a *target* directive at `trace`, so
+/// `inf0` silences the daemon while parsing cleanly — the typo this validation exists to catch.
+/// A whole-string check misses it the moment it shares a list with a valid directive
+/// (`inf0,proton_drive_sync_engine=debug`), which is the shape a user reaches for precisely when
+/// they are hand-editing levels.
 fn validate_log_directive(directive: &str, source: &str) -> AppResult<()> {
     tracing_subscriber::EnvFilter::try_new(directive)
         .map_err(|error| boxed_error(format!("invalid {source} `{directive}`: {error}")))?;
-    if !directive.contains('=')
-        && !directive.contains(',')
-        && !LOG_LEVELS.contains(&directive.to_ascii_lowercase().as_str())
-    {
-        return Err(boxed_error(format!(
-            "invalid {source} `{directive}`: expected one of {LOG_LEVELS:?}, or an explicit \
-             `target=level` directive such as `proton_drive_sync_engine=debug`"
-        )));
+    for segment in directive.split(',') {
+        let segment = segment.trim();
+        if segment.is_empty() || segment.contains('=') {
+            continue;
+        }
+        if !LOG_LEVELS.contains(&segment.to_ascii_lowercase().as_str()) {
+            return Err(boxed_error(format!(
+                "invalid {source} `{directive}`: `{segment}` is not one of {LOG_LEVELS:?}, and a \
+                 bare word that is not a level is read as a target to log at `trace`. Use an \
+                 explicit `target=level` directive such as `proton_drive_sync_engine=debug`"
+            )));
+        }
     }
     Ok(())
 }
@@ -1700,6 +1711,35 @@ local = true
             "warn",
             "an unusable RUST_LOG must not stop the daemon starting"
         );
+    }
+
+    #[test]
+    fn a_typo_hides_inside_a_directive_list_too() {
+        // The bare-word rule is per segment. Sharing a list with a valid `target=level` is exactly
+        // how a hand-edited level ends up looking legitimate: `EnvFilter` accepts the whole string,
+        // and `inf0` still becomes a target logged at `trace` while the daemon's own output stops.
+        for directive in [
+            "inf0,proton_drive_sync_engine=debug",
+            "proton_drive_sync_engine=debug,inf0",
+            "info,warn,inf0",
+        ] {
+            let error = resolve_log_filter(None, None, Some(directive))
+                .expect_err("a bare non-level in any segment must be refused")
+                .to_string();
+            assert!(
+                error.contains("inf0"),
+                "the error must name the offending segment, not just the whole value: {error}"
+            );
+        }
+        // Real multi-directive values still pass, including a bare level leading the list.
+        for directive in [
+            "info,proton_drive_sync_engine=debug",
+            "proton_drive_sync_engine::transfer=warn,proton_drive_sync_engine=info",
+            "warn",
+        ] {
+            resolve_log_filter(None, None, Some(directive))
+                .unwrap_or_else(|error| panic!("`{directive}` must stay valid: {error}"));
+        }
     }
 
     #[test]
