@@ -715,21 +715,44 @@ fn describe_pass_work(pass: &PassRecord) -> String {
     parts.join(", ")
 }
 
+/// Why a reply carries no `file_history`. The daemon's `message` is the generic reply label, so a
+/// `last_error` dropped here leaves the one debuggable fact on the floor (a read failure, a bad
+/// window) and the user with "this daemon does not do that", which is a different claim.
+fn missing_history_message(message: &str, last_error: Option<&str>) -> String {
+    match last_error {
+        Some(error) => format!("{message}: {error}"),
+        None => "This daemon does not report per-file activity.".to_owned(),
+    }
+}
+
+/// What an empty page means. `FileHistory::total` is a `COUNT(*)` over the same predicate, but
+/// `events` additionally drops rows whose action token this build cannot decode
+/// (`index::read_file_event` → `None`) — which is exactly what a **newer** daemon's rows look like
+/// to an older client. So an empty page over a non-zero count is not an empty window, and reporting
+/// "nothing has moved" would be a confident false all-clear: the shape that once rendered
+/// "Everything is up to date" over a failed pass (#246).
+fn empty_activity_message(total: usize) -> String {
+    if total > 0 {
+        format!(
+            "{total} event(s) in that window, none readable by this client — it is older than the \
+             daemon that wrote them. Upgrade proton-sync to read them."
+        )
+    } else {
+        "Nothing has moved in that window.".to_owned()
+    }
+}
+
 /// `proton-sync activity [PATH]` — the per-file feed, newest first.
 fn print_activity(response: &ControlResponse, style: &Style) {
     let Some(history) = &response.file_history else {
         println!(
             "{}",
-            if response.last_error.is_some() {
-                response.message.clone()
-            } else {
-                "This daemon does not report per-file activity.".to_owned()
-            }
+            missing_history_message(&response.message, response.last_error.as_deref())
         );
         return;
     };
     if history.events.is_empty() {
-        println!("Nothing has moved in that window.");
+        println!("{}", empty_activity_message(history.total));
         return;
     }
     for event in &history.events {
@@ -1468,5 +1491,42 @@ mod tests {
         // "first seen just now" is the one answer this display must never invent, since the whole
         // point of the field (#225) is that the age was previously re-stamped to now every pass.
         assert_eq!(relative_age(now + 3600), None);
+    }
+
+    #[test]
+    fn an_unreadable_page_is_never_reported_as_an_empty_window() {
+        // Rows this build cannot decode are dropped from `events` but still counted by `total`
+        // (`file_events` pages through `read_file_event`, counts with `COUNT(*)`). An older client
+        // against a newer daemon therefore sees `events: [], total: n` — and "Nothing has moved"
+        // would be a false all-clear about the user's data, not a cosmetic wording slip.
+        assert_eq!(
+            empty_activity_message(0),
+            "Nothing has moved in that window."
+        );
+        for total in [1, 42] {
+            let rendered = empty_activity_message(total);
+            assert!(
+                rendered.contains(&total.to_string()) && rendered.contains("Upgrade"),
+                "an unreadable page must say how many and what to do: {rendered}"
+            );
+            assert!(
+                !rendered.contains("Nothing has moved"),
+                "must not claim an empty window: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_history_reports_the_daemon_s_reason() {
+        // `message` is the generic reply label; the reason lives in `last_error`. Printing only the
+        // label turns "I failed, here is why" into "I do not support that", a different claim.
+        assert_eq!(
+            missing_history_message("daemon status", Some("database is locked")),
+            "daemon status: database is locked"
+        );
+        assert_eq!(
+            missing_history_message("daemon status", None),
+            "This daemon does not report per-file activity."
+        );
     }
 }
