@@ -3004,9 +3004,19 @@ impl<C: ProtonClient> Daemon<C> {
             }
         }
         // The gate's output IS the complete withheld set for this pass, so this replace is also what
-        // clears the table on the first pass that withholds nothing. Display-only, hence warn rather
-        // than fail: a pass must not die because an age could not be filed.
-        if let Err(error) = replace_withheld_deletions(&self.connection, &gate.withheld) {
+        // clears the table on the first pass that withholds nothing. Skipped when nothing moved —
+        // the steady state of a queue nobody has answered is the SAME set every ~30s, and an
+        // unchanged set is a DELETE+INSERT+fsync saying nothing (`record_unsyncable` guards the
+        // identical shape). Display-only either way, hence warn rather than fail: a pass must not
+        // die because an age could not be filed.
+        let unchanged = gate.withheld.len() == previous.len()
+            && gate
+                .withheld
+                .iter()
+                .all(|item| previous.get(&(item.path.clone(), item.direction)) == Some(item));
+        if !unchanged
+            && let Err(error) = replace_withheld_deletions(&self.connection, &gate.withheld)
+        {
             warn!(%error, "failed to persist the withheld-deletion ages");
         }
         Ok(gate)

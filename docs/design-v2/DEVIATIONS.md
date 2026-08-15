@@ -2357,10 +2357,13 @@ normative for tokens under §1.3 rule 1, so the token stays and the frame's valu
 sees either way — no light window is mapped (§58b) — which is exactly why it is written down before
 S10 propagates the table.
 
-**`DELETIONS.compact.permanent` still hardcodes the aggregate.** `1,204 photos gone from this
-computer, permanently` is a fixed string in the deck and drawn in `4a Compact`, so the copy gate is
-happy and the panel reproduces the frame. It is the same #208 number, and the day the tray panel
-renders a live queue (S8) it needs the same treatment the card got here.
+**`DELETIONS.compact.permanent` still hardcodes the aggregate, and nothing live reads it.**
+`1,204 photos gone from this computer, permanently` is a fixed string in the deck and drawn in
+`4a Compact`, so the copy gate is happy and the panel reproduces the frame. It is the same number the
+card now states for real (#208) — but `trayView`'s `PANEL_STATE` has no `deletions` form, so the live
+panel never builds that body and the string is reachable only from the fixture. The day the tray
+panel renders a live queue it needs what the card and the banner got here: `subtree_files`, and the
+same null-propagation rule when one row cannot be counted.
 
 | screen | frame          | drawn                                     | shipped                                   | gap      |
 | ------ | -------------- | ----------------------------------------- | ----------------------------------------- | -------- |

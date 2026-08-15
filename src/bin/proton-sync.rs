@@ -931,6 +931,22 @@ impl Spinner {
     }
 }
 
+/// How long a withheld deletion has been waiting, or `None` when the daemon did not say (an older
+/// daemon sends `0`, and a clock skewed backwards would otherwise read as a negative age).
+fn relative_age(first_seen_epoch_secs: u64) -> Option<String> {
+    if first_seen_epoch_secs == 0 {
+        return None;
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let seconds = now.saturating_sub(first_seen_epoch_secs);
+    Some(match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    })
+}
+
 fn print_pending(pending: &[PendingDeletion]) {
     if pending.is_empty() {
         println!("No deletions are pending approval.");
@@ -949,8 +965,25 @@ fn print_pending(pending: &[PendingDeletion]) {
             ),
         };
         println!("  {label}  {}  ({effect})", item.path.display());
+        // `first_seen_epoch_secs`, NEVER `detected_epoch_secs`: the second is the age of the pass
+        // that re-derived this item and refreshes every ~30s (#225). A zero means an older daemon
+        // cannot say, so the line is omitted rather than aged from 1970. The subtree line is what a
+        // folder would actually cost (#208); a file's own size is not repeated here.
+        let waiting = relative_age(item.first_seen_epoch_secs);
+        let subtree = item
+            .subtree_files
+            .map(|files| format!("{files} file(s), {} bytes", item.subtree_bytes.unwrap_or(0)));
+        match (waiting, subtree) {
+            (Some(waiting), Some(subtree)) => {
+                println!("                 waiting {waiting} · holds {subtree}")
+            }
+            (Some(waiting), None) => println!("                 waiting {waiting}"),
+            (None, Some(subtree)) => println!("                 holds {subtree}"),
+            (None, None) => {}
+        }
     }
     println!("Approve with: proton-sync approve <path>   (or --all)");
+    println!("Keep it instead: proton-sync keep <path>   (or --all)");
 }
 
 #[cfg(test)]
