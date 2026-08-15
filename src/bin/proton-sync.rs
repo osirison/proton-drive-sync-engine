@@ -594,7 +594,10 @@ fn print_history(response: &ControlResponse, style: &Style) {
             ),
             "failed" => (
                 style.red("✗"),
-                pass.error.clone().unwrap_or_else(|| "failed".to_owned()),
+                pass.error
+                    .as_deref()
+                    .map(one_line)
+                    .unwrap_or_else(|| "failed".to_owned()),
             ),
             "interrupted" => (
                 style.yellow("!"),
@@ -604,6 +607,15 @@ fn print_history(response: &ControlResponse, style: &Style) {
         };
         println!("{when} {took} {kind}  {mark} {detail}");
     }
+}
+
+/// Collapses an error onto one line for an inline clause.
+///
+/// A daemon error carries the CLI child's stderr verbatim, newlines included, and these two
+/// renderings put it mid-sentence and mid-row — where a raw newline breaks the sentence in half
+/// and strands its full stop on a line of its own.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// What the last full sweep found, as a clause for `Last full sweep 2 days ago — …`.
@@ -623,7 +635,7 @@ fn describe_sweep(sweep: &PassRecord) -> String {
             sweep.changed, sweep.failed
         ),
         "failed" => match &sweep.error {
-            Some(error) => format!("it failed: {error}"),
+            Some(error) => format!("it failed: {}", one_line(error)),
             None => "it failed".to_owned(),
         },
         "interrupted" => "it did not finish".to_owned(),
@@ -1220,8 +1232,21 @@ mod tests {
             failed,
             bytes_uploaded: 0,
             bytes_downloaded: 0,
-            error: Some("proton-drive: request failed".to_owned()),
+            error: Some("proton-drive: request\n  failed".to_owned()),
         }
+    }
+
+    #[test]
+    fn an_error_with_newlines_stays_on_one_line() {
+        // A daemon error carries the CLI child's stderr verbatim; inline it would otherwise break
+        // the sentence in half and leave the full stop alone on the next line.
+        assert_eq!(one_line("boom\n"), "boom");
+        assert_eq!(
+            one_line("list failed:\n  boom\n\n  twice"),
+            "list failed: boom twice"
+        );
+        assert_eq!(one_line("already tidy"), "already tidy");
+        assert!(!describe_sweep(&sweep("failed", 0, 0)).contains('\n'));
     }
 
     #[test]
@@ -1240,7 +1265,8 @@ mod tests {
         );
         assert_eq!(
             describe_sweep(&sweep("failed", 0, 0)),
-            "it failed: proton-drive: request failed"
+            "it failed: proton-drive: request failed",
+            "the embedded newline is collapsed, not printed"
         );
         assert_eq!(
             describe_sweep(&sweep("interrupted", 0, 0)),
