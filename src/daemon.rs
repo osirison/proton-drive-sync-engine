@@ -1698,7 +1698,6 @@ impl<C: ProtonClient> Daemon<C> {
             })
             .map(|item| (item.path.clone(), item.clone()))
             .collect();
-        drop(rederived);
         for item in skips {
             // `or_insert`, so a path already listed keeps the epoch it was FIRST seen at.
             merged.entry(item.path.clone()).or_insert(item);
