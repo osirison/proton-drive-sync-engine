@@ -331,6 +331,43 @@ pub struct DownloadRequest {
     pub expected_sha1: Option<String>,
 }
 
+/// The CLI reported a missing node for an operation that covered this request — the TOCTOU of
+/// issue #31: the node was in the listing this pass planned against, but is gone (trashed or
+/// deleted by another client, or eventual-consistency lag) by the time its transfer ran. Typed so
+/// the executor classifies it by downcast instead of re-matching stderr text: stderr is inspected
+/// exactly once, here, where the CLI's output is in hand. Carries the message it replaces so
+/// nothing is lost from the log.
+///
+/// **Not proof that `remote_path` itself is gone.** `download` covers one file and is exact, but
+/// `download_many` runs one invocation over a whole batch and the CLI's note names no request, so
+/// there every unstaged/unsalvaged file carries this type. Read it as "skip and replan", not as a
+/// confirmed remote delete — nothing may be purged on it.
+#[derive(Debug)]
+pub struct NodeNotFound {
+    pub remote_path: PathBuf,
+    pub details: String,
+}
+
+impl std::fmt::Display for NodeNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl std::error::Error for NodeNotFound {}
+
+/// True when `error` is a [`NodeNotFound`] — i.e. the CLI blamed a missing node rather than the
+/// transfer itself, so this action is **skippable and replanned**, not failed. See
+/// [`NodeNotFound`] for why that is weaker than "this request's node is gone" on the batched
+/// path. Callers must not match message text: only an error constructed at a site that saw the
+/// CLI's stderr classifies here. Every such site holds an `Output`, so the killing exits of
+/// `run_once` (timeout, cancellation, wait failure, an unreapable child — #275) have no stderr to
+/// read and can never reach this: they stay pass-fatal, which is the only skippability decision
+/// in the client and the only one the executor honours.
+pub fn is_node_not_found_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    error.downcast_ref::<NodeNotFound>().is_some()
+}
+
 /// Receiver for the concrete client's live progress callbacks (see
 /// [`ProtonClient::install_progress_sink`]). The daemon publishes these into its status
 /// snapshot so `proton-sync status` / the GUI can show what a long pass is doing. Callbacks
@@ -641,11 +678,20 @@ impl ProtonClient for ProtonDriveClient {
             1,
         )?;
         if !output.status.success() {
-            return Err(boxed_error(format!(
+            let message = format!(
                 "proton-drive download failed for {}: {}",
                 remote_path.display(),
                 String::from_utf8_lossy(&output.stderr)
-            )));
+            );
+            // Classified here, where stderr is in hand: the node is gone, so the executor skips
+            // this one action instead of failing the whole pass (#31).
+            if is_node_not_found(&output) {
+                return Err(Box::new(NodeNotFound {
+                    remote_path: remote_path.to_path_buf(),
+                    details: message,
+                }));
+            }
+            return Err(boxed_error(message));
         }
 
         // The CLI exited 0, so if the scratch directory does not now hold exactly the downloaded
@@ -1002,7 +1048,12 @@ impl ProtonDriveClient {
                     requests.len(),
                     trimmed_stderr(&output)
                 );
-                salvage_staged_downloads(&scratch_dir, requests, &failure)
+                salvage_staged_downloads(
+                    &scratch_dir,
+                    requests,
+                    &failure,
+                    is_node_not_found(&output),
+                )
             }
             Err(error) => {
                 let failure = format!(
@@ -1020,7 +1071,9 @@ impl ProtonDriveClient {
                         .map(|_| Err(boxed_error(failure.clone())))
                         .collect();
                 }
-                salvage_staged_downloads(&scratch_dir, requests, &failure)
+                // No `Output` here (spawn error, timeout, cancellation), so there is no stderr to
+                // classify: a transport failure is never a vanished node.
+                salvage_staged_downloads(&scratch_dir, requests, &failure, false)
             }
         }
     }
@@ -1570,14 +1623,28 @@ fn promote_staged_download(
 ) -> AppResult<()> {
     let staged = staged_download_path(scratch_dir, request)?;
     if !is_regular_file(&staged) {
-        return Err(boxed_error(format!(
+        let message = format!(
             "batch download reported success, but {} was not staged in {} — the CLI may have \
              skipped it or named it unexpectedly; proton-drive stdout: {}; stderr: {}",
             request.remote_path.display(),
             scratch_dir.display(),
             summarize_command_output(&output.stdout),
             summarize_command_output(&output.stderr),
-        )));
+        );
+        // Exit 0, a node-not-found note somewhere in stderr, and this file missing from staging.
+        // The check reads the whole invocation's stderr and the note names no request, so this is
+        // the BATCH's signal, not this file's: a sibling the CLI skipped for another reason (a
+        // Proton-native document) is classified alongside the vanished node. Skipping is still
+        // the safer read — nothing is recorded, the cursor is held, the action replans — and the
+        // misread lasts only while a vanished node keeps the note in stderr. Without the note the
+        // miss is unexplained and stays fatal (#31).
+        if is_node_not_found(output) {
+            return Err(Box::new(NodeNotFound {
+                remote_path: request.remote_path.clone(),
+                details: format!("{message}; the note names no file, so it cannot be attributed"),
+            }));
+        }
+        return Err(boxed_error(message));
     }
     move_staged_download(&staged, request)
 }
@@ -1587,22 +1654,42 @@ fn promote_staged_download(
 /// error late in a large batch does not discard the transfers that already finished. A partial
 /// file can never match its digest, and without a claimed digest there is nothing safe to
 /// verify against, so every other request fails with the batch error.
+///
+/// `node_not_found` says the batch's stderr reported a missing node. One CLI invocation covers
+/// many files and names no single one, so the signal cannot be attributed: every unsalvaged
+/// request is typed [`NodeNotFound`], which makes the executor skip them (recording nothing,
+/// holding the event cursor) instead of failing the pass. Their downloads simply replan next
+/// pass, when the vanished node is no longer listed.
 fn salvage_staged_downloads(
     scratch_dir: &Path,
     requests: &[DownloadRequest],
     failure: &str,
+    node_not_found: bool,
 ) -> Vec<AppResult<()>> {
+    let unsalvaged = |request: &DownloadRequest| -> Box<dyn std::error::Error + Send + Sync> {
+        if node_not_found {
+            Box::new(NodeNotFound {
+                remote_path: request.remote_path.clone(),
+                details: format!(
+                    "{failure}; one invocation covers the whole batch, so the missing node cannot \
+                     be attributed to a single file"
+                ),
+            })
+        } else {
+            boxed_error(failure.to_owned())
+        }
+    };
     requests
         .iter()
         .map(|request| {
             let Some(expected_sha1) = request.expected_sha1.as_deref() else {
-                return Err(boxed_error(failure.to_owned()));
+                return Err(unsalvaged(request));
             };
             let staged = staged_download_path(scratch_dir, request)?;
             let verified = is_regular_file(&staged)
                 && compute_sha1(&staged).is_ok_and(|hash| hash == expected_sha1);
             if !verified {
-                return Err(boxed_error(failure.to_owned()));
+                return Err(unsalvaged(request));
             }
             move_staged_download(&staged, request)
         })
@@ -3396,6 +3483,175 @@ exit 0
         assert!(
             !destination.exists(),
             "no file should appear at the destination when the download produced nothing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_classifies_a_node_not_found_exit_as_a_vanished_node() {
+        // #31: trashed between the listing and the transfer. Typed so the executor skips this
+        // one action instead of failing the pass.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+echo "Error: Node not found" >&2
+exit 1
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+
+        let error = client
+            .download(
+                Path::new("/my-files/demo/gone.txt"),
+                &local_folder.join("gone.txt"),
+            )
+            .expect_err("a missing node must still be an error");
+
+        assert!(
+            is_node_not_found_error(error.as_ref()),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains("Node not found"),
+            "the classified error must keep the CLI's own message: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_leaves_an_ordinary_failure_unclassified() {
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+echo "Error: network dropped" >&2
+exit 1
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+
+        let error = client
+            .download(
+                Path::new("/my-files/demo/here.txt"),
+                &local_folder.join("here.txt"),
+            )
+            .expect_err("a failing CLI must be an error");
+
+        assert!(
+            !is_node_not_found_error(error.as_ref()),
+            "only a missing node may be skippable; everything else fails the pass: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_many_classifies_every_unstaged_file_when_stderr_reports_a_missing_node() {
+        // Exit 0, one file staged, one announced as missing, one unstaged for a reason the CLI
+        // never explains (a Proton-native document). The check reads the whole invocation's
+        // stderr, so BOTH unstaged files classify — the note names no request and attribution is
+        // impossible. Pinned deliberately: skipping is the safer read of an unattributable
+        // signal, and it costs at most a replan.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+for a; do last="$a"; done
+printf 'alpha content\n' > "$last/alpha.txt"
+echo "beta.txt: Node not found" >&2
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(2), 1),
+        );
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        let requests = vec![
+            batch_request(&local_folder, "alpha.txt", None),
+            batch_request(&local_folder, "beta.txt", None),
+            batch_request(&local_folder, "gamma.txt", None),
+        ];
+
+        let results = client.download_many(&requests);
+
+        assert!(results[0].is_ok(), "the staged file succeeds: {results:?}");
+        for index in [1, 2] {
+            let error = results[index]
+                .as_ref()
+                .expect_err("an unstaged file must fail");
+            assert!(
+                is_node_not_found_error(error.as_ref()),
+                "unexpected error: {error}"
+            );
+            assert!(
+                error.to_string().contains("cannot be attributed"),
+                "the message must admit the note names no file: {error}"
+            );
+        }
+        assert!(
+            local_folder.join("alpha.txt").is_file(),
+            "the staged sibling still lands at its destination"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_batch_reporting_a_missing_node_classifies_its_unsalvaged_files() {
+        // One invocation covers the whole batch and names no single file, so every unsalvaged
+        // request is classified — the executor skips them (recording nothing, holding the
+        // cursor) rather than failing the pass. Digest-verified files still salvage as `Ok`.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+for a; do last="$a"; done
+printf 'salvaged content\n' > "$last/alpha.txt"
+echo "Error: Node not found" >&2
+exit 1
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(2), 1),
+        );
+        let local_folder = directory.path().join("demo");
+        fs::create_dir_all(&local_folder).expect("create local demo folder");
+        let alpha_sha1 = sha1_of_content(directory.path(), "salvaged content\n");
+        let requests = vec![
+            batch_request(&local_folder, "alpha.txt", Some(&alpha_sha1)),
+            batch_request(&local_folder, "beta.txt", None),
+        ];
+
+        let results = client.download_many(&requests);
+
+        assert!(
+            results[0].is_ok(),
+            "a digest-verified file still salvages: {results:?}"
+        );
+        let error = results[1].as_ref().expect_err("the unsalvaged file fails");
+        assert!(
+            is_node_not_found_error(error.as_ref()),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains("cannot be attributed"),
+            "the message must admit the attribution is unknown: {error}"
         );
     }
 

@@ -14,7 +14,7 @@ use crate::ipc::{
 };
 use crate::proton::{
     CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient, RemoteEntity,
-    RemoteListingStatus,
+    RemoteListingStatus, is_node_not_found_error,
 };
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
@@ -1665,7 +1665,7 @@ impl<C: ProtonClient> Daemon<C> {
         // keeps every pending deletion re-derived from ground truth each pass, so an approval
         // applies promptly and the queue never goes stale. The cursor resumes advancing the first
         // pass with nothing withheld.
-        let cursor_update = if withheld_paths.is_empty() {
+        let mut cursor_update = if withheld_paths.is_empty() {
             cursor_update
         } else {
             None
@@ -1706,6 +1706,10 @@ impl<C: ProtonClient> Daemon<C> {
         let action_total = plan.len() as u64;
         let mut pending_approval_consumptions: Vec<(PathBuf, DeleteDirection)> = Vec::new();
 
+        // Nodes skipped because the remote said they are gone (#31). Counted, never recorded:
+        // see the cursor hold after the loop.
+        let mut vanished_nodes = 0usize;
+
         let mut action_number = 0usize;
         while action_number < plan.len() {
             let action = &plan[action_number];
@@ -1719,7 +1723,7 @@ impl<C: ProtonClient> Daemon<C> {
                     .take_while(|action| action.action == SyncAction::Download)
                     .count();
                 if run_length > 1 {
-                    self.execute_download_run(
+                    vanished_nodes += self.execute_download_run(
                         &plan[action_number..action_number + run_length],
                         action_number,
                         action_total,
@@ -1867,7 +1871,10 @@ impl<C: ProtonClient> Daemon<C> {
                         }
                         let result = self.proton.download(&remote_path, &destination);
                         finish_transfer_spinner(spinner);
-                        result?;
+                        if !skip_if_node_vanished(result, &action.path)? {
+                            vanished_nodes += 1;
+                            break 'action;
+                        }
                         // The write we just landed will echo back through the watcher; record it so
                         // `handle_fs_event` does not flip this fresh `Synced` record to `Modified`
                         // (issue #49). Downloads always target a regular file.
@@ -2094,7 +2101,16 @@ impl<C: ProtonClient> Daemon<C> {
                                 safe_local_path(&self.config.local_root, conflict_path)
                         {
                             ensure_parent_directory(&destination)?;
-                            self.proton.download(&remote_path, &destination)?;
+                            let result = self.proton.download(&remote_path, &destination);
+                            // Skipping the sidecar means skipping the `Conflict` record below
+                            // too: a conflict with no sidecar has no exit and is invisible to the
+                            // GUI's conflicts list (#46). Next pass the node is no longer listed,
+                            // so the planner reaches `(Changed, Missing)` and copies the local
+                            // file into the sidecar instead.
+                            if !skip_if_node_vanished(result, &action.path)? {
+                                vanished_nodes += 1;
+                                break 'action;
+                            }
                         }
                         if let Some(local) = local_files.get(&action.path) {
                             let record = FileRecord::from_local(
@@ -2123,7 +2139,14 @@ impl<C: ProtonClient> Daemon<C> {
                                     safe_local_path(&self.config.local_root, conflict_path)
                             {
                                 ensure_parent_directory(&destination)?;
-                                self.proton.download(&remote_path, &destination)?;
+                                let result = self.proton.download(&remote_path, &destination);
+                                // Same whole-action skip as the `Conflict` arm: without its
+                                // sidecar the type clash has no exit, so the directory record is
+                                // not written either and the pass re-plans from ground truth.
+                                if !skip_if_node_vanished(result, &action.path)? {
+                                    vanished_nodes += 1;
+                                    break 'action;
+                                }
                                 let local_state =
                                     local_file_state(&self.config.local_root, &destination)?;
                                 let sidecar_record = FileRecord::from_local(
@@ -2254,6 +2277,22 @@ impl<C: ProtonClient> Daemon<C> {
             action_number += 1;
         }
 
+        // A node the remote reported gone mid-pass is a remote change this pass did NOT confirm:
+        // "not found" can equally be a transient listing error or a permissions change, so the
+        // skip records nothing. Hold the cursor for exactly the reason a withheld delete does —
+        // an advanced cursor would drop the skipped node's originating event from future deltas,
+        // and `reconstruct_remote` would then plan against a remote map that still shows it (or
+        // no longer explains it). Held, the next pass re-derives it from ground truth, which also
+        // keeps that pass non-idle.
+        if vanished_nodes > 0 {
+            warn!(
+                skipped = vanished_nodes,
+                "skipped node(s) that vanished remotely mid-pass; holding the event cursor so the \
+                 next pass re-derives them from ground truth"
+            );
+            cursor_update = None;
+        }
+
         self.shared.begin_activity(new_activity(PHASE_COMMITTING));
         let transaction = self.connection.transaction()?;
         // Whatever accumulated since the last checkpoint (trailing index-only mutations, plus any
@@ -2301,7 +2340,8 @@ impl<C: ProtonClient> Daemon<C> {
     /// is split into chunks of at most `download_batch_size`. Every chunk is
     /// checkpoint-committed as soon as it lands, so a failure — or a daemon shutdown — never
     /// discards transfers that already completed; the first failed file aborts the pass after
-    /// its chunk's survivors are committed.
+    /// its chunk's survivors are committed. Returns how many files were skipped because their
+    /// remote node has vanished (#31) — those neither fail the pass nor get recorded.
     #[allow(clippy::too_many_arguments)]
     fn execute_download_run(
         &mut self,
@@ -2314,7 +2354,7 @@ impl<C: ProtonClient> Daemon<C> {
         interactive_progress: bool,
         index_mutations: &mut Vec<IndexMutation>,
         pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
-    ) -> AppResult<()> {
+    ) -> AppResult<usize> {
         let mut groups: Vec<(PathBuf, Vec<PreparedDownload<'_>>)> = Vec::new();
         for (offset, action) in run.iter().enumerate() {
             let remote_id = action.remote_id.as_deref().ok_or_else(|| {
@@ -2370,12 +2410,13 @@ impl<C: ProtonClient> Daemon<C> {
             }
         }
         let batch_size = self.config.download_batch_size.max(1);
+        let mut vanished_nodes = 0usize;
         for (parent, members) in &groups {
             if let Some(first) = members.first() {
                 ensure_parent_directory(&first.request.destination)?;
             }
             for chunk in members.chunks(batch_size) {
-                self.execute_download_chunk(
+                vanished_nodes += self.execute_download_chunk(
                     parent,
                     chunk,
                     action_total,
@@ -2387,12 +2428,14 @@ impl<C: ProtonClient> Daemon<C> {
                 )?;
             }
         }
-        Ok(())
+        Ok(vanished_nodes)
     }
 
     /// Executes one chunk of prepared downloads via a single [`ProtonClient::download_many`]
     /// call, records every landed file, checkpoint-commits, and only then fails the pass if any
-    /// file in the chunk failed — completed transfers in a failing chunk stay durable.
+    /// file in the chunk failed — completed transfers in a failing chunk stay durable. A file
+    /// whose remote node has vanished (#31) is not a failure: it is skipped (nothing recorded)
+    /// and counted into the returned tally, so one trashed node cannot cost the chunk's others.
     #[allow(clippy::too_many_arguments)]
     fn execute_download_chunk(
         &mut self,
@@ -2404,7 +2447,7 @@ impl<C: ProtonClient> Daemon<C> {
         interactive_progress: bool,
         index_mutations: &mut Vec<IndexMutation>,
         pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
-    ) -> AppResult<()> {
+    ) -> AppResult<usize> {
         let display_parent = if parent.as_os_str().is_empty() {
             Path::new(".")
         } else {
@@ -2464,6 +2507,7 @@ impl<C: ProtonClient> Daemon<C> {
         finish_transfer_spinner(spinner);
 
         let mut first_failure: Option<(PathBuf, String)> = None;
+        let mut vanished_nodes = 0usize;
         let record_item_failure =
             |first_failure: &mut Option<(PathBuf, String)>, path: &Path, error: String| {
                 warn!(path = %path.display(), error = %error, "batched download failed for file");
@@ -2503,6 +2547,16 @@ impl<C: ProtonClient> Daemon<C> {
                         ),
                     }
                 }
+                // The node is gone since the listing (#31): skip this file alone — no record, no
+                // failure — so the chunk's other files still land and the pass continues.
+                Err(error) if is_node_not_found_error(error.as_ref()) => {
+                    warn!(
+                        path = %prepared.action.path.display(),
+                        %error,
+                        "skipping batched download: the remote node is gone since the listing"
+                    );
+                    vanished_nodes += 1;
+                }
                 Err(error) => record_item_failure(
                     &mut first_failure,
                     &prepared.action.path,
@@ -2518,7 +2572,7 @@ impl<C: ProtonClient> Daemon<C> {
             pending_approval_consumptions,
         )?;
         match first_failure {
-            None => Ok(()),
+            None => Ok(vanished_nodes),
             Some((path, error)) => Err(boxed_error(format!(
                 "download failed for {}: {error}",
                 path.display()
@@ -2976,6 +3030,25 @@ fn action_performs_side_effects(action: &SyncAction) -> bool {
         action,
         SyncAction::AutoLink | SyncAction::Purge | SyncAction::SkipUnsupported
     )
+}
+
+/// Classifies a finished single-file download. `Ok(false)` is the TOCTOU of issue #31: the node
+/// was in the listing this plan was built from but is gone now (trashed by another client, or
+/// listing lag). The caller then skips the action **whole** — no side effect, no index mutation —
+/// and the next pass re-derives it from ground truth. Every other failure still fails the pass.
+fn skip_if_node_vanished(result: AppResult<()>, path: &Path) -> AppResult<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if is_node_not_found_error(error.as_ref()) => {
+            warn!(
+                path = %path.display(),
+                %error,
+                "skipping download: the remote node is gone since the listing"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Durably commits everything accumulated since the previous checkpoint — the incremental half
@@ -3621,7 +3694,7 @@ mod tests {
     use crate::events::{RemoteChangeKind, VolumeEventPage};
     use crate::index::EntityKind;
     use crate::index::get_record;
-    use crate::proton::{RemoteDirectory, RemoteFile};
+    use crate::proton::{NodeNotFound, RemoteDirectory, RemoteFile};
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
     use sha1::{Digest, Sha1};
     use std::collections::HashMap;
@@ -3692,6 +3765,10 @@ mod tests {
         /// Absolute remote paths for which `download_many` reports `Ok` WITHOUT writing the
         /// destination file — models a landed file vanishing before the daemon can stat it.
         unstaged_batch_downloads: BTreeSet<PathBuf>,
+        /// Absolute remote paths whose download fails with a typed [`NodeNotFound`] — models a
+        /// node trashed between the listing and the transfer (#31). Honoured by both the
+        /// single-file and the batched path.
+        vanished_downloads: BTreeSet<PathBuf>,
     }
 
     impl RecordingProtonClient {
@@ -3708,6 +3785,7 @@ mod tests {
                     failed_uploads: BTreeSet::new(),
                     failed_batch_downloads: BTreeSet::new(),
                     unstaged_batch_downloads: BTreeSet::new(),
+                    vanished_downloads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -3727,6 +3805,7 @@ mod tests {
                     failed_uploads: BTreeSet::new(),
                     failed_batch_downloads: BTreeSet::new(),
                     unstaged_batch_downloads: BTreeSet::new(),
+                    vanished_downloads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -3746,6 +3825,7 @@ mod tests {
                     failed_uploads,
                     failed_batch_downloads: BTreeSet::new(),
                     unstaged_batch_downloads: BTreeSet::new(),
+                    vanished_downloads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -3771,6 +3851,7 @@ mod tests {
                     failed_uploads: BTreeSet::new(),
                     failed_batch_downloads: BTreeSet::new(),
                     unstaged_batch_downloads: BTreeSet::new(),
+                    vanished_downloads: BTreeSet::new(),
                 },
                 operations,
             )
@@ -3820,6 +3901,21 @@ mod tests {
         }
 
         fn download(&self, remote_path: &Path, destination: &Path) -> AppResult<()> {
+            if self.vanished_downloads.contains(remote_path) {
+                self.operations.lock().expect("operations lock").push(
+                    RecordedOperation::Download {
+                        remote_path: remote_path.to_path_buf(),
+                        destination: destination.to_path_buf(),
+                    },
+                );
+                return Err(Box::new(NodeNotFound {
+                    remote_path: remote_path.to_path_buf(),
+                    details: format!(
+                        "proton-drive download failed for {}: Node not found",
+                        remote_path.display()
+                    ),
+                }));
+            }
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -3851,6 +3947,16 @@ mod tests {
             requests
                 .iter()
                 .map(|request| {
+                    if self.vanished_downloads.contains(&request.remote_path) {
+                        return Err(Box::new(NodeNotFound {
+                            remote_path: request.remote_path.clone(),
+                            details: format!(
+                                "proton-drive download failed for {}: Node not found",
+                                request.remote_path.display()
+                            ),
+                        })
+                            as Box<dyn std::error::Error + Send + Sync>);
+                    }
                     if self.failed_batch_downloads.contains(&request.remote_path) {
                         return Err(boxed_error(format!(
                             "download failed for {}",
@@ -6365,6 +6471,248 @@ mod tests {
             "a failed pass must never advance the event cursor, checkpoints notwithstanding"
         );
         assert!(daemon.last_sync.is_none());
+    }
+
+    #[test]
+    fn a_vanished_node_skips_its_download_and_the_rest_of_the_pass_still_runs() {
+        // Issue #31: the node was in the listing this pass planned against, but another client
+        // trashed it before the transfer ran. Only that action is skipped; every action ordered
+        // after it still executes and commits, and the vanished node is NOT recorded.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("z.txt"), b"local only").expect("local file");
+
+        let mut remote_entities = HashMap::new();
+        // `a.txt` sorts first, so the download of `b.txt` and the upload of `z.txt` are both
+        // ordered AFTER the vanished node.
+        remote_entities.insert(
+            PathBuf::from("a.txt"),
+            RemoteEntity::File(remote("a.txt", "vol~na", Some("ha"))),
+        );
+        remote_entities.insert(
+            PathBuf::from("b.txt"),
+            RemoteEntity::File(remote("b.txt", "vol~nb", Some("hb"))),
+        );
+        let (mut client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        client.vanished_downloads = BTreeSet::from([PathBuf::from("/Drive/RemoteFolder/a.txt")]);
+        let config = DaemonConfig {
+            // 1 disables batching, so this drives the single-file `Download` arm.
+            download_batch_size: 1,
+            ..event_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-1"))),
+        )
+        .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect("a vanished node must not fail the whole pass");
+
+        assert!(
+            operations
+                .lock()
+                .expect("operations lock")
+                .iter()
+                .any(|operation| matches!(
+                    operation,
+                    RecordedOperation::Download { remote_path, .. }
+                        if remote_path == Path::new("/Drive/RemoteFolder/a.txt")
+                )),
+            "the vanished node's download was still attempted"
+        );
+        assert!(
+            !local_root.join("a.txt").exists(),
+            "nothing may be written for the vanished node"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("a.txt"))
+                .expect("vanished index lookup")
+                .is_none(),
+            "a skipped node must never be recorded as if it had synced"
+        );
+        assert!(
+            local_root.join("b.txt").is_file()
+                && get_record(&daemon.connection, Path::new("b.txt"))
+                    .expect("survivor index lookup")
+                    .is_some(),
+            "the download ordered after the vanished node still ran and committed"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("z.txt"))
+                .expect("upload index lookup")
+                .is_some(),
+            "the upload ordered after the vanished node still ran and committed"
+        );
+        // The disappearance is unconfirmed (it may equally be a transient listing error), so the
+        // cursor is held exactly as it is for a withheld delete: next pass re-derives from
+        // ground truth.
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("load cursor")
+                .is_none(),
+            "a pass that skipped a vanished node must not advance the event cursor"
+        );
+        assert!(
+            daemon.last_sync.is_some(),
+            "everything executable executed, so the pass succeeded"
+        );
+    }
+
+    #[test]
+    fn a_vanished_node_in_a_batch_does_not_fail_the_rest_of_its_chunk() {
+        // Issue #31, batched path: one trashed node among 3 in a single `download_many` chunk
+        // must not cost the other 2 — they land, are checkpoint-committed, and the pass survives.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("docs"),
+                id: Some("vol~nd".to_owned()),
+                name: "docs".to_owned(),
+            }),
+        );
+        for (path, id, hash) in [
+            ("docs/a.txt", "vol~na", "ha"),
+            ("docs/b.txt", "vol~nb", "hb"),
+            ("docs/c.txt", "vol~nc", "hc"),
+        ] {
+            remote_entities.insert(
+                PathBuf::from(path),
+                RemoteEntity::File(remote(path, id, Some(hash))),
+            );
+        }
+        let (mut client, operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        client.vanished_downloads =
+            BTreeSet::from([PathBuf::from("/Drive/RemoteFolder/docs/b.txt")]);
+        let config = DaemonConfig {
+            download_batch_size: 3,
+            ..event_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-1"))),
+        )
+        .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect("a vanished node in a batch must not fail the pass");
+
+        assert_eq!(
+            *operations.lock().expect("operations lock"),
+            vec![RecordedOperation::DownloadBatch {
+                remote_paths: vec![
+                    PathBuf::from("/Drive/RemoteFolder/docs/a.txt"),
+                    PathBuf::from("/Drive/RemoteFolder/docs/b.txt"),
+                    PathBuf::from("/Drive/RemoteFolder/docs/c.txt"),
+                ],
+            }],
+            "the whole chunk is still issued as one invocation"
+        );
+        for path in ["docs/a.txt", "docs/c.txt"] {
+            assert!(
+                local_root.join(path).is_file(),
+                "the chunk's survivor {path} must still land"
+            );
+            assert!(
+                get_record(&daemon.connection, Path::new(path))
+                    .expect("survivor index lookup")
+                    .is_some(),
+                "the chunk's survivor {path} must be checkpoint-committed"
+            );
+        }
+        assert!(
+            !local_root.join("docs/b.txt").exists(),
+            "nothing may be written for the vanished node"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("docs/b.txt"))
+                .expect("vanished index lookup")
+                .is_none(),
+            "a skipped node must never be recorded as if it had synced"
+        );
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("load cursor")
+                .is_none(),
+            "a pass that skipped a vanished node must not advance the event cursor"
+        );
+        assert!(daemon.last_sync.is_some(), "the pass succeeded");
+    }
+
+    #[test]
+    fn a_vanished_conflict_sidecar_skips_the_whole_action_including_its_record() {
+        // Issue #31 at the OTHER download site: the conflicting remote revision is trashed before
+        // the sidecar download runs. The `Conflict` record must be skipped along with the
+        // download — recording a conflict whose sidecar was never written leaves it with no exit
+        // and invisible to the GUI's disk-walking conflicts list (#46). Next pass the node is no
+        // longer listed, so the planner reaches `(Changed, Missing)` and copies the local file in.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("notes.txt"), b"local changed").expect("local file");
+        // Sorts after `notes.txt`, so its upload is ordered after the skipped conflict.
+        fs::write(local_root.join("z.txt"), b"local only").expect("local file");
+
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("notes.txt"),
+            RemoteEntity::File(remote("notes.txt", "vol~n1", Some("remote-changed"))),
+        );
+        let (mut client, _operations) =
+            RecordingProtonClient::with_remote_entities(remote_entities);
+        client.vanished_downloads =
+            BTreeSet::from([PathBuf::from("/Drive/RemoteFolder/notes.txt")]);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-1"))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("notes.txt", Some("vol~n1"), "base-hash"),
+        )
+        .expect("base record");
+
+        daemon
+            .reconcile_blocking()
+            .expect("a vanished conflict revision must not fail the whole pass");
+
+        assert!(
+            !local_root.join("notes.proton-cloud.txt").exists(),
+            "no sidecar may be written for the vanished revision"
+        );
+        let record = get_record(&daemon.connection, Path::new("notes.txt"))
+            .expect("index lookup")
+            .expect("the base record is untouched, not removed");
+        assert_eq!(
+            record.sync_status,
+            SyncStatus::Synced,
+            "a conflict with no sidecar has no exit, so the record is not written either"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("z.txt"))
+                .expect("upload index lookup")
+                .is_some(),
+            "the upload ordered after the skipped conflict still ran and committed"
+        );
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("load cursor")
+                .is_none(),
+            "a pass that skipped a vanished node must not advance the event cursor"
+        );
+        assert!(daemon.last_sync.is_some(), "the pass succeeded");
     }
 
     #[test]
