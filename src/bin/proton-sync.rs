@@ -77,12 +77,28 @@ enum Commands {
         /// Approve every currently-pending deletion.
         #[arg(long)]
         all: bool,
+        /// Which deletion at PATH to authorize when the daemon has *planned* it but not yet
+        /// withheld it (nothing is pending yet, e.g. straight after a dry run). `local` deletes
+        /// the copy on this computer, `remote` the copy on Proton Drive. Ignored when PATH is
+        /// already pending — that item's own direction wins.
+        #[arg(long, value_parser = ["local", "remote"])]
+        direction: Option<String>,
     },
     /// Revoke a prior approval before it has applied.
     Deny {
         /// Relative path of the approval to revoke.
         path: Option<PathBuf>,
         /// Revoke approval for every currently-pending deletion.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Refuse a withheld deletion and put the two sides back in step: the surviving copy is sent
+    /// back to the side it was deleted from on the next sync, and the item leaves the queue for
+    /// good (unlike `deny`, which only revokes an approval and leaves it waiting).
+    Keep {
+        /// Relative path of the pending deletion to keep (as shown by `pending`).
+        path: Option<PathBuf>,
+        /// Keep every currently-pending deletion.
         #[arg(long)]
         all: bool,
     },
@@ -188,7 +204,7 @@ async fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Commands::Approve { .. } | Commands::Deny { .. } => {
+        Commands::Approve { .. } | Commands::Deny { .. } | Commands::Keep { .. } => {
             if cli.json {
                 print_pretty_json(&response);
             } else {
@@ -221,10 +237,11 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
             (ControlCommand::ResetIndex, None)
         }
         Commands::Stop => (ControlCommand::Shutdown, None),
-        Commands::Approve { path, all } => {
+        Commands::Approve { path, all, .. } => {
             (ControlCommand::Approve, approval_selector(path, *all)?)
         }
         Commands::Deny { path, all } => (ControlCommand::Deny, approval_selector(path, *all)?),
+        Commands::Keep { path, all } => (ControlCommand::Keep, approval_selector(path, *all)?),
     };
     // A `<PATH>` selector is always a literal path on the wire: `proton-sync approve all`
     // targets a pending deletion literally named `all` instead of silently becoming the
@@ -233,16 +250,34 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         command,
         Commands::Approve {
             path: Some(_),
-            all: false
+            all: false,
+            ..
         } | Commands::Deny {
+            path: Some(_),
+            all: false
+        } | Commands::Keep {
             path: Some(_),
             all: false
         }
     );
+    // Only `approve` carries one, and only its pre-approval branch reads it (#227). Parsed here
+    // rather than passed as a string so an unknown word is a CLI error, not a silent no-op.
+    let direction = match command {
+        Commands::Approve {
+            direction: Some(value),
+            ..
+        } => Some(
+            value
+                .parse::<DeleteDirection>()
+                .map_err(|error| error.to_string())?,
+        ),
+        _ => None,
+    };
     Ok(ControlRequest {
         command: control_command,
         argument,
         literal_path,
+        direction,
     })
 }
 
@@ -784,6 +819,7 @@ async fn watch_syncnow(
             command: ControlCommand::Status,
             argument: None,
             literal_path: false,
+            direction: None,
         };
         match request_with_timeout(socket_path, request).await {
             Ok(status) => {
@@ -917,6 +953,24 @@ impl Spinner {
     }
 }
 
+/// How long a withheld deletion has been waiting, or `None` when the age cannot be stated: the
+/// daemon did not say (an older daemon sends `0`), or the stamp is in the future. The latter is a
+/// skewed clock, and `saturating_sub` would render it `0s` — asserting the item was first seen just
+/// now, which is the one answer a stale-age display must never give.
+fn relative_age(first_seen_epoch_secs: u64) -> Option<String> {
+    if first_seen_epoch_secs == 0 {
+        return None;
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let seconds = now.checked_sub(first_seen_epoch_secs)?;
+    Some(match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    })
+}
+
 fn print_pending(pending: &[PendingDeletion]) {
     if pending.is_empty() {
         println!("No deletions are pending approval.");
@@ -935,8 +989,31 @@ fn print_pending(pending: &[PendingDeletion]) {
             ),
         };
         println!("  {label}  {}  ({effect})", item.path.display());
+        // `first_seen_epoch_secs`, NEVER `detected_epoch_secs`: the second is the age of the pass
+        // that re-derived this item and refreshes every ~30s (#225). A zero means an older daemon
+        // cannot say, so the line is omitted rather than aged from 1970. The subtree line is what a
+        // folder would actually cost (#208); a file's own size is not repeated here.
+        let waiting = relative_age(item.first_seen_epoch_secs);
+        let subtree = item.subtree_files.map(|files| {
+            match item.subtree_bytes {
+                // `human_bytes`, the same formatter the activity line uses — a raw byte count is
+                // the one number on this line nobody reads. A missing total is dropped rather than
+                // printed as `0 B`, which is a real answer for an empty folder.
+                Some(bytes) => format!("{files} file(s), {}", human_bytes(bytes)),
+                None => format!("{files} file(s)"),
+            }
+        });
+        match (waiting, subtree) {
+            (Some(waiting), Some(subtree)) => {
+                println!("                 waiting {waiting} · holds {subtree}")
+            }
+            (Some(waiting), None) => println!("                 waiting {waiting}"),
+            (None, Some(subtree)) => println!("                 holds {subtree}"),
+            (None, None) => {}
+        }
     }
     println!("Approve with: proton-sync approve <path>   (or --all)");
+    println!("Keep it instead: proton-sync keep <path>   (or --all)");
 }
 
 #[cfg(test)]
@@ -1078,5 +1155,29 @@ mod tests {
         assert_eq!(human_bytes(2048), "2.0 KiB");
         assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
         assert_eq!(human_bytes(1_500_000_000), "1.4 GiB");
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock is after the epoch")
+            .as_secs()
+    }
+
+    #[test]
+    fn relative_age_scales_and_refuses_what_it_cannot_state() {
+        let now = now_secs();
+        assert_eq!(relative_age(now - 5).as_deref(), Some("5s"));
+        assert_eq!(relative_age(now - 600).as_deref(), Some("10m"));
+        assert_eq!(relative_age(now - 7200).as_deref(), Some("2h"));
+        assert_eq!(relative_age(now - 3 * 86_400).as_deref(), Some("3d"));
+
+        // An older daemon omits the field, which deserializes to 0.
+        assert_eq!(relative_age(0), None);
+
+        // A stamp in the future is a skewed clock. `saturating_sub` would render it "0s" —
+        // "first seen just now" is the one answer this display must never invent, since the whole
+        // point of the field (#225) is that the age was previously re-stamped to now every pass.
+        assert_eq!(relative_age(now + 3600), None);
     }
 }

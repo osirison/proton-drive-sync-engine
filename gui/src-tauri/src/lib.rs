@@ -42,6 +42,7 @@ pub fn run() {
             commands::resync,
             commands::approve,
             commands::deny,
+            commands::keep,
             commands::list_pending_deletions,
             commands::read_config,
             commands::write_config,

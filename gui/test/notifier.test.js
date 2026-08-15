@@ -39,6 +39,27 @@ const view = (over = {}) => ({
 const tick = (over = {}, state = { ...emptyState(), sawUnsynced: true, said: { firstSync: "first" } }) =>
   decide({ state, view: view(over), policy: over.policy ?? "only_when_needed", nowMs: NOW_MS });
 
+test("the deletion event carries what the subtree holds, and null the moment one cannot be counted", () => {
+  // #208. A folder contributes its `subtree_files`, a file itself, and an uncounted folder makes
+  // the whole total null: `4 files` about a queue whose uncounted folder holds a thousand is worse
+  // than the noun fallback the banner keeps for exactly that case.
+  const counted = tick({
+    response: {
+      pending_deletions: [
+        deletion({ subtree_files: 1204 }),
+        deletion({ path: "a.txt", entity_kind: "file", fingerprint: "b" }),
+      ],
+    },
+  });
+  assert.equal(counted.event.files, 1205);
+  const uncounted = tick({
+    response: {
+      pending_deletions: [deletion({ subtree_files: 1204 }), deletion({ path: "b", fingerprint: "c" })],
+    },
+  });
+  assert.equal(uncounted.event.files, null);
+});
+
 test("a permanent deletion interrupts; a recoverable one does not", () => {
   // The whole design in one assertion: `direction: local` removes the file from disk with no trash,
   // and `remote` puts Proton's copy in Proton's Trash. Only the first can cost you anything.

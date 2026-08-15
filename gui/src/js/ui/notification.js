@@ -71,13 +71,18 @@ const BUILDERS = {
    * and it is the one banner whose count is a number of files rather than of decisions. The body
    * names the first path; naming all of them would be the list `Review` opens.
    */
-  deletion: ({ paths, entity = null }) => ({
+  deletion: ({ paths, entity = null, files = null }) => ({
     kind: "deletion",
     icon: { state: "needsDot", tone: "destructive" },
-    // `entity` is the queue's own `entity_kind` where every item agrees on one — a folder deletion
-    // saying "1 file" would be wrong about the thing it is asking you to keep. Null where they
-    // differ, which falls back to the deck's `file`/`files`.
-    title: NOTIFY.deletionTitle(paths.length, entity ? plural(paths.length, entity, `${entity}s`) : null),
+    // FILES FIRST, which is what the frame counts (#208): one queued row can be a folder holding a
+    // thousand of them, so the queue's length is the size of the DECISION and not of the loss.
+    // `entity` is the fallback for a queue that cannot be counted — the queue's own `entity_kind`
+    // where every item agrees on one, because a folder deletion saying "1 file" would be wrong
+    // about the thing it is asking you to keep. Null in both, and the deck says `file`/`files`.
+    title:
+      files == null
+        ? NOTIFY.deletionTitle(paths.length, entity ? plural(paths.length, entity, `${entity}s`) : null)
+        : NOTIFY.deletionTitle(files),
     body: [{ mono: paths[0] }, { text: NOTIFY.deletionBodyAfter }],
     actions: safeActions([primary("keep", NOTIFY.deletionKeep), secondary("review", NOTIFY.deletionReview)]),
   }),

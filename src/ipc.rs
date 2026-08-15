@@ -34,6 +34,15 @@ pub enum ControlCommand {
     Approve,
     /// Revoke a prior approval (before it has applied). Same `argument` selector as `Approve`.
     Deny,
+    /// **Refuse** a withheld deletion and put the two sides back in step: purge the baseline
+    /// `file_index` record for the target (and its whole subtree), so the surviving side stops
+    /// looking like a deletion and is adopted back onto the other side by the bootstrap arm — an
+    /// upload for `direction: local`, a download for `direction: remote` (#224). Same `argument`
+    /// selector as `Approve`, and like it, only a *currently pending* deletion can be named.
+    ///
+    /// Distinct from [`Self::Deny`], which revokes an approval and leaves the deletion withheld and
+    /// re-derived for ever. Wire value `"keep"`; an older daemon rejects it as an unknown command.
+    Keep,
     /// Ask the daemon to exit gracefully (same clean path as SIGTERM). Lets a UI restart the
     /// daemon regardless of how it was launched (systemd unit or direct spawn).
     Shutdown,
@@ -53,6 +62,15 @@ pub struct ControlRequest {
     /// `"all"` interpretation.
     #[serde(default)]
     pub literal_path: bool,
+    /// Which deletion at `argument` an `Approve` authorizes when **nothing pending matches it** —
+    /// the pre-pass approval the Plan screen's typed-`DELETE` gate needs (#227). A plan can name a
+    /// deletion before any pass has withheld it, and a path alone does not say which of the two
+    /// deletions at it is meant, so an approval with no direction authorizes nothing (the #298 rule:
+    /// an ambiguous selector authorizes nothing). Ignored when the selector *does* match a pending
+    /// item — that item's own direction is the authority — and ignored entirely by every other
+    /// command. `#[serde(default)]` keeps both directions of the wire compatible.
+    #[serde(default)]
+    pub direction: Option<DeleteDirection>,
 }
 
 /// The wire form of a path, and the form an `approve`/`deny` selector is matched against. One
@@ -72,7 +90,30 @@ pub struct PendingDeletion {
     pub direction: DeleteDirection,
     pub entity_kind: EntityKind,
     pub fingerprint: String,
+    /// When **this pass** derived the withheld action — the age of the pass, not of the deletion.
+    /// The gate stamps `now` on everything it withholds and a pass cannot idle-skip while anything
+    /// is pending, so this refreshes every ~30s for as long as the item waits. Read
+    /// [`Self::first_seen_epoch_secs`] for "when did this happen"; this one answers "how fresh is
+    /// this reply". Kept under its original name because it is a required field on the wire and an
+    /// older client would fail to parse a reply without it (#225).
     pub detected_epoch_secs: u64,
+    /// When this deletion was **first** withheld, carried across passes and restarts in
+    /// `index::withheld_deletions` and re-stamped only when the fingerprint changes (a different
+    /// deletion at the same path). This is the field a UI ages "deleted on Proton 22m ago" from.
+    /// `#[serde(default)]` for replies from an older daemon — and `0` there means *unknown*, so a
+    /// client must treat it as "no age to show" rather than as the epoch.
+    #[serde(default)]
+    pub first_seen_epoch_secs: u64,
+    /// Files beneath a directory deletion, and their total size — what the subtree would cost you
+    /// (#208). Counted from the baseline index at gate time, files only (a directory's own
+    /// `file_size` is not a subtree total), so it is what the engine would actually delete: the
+    /// baseline is already selective-sync filtered. `None` for a file (its own size is a lookup the
+    /// client already has) and `None` from an older daemon — never `0`, which is a real answer for
+    /// an empty folder.
+    #[serde(default)]
+    pub subtree_files: Option<u64>,
+    #[serde(default)]
+    pub subtree_bytes: Option<u64>,
 }
 
 /// One action whose side effect failed during the last pass (#136). The executor keeps going past
@@ -439,6 +480,7 @@ pub async fn send_command(
             command,
             argument: None,
             literal_path: false,
+            direction: None,
         },
     )
     .await
@@ -499,6 +541,7 @@ mod tests {
             command: ControlCommand::ResetIndex,
             argument: None,
             literal_path: false,
+            direction: None,
         };
         let encoded = serde_json::to_string(&request).expect("encode");
         assert!(
@@ -519,6 +562,47 @@ mod tests {
             serde_json::from_str(legacy).expect("legacy request must parse");
         assert_eq!(request.argument.as_deref(), Some("all"));
         assert!(!request.literal_path);
+    }
+
+    #[test]
+    fn a_pending_deletion_from_an_older_daemon_still_parses() {
+        // The lifecycle fields (#225 first-seen, #208 subtree totals) are additions to a shape an
+        // older daemon already emits, so they default rather than fail the whole reply. `0` and
+        // `None` are the honest readings of "this daemon does not know", which is why a client
+        // must not age anything from a zero.
+        let legacy = r#"{
+            "path": "photos/2019",
+            "direction": "local",
+            "entity_kind": "directory",
+            "fingerprint": "vol~node",
+            "detected_epoch_secs": 42
+        }"#;
+        let pending: PendingDeletion =
+            serde_json::from_str(legacy).expect("legacy pending deletion must parse");
+        assert_eq!(pending.detected_epoch_secs, 42);
+        assert_eq!(pending.first_seen_epoch_secs, 0);
+        assert_eq!((pending.subtree_files, pending.subtree_bytes), (None, None));
+    }
+
+    #[test]
+    fn a_keep_request_names_a_command_an_older_client_never_sent() {
+        // Wire-visible names, pinned: `keep` is the refusal (#224) and `direction` rides along for
+        // `approve`'s pre-pass form (#227). Both are additive — an older client omits `direction`
+        // and never sends `keep`.
+        let json = serde_json::to_string(&ControlRequest {
+            command: ControlCommand::Keep,
+            argument: Some("photos/2019".to_owned()),
+            literal_path: true,
+            direction: None,
+        })
+        .expect("serialize");
+        assert!(json.contains(r#""command":"keep""#), "{json}");
+
+        let approve: ControlRequest = serde_json::from_str(
+            r#"{"command":"approve","argument":"a.txt","direction":"remote"}"#,
+        )
+        .expect("parse");
+        assert_eq!(approve.direction, Some(DeleteDirection::Remote));
     }
 
     #[test]
@@ -602,6 +686,9 @@ mod tests {
                 entity_kind: EntityKind::File,
                 fingerprint: "hash".to_owned(),
                 detected_epoch_secs: 1,
+                first_seen_epoch_secs: 1,
+                subtree_files: None,
+                subtree_bytes: None,
             }],
             failed_items: vec![FailedItem {
                 path: non_utf8_path(b"-failed.txt"),

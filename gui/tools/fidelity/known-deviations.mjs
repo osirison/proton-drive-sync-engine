@@ -61,42 +61,11 @@
 export const KNOWN_DEVIATIONS = [
   // ---- S9 · the three banners inside the desktop mock ----
   //
-  // TWO SENTENCES ARE SHORTER THAN THE DRAWN ONES, and every row below is one of them wrapping to one
-  // line instead of two — the banner, its head, the text column and the sentence itself, four nodes
-  // per cause. Neither is a layout difference: `renderBanner` draws exactly what the frame draws, at
-  // the length Phase 1 can honestly write.
-  {
-    frame: "11a In situ",
-    key: "div[1]/div/div[0]",
-    props: ["box.h"],
-    detail: "170.5 vs 154.5",
-    issue: "#208",
-    why: "`1,204 photos` counts the files under a folder about to be deleted and nothing reports a subtree total (G8 #208); the app names the queue instead — one item, so the title is one line where the frame draws two",
-  },
-  {
-    frame: "11a In situ",
-    key: "div[1]/div/div[0]/div[0]",
-    props: ["box.h"],
-    detail: "93.5 vs 77.5",
-    issue: "#208",
-    why: "`1,204 photos` counts the files under a folder about to be deleted and nothing reports a subtree total (G8 #208); the app names the queue instead — one item, so the title is one line where the frame draws two",
-  },
-  {
-    frame: "11a In situ",
-    key: "div[1]/div/div[0]/div[0]/div",
-    props: ["box.h"],
-    detail: "93.5 vs 77.5",
-    issue: "#208",
-    why: "`1,204 photos` counts the files under a folder about to be deleted and nothing reports a subtree total (G8 #208); the app names the queue instead — one item, so the title is one line where the frame draws two",
-  },
-  {
-    frame: "11a In situ",
-    key: "div[1]/div/div[0]/div[0]/div/div[1]",
-    props: ["box.h"],
-    detail: "32 vs 16",
-    issue: "#208",
-    why: "`1,204 photos` counts the files under a folder about to be deleted and nothing reports a subtree total (G8 #208); the app names the queue instead — one item, so the title is one line where the frame draws two",
-  },
+  // ONE SENTENCE IS SHORTER THAN THE DRAWN ONE, and every row below is it wrapping to one line
+  // instead of two — the banner, its head, the text column and the sentence itself, four nodes for
+  // the one cause. Not a layout difference: `renderBanner` draws exactly what the frame draws, at
+  // the length Phase 1 can honestly write. (The deletion banner's four rows are gone: it counts the
+  // subtree now, #208.)
   {
     frame: "11a In situ",
     key: "div[1]/div/div[2]",
@@ -322,38 +291,29 @@ export const KNOWN_DEVIATIONS = [
     why: "the footer is a child of the WINDOW, not the body, so it stays 1040 wide while the frame's is 520 — the narrow window draws 24px padding, a 22px gap and 12.5px labels against the wide window's 32/34/13. Faking those metrics at 1040 would draw four doors huddled inside 960px of chrome, which is neither frame",
   },
 
-  // ---- S3 · the deletions screen. Four rows for one missing number and three for one window size.
-  {
-    frame: "4a Deletions",
-    key: "div[1]/div[1]/div[0]/div[2]/div[1]",
-    props: ["box.h"],
-    detail: "41.59 vs 20.8",
-    issue: "#208",
-    why: "the folder card's consequence draws `1,204 photos, 8.4 GB` from a SUBTREE AGGREGATE, which no command produces and a directory's `file_size` is not. Phase 1 says `Deleting this folder removes everything inside it from this computer.` instead — true, and one line where the frame wraps to two",
-  },
+  // ---- S3 · the deletions screen. One row for one word, and three for one window size.
+  //
+  // THE COUNT LANDED AND THE NOUN CANNOT. #208 gave the card its subtree aggregate, so the
+  // consequence wraps to the drawn two lines, the facts strip is built and every height matches.
+  // What is left is a single word: the frame says `1,204 photos` because its folder is a photo
+  // library, and no engine can know that — `subtree_files` counts FILES. A UI that guessed the noun
+  // from the extensions inside would be inventing a fact on the screen whose whole job is not to,
+  // so the app says what is true and the drawing keeps its word. Decided 2026-08-15, DEVIATIONS §75.
   {
     frame: "4a Deletions",
     key: "div[1]/div[1]/div[0]/div[2]/div[1]/strong",
     props: ["box.w"],
-    detail: "122.27 vs 116.52",
-    issue: "#208",
-    why: "the emphasised loss is the aggregate itself. Phase 1 emphasises `everything inside it` — the same claim without a number, so the card keeps its crimson span and its structure rather than losing the emphasis with the figure",
-  },
-  {
-    frame: "4a Deletions",
-    key: "div[1]/div[1]/div[0]/div[2]",
-    props: ["box.h"],
-    detail: "275.59 vs 212.8",
-    issue: "#208",
-    why: "a card is as tall as what it says, and this one loses two things: the 20.79px second line of its consequence (#208), and its whole facts strip — a folder's two facts are the atime (#208) and the detected time, which is re-stamped every pass (#225), so there is no strip to draw",
+    detail: "122.27 vs 104.56",
+    decision: true,
+    why: "the emphasised loss is the aggregate itself, and `1,204 files, 8.4 GB` is 17.71px narrower than the drawn `1,204 photos, 8.4 GB` — the same number, the noun the engine can stand behind",
   },
   {
     frame: "4a Armed",
-    key: "div[0]/div[1]",
-    props: ["box.h"],
-    detail: "69.28 vs 46.19",
-    issue: "#208",
-    why: "the confirmation's sentence drops its `— 8.4 GB —` clause: the same aggregate, in the one place `05-deletions.md` makes it load-bearing. Three drawn lines become two. `DELETIONS.armedBody` takes a null size rather than an em-dash, which would be the app claiming the daemon answered `unknown` about how much is at stake",
+    key: "div[0]/div[0]",
+    props: ["box.w"],
+    detail: "507.73 vs 470.66",
+    decision: true,
+    why: "`Delete 1,204 files from this computer?` against the drawn `1,204 photos` — the same word as the card, in the question. Phase 1's `Delete photos/2019 …` happened to measure within tolerance and this does not, which is the coincidence DEVIATIONS §75 recorded as one",
   },
   {
     frame: "4a Empty",
@@ -897,27 +857,11 @@ export const KNOWN_DEVIATIONS = [
   },
   {
     frame: "12a Deletions light",
-    key: "div[1]/div[1]/div[0]/div[2]",
-    props: ["box.h"],
-    detail: "273.59 vs 210.8",
-    issue: "#208",
-    why: "the folder card without its second consequence line and without its facts strip — `4a Deletions`' 275.59/212.8, each two pixels shorter because light's primary-soft button draws no border and the card is as tall as what it holds",
-  },
-  {
-    frame: "12a Deletions light",
-    key: "div[1]/div[1]/div[0]/div[2]/div[1]",
-    props: ["box.h"],
-    detail: "41.59 vs 20.8",
-    issue: "#208",
-    why: "the consequence itself, two drawn lines against Phase 1's one — the subtree aggregate `1,204 photos, 8.4 GB` has no command behind it in either theme",
-  },
-  {
-    frame: "12a Deletions light",
     key: "div[1]/div[1]/div[0]/div[2]/div[1]/strong",
     props: ["box.w"],
-    detail: "122.27 vs 116.52",
-    issue: "#208",
-    why: "the emphasised loss, `everything inside it` where the frame draws the aggregate — the same substitution `4a Deletions` records, and the same 5.75px",
+    detail: "122.27 vs 104.56",
+    decision: true,
+    why: "the same word in the other theme, and the same 17.71px — `4a Deletions` records the decision",
   },
 ];
 
@@ -1056,31 +1000,10 @@ export const KNOWN_UNSTAMPED = [
   // its first span — which is exactly why `cardFact` is keyed by the DRAWN slot and not by position.
   {
     frame: "4a Deletions",
-    slot: "cardFacts",
-    key: "div[1]/div[1]/div[0]/div[2]/div[2]",
-    issue: "#208",
-    why: "the folder card's strip, absent rather than partial: its two facts are `last opened Mar 2024` (an atime — the index stores mtime only) and `deleted on Proton 22m ago` (#225), so `factsOf` returns no facts for a directory and the strip is never built",
-  },
-  {
-    frame: "4a Deletions",
-    slot: "cardFact",
-    key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[0]",
-    issue: "#225",
-    why: "`deleted on Proton 22m ago` — `detected_epoch_secs` is re-stamped on every pass, so it is the age of the pass and not of the deletion (DEVIATIONS §75)",
-  },
-  {
-    frame: "4a Deletions",
     slot: "cardFact",
     key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[1]",
     issue: "#208",
     why: "`last opened Mar 2024` is an access time and `FileRecord` stores a modification time only",
-  },
-  {
-    frame: "4a Deletions",
-    slot: "cardFact",
-    key: "div[1]/div[1]/div[1]/div[2]/div[2]/span[0]",
-    issue: "#225",
-    why: "`deleted here 6m ago` on the local card — the same re-stamped field as the Proton one, which is why this strip draws its second fact and not its first",
   },
 
   // `5a Plan safe` puts a size beside every file it is about to move. The rehearsal's rows carry an
@@ -1197,31 +1120,10 @@ export const KNOWN_UNSTAMPED = [
   },
   {
     frame: "12a Deletions light",
-    slot: "cardFacts",
-    key: "div[1]/div[1]/div[0]/div[2]/div[2]",
-    issue: "#208",
-    why: "the folder card's facts strip, absent rather than partial — an atime the index does not store (#208) and a detected time that is the pass's age (#225), so `factsOf` returns nothing for a directory",
-  },
-  {
-    frame: "12a Deletions light",
-    slot: "cardFact",
-    key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[0]",
-    issue: "#225",
-    why: "`deleted on Proton 22m ago` — `detected_epoch_secs` is re-stamped every pass",
-  },
-  {
-    frame: "12a Deletions light",
     slot: "cardFact",
     key: "div[1]/div[1]/div[0]/div[2]/div[2]/span[1]",
     issue: "#208",
     why: "`last opened Mar 2024` is an access time and `FileRecord` stores a modification time only",
-  },
-  {
-    frame: "12a Deletions light",
-    slot: "cardFact",
-    key: "div[1]/div[1]/div[1]/div[2]/div[2]/span[0]",
-    issue: "#225",
-    why: "`deleted here 6m ago` on the local card — the same re-stamped field, which is why this strip draws its second fact and not its first",
   },
 ];
 

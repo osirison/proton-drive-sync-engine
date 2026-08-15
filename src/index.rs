@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS unsyncable_items (
     reason TEXT NOT NULL,
     first_seen INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS withheld_deletions (
+    path BLOB NOT NULL,
+    direction TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    first_seen INTEGER NOT NULL,
+    PRIMARY KEY (path, direction)
+);
 "#;
 
 /// Speeds up [`path_for_proton_id`] (turning a volume event's node id into its local path).
@@ -1021,6 +1028,110 @@ pub fn load_delete_approvals(connection: &Connection) -> AppResult<Vec<DeleteApp
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(approvals)
+}
+
+/// When a withheld deletion was **first** held, from the `withheld_deletions` table.
+///
+/// `PendingDeletion::detected_epoch_secs` is the age of the *pass* that re-derived the withheld
+/// action, not of the deletion (#225): the gate stamps `now` on every item it withholds, and a pass
+/// cannot idle-skip while anything is pending, so a three-day-old deletion reported an age of
+/// seconds. This row is the missing fact, and it is persisted for the same reason
+/// [`load_unsyncable_items`] is — a queue that survives restarts must have an age that does too.
+///
+/// Keyed like `delete_approvals` on `(path, direction)` and pinned to the same `fingerprint`: a
+/// different fingerprint at the same path is a *different* deletion, so it re-stamps rather than
+/// inheriting the previous one's age. `index_key` BLOB keys, byte-exact like every other path
+/// column here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithheldDeletion {
+    pub path: PathBuf,
+    pub direction: crate::sync::DeleteDirection,
+    pub fingerprint: String,
+    pub first_seen_epoch_secs: u64,
+}
+
+/// Every stored withheld-deletion row (unordered — the caller keys them by `(path, direction)`).
+pub fn load_withheld_deletions(connection: &Connection) -> AppResult<Vec<WithheldDeletion>> {
+    let mut statement = connection
+        .prepare("SELECT path, direction, fingerprint, first_seen FROM withheld_deletions")?;
+    let items = statement
+        .query_map([], |row| {
+            let direction: String = row.get(1)?;
+            Ok(WithheldDeletion {
+                path: read_index_key_column(row, 0)?,
+                direction: direction.parse().map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, err)
+                })?,
+                fingerprint: row.get(2)?,
+                first_seen_epoch_secs: row.get::<_, i64>(3)?.max(0) as u64,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// Replaces the stored withheld-deletion set wholesale (see [`WithheldDeletion`]). The gate's output
+/// **is** the complete set of currently-withheld deletions, so a replace is the honest write and it
+/// also clears the table on the first pass that withholds nothing. Carrying `first_seen` forward is
+/// the caller's job (it holds the previous rows). One transaction, and display-only data — written
+/// outside the reconcile's checkpoint transactions, recording no side effect.
+pub fn replace_withheld_deletions(
+    connection: &Connection,
+    items: &[WithheldDeletion],
+) -> AppResult<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute("DELETE FROM withheld_deletions", [])?;
+    {
+        let mut statement = transaction.prepare(
+            "INSERT INTO withheld_deletions (path, direction, fingerprint, first_seen) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for item in items {
+            statement.execute(params![
+                index_key(&item.path),
+                item.direction.as_str(),
+                item.fingerprint,
+                i64::try_from(item.first_seen_epoch_secs).unwrap_or(i64::MAX)
+            ])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Purges the baseline record at `root` **and every record beneath it**, returning how many rows
+/// went. This is how a refused deletion (`keep`) stops being a deletion: with no baseline record the
+/// surviving side is no longer "a thing that was deleted", it is a thing the engine has never seen,
+/// and the bootstrap arm adopts it back onto the other side.
+///
+/// A subtree, not one row, because a directory deletion is planned **recursively** — one
+/// `LocalDelete`/`RemoteDelete` for the folder with every descendant action suppressed. Purging the
+/// folder alone would re-adopt the folder while each surviving child record went on deriving its own
+/// withheld delete.
+///
+/// Component-wise via [`Path::starts_with`], never a byte prefix: `photos/2019x` is not under
+/// `photos/2019`.
+///
+/// Returns the paths it purged, because the caller has to answer for each of them: a purged record
+/// leaves any standing approval at that path pointing at nothing the user can see (see
+/// `daemon::apply_keep_command`).
+///
+/// Opens **no transaction of its own** — the caller wraps it, because a refusal also revokes the
+/// approvals it replaces and the two must land together.
+pub fn purge_subtree_records(connection: &Connection, root: &Path) -> AppResult<Vec<PathBuf>> {
+    let paths: Vec<PathBuf> = {
+        let mut statement = connection.prepare("SELECT file_path FROM file_index")?;
+        let rows = statement
+            .query_map([], |row| read_index_key_column(row, 0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .filter(|path| path.starts_with(root))
+            .collect()
+    };
+    for path in &paths {
+        purge_record(connection, path)?;
+    }
+    Ok(paths)
 }
 
 /// Unfiltered scan with the **default** sidecar naming. Only for callers that classify nothing —
@@ -2885,6 +2996,110 @@ mod tests {
             load_unsyncable_items(&connection).expect("load"),
             items[1..]
         );
+    }
+
+    #[test]
+    fn withheld_deletions_round_trip_and_an_old_database_gains_the_table() {
+        // The queue survives restarts, so its age has to (#225) — including on a database written
+        // before this table existed, which `CREATE TABLE IF NOT EXISTS` must add cleanly.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db_path = directory.path().join("index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE file_index (
+                        file_path TEXT PRIMARY KEY,
+                        entity_kind TEXT NOT NULL DEFAULT 'file',
+                        file_size INTEGER NOT NULL,
+                        mtime INTEGER NOT NULL,
+                        sha1_hash TEXT,
+                        proton_id TEXT,
+                        sync_status TEXT NOT NULL
+                    );
+                    "#,
+                )
+                .expect("pre-existing schema");
+        }
+        let connection = open_database(&db_path).expect("open database upgrades cleanly");
+        assert!(
+            load_withheld_deletions(&connection)
+                .expect("load")
+                .is_empty(),
+            "an upgraded database has no withheld deletions"
+        );
+
+        let items = vec![
+            WithheldDeletion {
+                path: PathBuf::from(OsStr::from_bytes(b"caf\xe9.txt")),
+                direction: crate::sync::DeleteDirection::Local,
+                fingerprint: "sha1-of-the-file".to_owned(),
+                first_seen_epoch_secs: 100,
+            },
+            // Same path, other direction — the key is the pair, so both rows coexist.
+            WithheldDeletion {
+                path: PathBuf::from(OsStr::from_bytes(b"caf\xe9.txt")),
+                direction: crate::sync::DeleteDirection::Remote,
+                fingerprint: "sha1-of-the-file".to_owned(),
+                first_seen_epoch_secs: 200,
+            },
+        ];
+        replace_withheld_deletions(&connection, &items).expect("store");
+        let mut loaded = load_withheld_deletions(&connection).expect("load");
+        loaded.sort_by_key(|item| item.first_seen_epoch_secs);
+        assert_eq!(loaded, items, "byte-exact path, both directions, both ages");
+
+        // Wholesale replacement: the empty write is how a pass that withholds nothing clears it.
+        replace_withheld_deletions(&connection, &[]).expect("clear");
+        assert!(
+            load_withheld_deletions(&connection)
+                .expect("load")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn purging_a_subtree_takes_the_descendants_and_nothing_that_merely_shares_a_prefix() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let connection = open_database(&directory.path().join("index.db")).expect("open");
+        for path in ["photos", "photos/2019/a.jpg", "photosx", "photosx/b.jpg"] {
+            upsert_record(
+                &connection,
+                &FileRecord {
+                    file_path: PathBuf::from(path),
+                    entity_kind: EntityKind::File,
+                    file_size: 1,
+                    mtime: 1,
+                    sha1_hash: Some("hash".to_owned()),
+                    proton_id: None,
+                    sync_status: SyncStatus::Synced,
+                },
+            )
+            .expect("record");
+        }
+
+        let purged = purge_subtree_records(&connection, Path::new("photos")).expect("purge");
+
+        assert_eq!(purged.len(), 2, "the folder and its one descendant");
+        for gone in ["photos", "photos/2019/a.jpg"] {
+            assert!(
+                get_record(&connection, Path::new(gone))
+                    .expect("lookup")
+                    .is_none()
+            );
+        }
+        for kept in ["photosx", "photosx/b.jpg"] {
+            assert!(
+                get_record(&connection, Path::new(kept))
+                    .expect("lookup")
+                    .is_some(),
+                "{kept} shares a byte prefix and is not under photos"
+            );
+        }
     }
 
     #[test]

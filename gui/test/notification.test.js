@@ -95,9 +95,15 @@ test("the deletion body carries its path as its own segment", () => {
   assert.equal(payloadFor(spec).body, `photos/2019${NOTIFY.deletionBodyAfter}`);
 });
 
-test("a folder is not called a file", () => {
-  // G8 (#208) leaves the count as the queue's length; the noun still has to be true of what is in
-  // it, or the banner asks you to keep something it has misnamed.
+test("the count is the files at stake, not the length of the queue", () => {
+  // #208. One queued row can be a folder holding a thousand files, and `1 folder would be deleted`
+  // is the size of the DECISION rather than of the loss — which is what the frame counts.
+  assert.match(bannerFor({ ...EVENTS.deletion, files: 1204 }).title, /^1,204 files would be deleted/);
+});
+
+test("a folder is not called a file when nothing could count it", () => {
+  // The fallback, for a daemon that reports no subtree total: the noun still has to be true of what
+  // is in the queue, or the banner asks you to keep something it has misnamed.
   assert.match(bannerFor(EVENTS.deletion).title, /^1 folder would be deleted/);
   assert.match(
     bannerFor({ kind: "deletion", paths: ["a", "b"], entity: "folder" }).title,

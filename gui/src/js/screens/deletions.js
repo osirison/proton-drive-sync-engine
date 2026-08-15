@@ -26,16 +26,19 @@
 // contrast while the destructive one hides behind a typed word. There is NO cross-column
 // `Approve all`: the only bulk action is `Keep both files`, and it is the safe one.
 //
-// WHAT PHASE 1 CANNOT DRAW, each recorded in DEVIATIONS.md §75 with the issue that closes it:
-// the folder card's `1,204 photos, 8.4 GB` and the armed title's count (both the subtree aggregate,
-// #208), `last opened Mar 2024` (an atime; the index stores mtime only, #208), `deleted on Proton
-// 22m ago` (#225 — the field is re-stamped on every pass, so it is the age of the pass rather than
-// of the deletion), and `Keep it` making the refusal durable or restoring the other side (#224 —
-// the wire's `deny` revokes an approval and there is nothing that refuses one).
+// WHAT IS STILL NOT DRAWN, recorded in DEVIATIONS.md §75 with the issue that closes it: the folder
+// card's `1,204 photos, 8.4 GB` and the armed title's count are the subtree aggregate, which the
+// engine now reports (#208) as a count of FILES — no engine can know they are photos, so the deck's
+// noun and the frame's disagree and that half stays a recorded deviation; `last opened Mar 2024` is
+// an atime the index does not store at all.
+//
+// `deleted on Proton 22m ago` and `Keep it` are no longer among them: #225 added the first-seen time
+// the strip ages from, and #224 the `keep` command that refuses a deletion and puts the other side
+// back.
 
 import { el } from "../ui/el.js";
 import { DELETIONS } from "../ui/copy.js";
-import { fileSize, monthYear } from "../ui/format.js";
+import { bytes, count, fileSize, monthYear, plural, since } from "../ui/format.js";
 import { renderHexagon } from "../ui/hexagon.js";
 import { renderSeam } from "../ui/seam.js";
 import { button, deleteGate, setButtonKind } from "../ui/controls.js";
@@ -145,45 +148,89 @@ export function itemKey(item) {
  * happen to pick matching strings today. `splitEmphasis` already falls back to the whole sentence if
  * they ever stop matching; this is what stops them.
  *
- * The folder branch is the Phase-1 one. `DELETIONS.folderConsequence` needs the subtree aggregate
- * (#208) and nothing produces it, so the card says what is true without a number and emphasises
- * `everything inside it` — the loss, stated qualitatively, in the crimson the frame puts it in.
+ * THE FOLDER BRANCH HAS BOTH SHAPES, and which one it takes is whether the daemon could count the
+ * subtree (#208). With a count it is the drawn sentence and the figure IS the emphasis — voice rule
+ * 2, consequences in things you'd miss. Without one — an older daemon, or a folder with nothing in
+ * it, which has no figure worth stating — it is a different sentence rather than the same one with
+ * a hole in it, because "Deleting this removes from this computer" is not English.
  */
 export function consequenceOf(item) {
   if (severityOf(item.direction) === "recoverable") {
     return { sentence: DELETIONS.travelExplainer, emphasis: "Proton Drive's Trash" };
   }
   if (item.entity_kind === "directory") {
-    return { sentence: DELETIONS.folderConsequenceUnknown, emphasis: "everything inside it" };
+    const loss = subtreeLoss(item);
+    if (!loss) {
+      return { sentence: DELETIONS.folderConsequenceUnknown, emphasis: "everything inside it" };
+    }
+    return { sentence: DELETIONS.folderConsequence(loss), emphasis: loss };
   }
   return { sentence: DELETIONS.fileConsequence, emphasis: "for good" };
 }
 
 /**
+ * `1,204 files` — how much is inside, or null when the daemon did not say.
+ *
+ * FILES, WHERE THE FRAME SAYS PHOTOS. `4a Deletions` draws `1,204 photos` because its folder is a
+ * photo library; no engine can know that, and a UI that guessed the noun from the extensions inside
+ * would be inventing a fact on the one screen whose job is not to. The count is what is real, so it
+ * is what is said — recorded in DEVIATIONS §75 as the half of #208 the drawing keeps.
+ *
+ * ZERO IS NOT A LOSS TO NAME. An empty folder reports `0` honestly, and `Deleting this removes 0
+ * files` is a sentence about nothing; every caller falls back to its qualitative form.
+ */
+function subtreeCount(item) {
+  if (!item.subtree_files) return null;
+  return `${count(item.subtree_files)} ${plural(item.subtree_files, "file", "files")}`;
+}
+
+/** `1,204 files, 8.4 GB` — the count and what it weighs, for the card's consequence sentence. */
+function subtreeLoss(item) {
+  const counted = subtreeCount(item);
+  return counted && `${counted}, ${bytes(item.subtree_bytes)}`;
+}
+
+/**
  * The mono facts strip: when it happened on the other side, and when you last touched it.
  *
- * BOTH OF THE FRAME'S FACTS ARE MISSING CAPABILITIES, which is why a folder card draws no strip.
+ * `deleted on Proton 22m ago` IS `first_seen_epoch_secs`, AND NOT `detected_epoch_secs` — the second
+ * field is named as if it were this one and is not. `decide_delete_gate` stamps `now` on every
+ * action it withholds and a pass cannot idle-skip while anything is pending, so `detected` refreshes
+ * every ~30s for as long as the item waits: a deletion that happened three days ago reported an age
+ * of seconds. #225 added the first-seen time, carried across passes and restarts in the daemon's
+ * `withheld_deletions` table, and this is the field that answers *when did this happen*.
  *
- *   · `deleted on Proton 22m ago` looks like it comes straight off `detected_epoch_secs`, and the
- *     field is not what its name suggests: `decide_delete_gate` stamps `now` on every withheld
- *     action and `self.pending_deletions` is replaced wholesale on every pass — which is forced to
- *     run while anything is pending, so an approval applies promptly. A deletion that happened
- *     three days ago therefore reports an age of seconds, refreshed every ~30s. That is not a
- *     rounding error in a fact, it is a different fact, on the screen whose job is telling you when
- *     something happened. Omitted, and filed as #225.
- *   · `last opened Mar 2024` is an atime and the index stores mtime only (#208).
+ * A ZERO IS UNKNOWN, NOT 1970. The field is `#[serde(default)]` for replies from a daemon that
+ * predates it, so a zero means the daemon cannot say — and the clause is omitted rather than aged
+ * from the epoch, which would draw `55y ago` on a deletion from this morning.
  *
- * `last edited` is the mtime and is real, for a FILE — a directory record's mtime is the directory's
- * own, which is not when anything in it was edited, so it is left off there too. An em-dash would
- * be worse than an absence in every one of these: it claims the daemon was asked and did not know.
+ * `last opened Mar 2024` is still an atime and the index stores mtime only (#208), so slot 2 of a
+ * folder card stays empty. `last edited` is the mtime and is real, for a FILE — a directory record's
+ * mtime is the directory's own, which is not when anything in it was edited, so it is left off
+ * there. An em-dash would be worse than an absence in either: it claims the daemon was asked and
+ * did not know.
  */
 export function factsOf(item, status) {
-  if (item.entity_kind === "directory" || status?.mtime == null) return [];
-  // `at: 1` IS THE DRAWN SLOT, not the DOM position, and the two have come apart. The frame's strip
-  // is [when it was deleted, when you last touched it]; Phase 1 draws only the second, so the app's
-  // first child stands for the frame's `span[1]`. Stamped by position it would be compared against
-  // `deleted here 6m ago` — a node it is not — and reported as a width failure on a correct card.
-  return [{ at: 1, text: DELETIONS.lastEdited(monthYear(status.mtime)) }];
+  // Recomputed on every poll for the age fact — see `updateDeletions`. Nothing else here counts up.
+  // `at` IS THE DRAWN SLOT, not the DOM position, and the two come apart whenever a fact in the
+  // middle is missing. The frame's strip is [when it was deleted, when you last touched it].
+  // Stamped by position, a card drawing only the second would be compared against `deleted here 6m
+  // ago` — a node it is not — and reported as a width failure on a correct card.
+  const facts = [];
+  if (item.first_seen_epoch_secs) {
+    const ago = since(item.first_seen_epoch_secs, "short");
+    // The column and the direction name the same side from opposite ends: `local` means the delete
+    // would apply HERE, because it went first on Proton.
+    const text =
+      severityOf(item.direction) === "permanent"
+        ? DELETIONS.deletedOnProton(ago)
+        : DELETIONS.deletedHere(ago);
+    facts.push({ at: 0, text });
+  }
+  if (item.entity_kind !== "directory" && status?.mtime != null) {
+    facts.push({ at: 1, text: DELETIONS.lastEdited(monthYear(status.mtime)) });
+  }
+  return facts;
 }
 
 /**
@@ -201,7 +248,7 @@ export function kindNoteOf(item, status) {
 
 // ------------------------------------------------------------------------------ the queue ----
 
-function queueBody({ columns, statuses, busy, handlers, actions, gates }) {
+function queueBody({ columns, statuses, busy, handlers, actions, gates, ages }) {
   const body = fid(el("div", { class: "dl-body" }), "body");
   body.append(fid(renderSeam({ site: "deletionsList" }), "seam"));
 
@@ -218,7 +265,17 @@ function queueBody({ columns, statuses, busy, handlers, actions, gates }) {
         eyebrowText: severity === "permanent" ? DELETIONS.permanent : DELETIONS.recoverable,
         note: severity === "permanent" ? DELETIONS.permanentSub : DELETIONS.recoverableSub,
         cards: items.map((item, i) =>
-          itemCard({ item, status: statuses.get(item.path), c, i, busy, handlers, actions, gates }),
+          itemCard({
+            item,
+            status: statuses.get(item.path),
+            c,
+            i,
+            busy,
+            handlers,
+            actions,
+            gates,
+            ages,
+          }),
         ),
       }),
       "column",
@@ -246,7 +303,7 @@ function queueBody({ columns, statuses, busy, handlers, actions, gates }) {
  * without rebuilding: on this screen a rebuild is a half-typed `DELETE` destroyed, and clicking
  * `Move to Proton's Trash` on one card must not empty the gate on another.
  */
-function itemCard({ item, status, c, i, busy, handlers, actions, gates }) {
+function itemCard({ item, status, c, i, busy, handlers, actions, gates, ages }) {
   const permanent = severityOf(item.direction) === "permanent";
   const { sentence, emphasis } = consequenceOf(item);
   const facts = factsOf(item, status);
@@ -304,7 +361,13 @@ function itemCard({ item, status, c, i, busy, handlers, actions, gates }) {
   // from whatever Phase 1 can answer, so the app's first child is not the frame's first child — see
   // `factsOf`. The conflict card gets away with position because it only ever omits from the end.
   for (const [j, fact] of facts.entries()) {
-    if (strip?.children[j]) fid(strip.children[j], "cardFact", c, i, fact.at);
+    const node = strip?.children[j];
+    if (!node) continue;
+    fid(node, "cardFact", c, i, fact.at);
+    // The one node on this screen that counts up. Registered so the poll can rewrite its text
+    // without rebuilding the card the `DELETE` field is being typed into — the reason the render
+    // signature deliberately excludes what this says.
+    if (fact.at === 0) ages.push({ node, item });
   }
   if (permanent) {
     fid(card.querySelector(".deletion-gate"), "cardGate", c, i);
@@ -459,9 +522,14 @@ function armedBody({ item, disabled, handlers, actions }) {
 
   body.append(
     mark,
-    // `armedTitle` takes the noun phrase, and Phase 1 has the path where the frame has
-    // `1,204 photos` (#208). The question still names exactly what is about to go.
-    fid(el("div", { class: "dl-armed-title" }, DELETIONS.armedTitle(item.path)), "armedTitle"),
+    // `armedTitle` takes a NOUN PHRASE, so one grammar serves both: the subtree's count when the
+    // daemon could give one (#208), and the path when it could not — a file has no subtree, and an
+    // empty folder has no figure worth putting in the question. `armedSentence` names the path
+    // either way, so the confirmation never stops saying what it is about.
+    fid(
+      el("div", { class: "dl-armed-title" }, DELETIONS.armedTitle(subtreeCount(item) ?? item.path)),
+      "armedTitle",
+    ),
     armedSentence(item),
     fid(el("div", { class: "dl-armed-row" }, word, confirm), "armedRow"),
     keep,
@@ -482,8 +550,13 @@ function armedSentence(item) {
   // Folder grammar for a folder, file grammar for a file. `Everything in archive/old-notes.md` is
   // the frame's sentence applied to a thing that has no inside — and no frame draws a permanent
   // FILE, so nothing but this decides it.
+  //
+  // The size clause is the subtree's weight (#208) and `null` drops it whole, which is the shape
+  // `MAIN.syncingSub` uses for a null plan summary: an em-dash between two em-dashes would be the
+  // app claiming the daemon answered "unknown" about how much is at stake.
+  const size = subtreeCount(item) ? bytes(item.subtree_bytes) : null;
   const render =
-    item.entity_kind === "directory" ? (p) => DELETIONS.armedBody(p, null) : DELETIONS.armedBodyFile;
+    item.entity_kind === "directory" ? (p) => DELETIONS.armedBody(p, size) : DELETIONS.armedBodyFile;
   const sentence = render(item.path);
   const node = el("div", { class: "dl-armed-body" });
   // WHERE THE TEMPLATE PUTS IT, not where the path first appears. `indexOf(path)` finds the first
@@ -583,6 +656,10 @@ function signatureOf({ items, armed, statuses, body }) {
         item.direction,
         item.entity_kind,
         item.fingerprint,
+        // Whether there IS a first-seen time, never its age: a daemon that predates the field sends
+        // `0` and the card draws one fewer node, which is a structural difference a rebuild has to
+        // make. The age itself is patched in place — see `updateDeletions`.
+        Boolean(item.first_seen_epoch_secs),
         status?.file_size ?? null,
         status?.mtime ?? null,
       ];
@@ -611,8 +688,9 @@ export function renderDeletions(state = {}) {
   const typed = capturedGate();
   const actions = [];
   const gates = [];
-  const nodes = buildBody(v, handlers, actions, gates);
-  view = { sig: signatureOf(v), nodes, actions, gates };
+  const ages = [];
+  const nodes = buildBody(v, handlers, actions, gates, ages);
+  view = { sig: signatureOf(v), nodes, actions, gates, ages };
   restoreGate(typed, gates);
   return nodes;
 }
@@ -675,13 +753,13 @@ function restoreGate(typed, gates) {
 }
 
 /**
- * The poll's path: rebuild only when something the body draws has moved, and otherwise touch
- * nothing at all.
+ * The poll's path: rebuild only when something the body draws has moved, otherwise patch in place.
  *
- * NOTHING ON THIS SCREEN COUNTS UP. An earlier version refreshed the facts strip's relative times
- * in place, because the frame draws `deleted on Proton 22m ago`; that clause is gone (#225 — the
- * field it would come from is re-stamped every pass), and the one fact left is a month. So the poll
- * is a comparison and nothing else, which is what the typed field needs from it.
+ * ONE NODE COUNTS UP, and it is why this path exists at all. `deleted on Proton 22m ago` is a
+ * relative time (#225), so it goes stale between rebuilds — and it must NOT be in the signature,
+ * because a signature that changes with the clock would rebuild the card twice a second and take
+ * the half-typed `DELETE` with it every time. So the age is rewritten on the live node and
+ * everything else waits for a real difference.
  *
  * Returns the new blocks when it rebuilt and `null` when it did not, which is the shape `app.js`'s
  * main-screen branch already expects.
@@ -692,6 +770,12 @@ export function updateDeletions(state = {}) {
   const sig = signatureOf(v);
   if (sig !== view.sig) return renderDeletions(state);
   for (const action of view.actions) action.apply(v.busy.has(action.key));
+  for (const { node, item } of view.ages) {
+    // Through `factsOf`, not a second copy of the same sentence: which of the two wordings this
+    // card takes is the screen's severity rule, and deriving it twice is how the two disagree.
+    const fact = factsOf(item, null).find((entry) => entry.at === 0);
+    if (fact) node.textContent = fact.text;
+  }
   return null;
 }
 
@@ -700,7 +784,7 @@ export function unmountDeletions() {
   view = null;
 }
 
-function buildBody(v, handlers, actions, gates) {
+function buildBody(v, handlers, actions, gates, ages) {
   if (v.body === "empty") return [emptyBody()];
   if (v.body === "armed") {
     const item = armedItem(v.items, v.armed);
@@ -725,6 +809,7 @@ function buildBody(v, handlers, actions, gates) {
       handlers,
       actions,
       gates,
+      ages,
     }),
     queueFooter({ busy: v.busy, handlers, actions }),
   ];
