@@ -31,7 +31,7 @@ const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// `CommandPolicy::timeout` + this grace instead of blocking forever (issue #56).
 const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
 /// How long a killing exit waits to collect the child it just SIGKILLed before giving up on the
-/// reap and leaving a zombie behind (issue #275; see [`reap_killed_child`]). Generous relative to
+/// reap and leaving the child unreaped (issue #275; see [`reap_killed_child`]). Generous relative to
 /// the normal case — a killed child is collected in microseconds — because only a child the kernel
 /// cannot deliver the signal to reaches the deadline.
 const CHILD_REAP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1334,8 +1334,13 @@ fn terminate_child_tree(child: &mut Child, operation: &str) {
 /// `wait()` this replaces could block all three killing exits of `run_once` (timeout, cancellation,
 /// wait failure) indefinitely. That is #56's hazard one layer down: the reconcile runs under
 /// `block_in_place`, so the daemon's whole main loop stops with no timeout left to rescue it.
-/// Giving up leaks a zombie (pid + a kernel task_struct until this process exits), which is the
-/// lesser cost, and it is logged rather than silent so the leak is attributable.
+/// Giving up leaves the child **unreaped**, which is the lesser cost, and logs rather than
+/// swallows that so the leak is attributable. Unreaped is not the same as dead: at the deadline the
+/// signal has been sent but nothing proves it was delivered, and the case this exists for is
+/// exactly the one where it was not — the child is still in the syscall, and only becomes a zombie
+/// when that returns. Either way this process never collects it, so it holds a pid and a kernel
+/// task_struct until the daemon exits. A still-running *mutating* command may therefore still take
+/// effect remotely, which is what the callers' "may or may not have completed" wording covers.
 fn reap_killed_child(child: &mut Child, budget: Duration, operation: &str) -> bool {
     match child.wait_timeout(budget) {
         Ok(Some(_)) => true,
