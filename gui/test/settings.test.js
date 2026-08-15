@@ -250,6 +250,22 @@ test("the three cards are the three drawn pairs, in the drawn order", () => {
   assert.equal(policyOf({ delete_approval_remote: false, delete_approval_local: false }), "never");
 });
 
+test("a config written with the deletion_policy key selects its card, not the default", () => {
+  // #194. A file spelled `deletion_policy = "never"` reports BOTH booleans as absent, and absent
+  // means `true` — so reading the card off the booleans drew `Ask me every time` over a machine
+  // that asks about nothing. `read_config` resolves whichever spelling the file uses and this is
+  // what reads its answer.
+  assert.equal(policyOf({ deletion_policy: "never" }), "never");
+  assert.equal(policyOf({ deletion_policy: "only_permanent" }), "only_permanent");
+  assert.equal(
+    policyOf({ deletion_policy: "never", delete_approval_remote: true, delete_approval_local: true }),
+    "never",
+    "the resolved policy outranks booleans that a policy-spelled file never set",
+  );
+  assert.equal(policyOf({ deletion_policy: "only_recoverable" }), null, "the undrawn one draws no card");
+  assert.equal(policyOf({ deletion_policy: "something_else" }), null, "an unknown value draws no card");
+});
+
 test("the fourth combination selects NO card rather than the nearest one", () => {
   // `remote:true, local:false` — ask before Proton's Trash, wipe local files for good without
   // asking — is reachable by hand-editing the config. Coercing it to a card would mean the next

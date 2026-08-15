@@ -19,10 +19,13 @@
 //!   `PlanSummary`, not at the top level of the status reply.
 //! - The typed-DELETE gate keys on [`wire::SyncAction::delete_direction`] — `remote_delete` /
 //!   `local_delete` only. `purge` is *display*-destructive but is **never** gated (see [`plan`]).
-//! - Conflict sidecars match **both** `*.proton-cloud.*` and the extensionless `*.proton-cloud`
-//!   (see [`conflicts`]).
+//! - Conflict sidecars match **both** `*.{suffix}.*` and the extensionless `*.{suffix}`, where the
+//!   suffix is the daemon's configurable `conflict_suffix` (default `proton-cloud`) and reaches
+//!   the walker as a [`config_io::ConflictNaming`] read from the same config file (see
+//!   [`conflicts`]).
 //! - The config writer edits in place (comments + daemon-only keys preserved) and refuses to
-//!   write anything the daemon's own `deny_unknown_fields` parser would reject (see [`config_io`]).
+//!   write anything the daemon would reject — its own `deny_unknown_fields` parser *and* the
+//!   post-parse rules only the engine knows (see [`config_io`]).
 
 pub mod config_io;
 pub mod conflicts;

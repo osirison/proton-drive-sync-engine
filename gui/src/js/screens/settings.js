@@ -143,15 +143,29 @@ export const POLICIES = [
  * no card. **It draws no selection rather than the nearest one**: coercing it would mean the next
  * save silently rewrote a setting nobody touched, in the one screen built not to do that. §68.
  *
- * Read off the two booleans and not off `deletion_policy`, which `read_config` derives from exactly
- * these two — one source, not two that can disagree. An absent key means `true`, which is what stops
- * an empty config drawing as `Never ask` on a machine that is in fact asking about everything.
+ * READ OFF `deletion_policy`, WHICH IS NOW A KEY AND NOT A DERIVATION (#194). It used to be derived
+ * from the two booleans here, and deriving it here again would be the second copy: the daemon
+ * accepts `deletion_policy = "never"` as a key of its own, and a file written that way reports both
+ * booleans as absent — so the old reading drew `Ask me every time` over a machine that asks about
+ * nothing. `read_config` resolves whichever spelling the file uses and this reads its answer.
+ *
+ * The booleans remain the fallback for a payload that predates the field. An absent key means
+ * `true`, which is what stops an empty config drawing as `Never ask` on a machine that is in fact
+ * asking about everything.
  */
 export function policyOf(config) {
   if (!config) return null;
-  const remote = config.delete_approval_remote ?? true;
-  const local = config.delete_approval_local ?? true;
-  return POLICIES.find((p) => p.remote === remote && p.local === local)?.id ?? null;
+  const resolved =
+    config.deletion_policy ??
+    POLICIES.find(
+      (p) =>
+        p.remote === (config.delete_approval_remote ?? true) &&
+        p.local === (config.delete_approval_local ?? true),
+    )?.id ??
+    // The fourth combination has no card and no id in `POLICIES`; naming it here keeps the lookup
+    // below total, so an unknown value and the undrawn one both answer `null` the same way.
+    "only_recoverable";
+  return POLICIES.some((p) => p.id === resolved) ? resolved : null;
 }
 
 /**
@@ -956,6 +970,34 @@ function notificationsTab(props) {
  * Same panel pattern as the cadence panels, because it is the same kind of thing: a plain-language
  * title, a sentence about what it does to your files, and the key underneath in mono.
  */
+/**
+ * One Advanced text field: title, sentence, mono key, input. The `proton_cli` panel above predates
+ * this and is left as it is — it carries a placeholder note nothing else needs.
+ *
+ * `value ?? ""` and not `value || ""`: an empty string staged by clearing the field must draw as
+ * cleared, not fall back to the saved value.
+ */
+function advancedField(key, title, sub, placeholder, { config, handlers }) {
+  return panel("settings-panel-block", [
+    panelText(title, sub),
+    keyLine(key),
+    el(
+      "div",
+      { class: "settings-panel-control" },
+      textInput({
+        value: config[key] ?? "",
+        placeholder,
+        mono: true,
+        "data-field": key,
+        "data-sfocus": `field:${key}`,
+        "data-focus-key": `[data-sfocus="field:${key}"]`,
+        "aria-label": title,
+        onInput: (e) => handlers.onField?.(key, e.target.value),
+      }),
+    ),
+  ]);
+}
+
 function advancedTab(props) {
   const { config, handlers, drafts } = props;
   const include = config.include ?? [];
@@ -1025,6 +1067,16 @@ function advancedTab(props) {
         }),
       ),
     ]),
+    // THE THREE KEYS G23 (#237) ADDED, drawn in the same shape as the CLI field above because they
+    // are the same kind of thing: a plain-language title, what changing it does, and the key in
+    // mono. Each is a FILE key — an empty field clears it and the daemon default applies, which is
+    // what `write_config` does with an empty string rather than writing `key = ""`.
+    // THE DAEMON'S DEFAULTS, AS PLACEHOLDERS, and inline rather than in `copy.js` for the same
+    // reason the `proton-drive` placeholder above is: they are config values, like the mono key
+    // lines §68 keeps out of the deck. The socket's placeholder IS a sentence, so it stays copy.
+    advancedField("log_level", SETTINGS.logTitle, SETTINGS.logSub, "info", props),
+    advancedField("socket_path", SETTINGS.socketTitle, SETTINGS.socketSub, SETTINGS.socketPlaceholder, props),
+    advancedField("conflict_suffix", SETTINGS.suffixTitle, SETTINGS.suffixSub, "proton-cloud", props),
     panel("settings-panel-block", [
       panelText(SETTINGS.configFileTitle, null),
       el(

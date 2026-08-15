@@ -204,9 +204,16 @@ const NOT_DRAWN = new Map([
   ["SETTINGS.cliSub", "the Advanced tab is not drawn in any frame"],
   ["SETTINGS.configFileTitle", "the Advanced tab is not drawn in any frame"],
   ["SETTINGS.configFileMissing", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.logTitle", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.logSub", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.socketTitle", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.socketSub", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.socketPlaceholder", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.suffixTitle", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.suffixSub", "the Advanced tab is not drawn in any frame"],
   [
     "SETTINGS.advancedMissing",
-    "G23 (#237): the four settings the config layer cannot round-trip, named rather than left to be looked for",
+    "G23 (#237): the one remaining gap — resetting the index is a command, not a setting",
   ],
 ]);
 

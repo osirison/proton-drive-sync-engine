@@ -21,6 +21,14 @@ pub enum ControlCommand {
     /// value `"resync"`; an older daemon that predates this variant rejects it as an unknown
     /// command (the client is simply newer than the daemon).
     Resync,
+    /// Discard the daemon's learned state — the baseline index, the event cursors, the warm-start
+    /// counter and the standing delete approvals — and reconcile from scratch (G23/#237's *Reset
+    /// the index*). Latched like [`Self::Resync`] and applied by the main loop between passes, so
+    /// nothing is truncated under an in-flight reconcile; the database FILE is never removed (see
+    /// `index::reset_index_state`). Wire value `"reset_index"`; an older daemon rejects it as an
+    /// unknown command.
+    #[serde(rename = "reset_index")]
+    ResetIndex,
     /// Approve pending deletions so they apply on the next sync. The `argument` on the request
     /// selects the target: a relative path, or `"all"` for every currently-pending deletion.
     Approve,
@@ -523,6 +531,27 @@ mod tests {
     use crate::sync::UnsyncableReason;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn the_reset_index_command_has_a_stable_wire_value() {
+        // The container is `rename_all = "lowercase"`, which would spell this `resetindex`. The
+        // explicit rename is the wire contract, and an older daemon rejecting it as unknown is the
+        // documented behaviour — so the string must not drift.
+        let request = ControlRequest {
+            command: ControlCommand::ResetIndex,
+            argument: None,
+            literal_path: false,
+            direction: None,
+        };
+        let encoded = serde_json::to_string(&request).expect("encode");
+        assert!(
+            encoded.contains(r#""command":"reset_index""#),
+            "unexpected wire form: {encoded}"
+        );
+        let decoded: ControlRequest =
+            serde_json::from_str(r#"{"command":"reset_index"}"#).expect("decode");
+        assert_eq!(decoded.command, ControlCommand::ResetIndex);
+    }
 
     #[test]
     fn control_request_without_literal_path_parses_as_legacy() {

@@ -1,5 +1,7 @@
 use clap::Parser;
-use proton_drive_sync_engine::config::{DaemonConfigInput, resolve_runtime_config};
+use proton_drive_sync_engine::config::{
+    DEFAULT_LOG_LEVEL, DaemonConfigInput, DeletionPolicy, resolve_runtime_config,
+};
 use proton_drive_sync_engine::daemon::{Daemon, preview_plan};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -84,13 +86,36 @@ struct Cli {
     /// control, use `[delete_approval]` in the config file or per-directory `.proton-sync.toml`.
     #[arg(long = "no-delete-approval")]
     no_delete_approval: bool,
+    /// The delete-approval guard as one named setting: ask_every_time (default), only_permanent
+    /// (let the recoverable Drive-side deletions through), never, or only_recoverable. Overrides
+    /// the config file's `deletion_policy` / `[delete_approval]`; `--no-delete-approval` overrides
+    /// this.
+    #[arg(long = "deletion-policy", value_name = "POLICY")]
+    deletion_policy: Option<DeletionPolicy>,
+    /// Log verbosity as a `tracing` filter directive (`info`, `debug`, `crate::module=warn`, …).
+    /// Overrides `RUST_LOG`, which overrides the config file's `log_level`.
+    #[arg(long = "log-level", value_name = "DIRECTIVE")]
+    log_level: Option<String>,
+    /// Suffix used to name conflict sidecars: `{stem}.{suffix}.{ext}`. Default `proton-cloud`.
+    /// Changing it leaves sidecars written under the old suffix behind as ordinary files.
+    #[arg(long = "conflict-suffix", value_name = "SUFFIX")]
+    conflict_suffix: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    init_tracing();
+    // Tracing is initialized AFTER the config resolves, because the config is now what decides the
+    // verbosity (`log_level`). Clap's own parse errors print themselves and exit before this, and a
+    // resolution failure falls back to the default filter below so its `error!` is never silent.
     let cli = Cli::parse();
-    let (config, dry_run) = match resolve_runtime_config(cli.into()) {
+    let resolved = resolve_runtime_config(cli.into());
+    init_tracing(
+        resolved
+            .as_ref()
+            .map(|(config, _)| config.log_filter.as_str())
+            .unwrap_or(DEFAULT_LOG_LEVEL),
+    );
+    let (config, dry_run) = match resolved {
         Ok(config) => config,
         Err(error) => {
             error!(%error, "failed to resolve daemon configuration");
@@ -165,12 +190,22 @@ impl From<Cli> for DaemonConfigInput {
             warm_start_max_cursor_age_secs: cli.warm_start_max_cursor_age_secs,
             force_full_walk: cli.full_walk,
             no_delete_approval: cli.no_delete_approval,
+            deletion_policy: cli.deletion_policy,
+            log_level: cli.log_level,
+            // Read here, at the process edge, so `resolve_runtime_config` stays a pure function of
+            // its input and parallel tests cannot race on the environment.
+            rust_log: std::env::var("RUST_LOG").ok(),
+            conflict_suffix: cli.conflict_suffix,
         }
     }
 }
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+/// `directive` is already resolved (`--log-level` > `RUST_LOG` > `log_level` > `info`) and already
+/// validated by `resolve_log_filter`, so the fallback here is only reachable for the
+/// resolution-failed path above.
+fn init_tracing(directive: &str) {
+    let filter =
+        EnvFilter::try_new(directive).unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_LEVEL));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -180,6 +215,47 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_advanced_flags_parse_into_config_input() {
+        // `--deletion-policy` reaches clap through `DeletionPolicy`'s `FromStr`, which the compiler
+        // proves exists and nothing else exercises — including its error, which is the only place a
+        // user learns what the four spellings are.
+        let cli = Cli::try_parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--deletion-policy",
+            "only_permanent",
+            "--log-level",
+            "debug",
+            "--conflict-suffix",
+            "from-cloud",
+        ])
+        .expect("the advanced flags must parse");
+        let input: DaemonConfigInput = cli.into();
+        assert_eq!(input.deletion_policy, Some(DeletionPolicy::OnlyPermanent));
+        assert_eq!(input.log_level.as_deref(), Some("debug"));
+        assert_eq!(input.conflict_suffix.as_deref(), Some("from-cloud"));
+
+        let error = Cli::try_parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--deletion-policy",
+            "ask_sometimes",
+        ])
+        .expect_err("an unknown policy must be rejected, not silently defaulted")
+        .to_string();
+        assert!(
+            error.contains("ask_every_time"),
+            "the error must name the spellings that do work: {error}"
+        );
+    }
 
     #[test]
     fn conflicting_dry_run_flags_are_rejected_by_cli_parser() {

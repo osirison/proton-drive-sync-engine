@@ -7,10 +7,25 @@
 //!    (`db_path`, `events_full_scan_every`, …) that must survive a save.
 //!
 //! So we edit the document **in place** with `toml_edit` (comments + untouched keys preserved) and,
-//! before writing, validate the whole rendered document against the daemon's own `FileConfig`
-//! parser — refusing to write anything the daemon would reject. The include/exclude selective-sync
-//! globs use the **bare** keys `include` / `exclude` (not `*_patterns`).
+//! before writing, hand the whole rendered document to the engine's own
+//! `config::validate_file_config_text` — the `FileConfig` parser *plus* every post-parse rule the
+//! daemon exits on that a serde shape cannot see (a relative `socket_path`, an unusable
+//! `log_level` or `conflict_suffix`, both deletion spellings at once, a bad glob). Re-deriving
+//! those here is how the two halves came to disagree about `~` (#135). The include/exclude
+//! selective-sync globs use the **bare** keys `include` / `exclude` (not `*_patterns`).
+//!
+//! **A value is written back in the spelling the file already uses**, and the daemon gives every
+//! setting two spellings to get wrong:
+//! 1. a kebab-case alias for each key (`log-level` for `log_level`) — writing the other one leaves
+//!    both in the file, which serde rejects as `duplicate field` (`key_in_use`);
+//! 2. `deletion_policy` against the `[delete_approval]` table, which the daemon refuses together
+//!    ([`ConfigDoc::set_deletion_policy`]).
+//!
+//! Either way a writer with a favourite spelling bricks every config written the other way, and
+//! bricks it *silently* — the file still parses as TOML, and only the daemon's next start says so.
+//! One rule covers both: read either, write back the one already there.
 
+use std::borrow::Cow;
 use std::path::Path;
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
@@ -37,67 +52,30 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// What Settings → Deletions calls `deletion_policy`, expressed over the two keys the daemon
-/// actually has (C1, #174).
+/// What Settings → Deletions calls `deletion_policy` — **the engine's own enum**, re-exported.
 ///
-/// `delete_approval.remote` gates the **recoverable** direction — a file leaving this computer goes
-/// to Proton's Trash and can be pulled back. `delete_approval.local` gates the **permanent** one —
-/// a file removed from disk is gone. So the tab's three cards are three points on those two
-/// booleans, and no new config key is needed:
+/// It used to be a copy defined here, mapping the tab's three radio cards onto the daemon's two
+/// `[delete_approval]` booleans. The daemon has the key natively now (#194), so a copy would be two
+/// enums whose serde spellings have to stay in step by hand — and the one that decides what the
+/// daemon *does* is the engine's. Re-exported rather than aliased so `use config_io::DeletionPolicy`
+/// keeps working.
 ///
-/// | card                             | `remote` | `local` |
-/// | -------------------------------- | -------- | ------- |
+/// | card                              | `remote` | `local` |
+/// | --------------------------------- | -------- | ------- |
 /// | Ask me every time *(recommended)* | `true`   | `true`  |
 /// | Only ask about permanent ones     | `false`  | `true`  |
 /// | Never ask                         | `false`  | `false` |
 ///
 /// Two booleans have four states and the tab draws three, which is why
-/// [`DeletionPolicy::OnlyRecoverable`] exists. A hand-edited config can hold `remote = true,
-/// local = false` — ask about the recoverable deletions, let the permanent ones through — and the
-/// UI must be able to say so. Folding it into the nearest card would mean the next save silently
-/// rewrote a setting the user never touched, which is the one thing [`ConfigDoc`] is built not to
-/// do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeletionPolicy {
-    /// Every deletion waits for a person. The daemon's default, and what an empty config means.
-    AskEveryTime,
-    /// Recoverable deletions go through; permanent ones wait.
-    OnlyPermanent,
-    /// Nothing waits.
-    Never,
-    /// Permanent deletions go through; recoverable ones wait. **No radio card draws this** — it is
-    /// only reachable by hand-editing the config, and is preserved rather than coerced.
-    OnlyRecoverable,
-}
+/// [`DeletionPolicy::OnlyRecoverable`] exists: a hand-edited config can hold `remote = true, local
+/// = false`, and the UI must be able to say so rather than round it to the nearest card and
+/// silently rewrite a setting the user never touched.
+pub use proton_drive_sync_engine::config::DeletionPolicy;
 
-impl DeletionPolicy {
-    /// The policy a `(remote, local)` pair expresses. Total: every combination has a name.
-    pub fn from_directions(remote: bool, local: bool) -> Self {
-        match (remote, local) {
-            (true, true) => Self::AskEveryTime,
-            (false, true) => Self::OnlyPermanent,
-            (false, false) => Self::Never,
-            (true, false) => Self::OnlyRecoverable,
-        }
-    }
-
-    /// The `(remote, local)` pair this policy writes. Inverse of [`Self::from_directions`].
-    pub fn directions(self) -> (bool, bool) {
-        match self {
-            Self::AskEveryTime => (true, true),
-            Self::OnlyPermanent => (false, true),
-            Self::Never => (false, false),
-            Self::OnlyRecoverable => (true, false),
-        }
-    }
-
-    /// Whether a radio card in `8a Deletions tab` represents this policy. `false` for
-    /// [`Self::OnlyRecoverable`], which the tab has no control for.
-    pub fn is_drawn(self) -> bool {
-        !matches!(self, Self::OnlyRecoverable)
-    }
-}
+/// How conflict sidecars are named (`conflict_suffix`), re-exported so the Tauri shell can resolve
+/// one from the config file without depending on the engine crate directly — and so there is only
+/// ever the engine's definition of what a sidecar looks like.
+pub use proton_drive_sync_engine::sync::ConflictNaming;
 
 /// An in-memory, edit-in-place view of a config file. Getters read known keys; setters mutate only
 /// the targeted key, leaving comments and every other key untouched.
@@ -130,19 +108,53 @@ impl ConfigDoc {
         self.doc.to_string()
     }
 
+    /// The spelling **this document** uses for `key`, which is not always the one the caller
+    /// asked for.
+    ///
+    /// `FileConfig` gives every key a kebab-case alias (`log-level` for `log_level`,
+    /// `local-root` for `local_root`, …), so a hand-written config may legitimately use either.
+    /// A reader that knows only the snake_case spelling draws a setting that is *in force* as
+    /// though it were unset — and a writer that knows only the snake_case spelling then adds a
+    /// **second** spelling of the same field, which serde rejects outright:
+    ///
+    /// ```text
+    /// log_level = "debug"
+    /// log-level = "debug"   # duplicate field `log_level`
+    /// ```
+    ///
+    /// That is a config the daemon will not parse and [`Self::save`] therefore refuses to write,
+    /// so the user's saves fail forever with an error naming a key they never typed twice. Same
+    /// rule as [`Self::set_deletion_policy`], for the same reason: read either spelling, write
+    /// back the one the file already uses, and only default to snake_case when it uses neither.
+    fn key_in_use<'a>(&self, key: &'a str) -> Cow<'a, str> {
+        if self.doc.get(key).is_some() || !key.contains('_') {
+            return Cow::Borrowed(key);
+        }
+        let kebab = key.replace('_', "-");
+        if self.doc.get(&kebab).is_some() {
+            return Cow::Owned(kebab);
+        }
+        Cow::Borrowed(key)
+    }
+
     // ---- getters (top-level scalars) ----
     pub fn get_str(&self, key: &str) -> Option<String> {
-        self.doc.get(key).and_then(Item::as_str).map(str::to_string)
+        self.doc
+            .get(&self.key_in_use(key))
+            .and_then(Item::as_str)
+            .map(str::to_string)
     }
     pub fn get_int(&self, key: &str) -> Option<i64> {
-        self.doc.get(key).and_then(Item::as_integer)
+        self.doc
+            .get(&self.key_in_use(key))
+            .and_then(Item::as_integer)
     }
     pub fn get_bool(&self, key: &str) -> Option<bool> {
-        self.doc.get(key).and_then(Item::as_bool)
+        self.doc.get(&self.key_in_use(key)).and_then(Item::as_bool)
     }
     pub fn get_string_array(&self, key: &str) -> Vec<String> {
         self.doc
-            .get(key)
+            .get(&self.key_in_use(key))
             .and_then(Item::as_array)
             .map(|arr| {
                 arr.iter()
@@ -154,68 +166,104 @@ impl ConfigDoc {
 
     // ---- setters (edit in place) ----
     pub fn set_str(&mut self, key: &str, v: &str) {
-        self.doc[key] = value(v);
+        let key = self.key_in_use(key).into_owned();
+        self.doc[&key] = value(v);
     }
     pub fn set_int(&mut self, key: &str, v: i64) {
-        self.doc[key] = value(v);
+        let key = self.key_in_use(key).into_owned();
+        self.doc[&key] = value(v);
     }
     pub fn set_bool(&mut self, key: &str, v: bool) {
-        self.doc[key] = value(v);
+        let key = self.key_in_use(key).into_owned();
+        self.doc[&key] = value(v);
     }
     pub fn set_string_array(&mut self, key: &str, items: &[String]) {
         let mut array = Array::new();
         for item in items {
             array.push(item.as_str());
         }
-        self.doc[key] = value(array);
+        let key = self.key_in_use(key).into_owned();
+        self.doc[&key] = value(array);
     }
     /// Remove a top-level key entirely (e.g. clearing an override so the daemon default applies).
     pub fn remove(&mut self, key: &str) {
-        self.doc.remove(key);
+        let key = self.key_in_use(key).into_owned();
+        self.doc.remove(&key);
     }
 
     // ---- the nested `[delete_approval]` table (`remote` / `local` booleans) ----
     pub fn get_delete_approval(&self, direction: &str) -> Option<bool> {
         self.doc
-            .get("delete_approval")
+            .get(&self.key_in_use("delete_approval"))
             .and_then(Item::as_table)
             .and_then(|t| t.get(direction))
             .and_then(Item::as_bool)
     }
     pub fn set_delete_approval(&mut self, direction: &str, enabled: bool) {
-        if self
-            .doc
-            .get("delete_approval")
-            .and_then(Item::as_table)
-            .is_none()
-        {
-            self.doc
-                .insert("delete_approval", Item::Table(Table::new()));
+        let table_key = self.key_in_use("delete_approval").into_owned();
+        if self.doc.get(&table_key).and_then(Item::as_table).is_none() {
+            self.doc.insert(&table_key, Item::Table(Table::new()));
         }
-        if let Some(table) = self.doc["delete_approval"].as_table_mut() {
+        if let Some(table) = self.doc[&table_key].as_table_mut() {
             table.insert(direction, value(enabled));
         }
     }
 
-    /// The deletion policy the config currently expresses — see [`DeletionPolicy`].
-    ///
-    /// An unset direction reads as `true`, which is the daemon's own default
-    /// (`config.rs`: `file.remote.unwrap_or(true)`), so an empty config is `AskEveryTime` rather
-    /// than an unknown.
-    pub fn get_deletion_policy(&self) -> DeletionPolicy {
-        DeletionPolicy::from_directions(
-            self.get_delete_approval("remote").unwrap_or(true),
-            self.get_delete_approval("local").unwrap_or(true),
-        )
+    /// The `deletion_policy` key, when the file uses that spelling. `None` means the file either
+    /// says nothing or uses `[delete_approval]` — [`Self::get_deletion_policy`] resolves both.
+    pub fn get_deletion_policy_key(&self) -> Option<DeletionPolicy> {
+        self.get_str("deletion_policy")
+            .and_then(|value| value.parse().ok())
     }
 
-    /// Write a deletion policy as the two `[delete_approval]` booleans.
+    /// The deletion policy the config currently expresses, in **either** spelling.
     ///
-    /// Both directions are written **explicitly**, even when the value matches the daemon default.
-    /// The alternative — removing a key to let the default apply — leaves the same policy expressed
-    /// two different ways in two different files, and the tab's whole promise is that the radio you
-    /// can see is the rule that is running.
+    /// The native `deletion_policy` key is read first; otherwise the two `[delete_approval]`
+    /// booleans, where an unset direction reads as `true` — the daemon's own default
+    /// (`config.rs`: `table.remote.unwrap_or(true)`) — so an empty config is `AskEveryTime` rather
+    /// than an unknown. A file holding *both* is one the daemon refuses to start on; it reads as
+    /// the native key here, and [`Self::set_deletion_policy`] is what repairs it.
+    pub fn get_deletion_policy(&self) -> DeletionPolicy {
+        self.get_deletion_policy_key().unwrap_or_else(|| {
+            DeletionPolicy::from_directions(
+                self.get_delete_approval("remote").unwrap_or(true),
+                self.get_delete_approval("local").unwrap_or(true),
+            )
+        })
+    }
+
+    /// Write a deletion policy back **in the spelling the file already uses**.
+    ///
+    /// This is not a style preference, it is the round trip. The daemon rejects a config that sets
+    /// `deletion_policy` *and* `[delete_approval]` (they are two spellings of one setting, with no
+    /// defensible precedence), so a writer that always emitted its favourite key would brick every
+    /// config written the other way — silently, since a save that parses is a save that looks fine
+    /// until the daemon next starts. Hence:
+    ///
+    /// | the file already has | this writes |
+    /// | -------------------- | ----------- |
+    /// | `deletion_policy`    | `deletion_policy` |
+    /// | `[delete_approval]`  | both booleans, table untouched otherwise |
+    /// | neither              | `deletion_policy` (the native key) |
+    /// | **both**             | `deletion_policy`, and the table is **removed** |
+    ///
+    /// The last row is the only one that deletes anything a user typed, and it is the only one
+    /// where doing nothing leaves a config the daemon will not start on. Repairing it is the point.
+    ///
+    /// In the `[delete_approval]` case both directions are written explicitly, even when the value
+    /// matches the daemon default: leaving a key absent would express the same policy two different
+    /// ways in two different files, and the tab's promise is that the radio you can see is the rule
+    /// that is running.
     pub fn set_deletion_policy(&mut self, policy: DeletionPolicy) {
+        let has_policy_key = self.doc.get(&self.key_in_use("deletion_policy")).is_some();
+        let has_table = self.doc.get(&self.key_in_use("delete_approval")).is_some();
+        if has_policy_key || !has_table {
+            self.set_str("deletion_policy", policy.as_str());
+            if has_table {
+                self.remove("delete_approval");
+            }
+            return;
+        }
         let (remote, local) = policy.directions();
         self.set_delete_approval("remote", remote);
         self.set_delete_approval("local", local);
@@ -224,18 +272,22 @@ impl ConfigDoc {
     /// Validate the current document against the daemon's own `FileConfig` parser (which enforces
     /// `deny_unknown_fields` and field types). Returns `Invalid` if the daemon would reject it.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let rendered = self.to_toml_string();
-        toml::from_str::<proton_drive_sync_engine::config::FileConfig>(&rendered)
-            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
-        // AND THE CHECKS A PARSE CANNOT MAKE. `FileConfig` is a serde shape: every value below is
-        // well-typed TOML and still a config the daemon exits on at `validate_runtime_config`
-        // (src/config.rs) — which is the worst possible moment to find out, because by then the GUI
-        // has said "Saved" and the daemon that was running the old settings is gone.
+        // THE PARSE IS NOT THE CHECK. `FileConfig` is a serde shape; a bad glob, a relative
+        // `socket_path`, an unparseable `log_level`, a `conflict_suffix` holding a `/`, or both
+        // deletion spellings at once are all well-typed TOML the daemon still exits on — which is
+        // the worst possible moment to find out, because by then the GUI has said "Saved" and the
+        // daemon that was running the old settings is gone.
         //
-        // An ABSENT key is not one of these: the daemon fills it from its own default. An EMPTY
-        // one is, and it is what a settings form produces when someone clears a field.
-        // `proton_cli` is STRICTER THAN THE DAEMON, deliberately. `validate_runtime_config` does
-        // not check it, so an empty value starts a daemon that then fails every single pass with
+        // Every one of those rules lives in the engine (`validate_file_config_text`) and is called
+        // from here rather than re-implemented. A second copy is how the daemon and the GUI ended
+        // up disagreeing about what `~` means (#135), and this file would need the daemon's own
+        // `tracing` filter parser to have the same opinion about `log_level`.
+        proton_drive_sync_engine::config::validate_file_config_text(&self.to_toml_string())
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        // AND ONE RULE THAT IS STRICTER THAN THE DAEMON, deliberately. An ABSENT key is not this:
+        // the daemon fills it from its own default. An EMPTY one is, and it is what a settings form
+        // produces when someone clears a field. `validate_runtime_config` does not check
+        // `proton_cli`, so an empty value starts a daemon that then fails every single pass with
         // `os error 2` — the ENOENT loop #158 traced, arriving from a settings field someone
         // cleared rather than from a PATH race. There is no config in which an empty CLI works.
         for key in ["local_root", "remote_root", "proton_cli"] {
@@ -243,16 +295,6 @@ impl ConfigDoc {
                 return Err(ConfigError::Invalid(format!("{key} must not be empty")));
             }
         }
-        // The globs are compiled at startup and a bad pattern is fatal there. Compiling them here
-        // against a throwaway root is exactly the daemon's own check: the root only decides which
-        // paths are ignored, and this call passes none.
-        proton_drive_sync_engine::index::ScanOptions::new(
-            Path::new("/"),
-            &[],
-            &self.get_string_array("include"),
-            &self.get_string_array("exclude"),
-        )
-        .map_err(|e| ConfigError::Invalid(format!("invalid scan filter configuration: {e}")))?;
         Ok(())
     }
 
@@ -483,27 +525,98 @@ exclude = ["*.tmp"]
     }
 
     #[test]
-    fn each_radio_card_round_trips_through_the_two_daemon_keys() {
-        for (policy, remote, local) in [
-            (DeletionPolicy::AskEveryTime, true, true),
-            (DeletionPolicy::OnlyPermanent, false, true),
-            (DeletionPolicy::Never, false, false),
-            (DeletionPolicy::OnlyRecoverable, true, false),
-        ] {
+    fn each_radio_card_round_trips_through_the_native_key() {
+        // A config with neither spelling gains the native `deletion_policy` key.
+        for policy in DeletionPolicy::ALL {
             let mut doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
             doc.set_deletion_policy(policy);
+            assert_eq!(
+                doc.get_str("deletion_policy").as_deref(),
+                Some(policy.as_str()),
+                "{policy:?} must write the native key"
+            );
+            assert_eq!(doc.get_deletion_policy(), policy);
+            doc.validate()
+                .unwrap_or_else(|e| panic!("{policy:?} must satisfy the daemon parser: {e}"));
+        }
+    }
+
+    #[test]
+    fn a_delete_approval_file_keeps_being_written_as_delete_approval() {
+        // THE BUG THIS EXISTS TO STOP. The daemon refuses a config that sets both spellings, so a
+        // writer that always emitted its favourite key would brick every config written the other
+        // way — and the save would still say "Saved", because the file parses. Every existing
+        // `[delete_approval]` config in the world is this case.
+        for policy in DeletionPolicy::ALL {
+            let mut doc = ConfigDoc::from_toml_str(
+                "local_root = \"/x\"\n[delete_approval]\nremote = true\nlocal = true\n",
+            )
+            .unwrap();
+            doc.set_deletion_policy(policy);
+            let (remote, local) = policy.directions();
             assert_eq!(
                 (
                     doc.get_delete_approval("remote"),
                     doc.get_delete_approval("local")
                 ),
                 (Some(remote), Some(local)),
-                "{policy:?} must write the documented direction pair"
+                "{policy:?} must stay in the table spelling the file already uses"
+            );
+            assert_eq!(
+                doc.get_str("deletion_policy"),
+                None,
+                "{policy:?} must not add the key that would make this file unstartable"
             );
             assert_eq!(doc.get_deletion_policy(), policy);
             doc.validate()
-                .unwrap_or_else(|e| panic!("{policy:?} must satisfy the daemon parser: {e}"));
+                .unwrap_or_else(|e| panic!("{policy:?} must satisfy the daemon: {e}"));
         }
+    }
+
+    #[test]
+    fn a_deletion_policy_file_keeps_being_written_as_deletion_policy() {
+        let mut doc =
+            ConfigDoc::from_toml_str("local_root = \"/x\"\ndeletion_policy = \"never\"\n").unwrap();
+        assert_eq!(doc.get_deletion_policy(), DeletionPolicy::Never);
+        doc.set_deletion_policy(DeletionPolicy::OnlyPermanent);
+        assert_eq!(
+            doc.get_str("deletion_policy").as_deref(),
+            Some("only_permanent")
+        );
+        assert_eq!(
+            doc.get_delete_approval("remote"),
+            None,
+            "the table spelling must not appear beside the key spelling"
+        );
+        doc.validate().expect("daemon parser");
+    }
+
+    #[test]
+    fn a_file_holding_both_spellings_is_repaired_by_the_next_save() {
+        // The daemon will not start on this file. Reading it must still name a policy, saving must
+        // normalize it to one spelling, and the result must be a config that starts — which is the
+        // only case where this writer removes something a user typed.
+        let mut doc = ConfigDoc::from_toml_str(
+            "local_root = \"/x\"\ndeletion_policy = \"never\"\n[delete_approval]\nremote = true\n",
+        )
+        .unwrap();
+        assert!(
+            doc.validate().is_err(),
+            "a file with both spellings is one the daemon refuses"
+        );
+        assert_eq!(
+            doc.get_deletion_policy(),
+            DeletionPolicy::Never,
+            "the native key is what a mixed file reads as"
+        );
+        doc.set_deletion_policy(DeletionPolicy::AskEveryTime);
+        assert_eq!(
+            doc.get_str("deletion_policy").as_deref(),
+            Some("ask_every_time")
+        );
+        assert_eq!(doc.get_delete_approval("remote"), None);
+        doc.validate()
+            .expect("the save must leave a config the daemon starts on");
     }
 
     #[test]
@@ -576,5 +689,224 @@ exclude = ["*.tmp"]
         let dir = tempfile::tempdir().unwrap();
         let doc = ConfigDoc::load(&dir.path().join("does-not-exist.toml")).unwrap();
         assert_eq!(doc.get_str("local_root"), None);
+    }
+
+    /// A config that uses every shape this writer can get wrong at once: `~` paths the daemon
+    /// expands (so persisting the expansion would silently repoint the sync root), three `0`
+    /// sentinels that mean "disabled" (so normalizing one to a real number would turn a periodic
+    /// full walk back on), comments, daemon-only keys, and the legacy `[delete_approval]` spelling.
+    const ADVERSARIAL: &str = r#"# hand-written
+local_root = "~/ProtonDrive"          # expanded by the daemon, NOT by this file
+db_path = "~/.local/state/proton/index.db"
+proton_cli = "~/bin/proton-drive"
+socket_path = "~/run/proton-sync.sock"
+remote_root = "/Drive/RemoteFolder"
+
+# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.
+events_full_scan_every = 0
+warm_start_full_walk_every = 0
+warm_start_max_cursor_age_secs = 0
+
+conflict_suffix = "from-cloud"
+exclude = ["*.tmp"]
+
+[delete_approval]
+remote = false
+local = true
+"#;
+
+    #[test]
+    fn a_save_changes_only_what_it_was_asked_to_change() {
+        // PARSE -> EDIT -> RENDER -> RE-PARSE, asserting the FILE is semantically unchanged apart
+        // from the one key the caller touched. Every literal below is one this writer could
+        // plausibly rewrite: an expanded `~`, a sentinel normalized to a real number.
+        let mut doc = ConfigDoc::from_toml_str(ADVERSARIAL).unwrap();
+        doc.set_str("log_level", "debug");
+        let reparsed = ConfigDoc::from_toml_str(&doc.to_toml_string()).unwrap();
+
+        for (key, expected) in [
+            ("local_root", "~/ProtonDrive"),
+            ("db_path", "~/.local/state/proton/index.db"),
+            ("proton_cli", "~/bin/proton-drive"),
+            ("socket_path", "~/run/proton-sync.sock"),
+        ] {
+            assert_eq!(
+                reparsed.get_str(key).as_deref(),
+                Some(expected),
+                "{key} must stay the literal the user wrote — expanding it here repoints it at \
+                 whatever HOME this process happens to have (#135)"
+            );
+        }
+        for key in [
+            "events_full_scan_every",
+            "warm_start_full_walk_every",
+            "warm_start_max_cursor_age_secs",
+        ] {
+            assert_eq!(
+                reparsed.get_int(key),
+                Some(0),
+                "{key}'s 0 is a disabled sentinel and must survive verbatim"
+            );
+        }
+        assert_eq!(
+            reparsed.get_str("conflict_suffix").as_deref(),
+            Some("from-cloud")
+        );
+        assert_eq!(reparsed.get_delete_approval("remote"), Some(false));
+        assert_eq!(reparsed.get_delete_approval("local"), Some(true));
+        assert_eq!(
+            reparsed.get_deletion_policy(),
+            DeletionPolicy::OnlyPermanent
+        );
+        assert_eq!(reparsed.get_str("log_level").as_deref(), Some("debug"));
+        assert!(
+            reparsed.to_toml_string().contains("# hand-written"),
+            "comments survive a save"
+        );
+        reparsed.validate().expect("daemon parser");
+    }
+
+    #[test]
+    fn the_settings_the_writer_did_not_design_for_survive_a_policy_change() {
+        // The same fixture edited through the OTHER new surface. A policy change rewrites the
+        // deletion keys and must leave every unrelated setting exactly as written.
+        let mut doc = ConfigDoc::from_toml_str(ADVERSARIAL).unwrap();
+        doc.set_deletion_policy(DeletionPolicy::Never);
+        let rendered = doc.to_toml_string();
+        let reparsed = ConfigDoc::from_toml_str(&rendered).unwrap();
+
+        assert_eq!(reparsed.get_deletion_policy(), DeletionPolicy::Never);
+        assert_eq!(
+            reparsed.get_str("local_root").as_deref(),
+            Some("~/ProtonDrive")
+        );
+        assert_eq!(reparsed.get_int("events_full_scan_every"), Some(0));
+        assert_eq!(
+            reparsed.get_str("conflict_suffix").as_deref(),
+            Some("from-cloud")
+        );
+        assert!(rendered.contains("# hand-written"));
+        reparsed.validate().expect("daemon parser");
+    }
+
+    #[test]
+    fn the_advanced_keys_round_trip_through_the_document() {
+        // G23/#237. `socket_path`, `log_level` and `conflict_suffix` are file keys; the fourth gap
+        // (*Reset the index*) is a command, not a setting, and has no key here by design.
+        let mut doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
+        doc.set_str("socket_path", "/run/user/1000/custom.sock");
+        doc.set_str("log_level", "proton_drive_sync_engine=debug,warn");
+        doc.set_str("conflict_suffix", "from-cloud");
+        doc.validate().expect("daemon parser");
+
+        let reparsed = ConfigDoc::from_toml_str(&doc.to_toml_string()).unwrap();
+        assert_eq!(
+            reparsed.get_str("socket_path").as_deref(),
+            Some("/run/user/1000/custom.sock")
+        );
+        assert_eq!(
+            reparsed.get_str("log_level").as_deref(),
+            Some("proton_drive_sync_engine=debug,warn")
+        );
+        assert_eq!(
+            reparsed.get_str("conflict_suffix").as_deref(),
+            Some("from-cloud")
+        );
+    }
+
+    #[test]
+    fn a_kebab_case_config_is_read_and_written_in_its_own_spelling() {
+        // `FileConfig` aliases every key, so `log-level` is a setting genuinely IN FORCE. Reading
+        // only the snake_case spelling drew it as unset; writing only the snake_case spelling then
+        // added a second spelling of the same field, and serde rejects that outright as
+        // `duplicate field` — so `save` refused, and the user's saves failed forever with an error
+        // naming a key they never typed twice. Pre-existing for `local_root` and friends; the
+        // Advanced keys just made it three more.
+        let mut doc = ConfigDoc::from_toml_str(
+            "local-root = \"/home/u/Drive\"\nlog-level = \"debug\"\nscan-interval-secs = 120\n\
+             conflict-suffix = \"from-cloud\"\n[delete-approval]\nremote = false\n",
+        )
+        .unwrap();
+
+        assert_eq!(doc.get_str("local_root").as_deref(), Some("/home/u/Drive"));
+        assert_eq!(doc.get_str("log_level").as_deref(), Some("debug"));
+        assert_eq!(doc.get_int("scan_interval_secs"), Some(120));
+        assert_eq!(doc.get_delete_approval("remote"), Some(false));
+        assert_eq!(doc.get_deletion_policy(), DeletionPolicy::OnlyPermanent);
+
+        doc.set_str("log_level", "warn");
+        doc.set_int("scan_interval_secs", 300);
+        doc.set_delete_approval("local", false);
+        let rendered = doc.to_toml_string();
+
+        assert!(rendered.contains("log-level = \"warn\""), "{rendered}");
+        assert!(
+            !rendered.contains("log_level"),
+            "a second spelling of one field is a config the daemon will not parse:\n{rendered}"
+        );
+        assert!(!rendered.contains("scan_interval_secs"), "{rendered}");
+        assert!(!rendered.contains("[delete_approval]"), "{rendered}");
+        doc.validate()
+            .expect("a kebab-case config must still be saveable after an edit");
+        assert_eq!(
+            ConfigDoc::from_toml_str(&rendered)
+                .unwrap()
+                .get_deletion_policy(),
+            DeletionPolicy::Never
+        );
+    }
+
+    #[test]
+    fn a_snake_case_config_is_untouched_by_the_alias_rule() {
+        // The common case must not change: with no kebab spelling present, snake_case is written.
+        let mut doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
+        doc.set_str("log_level", "warn");
+        doc.set_deletion_policy(DeletionPolicy::Never);
+        let rendered = doc.to_toml_string();
+        assert!(rendered.contains("log_level = \"warn\""), "{rendered}");
+        assert!(!rendered.contains("log-level"), "{rendered}");
+        assert!(rendered.contains("deletion_policy"), "{rendered}");
+        doc.validate().expect("daemon parser");
+    }
+
+    #[test]
+    fn a_tilde_socket_path_validates_and_stays_a_tilde() {
+        // Ordering: the daemon expands `~` and THEN requires an absolute path, so a validator that
+        // checked the literal would reject a config the daemon accepts — and must not tempt the
+        // writer into persisting the expansion to make its own check pass.
+        let doc = ConfigDoc::from_toml_str("socket_path = \"~/run/proton-sync.sock\"\n").unwrap();
+        doc.validate()
+            .expect("`~` is expanded before the absolute-path check");
+        assert_eq!(
+            doc.get_str("socket_path").as_deref(),
+            Some("~/run/proton-sync.sock")
+        );
+    }
+
+    #[test]
+    fn the_new_keys_are_refused_when_the_daemon_would_exit_on_them() {
+        // Each of these is well-typed TOML that stops the daemon at startup — the moment after the
+        // GUI has said "Saved" and the process running the old settings is gone.
+        for (toml, needle) in [
+            ("socket_path = \"run/daemon.sock\"\n", "absolute path"),
+            // `EnvFilter` would take this as the TARGET directive `inf0=trace` and silence the
+            // daemon entirely, which is worse than an error because it looks accepted.
+            ("log_level = \"inf0\"\n", "invalid log_level"),
+            ("log_level = \"a=b=c\"\n", "invalid log_level"),
+            ("conflict_suffix = \"\"\n", "must not be empty"),
+            ("conflict_suffix = \"a/b\"\n", "path separator"),
+            ("conflict_suffix = \".hidden\"\n", "start or end with `.`"),
+            (
+                "deletion_policy = \"never\"\n[delete_approval]\nremote = true\n",
+                "two spellings of one setting",
+            ),
+        ] {
+            let error = ConfigDoc::from_toml_str(toml)
+                .unwrap()
+                .validate()
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(needle), "expected {needle:?} in: {error}");
+        }
     }
 }

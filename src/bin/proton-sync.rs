@@ -57,6 +57,15 @@ enum Commands {
     /// Force a full remote re-scan on the daemon's next pass (instead of the fast warm start),
     /// e.g. to self-heal suspected drift. Returns immediately; watch with `proton-sync status`.
     Resync,
+    /// Discard everything the daemon has learned — the baseline index, the event cursors and the
+    /// standing delete approvals — and rebuild it from a full scan of both sides. Your files are
+    /// not touched: the rebuild re-adopts every local/remote pair that already agrees. Requires
+    /// `--yes` because a mismatched pair is re-decided from scratch, conflict sidecars included.
+    ResetIndex {
+        /// Confirm the reset. Without it nothing is sent.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Ask the running daemon to exit gracefully.
     Stop,
     /// List deletions currently withheld by the delete-approval guard, awaiting approval.
@@ -167,7 +176,7 @@ async fn main() -> ExitCode {
         Commands::Syncnow { no_wait } => {
             watch_syncnow(&socket_path, response, *no_wait, cli.json, &style).await
         }
-        Commands::Resync => {
+        Commands::Resync | Commands::ResetIndex { .. } => {
             if cli.json {
                 print_pretty_json(&response);
             } else {
@@ -214,6 +223,19 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         Commands::Resume => (ControlCommand::Resume, None),
         Commands::Syncnow { .. } => (ControlCommand::Syncnow, None),
         Commands::Resync => (ControlCommand::Resync, None),
+        // The gate is here rather than on the daemon: a control command carries no confirmation
+        // field, so a client that skipped the prompt would be indistinguishable from one that did
+        // not. Refusing before the socket is even opened keeps "nothing was sent" literally true.
+        Commands::ResetIndex { yes } => {
+            if !yes {
+                return Err(
+                    "reset-index discards the sync baseline and every standing delete approval; \
+                     re-run with --yes to confirm"
+                        .to_owned(),
+                );
+            }
+            (ControlCommand::ResetIndex, None)
+        }
         Commands::Stop => (ControlCommand::Shutdown, None),
         Commands::Approve { path, all, .. } => {
             (ControlCommand::Approve, approval_selector(path, *all)?)
@@ -1010,6 +1032,27 @@ mod tests {
             transfer: None,
             since_epoch_secs: None,
         }
+    }
+
+    #[test]
+    fn reset_index_refuses_to_send_anything_without_the_typed_confirmation() {
+        // The gate is client-side because the wire carries no confirmation field: a daemon cannot
+        // tell a confirmed request from an unconfirmed one. Refusing before the socket is opened is
+        // what makes "nothing was sent" literally true.
+        let error = build_request(&Commands::ResetIndex { yes: false })
+            .expect_err("an unconfirmed reset must not be sent");
+        assert!(
+            error.contains("--yes"),
+            "the refusal must say how to confirm: {error}"
+        );
+
+        let request = build_request(&Commands::ResetIndex { yes: true }).expect("confirmed");
+        assert_eq!(request.command, ControlCommand::ResetIndex);
+        assert_eq!(request.argument, None);
+        assert!(
+            !request.literal_path,
+            "reset-index carries no path selector"
+        );
     }
 
     #[test]

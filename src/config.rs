@@ -7,11 +7,14 @@ use crate::paths::{
     default_global_lock_path, default_lockfile_path, default_socket_path, default_state_db_path,
 };
 use crate::proton::CommandPolicy;
+use crate::sync::{ConflictNaming, validate_conflict_suffix};
 use crate::{AppResult, boxed_error};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 /// Default number of incremental event-driven passes between forced full-tree resyncs when
@@ -26,6 +29,102 @@ const DEFAULT_EVENTS_FULL_SCAN_EVERY: u64 = 0;
 /// bulk download, small enough that every ~25 files a checkpoint commits and a failure loses
 /// at most one chunk of progress. `1` disables batching (one subprocess per file).
 const DEFAULT_DOWNLOAD_BATCH_SIZE: usize = 25;
+
+/// The verbosity used when nothing configures one. Matches the historical `init_tracing` fallback.
+pub const DEFAULT_LOG_LEVEL: &str = "info";
+
+/// The delete-approval guard expressed as one coarse setting — the `deletion_policy` key (#194).
+///
+/// Not a second mechanism: it is a **spelling** of the two `[delete_approval]` booleans the guard
+/// has always run on, and resolves to exactly that pair. `remote` gates the *recoverable*
+/// direction (a file leaving this computer lands in Proton's Trash and can be pulled back);
+/// `local` gates the *permanent* one (a file removed from disk is gone). Both layers that carry
+/// the guard — this daemon-wide config and the per-directory `.proton-sync.toml`
+/// ([`crate::dirconfig`]) — accept either spelling, and **refuse a file that uses both**, because
+/// two spellings of one setting in one file have no defensible precedence.
+///
+/// Four combinations, three of which the Settings screen draws.
+/// [`Self::OnlyRecoverable`] has no control: it exists so a hand-written config is *named* rather
+/// than rounded to the nearest card and silently rewritten on the next save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionPolicy {
+    /// Every deletion waits for a person. The daemon default, and what an empty config means.
+    AskEveryTime,
+    /// Recoverable deletions go through; permanent ones wait.
+    OnlyPermanent,
+    /// Nothing waits.
+    Never,
+    /// Permanent deletions go through; recoverable ones wait. Undrawn.
+    OnlyRecoverable,
+}
+
+impl DeletionPolicy {
+    /// The policy a `(remote, local)` pair expresses. Total: every combination has a name.
+    pub fn from_directions(remote: bool, local: bool) -> Self {
+        match (remote, local) {
+            (true, true) => Self::AskEveryTime,
+            (false, true) => Self::OnlyPermanent,
+            (false, false) => Self::Never,
+            (true, false) => Self::OnlyRecoverable,
+        }
+    }
+
+    /// The `(remote, local)` pair this policy resolves to. Inverse of [`Self::from_directions`].
+    pub fn directions(self) -> (bool, bool) {
+        match self {
+            Self::AskEveryTime => (true, true),
+            Self::OnlyPermanent => (false, true),
+            Self::Never => (false, false),
+            Self::OnlyRecoverable => (true, false),
+        }
+    }
+
+    /// Whether a radio card in `8a Deletions tab` represents this policy. `false` for
+    /// [`Self::OnlyRecoverable`], which the tab has no control for.
+    pub fn is_drawn(self) -> bool {
+        !matches!(self, Self::OnlyRecoverable)
+    }
+
+    /// The TOML/CLI spelling. Kept in step with the serde rename by
+    /// `every_policy_spelling_round_trips_through_serde_and_from_str`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AskEveryTime => "ask_every_time",
+            Self::OnlyPermanent => "only_permanent",
+            Self::Never => "never",
+            Self::OnlyRecoverable => "only_recoverable",
+        }
+    }
+
+    /// Every policy, for exhaustive tests and for naming the choices in an error message.
+    pub const ALL: [Self; 4] = [
+        Self::AskEveryTime,
+        Self::OnlyPermanent,
+        Self::Never,
+        Self::OnlyRecoverable,
+    ];
+}
+
+impl fmt::Display for DeletionPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DeletionPolicy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|policy| policy.as_str() == value)
+            .ok_or_else(|| {
+                let names: Vec<&str> = Self::ALL.iter().map(|policy| policy.as_str()).collect();
+                format!("unknown deletion_policy `{value}`; expected one of {names:?}")
+            })
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DaemonConfigInput {
@@ -65,6 +164,16 @@ pub struct DaemonConfigInput {
     /// Per-direction and per-subtree granularity lives in the per-directory `.proton-sync.toml`
     /// files (see `crate::dirconfig`); the CLI keeps only this blunt escape hatch.
     pub no_delete_approval: bool,
+    /// `--deletion-policy`: the guard as one named setting. Beaten by `no_delete_approval`, beats
+    /// anything the file says (including its `[delete_approval]` table).
+    pub deletion_policy: Option<DeletionPolicy>,
+    /// `--log-level`: a `tracing` filter directive (`info`, `debug`, `crate::module=warn`, …).
+    pub log_level: Option<String>,
+    /// The process's `RUST_LOG`, passed in rather than read here so resolution stays pure and
+    /// parallel tests cannot race on the environment (same reason as `expand_tilde_with_home`).
+    pub rust_log: Option<String>,
+    /// `--conflict-suffix`: how conflict sidecars are named. See [`ConflictNaming`].
+    pub conflict_suffix: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -110,6 +219,18 @@ pub struct FileConfig {
     /// per-directory inheritance chain). Each direction defaults to `true` (protected) when unset.
     #[serde(default, alias = "delete-approval")]
     delete_approval: Option<FileDeleteApproval>,
+    /// The same guard as one named setting (#194). Mutually exclusive with `delete_approval` —
+    /// see [`DeletionPolicy`] and [`resolve_file_delete_approval`].
+    #[serde(default, alias = "deletion-policy")]
+    deletion_policy: Option<DeletionPolicy>,
+    /// Daemon log verbosity as a `tracing` filter directive. Outranked by the process's
+    /// `RUST_LOG`, which outranks nothing else — see [`resolve_log_filter`].
+    #[serde(default, alias = "log-level")]
+    log_level: Option<String>,
+    /// Conflict-sidecar suffix (`{stem}.{suffix}.{ext}`); default `proton-cloud`. Changing it
+    /// orphans sidecars already on disk — see [`ConflictNaming`].
+    #[serde(default, alias = "conflict-suffix")]
+    conflict_suffix: Option<String>,
 }
 
 /// The `[delete_approval]` table in the daemon config file. Names the *target* of the deletion
@@ -158,9 +279,13 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
     // overrides live in `.proton-sync.toml` files, resolved at reconcile time by `crate::dirconfig`.
     let (delete_approval_remote, delete_approval_local) = if input.no_delete_approval {
         (false, false)
+    } else if let Some(policy) = input.deletion_policy {
+        policy.directions()
     } else {
-        let file = file_config.delete_approval.unwrap_or_default();
-        (file.remote.unwrap_or(true), file.local.unwrap_or(true))
+        resolve_file_delete_approval(
+            file_config.deletion_policy,
+            file_config.delete_approval.as_ref(),
+        )?
     };
     // Warm start (first-pass event-driven reconcile). Enabled by default; precedence mirrors
     // `events_driven`: explicit opt-out flag > explicit opt-in flag > file value > default (on).
@@ -282,6 +407,15 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
         delete_approval_remote,
         delete_approval_local,
         warm_start,
+        log_filter: resolve_log_filter(
+            input.log_level.as_deref(),
+            input.rust_log.as_deref(),
+            file_config.log_level.as_deref(),
+        )?,
+        conflict_naming: match input.conflict_suffix.or(file_config.conflict_suffix) {
+            Some(suffix) => ConflictNaming::new(&suffix)?,
+            None => ConflictNaming::default(),
+        },
     };
     validate_runtime_config(&config)?;
 
@@ -313,6 +447,141 @@ pub fn resolve_control_socket_path(
         }
         None => default_socket_path(),
     }
+}
+
+/// The `(remote, local)` guard pair a config **file** asks for, from whichever of the two
+/// spellings it uses.
+///
+/// **Both spellings in one file is an error**, not a precedence puzzle: `deletion_policy` and
+/// `[delete_approval]` are one setting written two ways, and silently preferring either would make
+/// a file whose two halves disagree run as something neither half says. Naming both keys is also
+/// what lets a round-trip writer know which one it may rewrite.
+///
+/// An existing `[delete_approval]`-only file is unaffected: no `deletion_policy`, same two
+/// booleans, same unset-means-protected default.
+fn resolve_file_delete_approval(
+    policy: Option<DeletionPolicy>,
+    table: Option<&FileDeleteApproval>,
+) -> AppResult<(bool, bool)> {
+    match (policy, table) {
+        (Some(_), Some(_)) => Err(boxed_error(
+            "config sets both `deletion_policy` and `[delete_approval]`: they are two spellings \
+             of one setting; keep whichever you prefer and delete the other",
+        )),
+        (Some(policy), None) => Ok(policy.directions()),
+        (None, Some(table)) => Ok((table.remote.unwrap_or(true), table.local.unwrap_or(true))),
+        (None, None) => Ok((true, true)),
+    }
+}
+
+/// The `tracing` filter directive the daemon runs with.
+///
+/// Precedence is **`--log-level` > `RUST_LOG` > the config file's `log_level` > `info`**. The env
+/// var sits in the middle deliberately: it is the documented ad-hoc verbosity control (`RUST_LOG`
+/// is what every log-related doc in this repo tells you to set), so a config file must not
+/// silently outrank it — but an explicit flag on this invocation must outrank both. An empty env
+/// value counts as unset, matching `EnvFilter::try_from_default_env`.
+///
+/// **A configured value is validated and fatal; the env var is best-effort.** `--log-level` and
+/// `log_level` are deliberate settings, and `EnvFilter` is permissive enough that a typo in one is
+/// worse than an error: `inf0` parses fine as the *target* directive `inf0=trace`, which silences
+/// the daemon completely while looking like it was accepted. So a configured value that is neither
+/// a bare level nor an explicit `target=level` directive is refused (see
+/// [`validate_log_directive`]). `RUST_LOG` keeps its historical forgiving behaviour — an ambient
+/// env var must not stop a daemon from starting — and an unusable one falls through to the next
+/// source instead of to `info`.
+pub fn resolve_log_filter(
+    flag: Option<&str>,
+    env: Option<&str>,
+    file: Option<&str>,
+) -> AppResult<String> {
+    fn non_empty(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+    if let Some(directive) = non_empty(flag) {
+        validate_log_directive(directive, "--log-level")?;
+        return Ok(directive.to_owned());
+    }
+    if let Some(directive) = non_empty(env)
+        && tracing_subscriber::EnvFilter::try_new(directive).is_ok()
+    {
+        return Ok(directive.to_owned());
+    }
+    if let Some(directive) = non_empty(file) {
+        validate_log_directive(directive, "log_level")?;
+        return Ok(directive.to_owned());
+    }
+    Ok(DEFAULT_LOG_LEVEL.to_owned())
+}
+
+/// Levels a bare `log_level` may name. Anything else without an explicit `=` is a typo, not a
+/// target filter — see [`resolve_log_filter`].
+const LOG_LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "trace"];
+
+/// Syntax check plus the bare-word rule. `target=level` directives go through `EnvFilter`
+/// untouched, so `proton_drive_sync_engine::transfer=warn` still works.
+///
+/// The bare-word rule is applied **per comma-separated segment**, not to the string as a whole.
+/// `EnvFilter` reads a bare word it does not recognise as a *target* directive at `trace`, so
+/// `inf0` silences the daemon while parsing cleanly — the typo this validation exists to catch.
+/// A whole-string check misses it the moment it shares a list with a valid directive
+/// (`inf0,proton_drive_sync_engine=debug`), which is the shape a user reaches for precisely when
+/// they are hand-editing levels.
+fn validate_log_directive(directive: &str, source: &str) -> AppResult<()> {
+    tracing_subscriber::EnvFilter::try_new(directive)
+        .map_err(|error| boxed_error(format!("invalid {source} `{directive}`: {error}")))?;
+    for segment in directive.split(',') {
+        let segment = segment.trim();
+        if segment.is_empty() || segment.contains('=') {
+            continue;
+        }
+        if !LOG_LEVELS.contains(&segment.to_ascii_lowercase().as_str()) {
+            return Err(boxed_error(format!(
+                "invalid {source} `{directive}`: `{segment}` is not one of {LOG_LEVELS:?}, and a \
+                 bare word that is not a level is read as a target to log at `trace`. Use an \
+                 explicit `target=level` directive such as `proton_drive_sync_engine=debug`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Every check a config **file** can fail that `toml::from_str::<FileConfig>` cannot see.
+///
+/// The serde shape only proves keys and types. Everything below is well-typed TOML that still
+/// stops the daemon at startup, and a second reader of this file (the GUI's config writer) has no
+/// way to know that without re-implementing the daemon's own rules — which is how the two ended up
+/// disagreeing about `~` (#135). One function, both callers.
+///
+/// Scoped to what a *file* alone can decide: a missing `local_root` is not an error here (a flag
+/// may supply it), and nothing on the filesystem is touched.
+pub fn validate_file_config_text(text: &str) -> AppResult<()> {
+    let config = parse_file_config(text)
+        .map_err(|error| boxed_error(format!("failed to parse config: {error}")))?;
+    resolve_file_delete_approval(config.deletion_policy, config.delete_approval.as_ref())?;
+    resolve_log_filter(None, None, config.log_level.as_deref())?;
+    if let Some(suffix) = &config.conflict_suffix {
+        validate_conflict_suffix(suffix)?;
+    }
+    if let Some(socket_path) = config.socket_path {
+        // Expand FIRST: `socket_path = "~/run/x.sock"` is a path the daemon accepts, and checking
+        // the literal would reject it as relative.
+        require_absolute_socket_path(&expand_tilde(socket_path, "socket_path")?)?;
+    }
+    resolve_positive_duration_secs(None, config.proton_timeout_secs, 1, "proton_timeout_secs")?;
+    resolve_positive_usize(None, config.proton_list_attempts, 1, "proton_list_attempts")?;
+    resolve_positive_usize(None, config.download_batch_size, 1, "download_batch_size")?;
+    // Compiled against a throwaway root: the root only decides which paths are ignored, and this
+    // call passes none. Same check `validate_runtime_config` makes.
+    ScanOptions::new(
+        Path::new("/"),
+        &[],
+        &config.include_patterns.unwrap_or_default(),
+        &config.exclude_patterns.unwrap_or_default(),
+        &ConflictNaming::default(),
+    )
+    .map_err(|error| boxed_error(format!("invalid scan filter configuration: {error}")))?;
+    Ok(())
 }
 
 pub fn load_file_config(path: Option<&PathBuf>) -> AppResult<FileConfig> {
@@ -459,6 +728,7 @@ fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
         std::slice::from_ref(&config.db_path),
         &config.include_patterns,
         &config.exclude_patterns,
+        &config.conflict_naming,
     )
     .map_err(|error| boxed_error(format!("invalid scan filter configuration: {error}")))?;
     Ok(())
@@ -475,6 +745,7 @@ fn merge_patterns(cli_patterns: Vec<String>, config_patterns: Option<Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::DEFAULT_CONFLICT_SUFFIX;
     use tempfile::tempdir;
 
     #[test]
@@ -1230,6 +1501,334 @@ local = true
 
         assert!(!config.delete_approval_remote);
         assert!(!config.delete_approval_local);
+    }
+
+    #[test]
+    fn every_policy_spelling_round_trips_through_serde_and_from_str() {
+        // Three spellings of one enum — the TOML value, the CLI value, and `as_str` — and a config
+        // round trip has to write back what it read. A rename that moved only one of them would
+        // otherwise show up as a config that silently reverts to the default.
+        for policy in DeletionPolicy::ALL {
+            let toml_text = format!("deletion_policy = \"{}\"\n", policy.as_str());
+            let parsed = parse_file_config(&toml_text).expect("parse");
+            assert_eq!(parsed.deletion_policy, Some(policy), "{policy:?} via TOML");
+            assert_eq!(
+                policy.as_str().parse::<DeletionPolicy>().expect("from_str"),
+                policy,
+                "{policy:?} via FromStr"
+            );
+            assert_eq!(policy.to_string(), policy.as_str());
+            let (remote, local) = policy.directions();
+            assert_eq!(DeletionPolicy::from_directions(remote, local), policy);
+        }
+        assert!(
+            "asks_every_time".parse::<DeletionPolicy>().is_err(),
+            "an unknown spelling must be an error, not the default"
+        );
+    }
+
+    #[test]
+    fn deletion_policy_resolves_to_the_same_pair_as_the_table_spelling() {
+        for policy in DeletionPolicy::ALL {
+            let directory = tempdir().expect("tempdir");
+            let config_path = directory.path().join("proton-sync.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    "local_root = \"sync-root\"\nremote_root = \"/Drive/R\"\ndeletion_policy = \"{}\"\n",
+                    policy.as_str()
+                ),
+            )
+            .expect("write config");
+
+            let (config, _) = resolve_runtime_config(DaemonConfigInput {
+                config: Some(config_path),
+                ..DaemonConfigInput::default()
+            })
+            .expect("runtime config");
+
+            assert_eq!(
+                (config.delete_approval_remote, config.delete_approval_local),
+                policy.directions(),
+                "{policy:?} must resolve to the two booleans the guard has always run on"
+            );
+        }
+    }
+
+    #[test]
+    fn a_config_using_both_deletion_spellings_is_refused_and_names_both() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+deletion_policy = "never"
+[delete_approval]
+remote = true
+"#,
+        )
+        .expect("write config");
+
+        let error = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("two spellings of one setting must not resolve to a guessed precedence");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("deletion_policy") && message.contains("delete_approval"),
+            "the error must name both keys so the fix is obvious: {message}"
+        );
+    }
+
+    #[test]
+    fn an_existing_delete_approval_config_is_unaffected_by_the_new_key() {
+        // THE COMPATIBILITY CLAIM, asserted rather than assumed: adding `deletion_policy` must not
+        // change what any config written before it means. Every direction combination, through the
+        // old spelling, plus the unset-is-protected default.
+        for (remote, local) in [(true, true), (true, false), (false, true), (false, false)] {
+            let directory = tempdir().expect("tempdir");
+            let config_path = directory.path().join("proton-sync.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    "local_root = \"sync-root\"\nremote_root = \"/Drive/R\"\n[delete_approval]\nremote = {remote}\nlocal = {local}\n"
+                ),
+            )
+            .expect("write config");
+
+            let (config, _) = resolve_runtime_config(DaemonConfigInput {
+                config: Some(config_path),
+                ..DaemonConfigInput::default()
+            })
+            .expect("an existing delete_approval config must keep resolving");
+
+            assert_eq!(
+                (config.delete_approval_remote, config.delete_approval_local),
+                (remote, local)
+            );
+        }
+    }
+
+    #[test]
+    fn the_deletion_policy_flag_beats_the_file_and_no_delete_approval_beats_the_flag() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+[delete_approval]
+remote = true
+local = true
+"#,
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path.clone()),
+            deletion_policy: Some(DeletionPolicy::OnlyPermanent),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+        assert_eq!(
+            (config.delete_approval_remote, config.delete_approval_local),
+            (false, true),
+            "an explicit flag outranks the file, including its table spelling"
+        );
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            deletion_policy: Some(DeletionPolicy::AskEveryTime),
+            no_delete_approval: true,
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+        assert!(
+            !config.delete_approval_remote && !config.delete_approval_local,
+            "--no-delete-approval stays the blunt override it has always been"
+        );
+    }
+
+    #[test]
+    fn log_filter_precedence_is_flag_then_env_then_file() {
+        assert_eq!(
+            resolve_log_filter(Some("debug"), Some("trace"), Some("warn")).expect("flag"),
+            "debug",
+            "an explicit flag outranks an ambient RUST_LOG"
+        );
+        assert_eq!(
+            resolve_log_filter(None, Some("trace"), Some("warn")).expect("env"),
+            "trace",
+            "RUST_LOG outranks the file: it is what every log doc in this repo tells you to set"
+        );
+        assert_eq!(
+            resolve_log_filter(None, None, Some("warn")).expect("file"),
+            "warn"
+        );
+        assert_eq!(
+            resolve_log_filter(None, None, None).expect("default"),
+            DEFAULT_LOG_LEVEL
+        );
+        assert_eq!(
+            resolve_log_filter(None, Some(""), Some("warn")).expect("empty env"),
+            "warn",
+            "an empty RUST_LOG counts as unset, matching EnvFilter::try_from_default_env"
+        );
+        assert_eq!(
+            resolve_log_filter(None, None, Some("proton_drive_sync_engine::transfer=warn"))
+                .expect("target directive"),
+            "proton_drive_sync_engine::transfer=warn",
+            "the per-module directives the daemon docs recommend must still be configurable"
+        );
+    }
+
+    #[test]
+    fn a_configured_log_level_is_fatal_while_a_broken_rust_log_is_not() {
+        // `EnvFilter` is permissive: `inf0` parses happily as the TARGET directive `inf0=trace`,
+        // which silences the daemon while looking accepted. That is fine to shrug off for an
+        // ambient env var and not fine for a setting someone deliberately wrote.
+        for source in ["--log-level", "log_level"] {
+            let (flag, file) = if source == "--log-level" {
+                (Some("inf0"), None)
+            } else {
+                (None, Some("inf0"))
+            };
+            let error = resolve_log_filter(flag, None, file)
+                .expect_err("a bare non-level must be refused")
+                .to_string();
+            assert!(
+                error.contains(source),
+                "the error must name its source: {error}"
+            );
+        }
+        assert_eq!(
+            resolve_log_filter(None, Some("!!!"), Some("warn")).expect("bad env falls through"),
+            "warn",
+            "an unusable RUST_LOG must not stop the daemon starting"
+        );
+    }
+
+    #[test]
+    fn a_typo_hides_inside_a_directive_list_too() {
+        // The bare-word rule is per segment. Sharing a list with a valid `target=level` is exactly
+        // how a hand-edited level ends up looking legitimate: `EnvFilter` accepts the whole string,
+        // and `inf0` still becomes a target logged at `trace` while the daemon's own output stops.
+        for directive in [
+            "inf0,proton_drive_sync_engine=debug",
+            "proton_drive_sync_engine=debug,inf0",
+            "info,warn,inf0",
+        ] {
+            let error = resolve_log_filter(None, None, Some(directive))
+                .expect_err("a bare non-level in any segment must be refused")
+                .to_string();
+            assert!(
+                error.contains("inf0"),
+                "the error must name the offending segment, not just the whole value: {error}"
+            );
+        }
+        // Real multi-directive values still pass, including a bare level leading the list.
+        for directive in [
+            "info,proton_drive_sync_engine=debug",
+            "proton_drive_sync_engine::transfer=warn,proton_drive_sync_engine=info",
+            "warn",
+        ] {
+            resolve_log_filter(None, None, Some(directive))
+                .unwrap_or_else(|error| panic!("`{directive}` must stay valid: {error}"));
+        }
+    }
+
+    #[test]
+    fn conflict_suffix_resolves_flag_over_file_over_default() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            r#"
+local_root = "sync-root"
+remote_root = "/Drive/RemoteFolder"
+conflict_suffix = "from-file"
+"#,
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/R")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("default");
+        assert_eq!(config.conflict_naming.suffix(), DEFAULT_CONFLICT_SUFFIX);
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path.clone()),
+            ..DaemonConfigInput::default()
+        })
+        .expect("file");
+        assert_eq!(config.conflict_naming.suffix(), "from-file");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            conflict_suffix: Some("from-flag".to_owned()),
+            ..DaemonConfigInput::default()
+        })
+        .expect("flag");
+        assert_eq!(config.conflict_naming.suffix(), "from-flag");
+    }
+
+    #[test]
+    fn an_unusable_conflict_suffix_from_the_file_returns_a_targeted_config_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/R")),
+            conflict_suffix: Some("nested/suffix".to_owned()),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("a suffix holding a separator would place the sidecar in another directory");
+
+        assert!(
+            error.to_string().contains("path separator"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The GUI's config writer calls this instead of re-implementing the daemon's rules; every
+    /// entry below is well-typed TOML the daemon still exits on, and each one used to be
+    /// invisible until startup.
+    #[test]
+    fn validate_file_config_text_catches_what_the_serde_shape_cannot() {
+        for (text, needle) in [
+            ("socket_path = \"run/daemon.sock\"\n", "absolute path"),
+            ("log_level = \"inf0\"\n", "invalid log_level"),
+            ("conflict_suffix = \"a/b\"\n", "path separator"),
+            ("proton_timeout_secs = 0\n", "greater than zero"),
+            ("proton_list_attempts = 0\n", "greater than zero"),
+            ("download_batch_size = 0\n", "greater than zero"),
+            ("exclude = [\"[\"]\n", "invalid scan filter"),
+            (
+                "deletion_policy = \"never\"\n[delete_approval]\nlocal = false\n",
+                "two spellings of one setting",
+            ),
+            ("frobnicate = 1\n", "failed to parse config"),
+        ] {
+            let error = validate_file_config_text(text)
+                .expect_err("must be refused")
+                .to_string();
+            assert!(error.contains(needle), "expected {needle:?} in: {error}");
+        }
+        // And the shapes it must NOT refuse: an absent key is the daemon's own default, `0` is a
+        // meaningful sentinel on the events/warm-start knobs, and `~` is expanded before the
+        // socket path is checked for absoluteness.
+        validate_file_config_text(
+            "socket_path = \"~/run/x.sock\"\nevents_full_scan_every = 0\n\
+             warm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\
+             [delete_approval]\nremote = false\n",
+        )
+        .expect("a valid config must pass");
     }
 
     #[test]

@@ -2,6 +2,7 @@ use crate::index::{
     EntityKind, FileRecord, LocalDirectoryState, LocalEntityState, LocalFileState, SyncStatus,
 };
 use crate::proton::{RemoteDirectory, RemoteEntity, RemoteFile};
+use crate::{AppResult, boxed_error};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -310,6 +311,7 @@ pub fn plan_sync(
     local_files: &HashMap<PathBuf, LocalFileState>,
     remote_files: &HashMap<PathBuf, RemoteFile>,
     base_index: &HashMap<PathBuf, FileRecord>,
+    naming: &ConflictNaming,
 ) -> Vec<PlannedAction> {
     let local_entities = local_files
         .iter()
@@ -319,7 +321,7 @@ pub fn plan_sync(
         .iter()
         .map(|(path, file)| (path.clone(), RemoteEntity::File(file.clone())))
         .collect();
-    plan_sync_entities(&local_entities, &remote_entities, base_index)
+    plan_sync_entities(&local_entities, &remote_entities, base_index, naming)
 }
 
 /// A plan plus the facts about the paths that produced **no** row. See
@@ -335,8 +337,9 @@ pub fn plan_sync_entities(
     local_entities: &HashMap<PathBuf, LocalEntityState>,
     remote_entities: &HashMap<PathBuf, RemoteEntity>,
     base_index: &HashMap<PathBuf, FileRecord>,
+    naming: &ConflictNaming,
 ) -> Vec<PlannedAction> {
-    plan_sync_entities_with_stats(local_entities, remote_entities, base_index).actions
+    plan_sync_entities_with_stats(local_entities, remote_entities, base_index, naming).actions
 }
 
 /// [`plan_sync_entities`] plus the count of files it deliberately left alone.
@@ -350,6 +353,7 @@ pub fn plan_sync_entities_with_stats(
     local_entities: &HashMap<PathBuf, LocalEntityState>,
     remote_entities: &HashMap<PathBuf, RemoteEntity>,
     base_index: &HashMap<PathBuf, FileRecord>,
+    naming: &ConflictNaming,
 ) -> PlanOutcome {
     let mut paths = BTreeSet::new();
     paths.extend(local_entities.keys().cloned());
@@ -364,6 +368,7 @@ pub fn plan_sync_entities_with_stats(
         remote_entities,
         base_index,
         &suppressed_paths,
+        naming,
     );
     let mut plan = transition_actions;
     let mut matched_files = 0u64;
@@ -380,6 +385,7 @@ pub fn plan_sync_entities_with_stats(
             base_index.get(&path),
             bootstrap,
             &deletion_verdicts,
+            naming,
         );
         // Counted against the action actually planned, so the tally can never contradict the plan:
         // a matching pair that nonetheless produced real work (an unrepresentable path's
@@ -428,6 +434,7 @@ fn plan_entity_action(
     base: Option<&FileRecord>,
     bootstrap: bool,
     deletion_verdicts: &HashMap<PathBuf, bool>,
+    naming: &ConflictNaming,
 ) -> Option<PlannedAction> {
     if !is_representable_remotely(path) {
         // #270. The path cannot cross the CLI's JSON boundary intact, so nothing that touches the
@@ -452,7 +459,7 @@ fn plan_entity_action(
         return None;
     }
     if is_live_kind_clash(local, remote) {
-        return Some(plan_type_conflict_action(path, local, remote, base));
+        return Some(plan_type_conflict_action(path, local, remote, base, naming));
     }
     if only_base_kind_is_stale(local, remote, base) {
         // No live clash — the surviving side(s) agree and it is the *base* row that still
@@ -460,7 +467,7 @@ fn plan_entity_action(
         // under the same name, and the mirror cases). Plan the surviving entity's bootstrap
         // action: its upsert replaces the stale row wholesale (`entity_kind` included), so the
         // path converges in THIS pass (#47).
-        return plan_bootstrap_entity_action(path, local, remote);
+        return plan_bootstrap_entity_action(path, local, remote, naming);
     }
     match base {
         Some(base) if base.entity_kind == EntityKind::Directory && !bootstrap => {
@@ -477,8 +484,9 @@ fn plan_entity_action(
             local.and_then(LocalEntityState::as_file),
             remote.and_then(RemoteEntity::as_file),
             base,
+            naming,
         ),
-        _ => plan_bootstrap_entity_action(path, local, remote),
+        _ => plan_bootstrap_entity_action(path, local, remote, naming),
     }
 }
 
@@ -881,11 +889,13 @@ fn plan_type_conflict_action(
     local: Option<&LocalEntityState>,
     remote: Option<&RemoteEntity>,
     base: Option<&FileRecord>,
+    naming: &ConflictNaming,
 ) -> PlannedAction {
     if let (Some(LocalEntityState::Directory(_)), Some(RemoteEntity::File(_))) = (local, remote) {
         return PlannedAction::type_conflict_with_sidecar(
             path,
             remote.and_then(RemoteEntity::remote_id),
+            naming,
         );
     }
     PlannedAction::new(
@@ -940,6 +950,7 @@ fn plan_bootstrap_entity_action(
     path: &Path,
     local: Option<&LocalEntityState>,
     remote: Option<&RemoteEntity>,
+    naming: &ConflictNaming,
 ) -> Option<PlannedAction> {
     match (local, remote) {
         (Some(LocalEntityState::Directory(_)), None) => Some(PlannedAction::new(
@@ -962,11 +973,14 @@ fn plan_bootstrap_entity_action(
                 remote.id.clone(),
             ))
         }
-        (Some(LocalEntityState::File(local)), remote) => {
-            plan_bootstrap_file_action(path, Some(local), remote.and_then(RemoteEntity::as_file))
-        }
+        (Some(LocalEntityState::File(local)), remote) => plan_bootstrap_file_action(
+            path,
+            Some(local),
+            remote.and_then(RemoteEntity::as_file),
+            naming,
+        ),
         (None, Some(RemoteEntity::File(remote))) => {
-            plan_bootstrap_file_action(path, None, Some(remote))
+            plan_bootstrap_file_action(path, None, Some(remote), naming)
         }
         (Some(_), Some(remote)) => Some(PlannedAction::new(
             path,
@@ -982,6 +996,7 @@ fn plan_bootstrap_file_action(
     path: &Path,
     local: Option<&LocalFileState>,
     remote: Option<&RemoteFile>,
+    naming: &ConflictNaming,
 ) -> Option<PlannedAction> {
     match (local, remote) {
         (Some(local), None) => Some(
@@ -1009,7 +1024,11 @@ fn plan_bootstrap_file_action(
                     Some(remote.id.clone()),
                 ))
             } else if remote.downloadable {
-                Some(PlannedAction::conflict(path, Some(remote.id.clone())))
+                Some(PlannedAction::conflict(
+                    path,
+                    Some(remote.id.clone()),
+                    naming,
+                ))
             } else {
                 Some(PlannedAction::skip_unsupported(
                     path,
@@ -1028,14 +1047,22 @@ fn plan_ongoing_file_action(
     local: Option<&LocalFileState>,
     remote: Option<&RemoteFile>,
     base: &FileRecord,
+    naming: &ConflictNaming,
 ) -> Option<PlannedAction> {
     let base_hash = base.sha1_hash.as_deref()?;
     let local_delta = delta_from_base(local.map(|file| file.sha1_hash.as_str()), Some(base_hash));
     let remote_delta = remote_file_delta(remote, base);
 
     if base.sync_status == SyncStatus::Modified
-        && let Some(action) =
-            plan_modified_record_action(path, local, remote, base, local_delta, remote_delta)
+        && let Some(action) = plan_modified_record_action(
+            path,
+            local,
+            remote,
+            base,
+            local_delta,
+            remote_delta,
+            naming,
+        )
     {
         return Some(action);
     }
@@ -1108,7 +1135,11 @@ fn plan_ongoing_file_action(
                     remote_id(Some(remote), base),
                 ))
             }
-            _ => Some(PlannedAction::conflict(path, remote_id(remote, base))),
+            _ => Some(PlannedAction::conflict(
+                path,
+                remote_id(remote, base),
+                naming,
+            )),
         },
         // Local was deleted while the remote was edited since the baseline. There is no
         // local content left to preserve, so a `.proton-cloud` sidecar would only strand
@@ -1137,7 +1168,8 @@ fn plan_ongoing_file_action(
         (FileDelta::Changed, FileDelta::Missing) => Some({
             // The sidecar is materialized by copying the local file, so the local size IS this
             // row's payload — the one Conflict arm that can carry a real size.
-            let action = PlannedAction::conflict_from_local_copy(path, base.proton_id.clone());
+            let action =
+                PlannedAction::conflict_from_local_copy(path, base.proton_id.clone(), naming);
             match local {
                 Some(local) => action.with_local_size(local),
                 None => action,
@@ -1172,9 +1204,11 @@ fn plan_ongoing_file_action(
                 None
             }
         }
-        (FileDelta::Changed, FileDelta::Unknown) => {
-            Some(PlannedAction::conflict(path, remote_id(remote, base)))
-        }
+        (FileDelta::Changed, FileDelta::Unknown) => Some(PlannedAction::conflict(
+            path,
+            remote_id(remote, base),
+            naming,
+        )),
         (FileDelta::Missing, FileDelta::Unknown) => None,
         (FileDelta::Unchanged, FileDelta::Unsupported)
         | (FileDelta::Changed, FileDelta::Unsupported)
@@ -1298,6 +1332,7 @@ fn compute_directory_deletion_verdicts(
     remote_entities: &HashMap<PathBuf, RemoteEntity>,
     base_index: &HashMap<PathBuf, FileRecord>,
     suppressed_paths: &BTreeSet<PathBuf>,
+    naming: &ConflictNaming,
 ) -> HashMap<PathBuf, bool> {
     if !any_base_directory_is_one_sided(local_entities, remote_entities, base_index) {
         // Nothing can read a verdict this pass, so proving anything is dead work. This is the
@@ -1347,6 +1382,7 @@ fn compute_directory_deletion_verdicts(
                     Some(base),
                     bootstrap,
                     &verdicts,
+                    naming,
                 )
                 .map(|planned| planned.action),
                 Some(SyncAction::RemoteDelete | SyncAction::LocalDelete | SyncAction::Purge)
@@ -1440,6 +1476,7 @@ fn plan_modified_record_action(
     base: &FileRecord,
     local_delta: FileDelta,
     remote_delta: FileDelta,
+    naming: &ConflictNaming,
 ) -> Option<PlannedAction> {
     // Bound rather than discarded: every arm below that plans an upload sends exactly THIS file,
     // so the scan's size is that row's payload size (#206). The sidecar exit (delete the sidecar ->
@@ -1470,9 +1507,11 @@ fn plan_modified_record_action(
             )
             .with_local_size(local),
         ),
-        (FileDelta::Unchanged, FileDelta::Unknown) => {
-            Some(PlannedAction::conflict(path, remote_id(remote, base)))
-        }
+        (FileDelta::Unchanged, FileDelta::Unknown) => Some(PlannedAction::conflict(
+            path,
+            remote_id(remote, base),
+            naming,
+        )),
         (FileDelta::Unchanged, FileDelta::Unsupported) => Some(PlannedAction::skip_unsupported(
             path,
             EntityKind::File,
@@ -1568,13 +1607,13 @@ impl PlannedAction {
             .unwrap_or_else(|| UnsyncableReason::for_path(&self.path))
     }
 
-    fn conflict(path: &Path, remote_id: Option<String>) -> Self {
+    fn conflict(path: &Path, remote_id: Option<String>, naming: &ConflictNaming) -> Self {
         Self {
             path: path.to_path_buf(),
             destination_path: None,
             action: SyncAction::Conflict,
             entity_kind: EntityKind::File,
-            conflict_path: Some(conflict_copy_path(path)),
+            conflict_path: Some(naming.conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: false,
             size_bytes: None,
@@ -1588,13 +1627,17 @@ impl PlannedAction {
     /// The sidecar is what gives this state an exit (delete it -> `Modified` -> upload) and the
     /// artefact the GUI conflicts list finds by walking the disk; without it the path silently
     /// stops syncing forever (#46).
-    fn conflict_from_local_copy(path: &Path, remote_id: Option<String>) -> Self {
+    fn conflict_from_local_copy(
+        path: &Path,
+        remote_id: Option<String>,
+        naming: &ConflictNaming,
+    ) -> Self {
         Self {
             path: path.to_path_buf(),
             destination_path: None,
             action: SyncAction::Conflict,
             entity_kind: EntityKind::File,
-            conflict_path: Some(conflict_copy_path(path)),
+            conflict_path: Some(naming.conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: true,
             size_bytes: None,
@@ -1606,13 +1649,17 @@ impl PlannedAction {
     /// file (SD-09): `conflict_path` points at the sidecar location the
     /// clashing remote file's content is downloaded to instead of being
     /// silently discarded.
-    fn type_conflict_with_sidecar(path: &Path, remote_id: Option<String>) -> Self {
+    fn type_conflict_with_sidecar(
+        path: &Path,
+        remote_id: Option<String>,
+        naming: &ConflictNaming,
+    ) -> Self {
         Self {
             path: path.to_path_buf(),
             destination_path: None,
             action: SyncAction::TypeConflict,
             entity_kind: EntityKind::Directory,
-            conflict_path: Some(conflict_copy_path(path)),
+            conflict_path: Some(naming.conflict_copy_path(path)),
             remote_id,
             sidecar_from_local_copy: false,
             size_bytes: None,
@@ -1726,109 +1773,182 @@ fn total_upload_bytes(plan: &[PlannedAction]) -> Option<u64> {
         })
 }
 
-pub fn conflict_copy_path(path: &Path) -> PathBuf {
-    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+/// The sidecar suffix used when `conflict_suffix` is unset. Every sidecar already on disk was
+/// written under whatever suffix was configured at the time — see [`ConflictNaming`].
+pub const DEFAULT_CONFLICT_SUFFIX: &str = "proton-cloud";
 
-    let Some(file_name) = path.file_name() else {
-        return parent.join("proton-cloud");
-    };
+/// How conflict sidecars are named, derived once from the configured `conflict_suffix`
+/// (`{stem}.{suffix}.{ext}`, or `{name}.{suffix}` with no extension).
+///
+/// Threaded explicitly rather than read from a global: `plan_sync` is pure, and the same value has
+/// to reach the *detector* side — `index::ScanOptions` (so a sidecar is never scanned as user
+/// data), the daemon's watcher, and the GUI's disk walk — or the engine writes a file it then
+/// uploads. One value, three readers, no second spelling.
+///
+/// **Changing the suffix orphans every sidecar already on disk.** They stop matching
+/// [`Self::is_conflict_copy`], so they are no longer ignored and plan as ordinary new files
+/// (uploaded, and no longer resolvable back to their original). Pinned by
+/// `changing_the_suffix_orphans_sidecars_written_under_the_old_one`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictNaming {
+    /// The bare suffix. Used for a path that has no file name at all.
+    suffix: String,
+    /// `.{suffix}.` — spliced between stem and extension.
+    mid: String,
+    /// `.{suffix}` — appended to a name with no extension.
+    tail: String,
+}
 
-    if let Some(name) = file_name.to_str() {
-        let stem = path.file_stem().and_then(|value| value.to_str());
-        let extension = path.extension().and_then(|value| value.to_str());
-        let renamed = match (stem, extension) {
-            (Some(stem), Some(extension)) => format!("{stem}.proton-cloud.{extension}"),
-            _ => format!("{name}.proton-cloud"),
+impl Default for ConflictNaming {
+    fn default() -> Self {
+        Self::from_suffix(DEFAULT_CONFLICT_SUFFIX)
+    }
+}
+
+impl ConflictNaming {
+    /// Build from a configured suffix, rejecting values that cannot survive being spliced into a
+    /// file name. Validated here rather than at the config layer so every construction path — the
+    /// daemon, the GUI, a test — gets the same rules.
+    pub fn new(suffix: &str) -> AppResult<Self> {
+        validate_conflict_suffix(suffix)?;
+        Ok(Self::from_suffix(suffix))
+    }
+
+    fn from_suffix(suffix: &str) -> Self {
+        Self {
+            suffix: suffix.to_owned(),
+            mid: format!(".{suffix}."),
+            tail: format!(".{suffix}"),
+        }
+    }
+
+    /// The configured suffix, for round-tripping it back out to a config file or a UI.
+    pub fn suffix(&self) -> &str {
+        &self.suffix
+    }
+
+    pub fn conflict_copy_path(&self, path: &Path) -> PathBuf {
+        let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+
+        let Some(file_name) = path.file_name() else {
+            return parent.join(&self.suffix);
         };
-        return parent.join(renamed);
+
+        if let Some(name) = file_name.to_str() {
+            let stem = path.file_stem().and_then(|value| value.to_str());
+            let extension = path.extension().and_then(|value| value.to_str());
+            let renamed = match (stem, extension) {
+                (Some(stem), Some(extension)) => format!("{stem}{}{extension}", self.mid),
+                _ => format!("{name}{}", self.tail),
+            };
+            return parent.join(renamed);
+        }
+
+        // `file_name` is not valid UTF-8: fall back to a byte-safe transform instead of
+        // collapsing every non-UTF-8 name onto the same fixed suffix literal, which would
+        // make two different non-UTF-8-named conflicts collide onto the same sidecar path.
+        parent.join(self.conflict_copy_os_string(file_name))
     }
 
-    // `file_name` is not valid UTF-8: fall back to a byte-safe transform instead of
-    // collapsing every non-UTF-8 name onto the same fixed "proton-cloud" literal,
-    // which would make two different non-UTF-8-named conflicts collide onto the same
-    // sidecar path.
-    parent.join(conflict_copy_os_string(file_name))
-}
+    /// Byte-safe fallback used by [`Self::conflict_copy_path`] when `file_name` is not valid
+    /// UTF-8. Splices the same `.{suffix}.`/`.{suffix}` marker used by the UTF-8 fast path into
+    /// the raw bytes, so distinct non-UTF-8 names never collapse onto the same sidecar path.
+    fn conflict_copy_os_string(&self, file_name: &OsStr) -> OsString {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
-/// Byte-safe fallback used by `conflict_copy_path` when `file_name` is not valid
-/// UTF-8. Splices the same `.proton-cloud.`/`.proton-cloud` marker used by the UTF-8
-/// fast path into the raw bytes, so distinct non-UTF-8 names never collapse onto the
-/// same sidecar path.
-fn conflict_copy_os_string(file_name: &OsStr) -> OsString {
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
-
-    let bytes = file_name.as_bytes();
-    let mut result = Vec::new();
-    match bytes.iter().rposition(|&byte| byte == b'.') {
-        // A leading dot (e.g. ".env") is not treated as an extension separator here,
-        // matching `Path::extension`'s own behavior for dotfiles.
-        Some(index) if index > 0 => {
-            result.extend_from_slice(&bytes[..index]);
-            result.extend_from_slice(b".proton-cloud.");
-            result.extend_from_slice(&bytes[index + 1..]);
-        }
-        _ => {
-            result.extend_from_slice(bytes);
-            result.extend_from_slice(b".proton-cloud");
-        }
-    }
-    OsString::from_vec(result)
-}
-
-pub fn is_conflict_copy(path: &Path) -> bool {
-    let Some(file_name) = path.file_name() else {
-        return false;
-    };
-    // `to_string_lossy` is safe here: the ASCII marker below always survives lossy
-    // conversion unchanged, since only genuinely invalid byte spans elsewhere in the
-    // name are replaced with the Unicode replacement character.
-    let name = file_name.to_string_lossy();
-    name.contains(".proton-cloud.") || name.ends_with(".proton-cloud")
-}
-
-pub fn original_from_conflict_copy(path: &Path) -> Option<PathBuf> {
-    let file_name = path.file_name()?;
-    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
-
-    if let Some(name) = file_name.to_str() {
-        if let Some((stem, extension)) = name.rsplit_once(".proton-cloud.") {
-            return Some(parent.join(format!("{stem}.{extension}")));
-        }
-        let stem = name.strip_suffix(".proton-cloud")?;
-        return Some(parent.join(stem));
-    }
-
-    original_from_conflict_copy_os_string(file_name).map(|name| parent.join(name))
-}
-
-/// Byte-safe fallback used by `original_from_conflict_copy` when `file_name` is not
-/// valid UTF-8. Mirrors `conflict_copy_os_string`'s marker placement in reverse so a
-/// conflict sidecar for a non-UTF-8-named original file can still be recognized and
-/// resolved.
-fn original_from_conflict_copy_os_string(file_name: &OsStr) -> Option<OsString> {
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
-
-    let bytes = file_name.as_bytes();
-    const MID_MARKER: &[u8] = b".proton-cloud.";
-    if let Some(index) = bytes
-        .windows(MID_MARKER.len())
-        .rposition(|window| window == MID_MARKER)
-    {
+        let bytes = file_name.as_bytes();
         let mut result = Vec::new();
-        result.extend_from_slice(&bytes[..index]);
-        result.push(b'.');
-        result.extend_from_slice(&bytes[index + MID_MARKER.len()..]);
-        return Some(OsString::from_vec(result));
+        match bytes.iter().rposition(|&byte| byte == b'.') {
+            // A leading dot (e.g. ".env") is not treated as an extension separator here,
+            // matching `Path::extension`'s own behavior for dotfiles.
+            Some(index) if index > 0 => {
+                result.extend_from_slice(&bytes[..index]);
+                result.extend_from_slice(self.mid.as_bytes());
+                result.extend_from_slice(&bytes[index + 1..]);
+            }
+            _ => {
+                result.extend_from_slice(bytes);
+                result.extend_from_slice(self.tail.as_bytes());
+            }
+        }
+        OsString::from_vec(result)
     }
 
-    const SUFFIX_MARKER: &[u8] = b".proton-cloud";
-    if bytes.ends_with(SUFFIX_MARKER) {
-        return Some(OsString::from_vec(
-            bytes[..bytes.len() - SUFFIX_MARKER.len()].to_vec(),
-        ));
+    pub fn is_conflict_copy(&self, path: &Path) -> bool {
+        let Some(file_name) = path.file_name() else {
+            return false;
+        };
+        // `to_string_lossy` is safe here: the marker below always survives lossy conversion
+        // unchanged (the suffix cannot hold a path separator or a NUL), since only genuinely
+        // invalid byte spans elsewhere in the name are replaced with the replacement character.
+        let name = file_name.to_string_lossy();
+        name.contains(&self.mid) || name.ends_with(&self.tail)
     }
 
-    None
+    pub fn original_from_conflict_copy(&self, path: &Path) -> Option<PathBuf> {
+        let file_name = path.file_name()?;
+        let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+
+        if let Some(name) = file_name.to_str() {
+            if let Some((stem, extension)) = name.rsplit_once(&self.mid) {
+                return Some(parent.join(format!("{stem}.{extension}")));
+            }
+            let stem = name.strip_suffix(&self.tail)?;
+            return Some(parent.join(stem));
+        }
+
+        self.original_from_conflict_copy_os_string(file_name)
+            .map(|name| parent.join(name))
+    }
+
+    /// Byte-safe fallback used by [`Self::original_from_conflict_copy`] when `file_name` is not
+    /// valid UTF-8. Mirrors [`Self::conflict_copy_os_string`]'s marker placement in reverse so a
+    /// conflict sidecar for a non-UTF-8-named original file can still be recognized and resolved.
+    fn original_from_conflict_copy_os_string(&self, file_name: &OsStr) -> Option<OsString> {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let bytes = file_name.as_bytes();
+        let mid = self.mid.as_bytes();
+        if let Some(index) = bytes.windows(mid.len()).rposition(|window| window == mid) {
+            let mut result = Vec::new();
+            result.extend_from_slice(&bytes[..index]);
+            result.push(b'.');
+            result.extend_from_slice(&bytes[index + mid.len()..]);
+            return Some(OsString::from_vec(result));
+        }
+
+        let tail = self.tail.as_bytes();
+        if bytes.ends_with(tail) {
+            return Some(OsString::from_vec(
+                bytes[..bytes.len() - tail.len()].to_vec(),
+            ));
+        }
+
+        None
+    }
+}
+
+/// Reject a `conflict_suffix` that cannot be spliced into a file name. A separator would make the
+/// sidecar land in another directory (or escape the root); a NUL cannot reach the filesystem at
+/// all; a leading/trailing `.` would double the dot the marker already supplies, so the sidecar
+/// would not round-trip back through
+/// [`ConflictNaming::original_from_conflict_copy`]; and an empty suffix names the original file.
+pub fn validate_conflict_suffix(suffix: &str) -> AppResult<()> {
+    if suffix.is_empty() {
+        return Err(boxed_error("conflict_suffix must not be empty"));
+    }
+    if suffix.contains('/') || suffix.contains('\0') {
+        return Err(boxed_error(format!(
+            "conflict_suffix `{suffix}` must not contain a path separator or a NUL byte"
+        )));
+    }
+    if suffix.starts_with('.') || suffix.ends_with('.') {
+        return Err(boxed_error(format!(
+            "conflict_suffix `{suffix}` must not start or end with `.`: the sidecar marker \
+             already supplies the separating dots"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1836,6 +1956,49 @@ mod tests {
     use super::*;
     use crate::index::{EntityKind, FileRecord, LocalDirectoryState, LocalFileState, SyncStatus};
     use crate::proton::{RemoteDirectory, RemoteEntity, RemoteFile};
+
+    // Shadow the two planner entry points with default-naming shims: every test below is about the
+    // decision matrix, not about how a sidecar is spelled, and shadowing keeps that visible instead
+    // of threading one constant through sixty call sites. Custom-suffix behaviour has its own
+    // tests, which call `super::` directly.
+    fn plan_sync(
+        local_files: &HashMap<PathBuf, LocalFileState>,
+        remote_files: &HashMap<PathBuf, RemoteFile>,
+        base_index: &HashMap<PathBuf, FileRecord>,
+    ) -> Vec<PlannedAction> {
+        super::plan_sync(
+            local_files,
+            remote_files,
+            base_index,
+            &ConflictNaming::default(),
+        )
+    }
+
+    fn plan_sync_entities(
+        local_entities: &HashMap<PathBuf, LocalEntityState>,
+        remote_entities: &HashMap<PathBuf, RemoteEntity>,
+        base_index: &HashMap<PathBuf, FileRecord>,
+    ) -> Vec<PlannedAction> {
+        super::plan_sync_entities(
+            local_entities,
+            remote_entities,
+            base_index,
+            &ConflictNaming::default(),
+        )
+    }
+
+    fn plan_sync_entities_with_stats(
+        local_entities: &HashMap<PathBuf, LocalEntityState>,
+        remote_entities: &HashMap<PathBuf, RemoteEntity>,
+        base_index: &HashMap<PathBuf, FileRecord>,
+    ) -> PlanOutcome {
+        super::plan_sync_entities_with_stats(
+            local_entities,
+            remote_entities,
+            base_index,
+            &ConflictNaming::default(),
+        )
+    }
 
     fn local(path: &str, hash: &str) -> LocalFileState {
         LocalFileState {
@@ -2439,15 +2602,16 @@ mod tests {
 
     #[test]
     fn creates_conflict_copy_names() {
+        let naming = ConflictNaming::default();
         assert_eq!(
-            conflict_copy_path(Path::new("notes.txt")),
+            naming.conflict_copy_path(Path::new("notes.txt")),
             PathBuf::from("notes.proton-cloud.txt")
         );
         assert_eq!(
-            original_from_conflict_copy(Path::new("notes.proton-cloud.txt")),
+            naming.original_from_conflict_copy(Path::new("notes.proton-cloud.txt")),
             Some(PathBuf::from("notes.txt"))
         );
-        assert!(is_conflict_copy(Path::new("nested/notes.proton-cloud.txt")));
+        assert!(naming.is_conflict_copy(Path::new("nested/notes.proton-cloud.txt")));
     }
 
     #[cfg(unix)]
@@ -2456,6 +2620,7 @@ mod tests {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
 
+        let naming = ConflictNaming::default();
         let name_a = PathBuf::from(OsStr::from_bytes(b"fo\x80o.txt"));
         let name_b = PathBuf::from(OsStr::from_bytes(b"fo\x81o.txt"));
         assert_eq!(
@@ -2465,18 +2630,113 @@ mod tests {
              test to be meaningful"
         );
 
-        let copy_a = conflict_copy_path(&name_a);
-        let copy_b = conflict_copy_path(&name_b);
+        let copy_a = naming.conflict_copy_path(&name_a);
+        let copy_b = naming.conflict_copy_path(&name_b);
         assert_ne!(
             copy_a, copy_b,
             "distinct non-UTF-8 names must not collapse onto the same conflict-copy path"
         );
 
-        assert!(is_conflict_copy(&copy_a));
-        assert!(is_conflict_copy(&copy_b));
+        assert!(naming.is_conflict_copy(&copy_a));
+        assert!(naming.is_conflict_copy(&copy_b));
 
-        assert_eq!(original_from_conflict_copy(&copy_a), Some(name_a));
-        assert_eq!(original_from_conflict_copy(&copy_b), Some(name_b));
+        assert_eq!(naming.original_from_conflict_copy(&copy_a), Some(name_a));
+        assert_eq!(naming.original_from_conflict_copy(&copy_b), Some(name_b));
+    }
+
+    #[test]
+    fn a_custom_suffix_names_and_resolves_sidecars_symmetrically() {
+        let naming = ConflictNaming::new("from-cloud").expect("a plain suffix is usable");
+        assert_eq!(naming.suffix(), "from-cloud", "the suffix round-trips out");
+        assert_eq!(
+            naming.conflict_copy_path(Path::new("notes.txt")),
+            PathBuf::from("notes.from-cloud.txt")
+        );
+        assert_eq!(
+            naming.conflict_copy_path(Path::new("dir/.env")),
+            PathBuf::from("dir/.env.from-cloud"),
+            "a dotfile has no extension to splice into, exactly as under the default suffix"
+        );
+        for original in ["notes.txt", "dir/.env", "nested/a.b.c"] {
+            let sidecar = naming.conflict_copy_path(Path::new(original));
+            assert!(naming.is_conflict_copy(&sidecar), "{sidecar:?}");
+            assert_eq!(
+                naming.original_from_conflict_copy(&sidecar).as_deref(),
+                Some(Path::new(original)),
+                "the sidecar name must map back to {original}"
+            );
+        }
+    }
+
+    #[test]
+    fn changing_the_suffix_orphans_sidecars_written_under_the_old_one() {
+        // THE COST OF MAKING THIS CONFIGURABLE, pinned rather than discovered. A sidecar on disk
+        // encodes the suffix that was configured when it was written; under a new one it stops
+        // matching `is_conflict_copy`, so `ScanOptions` no longer ignores it and the planner sees
+        // an ordinary new file — which it uploads, and which no longer resolves to its original.
+        // Anyone changing `conflict_suffix` inherits that, and the key's docs say so.
+        let old = ConflictNaming::default();
+        let new = ConflictNaming::new("from-cloud").expect("suffix");
+        let existing = old.conflict_copy_path(Path::new("notes.txt"));
+
+        assert!(old.is_conflict_copy(&existing));
+        assert!(
+            !new.is_conflict_copy(&existing),
+            "a sidecar written under the old suffix is an ordinary file under the new one"
+        );
+        assert_eq!(new.original_from_conflict_copy(&existing), None);
+    }
+
+    #[test]
+    fn an_unusable_conflict_suffix_is_refused_before_it_names_a_file() {
+        for (suffix, needle) in [
+            ("", "must not be empty"),
+            ("a/b", "path separator"),
+            ("x\0y", "NUL byte"),
+            (".hidden", "start or end with `.`"),
+            ("trailing.", "start or end with `.`"),
+        ] {
+            let error = ConflictNaming::new(suffix)
+                .err()
+                .unwrap_or_else(|| panic!("`{suffix}` must be refused"))
+                .to_string();
+            assert!(error.contains(needle), "expected {needle:?} in: {error}");
+        }
+        assert_eq!(
+            ConflictNaming::default().suffix(),
+            DEFAULT_CONFLICT_SUFFIX,
+            "the default is the documented suffix every existing sidecar was written under"
+        );
+    }
+
+    #[test]
+    fn the_configured_suffix_reaches_the_planned_conflict_path() {
+        // The planner is where the sidecar name is *decided*, so a suffix that never reaches it is
+        // a setting with no effect — and the on-disk artefact the GUI walks for would keep the
+        // default name while the scanner looked for the configured one.
+        let mut local_files = HashMap::new();
+        let mut remote_files = HashMap::new();
+        let mut base_index = HashMap::new();
+        local_files.insert(PathBuf::from("notes.txt"), local("notes.txt", "local-hash"));
+        remote_files.insert(
+            PathBuf::from("notes.txt"),
+            remote("notes.txt", "remote-id", Some("remote-hash")),
+        );
+        base_index.insert(
+            PathBuf::from("notes.txt"),
+            base("notes.txt", Some("remote-id"), "base-hash"),
+        );
+
+        let naming = ConflictNaming::new("from-cloud").expect("suffix");
+        let planned = super::plan_sync(&local_files, &remote_files, &base_index, &naming);
+        let conflict = planned
+            .iter()
+            .find(|action| action.action == SyncAction::Conflict)
+            .expect("a both-sides-changed file plans a conflict");
+        assert_eq!(
+            conflict.conflict_path.as_deref(),
+            Some(Path::new("notes.from-cloud.txt"))
+        );
     }
 
     #[test]
@@ -3510,6 +3770,7 @@ mod tests {
             &remote_entities,
             &base_index,
             &BTreeSet::new(),
+            &ConflictNaming::default(),
         );
 
         assert!(
@@ -4248,7 +4509,11 @@ mod tests {
 
     #[test]
     fn planned_action_serializes_for_dry_run_output() {
-        let action = PlannedAction::conflict(Path::new("notes.txt"), Some("remote-id".to_owned()));
+        let action = PlannedAction::conflict(
+            Path::new("notes.txt"),
+            Some("remote-id".to_owned()),
+            &ConflictNaming::default(),
+        );
 
         let json = serde_json::to_string(&action).expect("serialize planned action");
 
@@ -4287,7 +4552,11 @@ mod tests {
                 EntityKind::File,
                 Some("delete-id".to_owned()),
             ),
-            PlannedAction::conflict(Path::new("conflict.txt"), Some("conflict-id".to_owned())),
+            PlannedAction::conflict(
+                Path::new("conflict.txt"),
+                Some("conflict-id".to_owned()),
+                &ConflictNaming::default(),
+            ),
             PlannedAction::new(
                 Path::new("sheet"),
                 SyncAction::SkipUnsupported,
