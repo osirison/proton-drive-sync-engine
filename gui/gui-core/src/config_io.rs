@@ -14,9 +14,16 @@
 //! those here is how the two halves came to disagree about `~` (#135). The include/exclude
 //! selective-sync globs use the **bare** keys `include` / `exclude` (not `*_patterns`).
 //!
-//! **A value is written back in the spelling the file already uses.** The daemon refuses a config
-//! that sets `deletion_policy` and `[delete_approval]` together, so a writer with a favourite key
-//! would brick every config written the other way — see [`ConfigDoc::set_deletion_policy`].
+//! **A value is written back in the spelling the file already uses**, and the daemon gives every
+//! setting two spellings to get wrong:
+//! 1. a kebab-case alias for each key (`log-level` for `log_level`) — writing the other one leaves
+//!    both in the file, which serde rejects as `duplicate field` (`key_in_use`);
+//! 2. `deletion_policy` against the `[delete_approval]` table, which the daemon refuses together
+//!    ([`ConfigDoc::set_deletion_policy`]).
+//!
+//! Either way a writer with a favourite spelling bricks every config written the other way, and
+//! bricks it *silently* — the file still parses as TOML, and only the daemon's next start says so.
+//! One rule covers both: read either, write back the one already there.
 
 use std::borrow::Cow;
 use std::path::Path;
