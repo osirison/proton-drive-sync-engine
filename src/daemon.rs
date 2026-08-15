@@ -1576,8 +1576,8 @@ impl<C: ProtonClient> Daemon<C> {
 
     /// Reads the current latest cursor before a snapshot, when event-driven and the volume is
     /// already known (from the baseline or a previously stored cursor). The distinction the return
-    /// type carries is the point: "no volume yet" and "the read failed" are different answers, and
-    /// only the former may be repaired after the walk (#294).
+    /// type carries is the point: "nothing names a volume" and "a lookup failed" are different
+    /// answers, and only the former may be repaired after the walk (#294).
     fn capture_pre_snapshot_cursor(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
@@ -1615,11 +1615,11 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Chooses the cursor to persist with a bootstrap. `Captured` → persist it. `Unavailable` →
-    /// persist **nothing**: the volume was known before the walk, so prior state exists, and a
-    /// cursor read *after* the walk would assert that every change made during it had been applied
-    /// when the snapshot never saw it (#294). `VolumeUnknown` → the first-ever bootstrap, where the
-    /// volume is only knowable from the fresh snapshot and there is no prior state to lose; anchor
-    /// from a post-walk read, or the event path could never engage at all.
+    /// persist **nothing**: a lookup failed while prior state may exist, and a cursor read *after*
+    /// the walk would assert that every change made during it had been applied when the snapshot
+    /// never saw it (#294). `VolumeUnknown` → the first-ever bootstrap, where the volume is only
+    /// knowable from the fresh snapshot and there is no prior state to lose; anchor from a
+    /// post-walk read, or the event path could never engage at all.
     ///
     /// This is one of three places that can suppress the cursor, but they are one decision, not
     /// three that can disagree: all of them only ever force the single `cursor_update` toward
