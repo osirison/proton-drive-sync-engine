@@ -80,8 +80,9 @@ pub fn glyph_for(state: gui_core::state::DaemonState) -> &'static str {
 /// `hicolor/symbolic/apps` tree. Under `$XDG_RUNTIME_DIR` so it is cleaned up with the session and
 /// is not world-readable.
 pub fn theme_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
+    // Absolute-only (#286): a relative value would scatter the glyph directory across whatever cwd
+    // each launch had, and `IconThemePath` is read by another process, which cannot resolve ours.
+    let base = crate::config_path::absolute_dir(std::env::var_os("XDG_RUNTIME_DIR"))
         .unwrap_or_else(std::env::temp_dir);
     base.join("proton-sync-tray")
 }
