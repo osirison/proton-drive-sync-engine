@@ -1682,10 +1682,14 @@ impl<C: ProtonClient> Daemon<C> {
     /// one (`proton-sync resync` forces it). Display-only data: a stale row misleads nobody into a
     /// side effect, and the planner re-derives every skip from ground truth regardless.
     fn record_unsyncable(&mut self, plan: &[PlannedAction], full_snapshot: bool) {
+        // `destination_path` counts as much as `path`: a move's destination is a path this pass
+        // planned a real action ONTO, so a stale entry there is contradicted by the same evidence.
         let superseded: HashSet<&Path> = plan
             .iter()
             .filter(|action| action.action != SyncAction::SkipUnsupported)
-            .map(|action| action.path.as_path())
+            .flat_map(|action| {
+                std::iter::once(action.path.as_path()).chain(action.destination_path.as_deref())
+            })
             .collect();
         let skips = unsyncable_items(plan, current_epoch_secs());
         let rederived: HashSet<&Path> = skips.iter().map(|item| item.path.as_path()).collect();
@@ -8853,6 +8857,32 @@ mod tests {
                 EntityKind::File,
                 Some("vol~node".to_owned()),
             )],
+            false,
+        );
+        assert!(daemon.unsyncable.is_empty());
+
+        // A move's DESTINATION is proof of the same kind: the pass planned a real action onto that
+        // path, so an entry sitting there is already contradicted.
+        daemon.record_unsyncable(
+            &[PlannedAction::skip_unsupported(
+                Path::new("doc"),
+                EntityKind::File,
+                None,
+                UnsyncableReason::RemoteNotDownloadable,
+            )],
+            true,
+        );
+        assert_eq!(daemon.unsyncable.len(), 1);
+        daemon.record_unsyncable(
+            &[PlannedAction {
+                destination_path: Some(PathBuf::from("doc")),
+                ..PlannedAction::new(
+                    Path::new("elsewhere"),
+                    SyncAction::MoveLocal,
+                    EntityKind::File,
+                    None,
+                )
+            }],
             false,
         );
         assert!(daemon.unsyncable.is_empty());
