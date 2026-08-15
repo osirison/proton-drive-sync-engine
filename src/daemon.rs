@@ -3354,12 +3354,19 @@ fn apply_keep_command(
             stale += 1;
             continue;
         }
-        purge_subtree_records(&transaction, &pending.path)?;
-        // Any standing approval for this deletion goes with it. Left behind, the very next pass
-        // would find an approval for the deletion just refused — and while the purge normally
-        // stops that action being planned at all, an approval nobody can see is not something to
-        // leave lying in the store.
-        delete_delete_approval(&transaction, &pending.path, pending.direction)?;
+        // EVERY purged path, in BOTH directions, and that is the same argument the root's own
+        // approval makes one level up: a purged record leaves any approval at that path pointing at
+        // nothing the user can see. It is reachable — a descendant can carry an approval from an
+        // earlier pass that queued it individually, or from a pre-pass `approve --direction`
+        // (#227) — and it is not inert, because the fingerprint an approval is pinned to is the
+        // content's own: re-adopt the file unchanged and the stale approval matches the new record
+        // exactly, so the next deletion of that path would execute without ever being shown.
+        // Over-revoking is the safe direction here, as it is for `deny`.
+        for purged in purge_subtree_records(&transaction, &pending.path)? {
+            for direction in [DeleteDirection::Local, DeleteDirection::Remote] {
+                delete_delete_approval(&transaction, &purged, direction)?;
+            }
+        }
         kept += 1;
     }
     transaction.commit()?;
@@ -6748,6 +6755,58 @@ mod tests {
                 .expect("lookup")
                 .is_some(),
             "containment is component-wise: photosx is not under photos"
+        );
+    }
+
+    #[test]
+    fn keeping_a_folder_revokes_the_approvals_under_it_too() {
+        // Copilot, PR #309. A descendant can carry a standing approval the folder card never showed
+        // — an earlier pass that queued it individually, or a pre-pass `approve --direction` — and
+        // the purge alone would leave it pointing at a record that no longer exists. It is not
+        // inert: the fingerprint is the content's own, so re-adopting the file unchanged makes the
+        // stale approval match the NEW record exactly, and the next deletion of that path would
+        // execute without ever being shown.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::create_dir(local_root.join("photos")).expect("local directory");
+        fs::write(local_root.join("photos/a.jpg"), b"aaaa").expect("child");
+
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &directory_record("photos", Some("dir-id")),
+        )
+        .expect("directory record");
+        let child_hash =
+            crate::index::compute_sha1(&local_root.join("photos/a.jpg")).expect("hash");
+        upsert_record(
+            &daemon.connection,
+            &base_record("photos/a.jpg", Some("child-id"), child_hash.as_str()),
+        )
+        .expect("child record");
+        upsert_delete_approval(
+            &daemon.connection,
+            Path::new("photos/a.jpg"),
+            DeleteDirection::Local,
+            child_hash.as_str(),
+            1,
+        )
+        .expect("a standing approval for the descendant");
+
+        daemon.reconcile_blocking().expect_clean("reconcile");
+        let (_, changed) = daemon
+            .apply_keep_command(Some("photos"))
+            .expect("keep the folder");
+
+        assert!(changed);
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("load approvals")
+                .is_empty(),
+            "an approval under a kept folder must go with the record it was pinned to"
         );
     }
 

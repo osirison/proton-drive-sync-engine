@@ -1064,9 +1064,13 @@ pub fn replace_withheld_deletions(
 /// Component-wise via [`Path::starts_with`], never a byte prefix: `photos/2019x` is not under
 /// `photos/2019`.
 ///
+/// Returns the paths it purged, because the caller has to answer for each of them: a purged record
+/// leaves any standing approval at that path pointing at nothing the user can see (see
+/// `daemon::apply_keep_command`).
+///
 /// Opens **no transaction of its own** — the caller wraps it, because a refusal also revokes the
-/// approval it replaces and the two must land together (`daemon::apply_keep_command`).
-pub fn purge_subtree_records(connection: &Connection, root: &Path) -> AppResult<usize> {
+/// approvals it replaces and the two must land together.
+pub fn purge_subtree_records(connection: &Connection, root: &Path) -> AppResult<Vec<PathBuf>> {
     let paths: Vec<PathBuf> = {
         let mut statement = connection.prepare("SELECT file_path FROM file_index")?;
         let rows = statement
@@ -1079,7 +1083,7 @@ pub fn purge_subtree_records(connection: &Connection, root: &Path) -> AppResult<
     for path in &paths {
         purge_record(connection, path)?;
     }
-    Ok(paths.len())
+    Ok(paths)
 }
 
 pub fn scan_local_files(root: &Path) -> AppResult<HashMap<PathBuf, LocalFileState>> {
@@ -2882,7 +2886,7 @@ mod tests {
 
         let purged = purge_subtree_records(&connection, Path::new("photos")).expect("purge");
 
-        assert_eq!(purged, 2, "the folder and its one descendant");
+        assert_eq!(purged.len(), 2, "the folder and its one descendant");
         for gone in ["photos", "photos/2019/a.jpg"] {
             assert!(
                 get_record(&connection, Path::new(gone))
