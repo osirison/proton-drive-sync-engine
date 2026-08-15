@@ -1,4 +1,4 @@
-use crate::sync::{UnsyncableItem, UnsyncableReason};
+use crate::sync::{ConflictNaming, UnsyncableItem, UnsyncableReason};
 use crate::{AppResult, boxed_error};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -228,14 +228,22 @@ pub struct ScanOptions {
     include_pattern_strings: Vec<String>,
     has_include_patterns: bool,
     exclude_patterns: GlobSet,
+    /// How conflict sidecars are spelled, so the scanner ignores exactly what the planner writes.
+    /// Carried here rather than read from a constant because `conflict_suffix` is configurable —
+    /// a scanner using a different suffix from the planner uploads the engine's own sidecars.
+    conflict_naming: ConflictNaming,
 }
 
 impl ScanOptions {
+    /// `naming` must be the one the planner is running with (`DaemonConfig::conflict_naming`);
+    /// [`ConflictNaming::default`] is correct only where nothing on disk is being classified —
+    /// glob validation, and tests that never write a sidecar.
     pub fn new(
         root: &Path,
         ignored_paths: &[PathBuf],
         include_patterns: &[String],
         exclude_patterns: &[String],
+        naming: &ConflictNaming,
     ) -> AppResult<Self> {
         let ignored_relative_paths = ignored_paths
             .iter()
@@ -256,11 +264,14 @@ impl ScanOptions {
             include_pattern_strings: include_patterns.to_vec(),
             has_include_patterns: !include_patterns.is_empty(),
             exclude_patterns: build_glob_set(exclude_patterns)?,
+            conflict_naming: naming.clone(),
         })
     }
 
     pub fn allows_relative_file(&self, relative_path: &Path) -> bool {
-        if should_ignore_relative_path(relative_path) || self.is_configured_ignored(relative_path) {
+        if should_ignore_relative_path(relative_path, &self.conflict_naming)
+            || self.is_configured_ignored(relative_path)
+        {
             return false;
         }
         if self.matches(&self.exclude_patterns, relative_path) {
@@ -748,6 +759,35 @@ pub fn clear_event_cursor(connection: &Connection, scope_id: &str) -> AppResult<
     Ok(())
 }
 
+/// Drops every row the daemon derives sync decisions from, in one transaction: the baseline
+/// (`file_index`), the event cursors, the persisted warm-start counter, the standing delete
+/// approvals, and the display-only unsyncable list.
+///
+/// This is `proton-sync reset-index` (G23/#237's *Reset the index*), and it **truncates rather
+/// than removes the database file**: the file is open in a running daemon, and unlinking it under
+/// a live connection leaves that daemon writing to an orphaned inode. Truncating in-process, from
+/// the main loop between passes, keeps every invariant instead — an empty baseline *is* the
+/// bootstrap condition, and a cleared cursor makes the next pass a full walk, not a warm start.
+///
+/// Not destructive to user data: with an empty index the next pass plans a bootstrap, which
+/// `AutoLink`s an already-agreeing local/remote pair rather than re-transferring it. The approvals
+/// go with it because each is pinned to a `fingerprint` derived from the baseline this erases —
+/// keeping them would leave standing consent for a deletion nothing can still describe.
+pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
+    connection.execute_batch(
+        r#"
+        BEGIN;
+        DELETE FROM file_index;
+        DELETE FROM remote_event_cursor;
+        DELETE FROM warm_start_state;
+        DELETE FROM delete_approvals;
+        DELETE FROM unsyncable_items;
+        COMMIT;
+        "#,
+    )?;
+    Ok(())
+}
+
 /// Loads the persisted "warm starts since the last full walk" counter, or `0` if none is recorded.
 ///
 /// Distinct from the daemon's in-memory `incremental_passes_since_full_scan`: that one counts
@@ -944,8 +984,10 @@ pub fn load_delete_approvals(connection: &Connection) -> AppResult<Vec<DeleteApp
     Ok(approvals)
 }
 
+/// Unfiltered scan with the **default** sidecar naming. Only for callers that classify nothing —
+/// tests and the live smoke test; the daemon always goes through `scan_options_from_config`.
 pub fn scan_local_files(root: &Path) -> AppResult<HashMap<PathBuf, LocalFileState>> {
-    let options = ScanOptions::new(root, &[], &[], &[])?;
+    let options = ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default())?;
     scan_local_files_with_options(root, &options)
 }
 
@@ -1010,8 +1052,9 @@ pub fn scan_local_entities_observed(
     Ok(entities)
 }
 
+/// See [`scan_local_files`] for the default-naming caveat.
 pub fn scan_local_entities(root: &Path) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
-    let options = ScanOptions::new(root, &[], &[], &[])?;
+    let options = ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default())?;
     scan_local_entities_with_options(root, &options)
 }
 
@@ -1102,12 +1145,12 @@ fn vanished_entry_to_skip<T>(result: AppResult<T>) -> AppResult<Option<T>> {
     }
 }
 
-pub fn should_ignore_path(path: &Path) -> bool {
-    should_ignore_relative_path(path)
+pub fn should_ignore_path(path: &Path, naming: &ConflictNaming) -> bool {
+    should_ignore_relative_path(path, naming)
 }
 
-fn should_ignore_relative_path(relative_path: &Path) -> bool {
-    if crate::sync::is_conflict_copy(relative_path)
+fn should_ignore_relative_path(relative_path: &Path, naming: &ConflictNaming) -> bool {
+    if naming.is_conflict_copy(relative_path)
         || is_download_scratch_path(relative_path)
         || is_sync_state_path(relative_path)
     {
@@ -1435,13 +1478,87 @@ mod tests {
     }
 
     #[test]
+    fn reset_index_state_clears_every_table_the_daemon_decides_from() {
+        // `proton-sync reset-index` (G23/#237). Written against the table list rather than one
+        // sample row, because the failure mode is a table someone forgets to add here when they add
+        // it to the schema — a stale cursor or a stale approval surviving a "reset" is worse than
+        // no reset at all.
+        let directory = tempdir().expect("tempdir");
+        let connection = open_database(&directory.path().join("index.db")).expect("db");
+        upsert_record(&connection, &known_file_record("keep.txt", 1, 1, "hash")).expect("record");
+        store_event_cursor(&connection, "vol", "cursor-0", 1).expect("cursor");
+        store_warm_start_count(&connection, 7).expect("warm start count");
+        upsert_delete_approval(
+            &connection,
+            Path::new("keep.txt"),
+            crate::sync::DeleteDirection::Local,
+            "fingerprint",
+            1,
+        )
+        .expect("approval");
+
+        reset_index_state(&connection).expect("reset");
+
+        assert!(load_index(&connection).expect("index").is_empty());
+        assert!(
+            load_event_cursor(&connection, "vol")
+                .expect("cursor")
+                .is_none()
+        );
+        assert_eq!(load_warm_start_count(&connection).expect("count"), 0);
+        assert!(
+            !matching_delete_approval(
+                &connection,
+                Path::new("keep.txt"),
+                crate::sync::DeleteDirection::Local,
+                "fingerprint",
+            )
+            .expect("approval"),
+        );
+        // And the file is still a working database, not a removed one: the daemon holds this
+        // connection open across the reset.
+        upsert_record(&connection, &known_file_record("again.txt", 1, 1, "hash"))
+            .expect("still writable");
+        assert_eq!(load_index(&connection).expect("index").len(), 1);
+    }
+
+    #[test]
+    fn a_scan_ignores_the_sidecars_its_own_configured_suffix_names() {
+        // The scanner and the planner have to agree about what a sidecar looks like, or the engine
+        // uploads the file it just wrote. `ScanOptions` carries the naming for exactly that reason,
+        // and the second half of this test is what the old compiled-in constant could not express:
+        // under a custom suffix a `.proton-cloud` file is ORDINARY USER DATA and must sync.
+        let directory = tempdir().expect("tempdir");
+        for name in ["keep.txt", "keep.from-cloud.txt", "legacy.proton-cloud.txt"] {
+            std::fs::write(directory.path().join(name), b"x").expect("write");
+        }
+
+        let naming = ConflictNaming::new("from-cloud").expect("suffix");
+        let options =
+            ScanOptions::new(directory.path(), &[], &[], &[], &naming).expect("scan options");
+        let files = scan_local_files_with_options(directory.path(), &options).expect("scan");
+
+        assert!(
+            !files.contains_key(Path::new("keep.from-cloud.txt")),
+            "the configured suffix must be ignored: {files:?}"
+        );
+        assert!(
+            files.contains_key(Path::new("legacy.proton-cloud.txt")),
+            "a name matching only the DEFAULT suffix is ordinary data here — the orphaning that \
+             `sync::changing_the_suffix_orphans_sidecars_written_under_the_old_one` records"
+        );
+        assert!(files.contains_key(Path::new("keep.txt")));
+    }
+
+    #[test]
     fn scan_observer_reports_each_visited_file_with_a_running_count() {
         let directory = tempdir().expect("tempdir");
         let nested = directory.path().join("sub");
         std::fs::create_dir(&nested).expect("nested dir");
         std::fs::write(directory.path().join("one.txt"), b"one").expect("write one");
         std::fs::write(nested.join("two.txt"), b"two").expect("write two");
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("options");
 
         let seen = std::cell::RefCell::new(Vec::new());
         let observer = |count: u64, path: &Path| {
@@ -1505,7 +1622,14 @@ mod tests {
 
     #[test]
     fn scan_options_reject_download_scratch_paths() {
-        let options = ScanOptions::new(Path::new("/root"), &[], &[], &[]).expect("scan options");
+        let options = ScanOptions::new(
+            Path::new("/root"),
+            &[],
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
         let scratch_file =
             PathBuf::from(format!("{}9-9/budget.xlsx", crate::DOWNLOAD_SCRATCH_PREFIX));
         let scratch_dir = PathBuf::from(format!("{}9-9", crate::DOWNLOAD_SCRATCH_PREFIX));
@@ -1572,7 +1696,8 @@ mod tests {
                 .is_none()
         );
         // A child directory that vanished before its own read_dir (the recursion call site).
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("options");
         let mut entities = HashMap::new();
         assert!(
             vanished_entry_to_skip(visit_directory(
@@ -1614,6 +1739,7 @@ mod tests {
             std::slice::from_ref(&custom_db_path),
             &[],
             &[],
+            &ConflictNaming::default(),
         )
         .expect("scan options");
 
@@ -1634,6 +1760,7 @@ mod tests {
             &[PathBuf::from("sync-root/state/custom.db")],
             &[],
             &[],
+            &ConflictNaming::default(),
         )
         .expect("scan options");
 
@@ -1657,8 +1784,14 @@ mod tests {
         // issue #73 shape (relative/`..`/symlink root vs absolute db path). Without canonical
         // matching the ignore silently drops and the engine scans/uploads its own live DB.
         let dotted_root = directory.path().join("x").join("..").join("x");
-        let options = ScanOptions::new(&dotted_root, std::slice::from_ref(&db_path), &[], &[])
-            .expect("scan options");
+        let options = ScanOptions::new(
+            &dotted_root,
+            std::slice::from_ref(&db_path),
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
         assert!(
             !options.allows_relative_file(Path::new(".state/custom.db")),
             "a db path that only matches the root after canonicalization must still be ignored"
@@ -1677,8 +1810,14 @@ mod tests {
             .join("..")
             .join(".state")
             .join("other.db");
-        let options = ScanOptions::new(&root, std::slice::from_ref(&dotted_db), &[], &[])
-            .expect("scan options");
+        let options = ScanOptions::new(
+            &root,
+            std::slice::from_ref(&dotted_db),
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
         assert!(
             !options.allows_relative_file(Path::new(".state/other.db")),
             "a not-yet-created db path spelled with `..` must normalize into the ignore set"
@@ -1697,8 +1836,14 @@ mod tests {
         std::fs::write(state.join("custom.db-shm"), b"s").expect("write shm");
         std::fs::write(directory.path().join("keep.txt"), b"keep").expect("write keep");
 
-        let options = ScanOptions::new(directory.path(), std::slice::from_ref(&db_path), &[], &[])
-            .expect("scan options");
+        let options = ScanOptions::new(
+            directory.path(),
+            std::slice::from_ref(&db_path),
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
 
         assert!(!options.allows_relative_file(Path::new(".state/custom.db-journal")));
         assert!(!options.allows_relative_file(Path::new(".state/custom.db-wal")));
@@ -1727,7 +1872,8 @@ mod tests {
         std::fs::write(nested.join("notes.txt"), b"notes").expect("nested file");
         std::fs::write(directory.path().join("keep.txt"), b"keep").expect("keep");
 
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("scan options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("scan options");
         let files = scan_local_files_with_options(directory.path(), &options).expect("scan files");
 
         assert!(files.contains_key(Path::new("keep.txt")));
@@ -1744,7 +1890,9 @@ mod tests {
 
     #[test]
     fn scan_options_reject_the_sync_state_dir_and_its_contents() {
-        let options = ScanOptions::new(Path::new("root"), &[], &[], &[]).expect("scan options");
+        let options =
+            ScanOptions::new(Path::new("root"), &[], &[], &[], &ConflictNaming::default())
+                .expect("scan options");
 
         assert!(!options.allows_relative_directory(Path::new(".sync")));
         assert!(!options.allows_relative_file(Path::new(".sync/sync_index.db")));
@@ -1770,6 +1918,7 @@ mod tests {
             &[],
             &["docs/**".to_owned()],
             &["**/*.tmp".to_owned()],
+            &ConflictNaming::default(),
         )
         .expect("scan options");
 
@@ -1897,11 +2046,23 @@ mod tests {
 
     #[test]
     fn per_directory_config_file_is_ignored_at_any_depth() {
-        assert!(should_ignore_path(Path::new(".proton-sync.toml")));
-        assert!(should_ignore_path(Path::new("a/b/.proton-sync.toml")));
+        assert!(should_ignore_path(
+            Path::new(".proton-sync.toml"),
+            &ConflictNaming::default()
+        ));
+        assert!(should_ignore_path(
+            Path::new("a/b/.proton-sync.toml"),
+            &ConflictNaming::default()
+        ));
         // A same-named directory or unrelated file is not ignored.
-        assert!(!should_ignore_path(Path::new("a/proton-sync.toml")));
-        assert!(!should_ignore_path(Path::new("notes.txt")));
+        assert!(!should_ignore_path(
+            Path::new("a/proton-sync.toml"),
+            &ConflictNaming::default()
+        ));
+        assert!(!should_ignore_path(
+            Path::new("notes.txt"),
+            &ConflictNaming::default()
+        ));
     }
 
     #[cfg(unix)]
@@ -2281,7 +2442,8 @@ mod tests {
                 "reused-sentinel",
             ),
         );
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("options");
         let entities =
             scan_local_entities_reusing_hashes(directory.path(), &options, &known).expect("scan");
 
@@ -2312,7 +2474,8 @@ mod tests {
                 "stale-sentinel",
             ),
         );
-        let options = ScanOptions::new(directory.path(), &[], &[], &[]).expect("options");
+        let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
+            .expect("options");
         let entities =
             scan_local_entities_reusing_hashes(directory.path(), &options, &known).expect("scan");
 

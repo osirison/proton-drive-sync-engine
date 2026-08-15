@@ -910,6 +910,18 @@ export const SETTINGS = {
   addIncludePlaceholder: "Add a pattern — e.g. work/** or *.md",
   cliTitle: "Where the Proton Drive command lives",
   cliSub: "The app runs this program to reach Proton Drive. A bare name is looked up on PATH.",
+  logTitle: "How much the sync service writes to its log",
+  logSub:
+    "Leave this alone unless you are chasing a problem. debug and trace are large and slow; they take effect the next time the service starts.",
+  logPlaceholder: "info",
+  socketTitle: "Where the app talks to the sync service",
+  socketSub:
+    "The app and the service find each other through this socket. Change it only if the default place is unavailable — both sides have to agree, so the service needs a restart.",
+  socketPlaceholder: "the default under $XDG_RUNTIME_DIR",
+  suffixTitle: "What the second copy of a conflicted file is called",
+  suffixSub:
+    "When both sides change a file, Proton's version is saved beside yours with this in the name. Changing it leaves any copies already on your disk behind as ordinary files — they will upload as new files, so rename them first.",
+  suffixPlaceholder: "proton-cloud",
   configFileTitle: "The file these settings are written to",
   configFileMissing: "Not created yet — saving writes it.",
   // The config file could not be read — a TOML typo, or a permission. A template, so the reason is
@@ -917,7 +929,7 @@ export const SETTINGS = {
   // every control below it is describing a file nobody could open.
   configUnreadable: (reason) => `These aren't the settings that are running — ${reason}`,
   advancedMissing:
-    "Log level, the socket path, the conflict suffix and resetting the index aren't settings the app can write yet.",
+    "Resetting the index isn't something the app can do yet — it discards everything the service has learned and rebuilds it, and only the proton-sync reset-index command can. Your files aren't touched either way.",
 };
 
 // --------------------------------------------------------------------------- onboarding ----

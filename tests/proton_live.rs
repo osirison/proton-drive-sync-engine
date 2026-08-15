@@ -4,9 +4,7 @@ use proton_drive_sync_engine::index::{
 use proton_drive_sync_engine::proton::{
     CommandPolicy, ProtonClient, ProtonDriveClient, RemoteEntity,
 };
-use proton_drive_sync_engine::sync::{
-    SyncAction, is_conflict_copy, original_from_conflict_copy, plan_sync_entities,
-};
+use proton_drive_sync_engine::sync::{ConflictNaming, SyncAction, plan_sync_entities};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
@@ -722,7 +720,12 @@ fn mutating_live_e2e_resolves_conflict_by_downloading_a_sidecar_copy() {
         .list_entities(&run_root)
         .expect("list_entities before reconcile");
 
-    let planned = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+    let planned = plan_sync_entities(
+        &local_entities,
+        &remote_entities,
+        &base_index,
+        &ConflictNaming::default(),
+    );
     let conflict = planned
         .iter()
         .find(|action| action.path == Path::new("notes.txt"))
@@ -737,12 +740,14 @@ fn mutating_live_e2e_resolves_conflict_by_downloading_a_sidecar_copy() {
         .clone()
         .expect("a conflict action should carry a sidecar conflict_path");
     assert!(
-        is_conflict_copy(&conflict_path),
+        ConflictNaming::default().is_conflict_copy(&conflict_path),
         "the planned conflict_path should look like a conflict sidecar: {}",
         conflict_path.display()
     );
     assert_eq!(
-        original_from_conflict_copy(&conflict_path).as_deref(),
+        ConflictNaming::default()
+            .original_from_conflict_copy(&conflict_path)
+            .as_deref(),
         Some(Path::new("notes.txt")),
         "the conflict sidecar name should map back to the original path"
     );

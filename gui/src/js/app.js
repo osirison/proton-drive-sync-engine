@@ -2601,17 +2601,14 @@ function settingsProps() {
       onField: (key, value) => stageSetting(key, value),
       onEvents: (on) => stageSetting("events_driven", on),
       onInterval: (secs) => stageSetting("scan_interval_secs", secs),
-      // Writes BOTH booleans, always — a card that set one would leave a pair no card describes
-      // (DEVIATIONS §68). `deletion_policy` goes with them because `write_config` applies it after
-      // the two and a stale value there would overwrite what was just chosen.
+      // ONE FIELD, not three. `deletion_policy` is a daemon key now (#194) and `set_deletion_policy`
+      // always writes both directions, in whichever spelling the file already uses — so staging the
+      // two booleans beside it would briefly put both spellings in one document, which is a config
+      // the daemon refuses to start on. A card that set one direction would still leave a pair no
+      // card describes (DEVIATIONS §68); the engine's enum is what guarantees it cannot.
       onPolicy: (policy) => {
         settingsNotice = null;
-        settingsEdits = {
-          ...settingsEdits,
-          delete_approval_remote: policy.remote,
-          delete_approval_local: policy.local,
-          deletion_policy: policy.id,
-        };
+        settingsEdits = { ...settingsEdits, deletion_policy: policy.id };
         settingsSaved = false;
         render();
       },

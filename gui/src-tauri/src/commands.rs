@@ -245,8 +245,19 @@ pub struct ConfigPayload {
     proton_cli: Option<String>,
     proton_timeout_secs: Option<i64>,
     proton_list_attempts: Option<i64>,
+    /// The Advanced tab's remaining file keys (G23/#237). Each is the **file's literal value**, not
+    /// the effective one: an absent key means the daemon default applies, and reporting the
+    /// resolved value here would let the next save bake a default — or a value that came from a
+    /// command-line flag — into the file as if the user had typed it.
+    socket_path: Option<String>,
+    log_level: Option<String>,
+    conflict_suffix: Option<String>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
+    /// The `deletion_policy` key when the file uses that spelling (#194), so a writer can tell
+    /// which of the two spellings this file speaks. `None` with a policy below means the file uses
+    /// `[delete_approval]`, or says nothing at all.
+    deletion_policy_key: Option<config_io::DeletionPolicy>,
     /// The same two booleans as the Settings → Deletions radio (C1, #174).
     ///
     /// Carried **alongside** them, not instead of them: the raw pair is what the Advanced view and
@@ -275,6 +286,10 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
         proton_cli: doc.get_str("proton_cli"),
         proton_timeout_secs: doc.get_int("proton_timeout_secs"),
         proton_list_attempts: doc.get_int("proton_list_attempts"),
+        socket_path: doc.get_str("socket_path"),
+        log_level: doc.get_str("log_level"),
+        conflict_suffix: doc.get_str("conflict_suffix"),
+        deletion_policy_key: doc.get_deletion_policy_key(),
         delete_approval_remote: doc.get_delete_approval("remote"),
         delete_approval_local: doc.get_delete_approval("local"),
         deletion_policy: doc.get_deletion_policy(),
@@ -294,10 +309,14 @@ pub struct ConfigUpdate {
     proton_cli: Option<String>,
     proton_timeout_secs: Option<i64>,
     proton_list_attempts: Option<i64>,
+    socket_path: Option<String>,
+    log_level: Option<String>,
+    conflict_suffix: Option<String>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
     /// Applied AFTER the two raw booleans, so a screen that sends both cannot end up half-written:
     /// the policy always sets both directions, which is what makes a radio selection unambiguous.
+    /// `set_deletion_policy` writes it back in whichever spelling the file already uses.
     deletion_policy: Option<config_io::DeletionPolicy>,
 }
 
@@ -331,6 +350,20 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     }
     if let Some(v) = update.proton_list_attempts {
         doc.set_int("proton_list_attempts", v);
+    }
+    // An EMPTY string clears the key rather than writing `key = ""` — for all three of these an
+    // empty value is either rejected outright (`conflict_suffix`) or means something the user did
+    // not ask for, while an absent key is exactly "use the daemon default".
+    for (key, value) in [
+        ("socket_path", &update.socket_path),
+        ("log_level", &update.log_level),
+        ("conflict_suffix", &update.conflict_suffix),
+    ] {
+        match value.as_deref().map(str::trim) {
+            Some("") => doc.remove(key),
+            Some(v) => doc.set_str(key, v),
+            None => {}
+        }
     }
     if let Some(v) = update.delete_approval_remote {
         doc.set_delete_approval("remote", v);
@@ -546,13 +579,17 @@ pub async fn list_remote(state: Paths<'_>, path: Option<String>) -> Result<Strin
 /// GTK main loop on a large folder.
 #[tauri::command]
 pub async fn scan_conflicts(state: Paths<'_>) -> Result<Vec<Conflict>, String> {
-    let local_root = state
-        .lock()
-        .unwrap()
-        .effective_local_root()
-        .ok_or_else(|| "local_root is not configured".to_string())?;
+    // Root and naming come out of the SAME guard: the scanner must look for the suffix this config
+    // makes the daemon write, not the compiled-in default (`conflict_suffix`, G23/#237).
+    let (local_root, naming) = {
+        let paths = state.lock().unwrap();
+        let local_root = paths
+            .effective_local_root()
+            .ok_or_else(|| "local_root is not configured".to_string())?;
+        (local_root, paths.conflict_naming.clone())
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        conflicts::scan_conflicts(&local_root).map_err(|e| e.to_string())
+        conflicts::scan_conflicts(&local_root, &naming).map_err(|e| e.to_string())
     })
     .await
     .map_err(|error| format!("conflict-scan task failed: {error}"))?

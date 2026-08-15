@@ -224,7 +224,14 @@ mod tests {
 
     fn scan_options(excludes: &[&str]) -> ScanOptions {
         let excludes: Vec<String> = excludes.iter().map(|s| (*s).to_owned()).collect();
-        ScanOptions::new(Path::new("/root"), &[], &[], &excludes).expect("scan options")
+        ScanOptions::new(
+            Path::new("/root"),
+            &[],
+            &[],
+            &excludes,
+            &crate::sync::ConflictNaming::default(),
+        )
+        .expect("scan options")
     }
 
     fn file_record(path: &str, sha1: &str, proton_id: Option<&str>) -> FileRecord {

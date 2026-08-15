@@ -9,6 +9,7 @@
 //! carries its *live* resolved roots (`RunningConfigInfo`); `get_status` caches them here so every
 //! command can fall back to the daemon's ground truth when the GUI config doesn't provide a value.
 
+use gui_core::config_io::ConflictNaming;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -45,6 +46,13 @@ pub struct RuntimePaths {
     pub local_root: Option<PathBuf>,
     pub remote_root: Option<PathBuf>,
     pub proton_cli: String,
+    /// How the daemon spells conflict sidecars (`conflict_suffix`). Resolved from the same file the
+    /// daemon reads, because the GUI's conflict scanner walks the disk looking for exactly the
+    /// names the daemon wrote — a scanner holding the default while the daemon runs a custom suffix
+    /// reports "no conflicts" on a folder full of them. An invalid value falls back to the default
+    /// rather than failing the whole resolve: that config does not start a daemon either, and the
+    /// Settings screen's own validation is what reports it.
+    pub conflict_naming: ConflictNaming,
     /// Live values reported by the running daemon (cached from the last successful status round
     /// trip). Fallbacks only: an explicit GUI-config value always wins.
     pub daemon_local_root: Option<PathBuf>,
@@ -123,6 +131,9 @@ impl RuntimePaths {
         let proton_cli = get("proton_cli")
             .map(|value| expand(value, "proton_cli").to_string_lossy().into_owned())
             .unwrap_or_else(|| "proton-drive".to_string());
+        let conflict_naming = get("conflict_suffix")
+            .and_then(|value| ConflictNaming::new(&value).ok())
+            .unwrap_or_default();
 
         Self {
             config_path,
@@ -131,6 +142,7 @@ impl RuntimePaths {
             local_root,
             remote_root,
             proton_cli,
+            conflict_naming,
             daemon_local_root: None,
             daemon_remote_root: None,
             daemon_db_path: None,

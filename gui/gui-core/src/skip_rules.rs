@@ -29,6 +29,7 @@
 //! beside it.
 
 use proton_drive_sync_engine::index::ScanOptions;
+use proton_drive_sync_engine::sync::ConflictNaming;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -161,17 +162,26 @@ pub fn measure(
     //   per-rule  — one rule alone: that rule's own row.
     //
     // Only the baseline is fatal, because a failure there is not about any rule the user typed.
-    let baseline =
-        ScanOptions::new(local_root, ignored_paths, include_patterns, &[]).map_err(to_error)?;
+    let baseline = ScanOptions::new(
+        local_root,
+        ignored_paths,
+        include_patterns,
+        &[],
+        &ConflictNaming::default(),
+    )
+    .map_err(to_error)?;
 
     let mut rules = Vec::with_capacity(exclude_patterns.len());
     let mut per_rule = Vec::with_capacity(exclude_patterns.len());
     for pattern in exclude_patterns {
+        // Sidecar naming is irrelevant to glob compilation — this call only validates the
+        // pattern and counts matches; nothing here classifies a sidecar.
         let compiled = ScanOptions::new(
             local_root,
             ignored_paths,
             include_patterns,
             std::slice::from_ref(pattern),
+            &ConflictNaming::default(),
         );
         let error = compiled.as_ref().err().map(|e| e.to_string());
         rules.push(RuleUsage {
@@ -193,8 +203,14 @@ pub fn measure(
         .filter(|(_, compiled)| compiled.is_some())
         .map(|(pattern, _)| pattern.clone())
         .collect();
-    let combined =
-        ScanOptions::new(local_root, ignored_paths, include_patterns, &valid).map_err(to_error)?;
+    let combined = ScanOptions::new(
+        local_root,
+        ignored_paths,
+        include_patterns,
+        &valid,
+        &ConflictNaming::default(),
+    )
+    .map_err(to_error)?;
 
     let mut report = SkipRuleReport {
         rules,

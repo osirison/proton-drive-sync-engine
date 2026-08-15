@@ -5,7 +5,7 @@ use crate::index::{
     delete_delete_approval, load_event_cursor, load_existing_index, load_index,
     load_sole_event_cursor, load_unsyncable_items, load_warm_start_count, local_directory_state,
     local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
-    purge_record, replace_unsyncable_items, scan_local_entities_observed,
+    purge_record, replace_unsyncable_items, reset_index_state, scan_local_entities_observed,
     scan_local_entities_reusing_hashes, store_event_cursor, store_warm_start_count,
     upsert_delete_approval, upsert_record,
 };
@@ -21,9 +21,9 @@ use crate::proton::{
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
-    DeleteDirection, PlanSummary, PlannedAction, SyncAction, UnsyncableItem,
-    directory_move_descendant_path_pairs, is_strict_descendant, original_from_conflict_copy,
-    plan_sync_entities, unsyncable_items,
+    ConflictNaming, DeleteDirection, PlanSummary, PlannedAction, SyncAction, UnsyncableItem,
+    directory_move_descendant_path_pairs, is_strict_descendant, plan_sync_entities,
+    unsyncable_items,
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -172,6 +172,14 @@ pub struct DaemonConfig {
     pub delete_approval_local: bool,
     /// Startup-reconcile tuning (warm start; see [`WarmStartConfig`]).
     pub warm_start: WarmStartConfig,
+    /// How conflict sidecars are named (`conflict_suffix`, default `proton-cloud`). One value for
+    /// the planner that writes them and the scanner/watcher that must not sync them — see
+    /// [`crate::sync::ConflictNaming`], including what changing it does to sidecars already on disk.
+    pub conflict_naming: ConflictNaming,
+    /// The resolved `tracing` filter directive (`--log-level` > `RUST_LOG` > file > `info`; see
+    /// [`crate::config::resolve_log_filter`]). Applied by the binary at startup — the daemon holds
+    /// it so the value that is running is the value the config resolved, not a second env read.
+    pub log_filter: String,
 }
 
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
@@ -313,6 +321,11 @@ struct ControlShared {
     /// (rather than a warm start / incremental pass). The daemon core consumes it with a `swap`
     /// at the top of each pass. Written by the IPC task, read-and-cleared by the core.
     force_full_walk: AtomicBool,
+    /// Set by the IPC `reset_index` command to discard the learned state before the next pass.
+    /// Same shape as [`Self::force_full_walk`] and for the same reason: the truncation must happen
+    /// on the main loop between passes, never from the IPC task under an in-flight reconcile.
+    /// Written by the IPC task, read-and-cleared by the core.
+    reset_index: AtomicBool,
     /// The daemon core's most recently published status. The IPC task only ever reads it.
     snapshot: StdMutex<StatusSnapshot>,
     /// Live activity for the in-flight pass (see [`SyncActivity`]). Written from inside the
@@ -356,6 +369,7 @@ impl ControlShared {
             syncing: AtomicBool::new(false),
             reconcile_seq: AtomicU64::new(0),
             force_full_walk: AtomicBool::new(false),
+            reset_index: AtomicBool::new(false),
             snapshot: StdMutex::new(StatusSnapshot {
                 pending_changes: 0,
                 last_sync_epoch_secs: None,
@@ -636,7 +650,12 @@ pub fn preview_plan_with_client(
     if remote_root_missing {
         base_index.clear();
     }
-    let mut plan = plan_sync_entities(&local_entities, &remote_entities, &base_index);
+    let mut plan = plan_sync_entities(
+        &local_entities,
+        &remote_entities,
+        &base_index,
+        &config.conflict_naming,
+    );
     prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
     info!(planned_actions = plan.len(), "dry-run sync plan computed");
     Ok(plan)
@@ -967,7 +986,7 @@ impl<C: ProtonClient> Daemon<C> {
                 // file-content record semantics. The empty relative path is the watched root
                 // itself, not a syncable entity.
                 if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
-                    && !crate::sync::is_conflict_copy(&path)
+                    && !self.config.conflict_naming.is_conflict_copy(&path)
                     && let Ok(relative_path) = path.strip_prefix(&self.config.local_root)
                     && !relative_path.as_os_str().is_empty()
                     && self.scan_options.allows_relative_directory(relative_path)
@@ -976,9 +995,12 @@ impl<C: ProtonClient> Daemon<C> {
                 }
                 continue;
             }
-            if crate::sync::is_conflict_copy(&path) {
+            if self.config.conflict_naming.is_conflict_copy(&path) {
                 if matches!(event.kind, EventKind::Remove(_))
-                    && let Some(original) = original_from_conflict_copy(&path)
+                    && let Some(original) = self
+                        .config
+                        .conflict_naming
+                        .original_from_conflict_copy(&path)
                     && let Ok(relative_path) = original.strip_prefix(&self.config.local_root)
                     && self.scan_options.allows_relative_file(relative_path)
                 {
@@ -1154,14 +1176,30 @@ impl<C: ProtonClient> Daemon<C> {
         // publish the previous pass's items beside its own "sync failed".
         self.last_failed_items.clear();
         self.last_failed_item_count = 0;
-        // Load the baseline before scanning so the scan can reuse each unchanged file's
-        // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
-        let base_records = load_index(&self.connection)?;
-
         // A runtime `resync` forces this pass to a full-tree walk, overriding both the warm start
         // and the steady-state incremental path. Consume it exactly once (a `swap`), so a later
         // pass is not also forced. (The startup `--full-walk` flag is separate — see below.)
         let resync_requested = self.shared.force_full_walk.swap(false, Ordering::SeqCst);
+
+        // `reset_index` is applied BEFORE the baseline is loaded, or this pass would plan against
+        // the very rows it just erased. Consumed with the same `swap`-once discipline as the
+        // resync latch, and on the main loop — never from the IPC task, which holds its own
+        // connection to this database.
+        if self.shared.reset_index.swap(false, Ordering::SeqCst) {
+            reset_index_state(&self.connection)?;
+            // A reset makes this a first pass in every sense that matters: an empty baseline is
+            // the bootstrap condition, and the cleared cursor has to be re-seeded by a full walk
+            // before any later pass may replay from it. `is_first_reconcile` also restores the
+            // "always full-scan the local tree" floor the empty baseline now depends on.
+            self.is_first_reconcile = true;
+            self.force_local_rescan = true;
+            self.incremental_passes_since_full_scan = 0;
+            warn!("index reset: baseline, event cursors and delete approvals discarded");
+        }
+
+        // Load the baseline before scanning so the scan can reuse each unchanged file's
+        // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
+        let base_records = load_index(&self.connection)?;
 
         // The first reconcile after boot is special: `notify` has replayed nothing, so it must
         // full-scan the local tree. `first_reconcile` either full-walks or warm-starts (both do
@@ -1876,7 +1914,12 @@ impl<C: ProtonClient> Daemon<C> {
         cursor_update: Option<CursorUpdate>,
     ) -> AppResult<PassOutcome> {
         let remote_root_missing = remote_map.remote_root_missing;
-        let mut plan = plan_sync_entities(local_entities, remote_entities, base_index);
+        let mut plan = plan_sync_entities(
+            local_entities,
+            remote_entities,
+            base_index,
+            &self.config.conflict_naming,
+        );
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
         let plan_summary = PlanSummary::from_plan(&plan);
         self.last_plan_summary = Some(plan_summary.clone());
@@ -3252,6 +3295,21 @@ async fn handle_control_connection(
                 }
             }
         }
+        ControlCommand::ResetIndex => {
+            // Latched, not applied here: this task holds a *second* connection to the same
+            // database and a reconcile may be mid-checkpoint on the first one. Order matters —
+            // latch the reset before scheduling the pass that consumes it, and latch the full walk
+            // with it so a cleared cursor cannot be mistaken for a warm-start opportunity.
+            shared.reset_index.store(true, Ordering::SeqCst);
+            shared.force_full_walk.store(true, Ordering::SeqCst);
+            if shared.is_paused() {
+                shared.response("index reset queued; it will run when syncing resumes")
+            } else if loop_tx.send(LoopCommand::SyncNow).is_ok() {
+                shared.response("index reset scheduled; the next pass rebuilds from scratch")
+            } else {
+                shared.response("daemon is shutting down; index reset not scheduled")
+            }
+        }
         ControlCommand::Approve | ControlCommand::Deny => {
             let approve = request.command == ControlCommand::Approve;
             let pending = shared
@@ -3472,6 +3530,7 @@ fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
         &ignored_paths,
         &config.include_patterns,
         &config.exclude_patterns,
+        &config.conflict_naming,
     )
 }
 
@@ -4765,6 +4824,8 @@ mod tests {
             delete_approval_remote: false,
             delete_approval_local: false,
             warm_start: WarmStartConfig::default(),
+            conflict_naming: ConflictNaming::default(),
+            log_filter: "info".to_owned(),
         };
 
         let plan = preview_plan_with_client(&config, &FakeProtonClient { remote_files })
@@ -8098,9 +8159,17 @@ mod tests {
         );
         // The two predicates `gui_core::conflicts::scan_conflicts` walks the disk with: the sidecar
         // is only in the GUI's conflicts list if both hold for what the daemon actually wrote.
-        assert!(crate::sync::is_conflict_copy(&sidecar_path));
+        assert!(
+            daemon
+                .config
+                .conflict_naming
+                .is_conflict_copy(&sidecar_path)
+        );
         assert_eq!(
-            crate::sync::original_from_conflict_copy(&sidecar_path),
+            daemon
+                .config
+                .conflict_naming
+                .original_from_conflict_copy(&sidecar_path),
             Some(local_path.clone())
         );
         let record = get_record(&daemon.connection, Path::new("notes.txt"))
@@ -9380,6 +9449,8 @@ mod tests {
                 enabled: false,
                 ..WarmStartConfig::default()
             },
+            conflict_naming: ConflictNaming::default(),
+            log_filter: "info".to_owned(),
         }
     }
 
@@ -11519,6 +11590,103 @@ mod tests {
             full_walks.load(Ordering::SeqCst),
             1,
             "the force-full-walk latch is consumed after one pass"
+        );
+    }
+
+    #[test]
+    fn a_reset_index_request_discards_the_learned_state_and_rebuilds_by_adoption() {
+        // G23/#237's *Reset the index*. Three claims at once: the baseline, cursor and approvals
+        // are gone; the next pass full-walks (an empty index is the bootstrap condition, and the
+        // cleared cursor must not be mistaken for a warm-start opportunity); and the user's files
+        // are untouched — an already-agreeing pair is re-adopted, not re-transferred.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("local file");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]);
+        let client = EventFakeClient::new(remote_entities);
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut config = event_config(directory.path(), &local_root);
+        config.warm_start.enabled = true;
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
+        )
+        .expect("seed keep record");
+        store_event_cursor(
+            &daemon.connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+        upsert_delete_approval(
+            &daemon.connection,
+            Path::new("keep.txt"),
+            DeleteDirection::Local,
+            "fingerprint",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed approval");
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("warm-start first pass");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+        daemon.is_first_reconcile = false;
+
+        // Only the reset latch — NOT `force_full_walk`, which the IPC handler also sets. The full
+        // walk below therefore proves the reset's own doing: a cleared cursor leaves nothing to
+        // warm-start from, so the pass has to walk.
+        daemon.shared.reset_index.store(true, Ordering::SeqCst);
+        daemon.reconcile_blocking().expect_clean("reset pass");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "a reset pass rebuilds from a full walk, never from the cursor it just cleared"
+        );
+        // The cursor was cleared and then RE-SEEDED by this pass, which is the point: a reset must
+        // not leave the daemon permanently cursorless and full-walking. That the truncation itself
+        // happens is pinned at the layer that does it —
+        // `index::reset_index_state_clears_every_table_the_daemon_decides_from`.
+        assert!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("cursor query")
+                .is_some(),
+            "a successful reset pass re-seeds the cursor from the walk it just did"
+        );
+        assert!(
+            !matching_delete_approval(
+                &daemon.connection,
+                Path::new("keep.txt"),
+                DeleteDirection::Local,
+                "fingerprint",
+            )
+            .expect("approval query"),
+            "a standing approval is pinned to a baseline the reset erased"
+        );
+        assert!(
+            local_root.join("keep.txt").exists(),
+            "resetting the index must not touch the user's files"
+        );
+        let record = get_record(&daemon.connection, Path::new("keep.txt"))
+            .expect("record query")
+            .expect("the rebuilt baseline re-adopts the already-agreeing pair");
+        assert_eq!(record.sha1_hash.as_deref(), Some(keep.as_str()));
+        assert!(
+            !daemon.shared.reset_index.load(Ordering::SeqCst),
+            "the reset latch is consumed exactly once"
         );
     }
 
