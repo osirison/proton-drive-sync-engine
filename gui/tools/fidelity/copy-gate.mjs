@@ -208,6 +208,7 @@ const NOT_DRAWN = new Map([
   ["SETTINGS.logSub", "the Advanced tab is not drawn in any frame"],
   ["SETTINGS.socketTitle", "the Advanced tab is not drawn in any frame"],
   ["SETTINGS.socketSub", "the Advanced tab is not drawn in any frame"],
+  ["SETTINGS.socketPlaceholder", "the Advanced tab is not drawn in any frame"],
   ["SETTINGS.suffixTitle", "the Advanced tab is not drawn in any frame"],
   ["SETTINGS.suffixSub", "the Advanced tab is not drawn in any frame"],
   [

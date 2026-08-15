@@ -1071,15 +1071,12 @@ function advancedTab(props) {
     // are the same kind of thing: a plain-language title, what changing it does, and the key in
     // mono. Each is a FILE key — an empty field clears it and the daemon default applies, which is
     // what `write_config` does with an empty string rather than writing `key = ""`.
-    advancedField("log_level", SETTINGS.logTitle, SETTINGS.logSub, SETTINGS.logPlaceholder, props),
+    // THE DAEMON'S DEFAULTS, AS PLACEHOLDERS, and inline rather than in `copy.js` for the same
+    // reason the `proton-drive` placeholder above is: they are config values, like the mono key
+    // lines §68 keeps out of the deck. The socket's placeholder IS a sentence, so it stays copy.
+    advancedField("log_level", SETTINGS.logTitle, SETTINGS.logSub, "info", props),
     advancedField("socket_path", SETTINGS.socketTitle, SETTINGS.socketSub, SETTINGS.socketPlaceholder, props),
-    advancedField(
-      "conflict_suffix",
-      SETTINGS.suffixTitle,
-      SETTINGS.suffixSub,
-      SETTINGS.suffixPlaceholder,
-      props,
-    ),
+    advancedField("conflict_suffix", SETTINGS.suffixTitle, SETTINGS.suffixSub, "proton-cloud", props),
     panel("settings-panel-block", [
       panelText(SETTINGS.configFileTitle, null),
       el(
