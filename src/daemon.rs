@@ -3683,12 +3683,13 @@ fn resolve_history_path(
     if !selector.contains(char::REPLACEMENT_CHARACTER) {
         return Ok(validated);
     }
+    // No dedup: the query is `SELECT DISTINCT`, so these differ byte-wise by construction — and
+    // two of them rendering alike is precisely the ambiguity the count below refuses.
     let mut matches: Vec<PathBuf> =
         crate::index::distinct_event_paths(connection, since_epoch_secs)?
             .into_iter()
             .filter(|stored| crate::wire_path(stored) == crate::wire_path(&validated))
             .collect();
-    matches.dedup();
     match matches.len() {
         1 => Ok(matches.remove(0)),
         // Nothing matched: hand back the validated form so the query runs and reports an empty
@@ -3968,7 +3969,12 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> AppResult<()> {
 /// boundary is and the engine takes no date-time dependency (it shells `curl` rather than link an
 /// HTTP crate), so this asks libc — which the crate already uses for `geteuid` and `kill`.
 fn local_day_start(now_epoch_secs: u64) -> u64 {
-    let time = now_epoch_secs as libc::time_t;
+    // `try_from`, not `as`: `time_t` is `i32` on 32-bit targets, where a silent truncation would
+    // hand `localtime_r` a wrapped instant and put the day boundary somewhere else entirely.
+    // Everything here degrades to "window unknown" rather than a confident wrong span.
+    let Ok(time) = libc::time_t::try_from(now_epoch_secs) else {
+        return now_epoch_secs;
+    };
     let mut broken_down: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: `time` and `broken_down` are live locals for the duration of the call, and
     // `localtime_r` is the thread-safe form (it writes only into the buffer it is handed).
