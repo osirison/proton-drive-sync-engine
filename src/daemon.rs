@@ -1277,8 +1277,9 @@ impl<C: ProtonClient> Daemon<C> {
     ) -> Option<(String, EventCursor)> {
         let volume = match self.volume_id_for_scope(base_records) {
             Ok(volume) => volume,
-            Err(reason) => {
-                self.note_event_scope_declined(reason);
+            // Both failures decline the same way here; only the bootstrap cursor cares which.
+            Err(error) => {
+                self.note_event_scope_declined(error.into_reason());
                 return None;
             }
         };
@@ -1302,12 +1303,12 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
-    /// The volume id this root's event stream is scoped to, or a human-readable reason it cannot be
-    /// determined. Derived from any baseline composed `proton_id` first (free, no I/O).
+    /// The volume id this root's event stream is scoped to, or why it cannot be determined. Derived
+    /// from any baseline composed `proton_id` first (free, no I/O).
     fn volume_id_for_scope(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
-    ) -> Result<String, String> {
+    ) -> Result<String, VolumeScopeError> {
         if let Some(volume) = derive_volume_id(base_records) {
             return Ok(volume.to_owned());
         }
@@ -1317,14 +1318,14 @@ impl<C: ProtonClient> Daemon<C> {
         // (#32 — it used to stay on full-tree walks forever here).
         match load_sole_event_cursor(&self.connection) {
             Ok(Some(cursor)) => Ok(cursor.scope_id),
-            Ok(None) => Err(
+            Ok(None) => Err(VolumeScopeError::Unnameable(
                 "no event volume: no indexed node carries a composed proton_id, and no single \
                  stored cursor names one"
                     .to_owned(),
-            ),
-            Err(error) => Err(format!(
-                "no event volume: the stored event cursor is unreadable: {error}"
             )),
+            Err(error) => Err(VolumeScopeError::Unreadable(format!(
+                "no event volume: the stored event cursor is unreadable: {error}"
+            ))),
         }
     }
 
@@ -1587,8 +1588,16 @@ impl<C: ProtonClient> Daemon<C> {
         let Some(source) = self.event_source.as_ref() else {
             return PreSnapshotCursor::Unavailable;
         };
-        let Ok(volume) = self.volume_id_for_scope(base_records) else {
-            return PreSnapshotCursor::VolumeUnknown;
+        let volume = match self.volume_id_for_scope(base_records) {
+            Ok(volume) => volume,
+            // Nothing *names* a volume: the first-ever bootstrap, with no prior cursor to lose.
+            Err(VolumeScopeError::Unnameable(_)) => return PreSnapshotCursor::VolumeUnknown,
+            // The lookup itself failed, so a stored cursor may well exist and simply be invisible
+            // right now; anchoring after the walk would overwrite it with a post-walk value.
+            Err(VolumeScopeError::Unreadable(reason)) => {
+                warn!(%reason, "cannot name the event volume before the snapshot; this pass persists no cursor");
+                return PreSnapshotCursor::Unavailable;
+            }
         };
         match source.latest_cursor(&volume) {
             Ok(last_event_id) => PreSnapshotCursor::Captured(CursorUpdate {
@@ -3341,6 +3350,23 @@ struct CursorUpdate {
     last_event_id: String,
 }
 
+/// Why [`Daemon::volume_id_for_scope`] could not name the event volume. Callers that only log
+/// take [`Self::into_reason`]; the bootstrap cursor is the one caller the distinction matters to.
+enum VolumeScopeError {
+    /// Nothing names a volume: no baseline composed `proton_id` and no sole stored cursor row.
+    Unnameable(String),
+    /// The stored cursor could not be read, so a volume may exist and be invisible right now.
+    Unreadable(String),
+}
+
+impl VolumeScopeError {
+    fn into_reason(self) -> String {
+        match self {
+            Self::Unnameable(reason) | Self::Unreadable(reason) => reason,
+        }
+    }
+}
+
 /// What a bootstrap learned about the event cursor *before* it started walking (#294). The two
 /// `None`-shaped outcomes are deliberately distinct: only one of them may be repaired by a
 /// post-walk read.
@@ -3352,8 +3378,9 @@ enum PreSnapshotCursor {
     /// the event path can ever engage.
     VolumeUnknown,
     /// No cursor may be anchored from this pass: the feature is off, there is no event source, or
-    /// the volume *was* known and the read failed. The last case is the dangerous one — prior
-    /// state exists, so a post-walk value would claim mid-walk changes were applied.
+    /// a lookup failed (the volume could not be read, or `latest_cursor` did) while prior state
+    /// may exist. That last case is the dangerous one — a post-walk value would claim mid-walk
+    /// changes were applied, and could overwrite a stored cursor that is merely unreadable now.
     Unavailable,
 }
 
@@ -8980,6 +9007,64 @@ mod tests {
             full_walks.load(Ordering::SeqCst),
             1,
             "the older cursor is still a usable replay point"
+        );
+    }
+
+    /// #294, third door: the volume lookup itself fails. `volume_id_for_scope` falls back to the
+    /// sole stored cursor row when no baseline record carries a composed id, so an unreadable row
+    /// is *not* "first-ever bootstrap" — a cursor exists, it just cannot be seen this pass. Anchor
+    /// after the walk and it is overwritten with a post-walk value.
+    #[test]
+    fn an_unreadable_cursor_row_is_not_treated_as_a_first_ever_bootstrap() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]));
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-live"))),
+        )
+        .expect("daemon");
+        // No composed id in the baseline (an all-Proton-native remote, #32), so the volume can only
+        // come from the cursor row — whose `updated_at` is text, making the row unreadable while
+        // leaving it fully writable.
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", None, keep.as_str()),
+        )
+        .expect("seed record");
+        daemon
+            .connection
+            .execute(
+                "INSERT INTO remote_event_cursor (scope_id, last_event_id, updated_at)
+                 VALUES ('vol', 'cursor-old', 'corrupt')",
+                [],
+            )
+            .expect("seed corrupt cursor");
+        assert!(
+            load_sole_event_cursor(&daemon.connection).is_err(),
+            "precondition: the cursor row is unreadable"
+        );
+
+        daemon.reconcile_blocking().expect("bootstrap reconcile");
+
+        let stored: String = daemon
+            .connection
+            .query_row(
+                "SELECT last_event_id FROM remote_event_cursor WHERE scope_id = 'vol'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("cursor row still present");
+        assert_eq!(
+            stored, "cursor-old",
+            "an unreadable row must not be overwritten by a post-walk cursor"
         );
     }
 
