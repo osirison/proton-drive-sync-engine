@@ -35,6 +35,72 @@ pub fn boxed_error(message: impl Into<String>) -> Box<dyn std::error::Error + Se
     Box::new(std::io::Error::other(message.into()))
 }
 
+/// The form of a path as it travels on **any** wire this engine publishes — the control
+/// protocol's JSON (#61) and the dry-run report (#300) alike — and therefore the form an
+/// `approve`/`deny` selector must be matched against: `to_string_lossy`. A client only ever sees
+/// this rendering (a non-UTF-8 path cannot survive JSON), so the daemon compares selectors here
+/// rather than against the real `PathBuf` it keeps internally — otherwise exactly the paths that
+/// motivated the lossy wire would be unreachable through the control plane.
+///
+/// The rule this fixes in place: a wire path is a **rendering, never an authoritative selector**.
+/// Two paths that differ only in invalid bytes collapse to one string, so a command that turns a
+/// selector into a destructive side effect must refuse an ambiguous one rather than resolve it
+/// arbitrarily (`daemon::apply_approval_command`), and nothing may promote a rendering back into a
+/// real path. That covers the plan surface too: a `PlannedAction`'s path is display data, and any
+/// future command that authorises a plan row by path (the GUI's typed-DELETE gate, #227) must
+/// match in this form and refuse ambiguity rather than invent a second rule.
+///
+/// Returns the `Cow` unchanged rather than an owned `String`: these fields ride on every status
+/// reply and the selector match walks every pending deletion, and `to_string_lossy` borrows for a
+/// UTF-8 path — so only a path that actually needs replacing pays for an allocation.
+pub fn wire_path(path: &std::path::Path) -> std::borrow::Cow<'_, str> {
+    path.to_string_lossy()
+}
+
+/// Serde for a `PathBuf` field on the wire: **lossy** out, verbatim back.
+///
+/// `impl Serialize for Path` *errors* on a non-UTF-8 path, and the engine deliberately supports
+/// such paths (`index::index_key` is a BLOB for exactly that). `serde_json` is all-or-nothing, so
+/// one such path used to fail the *whole* document: every `ControlResponse` — for `status`,
+/// `pause`, `pending` and `approve` alike, a control-plane lockout that could not be cleared
+/// through the control plane (#61) — and every `--dry-run` report, which exits 1 having printed
+/// nothing and blanks the GUI's plan screen (#300). The daemon keeps the real `PathBuf`; only the
+/// JSON is lossy, and byte-identical for a UTF-8 path so no consumer sees a format change.
+pub(crate) mod lossy_path {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::{Path, PathBuf};
+
+    pub fn serialize<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::wire_path(path))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
+        Ok(PathBuf::from(String::deserialize(deserializer)?))
+    }
+
+    /// The same for an `Option<PathBuf>` field; `None` stays `null`.
+    pub mod optional {
+        use serde::{Deserialize, Deserializer, Serializer};
+        use std::path::PathBuf;
+
+        pub fn serialize<S: Serializer>(
+            path: &Option<PathBuf>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            match path {
+                Some(path) => serializer.serialize_some(&*crate::wire_path(path)),
+                None => serializer.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<PathBuf>, D::Error> {
+            Ok(Option::<String>::deserialize(deserializer)?.map(PathBuf::from))
+        }
+    }
+}
+
 /// Validate and canonicalize a relative path so that it is safe to join onto a
 /// local or remote root directory.
 ///

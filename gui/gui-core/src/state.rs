@@ -141,6 +141,7 @@ mod tests {
             pending_deletions: vec![],
             config: None,
             activity: None,
+            unsyncable: vec![],
         }
     }
 

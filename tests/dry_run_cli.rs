@@ -300,6 +300,68 @@ dry_run = true
         );
     }
 
+    /// #300 at the boundary that broke: `proton-syncd --dry-run` writing the report to stdout.
+    /// One non-UTF-8 filename anywhere under the root used to fail the WHOLE document
+    /// (`Error("path contains invalid UTF-8 characters")`), exit 1 with nothing printed, and blank
+    /// the GUI's plan screen — and #270 guaranteed such a path always reaches the report by
+    /// planning it rather than dropping it.
+    #[test]
+    fn dry_run_cli_reports_a_plan_containing_a_non_utf8_filename() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("ordinary.txt"), b"local").expect("utf-8 local file");
+        let odd_name = OsStr::from_bytes(b"caf\xe9.txt");
+        fs::write(local_root.join(odd_name), b"odd").expect("non-UTF-8 local file");
+        let db_path = local_root.join("custom-index.db");
+        let fake_proton_drive =
+            write_fake_proton_drive(directory.path(), "/Drive/RemoteFolder", "");
+
+        let output = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
+            .arg("--local-root")
+            .arg(&local_root)
+            .arg("--remote-root")
+            .arg("/Drive/RemoteFolder")
+            .arg("--db-path")
+            .arg(&db_path)
+            .arg("--proton-cli")
+            .arg(&fake_proton_drive)
+            .arg("--dry-run")
+            .env("RUST_LOG", "error")
+            .output()
+            .expect("run proton-syncd dry-run");
+
+        assert_success(&output);
+        let report = parse_report(&output.stdout);
+        let plan = plan(&report);
+
+        assert_eq!(report["summary"]["total"].as_u64(), Some(2));
+        assert_eq!(report["summary"]["uploads"].as_u64(), Some(1));
+        assert_eq!(report["summary"]["skipped_unsupported"].as_u64(), Some(1));
+        assert!(
+            plan.iter()
+                .any(|action| action["path"] == "ordinary.txt" && action["action"] == "upload"),
+            "the odd filename must cost the report one ROW, not the whole document: {plan:?}"
+        );
+        let skipped = plan
+            .iter()
+            .find(|action| action["action"] == "skip_unsupported")
+            .expect("the unsyncable path is reported rather than dropped");
+        assert_eq!(
+            skipped["path"].as_str(),
+            Some("caf\u{fffd}.txt"),
+            "the row carries the lossy rendering — a display form, never a selector"
+        );
+        assert_eq!(
+            skipped["skip_reason"].as_str(),
+            Some("unrepresentable_path"),
+            "and it says why, so the row is actionable (#295)"
+        );
+    }
+
     fn assert_success(output: &Output) {
         assert!(
             output.status.success(),
