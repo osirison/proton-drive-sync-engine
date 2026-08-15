@@ -668,8 +668,10 @@ fn print_activity(response: &ControlResponse, style: &Style) {
     println!(
         "{}",
         style.dim(&format!(
-            "{} file(s), {} event(s) in this window{traffic}",
-            history.files, history.total
+            "{} file(s), {}{} event(s) in this window{traffic}",
+            history.files,
+            shown_prefix(history.events.len(), history.total),
+            history.total
         ))
     );
 }
@@ -691,6 +693,20 @@ fn describe_action(action: SyncAction) -> &'static str {
         SyncAction::AutoLink => "linked",
         SyncAction::Purge => "forgotten",
         SyncAction::SkipUnsupported => "skipped",
+    }
+}
+
+/// `"showing 2 of "` when the printed list is shorter than the count beside it, `""` otherwise.
+///
+/// Two things shorten the list — the `--limit` cap, and a row whose action token this build does
+/// not know (written by a newer daemon; `index::read_file_event` skips it while the SQL still
+/// counts it) — and in both cases a bare total under a shorter list is a count that contradicts
+/// what the reader can see.
+fn shown_prefix(shown: usize, total: usize) -> String {
+    if shown < total {
+        format!("showing {shown} of ")
+    } else {
+        String::new()
     }
 }
 
@@ -1170,6 +1186,18 @@ mod tests {
             file_history: None,
             index_totals: None,
         }
+    }
+
+    #[test]
+    fn a_shorter_list_than_its_own_count_says_so() {
+        // "a count is a claim": `total` is a SQL count over the window, and the list is shortened
+        // by `--limit` and by any row whose action token this build does not know. Drives the
+        // function `print_activity` actually calls, so deleting the branch fails this.
+        assert_eq!(shown_prefix(2, 6), "showing 2 of ");
+        assert_eq!(shown_prefix(6, 6), "");
+        // Never "showing 6 of 2": a count below the rows would mean the page and the counts
+        // described different sets, which the shared SQL predicate makes impossible.
+        assert_eq!(shown_prefix(6, 2), "");
     }
 
     #[test]
