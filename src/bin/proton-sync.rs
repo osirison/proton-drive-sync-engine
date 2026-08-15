@@ -249,7 +249,7 @@ fn approval_selector(path: &Option<PathBuf>, all: bool) -> Result<Option<String>
         (Some(_), true) => Err("specify either a PATH or --all, not both".to_owned()),
         // `wire_path`, not an ad-hoc `to_string_lossy`: the daemon matches selectors in exactly
         // this form, so the two sides must name the same function (#61).
-        (Some(path), false) => Ok(Some(wire_path(path))),
+        (Some(path), false) => Ok(Some(wire_path(path).into_owned())),
         (None, true) => Ok(Some("all".to_owned())),
         (None, false) => {
             Err("specify a PATH, or --all to act on every pending deletion".to_owned())

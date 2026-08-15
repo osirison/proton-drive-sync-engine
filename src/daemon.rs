@@ -2672,7 +2672,7 @@ fn apply_approval_command(
             // component-wise leniency of the previous `PathBuf` comparison (a shell-completed
             // trailing slash on a directory, a `./` prefix) survives.
             Some(selector) => {
-                Path::new(crate::ipc::wire_path(&pending.path).as_str()) == Path::new(selector)
+                Path::new(&*crate::ipc::wire_path(&pending.path)) == Path::new(selector)
             }
             None => true,
         })
@@ -5046,7 +5046,7 @@ mod tests {
         }];
         let selector = crate::ipc::wire_path(&real_path);
         assert_ne!(
-            PathBuf::from(&selector),
+            PathBuf::from(&*selector),
             real_path,
             "the wire form is lossy"
         );

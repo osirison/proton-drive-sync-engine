@@ -2,6 +2,7 @@ use crate::AppResult;
 use crate::index::EntityKind;
 use crate::sync::{DeleteDirection, PlanSummary};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -54,8 +55,12 @@ pub struct ControlRequest {
 /// wire (#61) would be unapprovable. Two paths that differ only in invalid bytes collapse to one
 /// selector, which the daemon refuses to *approve* rather than resolve arbitrarily (see
 /// `daemon::apply_approval_command`).
-pub fn wire_path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+///
+/// Returns the `Cow` unchanged rather than an owned `String`: these fields ride on every status
+/// reply and the selector match walks every pending deletion, and `to_string_lossy` borrows for a
+/// UTF-8 path — so only a path that actually needs replacing pays for an allocation.
+pub fn wire_path(path: &Path) -> Cow<'_, str> {
+    path.to_string_lossy()
 }
 
 /// Serde for a `PathBuf` field on the wire: **lossy** out, verbatim back.
@@ -535,12 +540,12 @@ mod tests {
         let back: ControlResponse = serde_json::from_str(&json).expect("reply parses back");
         assert_eq!(
             back.pending_deletions[0].path,
-            PathBuf::from(wire_path(&response.pending_deletions[0].path)),
+            PathBuf::from(&*wire_path(&response.pending_deletions[0].path)),
             "a client sees exactly the lossy form the daemon published"
         );
         assert_eq!(
             back.config.expect("config").local_root,
-            PathBuf::from(wire_path(&non_utf8_path(b"-root")))
+            PathBuf::from(&*wire_path(&non_utf8_path(b"-root")))
         );
     }
 
@@ -549,7 +554,7 @@ mod tests {
         // The approve/deny selector a client can send is the lossy string it received; a daemon
         // that compared it against the real PathBuf could never match one (#61).
         let real = non_utf8_path(b".txt");
-        assert_ne!(real, PathBuf::from(wire_path(&real)));
+        assert_ne!(real, PathBuf::from(&*wire_path(&real)));
         assert_eq!(wire_path(&real), real.to_string_lossy());
         // UTF-8 paths are untouched, so nothing about the ordinary case changes.
         assert_eq!(wire_path(Path::new("a/b.txt")), "a/b.txt");
