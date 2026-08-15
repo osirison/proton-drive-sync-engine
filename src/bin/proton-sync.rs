@@ -1,10 +1,11 @@
 use clap::{Parser, Subcommand};
 use proton_drive_sync_engine::config::resolve_control_socket_path;
+use proton_drive_sync_engine::index::PassRecord;
 use proton_drive_sync_engine::ipc::{
     ControlCommand, ControlRequest, ControlResponse, PendingDeletion, SyncActivity, send_request,
     wire_path,
 };
-use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, UnsyncableItem};
+use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, SyncAction, UnsyncableItem};
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -41,9 +42,20 @@ struct Cli {
 enum Commands {
     /// Show what the sync daemon is doing right now.
     Status,
-    /// Show the recent sync history, newest first. (--json prints the daemon's raw
-    /// status_history array instead, which is stored oldest-first.)
+    /// Show the recorded sync passes, newest first: how long each took, which strategy it ran,
+    /// and how it ended. Idle passes are not recorded, so these are passes that did something.
     History,
+    /// Show what has moved recently, newest first — or one path's own history when PATH is given.
+    Activity {
+        /// Relative path (as shown by `status`) to show the history of. Omit for the global feed.
+        path: Option<PathBuf>,
+        /// How far back to look. Omit for everything the daemon still keeps.
+        #[arg(long)]
+        days: Option<u64>,
+        /// Cap on the rows shown.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Pause syncing (edits are still tracked while paused).
     Pause,
     /// Resume syncing.
@@ -149,11 +161,23 @@ async fn main() -> ExitCode {
             if cli.json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&response.status_history)
-                        .expect("serialize status history")
+                    serde_json::to_string_pretty(&response.history)
+                        .expect("serialize pass history")
                 );
             } else {
                 print_history(&response, &style);
+            }
+            ExitCode::SUCCESS
+        }
+        Commands::Activity { .. } => {
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response.file_history)
+                        .expect("serialize file history")
+                );
+            } else {
+                print_activity(&response, &style);
             }
             ExitCode::SUCCESS
         }
@@ -218,7 +242,12 @@ async fn main() -> ExitCode {
 /// Maps a subcommand to the control request to send, validating the `approve`/`deny` selector.
 fn build_request(command: &Commands) -> Result<ControlRequest, String> {
     let (control_command, argument) = match command {
+        // `history` reads the pass log, which rides on every status reply — no second verb.
         Commands::Status | Commands::History | Commands::Pending => (ControlCommand::Status, None),
+        Commands::Activity { path, .. } => (
+            ControlCommand::Activity,
+            path.as_ref().map(|path| wire_path(path).into_owned()),
+        ),
         Commands::Pause => (ControlCommand::Pause, None),
         Commands::Resume => (ControlCommand::Resume, None),
         Commands::Syncnow { .. } => (ControlCommand::Syncnow, None),
@@ -246,6 +275,14 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
     // A `<PATH>` selector is always a literal path on the wire: `proton-sync approve all`
     // targets a pending deletion literally named `all` instead of silently becoming the
     // every-item form (which requires the explicit `--all`, exactly as documented).
+    let (window_secs, limit) = match command {
+        // Days, not seconds, at the CLI: the reply's window is in seconds because a GUI slider is
+        // not a calendar.
+        Commands::Activity { days, limit, .. } => {
+            (days.map(|days| days.saturating_mul(86_400)), *limit)
+        }
+        _ => (None, None),
+    };
     let literal_path = matches!(
         command,
         Commands::Approve {
@@ -274,10 +311,12 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         _ => None,
     };
     Ok(ControlRequest {
-        command: control_command,
         argument,
         literal_path,
+        window_secs,
+        limit,
         direction,
+        ..ControlRequest::new(control_command)
     })
 }
 
@@ -558,41 +597,240 @@ fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str,
 }
 
 /// `proton-sync history` — one line per recorded pass, newest first.
+///
+/// Reads the durable pass log, NOT `status_history`: with event-driven detection on by default the
+/// daemon runs a pass every 30s and records every one of them in that rolling 20-entry trail, so
+/// it holds about ten minutes and is almost entirely idle polls. The pass log records only passes
+/// that did something (plus every full sweep, and every pass that did not end clean).
 fn print_history(response: &ControlResponse, style: &Style) {
-    if response.status_history.is_empty() {
-        println!("No sync history yet.");
+    // `None` is NOT "no history": the daemon publishes this block before its first pass, so an
+    // absent one means the daemon is older than the field or its history read failed (the daemon
+    // logs that). Saying "no sync history yet" here would answer a question this reply cannot
+    // answer, with a confident wrong number — the `unknown is not zero` rule.
+    let Some(history) = &response.history else {
+        println!(
+            "This daemon does not report pass history. Upgrade it, or check its log for a \
+             history read failure."
+        );
+        return;
+    };
+    if let Some(sweep) = &history.last_full_sweep {
+        println!(
+            "Last full sweep {} — {}.",
+            relative_time(sweep.started_epoch_secs),
+            describe_sweep(sweep)
+        );
+    }
+    if history.today.uploaded_bytes > 0 || history.today.downloaded_bytes > 0 {
+        println!(
+            "Today: {} sent · {} received.",
+            human_bytes(history.today.uploaded_bytes),
+            human_bytes(history.today.downloaded_bytes)
+        );
+    }
+    if history.recent.is_empty() {
+        println!("No passes recorded yet (an idle pass records nothing).");
         return;
     }
-    for entry in response.status_history.iter().rev() {
-        let when = style.dim(&format!("{:>8}", relative_time(entry.epoch_secs)));
-        if entry.failed_item_count > 0 {
-            println!(
-                "{when}  {} {}",
+    println!();
+    for pass in &history.recent {
+        let when = style.dim(&format!("{:>8}", relative_time(pass.started_epoch_secs)));
+        let took = style.dim(&format!("{:>7}", human_duration(pass.duration_ms)));
+        let kind = style.dim(&format!("{:>11}", pass.kind));
+        // Four outcomes, four arms, and an explicit `other` for a token a newer daemon knows and
+        // this build does not — never a trailing arm that quietly renders one state as another.
+        let (mark, detail) = match pass.outcome.as_str() {
+            "clean" => (style.green("✓"), describe_pass_work(pass)),
+            "partial" => (
                 style.yellow("!"),
-                format_args!(
+                format!(
                     "{} — {} item(s) failed",
-                    entry.message, entry.failed_item_count
-                )
-            );
-            continue;
-        }
-        match &entry.last_error {
-            Some(error) => {
-                println!(
-                    "{when}  {} {}",
-                    style.red("✗"),
-                    format_args!("{} — {error}", entry.message)
-                );
-            }
-            None => {
-                let summary = entry
-                    .successful_sync_summary
-                    .as_ref()
-                    .map(|summary| format!(" — {}", summarize_plan(summary)))
-                    .unwrap_or_default();
-                println!("{when}  {} {}{summary}", style.green("✓"), entry.message);
-            }
-        }
+                    describe_pass_work(pass),
+                    pass.failed
+                ),
+            ),
+            "failed" => (
+                style.red("✗"),
+                pass.error
+                    .as_deref()
+                    .map(one_line)
+                    .unwrap_or_else(|| "failed".to_owned()),
+            ),
+            "interrupted" => (
+                style.yellow("!"),
+                "interrupted — the daemon stopped mid-pass".to_owned(),
+            ),
+            other => (style.dim("?"), other.to_owned()),
+        };
+        println!("{when} {took} {kind}  {mark} {detail}");
+    }
+}
+
+/// Collapses an error onto one line for an inline clause.
+///
+/// A daemon error carries the CLI child's stderr verbatim, newlines included, and these two
+/// renderings put it mid-sentence and mid-row — where a raw newline breaks the sentence in half
+/// and strands its full stop on a line of its own.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// What the last full sweep found, as a clause for `Last full sweep 2 days ago — …`.
+///
+/// Branches on **outcome first**, and only then on the count. `changed == 0` alone does not mean
+/// "nothing was out of step": a sweep that failed, or was killed mid-pass, also moved nothing, and
+/// reading the count without the outcome prints a confident all-clear over a pass that never
+/// finished — the exact shape of #246, and exactly what #238 warns about ("answering a different
+/// question with a confident number"). Every outcome is enumerated, including an unknown token
+/// from a newer daemon; there is no trailing arm that could absorb a state added later.
+fn describe_sweep(sweep: &PassRecord) -> String {
+    match sweep.outcome.as_str() {
+        "clean" if sweep.changed == 0 => "nothing was out of step".to_owned(),
+        "clean" => format!("{} change(s)", sweep.changed),
+        "partial" => format!(
+            "{} change(s), {} item(s) failed",
+            sweep.changed, sweep.failed
+        ),
+        "failed" => match &sweep.error {
+            Some(error) => format!("it failed: {}", one_line(error)),
+            None => "it failed".to_owned(),
+        },
+        "interrupted" => "it did not finish".to_owned(),
+        other => format!("it ended `{other}`"),
+    }
+}
+
+/// "3 changes, 1.2 MB sent" — what one recorded pass actually moved.
+fn describe_pass_work(pass: &PassRecord) -> String {
+    if pass.changed == 0 {
+        return "nothing to do".to_owned();
+    }
+    let mut parts = vec![format!("{} change(s)", pass.changed)];
+    if pass.bytes_uploaded > 0 {
+        parts.push(format!("{} sent", human_bytes(pass.bytes_uploaded)));
+    }
+    if pass.bytes_downloaded > 0 {
+        parts.push(format!("{} received", human_bytes(pass.bytes_downloaded)));
+    }
+    parts.join(", ")
+}
+
+/// Why a reply carries no `file_history`. The daemon's `message` is the generic reply label, so a
+/// `last_error` dropped here leaves the one debuggable fact on the floor (a read failure, a bad
+/// window) and the user with "this daemon does not do that", which is a different claim.
+fn missing_history_message(message: &str, last_error: Option<&str>) -> String {
+    match last_error {
+        Some(error) => format!("{message}: {error}"),
+        None => "This daemon does not report per-file activity.".to_owned(),
+    }
+}
+
+/// What an empty page means. `FileHistory::total` is a `COUNT(*)` over the same predicate, but
+/// `events` additionally drops rows whose action token this build cannot decode
+/// (`index::read_file_event` → `None`) — which is exactly what a **newer** daemon's rows look like
+/// to an older client. So an empty page over a non-zero count is not an empty window, and reporting
+/// "nothing has moved" would be a confident false all-clear: the shape that once rendered
+/// "Everything is up to date" over a failed pass (#246).
+fn empty_activity_message(total: usize) -> String {
+    if total > 0 {
+        format!(
+            "{total} event(s) in that window, none readable by this client — it is older than the \
+             daemon that wrote them. Upgrade proton-sync to read them."
+        )
+    } else {
+        "Nothing has moved in that window.".to_owned()
+    }
+}
+
+/// `proton-sync activity [PATH]` — the per-file feed, newest first.
+fn print_activity(response: &ControlResponse, style: &Style) {
+    let Some(history) = &response.file_history else {
+        println!(
+            "{}",
+            missing_history_message(&response.message, response.last_error.as_deref())
+        );
+        return;
+    };
+    if history.events.is_empty() {
+        println!("{}", empty_activity_message(history.total));
+        return;
+    }
+    for event in &history.events {
+        let when = style.dim(&format!("{:>8}", relative_time(event.epoch_secs)));
+        let size = match event.bytes {
+            Some(bytes) => style.dim(&format!(" ({})", human_bytes(bytes))),
+            None => String::new(),
+        };
+        let path = match &event.source_path {
+            Some(from) => format!("{} ← {}", wire_path(&event.path), wire_path(from)),
+            None => wire_path(&event.path).into_owned(),
+        };
+        println!("{when}  {:<24} {path}{size}", describe_action(event.action));
+    }
+    println!();
+    // The byte clause is present only for the unfiltered feed: a path-filtered reply carries no
+    // totals, because the window-wide number would read as that one file's.
+    let traffic = match &history.totals {
+        Some(totals) => format!(
+            " · {} sent · {} received",
+            human_bytes(totals.uploaded_bytes),
+            human_bytes(totals.downloaded_bytes)
+        ),
+        None => String::new(),
+    };
+    println!(
+        "{}",
+        style.dim(&format!(
+            "{} file(s), {}{} event(s) in this window{traffic}",
+            history.files,
+            shown_prefix(history.events.len(), history.total),
+            history.total
+        ))
+    );
+}
+
+/// The user-facing sentence for one recorded action. Every variant, no fall-through.
+fn describe_action(action: SyncAction) -> &'static str {
+    match action {
+        SyncAction::Upload => "sent to Proton Drive",
+        SyncAction::Download => "brought to this computer",
+        SyncAction::CreateRemoteDirectory => "folder made on Proton",
+        SyncAction::CreateLocalDirectory => "folder made here",
+        SyncAction::MoveLocal => "moved here",
+        SyncAction::MoveRemote => "moved on Proton Drive",
+        SyncAction::Conflict => "both sides changed",
+        SyncAction::TypeConflict => "file/folder clash",
+        SyncAction::RemoteDelete => "removed from Proton",
+        SyncAction::LocalDelete => "removed here",
+        // Never recorded (no side effect), listed so a future change to that rule shows up here.
+        SyncAction::AutoLink => "linked",
+        SyncAction::Purge => "forgotten",
+        SyncAction::SkipUnsupported => "skipped",
+    }
+}
+
+/// `"showing 2 of "` when the printed list is shorter than the count beside it, `""` otherwise.
+///
+/// Two things shorten the list — the `--limit` cap, and a row whose action token this build does
+/// not know (written by a newer daemon; `index::read_file_event` skips it while the SQL still
+/// counts it) — and in both cases a bare total under a shorter list is a count that contradicts
+/// what the reader can see.
+fn shown_prefix(shown: usize, total: usize) -> String {
+    if shown < total {
+        format!("showing {shown} of ")
+    } else {
+        String::new()
+    }
+}
+
+/// "1.4s" / "830ms" — a pass duration at the precision it deserves.
+fn human_duration(millis: u64) -> String {
+    if millis < 1000 {
+        format!("{millis}ms")
+    } else if millis < 60_000 {
+        format!("{:.1}s", millis as f64 / 1000.0)
+    } else {
+        format!("{}m{:02}s", millis / 60_000, (millis % 60_000) / 1000)
     }
 }
 
@@ -815,12 +1053,7 @@ async fn watch_syncnow(
     let mut consecutive_errors = 0u32;
     let outcome = loop {
         tokio::time::sleep(WAIT_POLL_INTERVAL).await;
-        let request = ControlRequest {
-            command: ControlCommand::Status,
-            argument: None,
-            literal_path: false,
-            direction: None,
-        };
+        let request = ControlRequest::new(ControlCommand::Status);
         match request_with_timeout(socket_path, request).await {
             Ok(status) => {
                 consecutive_errors = 0;
@@ -1031,6 +1264,7 @@ mod tests {
             action_total: None,
             transfer: None,
             since_epoch_secs: None,
+            pass: None,
         }
     }
 
@@ -1123,8 +1357,86 @@ mod tests {
             config: None,
             activity: None,
             unsyncable: Vec::new(),
+            history: None,
+            file_history: None,
             index_totals: None,
         }
+    }
+
+    fn sweep(outcome: &str, changed: usize, failed: usize) -> PassRecord {
+        PassRecord {
+            id: 1,
+            started_epoch_secs: 100,
+            duration_ms: 1000,
+            kind: "full-sweep".to_owned(),
+            outcome: outcome.to_owned(),
+            changed,
+            failed,
+            bytes_uploaded: 0,
+            bytes_downloaded: 0,
+            error: Some("proton-drive: request\n  failed".to_owned()),
+        }
+    }
+
+    #[test]
+    fn an_error_with_newlines_stays_on_one_line() {
+        // A daemon error carries the CLI child's stderr verbatim; inline it would otherwise break
+        // the sentence in half and leave the full stop alone on the next line.
+        assert_eq!(one_line("boom\n"), "boom");
+        assert_eq!(
+            one_line("list failed:\n  boom\n\n  twice"),
+            "list failed: boom twice"
+        );
+        assert_eq!(one_line("already tidy"), "already tidy");
+        assert!(!describe_sweep(&sweep("failed", 0, 0)).contains('\n'));
+    }
+
+    #[test]
+    fn a_full_sweep_that_did_not_finish_is_never_an_all_clear() {
+        // #246's shape, in the one sentence #238 asks for. A failed or interrupted sweep also has
+        // `changed == 0`, so keying the clause off the count alone printed "nothing was out of
+        // step" over a pass that never got far enough to know.
+        assert_eq!(
+            describe_sweep(&sweep("clean", 0, 0)),
+            "nothing was out of step"
+        );
+        assert_eq!(describe_sweep(&sweep("clean", 3, 0)), "3 change(s)");
+        assert_eq!(
+            describe_sweep(&sweep("partial", 2, 1)),
+            "2 change(s), 1 item(s) failed"
+        );
+        assert_eq!(
+            describe_sweep(&sweep("failed", 0, 0)),
+            "it failed: proton-drive: request failed",
+            "the embedded newline is collapsed, not printed"
+        );
+        assert_eq!(
+            describe_sweep(&sweep("interrupted", 0, 0)),
+            "it did not finish"
+        );
+        // A token this build does not know is rendered, never silently treated as clean.
+        assert_eq!(
+            describe_sweep(&sweep("quiesced", 0, 0)),
+            "it ended `quiesced`"
+        );
+        for outcome in ["failed", "interrupted", "quiesced"] {
+            assert!(
+                !describe_sweep(&sweep(outcome, 0, 0)).contains("nothing was out of step"),
+                "{outcome} must not read as an all-clear"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shorter_list_than_its_own_count_says_so() {
+        // "a count is a claim": `total` is a SQL count over the window, and the list is shortened
+        // by `--limit` and by any row whose action token this build does not know. Drives the
+        // function `print_activity` actually calls, so deleting the branch fails this.
+        assert_eq!(shown_prefix(2, 6), "showing 2 of ");
+        assert_eq!(shown_prefix(6, 6), "");
+        // Never "showing 6 of 2": a count below the rows would mean the page and the counts
+        // described different sets, which the shared SQL predicate makes impossible.
+        assert_eq!(shown_prefix(6, 2), "");
     }
 
     #[test]
@@ -1179,5 +1491,42 @@ mod tests {
         // "first seen just now" is the one answer this display must never invent, since the whole
         // point of the field (#225) is that the age was previously re-stamped to now every pass.
         assert_eq!(relative_age(now + 3600), None);
+    }
+
+    #[test]
+    fn an_unreadable_page_is_never_reported_as_an_empty_window() {
+        // Rows this build cannot decode are dropped from `events` but still counted by `total`
+        // (`file_events` pages through `read_file_event`, counts with `COUNT(*)`). An older client
+        // against a newer daemon therefore sees `events: [], total: n` — and "Nothing has moved"
+        // would be a false all-clear about the user's data, not a cosmetic wording slip.
+        assert_eq!(
+            empty_activity_message(0),
+            "Nothing has moved in that window."
+        );
+        for total in [1, 42] {
+            let rendered = empty_activity_message(total);
+            assert!(
+                rendered.contains(&total.to_string()) && rendered.contains("Upgrade"),
+                "an unreadable page must say how many and what to do: {rendered}"
+            );
+            assert!(
+                !rendered.contains("Nothing has moved"),
+                "must not claim an empty window: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_history_reports_the_daemon_s_reason() {
+        // `message` is the generic reply label; the reason lives in `last_error`. Printing only the
+        // label turns "I failed, here is why" into "I do not support that", a different claim.
+        assert_eq!(
+            missing_history_message("daemon status", Some("database is locked")),
+            "daemon status: database is locked"
+        );
+        assert_eq!(
+            missing_history_message("daemon status", None),
+            "This daemon does not report per-file activity."
+        );
     }
 }

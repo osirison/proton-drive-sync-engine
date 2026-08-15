@@ -1715,11 +1715,12 @@ file, at the same moment, six inches apart. Queued work is not settled; the hero
 `started 14 seconds ago · 2 leaving, 1 arriving` needs the pass as a unit, and nothing in the reply
 is one. Filed as **G11 ([#213](https://github.com/osirison/proton-drive-sync-engine/issues/213))**.
 
-- **`SyncActivity.since_epoch_secs` is the PHASE's start**, reset by `begin_activity` on every phase
-  change. A pass walking scanning → listing → executing → committing therefore counts up and jumps
-  back to zero three times. `last_sync_epoch_secs` is the previous pass's _end_, so it is not the
-  fallback either. Phase 1 renders the phase's elapsed time — visibly wrong on a long pass, and the
-  closest honest number there is.
+- ~~**`SyncActivity.since_epoch_secs` is the PHASE's start**~~ — **closed.** `begin_activity` reset
+  it on every phase change, so a pass walking scanning → listing → executing → committing counted up
+  and jumped back to zero three times, and `last_sync_epoch_secs` (the previous pass's _end_) was no
+  fallback either. `SyncActivity.pass` now carries `started_epoch_secs` for the **pass**, held in
+  `ControlShared` and stamped onto every activity rather than rebuilt with the phase; `subOf` reads
+  it and keeps the phase's start only as the fallback for an older daemon.
 - **`pending_changes` is the local watch queue and nothing else**, cleared after each successful
   reconcile. A pass driven entirely by Proton — a second device uploading, the first reconcile after
   a restart — has an empty queue while downloading, so the headline read `Syncing 0 changes` with a
@@ -1729,6 +1730,9 @@ is one. Filed as **G11 ([#213](https://github.com/osirison/proton-drive-sync-eng
 - **`last_plan_summary` is null until `execute_plan_and_commit` runs** — the whole scan-and-walk
   stretch, during which `syncing` is already true. `0 leaving, 0 arriving` is a summary the daemon
   never published, so the clause drops instead. Same rule as §63's omissions and `unreachableBody`'s.
+  **Still the source of the headline count**, deliberately: `pass.changes` is populated at the same
+  moment `last_plan_summary` is (both are set from the plan), so switching would move no number and
+  only add a second path to one.
 
 ### 67f. `0 changes are waiting` at the moment the app can see nothing
 

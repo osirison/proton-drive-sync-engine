@@ -46,6 +46,12 @@ pub enum ControlCommand {
     /// Ask the daemon to exit gracefully (same clean path as SIGTERM). Lets a UI restart the
     /// daemon regardless of how it was launched (systemd unit or direct spawn).
     Shutdown,
+    /// Query the per-file history log: what moved and when (#230), or one path's own history
+    /// (#190) when `argument` names it. `window_secs` and `limit` bound the answer. Wire value
+    /// `"activity"`; an older daemon rejects it as an unknown command. The pass-level history
+    /// (#229/#238) and today's byte totals (#191) ride on every `Status` reply instead — the
+    /// screens that draw them are already polling it.
+    Activity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +68,16 @@ pub struct ControlRequest {
     /// `"all"` interpretation.
     #[serde(default)]
     pub literal_path: bool,
+    /// [`ControlCommand::Activity`] only: how far back to look, in seconds. `None` (and `0`) mean
+    /// "everything still retained" — which is what a per-path history wants, since the row it is
+    /// after ("First brought to this computer") may be months old. `#[serde(default)]` for wire
+    /// compat.
+    #[serde(default)]
+    pub window_secs: Option<u64>,
+    /// [`ControlCommand::Activity`] only: cap on returned rows. `None` uses
+    /// [`ACTIVITY_EVENTS_DEFAULT_LIMIT`]; the reply's `total` is untruncated either way.
+    #[serde(default)]
+    pub limit: Option<usize>,
     /// Which deletion at `argument` an `Approve` authorizes when **nothing pending matches it** —
     /// the pre-pass approval the Plan screen's typed-`DELETE` gate needs (#227). A plan can name a
     /// deletion before any pass has withheld it, and a path alone does not say which of the two
@@ -71,6 +87,26 @@ pub struct ControlRequest {
     /// command. `#[serde(default)]` keeps both directions of the wire compatible.
     #[serde(default)]
     pub direction: Option<DeleteDirection>,
+}
+
+/// Default and hard cap on the rows one [`ControlCommand::Activity`] reply carries. A control
+/// reply is read into memory whole, so the limit is the daemon's to enforce, not the client's.
+pub const ACTIVITY_EVENTS_DEFAULT_LIMIT: usize = 50;
+pub const ACTIVITY_EVENTS_MAX_LIMIT: usize = 500;
+
+impl ControlRequest {
+    /// A request carrying nothing but its command. Every optional field is a later addition, so
+    /// building one this way keeps a caller from having to name fields its command ignores.
+    pub fn new(command: ControlCommand) -> Self {
+        Self {
+            command,
+            argument: None,
+            literal_path: false,
+            window_secs: None,
+            limit: None,
+            direction: None,
+        }
+    }
 }
 
 /// The wire form of a path, and the form an `approve`/`deny` selector is matched against. One
@@ -182,10 +218,52 @@ pub struct SyncActivity {
     /// The in-flight file transfer, when the executing action is an upload or download.
     #[serde(default)]
     pub transfer: Option<TransferActivity>,
-    /// When this phase began (unix seconds), for elapsed-time rendering.
+    /// When this **phase** began (unix seconds). Reset on every phase change, so it is not the
+    /// pass's start — read [`PassProgress::started_epoch_secs`] for that (#213).
     #[serde(default)]
     pub since_epoch_secs: Option<u64>,
+    /// The pass as a unit: one start time and one change count that survive every phase change
+    /// (#213). Carried across `begin_activity` rather than reset with the phase, so an elapsed
+    /// time rendered from it climbs monotonically instead of jumping back to zero three times.
+    #[serde(default)]
+    pub pass: Option<PassProgress>,
 }
+
+/// The in-flight pass, as opposed to the phase it is currently in (#213).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassProgress {
+    /// When the pass started (unix seconds) — stable for its whole duration.
+    pub started_epoch_secs: u64,
+    /// Side-effecting actions this pass **planned**. `None` until the plan exists (the scan and
+    /// remote walk run first), which a client renders as an omitted clause — never as `0`, per
+    /// `14-behaviour-and-state.md`'s "a null summary means unknown, not zero". Distinct from
+    /// [`crate::index::PassRecord::changed`], which is what a finished pass actually landed.
+    #[serde(default)]
+    pub changes: Option<u64>,
+    /// Open token, [`crate::index::PassKind::as_str`] — render an unrecognized one verbatim.
+    pub kind: String,
+}
+
+/// The pass-level history that rides on every status reply: enough to draw `Last 20 passes`
+/// (#229), `Last one 2 days ago` (#238) and today's byte totals (#191) without a second round
+/// trip. All three are queries over the one history schema in [`crate::index`] — see its module
+/// note for why a byte total never comes from the per-file rows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassHistory {
+    /// The most recent recorded passes, newest first, capped at [`PASS_HISTORY_REPORTED`].
+    /// **Notable passes only** — an idle pass records nothing (see `daemon::PassLog`), so twenty
+    /// rows here are twenty passes that did something rather than ten minutes of polling.
+    pub recent: Vec<crate::index::PassRecord>,
+    /// The last full-tree walk, however long ago. `None` before this daemon has ever run one.
+    #[serde(default)]
+    pub last_full_sweep: Option<crate::index::PassRecord>,
+    /// Bytes moved per direction since local midnight.
+    pub today: crate::index::ByteTotals,
+}
+
+/// How many pass records a status reply carries. Matches the twenty bars `6a Activity passes`
+/// draws.
+pub const PASS_HISTORY_REPORTED: usize = 20;
 
 /// A file transfer in flight. For downloads, `bytes_done` is sampled live from the staging
 /// scratch directory each time a status reply is built, so a client polling status watches the
@@ -260,6 +338,18 @@ pub struct ControlResponse {
     /// so a reply from an older daemon still parses.
     #[serde(default)]
     pub unsyncable: Vec<UnsyncableItem>,
+    /// Pass-level history (see [`PassHistory`]). `None` means **an older daemon, or this one could
+    /// not read its history** — `Daemon::with_client` publishes it at construction, before the
+    /// first pass, and a daemon with no recorded passes publishes `Some` with empty fields. So
+    /// "nothing has run yet" is `Some`, and `None` is never a transient a client should wait out:
+    /// `refresh_pass_history` reaching its `Err` arm warns and leaves this `None`, so a client that
+    /// renders it as "waiting for the first pass" would say that forever over an unreadable
+    /// database. `#[serde(default)]` keeps both wire directions compatible.
+    #[serde(default)]
+    pub history: Option<PassHistory>,
+    /// The answer to a [`ControlCommand::Activity`] request, and `None` on every other reply.
+    #[serde(default)]
+    pub file_history: Option<crate::index::FileHistory>,
     /// How many files the index tracks and how many bytes they come to (#207) — the *corpus* size,
     /// as distinct from `pending_changes`, which is work outstanding.
     ///
@@ -275,6 +365,15 @@ pub struct ControlResponse {
     pub index_totals: Option<IndexTotals>,
 }
 
+/// One completed reconcile **attempt**, including the idle ones — a rolling debug trail of the
+/// last twenty passes (`daemon::STATUS_HISTORY_LIMIT`), persisted to `<db>.status.json`.
+///
+/// Deliberately carries no duration, kind or outcome, though #229/#238 proposed it as their home:
+/// with event-driven detection on by default the daemon runs a pass every 30s and records every
+/// one here, so twenty entries are about ten minutes of wall clock. That window can answer neither
+/// "how long did each of the last 20 passes take" (they are twenty idle polls) nor "when was the
+/// last full sweep" (two days is four thousand entries ago). Both live on [`PassHistory`], which is
+/// backed by the durable, idle-filtered `sync_passes` table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatusHistoryEntry {
     pub epoch_secs: u64,
@@ -474,16 +573,7 @@ pub async fn send_command(
     socket_path: &Path,
     command: ControlCommand,
 ) -> AppResult<ControlResponse> {
-    send_request(
-        socket_path,
-        ControlRequest {
-            command,
-            argument: None,
-            literal_path: false,
-            direction: None,
-        },
-    )
-    .await
+    send_request(socket_path, ControlRequest::new(command)).await
 }
 
 /// Sends a full control request (used by commands that carry an `argument`, e.g. `approve <path>`).
@@ -537,12 +627,7 @@ mod tests {
         // The container is `rename_all = "lowercase"`, which would spell this `resetindex`. The
         // explicit rename is the wire contract, and an older daemon rejecting it as unknown is the
         // documented behaviour — so the string must not drift.
-        let request = ControlRequest {
-            command: ControlCommand::ResetIndex,
-            argument: None,
-            literal_path: false,
-            direction: None,
-        };
+        let request = ControlRequest::new(ControlCommand::ResetIndex);
         let encoded = serde_json::to_string(&request).expect("encode");
         assert!(
             encoded.contains(r#""command":"reset_index""#),
@@ -590,10 +675,9 @@ mod tests {
         // `approve`'s pre-pass form (#227). Both are additive — an older client omits `direction`
         // and never sends `keep`.
         let json = serde_json::to_string(&ControlRequest {
-            command: ControlCommand::Keep,
             argument: Some("photos/2019".to_owned()),
             literal_path: true,
-            direction: None,
+            ..ControlRequest::new(ControlCommand::Keep)
         })
         .expect("serialize");
         assert!(json.contains(r#""command":"keep""#), "{json}");
@@ -644,6 +728,11 @@ mod tests {
                 started_epoch_secs: 5,
             }),
             since_epoch_secs: Some(4),
+            pass: Some(PassProgress {
+                started_epoch_secs: 2,
+                changes: Some(3),
+                kind: "incremental".to_owned(),
+            }),
         };
         let json = serde_json::to_string(&activity).expect("serialize");
         let back: SyncActivity = serde_json::from_str(&json).expect("deserialize");
@@ -656,6 +745,21 @@ mod tests {
         assert_eq!(minimal.phase, "listing-remote");
         assert!(minimal.transfer.is_none());
         assert!(minimal.folders_listed.is_none());
+        assert!(minimal.pass.is_none());
+    }
+
+    #[test]
+    fn the_pass_block_is_the_pass_not_the_phase() {
+        // #213: `since_epoch_secs` restarts on every phase change, which is why a client rendering
+        // it as the pass's elapsed time counts backwards three times. The pass block does not.
+        let json = r#"{"phase":"committing","since_epoch_secs":900,
+                       "pass":{"started_epoch_secs":100,"kind":"full-sweep"}}"#;
+        let activity: SyncActivity = serde_json::from_str(json).expect("activity with a pass");
+        let pass = activity.pass.expect("pass block");
+        assert_eq!(pass.started_epoch_secs, 100);
+        assert!(activity.since_epoch_secs.unwrap() > pass.started_epoch_secs);
+        // Unknown is not zero: a client omits the clause rather than printing "0 changes".
+        assert_eq!(pass.changes, None);
     }
 
     /// A path whose bytes are not valid UTF-8 (the engine supports them: `index_key` is a BLOB).
@@ -716,6 +820,11 @@ mod tests {
                     started_epoch_secs: 2,
                 }),
                 since_epoch_secs: None,
+                pass: Some(PassProgress {
+                    started_epoch_secs: 1,
+                    changes: Some(2),
+                    kind: "warm-start".to_owned(),
+                }),
             }),
             unsyncable: vec![UnsyncableItem {
                 path: non_utf8_path(b"-doc"),
@@ -723,10 +832,53 @@ mod tests {
                 reason: UnsyncableReason::RemoteNotDownloadable,
                 first_seen_epoch_secs: 3,
             }],
+            history: Some(PassHistory {
+                recent: vec![pass_record()],
+                last_full_sweep: Some(pass_record()),
+                today: crate::index::ByteTotals {
+                    since_epoch_secs: 0,
+                    uploaded_bytes: 10,
+                    downloaded_bytes: 20,
+                },
+            }),
+            // Both of a `FileEvent`'s paths are lossy wire paths, so they belong in this fixture
+            // too — a new PathBuf field that skips it is exactly how #61 happened.
+            file_history: Some(crate::index::FileHistory {
+                events: vec![crate::index::FileEvent {
+                    path: non_utf8_path(b"-moved"),
+                    source_path: Some(non_utf8_path(b"-original")),
+                    action: SyncAction::MoveLocal,
+                    bytes: None,
+                    epoch_secs: 4,
+                    pass_id: 1,
+                }],
+                total: 1,
+                files: 1,
+                totals: Some(crate::index::ByteTotals {
+                    since_epoch_secs: 0,
+                    uploaded_bytes: 0,
+                    downloaded_bytes: 0,
+                }),
+            }),
             index_totals: Some(IndexTotals {
                 files: 12_480,
                 bytes: 41_200_000_000,
             }),
+        }
+    }
+
+    fn pass_record() -> crate::index::PassRecord {
+        crate::index::PassRecord {
+            id: 1,
+            started_epoch_secs: 100,
+            duration_ms: 250,
+            kind: "full-sweep".to_owned(),
+            outcome: "clean".to_owned(),
+            changed: 0,
+            failed: 0,
+            bytes_uploaded: 0,
+            bytes_downloaded: 0,
+            error: None,
         }
     }
 
@@ -763,6 +915,17 @@ mod tests {
         assert_eq!(
             back.unsyncable[0].path,
             PathBuf::from(&*wire_path(&non_utf8_path(b"-doc")))
+        );
+        // A history event carries TWO paths, and a move's source is the one a per-path feed is
+        // most likely to hold a non-UTF-8 value for.
+        let event = &back.file_history.expect("file history").events[0];
+        assert_eq!(
+            event.path,
+            PathBuf::from(&*wire_path(&non_utf8_path(b"-moved")))
+        );
+        assert_eq!(
+            event.source_path,
+            Some(PathBuf::from(&*wire_path(&non_utf8_path(b"-original"))))
         );
     }
 

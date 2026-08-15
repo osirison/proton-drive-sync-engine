@@ -194,6 +194,16 @@ pub fn unsyncable_items(plan: &[PlannedAction], now: u64) -> Vec<UnsyncableItem>
         .collect()
 }
 
+/// Which way a transfer moves bytes, for the per-direction byte totals (#191).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferDirection {
+    /// Local disk -> Proton Drive.
+    Up,
+    /// Proton Drive -> local disk.
+    Down,
+}
+
 /// The direction a deletion propagates, used by the delete-approval guard, the persistent
 /// approval store, and the control protocol. It is the stable identity that distinguishes the
 /// two data-losing actions (see [`SyncAction::delete_direction`]).
@@ -235,6 +245,31 @@ impl std::str::FromStr for DeleteDirection {
     }
 }
 
+/// Compile-time nudge for [`SyncAction::ALL`]: Rust cannot enumerate an enum's variants, so
+/// nothing can prove that array complete. This match can at least stop the build one line above
+/// it when a variant is added. `ALL` is test-only (see its doc), so the cost of forgetting is
+/// coverage rather than a runtime bug.
+const _: () = {
+    #[allow(dead_code)]
+    fn every_variant_is_named_beside_all(action: SyncAction) {
+        match action {
+            SyncAction::Upload
+            | SyncAction::Download
+            | SyncAction::CreateRemoteDirectory
+            | SyncAction::CreateLocalDirectory
+            | SyncAction::MoveLocal
+            | SyncAction::MoveRemote
+            | SyncAction::AutoLink
+            | SyncAction::Conflict
+            | SyncAction::TypeConflict
+            | SyncAction::RemoteDelete
+            | SyncAction::LocalDelete
+            | SyncAction::Purge
+            | SyncAction::SkipUnsupported => {}
+        }
+    }
+};
+
 impl SyncAction {
     /// The deletion direction this action propagates, or `None` for non-destructive actions and
     /// for `Purge` (index-only cleanup that destroys no user data and is never gated).
@@ -245,6 +280,84 @@ impl SyncAction {
             _ => None,
         }
     }
+
+    /// The stored token, identical to this enum's serde rendering (pinned by
+    /// `action_tokens_match_the_wire_rendering`) — so `index::sync_events.action` and the control
+    /// protocol can never disagree about what an action is called.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Upload => "upload",
+            Self::Download => "download",
+            Self::CreateRemoteDirectory => "create_remote_directory",
+            Self::CreateLocalDirectory => "create_local_directory",
+            Self::MoveLocal => "move_local",
+            Self::MoveRemote => "move_remote",
+            Self::AutoLink => "auto_link",
+            Self::Conflict => "conflict",
+            Self::TypeConflict => "type_conflict",
+            Self::RemoteDelete => "remote_delete",
+            Self::LocalDelete => "local_delete",
+            Self::Purge => "purge",
+            Self::SkipUnsupported => "skip_unsupported",
+        }
+    }
+
+    /// Which way this action moves bytes over the network, or `None` when it moves none.
+    ///
+    /// The direction is a property of the action, so the history log stores no direction column —
+    /// only an amount, and only when bytes actually crossed. A `Conflict` resolved from a local
+    /// copy (`sidecar_from_local_copy`) transfers nothing and records no amount, which is why the
+    /// amount is the executor's to report and the direction is not.
+    pub fn transfer_direction(self) -> Option<TransferDirection> {
+        match self {
+            Self::Upload => Some(TransferDirection::Up),
+            // A conflict's sidecar is the remote revision, fetched over the network.
+            Self::Download | Self::Conflict | Self::TypeConflict => Some(TransferDirection::Down),
+            Self::CreateRemoteDirectory
+            | Self::CreateLocalDirectory
+            | Self::MoveLocal
+            | Self::MoveRemote
+            | Self::AutoLink
+            | Self::RemoteDelete
+            | Self::LocalDelete
+            | Self::Purge
+            | Self::SkipUnsupported => None,
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]; `None` for a token this build does not know.
+    ///
+    /// Goes through **serde**, not through [`Self::ALL`]: the derive is generated from the enum
+    /// itself, so a new variant parses with no list to remember. A hand-maintained lookup would
+    /// have failed silently and one-directionally — the daemon writing rows with the new token
+    /// (`as_str` is an exhaustive match, so it always has one) and `index::read_file_event`
+    /// dropping every one of them from the feed. `StrDeserializer` rather than a
+    /// `serde_json::Value` so an unknown token costs no allocation.
+    pub fn from_token(token: &str) -> Option<Self> {
+        use serde::de::IntoDeserializer;
+        Self::deserialize(IntoDeserializer::<serde::de::value::Error>::into_deserializer(token))
+            .ok()
+    }
+
+    /// Every variant, for **tests** that need to sweep the enum. Nothing at runtime reads it —
+    /// `from_token` goes through serde precisely so no hand-maintained list can drift into a
+    /// silent bug — so a variant missing here costs coverage, not correctness. The `const _` above
+    /// still stops the build one line away when a variant is added, which is the reminder.
+    pub const ALL: [Self; 13] = [
+        Self::Upload,
+        Self::Download,
+        Self::CreateRemoteDirectory,
+        Self::CreateLocalDirectory,
+        Self::MoveLocal,
+        Self::MoveRemote,
+        Self::AutoLink,
+        Self::Conflict,
+        Self::TypeConflict,
+        Self::RemoteDelete,
+        Self::LocalDelete,
+        Self::Purge,
+        Self::SkipUnsupported,
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1956,6 +2069,68 @@ mod tests {
     use super::*;
     use crate::index::{EntityKind, FileRecord, LocalDirectoryState, LocalFileState, SyncStatus};
     use crate::proton::{RemoteDirectory, RemoteEntity, RemoteFile};
+
+    #[test]
+    fn action_tokens_match_the_wire_rendering() {
+        // `as_str` is the token stored in `sync_events.action`; the serde derive is the token on
+        // the control protocol. Two hand-written mappings of one enum drift silently, so this is
+        // the gate that says they are the same vocabulary.
+        for action in SyncAction::ALL {
+            let wire = serde_json::to_string(&action).expect("serialize action");
+            assert_eq!(
+                wire,
+                format!("\"{}\"", action.as_str()),
+                "{action:?} renders differently on the wire than it is stored"
+            );
+            assert_eq!(SyncAction::from_token(action.as_str()), Some(action));
+        }
+        assert_eq!(SyncAction::from_token("teleport"), None);
+    }
+
+    #[test]
+    fn action_tokens_are_unique() {
+        // Only uniqueness, and this cannot prove `ALL` is COMPLETE — Rust cannot enumerate an
+        // enum's variants (see `SyncAction::ALL`'s doc and the `const _` beside it). Two variants
+        // sharing a token would still be a real bug: the stored column could not tell them apart.
+        let mut seen: Vec<&str> = SyncAction::ALL.iter().map(|a| a.as_str()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), SyncAction::ALL.len(), "duplicate token in ALL");
+    }
+
+    #[test]
+    fn only_transfers_carry_a_direction() {
+        // The history log stores no direction column: #191's per-direction totals are derived
+        // from the action. A conflict's sidecar IS fetched from the remote, so it counts down.
+        assert_eq!(
+            SyncAction::Upload.transfer_direction(),
+            Some(TransferDirection::Up)
+        );
+        for action in [
+            SyncAction::Download,
+            SyncAction::Conflict,
+            SyncAction::TypeConflict,
+        ] {
+            assert_eq!(action.transfer_direction(), Some(TransferDirection::Down));
+        }
+        for action in [
+            SyncAction::CreateRemoteDirectory,
+            SyncAction::CreateLocalDirectory,
+            SyncAction::MoveLocal,
+            SyncAction::MoveRemote,
+            SyncAction::AutoLink,
+            SyncAction::RemoteDelete,
+            SyncAction::LocalDelete,
+            SyncAction::Purge,
+            SyncAction::SkipUnsupported,
+        ] {
+            assert_eq!(
+                action.transfer_direction(),
+                None,
+                "{action:?} moves no bytes"
+            );
+        }
+    }
 
     // Shadow the two planner entry points with default-naming shims: every test below is about the
     // decision matrix, not about how a sidecar is spelled, and shadowing keeps that visible instead
