@@ -1433,10 +1433,17 @@ pub async fn skip_rule_usage(
     patterns: Vec<String>,
     include: Option<Vec<String>>,
 ) -> Result<gui_core::skip_rules::SkipRuleReport, String> {
-    let (local_root, db_path) = {
+    let (local_root, db_path, naming) = {
         let paths = app.state::<Mutex<RuntimePaths>>();
         let paths = paths.lock().unwrap();
-        (paths.effective_local_root(), paths.effective_db_path())
+        (
+            paths.effective_local_root(),
+            paths.effective_db_path(),
+            // The baseline `measure` builds is the denominator — "would the daemon sync this
+            // file" — and a conflict sidecar is one of the things it answers no to, so it has to
+            // ask under the daemon's configured suffix rather than the compiled-in one.
+            paths.conflict_naming.clone(),
+        )
     };
     // Two different "no" answers, and only one of them makes a rule safe to remove.
     //
@@ -1459,6 +1466,7 @@ pub async fn skip_rule_usage(
             &patterns,
             &include.unwrap_or_default(),
             &daemon_ignored_paths(db_path.as_ref()),
+            &naming,
         )
     })
     .await

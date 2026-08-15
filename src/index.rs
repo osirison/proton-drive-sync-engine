@@ -805,17 +805,25 @@ pub fn clear_event_cursor(connection: &Connection, scope_id: &str) -> AppResult<
 /// go with it because each is pinned to a `fingerprint` derived from the baseline this erases —
 /// keeping them would leave standing consent for a deletion nothing can still describe.
 pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
-    connection.execute_batch(
-        r#"
-        BEGIN;
-        DELETE FROM file_index;
-        DELETE FROM remote_event_cursor;
-        DELETE FROM warm_start_state;
-        DELETE FROM delete_approvals;
-        DELETE FROM unsyncable_items;
-        COMMIT;
-        "#,
-    )?;
+    // A guarded transaction, not a `BEGIN; …; COMMIT;` batch. `execute_batch` returns on the first
+    // failing statement with the `BEGIN` still open — SQLite does not implicitly roll back — and
+    // this runs on the DAEMON'S LIVE CONNECTION mid-life, where the failure does not stop the
+    // process: `reconcile_blocking` records the error and the loop carries on, so every later
+    // `commit_checkpoint` would then fail with "cannot start a transaction within a transaction"
+    // until a restart. The guard rolls back on drop, leaving the connection usable and the state
+    // whole. `unchecked_transaction` because the caller holds `&Connection`, matching
+    // `replace_unsyncable_items`.
+    let transaction = connection.unchecked_transaction()?;
+    for table in [
+        "file_index",
+        "remote_event_cursor",
+        "warm_start_state",
+        "delete_approvals",
+        "unsyncable_items",
+    ] {
+        transaction.execute(&format!("DELETE FROM {table}"), [])?;
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -1551,6 +1559,33 @@ mod tests {
         upsert_record(&connection, &known_file_record("again.txt", 1, 1, "hash"))
             .expect("still writable");
         assert_eq!(load_index(&connection).expect("index").len(), 1);
+    }
+
+    #[test]
+    fn a_failed_reset_rolls_back_and_leaves_the_connection_usable() {
+        // The daemon does not exit on a failed pass, so a half-applied reset would leave its live
+        // connection inside an open transaction and every later checkpoint would fail with
+        // "cannot start a transaction within a transaction". Forced here by removing a table the
+        // reset deletes from, which makes the fourth statement fail with the first three applied.
+        let directory = tempdir().expect("tempdir");
+        let connection = open_database(&directory.path().join("index.db")).expect("db");
+        upsert_record(&connection, &known_file_record("keep.txt", 1, 1, "hash")).expect("record");
+        connection
+            .execute_batch("DROP TABLE delete_approvals")
+            .expect("drop");
+
+        reset_index_state(&connection).expect_err("the reset must fail");
+
+        assert_eq!(
+            load_index(&connection).expect("index").len(),
+            1,
+            "the rows deleted before the failure must roll back, not vanish half-way"
+        );
+        // The decisive half: a connection left mid-transaction cannot open another one.
+        let transaction = connection
+            .unchecked_transaction()
+            .expect("the connection must not be stuck inside a transaction");
+        transaction.commit().expect("commit");
     }
 
     #[test]
