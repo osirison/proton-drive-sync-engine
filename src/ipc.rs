@@ -263,8 +263,11 @@ pub async fn bind_listener(socket_path: &Path) -> AppResult<UnixListener> {
     Ok(listener)
 }
 
-/// Maximum `.psb-<pid>-<n>` names tried before giving up. Only a SIGKILLed run leaks one (the
-/// `Drop` below removes it on every other path), so a collision needs a pid to be reused.
+/// Maximum `.psb-<pid>-<n>` names tried before giving up. Two things leave one behind: a SIGKILL
+/// that skips [`Drop`], and — by design — a `Drop` that ran and *refused*, because it removes only
+/// an empty directory and another local user planted something inside (see the `Drop` impl). Either
+/// way the loop steps **past** a taken name rather than clearing it, so a leftover costs one attempt
+/// and a start fails only if a reused pid meets this many of them.
 #[cfg(unix)]
 const STAGING_DIR_ATTEMPTS: u64 = 16;
 /// Fixed, short staged socket name. Both this and the directory name are charged to the
@@ -274,7 +277,8 @@ const STAGING_DIR_ATTEMPTS: u64 = 16;
 const STAGED_SOCKET_NAME: &str = "s";
 
 /// The private directory the control socket is bound in before being renamed to its published
-/// path (see [`bind_listener`]). Removed on drop, so every failure path cleans up.
+/// path (see [`bind_listener`]). Cleaned up on drop, so every failure path cleans up — but only
+/// ever its own, empty self (see the `Drop` impl).
 #[cfg(unix)]
 struct StagingDir {
     directory: PathBuf,
