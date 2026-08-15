@@ -7,9 +7,16 @@
 //!    (`db_path`, `events_full_scan_every`, …) that must survive a save.
 //!
 //! So we edit the document **in place** with `toml_edit` (comments + untouched keys preserved) and,
-//! before writing, validate the whole rendered document against the daemon's own `FileConfig`
-//! parser — refusing to write anything the daemon would reject. The include/exclude selective-sync
-//! globs use the **bare** keys `include` / `exclude` (not `*_patterns`).
+//! before writing, hand the whole rendered document to the engine's own
+//! `config::validate_file_config_text` — the `FileConfig` parser *plus* every post-parse rule the
+//! daemon exits on that a serde shape cannot see (a relative `socket_path`, an unusable
+//! `log_level` or `conflict_suffix`, both deletion spellings at once, a bad glob). Re-deriving
+//! those here is how the two halves came to disagree about `~` (#135). The include/exclude
+//! selective-sync globs use the **bare** keys `include` / `exclude` (not `*_patterns`).
+//!
+//! **A value is written back in the spelling the file already uses.** The daemon refuses a config
+//! that sets `deletion_policy` and `[delete_approval]` together, so a writer with a favourite key
+//! would brick every config written the other way — see [`ConfigDoc::set_deletion_policy`].
 
 use std::path::Path;
 use toml_edit::{Array, DocumentMut, Item, Table, value};

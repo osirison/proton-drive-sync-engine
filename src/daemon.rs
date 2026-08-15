@@ -1186,7 +1186,14 @@ impl<C: ProtonClient> Daemon<C> {
         // resync latch, and on the main loop — never from the IPC task, which holds its own
         // connection to this database.
         if self.shared.reset_index.swap(false, Ordering::SeqCst) {
-            reset_index_state(&self.connection)?;
+            // RE-LATCH ON FAILURE. `reset-index` is a typed confirmation the user already gave and
+            // the IPC reply already promised; a truncation that fails (a locked database, a disk
+            // error) must not consume it, or the request evaporates and the daemon carries on with
+            // the state the user asked to discard.
+            if let Err(error) = reset_index_state(&self.connection) {
+                self.shared.reset_index.store(true, Ordering::SeqCst);
+                return Err(error);
+            }
             // A reset makes this a first pass in every sense that matters: an empty baseline is
             // the bootstrap condition, and the cleared cursor has to be re-seeded by a full walk
             // before any later pass may replay from it. `is_first_reconcile` also restores the

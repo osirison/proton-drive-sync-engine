@@ -329,6 +329,37 @@ mod tests {
     }
 
     #[test]
+    fn the_walker_finds_the_configured_suffix_and_only_that_one() {
+        // The GUI's conflicts list is a DISK WALK, so it is the one consumer that can silently
+        // disagree with the daemon about what a sidecar is called: a scanner holding the default
+        // while `conflict_suffix` says otherwise reports "no conflicts" on a folder full of them,
+        // and reports the user's own `.proton-cloud`-named files as conflicts on top. Both halves
+        // are asserted here because a naming threaded to only one of them passes the other.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("notes.txt"), "mine");
+        write(&root.join("notes.from-cloud.txt"), "theirs");
+        write(&root.join("legacy.txt"), "mine");
+        write(
+            &root.join("legacy.proton-cloud.txt"),
+            "an ordinary file under this suffix",
+        );
+
+        let naming = ConflictNaming::new("from-cloud").unwrap();
+        let conflicts = scan_conflicts(root, &naming).unwrap();
+
+        assert_eq!(
+            conflicts,
+            vec![Conflict {
+                original: "notes.txt".into(),
+                sidecar: "notes.from-cloud.txt".into(),
+                kind: ConflictKind::Content,
+            }],
+            "only the configured suffix names a conflict"
+        );
+    }
+
+    #[test]
     fn scan_finds_both_sidecar_forms_and_skips_dot_sync() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();

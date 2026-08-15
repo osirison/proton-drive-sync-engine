@@ -218,6 +218,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_advanced_flags_parse_into_config_input() {
+        // `--deletion-policy` reaches clap through `DeletionPolicy`'s `FromStr`, which the compiler
+        // proves exists and nothing else exercises — including its error, which is the only place a
+        // user learns what the four spellings are.
+        let cli = Cli::try_parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--deletion-policy",
+            "only_permanent",
+            "--log-level",
+            "debug",
+            "--conflict-suffix",
+            "from-cloud",
+        ])
+        .expect("the advanced flags must parse");
+        let input: DaemonConfigInput = cli.into();
+        assert_eq!(input.deletion_policy, Some(DeletionPolicy::OnlyPermanent));
+        assert_eq!(input.log_level.as_deref(), Some("debug"));
+        assert_eq!(input.conflict_suffix.as_deref(), Some("from-cloud"));
+
+        let error = Cli::try_parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--deletion-policy",
+            "ask_sometimes",
+        ])
+        .expect_err("an unknown policy must be rejected, not silently defaulted")
+        .to_string();
+        assert!(
+            error.contains("ask_every_time"),
+            "the error must name the spellings that do work: {error}"
+        );
+    }
+
+    #[test]
     fn conflicting_dry_run_flags_are_rejected_by_cli_parser() {
         let result = Cli::try_parse_from([
             "proton-syncd",

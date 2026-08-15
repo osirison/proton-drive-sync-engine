@@ -254,10 +254,6 @@ pub struct ConfigPayload {
     conflict_suffix: Option<String>,
     delete_approval_remote: Option<bool>,
     delete_approval_local: Option<bool>,
-    /// The `deletion_policy` key when the file uses that spelling (#194), so a writer can tell
-    /// which of the two spellings this file speaks. `None` with a policy below means the file uses
-    /// `[delete_approval]`, or says nothing at all.
-    deletion_policy_key: Option<config_io::DeletionPolicy>,
     /// The same two booleans as the Settings → Deletions radio (C1, #174).
     ///
     /// Carried **alongside** them, not instead of them: the raw pair is what the Advanced view and
@@ -289,7 +285,6 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
         socket_path: doc.get_str("socket_path"),
         log_level: doc.get_str("log_level"),
         conflict_suffix: doc.get_str("conflict_suffix"),
-        deletion_policy_key: doc.get_deletion_policy_key(),
         delete_approval_remote: doc.get_delete_approval("remote"),
         delete_approval_local: doc.get_delete_approval("local"),
         deletion_policy: doc.get_deletion_policy(),
@@ -575,8 +570,8 @@ pub async fn list_remote(state: Paths<'_>, path: Option<String>) -> Result<Strin
     .map_err(|error| format!("remote-list task failed: {error}"))?
 }
 
-/// Async so a full local-tree conflict scan (the `.proton-cloud` sidecar walk) never blocks the
-/// GTK main loop on a large folder.
+/// Async so a full local-tree conflict scan (the sidecar walk) never blocks the GTK main loop on a
+/// large folder.
 #[tauri::command]
 pub async fn scan_conflicts(state: Paths<'_>) -> Result<Vec<Conflict>, String> {
     // Root and naming come out of the SAME guard: the scanner must look for the suffix this config
@@ -609,7 +604,7 @@ pub fn resolve_conflict(
     conflicts::apply_resolution(&local_root, &conflict, choice).map_err(|e| e.to_string())
 }
 
-/// Read both sides of a conflict (the local file + its `.proton-cloud` sidecar) for the compare
+/// Read both sides of a conflict (the local file + its sidecar) for the compare
 /// view. Path-safe and size-bounded — see `gui_core::conflicts::read_conflict_pair`.
 #[tauri::command]
 pub fn read_conflict_pair(
