@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
+use proton_drive_sync_engine::config::resolve_control_socket_path;
 use proton_drive_sync_engine::ipc::{
     ControlCommand, ControlRequest, ControlResponse, PendingDeletion, SyncActivity, send_request,
     wire_path,
 };
-use proton_drive_sync_engine::paths::default_socket_path;
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -22,6 +22,11 @@ const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(300);
     about = "Frontend controller for the Proton Drive sync daemon"
 )]
 struct Cli {
+    /// Daemon config file to read the control socket's location from, so a file-configured
+    /// `socket_path` does not have to be repeated as `--socket-path` on every invocation (#63).
+    /// Only `socket_path` is read here; everything else in the file belongs to the daemon.
+    #[arg(long)]
+    config: Option<PathBuf>,
     #[arg(long)]
     socket_path: Option<PathBuf>,
     /// Print the daemon's raw JSON response instead of the human-readable output.
@@ -76,19 +81,17 @@ enum Commands {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    // Lazy: only an unset --socket-path resolves the default, which is fallible since the
-    // shared-/tmp fallback fails closed (#74). `main` returns ExitCode, so the error is reported
-    // here rather than propagated.
-    let socket_path = match cli.socket_path.clone() {
-        Some(path) => path,
-        None => match default_socket_path() {
+    // Same precedence and same validation as the daemon (`--socket-path` > config file >
+    // XDG default), through the engine's own resolver so the two cannot drift (#63). `main`
+    // returns ExitCode, so the error is reported here rather than propagated.
+    let socket_path =
+        match resolve_control_socket_path(cli.socket_path.clone(), cli.config.as_deref()) {
             Ok(path) => path,
             Err(error) => {
                 eprintln!("cannot resolve the control socket path: {error}");
                 return ExitCode::FAILURE;
             }
-        },
-    };
+        };
     let style = Style::for_stdout();
 
     let request = match build_request(&cli.command) {
