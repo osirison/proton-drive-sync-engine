@@ -2684,6 +2684,21 @@ fn apply_approval_command(
             None => "no deletions are pending approval".to_owned(),
         });
     }
+    // The planner emits at most one delete per path, so a targeted selector matches more than one
+    // row only when two real paths differ solely in bytes the lossy wire replaced (#61). Authorising
+    // both from one ambiguous selector would delete a file the user never picked out — and they
+    // cannot pick it out, the rows render identically. Fail closed on the destructive side only:
+    // a `deny` over-revoking is the safe direction, and `--all` remains the deliberate every-item
+    // form.
+    if approve && target.is_some() && matches.len() > 1 {
+        return Ok(format!(
+            "{} pending deletions render as '{}' and cannot be told apart on the wire (their \
+             paths are not valid UTF-8); nothing was approved — use \"all\" to approve every \
+             pending deletion",
+            matches.len(),
+            target.unwrap_or_default()
+        ));
+    }
 
     let now = current_epoch_secs() as i64;
     for pending in &matches {
@@ -5049,6 +5064,69 @@ mod tests {
         assert_eq!(
             approvals[0].path, real_path,
             "the approval must be pinned to the real path the guard checks, not the lossy one"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_lossy_selector_approves_nothing() {
+        // Two real paths differing only in the bytes `to_string_lossy` replaces render as ONE
+        // selector, so a targeted approve cannot say which was meant — and the `pending` list the
+        // user read from shows them identically. Approving both would delete a file nobody picked.
+        // `deny` is not gated: over-revoking is the safe direction.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending: Vec<PendingDeletion> = [&b"bad-\xff.txt"[..], &b"bad-\xfe.txt"[..]]
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| PendingDeletion {
+                path: PathBuf::from(OsStr::from_bytes(bytes)),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::File,
+                fingerprint: format!("fp-{index}"),
+                detected_epoch_secs: 1,
+            })
+            .collect();
+        let selector = crate::ipc::wire_path(&pending[0].path);
+        assert_eq!(selector, crate::ipc::wire_path(&pending[1].path));
+
+        let message =
+            apply_approval_command(&daemon.connection, &pending, Some(&selector), true, true)
+                .expect("ambiguous approve");
+
+        assert!(
+            message.contains("cannot be told apart"),
+            "an ambiguous selector must explain itself: {message}"
+        );
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("approvals")
+                .is_empty(),
+            "an ambiguous approve must authorize nothing"
+        );
+
+        // "all" is the deliberate every-item form and still works, as does a deny.
+        apply_approval_command(&daemon.connection, &pending, Some("all"), false, true)
+            .expect("approve all");
+        assert_eq!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("approvals")
+                .len(),
+            2
+        );
+        apply_approval_command(&daemon.connection, &pending, Some(&selector), true, false)
+            .expect("ambiguous deny");
+        assert!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("approvals")
+                .is_empty(),
+            "a deny is not gated: revoking more than asked is the safe direction"
         );
     }
 

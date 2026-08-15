@@ -52,7 +52,8 @@ pub struct ControlRequest {
 /// non-UTF-8 path cannot survive JSON), so the daemon compares selectors here rather than against
 /// the real `PathBuf` it keeps internally — otherwise exactly the paths that motivated the lossy
 /// wire (#61) would be unapprovable. Two paths that differ only in invalid bytes collapse to one
-/// selector; each still carries its own fingerprint-pinned approval.
+/// selector, which the daemon refuses to *approve* rather than resolve arbitrarily (see
+/// `daemon::apply_approval_command`).
 pub fn wire_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
