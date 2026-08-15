@@ -106,7 +106,15 @@ const PASS = {
     detail: "docs/spec.md",
     action_index: 1,
     action_total: summary.total,
-    since_epoch_secs: ago(14),
+    // The PHASE's start, which the frame's `started 14 seconds ago` is deliberately NOT read from
+    // — the pass block below is. Held at a different value so the fixture exercises the preferred
+    // branch rather than agreeing with it by accident.
+    since_epoch_secs: ago(3),
+    pass: {
+      started_epoch_secs: ago(14),
+      changes: summary.uploads + summary.downloads,
+      kind: "incremental",
+    },
     transfer: {
       direction: "upload",
       path: "docs/spec.md",

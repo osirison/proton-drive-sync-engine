@@ -254,13 +254,13 @@ export function headlineOf(v) {
 export function subOf(v) {
   switch (v.hero) {
     case "syncing":
-      // `?? null`, never `?? 0` — see `syncingSub`. And `since_epoch_secs` is the PHASE's start, not
-      // the pass's: `begin_activity` resets it on every phase change, so a long pass walking
-      // scanning-local → listing-remote → executing makes `started N ago` count up and then jump
-      // back to zero three times. Nothing in the reply records when the pass itself began (#213), so
-      // Phase 1 shows the phase's elapsed time — which is at least honest about a number that moves.
+      // `?? null`, never `?? 0` — see `syncingSub`. The elapsed time is the PASS's, not the
+      // phase's: `since_epoch_secs` is reset by `begin_activity` on every phase change, so a pass
+      // walking scanning-local → listing-remote → executing counted up and jumped back to zero
+      // three times. `activity.pass.started_epoch_secs` (#213) is the pass as a unit and does not.
+      // The phase's start stays as the fallback for a daemon too old to send the block.
       return MAIN.syncingSub(
-        since(v.activity?.since_epoch_secs ?? v.lastSync),
+        since(v.activity?.pass?.started_epoch_secs ?? v.activity?.since_epoch_secs ?? v.lastSync),
         v.summary?.uploads ?? null,
         v.summary?.downloads ?? null,
       );
