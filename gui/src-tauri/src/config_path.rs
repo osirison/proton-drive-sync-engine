@@ -14,7 +14,11 @@ use std::path::PathBuf;
 /// Paths the command layer needs, resolved once at startup and re-resolved after a config write.
 pub struct RuntimePaths {
     pub config_path: PathBuf,
-    pub socket_path: PathBuf,
+    /// `Err` only when the GUI config sets no `socket_path` **and** the engine's default fails
+    /// closed (#74 — `XDG_RUNTIME_DIR` unset and the shared-/tmp fallback is not a directory this
+    /// user owns at 0700). Carried as a `Result` rather than a guessed path so the UI reports the
+    /// real reason instead of a wrong "connect: No such file" (#277).
+    pub socket_path: Result<PathBuf, String>,
     /// From the GUI config file (explicit `db_path`, or derived from `local_root`). `None` when
     /// the config file provides neither — the daemon-reported path may still fill in.
     pub db_path: Option<PathBuf>,
@@ -40,14 +44,6 @@ pub fn gui_config_path() -> PathBuf {
 
 use gui_core::config_io::expand_config_path as expand;
 
-fn default_socket_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(std::env::temp_dir)
-        .join("proton-sync.sock")
-}
-
 impl RuntimePaths {
     /// Resolve from the GUI config path, applying engine defaults where a key is unset.
     pub fn resolve() -> Self {
@@ -67,10 +63,17 @@ impl RuntimePaths {
         // `local_root` is expanded BEFORE `db_path` derives from it, or the derived index path
         // inherits the unexpanded root.
         let local_root = get("local_root").map(|value| expand(value, "local_root"));
-        let remote_root = get("remote_root").map(PathBuf::from); // a Proton Drive path, not local
-        let socket_path = get("socket_path")
-            .map(|value| expand(value, "socket_path"))
-            .unwrap_or_else(default_socket_path);
+        // A Proton Drive path, not a local one.
+        let remote_root = get("remote_root").map(PathBuf::from);
+
+        // The default comes from the engine (`gui_core::ipc::default_socket_path`), never from a
+        // private copy here: the copy this replaced pointed at `<temp>/proton-sync.sock` while the
+        // daemon bound `<temp>/proton-drive-sync-<uid>/proton-sync.sock` whenever
+        // `XDG_RUNTIME_DIR` was unset (#277).
+        let socket_path = match get("socket_path") {
+            Some(value) => Ok(expand(value, "socket_path")),
+            None => gui_core::ipc::default_socket_path(),
+        };
         let db_path = get("db_path")
             .map(|value| expand(value, "db_path"))
             .or_else(|| {

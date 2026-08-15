@@ -96,6 +96,23 @@ pub fn send_request(
     ))
 }
 
+/// The engine's own default control-socket path, delegated rather than reimplemented (#277).
+///
+/// The GUI used to keep a private copy that fell back to `<temp>/proton-sync.sock` when
+/// `XDG_RUNTIME_DIR` was unset (SSH without `pam_systemd`, many containers), while the daemon
+/// listened on the uid-namespaced `<temp>/proton-drive-sync-<uid>/proton-sync.sock` — so the GUI
+/// rendered a healthy daemon as **unreachable**, and wrote a predictable name straight into
+/// world-writable `/tmp`, the exact placement the engine's namespacing exists to avoid (#74).
+/// Two places computing one path is how they drift; this is the one place.
+///
+/// Fallible for the engine's reason: that fallback **fails closed** rather than hand back a path
+/// in attacker-plantable space. The caller must surface the failure as the unreachable state, not
+/// substitute a guess.
+pub fn default_socket_path() -> Result<std::path::PathBuf, String> {
+    proton_drive_sync_engine::paths::default_socket_path()
+        .map_err(|error| format!("cannot resolve the control socket path: {error}"))
+}
+
 /// Convenience wrapper for the argument-less commands (`status`, `pause`, `resume`, `syncnow`).
 pub fn command(
     socket_path: &Path,
@@ -170,6 +187,26 @@ mod tests {
         assert_eq!(resp.pending_changes, 3);
         assert_eq!(resp.message, "sync completed");
         assert_eq!(resp.last_sync_epoch_secs, Some(1_750_000_000));
+    }
+
+    /// #277: the GUI's private copy of this default fell back to `<temp>/proton-sync.sock` while
+    /// the engine's is uid-namespaced, so with `XDG_RUNTIME_DIR` unset the GUI polled a path the
+    /// daemon never bound and drew a healthy daemon as unreachable. That literal must never be
+    /// producible here again — in EITHER branch (with the runtime dir set the answer is under it).
+    #[test]
+    fn the_default_socket_path_is_never_the_unnamespaced_temp_one_the_gui_used_to_build() {
+        let resolved = default_socket_path().expect("a default resolves on a test host");
+        assert_ne!(
+            resolved,
+            std::env::temp_dir().join("proton-sync.sock"),
+            "a predictable name straight in the shared temp dir is the placement #74 exists to \
+             avoid, and the path the daemon never binds"
+        );
+        assert_eq!(
+            resolved,
+            proton_drive_sync_engine::paths::default_socket_path().expect("engine default"),
+            "the GUI must not compute this path itself — one copy, or they drift again"
+        );
     }
 
     #[test]

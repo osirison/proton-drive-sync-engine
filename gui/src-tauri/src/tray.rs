@@ -200,8 +200,11 @@ fn spawn_poll(app: AppHandle) {
             // that is not answering. On the async runtime that would stall every other task —
             // including the D-Bus connection serving the tray item, which is how a tray stops
             // responding to clicks whenever the daemon is down.
-            let polled = tauri::async_runtime::spawn_blocking(move || {
-                ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT)
+            let polled = tauri::async_runtime::spawn_blocking(move || match socket {
+                // An unlocatable socket (#277) IS unreachable, and must reach `derive_state` as
+                // such — the offline glyph with its reason, not a skipped tick.
+                Err(reason) => Err(ipc::IpcError::Unreachable(reason)),
+                Ok(socket) => ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT),
             })
             .await;
             // A join failure is this task's own bug, not the daemon's, and it must not be folded
@@ -426,7 +429,14 @@ fn send_command(app: &AppHandle, command: ControlCommand) {
             let guard = state.lock().unwrap();
             guard.socket_path.clone()
         };
-        let _ = ipc::command(&socket, command, ipc::DEFAULT_TIMEOUT);
+        match socket {
+            Ok(socket) => {
+                let _ = ipc::command(&socket, command, ipc::DEFAULT_TIMEOUT);
+            }
+            Err(reason) => {
+                eprintln!("tray: could not locate the daemon's control socket ({reason})")
+            }
+        }
     });
 }
 

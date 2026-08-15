@@ -68,8 +68,16 @@ fn status_payload(result: Result<ControlResponse, ipc::IpcError>) -> StatusPaylo
     }
 }
 
-fn socket_path(state: &Paths) -> std::path::PathBuf {
+/// `Err` when the control socket cannot be located at all (#277) — a state as unreachable as a
+/// refused connection, and reported with its own reason rather than a guessed path's ENOENT.
+fn socket_path(state: &Paths) -> Result<std::path::PathBuf, String> {
     state.lock().unwrap().socket_path.clone()
+}
+
+/// [`socket_path`] as an `ipc` result, so an unresolvable socket folds into the same
+/// `StatusPayload` error shape as an unreachable daemon.
+fn socket_path_for_ipc(state: &Paths) -> Result<std::path::PathBuf, ipc::IpcError> {
+    socket_path(state).map_err(ipc::IpcError::Unreachable)
 }
 
 /// Drop ANSI escape sequences (`ESC [ … <letter>`) from subprocess stderr. The daemon's tracing
@@ -140,7 +148,10 @@ async fn status_round_trip<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     command: ControlCommand,
 ) -> StatusPayload {
-    let socket = socket_path(&app.state());
+    let socket = match socket_path_for_ipc(&app.state()) {
+        Ok(socket) => socket,
+        Err(error) => return status_payload(Err(error)),
+    };
     let reply =
         spawn_blocking_ipc(move || ipc::command(&socket, command, ipc::DEFAULT_TIMEOUT)).await;
     status_payload_remembering(&app.state(), reply)
@@ -189,7 +200,10 @@ async fn approval_round_trip<R: tauri::Runtime>(
     target: String,
     literal_path: bool,
 ) -> StatusPayload {
-    let socket = socket_path(&app.state());
+    let socket = match socket_path_for_ipc(&app.state()) {
+        Ok(socket) => socket,
+        Err(error) => return status_payload(Err(error)),
+    };
     let reply = spawn_blocking_ipc(move || {
         ipc::command_with_argument(&socket, command, target, literal_path, ipc::DEFAULT_TIMEOUT)
     })
@@ -209,7 +223,7 @@ pub async fn deny(app: tauri::AppHandle, target: String, literal_path: bool) -> 
 
 #[tauri::command]
 pub async fn list_pending_deletions(app: tauri::AppHandle) -> Result<Vec<PendingDeletion>, String> {
-    let socket = socket_path(&app.state());
+    let socket = socket_path(&app.state())?;
     spawn_blocking_ipc(move || ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT))
         .await
         .map(|response| response.pending_deletions)
@@ -815,7 +829,7 @@ pub(crate) fn restart_service_impl(
 pub async fn restart_service(state: Paths<'_>) -> Result<String, String> {
     let (config_path, socket_path) = {
         let paths = state.lock().unwrap();
-        (paths.config_path.clone(), paths.socket_path.clone())
+        (paths.config_path.clone(), paths.socket_path.clone()?)
     };
     tauri::async_runtime::spawn_blocking(move || restart_service_impl(&config_path, &socket_path))
         .await
@@ -1508,6 +1522,16 @@ pub fn quit_stopping_the_daemon(app: tauri::AppHandle) {
         let guard = state.lock().unwrap();
         guard.socket_path.clone()
     };
+    // An unlocatable socket (#277) must not block the quit — it is the same "already gone" case
+    // the failed-shutdown path below already treats as non-fatal.
+    let socket = match socket {
+        Ok(socket) => socket,
+        Err(reason) => {
+            eprintln!("quit: could not locate the daemon's control socket ({reason}); exiting");
+            app.exit(0);
+            return;
+        }
+    };
     // On a worker, with the app's exit behind it: the control socket blocks up to DEFAULT_TIMEOUT,
     // and doing that on the UI thread is the WebKitGTK freeze this crate has already shipped once
     // (PR #142). The exit follows the attempt either way.
@@ -1993,7 +2017,7 @@ mod socket_tests {
     /// A headless mock app (no webview/display) managing `RuntimePaths` pointed at `socket`.
     fn mock_app(socket: std::path::PathBuf) -> tauri::App<tauri::test::MockRuntime> {
         let mut paths = RuntimePaths::resolve();
-        paths.socket_path = socket;
+        paths.socket_path = Ok(socket);
         tauri::test::mock_builder()
             .manage(Mutex::new(paths))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -2045,11 +2069,37 @@ mod socket_tests {
         assert_ne!(payload.state, gui_core::DaemonState::Unreachable);
     }
 
+    /// #277: the socket path can now fail to resolve at all (the engine's fallback fails closed).
+    /// That is the unreachable state WITH ITS REASON — not a panic, and not a guessed path whose
+    /// ENOENT would name a file the daemon was never asked to bind.
+    #[test]
+    fn an_unresolvable_socket_path_folds_into_the_unreachable_state_with_its_reason() {
+        let (socket, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
+        let app = mock_app(socket);
+        app.state::<Mutex<RuntimePaths>>()
+            .lock()
+            .unwrap()
+            .socket_path = Err("fallback runtime directory is owned by uid 1234".to_owned());
+
+        let payload = tauri::async_runtime::block_on(status_round_trip(
+            app.handle().clone(),
+            ControlCommand::Status,
+        ));
+
+        assert_eq!(payload.state, gui_core::DaemonState::Unreachable);
+        assert!(payload.response.is_none());
+        let error = payload.error.expect("the reason must reach the UI");
+        assert!(
+            error.contains("owned by uid 1234"),
+            "the engine's own reason must survive: {error}"
+        );
+    }
+
     /// A mock app whose managed paths name `root` as the sync folder. The socket is deliberately a
     /// path nothing is listening on: the opener commands never touch it.
     fn mock_app_rooted(root: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
         let mut paths = RuntimePaths::resolve();
-        paths.socket_path = root.join("unused.sock");
+        paths.socket_path = Ok(root.join("unused.sock"));
         paths.local_root = Some(root.to_path_buf());
         tauri::test::mock_builder()
             .manage(Mutex::new(paths))
@@ -2062,7 +2112,7 @@ mod socket_tests {
     /// pass or fail depending on whose machine it runs on.
     fn mock_app_rootless(dir: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
         let mut paths = RuntimePaths::resolve();
-        paths.socket_path = dir.join("unused.sock");
+        paths.socket_path = Ok(dir.join("unused.sock"));
         paths.local_root = None;
         paths.daemon_local_root = None;
         tauri::test::mock_builder()
