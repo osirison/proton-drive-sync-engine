@@ -8,14 +8,22 @@ name: Dependabot auto-merge
 # protection on main with the CI + security-audit checks required — the required checks are
 # what make `--auto` wait for green rather than merge immediately.
 #
-# There is deliberately NO `gh pr review --approve` step. It fails with
-# "GitHub Actions is not permitted to approve pull requests (addPullRequestReview)" whenever
-# the repo's `actions/permissions/workflow` has `can_approve_pull_request_reviews: false`,
-# which is the default — and that failure aborted the step before `gh pr merge --auto` ran,
-# so every eligible bump stalled (6 open PRs, 46 commits stale, before this was found).
-# It is also unnecessary: main's protection sets `required_pull_request_reviews: null`, so
-# `--auto` needs only green checks. If required reviews are ever enabled, restoring the
-# approve step is NOT the fix — GITHUB_TOKEN cannot supply it. Use a PAT or GitHub App.
+# There is deliberately NO `gh pr review --approve` step. Under the default repo setting
+# `actions/permissions/workflow` → `can_approve_pull_request_reviews: false`, it fails with
+#
+#   failed to create review: GraphQL: GitHub Actions is not permitted to approve pull
+#   requests. (addPullRequestReview)
+#
+# `run:` uses `bash -e`, so that aborted the step *before* `gh pr merge --auto` — leaving
+# every eligible bump open and un-armed, and showing as a red `auto-merge` check that reads
+# like the PR failed rather than like the automation never started. (Found 2026-08-15, after
+# it had silently stalled every Dependabot PR since the workflow landed in #144.)
+#
+# The approval is also unnecessary here: main's protection sets
+# `required_pull_request_reviews: null`, so `--auto` waits only on the required checks.
+# If required reviews are ever enabled, do NOT restore this step and flip that repo setting
+# to buy it — that grants Actions approval rights over every PR in the repo. Use a PAT or a
+# GitHub App instead.
 on: pull_request
 
 # Default to read-only; only the auto-merge job (and only for Dependabot PRs) elevates.
