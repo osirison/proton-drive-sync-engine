@@ -338,9 +338,13 @@ pub struct ControlResponse {
     /// so a reply from an older daemon still parses.
     #[serde(default)]
     pub unsyncable: Vec<UnsyncableItem>,
-    /// Pass-level history (see [`PassHistory`]). `None` from an older daemon, and until the
-    /// daemon's first pass has published it. `#[serde(default)]` keeps both wire directions
-    /// compatible.
+    /// Pass-level history (see [`PassHistory`]). `None` means **an older daemon, or this one could
+    /// not read its history** — `Daemon::with_client` publishes it at construction, before the
+    /// first pass, and a daemon with no recorded passes publishes `Some` with empty fields. So
+    /// "nothing has run yet" is `Some`, and `None` is never a transient a client should wait out:
+    /// `refresh_pass_history` reaching its `Err` arm warns and leaves this `None`, so a client that
+    /// renders it as "waiting for the first pass" would say that forever over an unreadable
+    /// database. `#[serde(default)]` keeps both wire directions compatible.
     #[serde(default)]
     pub history: Option<PassHistory>,
     /// The answer to a [`ControlCommand::Activity`] request, and `None` on every other reply.
