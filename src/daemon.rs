@@ -1608,7 +1608,7 @@ impl<C: ProtonClient> Daemon<C> {
                 // Typically an unhealthy events endpoint — the same condition that forced this
                 // snapshot in the first place, so this arm fires exactly when a fabricated cursor
                 // would skip the most.
-                warn!(%error, "could not capture the pre-snapshot events cursor; this pass persists no cursor, so nothing that changes during the walk is skipped");
+                warn!(%error, "could not capture the pre-snapshot events cursor; this pass persists no cursor, so a change made during the walk is re-derived next pass instead of being skipped forever");
                 PreSnapshotCursor::Unavailable
             }
         }
