@@ -2221,10 +2221,21 @@ impl<C: ProtonClient> Daemon<C> {
                         index_mutations.push(IndexMutation::Purge(action.path.clone()));
                     }
                     SyncAction::SkipUnsupported => {
+                        // Two causes reach here, and the path is the only thing that tells them
+                        // apart: a Proton-native remote file the CLI cannot download as bytes, and
+                        // a local path that is not valid UTF-8 and so cannot survive the CLI's
+                        // JSON listing (#270). The predicate is the planner's own, not a second
+                        // copy of it.
+                        let reason = if crate::sync::is_representable_remotely(&action.path) {
+                            "proton-drive cannot download this Proton-native file"
+                        } else {
+                            "the path is not valid UTF-8, so the remote listing can never name it"
+                        };
                         debug!(
                             path = %action.path.display(),
                             remote_id = ?action.remote_id,
-                            "skipping Proton-native file that proton-drive cannot download"
+                            reason,
+                            "skipping an entity that cannot be synced"
                         );
                     }
                 }
