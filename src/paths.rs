@@ -29,7 +29,8 @@ pub fn sync_state_dir(local_root: &Path) -> PathBuf {
 /// `sun_path` length limit; and the control CLI locates it there without needing to know the sync
 /// root. So, unlike the persistent state, it does *not* move into `.sync`.
 ///
-/// Fallible: with `XDG_RUNTIME_DIR` unset this resolves through [`fallback_runtime_dir`], which
+/// Fallible: with `XDG_RUNTIME_DIR` unset — or set to a non-absolute value, which [`absolute_dir`]
+/// discards — this resolves through [`fallback_runtime_dir`], which
 /// fails closed rather than hand back a path in attacker-controlled space (#74).
 pub fn default_socket_path() -> AppResult<PathBuf> {
     default_runtime_path(DEFAULT_SOCKET_NAME, env::var_os("XDG_RUNTIME_DIR"))
@@ -59,8 +60,9 @@ pub fn default_state_db_path(local_root: &Path) -> PathBuf {
 /// second daemon slip through in exactly those cases and still contend on the shared cache. This
 /// complements the *per-root* [`default_lockfile_path`], which stops two daemons on the same root.
 ///
-/// Fallible for the same reason as [`default_socket_path`]: with both `XDG_STATE_HOME` and `HOME`
-/// unset it resolves through [`fallback_runtime_dir`], which fails closed (#74).
+/// Fallible for the same reason as [`default_socket_path`]: with neither `XDG_STATE_HOME` nor
+/// `HOME` usable (unset or non-absolute) it resolves through [`fallback_runtime_dir`], which fails
+/// closed (#74).
 pub fn default_global_lock_path() -> AppResult<PathBuf> {
     Ok(global_lock_path_in(user_state_dir()?))
 }
@@ -71,8 +73,9 @@ fn global_lock_path_in(state_dir: PathBuf) -> PathBuf {
     state_dir.join(APP_STATE_DIR).join(GLOBAL_LOCK_NAME)
 }
 
-/// `$XDG_STATE_HOME`, falling back to `~/.local/state`, then — if even `HOME` is unset (unusual) —
-/// to the per-uid temp directory so the path stays user-private rather than shared.
+/// `$XDG_STATE_HOME`, falling back to `~/.local/state`, then — if even `HOME` is unusable (unset or
+/// non-absolute; unusual) — to the per-uid temp directory so the path stays user-private rather
+/// than shared. Both values go through [`absolute_dir`] first.
 fn user_state_dir() -> AppResult<PathBuf> {
     user_state_dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"))
 }
@@ -101,7 +104,8 @@ fn default_runtime_path(file_name: &str, runtime_dir: Option<OsString>) -> AppRe
 
 /// `XDG_RUNTIME_DIR` is normally set by a login session manager (for example
 /// systemd-logind) to a private, per-user, mode-0700 directory. When it is unset
-/// (minimal environments, some containers, `su`'d shells) fall back to a
+/// (minimal environments, some containers, `su`'d shells) — or holds a
+/// non-absolute value, which [`absolute_dir`] discards — fall back to a
 /// namespaced, owner-only-permission subdirectory of the shared temporary
 /// directory rather than writing predictable filenames (`proton-sync.sock`)
 /// directly into world-writable `/tmp`, where they would be guessable and could
