@@ -1073,6 +1073,14 @@ const NEVER_SYNCED_FIDS = {
   ruleRowNote: (i, j) => (i === 0 && j < 2 ? `div[1]/div[${j + 2}]/span[1]` : null),
   changeRule: "div[1]/button",
 
+  // The second group (#232), which follows the button in DOM order even though the frame's keys
+  // put `div[1]/button` last — buttons and divs are keyed in separate sequences.
+  cannotHeading: "div[1]/div[4]",
+  cannotSub: "div[1]/div[5]",
+  cannotRow: (i) => (i < 2 ? `div[1]/div[${i + 6}]` : null),
+  cannotRowPath: (i) => (i < 2 ? `div[1]/div[${i + 6}]/span[0]` : null),
+  cannotRowNote: (i) => (i < 2 ? `div[1]/div[${i + 6}]/span[1]` : null),
+
   dlgFoot: "div[2]",
   reassurance: "div[2]/span[0]",
   done: "div[2]/button",

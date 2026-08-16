@@ -18,6 +18,9 @@ import {
   verdictOf,
   passesSummaryOf,
   neverSyncedFrom,
+  neverSyncedSubject,
+  cannotSyncFrom,
+  receivedAtFrom,
   footerVariantOf,
   elideId,
   normaliseQuery,
@@ -204,6 +207,106 @@ test("files hidden by two rules still raise the band", () => {
   };
   assert.equal(neverSyncedFrom(report).total, 2);
   assert.equal(neverSyncedFrom(report).rules.length, 2);
+});
+
+// ---- the `Can't be synced` group (#232) ------------------------------------------------------
+
+const unsyncable = (reason, path = "x") => ({
+  path,
+  entity_kind: "file",
+  reason,
+  first_seen_epoch_secs: 1,
+});
+
+// ONE FILTER, FOUR NUMBERS. The band's count, the band's second clause, the dialog's title and the
+// dialog's rows all read `cannotSyncFrom`. This screen has already shipped the bug where two of
+// them were computed apart.
+test("every local kind is drawn, and each is named by what it is", () => {
+  const { count, rows } = cannotSyncFrom([
+    unsyncable("local_socket", ".cache/session.sock"),
+    unsyncable("local_symlink", "projects/current"),
+    unsyncable("local_fifo", "a.pipe"),
+    unsyncable("local_device", "b.dev"),
+    unsyncable("local_special_file", "c.odd"),
+    unsyncable("unrepresentable_path", "d\ufffd.txt"),
+  ]);
+  assert.equal(count, 6);
+  // BY PATH, so the list does not reshuffle between polls: `.cache/session.sock`, `a.pipe`,
+  // `b.dev`, `c.odd`, `d�.txt`, `projects/current`.
+  assert.deepEqual(
+    rows.map((r) => r.note),
+    ["a socket", "a pipe", "a device", "not a file", "an unreadable name", "a shortcut"],
+  );
+});
+
+// The one exclusion, and it is a KNOWN token excluded for a stated reason rather than a token that
+// happens to be missing from a table. A Proton Docs document is a real file on Proton Drive, and
+// both of this dialog's sentences — `live in your folder`, `Not real files` — would be false of it.
+test("a remote node that cannot be downloaded is not in your folder, so it is not in this group", () => {
+  const { count, rows } = cannotSyncFrom([
+    unsyncable("remote_not_downloadable", "Unsorted/Networth"),
+    unsyncable("local_socket", ".cache/session.sock"),
+  ]);
+  assert.equal(count, 1);
+  assert.equal(rows[0].path, ".cache/session.sock");
+});
+
+// THE CONSERVATIVE DIRECTION, and the reason the table is not also the membership test for unknown
+// tokens: a newer daemon's local kind must not vanish from the one dialog that names what cannot
+// sync. Hiding a stuck file is the failure #295 is about; showing a remote one under this heading
+// is the smaller wrong. The token is rendered verbatim, exactly as `proton-sync status` does.
+test("a reason from a newer daemon is drawn with its own token, not dropped", () => {
+  const { count, rows } = cannotSyncFrom([unsyncable("local_wormhole", "odd")]);
+  assert.equal(count, 1);
+  assert.equal(rows[0].note, "local_wormhole");
+});
+
+// The band's two halves are independent. Before #232 the rule half alone decided whether the band
+// rendered at all, so a machine with a socket and no exclude rules drew nothing.
+test("a machine with no exclude rules and one socket still raises the band", () => {
+  const subject = neverSyncedSubject(null, [unsyncable("local_socket")]);
+  assert.equal(subject.total, 1);
+  assert.equal(subject.byRule, 0);
+  assert.equal(subject.cannot.count, 1);
+});
+
+test("the band's title counts both groups", () => {
+  const report = { rules: [rule({ files: 2 })], total_files: 2 };
+  const subject = neverSyncedSubject(report, [
+    unsyncable("local_socket", "a.sock"),
+    unsyncable("local_symlink", "b"),
+  ]);
+  assert.equal(subject.total, 4);
+  assert.equal(ACTIVITY.neverSyncedSub(subject.byRule, subject.cannot.count).includes("Two match"), true);
+});
+
+test("neither group means no band at all", () => {
+  assert.equal(neverSyncedSubject(null, []), null);
+  assert.equal(neverSyncedSubject({ rules: [], total_files: 0 }, undefined), null);
+});
+
+// ---- `received HH:MM` on the Proton card (#233) -----------------------------------------------
+
+// THE FAILURE THIS FIELD EXISTS TO AVOID. `mtime` is the LOCAL modification time; labelling it as a
+// remote event on the one screen that says where a file stands is what S5 refused to ship. There is
+// no fallback arm, so a status with an mtime and no transfer draws nothing.
+test("a local mtime never becomes a remote timestamp", () => {
+  assert.equal(receivedAtFrom({ mtime: 1_700_000_000 }), null);
+  assert.equal(receivedAtFrom({ mtime: 1_700_000_000 }, "14:32"), null);
+});
+
+// Only an upload means Proton Drive received anything. A download — and a conflict sidecar's fetch,
+// which is a `down` row filed under the file's own path — is when THIS computer received bytes.
+test("only an upload renders the clause", () => {
+  assert.equal(receivedAtFrom({ last_transfer: { epoch_secs: 1, direction: "down" } }, "14:32"), null);
+  assert.equal(receivedAtFrom({ last_transfer: { epoch_secs: 1, direction: "up" } }, "14:32"), "14:32");
+});
+
+// The pinned clock literal is read only once the field is there, so a fixture can never conjure the
+// clause out of a status that has no transfer.
+test("the pinned literal cannot stand in for a missing transfer", () => {
+  assert.equal(receivedAtFrom(null, "14:32"), null);
+  assert.equal(receivedAtFrom({ tracked: true, proton_id: "v~n" }, "14:32"), null);
 });
 
 // A failed command and a path that is not in the index both leave `status` null. Telling someone

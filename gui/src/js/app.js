@@ -62,7 +62,7 @@ import {
   renderNeverSyncedBody,
   renderFilePendingBody,
   footerVariantOf,
-  neverSyncedFrom,
+  neverSyncedSubject,
   normaliseQuery,
   passesSummaryOf,
   searchOutcome,
@@ -2240,7 +2240,9 @@ function activityProps() {
   const tab = ui?.tab ?? activityTab;
   if (tab === "files" || dialogOverlay === "neverSynced" || ui?.dialog === "neverSynced") ensureSkipRules();
 
-  const never = neverSyncedFrom(skipRuleReport);
+  // BOTH HALVES, one subject. The rule-matched files come from the disk walk; the ones nothing
+  // can sync come from the daemon's standing list (#232), which is on every status reply.
+  const never = neverSyncedSubject(skipRuleReport, response?.unsyncable);
   return {
     tab,
     query: ui?.query ?? activityQuery,

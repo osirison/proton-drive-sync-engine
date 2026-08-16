@@ -31,14 +31,18 @@
 //     (`proton_id` is `volumeId~nodeId`, an API identity the web app does not route on).
 //     `Open the system log` opens a snapshot of `journalctl --user -u proton-syncd`, because a
 //     journal has no path to hand a file manager — and says so when there is no journal to read.
-//   · the never-synced `Can't be synced` group — a socket or a symlink never enters the index at
-//     all, so there is nothing to enumerate (G19). Its GROUP goes; the rule-matched group stays,
-//     and is the one block on this screen that a Phase-1 command gained rather than lost.
+//   · `received 14:32` on the lookup's Proton card — WAS omitted for want of any remote-side
+//     timestamp, and is drawn since #233 from `EmblemStatus.last_transfer`. Only its `up` direction
+//     renders it; see `receivedAtFrom` for why, and for the four ordinary ways it is still absent.
+//   · the never-synced `Can't be synced` group — WAS omitted because a socket or a symlink never
+//     enters the index at all, and is drawn since #232. It is still not in the index: the daemon's
+//     local walk now REPORTS what it drops, on `ControlResponse.unsyncable`.
 //
-// THE ONE BLOCK THAT GOT A SOURCE. `skip_rule_usage` (C2) walks the local tree and reports, per
-// exclude rule, the files it matches with their sizes. The F9 fixture recorded this group as
-// unbuildable — "counting them means walking the filesystem, not reading the index" — which is
-// exactly what C2 shipped, so the band and the dialog's first group are live data here.
+// THE THREE BLOCKS THAT GOT A SOURCE. `skip_rule_usage` (C2) walks the local tree and reports, per
+// exclude rule, the files it matches with their sizes — the F9 fixture recorded that group as
+// unbuildable ("counting them means walking the filesystem, not reading the index"), which is
+// exactly what C2 shipped. #232 and #233 are the other two, and neither came from looking harder at
+// an existing field: each is a fact the engine did not record before.
 
 import { el } from "../ui/el.js";
 import { ACTIVITY, CHROME, CONFLICTS, MAIN } from "../ui/copy.js";
@@ -208,6 +212,37 @@ export function neverSyncedFrom(report) {
 }
 
 /**
+ * The `Can't be synced` group, from `ControlResponse.unsyncable` (#232).
+ *
+ * THE ONE PLACE THE GROUP IS DECIDED. The band's count, the band's second clause, the dialog's
+ * title and the dialog's rows all read this — four numbers that must be the same number, and this
+ * screen has already shipped the bug where two of them were computed apart.
+ *
+ * Membership and the row notes come from ONE table, `ACTIVITY.neverSyncedDialog.cannotKind`, which
+ * lives under the sentence it has to be true of. A reason with no entry there is still drawn, with
+ * its raw token as the note — the rule `proton-sync status` follows for an unfamiliar reason, and
+ * the conservative direction: a newer daemon's local kind must not vanish from the one dialog that
+ * names what cannot sync. The single exclusion is `remote_not_downloadable`, which is a real file
+ * on Proton Drive rather than a non-file in your folder, so both of this dialog's sentences would
+ * be false about it.
+ *
+ * Ordered by path, so the list does not reshuffle between polls; the daemon already sorts, and
+ * this does not depend on it.
+ */
+const CANNOT_SYNC_EXCLUDED = "remote_not_downloadable";
+
+export function cannotSyncFrom(unsyncable) {
+  const rows = (unsyncable ?? [])
+    .filter((item) => item?.path != null && item.reason !== CANNOT_SYNC_EXCLUDED)
+    .map((item) => ({
+      path: item.path,
+      note: ACTIVITY.neverSyncedDialog.cannotKind[item.reason] ?? item.reason,
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  return { count: rows.length, rows };
+}
+
+/**
  * The passes tab's summary sentence, composed from the history rather than asserted.
  *
  * `recovered` is the ordering fact the sentence depends on: "retried on its own" is true only
@@ -353,16 +388,31 @@ function seamSide(which, sub) {
 // ------------------------------------------------------------------------------ files tab ----
 
 /**
+ * The two groups as one band/dialog subject: how many files are never synced, and how that splits.
+ *
+ * `byRule` is `report.total_files` — the DISTINCT-FILE UNION, see `neverSyncedFrom`, which is the
+ * one field that answers it. Not `unique_files`: that is `matches == 1` and belongs to a different
+ * question. This comment said otherwise for two commits after the code was corrected, which is
+ * precisely how someone "fixes" the code back.
+ *
+ * The two halves are independent: a machine with a socket and no exclude rules has `byRule: 0` and
+ * is still a machine with a file that will never be copied anywhere, so `null` is returned only
+ * when BOTH are empty. Before #232 the rule half alone decided, and that machine drew nothing.
+ */
+export function neverSyncedSubject(report, unsyncable) {
+  const never = neverSyncedFrom(report);
+  const cannot = cannotSyncFrom(unsyncable);
+  const byRule = never?.total ?? 0;
+  if (byRule === 0 && cannot.count === 0) return null;
+  return { total: byRule + cannot.count, byRule, cannot, rules: never?.rules ?? [] };
+}
+
+/**
  * The never-synced band. Two nodes, not one — see `noticeBand`'s `wrapped`.
  *
- * The count is `report.total_files` — the DISTINCT-FILE UNION, see `neverSyncedFrom`, which is the
- * one field that answers "how many files are never synced". Not `unique_files`: that is
- * `matches == 1` and belongs to a different question. This comment said otherwise for two commits
- * after the code was corrected, which is precisely how someone "fixes" the code back.
- *
- * With the `can't be synced` group unsourced the sentence's second clause drops, which is what
- * `neverSyncedSub`'s zero form is for: claiming `zero can't be synced at all` would be a sentence
- * about a group nobody measured.
+ * Both clauses of the sentence are sourced now (#232). `neverSyncedSub`'s zero form still matters
+ * and is still reachable — a machine whose only never-synced files match a rule renders one clause,
+ * because claiming `zero can't be synced at all` would be a sentence about a group with no members.
  */
 function neverSyncedBand(never, onShow) {
   const band = noticeBand({
@@ -373,7 +423,7 @@ function neverSyncedBand(never, onShow) {
     // an inline child of the title div — so the gate compared the frame's 806px block against a
     // 146px inline span. `noticeBand` builds the real title node; it is found afterwards.
     title: ACTIVITY.neverSyncedTitle(never.total),
-    note: ACTIVITY.neverSyncedSub(never.total, 0),
+    note: ACTIVITY.neverSyncedSub(never.byRule, never.cannot.count),
     action: fid(filledSecondary(ACTIVITY.showThem, onShow, { class: "band-action" }), "bandAction"),
   });
   fid(band.querySelector(".band-notice-title"), "bandTitle");
@@ -1046,15 +1096,21 @@ export function renderActivity(props) {
 // ------------------------------------------------------------------------------- dialogs ----
 
 /**
- * `7a Never synced` — the rule-matched files, enumerated.
+ * `7a Never synced` — both groups, enumerated.
  *
- * ONE GROUP, NOT TWO. `Can't be synced` (a socket, a symlink) has no source in Phase 1 and cannot
- * acquire one by looking harder: those entries never enter the index, and `skip_rule_usage` reports
- * what the exclude rules matched, which is a different question. G19.
+ * TWO GROUPS, TWO SOURCES, ONE SENTENCE EACH. The rule-matched half is `skip_rule_usage`, a walk of
+ * the disk against the exclude globs. The `Can't be synced` half is `ControlResponse.unsyncable`,
+ * the daemon's standing list — the entries the local stat-walk drops because they are not regular
+ * files, which it now reports instead of skipping silently (#232). They are still not in the index
+ * and never will be: the list is fed by the walk itself, not by anything that reads a record.
+ *
+ * Either group may be empty and each brings its own heading, so a machine with only sockets draws
+ * only the second — the reason the group filter is `cannotSyncFrom` and not an `else`.
  */
 export function renderNeverSyncedBody(props) {
   const never = props.never;
   const rules = never?.rules ?? [];
+  const cannot = never?.cannot ?? { count: 0, rows: [] };
   const body = [];
 
   // ONE heading for the group, however many rules are in it. `7a Never synced` draws a single rule
@@ -1097,6 +1153,34 @@ export function renderNeverSyncedBody(props) {
     });
     change.style.marginTop = "12px";
     body.push(fid(change, "changeRule"));
+  }
+
+  // The second group. No button under it, and that is the point of its sub-line: there is no rule
+  // to change and nothing to configure — a socket is not a file, and no setting makes it one.
+  if (cannot.count > 0) {
+    // `neutral`, NOT the `up` the rule heading takes: the frame draws this one at `--text-label`
+    // (`#626b78`) against the other's amber. The amber marks the group you can do something about,
+    // and there is no rule to change here — which is what this group's own sub-line says.
+    const heading = eyebrow({ tone: "neutral", text: ACTIVITY.neverSyncedDialog.cannotHeading });
+    // 26px clears the `Change this rule` button above it. Measured, and not the same gap as the
+    // rule heading's, which clears a sentence rather than a control.
+    if (body.length > 0) heading.style.marginTop = "26px";
+    body.push(fid(heading, "cannotHeading"));
+    body.push(
+      fid(el("div", { class: "activity-rule-sub" }, ACTIVITY.neverSyncedDialog.cannotSub), "cannotSub"),
+    );
+    for (const [i, row] of cannot.rows.entries()) {
+      // `dim` and NOT `mono`, which is the whole visual difference between the two groups and was
+      // already written into `rows.css` waiting for this: a file you chose to skip reads at full
+      // strength, one that cannot be synced at all reads quieter, and the note here is PROSE
+      // (`a socket`) where the other group's is data (`2.1 MB`), so it stays sans. There is no size
+      // to print either — a socket's `0 B` would read as an empty file someone could go and fix.
+      const node = pathRow({ path: row.path, note: row.note, dim: true });
+      if (i === 0) node.style.marginTop = "11px";
+      body.push(fid(node, "cannotRow", i));
+      fid(node.children[0], "cannotRowPath", i);
+      fid(node.children[1], "cannotRowNote", i);
+    }
   }
 
   return [
