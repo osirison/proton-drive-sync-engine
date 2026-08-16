@@ -35,7 +35,8 @@ use crate::config_path::RuntimePaths;
 use gui_core::conflicts::{self, Conflict, Resolution};
 use gui_core::state::derive_state;
 use gui_core::wire::{
-    ControlCommand, ControlResponse, DeleteDirection, DryRunReport, PendingDeletion,
+    ApplyOutcome, ControlCommand, ControlRequest, ControlResponse, DeleteDirection, DryRunReport,
+    PendingDeletion, PlanOutcome, PLAN_ACTIONS_MAX_LIMIT,
 };
 use gui_core::{config_io, index_read, ipc, plan};
 use std::process::Command;
@@ -470,18 +471,41 @@ pub struct DryRunPayload {
     requires_delete_gate: bool,
     /// User-data files a destructive apply would remove (names the gate copy should show).
     files_at_risk: Vec<String>,
+    /// The plan's token (#100), when the daemon computed it — what `apply_plan` authorises. `None`
+    /// from the child `--dry-run` path: nothing holds that plan, so nothing can be applied by
+    /// naming it, and the screen falls back to the approve-then-syncnow route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
 }
 
-/// Async so the full-tree dry run — a `proton-syncd --dry-run` subprocess that can take many
-/// seconds against a large remote — never blocks the GTK main loop. Running it synchronously would
-/// stall the webview's URI-scheme handler thread (the GTK main loop) until WebKit aborts the whole
-/// process; here the blocking work runs on a runtime blocking thread instead. (See
-/// `restart_service` for the same pattern.)
+/// How long a plan poll waits between `plan_result` requests. The same cadence
+/// `proton-sync plan` polls at.
+const PLAN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
+/// Consecutive transport failures that end a plan wait — `watch_syncnow`'s bail-out, at the same
+/// count the CLI uses, because it answers the same question: a daemon that has not replied five
+/// polls running is not a pass that is still working.
+const PLAN_POLL_ERROR_LIMIT: u32 = 5;
+
+/// Async so the full-tree dry run — which is a remote walk that can take many seconds against a
+/// large remote — never blocks the GTK main loop. Running it synchronously would stall the
+/// webview's URI-scheme handler thread (the GTK main loop) until WebKit aborts the whole process;
+/// here the blocking work runs on a runtime blocking thread instead. (See `restart_service` for the
+/// same pattern.)
 #[tauri::command]
 pub async fn run_dry_run(state: Paths<'_>) -> Result<DryRunPayload, String> {
-    let (config_path, file_local, file_remote, file_db, daemon_local, daemon_remote, daemon_db) = {
+    let (
+        socket,
+        config_path,
+        file_local,
+        file_remote,
+        file_db,
+        daemon_local,
+        daemon_remote,
+        daemon_db,
+    ) = {
         let paths = state.lock().unwrap();
         (
+            paths.socket_path.clone(),
             paths.config_path.clone(),
             paths.local_root.clone(),
             paths.remote_root.clone(),
@@ -493,6 +517,7 @@ pub async fn run_dry_run(state: Paths<'_>) -> Result<DryRunPayload, String> {
     };
     tauri::async_runtime::spawn_blocking(move || {
         run_dry_run_impl(
+            socket,
             config_path,
             file_local,
             file_remote,
@@ -506,9 +531,49 @@ pub async fn run_dry_run(state: Paths<'_>) -> Result<DryRunPayload, String> {
     .map_err(|error| format!("dry-run task failed: {error}"))?
 }
 
-/// The blocking half of `run_dry_run`: build and run `proton-syncd --dry-run`, then parse its
-/// stdout. Kept as a free function so the mutex guard from `run_dry_run` never crosses the `.await`.
+/// Whether the daemon's `plan` verb answers the question this screen is asking.
+///
+/// **Two conditions, and the second is the subtle one.** The daemon plans against *its own*
+/// configured roots; the GUI's config file may already name a different pair that the running
+/// daemon has not been restarted onto. Asking the daemon then would preview the wrong folders
+/// silently — where the child, which is handed the file's pair, previews the right ones. So the
+/// verb is used only when the file agrees with the daemon (or says nothing, in which case the
+/// daemon's pair *is* the effective one).
+fn daemon_plans_the_same_roots(
+    file_local: Option<&std::path::Path>,
+    file_remote: Option<&std::path::Path>,
+    daemon_local: Option<&std::path::Path>,
+    daemon_remote: Option<&std::path::Path>,
+) -> bool {
+    let (Some(daemon_local), Some(daemon_remote)) = (daemon_local, daemon_remote) else {
+        // Nothing has answered the socket yet, so there is no daemon to ask.
+        return false;
+    };
+    file_local.is_none_or(|local| local == daemon_local)
+        && file_remote.is_none_or(|remote| remote == daemon_remote)
+}
+
+/// Why a plan could not be taken from the daemon.
+enum DaemonPlanFailure {
+    /// The daemon is not there (or is too old to know the verb). The caller falls back to the
+    /// child `--dry-run`, which is what onboarding runs before any daemon exists.
+    Unavailable,
+    /// The daemon answered, and this is its answer. **Never fall back to the child on this**: a
+    /// running daemon plus a second `proton-syncd --dry-run` is two `proton-drive` clients against
+    /// the CLI's shared, not-concurrency-safe SQLite store (#23/#317), which is the hazard this
+    /// whole verb exists to retire.
+    Reported(String),
+}
+
+/// The blocking half of `run_dry_run`.
+///
+/// Prefers the daemon's `plan` verb (#100/#209/#317) and falls back to spawning
+/// `proton-syncd --dry-run` only when there is no daemon to ask — which is exactly onboarding,
+/// where the child path is the only one that can work. Kept as a free function so the mutex guard
+/// from `run_dry_run` never crosses the `.await`.
+#[allow(clippy::too_many_arguments)]
 fn run_dry_run_impl(
+    socket: Result<std::path::PathBuf, String>,
     config_path: std::path::PathBuf,
     file_local: Option<std::path::PathBuf>,
     file_remote: Option<std::path::PathBuf>,
@@ -517,6 +582,21 @@ fn run_dry_run_impl(
     daemon_remote: Option<std::path::PathBuf>,
     daemon_db: Option<std::path::PathBuf>,
 ) -> Result<DryRunPayload, String> {
+    let ask_the_daemon = daemon_plans_the_same_roots(
+        file_local.as_deref(),
+        file_remote.as_deref(),
+        daemon_local.as_deref(),
+        daemon_remote.as_deref(),
+    );
+    if let Ok(socket) = &socket {
+        if ask_the_daemon {
+            match plan_through_daemon(socket) {
+                Ok(payload) => return Ok(payload),
+                Err(DaemonPlanFailure::Reported(message)) => return Err(message),
+                Err(DaemonPlanFailure::Unavailable) => {}
+            }
+        }
+    }
     let mut command = Command::new("proton-syncd");
     command.arg("--dry-run");
     if config_path.exists() {
@@ -564,15 +644,264 @@ fn run_dry_run_impl(
         ));
     }
     let report = plan::parse_dry_run(&String::from_utf8_lossy(&output.stdout))?;
+    // No token: nothing holds this plan, so nothing can apply it by name. The screen falls back to
+    // the approve-then-syncnow route, which is what it did before #100.
+    Ok(payload_from_report(report, None))
+}
+
+fn payload_from_report(report: DryRunReport, token: Option<String>) -> DryRunPayload {
     let files_at_risk = plan::files_at_risk(&report)
         .iter()
         .map(|p| p.display().to_string())
         .collect();
-    Ok(DryRunPayload {
+    DryRunPayload {
         requires_delete_gate: plan::requires_delete_gate(&report),
         files_at_risk,
+        token,
         report,
+    }
+}
+
+/// Asks the daemon for a plan and waits for it: `plan` acks, then `plan_result` is polled until the
+/// pass that answers *this* request has sealed.
+///
+/// **Not bounded by a wall clock.** A plan is an O(folders) remote walk, which on a large account
+/// takes minutes; the child path it replaces was equally unbounded. What it *is* bounded by is the
+/// daemon's own sealing discipline — every plan pass seals its request, success or failure — plus
+/// the transport bail-out below, so the only way to wait for ever is a socket that keeps answering
+/// while the daemon never runs the pass, which cannot happen.
+///
+/// **And deliberately no paused bail-out.** `proton-sync`'s `watch_syncnow` bails on
+/// `paused && !syncing`, which is right *there* because a paused `syncnow` is never sealed —
+/// `reconcile_if_needed` early-returns without bumping `reconcile_seq`, so only the client can end
+/// that wait. A plan request is always sealed, so the same rule here is a *false positive*:
+/// `ControlCommand::Plan` refuses a paused daemon at the ack (handled above), and a pause landing
+/// after that ack does **not** cancel the booked pass —
+/// `LoopCommand::PlanNow` goes straight to `Daemon::plan_now`, which has no pause check, so the
+/// inert rehearsal still runs and still seals (daemon guard:
+/// `a_plan_pass_booked_before_a_pause_still_runs_and_seals`). Between that ack and `plan_now`'s
+/// `syncing.store(true)` a poller observes `paused && !syncing` for a pass that is about to run and
+/// will answer, so such a bail-out would report "paused before the pass ran" for a plan that then
+/// completes normally. An overall timeout is no better: a legitimate walk can run 30 minutes, so
+/// any bound large enough to be safe is too large to help, and `PLAN_POLL_ERROR_LIMIT` below
+/// already covers the real failure — a daemon that stopped answering at all.
+fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, DaemonPlanFailure> {
+    let ack = match ipc::command(socket, ControlCommand::Plan, ipc::DEFAULT_TIMEOUT) {
+        Ok(ack) => ack,
+        // The request did not complete. That is EITHER no daemon (onboarding, the case the child
+        // exists for) OR a daemon too old to parse the verb — which drops the connection without
+        // replying, so at this layer the two look identical. Ask `status`, which every daemon that
+        // has ever existed answers, and let the answer decide.
+        Err(error) => return Err(classify_unreachable_plan(socket, error)),
+    };
+    let target = match ack.plan {
+        Some(PlanOutcome::Scheduled { plan_seq }) => plan_seq,
+        Some(PlanOutcome::Paused) => {
+            return Err(DaemonPlanFailure::Reported(
+                "Syncing is paused, so nothing was worked out. Resume syncing and check again."
+                    .to_owned(),
+            ));
+        }
+        // A daemon ANSWERED and did not schedule a plan — an outcome this build does not know, or
+        // none at all. Reported, never fallen back from: spawning `proton-syncd --dry-run` beside a
+        // live daemon is two `proton-drive` clients against the CLI's shared, not-concurrency-safe
+        // store (#23/#317), which is the hazard this verb exists to retire.
+        other => {
+            return Err(DaemonPlanFailure::Reported(
+                unexpected_plan_ack(other.as_ref()).to_owned(),
+            ));
+        }
+    };
+    let mut consecutive_errors = 0u32;
+    loop {
+        std::thread::sleep(PLAN_POLL_INTERVAL);
+        // Ask for the daemon's own maximum rather than its default 500: the screen draws a row per
+        // action, and a window is a rendering the user decides from. Destructive rows are never
+        // truncated whatever the cap (`StoredPlan::outcome`), so what a bigger cap buys is the
+        // ordinary rows of an unusually large plan, not safety.
+        let request = ControlRequest {
+            limit: Some(PLAN_ACTIONS_MAX_LIMIT),
+            ..ControlRequest::new(ControlCommand::PlanResult)
+        };
+        let response = match ipc::send_request(socket, &request, ipc::DEFAULT_TIMEOUT) {
+            Ok(response) => {
+                consecutive_errors = 0;
+                response
+            }
+            Err(error) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= PLAN_POLL_ERROR_LIMIT {
+                    // The daemon stopped answering mid-plan. Reported, not fallen back from: a
+                    // daemon that was alive a second ago may still be running its walk, and
+                    // spawning a child beside it is #317.
+                    return Err(DaemonPlanFailure::Reported(format!(
+                        "lost contact with the daemon while it worked out the plan: {error}"
+                    )));
+                }
+                continue;
+            }
+        };
+        match response.plan {
+            Some(PlanOutcome::Computed(plan)) if plan.plan_seq >= target => {
+                let token = plan.token.clone();
+                // `summary` describes the WHOLE plan; `actions` may be a window (see
+                // `PLAN_ACTIONS_*`). The screen counts from the summary for exactly that reason,
+                // so a windowed reply cannot make it claim a shorter plan than the one the token
+                // applies.
+                return Ok(payload_from_report(
+                    DryRunReport {
+                        summary: plan.summary,
+                        plan: plan.actions,
+                        cannot_sync: plan.cannot_sync,
+                    },
+                    Some(token),
+                ));
+            }
+            Some(PlanOutcome::Failed { plan_seq, error }) if plan_seq >= target => {
+                return Err(DaemonPlanFailure::Reported(error));
+            }
+            // Still computing, or an older answer than the one asked for.
+            _ => {}
+        }
+    }
+}
+
+/// Which failure a `plan` request that never completed really was.
+///
+/// `Unavailable` — and therefore the child `--dry-run` — **only** when nothing answers the socket at
+/// all. A daemon that answers `status` but not `plan` is one this app is newer than, and the honest
+/// answer there is to say so: falling back would put a second `proton-drive` client beside a live
+/// daemon (#23/#317), which is exactly what this verb removed.
+///
+/// So the follow-up `status` is read by **variant, not by `is_err()`**: [`ipc::IpcError::Protocol`]
+/// means the daemon *replied* and the reply could not be decoded, which is evidence a daemon is
+/// there — the opposite of what a fallback needs. Only [`ipc::IpcError::Unreachable`] (no socket,
+/// refused, closed early, timed out) is evidence of absence. Guard:
+/// `an_undecodable_status_reply_is_a_live_daemon_not_an_absent_one`.
+fn classify_unreachable_plan(socket: &std::path::Path, error: ipc::IpcError) -> DaemonPlanFailure {
+    match ipc::command(socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT) {
+        Ok(_) => DaemonPlanFailure::Reported(format!(
+            "the sync daemon is running but could not work out a plan ({error}). It is \
+             probably older than this app; restart it from Settings and try again."
+        )),
+        Err(reply) if !status_error_proves_no_daemon(&reply) => {
+            DaemonPlanFailure::Reported(format!(
+                "the sync daemon answered with something this app could not read ({reply}). \
+                 Restart it from Settings and try again."
+            ))
+        }
+        Err(_) => DaemonPlanFailure::Unavailable,
+    }
+}
+
+/// The one question [`classify_unreachable_plan`] asks of a failed `status`, split out so it can be
+/// tested without a socket: **is this evidence there is no daemon?** Only an unreachable socket is.
+fn status_error_proves_no_daemon(error: &ipc::IpcError) -> bool {
+    match error {
+        ipc::IpcError::Unreachable(_) => true,
+        // It answered. Undecodably, but it answered.
+        ipc::IpcError::Protocol(_) => false,
+    }
+}
+
+/// What to tell the user when the daemon answered `plan` with something other than an ack.
+///
+/// One sentence per outcome rather than one sentence with the outcome interpolated, because the
+/// **advice** differs: "restart it, it is older than this app" is right for a reply carrying no plan
+/// field or one this build cannot read, and wrong for a daemon that tried and failed. Exhaustive by
+/// variant, no `_`: a new outcome has to be given its own sentence rather than inherit an arm's
+/// guess. Never used to *decide* anything — that is what the typed outcome is for (#103).
+fn unexpected_plan_ack(outcome: Option<&PlanOutcome>) -> &'static str {
+    match outcome {
+        // Both mean this app is newer than the daemon: the field is missing, or its value comes
+        // from a vocabulary this build predates.
+        None | Some(PlanOutcome::Unknown) => {
+            "the sync daemon did not answer with a plan. It is probably older than this app — \
+             restart it from Settings and try again."
+        }
+        Some(PlanOutcome::Failed { .. }) => {
+            "the sync daemon could not work out a plan. Check again in a moment."
+        }
+        // Both answer a different question than the one just asked, so either here means the
+        // daemon did not schedule the pass.
+        Some(PlanOutcome::Absent | PlanOutcome::Computing { .. }) => {
+            "the sync daemon did not start working out a plan. Check again in a moment."
+        }
+        // Handled by the arms above; named so the match stays exhaustive by variant.
+        Some(PlanOutcome::Scheduled { .. } | PlanOutcome::Computed(_) | PlanOutcome::Paused) => {
+            "the sync daemon answered unexpectedly. Check again in a moment."
+        }
+    }
+}
+
+/// `apply <token>` (#100), and with `skip_destructive` the Plan screen's
+/// `Run it without the deletion` (#192).
+///
+/// Returns the typed [`ApplyOutcome`] rather than a `StatusPayload`, because the caller's next act
+/// depends on *which* answer it got and a client must never tell those apart by matching a sentence
+/// (#103). `Err` only when the daemon could not be reached at all.
+///
+/// The wait below needs no paused bail-out either, for a different reason than the plan loop's: a
+/// pause *does* cancel a booked apply, and cancelling it is itself a seal —
+/// `daemon::discard_queued_apply_for_pause` takes the queued request and seals it `Failed`, which
+/// this loop exits on. `schedule_apply` always sends a `LoopCommand::SyncNow`, so the pass that
+/// reaches that discard is always scheduled (daemon guard:
+/// `a_pause_cancels_an_apply_it_overtook_rather_than_latching_it`).
+#[tauri::command]
+pub async fn apply_plan(
+    app: tauri::AppHandle,
+    token: String,
+    skip_destructive: bool,
+) -> Result<ApplyOutcome, String> {
+    let socket = socket_path(&app.state())?;
+    let ack = tauri::async_runtime::spawn_blocking(move || {
+        let ack = ipc::apply_plan(&socket, token, skip_destructive, ipc::DEFAULT_TIMEOUT)?;
+        let target = match ack.apply {
+            Some(ApplyOutcome::Scheduled { apply_seq }) => apply_seq,
+            // Refused, or a daemon too old to know the verb — either way there is nothing to wait
+            // for, and the outcome says which it was.
+            other => return Ok(other.unwrap_or(ApplyOutcome::Unknown)),
+        };
+        let mut consecutive_errors = 0u32;
+        loop {
+            std::thread::sleep(PLAN_POLL_INTERVAL);
+            // The smallest window the daemon will build, because this loop reads `apply` and
+            // nothing else — unlike the CLI's wait, which renders the fresh plan out of this same
+            // reply when an apply diverges. Without it every 300ms poll ships up to
+            // `PLAN_ACTIONS_DEFAULT_LIMIT` rows nobody looks at, for as long as the apply runs.
+            // `1`, not `0`: the daemon clamps the limit to at least one row, and a literal that
+            // does not survive the clamp reads as a stronger claim than it is. Destructive rows are
+            // never truncated whatever the limit, so this bounds the ordinary case only (#321).
+            let request = ControlRequest {
+                limit: Some(1),
+                ..ControlRequest::new(ControlCommand::PlanResult)
+            };
+            let response = match ipc::send_request(&socket, &request, ipc::DEFAULT_TIMEOUT) {
+                Ok(response) => {
+                    consecutive_errors = 0;
+                    response
+                }
+                Err(error) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= PLAN_POLL_ERROR_LIMIT {
+                        return Err(error);
+                    }
+                    continue;
+                }
+            };
+            match response.apply {
+                Some(
+                    outcome @ (ApplyOutcome::Applied { apply_seq, .. }
+                    | ApplyOutcome::Diverged { apply_seq }
+                    | ApplyOutcome::Failed { apply_seq, .. }),
+                ) if apply_seq >= target => return Ok(outcome),
+                _ => {}
+            }
+        }
     })
+    .await
+    .map_err(|join_error| format!("apply task failed: {join_error}"))?;
+    ack.map_err(|error| error.to_string())
 }
 
 /// Async so the remote-listing subprocess (`proton-drive filesystem list`, which walks the remote
@@ -1828,8 +2157,109 @@ pub fn hide_tray_panel(app: tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_ignored_paths, probe_cli, relative_query, strip_ansi};
+    use super::{
+        daemon_ignored_paths, daemon_plans_the_same_roots, probe_cli, relative_query,
+        status_error_proves_no_daemon, strip_ansi,
+    };
+    use gui_core::ipc::IpcError;
     use std::path::Path;
+
+    /// Every user-facing sentence this module builds, rendered rather than merely constructed.
+    ///
+    /// A `\`-newline continuation in a Rust literal is silently eaten when a patch script writes it
+    /// from a non-raw Python string, baking the next line's indentation into the value — invisible
+    /// to `cargo fmt`, to clippy, and to any test that compares a constant with itself. So this
+    /// asserts what a user would see: no run of spaces inside a sentence.
+    /// (`docs/agent-notes/python-patch-scripts-and-rust-string-continuations.md`.)
+    #[test]
+    fn no_message_carries_a_swallowed_line_continuation() {
+        use gui_core::wire::PlanOutcome;
+
+        for outcome in [
+            None,
+            Some(PlanOutcome::Unknown),
+            Some(PlanOutcome::Absent),
+            Some(PlanOutcome::Failed {
+                plan_seq: 1,
+                error: "x".to_owned(),
+            }),
+            Some(PlanOutcome::Computing { plan_seq: 1 }),
+            Some(PlanOutcome::Paused),
+        ] {
+            let message = super::unexpected_plan_ack(outcome.as_ref());
+            assert!(!message.contains("  "), "{message:?}");
+        }
+    }
+
+    /// The fallback to `proton-syncd --dry-run` may only be taken as evidence of **absence**, and
+    /// an undecodable reply is the opposite: something is bound to that socket and answering.
+    ///
+    /// `classify_unreachable_plan` reads the follow-up `status` by variant rather than `is_err()`
+    /// for exactly this. A `Protocol` error means a daemon replied and this app could not read it —
+    /// a version skew — and spawning a child there puts a second `proton-drive` client beside a
+    /// live daemon (#23/#317), the hazard the whole verb exists to retire. Only `Unreachable` (no
+    /// socket, refused, closed early, timed out) says nothing is there.
+    #[test]
+    fn an_undecodable_status_reply_is_a_live_daemon_not_an_absent_one() {
+        assert!(status_error_proves_no_daemon(&IpcError::Unreachable(
+            "no such file".to_owned()
+        )));
+        assert!(!status_error_proves_no_daemon(&IpcError::Protocol(
+            "expected value at line 1".to_owned()
+        )));
+    }
+
+    /// The fork behind the plan verb (#100/#209/#317), and the second condition is the subtle one:
+    /// the daemon plans against ITS OWN roots, so a config file that already names a different pair
+    /// than the running daemon must go to the child — which is handed the file's pair — rather than
+    /// silently preview folders nobody asked about.
+    #[test]
+    fn the_daemon_is_asked_for_a_plan_only_when_it_is_syncing_the_same_folders() {
+        let local = Path::new("/home/me/ProtonDrive");
+        let remote = Path::new("/Drive/RemoteFolder");
+        let other = Path::new("/home/me/Elsewhere");
+
+        // Nothing has answered the socket: there is no daemon to ask.
+        assert!(!daemon_plans_the_same_roots(
+            Some(local),
+            Some(remote),
+            None,
+            None
+        ));
+        assert!(!daemon_plans_the_same_roots(
+            Some(local),
+            Some(remote),
+            Some(local),
+            None
+        ));
+        // The file says nothing, so the daemon's pair IS the effective one.
+        assert!(daemon_plans_the_same_roots(
+            None,
+            None,
+            Some(local),
+            Some(remote)
+        ));
+        // The file agrees.
+        assert!(daemon_plans_the_same_roots(
+            Some(local),
+            Some(remote),
+            Some(local),
+            Some(remote)
+        ));
+        // The file has moved on and the daemon has not been restarted onto it: ask the child.
+        assert!(!daemon_plans_the_same_roots(
+            Some(other),
+            Some(remote),
+            Some(local),
+            Some(remote)
+        ));
+        assert!(!daemon_plans_the_same_roots(
+            Some(local),
+            Some(Path::new("/Drive/Other")),
+            Some(local),
+            Some(remote)
+        ));
+    }
 
     #[test]
     fn a_pasted_absolute_path_is_reduced_to_the_one_the_index_stores() {

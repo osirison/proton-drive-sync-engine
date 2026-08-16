@@ -1437,7 +1437,7 @@ Four, none of them among the ten capabilities in `IMPLEMENTATION-PLAN.md` §4 an
 | G6  | a **size on a planned action** — `PlannedAction` has no size field at any level of the dry-run surface | `5a Plan` (`3 files, 4.1 MB`), `5a Plan safe` (a size per row), `9a Review` (`1.4 GB` / `38.4 GB`)                     | [#206](https://github.com/osirison/proton-drive-sync-engine/issues/206) |
 | G7  | **index-wide totals** — how many files, how many bytes                                                 | `2a Settled`, `2a Compact settled`, `10a Settled`, `7a Activity quiet`, `8a Settings`, `5a Checking`                   | [#207](https://github.com/osirison/proton-drive-sync-engine/issues/207) |
 | G8  | a **subtree aggregate** for a directory about to be deleted, and an atime                              | `4a Deletions` (`1,204 photos, 8.4 GB`, `last opened Mar 2024`), `4a Armed` (the same count in the confirmation title) | [#208](https://github.com/osirison/proton-drive-sync-engine/issues/208) |
-| G9  | **dry-run progress** — `run_dry_run` resolves once and reports nothing while it runs                   | `5a Checking` (`8,431 of 12,480 files`)                                                                                | [#209](https://github.com/osirison/proton-drive-sync-engine/issues/209) |
+| G9  | ~~**dry-run progress**~~ — **CLOSED.** The rehearsal is a daemon-side pass now, so the existing `SyncActivity` describes it | `5a Checking` (`8,431 of 12,480 files`) — **drawn**                                                                    | [#209](https://github.com/osirison/proton-drive-sync-engine/issues/209) |
 
 **G6 is not G2.** #191 is byte totals _per direction, per time window_ — what a pass moved. G6 is the
 size of files a plan _would_ move, which is a field on a plan row. The distinction matters because
@@ -2475,13 +2475,21 @@ Awaited in order, one at a time: a `syncnow` that overtakes an approval is a del
 is the old behaviour. A failed approval is left where it falls — the pass withholds that one and the
 Deletions screen has it.
 
-**Both filtered-apply buttons are hidden, not drawn-and-inert.** `Run it without the deletion` is G3
-(#192) and `06-plan.md` says outright to hide it rather than fake it. `Leave it alone` — the band's
-own escape hatch — is the same capability reached from the band: drop this one action and run the
-rest. Read the other way (a durable refusal of this deletion) it is #224, which does not exist
-either. So it is hidden by the same rule, and deliberately not left drawn: a button that quietly does
-nothing would be worst of all right there, because it is the escape hatch on the one screen where
-somebody is looking for one. Four style-gate rows record the widths that change (`#192`).
+**`Run it without the deletion` is drawn; `Leave it alone` still is not, and they are no longer the
+same question.** G3 (#192) landed as `apply <token> --skip-destructive`: the daemon runs the plan the
+user reviewed minus exactly the rows `SyncAction::is_destructive` names — the same set the screen
+tints — and holds the event cursor for the dropped ones so they re-plan. The footer button names that
+verb, and it is drawn **only when the plan carries a token**: a plan computed by the `--dry-run`
+child (onboarding, before any daemon exists) is held by nobody and can be applied by nobody, so
+there the button is hidden exactly as `06-plan.md` requires rather than faked.
+
+`Leave it alone` stays hidden, and now for a reason of its own rather than a shared missing
+capability. It reads two ways — drop this one action and run the rest (which the footer button now
+does) or refuse this deletion durably (#224, which the Deletions screen's `Keep it` owns) — and a
+button that means whichever the reader assumed is worse in that spot than one that is absent: it is
+the escape hatch on the one screen where somebody is looking for one. Three style-gate rows record
+the widths the band takes from it (`#224`); the action bar's spacer row is gone, because the button
+that used to be absorbed into it is now drawn.
 
 **No byte total exists anywhere in the dry-run surface.** `PlannedAction` carries `path`,
 `destination_path`, `action`, `entity_kind`, `conflict_path` and `remote_id` — and no size. So
@@ -2491,10 +2499,15 @@ Those cost no assertion at all, which is worth saying rather than leaving to loo
 every one of those rows sits inside a subtree containing an unbundled glyph, so the harness does not
 compare their boxes. `new folder` and `moved` are drawable and are drawn.
 
-**`8,431 of 12,480 files` is omitted whole, because its two halves are two different gaps.**
-`run_dry_run` is a single async command with no progress channel (G9 #209) and nothing reports an
-index-wide file count (G7 #207). Half a fraction is a fraction with no denominator. The `Stop` button
-keeps its own 22px margin rather than widening to stand in for the missing line.
+**`8,431 of 12,480 files` is drawn, and its two halves still come from two different places.** The
+rehearsal moved onto the daemon's main loop (#209), so `activity.files_scanned` describes *this*
+walk — `activity.pass.kind === "plan"` is what makes it this rehearsal's number rather than a sync
+that happened to start while the screen was open — and `index_totals.files` is the corpus size
+(#207). One clause the design's fixed fraction cannot express is kept: on a **first run** the index
+is empty, and a denominator of zero is not a denominator, so the line degrades to the bare
+numerator rather than claiming `8,431 of 0 files`. The line is patched in place across the status
+poll rather than re-rendered, because rebuilding the checking body restarts the mark's two CSS
+animations from 0%.
 
 **`Stop` is the one button in the app that masks the seam with its own fill.** `06-plan.md` calls it
 out — _"`Stop` is `background:#0A0B0D`, not transparent, so the seam passes behind it"_ — and the
@@ -2561,9 +2574,7 @@ than one gated deletion) are templates no frame renders, and `NOT_DRAWN` only re
 | ------ | -------------- | --------------------------------------- | --------------------------------------- | ---------------- |
 | S4     | `5a Plan`      | `3` `files, 4.1 MB`                     | `3` `files`                             | G2 #191          |
 | S4     | `5a Plan safe` | a size on every row                     | the row without its size                | G2 #191          |
-| S4     | `5a Plan`      | `Run it without the deletion`           | hidden                                  | G3 #192          |
-| S4     | `5a Plan`      | `Leave it alone`                        | hidden                                  | G3 #192          |
-| S4     | `5a Checking`  | `8,431 of 12,480 files`                 | the line omitted                        | G9 #209, G7 #207 |
+| S4     | `5a Plan`      | `Leave it alone`                        | hidden                                  | #224             |
 | S4     | `5a Checking`  | a 522px window                          | a 520px column in a 1040 window         | #221             |
 
 ### 77. S5 · the activity screen

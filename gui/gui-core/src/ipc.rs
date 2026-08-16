@@ -147,6 +147,29 @@ pub fn command_with_argument(
     )
 }
 
+/// `apply <token>` (#100), optionally without the plan's destructive rows (#192).
+///
+/// Its own builder rather than a `command_with_argument` call, because the argument here is **not
+/// a path**: it is a plan token, so `literal_path` is meaningless and the `direction` an approval
+/// carries has nothing to say about it. Passing it through the approval builder would put a token
+/// where every other caller puts a path.
+pub fn apply_plan(
+    socket_path: &Path,
+    token: impl Into<String>,
+    skip_destructive: bool,
+    timeout: Duration,
+) -> Result<ControlResponse, IpcError> {
+    send_request(
+        socket_path,
+        &ControlRequest {
+            argument: Some(token.into()),
+            skip_destructive,
+            ..ControlRequest::new(ControlCommand::Apply)
+        },
+        timeout,
+    )
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

@@ -303,9 +303,17 @@
   color: var(--text-4);
   text-align: center;
 }
-/* The frame's own 22px, unchanged: the progress line above it (`8,431 of 12,480 files`, two missing
-   capabilities — #209, #207) is not drawn, so the block is one node shorter rather than this gap
-   being widened to stand in for it. §76. */
+/* `8,431 of 12,480 files` — `06-plan.md`: "mono 11.5px (masked)". Drawn again since the rehearsal
+   moved onto the daemon (#209 gave it a progress channel; #207 the denominator). Absent, not zeroed,
+   when the pass has not reached the local scan — so `.pl-stop`'s gap below is measured from
+   whichever node is really above it. §76. */
+.pl-checking-progress {
+  margin-top: 20px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-5);
+}
+/* The frame's own 22px. */
 .pl-stop {
   margin-top: 22px;
 }

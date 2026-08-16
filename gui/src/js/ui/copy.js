@@ -596,6 +596,9 @@ export const PLAN = {
   checkingTitle: "Working out what would change",
   checkingSub: "Comparing both sides. Nothing is being touched.",
   checkingProgress: (done, total) => `${count(done)} of ${count(total)} files`,
+  // The same line with no denominator, for the run that has nothing to count against: a
+  // first sync's index is empty, and `8,431 of 0 files` is worse than saying less.
+  checkingProgressBare: (done) => `${count(done)} files`,
   stop: "Stop",
 
   // The failed rehearsal. `14-behaviour-and-state.md`'s empty-and-error table specifies the state in

@@ -368,6 +368,35 @@ impl SyncAction {
         }
     }
 
+    /// Whether this action is one of the plan's **destructive** rows — the set
+    /// [`PlanSummary::destructive_actions`] counts, and therefore the set a filtered apply drops
+    /// (#192).
+    ///
+    /// **The one definition, and deliberately not the same question as [`Self::delete_direction`].**
+    /// That one answers "does the delete-approval guard gate this", which `Purge` is excluded from
+    /// because it removes an index row and no user data. This one answers "is this a row the plan
+    /// screen counted as destructive", and `Purge` has always been in that count. Two predicates
+    /// with two jobs; what must never exist is a *second* spelling of either, because
+    /// `Run it without the deletion` dropping a different set from the one the user was shown as
+    /// destructive is a silent lie about what just ran.
+    ///
+    /// Exhaustive by variant, no `_`: a new action has to answer this rather than inherit an arm.
+    pub fn is_destructive(self) -> bool {
+        match self {
+            Self::RemoteDelete | Self::LocalDelete | Self::Purge => true,
+            Self::Upload
+            | Self::Download
+            | Self::CreateRemoteDirectory
+            | Self::CreateLocalDirectory
+            | Self::MoveLocal
+            | Self::MoveRemote
+            | Self::AutoLink
+            | Self::Conflict
+            | Self::TypeConflict
+            | Self::SkipUnsupported => false,
+        }
+    }
+
     /// The stored token, identical to this enum's serde rendering (pinned by
     /// `action_tokens_match_the_wire_rendering`) — so `index::sync_events.action` and the control
     /// protocol can never disagree about what an action is called.
@@ -451,7 +480,140 @@ impl SyncAction {
 pub struct DryRunReport {
     pub summary: PlanSummary,
     pub plan: Vec<PlannedAction>,
+    /// Entities the local stat-walk **dropped** because the engine cannot sync them — a socket, a
+    /// symlink, a FIFO, a device node (#232) — as this one walk observed them (#315).
+    ///
+    /// **Not `unsyncable`, and the name is the point.** `ipc::ControlResponse.unsyncable` is the
+    /// daemon's *persistent merged* store: it remembers what earlier passes derived, carries a
+    /// first-seen epoch, and is pruned by evidence. A report is one observation with no store to
+    /// merge into and no age to carry, so calling it by the other name would make one word mean two
+    /// things — which is exactly why #315 said the field could not simply be added.
+    ///
+    /// Disjoint from the plan's own `SkipUnsupported` rows, so the two can be summed: these entries
+    /// never reach the planner at all (nothing records them, and the planner only ever sees the
+    /// entities the scan kept), while the plan's skips are remote nodes and non-UTF-8 names.
+    ///
+    /// `#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so a report with nothing to say
+    /// here is byte-identical to what earlier builds emitted and an older report still parses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cannot_sync: Vec<crate::index::UnsyncableEntry>,
 }
+
+/// The identity of a reviewed plan (#100), and the whole of what an `apply` is pinned to.
+///
+/// Same shape of promise as a `delete_approvals.fingerprint`: a stable digest of *exactly what the
+/// user was shown*, compared for equality against what is really about to happen, so an
+/// authorization can never be spent on something else. There it is one entity's identity; here it
+/// is one plan's.
+///
+/// Order-independent — the rows are sorted before hashing — because a plan's identity is its set of
+/// actions, and two runs of the planner over an unchanged tree must produce the same token even if
+/// a `HashMap` iteration reordered the transition rows.
+///
+/// Every field of every row that describes *what will happen* goes in, `size_bytes` included: an
+/// upload whose file changed under the reviewed plan is precisely the divergence the token exists
+/// to catch.
+pub fn plan_token(plan: &[PlannedAction]) -> String {
+    use sha1::{Digest, Sha1};
+    use std::fmt::Write as _;
+
+    let mut rows: Vec<Vec<u8>> = plan.iter().map(plan_row_preimage).collect();
+    rows.sort();
+    let mut hasher = Sha1::new();
+    hasher.update(PLAN_TOKEN_VERSION.as_bytes());
+    hasher.update([0u8]);
+    for row in &rows {
+        // Length-prefixed, so no two different row sets can concatenate to the same bytes.
+        hasher.update((row.len() as u64).to_le_bytes());
+        hasher.update(row);
+    }
+    let mut token = format!("{PLAN_TOKEN_VERSION}:");
+    for byte in hasher.finalize() {
+        write!(token, "{byte:02x}").expect("writing hex digits to a String cannot fail");
+    }
+    token
+}
+
+/// The token format's version, carried in the token itself **and** hashed into it. A future change
+/// to what a row's identity covers therefore yields a token that neither matches nor parses as an
+/// old one — a client holding a pre-upgrade token gets the typed stale refusal rather than an
+/// accidental match.
+const PLAN_TOKEN_VERSION: &str = "1";
+
+/// One plan row as bytes. Raw path bytes (never `to_string_lossy`), because two paths differing
+/// only in invalid UTF-8 are two different plans and the wire rendering collapses them — the same
+/// reason `ipc` forbids matching a destructive selector by its wire form.
+/// **Every optional field carries a presence byte**, so `None` and `Some("")` are different bytes.
+/// Without it they collapse — and `Some("")` is reachable: `proton::WrappedString` decodes a JSON
+/// `""` to `Decoded("")`, and nothing rejects an empty remote id — which would let two distinct
+/// plans share a token and an apply run something other than what was reviewed. The rule this
+/// generalises is the one `size_bytes` already followed: unknown is not the empty value, here as
+/// everywhere else in this engine.
+fn plan_row_preimage(action: &PlannedAction) -> Vec<u8> {
+    let mut row = Vec::new();
+    fn field(row: &mut Vec<u8>, bytes: &[u8]) {
+        row.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        row.extend_from_slice(bytes);
+    }
+    // A present field is `len(1 + bytes)` · `PRESENT_FIELD` · `bytes`, written straight into `row`
+    // rather than through a tagged temporary — same bytes, one less allocation per optional field
+    // per row, and the token is recomputed for every plan and every apply. Byte-for-byte identical
+    // to the tagged form by construction: the length prefix counts the tag, exactly as `field`
+    // would have counted it. Pinned by `a_plan_row_preimage_is_length_prefixed_and_presence_tagged`
+    // so a future re-encoding has to be a decision rather than a slip.
+    fn optional(row: &mut Vec<u8>, bytes: Option<&[u8]>) {
+        match bytes {
+            None => field(row, &[ABSENT_FIELD]),
+            Some(bytes) => {
+                row.extend_from_slice(&((bytes.len() + 1) as u64).to_le_bytes());
+                row.push(PRESENT_FIELD);
+                row.extend_from_slice(bytes);
+            }
+        }
+    }
+    let row = &mut row;
+    field(row, action.action.as_str().as_bytes());
+    field(row, action.entity_kind.as_str().as_bytes());
+    field(row, action.path.as_os_str().as_encoded_bytes());
+    optional(
+        row,
+        action
+            .destination_path
+            .as_ref()
+            .map(|path| path.as_os_str().as_encoded_bytes()),
+    );
+    optional(
+        row,
+        action
+            .conflict_path
+            .as_ref()
+            .map(|path| path.as_os_str().as_encoded_bytes()),
+    );
+    optional(row, action.remote_id.as_deref().map(str::as_bytes));
+    field(row, &[u8::from(action.sidecar_from_local_copy)]);
+    optional(
+        row,
+        action
+            .skip_reason
+            .as_ref()
+            .map(|reason| reason.as_str().as_bytes()),
+    );
+    optional(
+        row,
+        action
+            .size_bytes
+            .map(u64::to_le_bytes)
+            .as_ref()
+            .map(|bytes| &bytes[..]),
+    );
+    std::mem::take(row)
+}
+
+/// Presence tags for [`plan_row_preimage`]'s optional fields. Two bytes that cannot be the start of
+/// any value they precede — because they are never *compared* against one, only prepended — so all
+/// they have to be is different from each other.
+const ABSENT_FIELD: u8 = 0;
+const PRESENT_FIELD: u8 = 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanSummary {
@@ -1911,16 +2073,28 @@ impl DryRunReport {
         Self {
             summary: PlanSummary::from_plan(&plan),
             plan,
+            cannot_sync: Vec::new(),
         }
     }
 
     /// The reporting form of a [`PlanOutcome`]: carries the planner's `matched_files` through to
-    /// the summary, which [`Self::new`] cannot recover from the rows alone.
-    pub fn from_outcome(outcome: PlanOutcome) -> Self {
+    /// the summary, which [`Self::new`] cannot recover from the rows alone, and the same walk's
+    /// dropped entries (#315), which no plan row carries either.
+    pub fn from_outcome(
+        outcome: PlanOutcome,
+        cannot_sync: Vec<crate::index::UnsyncableEntry>,
+    ) -> Self {
         Self {
             summary: PlanSummary::from_outcome(&outcome.actions, outcome.matched_files),
             plan: outcome.actions,
+            cannot_sync,
         }
+    }
+
+    /// This report's plan token (#100). Computed rather than stored, so a report parsed from a
+    /// child `--dry-run` and one built by the daemon's plan verb name the same plan identically.
+    pub fn token(&self) -> String {
+        plan_token(&self.plan)
     }
 }
 
@@ -1947,8 +2121,13 @@ impl PlanSummary {
                 SyncAction::SkipUnsupported => summary.skipped_unsupported += 1,
             }
         }
-        summary.destructive_actions =
-            summary.remote_deletes + summary.local_deletes + summary.purges;
+        // Through the one predicate rather than by re-adding the three counters, so the number the
+        // Plan screen shows and the set `skip_destructive` drops are the same set by construction
+        // (#192). `destructive_actions_match_the_predicate` pins the value against the old sum.
+        summary.destructive_actions = plan
+            .iter()
+            .filter(|action| action.action.is_destructive())
+            .count();
         summary.upload_bytes = total_upload_bytes(plan);
         summary
     }
@@ -4875,5 +5054,228 @@ mod tests {
         assert_eq!(report.summary.skipped_unsupported, 1);
         assert_eq!(report.summary.destructive_actions, 1);
         assert_eq!(report.plan.len(), 5);
+    }
+
+    /// The one predicate must produce exactly the number the three counters used to add up to, over
+    /// every action there is — otherwise `Run it without the deletion` (#192) drops a different set
+    /// from the one the Plan screen counted as destructive.
+    #[test]
+    fn destructive_actions_match_the_predicate() {
+        let plan: Vec<PlannedAction> = SyncAction::ALL
+            .iter()
+            .map(|action| {
+                PlannedAction::new(
+                    Path::new("a.txt"),
+                    *action,
+                    EntityKind::File,
+                    Some("id".to_owned()),
+                )
+            })
+            .collect();
+        let summary = PlanSummary::from_plan(&plan);
+        assert_eq!(
+            summary.destructive_actions,
+            summary.remote_deletes + summary.local_deletes + summary.purges,
+            "the predicate and the historical sum must name the same set"
+        );
+        assert_eq!(summary.destructive_actions, 3);
+        // And `Purge` is destructive-for-counting while carrying no delete direction: two
+        // predicates, two questions (see `SyncAction::is_destructive`).
+        assert!(SyncAction::Purge.is_destructive());
+        assert!(SyncAction::Purge.delete_direction().is_none());
+    }
+
+    #[test]
+    fn a_plan_token_is_order_independent_and_moves_when_the_plan_does() {
+        let upload = PlannedAction::new(
+            Path::new("a.txt"),
+            SyncAction::Upload,
+            EntityKind::File,
+            None,
+        );
+        let download = PlannedAction::new(
+            Path::new("b.txt"),
+            SyncAction::Download,
+            EntityKind::File,
+            Some("remote-id".to_owned()),
+        );
+        let token = plan_token(&[upload.clone(), download.clone()]);
+        assert_eq!(
+            token,
+            plan_token(&[download.clone(), upload.clone()]),
+            "a plan's identity is its set of rows, not the order the planner emitted them in"
+        );
+        assert!(token.starts_with("1:"), "{token}");
+        assert_ne!(token, plan_token(std::slice::from_ref(&upload)));
+        assert_ne!(token, plan_token(&[]));
+
+        // A row whose payload changed is a different plan: an upload of a file that grew since the
+        // review is exactly what the token exists to refuse.
+        let mut resized = upload.clone();
+        resized.size_bytes = Some(42);
+        assert_ne!(token, plan_token(&[resized.clone(), download.clone()]));
+        // …and "unknown" is not "zero" here either.
+        let mut zero = upload.clone();
+        zero.size_bytes = Some(0);
+        assert_ne!(
+            plan_token(&[zero, download.clone()]),
+            plan_token(&[upload.clone(), download.clone()])
+        );
+
+        // The action itself is part of the identity: same path, different verb, different plan.
+        let mut deleted = upload;
+        deleted.action = SyncAction::RemoteDelete;
+        assert_ne!(token, plan_token(&[deleted, download]));
+    }
+
+    /// An **absent** optional field and an **empty** one are two different plans, and the token has
+    /// to say so — otherwise two distinct plans share a token and an apply runs something other than
+    /// what was reviewed. `Some("")` is reachable rather than theoretical: `proton::WrappedString`
+    /// decodes a JSON `""` to `Decoded("")`, and nothing rejects an empty remote id.
+    #[test]
+    fn a_plan_token_separates_an_absent_field_from_an_empty_one() {
+        let base = PlannedAction::new(
+            Path::new("a.txt"),
+            SyncAction::Download,
+            EntityKind::File,
+            None,
+        );
+        let token = |action: &PlannedAction| plan_token(std::slice::from_ref(action));
+
+        let mut empty_id = base.clone();
+        empty_id.remote_id = Some(String::new());
+        assert_ne!(
+            token(&base),
+            token(&empty_id),
+            "remote_id: None vs Some(\"\")"
+        );
+
+        let mut empty_destination = base.clone();
+        empty_destination.destination_path = Some(PathBuf::new());
+        assert_ne!(token(&base), token(&empty_destination), "destination_path");
+
+        let mut empty_conflict = base.clone();
+        empty_conflict.conflict_path = Some(PathBuf::new());
+        assert_ne!(token(&base), token(&empty_conflict), "conflict_path");
+
+        let mut empty_reason = base.clone();
+        empty_reason.skip_reason = Some(UnsyncableReason::from_token(""));
+        assert_ne!(token(&base), token(&empty_reason), "skip_reason");
+
+        // The rule `size_bytes` already followed, kept: unknown is not zero.
+        let mut zero_size = base.clone();
+        zero_size.size_bytes = Some(0);
+        assert_ne!(token(&base), token(&zero_size), "size_bytes");
+
+        // And the tags do not make two *different* present values collide either.
+        let mut other_id = base;
+        other_id.remote_id = Some("x".to_owned());
+        assert_ne!(token(&empty_id), token(&other_id));
+    }
+
+    /// The row preimage's **exact bytes**, because the token is plan identity and the encoding is
+    /// the only thing standing between two different plans and one token.
+    ///
+    /// The other token tests pin *behaviour* — absent ≠ empty, order independence, raw path bytes —
+    /// and a uniform re-encoding passes all of them while changing every token. This pins the
+    /// layout itself: each field is a `u64` little-endian length followed by that many bytes, and
+    /// an optional field spends one of those bytes on `ABSENT_FIELD`/`PRESENT_FIELD` *inside* the
+    /// counted run. So writing a present field straight into the row and building a tagged
+    /// temporary first are the same bytes, and any future field, tag or ordering change has to be a
+    /// deliberate decision — with `PLAN_TOKEN_VERSION` bumped — rather than a slip nothing notices.
+    #[test]
+    fn a_plan_row_preimage_is_length_prefixed_and_presence_tagged() {
+        let mut action =
+            PlannedAction::new(Path::new("a"), SyncAction::Download, EntityKind::File, None);
+        action.remote_id = Some("i".to_owned());
+
+        let len = |n: u64| n.to_le_bytes().to_vec();
+        let expected: Vec<u8> = [
+            len(8), // "download"
+            b"download".to_vec(),
+            len(4), // "file"
+            b"file".to_vec(),
+            len(1), // path "a"
+            b"a".to_vec(),
+            len(1), // destination_path: absent
+            vec![ABSENT_FIELD],
+            len(1), // conflict_path: absent
+            vec![ABSENT_FIELD],
+            len(2), // remote_id: present, tag counted in the length
+            vec![PRESENT_FIELD, b'i'],
+            len(1), // sidecar_from_local_copy: false
+            vec![0],
+            len(1), // skip_reason: absent
+            vec![ABSENT_FIELD],
+            len(1), // size_bytes: absent
+            vec![ABSENT_FIELD],
+        ]
+        .concat();
+
+        assert_eq!(plan_row_preimage(&action), expected);
+    }
+
+    /// Two paths differing only in invalid UTF-8 collapse to one string on the wire (#61/#300), so
+    /// the token must be computed from the raw bytes — else a plan that deletes one of them could
+    /// be applied under a token reviewed for the other.
+    #[test]
+    fn a_plan_token_separates_paths_that_the_wire_form_collapses() {
+        use std::ffi::OsString;
+        #[cfg(unix)]
+        use std::os::unix::ffi::OsStringExt;
+
+        #[cfg(unix)]
+        {
+            let one = PathBuf::from(OsString::from_vec(b"bad-\xff.txt".to_vec()));
+            let two = PathBuf::from(OsString::from_vec(b"bad-\xfe.txt".to_vec()));
+            assert_eq!(
+                crate::wire_path(&one),
+                crate::wire_path(&two),
+                "precondition: these two render identically on the wire"
+            );
+            let row = |path: &Path| {
+                vec![PlannedAction::new(
+                    path,
+                    SyncAction::LocalDelete,
+                    EntityKind::File,
+                    None,
+                )]
+            };
+            assert_ne!(plan_token(&row(&one)), plan_token(&row(&two)));
+        }
+    }
+
+    /// #315: the report carries the walk's own drops under a name that is not `unsyncable`, and an
+    /// empty one stays byte-identical to what earlier builds emitted.
+    #[test]
+    fn a_dry_run_report_carries_the_walks_drops_without_borrowing_the_standing_lists_name() {
+        use crate::index::UnsyncableEntry;
+
+        let empty = DryRunReport::new(Vec::new());
+        let json = serde_json::to_string(&empty).expect("serialize");
+        assert!(!json.contains("cannot_sync"), "{json}");
+        assert!(!json.contains("unsyncable"), "{json}");
+
+        let report = DryRunReport::from_outcome(
+            PlanOutcome {
+                actions: Vec::new(),
+                matched_files: 0,
+            },
+            vec![UnsyncableEntry {
+                relative_path: PathBuf::from("run/socket"),
+                reason: UnsyncableReason::LocalSocket,
+            }],
+        );
+        let json = serde_json::to_string(&report).expect("serialize");
+        assert!(json.contains(r#""cannot_sync""#), "{json}");
+        assert!(json.contains(r#""local_socket""#), "{json}");
+        let back: DryRunReport = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, report);
+
+        // A report from a build that predates the field parses with it empty.
+        let legacy: DryRunReport =
+            serde_json::from_str(r#"{"summary":{"total":0,"uploads":0,"downloads":0,"remote_directories_created":0,"local_directories_created":0,"local_moves":0,"remote_moves":0,"auto_links":0,"conflicts":0,"type_conflicts":0,"remote_deletes":0,"local_deletes":0,"purges":0,"skipped_unsupported":0,"destructive_actions":0},"plan":[]}"#)
+                .expect("legacy report must parse");
+        assert!(legacy.cannot_sync.is_empty());
     }
 }

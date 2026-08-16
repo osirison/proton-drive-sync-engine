@@ -19,13 +19,15 @@ pub fn parse_dry_run(json: &str) -> Result<DryRunReport, String> {
     serde_json::from_str(json).map_err(|e| format!("parse dry-run plan: {e}"))
 }
 
-/// Whether an action is shown as destructive (tinted + sorted first). Includes `Purge`, matching
-/// the daemon's `summary.destructive_actions` counter. This is a *display* concern only.
+/// Whether an action is shown as destructive (tinted + sorted first).
+///
+/// **Delegated, not re-enumerated.** This used to spell out `RemoteDelete | LocalDelete | Purge`,
+/// which was a second copy of the engine's own definition — and since #192 that set is no longer
+/// display-only: `apply --skip-destructive` drops exactly the rows
+/// [`SyncAction::is_destructive`] names, so a screen tinting a different set would show one thing
+/// and run another.
 pub fn is_display_destructive(action: SyncAction) -> bool {
-    matches!(
-        action,
-        SyncAction::RemoteDelete | SyncAction::LocalDelete | SyncAction::Purge
-    )
+    action.is_destructive()
 }
 
 /// Whether the plan must be gated behind the typed-`DELETE` confirmation. Keys on

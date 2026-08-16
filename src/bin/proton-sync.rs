@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use proton_drive_sync_engine::config::resolve_control_socket_path;
 use proton_drive_sync_engine::index::{EntityKind, PassRecord};
 use proton_drive_sync_engine::ipc::{
-    AuthState, ControlCommand, ControlRequest, ControlResponse, ListingOutcome, PendingDeletion,
-    SyncActivity, send_request, wire_path,
+    ApplyOutcome, AuthState, ControlCommand, ControlRequest, ControlResponse, ListingOutcome,
+    PendingDeletion, PlanOutcome, ReviewedPlan, SyncActivity, send_request, wire_path,
 };
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, SyncAction, UnsyncableItem};
 use std::collections::BTreeMap;
@@ -112,6 +112,29 @@ enum Commands {
         /// Cap on the entries shown.
         #[arg(long)]
         limit: Option<usize>,
+    },
+    /// Work out what a sync would change, without changing anything. The daemon computes it on its
+    /// own proton-drive client, so it never races the sync in progress.
+    Plan {
+        /// Cap on the plan rows shown. Destructive rows are always shown, whatever the cap.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Run a plan you reviewed with `plan`, named by its token.
+    ///
+    /// The daemon re-plans, compares, and applies only if nothing has changed since — so an apply
+    /// can never quietly do more than what was reviewed. If the plan moved, nothing runs and the
+    /// new plan is printed instead.
+    Apply {
+        /// The token printed by `proton-sync plan`.
+        token: String,
+        /// Run the plan without its destructive actions (deletions). Standing approvals do not
+        /// override this: the deletions are skipped for this run and re-plan next pass.
+        #[arg(long)]
+        skip_destructive: bool,
+        /// Schedule the apply and return immediately instead of waiting for it to finish.
+        #[arg(long)]
+        no_wait: bool,
     },
     /// Refuse a withheld deletion and put the two sides back in step: the surviving copy is sent
     /// back to the side it was deleted from on the next sync, and the item leaves the queue for
@@ -245,6 +268,12 @@ async fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Commands::Plan { limit } => {
+            watch_plan(&socket_path, response, *limit, cli.json, &style).await
+        }
+        Commands::Apply { no_wait, .. } => {
+            watch_apply(&socket_path, response, *no_wait, cli.json, &style).await
+        }
         Commands::List { .. } => {
             if cli.json {
                 println!(
@@ -299,6 +328,13 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
             ControlCommand::List,
             path.as_ref().map(|path| wire_path(path).into_owned()),
         ),
+        // The ack only; `watch_plan` then polls `plan_result` for the answer. Same two-verb shape
+        // as `syncnow`, which acks and then polls `status`.
+        Commands::Plan { .. } => (ControlCommand::Plan, None),
+        // The token IS the argument, and it is not a path — no `literal_path`, no validation as
+        // one. An apply with no token is refused by the daemon as stale, which is why clap makes
+        // it required here rather than optional-and-meaning-"whatever you have".
+        Commands::Apply { token, .. } => (ControlCommand::Apply, Some(token.clone())),
     };
     // A `<PATH>` selector is always a literal path on the wire: `proton-sync approve all`
     // targets a pending deletion literally named `all` instead of silently becoming the
@@ -310,6 +346,7 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
             (days.map(|days| days.saturating_mul(86_400)), *limit)
         }
         Commands::List { limit, .. } => (None, *limit),
+        Commands::Plan { limit } => (None, *limit),
         _ => (None, None),
     };
     let literal_path = matches!(
@@ -339,12 +376,21 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         ),
         _ => None,
     };
+    // Read by `apply` alone (#192): every other command ignores it.
+    let skip_destructive = matches!(
+        command,
+        Commands::Apply {
+            skip_destructive: true,
+            ..
+        }
+    );
     Ok(ControlRequest {
         argument,
         literal_path,
         window_secs,
         limit,
         direction,
+        skip_destructive,
         ..ControlRequest::new(control_command)
     })
 }
@@ -1313,6 +1359,344 @@ async fn watch_syncnow(
     }
 }
 
+// ---- plan / apply ------------------------------------------------------------------------------
+
+/// How many consecutive transport failures end a wait. Same bail-out `watch_syncnow` uses: a
+/// daemon that stopped answering is not a pass that is still running.
+const WAIT_ERROR_LIMIT: u32 = 5;
+
+/// The daemon acks `plan` immediately and computes it on its main loop, so the CLI watches until
+/// the pass that answers *this* request finishes. It waits on the plan plane's own counter, not on
+/// `reconcile_seq`: a plan pass deliberately does not bump that, because doing so would satisfy a
+/// concurrent `syncnow` watcher's target and make it report a sync that never ran.
+async fn watch_plan(
+    socket_path: &Path,
+    ack: ControlResponse,
+    limit: Option<usize>,
+    json: bool,
+    style: &Style,
+) -> ExitCode {
+    let target = match &ack.plan {
+        Some(PlanOutcome::Scheduled { plan_seq }) => *plan_seq,
+        // Paused, shutting down, or a daemon too old to know the verb: nothing to watch. Reported
+        // from the typed outcome, never by matching the message (#103).
+        _ => return report_plan(&ack, json, style),
+    };
+    let outcome = poll_until(
+        socket_path,
+        || ControlRequest {
+            limit,
+            ..ControlRequest::new(ControlCommand::PlanResult)
+        },
+        // The generation, not merely "no longer computing": a second client's `plan` while ours is
+        // in flight books a newer request, and reading its answer as ours would show a plan whose
+        // token we never asked for.
+        |response| plan_generation(response.plan.as_ref()).is_some_and(|seq| seq >= target),
+    )
+    .await;
+    match outcome {
+        Ok(response) => report_plan(&response, json, style),
+        Err(message) => {
+            eprintln!("lost contact with the daemon while waiting: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The request generation a plan outcome answers, or `None` while nothing has been answered.
+/// [`PlanOutcome::Computing`] carries the *last answered* generation, so it never satisfies a wait
+/// for a newer one.
+fn plan_generation(outcome: Option<&PlanOutcome>) -> Option<u64> {
+    match outcome? {
+        PlanOutcome::Computed(plan) => Some(plan.plan_seq),
+        PlanOutcome::Failed { plan_seq, .. } => Some(*plan_seq),
+        // Not an answer to anything: still working, refused, or a state this build does not know.
+        PlanOutcome::Computing { .. }
+        | PlanOutcome::Scheduled { .. }
+        | PlanOutcome::Paused
+        | PlanOutcome::Absent
+        | PlanOutcome::Unknown => None,
+    }
+}
+
+/// The request generation an apply verdict answers. Same rule as [`plan_generation`].
+fn apply_generation(outcome: Option<&ApplyOutcome>) -> Option<u64> {
+    match outcome? {
+        ApplyOutcome::Applied { apply_seq, .. }
+        | ApplyOutcome::Diverged { apply_seq }
+        | ApplyOutcome::Failed { apply_seq, .. } => Some(*apply_seq),
+        ApplyOutcome::Scheduled { .. }
+        | ApplyOutcome::Stale
+        | ApplyOutcome::Paused
+        | ApplyOutcome::Unknown => None,
+    }
+}
+
+/// `apply` is a normal pass, so this waits on the apply plane's counter and then reports the
+/// verdict. A divergence is not an error the user made — the same reply carries the new plan, so it
+/// is printed for review.
+async fn watch_apply(
+    socket_path: &Path,
+    ack: ControlResponse,
+    no_wait: bool,
+    json: bool,
+    style: &Style,
+) -> ExitCode {
+    let target = match &ack.apply {
+        Some(ApplyOutcome::Scheduled { apply_seq }) => *apply_seq,
+        _ => return report_apply(&ack, json, style),
+    };
+    if no_wait {
+        return report_apply(&ack, json, style);
+    }
+    let outcome = poll_until(
+        socket_path,
+        || ControlRequest::new(ControlCommand::PlanResult),
+        |response| apply_generation(response.apply.as_ref()).is_some_and(|seq| seq >= target),
+    )
+    .await;
+    match outcome {
+        Ok(response) => report_apply(&response, json, style),
+        Err(message) => {
+            eprintln!("lost contact with the daemon while waiting: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The shared wait: poll `plan_result` on the `syncnow` cadence until `ready` says the answer has
+/// landed, bailing out only on [`WAIT_ERROR_LIMIT`] consecutive transport failures.
+///
+/// **Deliberately no paused bail-out, unlike [`watch_syncnow`].** That is not an inconsistency —
+/// the two waits watch counters with opposite guarantees. A `syncnow` skipped by a pause is never
+/// sealed: `reconcile_if_needed` early-returns without bumping `reconcile_seq`, so its target is
+/// unreachable and only the client can end the wait. Every `plan`/`apply` request, by contrast, is
+/// *always* sealed — a plan booked before a pause still runs (`plan_now` has no pause check), an
+/// apply overtaken by one is sealed `Failed` by `discard_queued_apply_for_pause`, and a daemon that
+/// died stops answering and trips `WAIT_ERROR_LIMIT`. So a pause here proves nothing about this
+/// request, and bailing on it was a **false positive**: between the `plan` ack and `plan_now`'s
+/// `syncing.store(true)` a poller reads `paused && !syncing` for a pass that is about to run, and
+/// would report "paused before the pass ran" for a plan that then completes and seals normally. For
+/// `apply` it raced the daemon's own typed verdict and answered with a sentence this client made up
+/// instead — exactly the #103 shape. Guard:
+/// `a_pause_mid_wait_does_not_end_a_plan_or_apply_wait`.
+async fn poll_until(
+    socket_path: &Path,
+    request: impl Fn() -> ControlRequest,
+    ready: impl Fn(&ControlResponse) -> bool,
+) -> Result<ControlResponse, String> {
+    let spinner = Spinner::for_stderr();
+    let started = Instant::now();
+    let mut consecutive_errors = 0u32;
+    let result = loop {
+        tokio::time::sleep(WAIT_POLL_INTERVAL).await;
+        match request_with_timeout(socket_path, request()).await {
+            Ok(response) => {
+                consecutive_errors = 0;
+                if ready(&response) {
+                    break Ok(response);
+                }
+                spinner.tick(&started, &response);
+            }
+            Err(message) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= WAIT_ERROR_LIMIT {
+                    break Err(message);
+                }
+            }
+        }
+    };
+    spinner.clear();
+    result
+}
+
+/// The `Run it with:` footer, or `None` when there is nothing to run.
+///
+/// The token is the whole point of printing it: `apply` names it, and nothing else can authorise
+/// this exact plan. But an **empty** plan has nothing to authorise — applying one is a provable
+/// no-op (the daemon re-plans, compares, and executes nothing) — so offering the command under
+/// "Nothing would change" both contradicts that sentence and invites a pointless pass. Keyed on
+/// `total`, the untruncated plan length, never on `actions`, which is a window over it.
+fn run_it_line(total: usize, token: &str, style: &Style) -> Option<String> {
+    (total > 0).then(|| {
+        format!(
+            "Run it with: {}",
+            style.dim(&format!("proton-sync apply {token}"))
+        )
+    })
+}
+
+/// Renders a plan reply, and returns the exit code with it — the same rule `list` follows: a plan
+/// that did not happen exits non-zero so a script never mistakes it for "nothing to do".
+fn report_plan(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&response.plan).expect("serialize the plan")
+        );
+    }
+    match &response.plan {
+        Some(PlanOutcome::Computed(plan)) => {
+            let ReviewedPlan {
+                token,
+                summary,
+                actions,
+                total,
+                truncated,
+                cannot_sync,
+                ..
+            } = plan.as_ref();
+            if !json {
+                if *total == 0 {
+                    println!("Nothing would change — both sides already match.");
+                } else {
+                    println!("{}", style.dim(&summarize_plan(summary)));
+                    for action in actions {
+                        let mark = if action.action.is_destructive() {
+                            style.red("-")
+                        } else {
+                            style.dim("·")
+                        };
+                        let path = match &action.destination_path {
+                            Some(destination) => {
+                                format!("{} → {}", action.path.display(), destination.display())
+                            }
+                            None => action.path.display().to_string(),
+                        };
+                        println!("  {mark} {:<24} {path}", describe_action(action.action));
+                    }
+                    if *truncated {
+                        println!(
+                            "  {}",
+                            style.dim(&format!(
+                                "… {} of {total} shown; raise --limit for more",
+                                actions.len()
+                            ))
+                        );
+                    }
+                }
+                if !cannot_sync.is_empty() {
+                    println!("\n{}", style.dim("can't sync"));
+                    for entry in cannot_sync {
+                        println!(
+                            "  {} {}",
+                            entry.relative_path.display(),
+                            style.dim(entry.reason.describe())
+                        );
+                    }
+                }
+                if let Some(line) = run_it_line(*total, token, style) {
+                    println!("\n{line}");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Some(PlanOutcome::Paused) => {
+            eprintln!(
+                "Syncing is paused, so nothing was planned. Resume with `proton-sync resume`."
+            );
+            ExitCode::FAILURE
+        }
+        Some(PlanOutcome::Failed { error, .. }) => {
+            eprintln!("Could not work out a plan: {error}");
+            ExitCode::FAILURE
+        }
+        Some(PlanOutcome::Computing { .. }) => {
+            eprintln!("The daemon is still working out the plan.");
+            ExitCode::FAILURE
+        }
+        Some(PlanOutcome::Absent) => {
+            eprintln!("The daemon has not worked out a plan yet.");
+            ExitCode::FAILURE
+        }
+        // A state this client does not know, and the `None` an older daemon sends. Neither is an
+        // empty plan.
+        Some(PlanOutcome::Scheduled { .. } | PlanOutcome::Unknown) | None => {
+            eprintln!("The daemon did not return a plan.");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Renders an apply reply. A divergence exits non-zero and prints the new plan: nothing ran, and
+/// the user has something to review.
+fn report_apply(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&response.apply).expect("serialize the apply outcome")
+        );
+    }
+    match &response.apply {
+        Some(ApplyOutcome::Applied {
+            executed,
+            skipped_destructive,
+            failed,
+            ..
+        }) => {
+            if !json {
+                let mut clauses = vec![format!("{executed} action(s) applied")];
+                if *skipped_destructive > 0 {
+                    clauses.push(format!("{skipped_destructive} deletion(s) skipped"));
+                }
+                if *failed > 0 {
+                    clauses.push(format!("{failed} failed"));
+                }
+                let line = clauses.join(" · ");
+                if *failed > 0 {
+                    println!("{} {line}", style.yellow("!"));
+                } else {
+                    println!("{} {line}", style.green("✓"));
+                }
+            }
+            // A partial apply is not a success (#136's third outcome, reported as itself).
+            if *failed > 0 {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Some(ApplyOutcome::Diverged { .. }) => {
+            if !json {
+                eprintln!(
+                    "The plan changed since you reviewed it, so nothing was applied. The new plan:"
+                );
+                // Not a second rendering: the same reply carries the fresh plan under the same
+                // field `plan` prints from.
+                report_plan(response, false, style);
+            }
+            ExitCode::FAILURE
+        }
+        Some(ApplyOutcome::Stale) => {
+            eprintln!(
+                "That plan is no longer the current one. Run `proton-sync plan` again and apply \
+                 the token it prints."
+            );
+            ExitCode::FAILURE
+        }
+        Some(ApplyOutcome::Paused) => {
+            eprintln!(
+                "Syncing is paused, so nothing was applied. Resume with `proton-sync resume`."
+            );
+            ExitCode::FAILURE
+        }
+        Some(ApplyOutcome::Failed { error, .. }) => {
+            eprintln!("The apply failed: {error}");
+            ExitCode::FAILURE
+        }
+        Some(ApplyOutcome::Scheduled { .. }) => {
+            if !json {
+                println!("Apply scheduled; watch it with `proton-sync status`.");
+            }
+            ExitCode::SUCCESS
+        }
+        Some(ApplyOutcome::Unknown) | None => {
+            eprintln!("The daemon did not say what happened to the apply.");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// A single-line stderr spinner for the `syncnow` wait, shown only on a terminal.
 struct Spinner {
     interactive: bool,
@@ -1657,6 +2041,8 @@ mod tests {
             file_history: None,
             index_totals: None,
             listing: None,
+            plan: None,
+            apply: None,
             auth: AuthState::Unknown,
         }
     }
@@ -1825,6 +2211,135 @@ mod tests {
         assert_eq!(
             missing_history_message("daemon status", None),
             "This daemon does not report per-file activity."
+        );
+    }
+
+    /// An empty plan offers no `apply` command: there is nothing to authorise, and printing one
+    /// under "Nothing would change — both sides already match" contradicts the line above it.
+    #[test]
+    fn an_empty_plan_offers_nothing_to_run() {
+        let style = plain_style();
+        assert_eq!(run_it_line(0, "1:abc", &style), None);
+        assert_eq!(
+            run_it_line(1, "1:abc", &style),
+            Some("Run it with: proton-sync apply 1:abc".to_owned())
+        );
+    }
+
+    /// `Computing` carries the last generation **answered** (`slot.completed`), never the one in
+    /// flight — so a wait must never resolve on it, even when that number has caught up with its
+    /// own target. It can: our pass completes (`completed == our plan_seq`) and a second client
+    /// books the next one, which is `requested > completed` again. Comparing the number there would
+    /// end our wait on someone else's in-flight request and report a plan we never asked for.
+    #[test]
+    fn a_computing_reply_answers_no_generation_however_high_its_number() {
+        for plan_seq in [0, 1, 2, 7] {
+            assert_eq!(
+                plan_generation(Some(&PlanOutcome::Computing { plan_seq })),
+                None,
+                "Computing must never satisfy a wait (plan_seq {plan_seq})"
+            );
+        }
+        // The ack is not an answer either, for the same reason: it precedes the pass.
+        assert_eq!(
+            plan_generation(Some(&PlanOutcome::Scheduled { plan_seq: 2 })),
+            None
+        );
+        // Only these two answer anything.
+        assert_eq!(
+            plan_generation(Some(&PlanOutcome::Failed {
+                plan_seq: 2,
+                error: "x".to_owned()
+            })),
+            Some(2)
+        );
+    }
+
+    /// Serves one canned [`ControlResponse`] per connection, in order, on a real control socket —
+    /// the smallest fake daemon [`poll_until`] cannot tell from the real one.
+    async fn serve_scripted(socket_path: PathBuf, replies: Vec<ControlResponse>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        for reply in replies {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read request");
+            let mut stream = reader.into_inner();
+            let mut body = serde_json::to_vec(&reply).expect("serialize");
+            body.push(b'\n');
+            stream.write_all(&body).await.expect("write response");
+            stream.flush().await.expect("flush");
+        }
+    }
+
+    /// A pause **does not** end a `plan`/`apply` wait, and must not be "made consistent" with
+    /// [`watch_syncnow`], which does bail on one.
+    ///
+    /// The two watch counters with opposite guarantees: a paused `syncnow` is never sealed (no
+    /// `reconcile_seq` bump), so only the client can end that wait, while every plan/apply request
+    /// is always sealed. Bailing here was a false positive — a plan booked before a pause still
+    /// runs (`plan_now` has no pause check), so the poller must keep asking until the seal lands
+    /// rather than report a pause for a plan that completes. The scripted daemon below is paused
+    /// with nothing running on the first poll and answers on the second, which is exactly the
+    /// ack→`syncing.store(true)` window.
+    #[test]
+    fn a_pause_mid_wait_does_not_end_a_plan_or_apply_wait() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let socket_path = directory.path().join("control.sock");
+
+        let paused_and_idle = ControlResponse {
+            paused: true,
+            syncing: false,
+            plan: None,
+            ..blank_response()
+        };
+        // The seal. `Failed` is the smallest one that still counts as an answer to generation 1
+        // (see `plan_generation`), so the test needs no fixture plan to assert the rule.
+        let sealed = ControlResponse {
+            paused: true,
+            syncing: false,
+            plan: Some(PlanOutcome::Failed {
+                plan_seq: 1,
+                error: "the walk failed".to_owned(),
+            }),
+            ..blank_response()
+        };
+
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let server = tokio::spawn(serve_scripted(
+                    socket_path.clone(),
+                    vec![paused_and_idle, sealed],
+                ));
+                // Bounded, and the server is aborted rather than awaited: a regression here must
+                // FAIL, not hang. Two polls at `WAIT_POLL_INTERVAL` sit far inside this, while a
+                // wait that ended early leaves the scripted daemon holding a reply nobody asks for.
+                let outcome = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    poll_until(
+                        &socket_path,
+                        || ControlRequest::new(ControlCommand::PlanResult),
+                        |response| {
+                            plan_generation(response.plan.as_ref()).is_some_and(|seq| seq >= 1)
+                        },
+                    ),
+                )
+                .await;
+                server.abort();
+                outcome
+            });
+
+        let response = outcome
+            .expect("the wait must finish well inside the timeout")
+            .expect("a pause mid-wait must not end the wait");
+        assert_eq!(
+            plan_generation(response.plan.as_ref()),
+            Some(1),
+            "the wait must return the daemon's own sealed verdict, not a pause the client inferred"
         );
     }
 }

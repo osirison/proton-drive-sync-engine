@@ -123,12 +123,15 @@ export function gateSatisfied(value) {
  * and a new folder — the folder is the sentence underneath. `5a Plan safe`, likewise: seven actions,
  * `Five files move`.
  */
-export function summarise(plan = []) {
+export function summarise(plan = [], reportedTotal = null) {
   const rows = sortedForDisplay(plan);
   const countOf = (...actions) => rows.filter((row) => actions.includes(row.action)).length;
   return {
     rows,
-    total: rows.length,
+    // The daemon's own count when it gave one and it exceeds the rows in hand — a windowed reply
+    // is fewer rows describing the same plan. Never *below* the rows: a count under the list
+    // beside it would be visibly wrong.
+    total: typeof reportedTotal === "number" ? Math.max(reportedTotal, rows.length) : rows.length,
     uploads: countOf("upload"),
     downloads: countOf("download"),
     // Both directions. The engine emits `create_local_directory` and `move_remote` as well, and a
@@ -543,7 +546,7 @@ function safeBody(model) {
  * No numeral — the mark is reading, not moving. F2's `dryRun` flag carries the thinner, faster dash
  * the frame draws (`40 260` at 2.4s/3.2s against the syncing mark's `62 238` at 3.2s/4.4s).
  */
-function checkingBody(handlers) {
+function checkingBody(handlers, progress) {
   const body = fid(el("div", { class: "pl-checking" }), "checking");
   body.append(fid(renderSeam({ site: "checkingDialog" }), "checkingSeam"));
   const mark = fid(
@@ -568,9 +571,13 @@ function checkingBody(handlers) {
   const sub = fid(el("div", { class: "pl-checking-sub" }, PLAN.checkingSub), "checkingSub");
   seamMask(title, { pad: 16 });
   seamMask(sub, { pad: 14, padY: 2 });
-  // `8,431 of 12,480 files` is not drawn: `run_dry_run` is one command with no progress channel
-  // (G9 #209) and nothing reports an index-wide file count (G7 #207), so the whole line goes — half
-  // of it is a fraction with no denominator. DEVIATIONS §76.
+  // `8,431 of 12,480 files`. Both halves have a source now: the rehearsal runs on the daemon's
+  // main loop (#209), so `activity.files_scanned` describes THIS walk, and `index_totals.files` is
+  // the corpus size (#207). Drawn only when the numerator exists — the pass may not have reached
+  // the local scan yet — and the denominator is dropped rather than invented when the index is
+  // empty (a first run has nothing to count against), which is the one clause the design's fixed
+  // fraction cannot express. DEVIATIONS §76.
+  const progressText = checkingProgressText(progress);
   const stop = fid(
     button({
       kind: "secondary",
@@ -590,6 +597,10 @@ function checkingBody(handlers) {
   // F3 records (the seam paints over the fill). The `position` difference is recorded in §76.
   seamMask(stop, { pad: null });
   body.append(mark, title, sub, stop);
+  // Appended CONDITIONALLY, never as a `null` child: `Element.append(null)` inserts the literal
+  // string "null", which no gate here can see (every frame's fixture carries the progress, so the
+  // absent case is undrawn).
+  if (progressText != null) insertCheckingProgress(body, progressText);
   return [body];
 }
 
@@ -622,9 +633,15 @@ function failedBody(error) {
  * It holds the gate, so it is built here and patched rather than rebuilt: the shell re-renders on
  * every ~2s status poll, and a rebuilt bar destroys a half-typed `DELETE` — see `updatePlanBar`.
  *
- * `Run it without the deletion` is not drawn (G3 #192; `06-plan.md`: "if unavailable, hide the
- * button rather than faking it"). The one drawn button keeps the frame's second button identity in
- * the mapping, not its first.
+ * `Run it without the deletion` (#192) is drawn when the plan is gated **and** the daemon holds
+ * the plan — i.e. `dryRun.token` exists. Without a token there is nothing to apply by name: that is
+ * the onboarding path, where the plan came from a `proton-syncd --dry-run` child no daemon is
+ * holding, and `06-plan.md` says hide the button rather than fake it.
+ *
+ * `Leave it alone` (the band's own escape hatch) stays hidden. It reads two ways — drop this one
+ * action and run the rest, or refuse this deletion durably — and the second is #224, which the
+ * `Keep it` flow on the Deletions screen owns. Drawing it here would make one button mean whichever
+ * the reader assumed.
  */
 export function renderPlanBar(state = {}) {
   const v = viewOf(state);
@@ -664,6 +681,23 @@ function buildBar(v, handlers, state) {
     "run",
   );
   if (gated) setButtonKind(run, "primaryDisabled");
+  // The frame's first button. `secondary` is the same slot `Check again` takes on the safe body,
+  // and the two never coexist: a safe plan has no destructive row to run without.
+  const runWithout =
+    gated && v.filterable
+      ? fid(
+          button({
+            kind: "secondary",
+            size: "bar",
+            label: PLAN.runWithout,
+            padding: "11px 20px",
+            radius: "var(--r-10)",
+            fontSize: "13px",
+            onClick: () => handlers.onRunWithout?.(),
+          }),
+          "runWithout",
+        )
+      : null;
   const bar = renderActionBar({
     consequence: gated ? gateBlock(run) : fid(el("span", { class: "pl-checked" }, checkedText(v)), "checked"),
     // The re-check moves into the bar exactly when the title row has gone: `5a Plan` draws it beside
@@ -673,7 +707,7 @@ function buildBar(v, handlers, state) {
     secondary:
       v.body === "safe"
         ? fid(checkAgain({ handlers, size: "bar", padding: "11px 20px", fontSize: "13px" }), "checkAgain")
-        : null,
+        : runWithout,
     primary: run,
   });
   // The group the field may move within is the bar, not the gate block. `deleteGate` clears on blur
@@ -739,7 +773,9 @@ function runNow(v, state, run) {
 /** The bar's shape — what a rebuild would change, as opposed to what a patch can carry. */
 function shapeOf(v) {
   if (v.body === "failed" || v.body === "checking") return v.body;
-  return `${v.body}|${v.model.gated.length > 0}`;
+  // `filterable` is in the shape because it decides whether a BUTTON exists: a patch cannot add one,
+  // so a plan that gained a token across a poll has to rebuild the bar.
+  return `${v.body}|${v.model.gated.length > 0}|${v.filterable}`;
 }
 
 /**
@@ -775,10 +811,42 @@ let view = null;
 function viewOf(state) {
   return {
     body: bodyOf(state),
-    model: summarise(state.dryRun?.report?.plan ?? []),
+    // `summary.total` is the WHOLE plan; `report.plan` may be a bounded window when the daemon
+    // computed it (#100's reply cap). Counting from the rows alone would make the title claim a
+    // shorter plan than the one the token applies — and the summary is the daemon's own count, so
+    // this is not a second derivation of it.
+    model: summarise(state.dryRun?.report?.plan ?? [], state.dryRun?.report?.summary?.total),
     error: state.error ?? null,
     checkedAt: state.checkedAt ?? null,
+    filterable: filterableFor(state),
+    progress: state.progress ?? null,
   };
+}
+
+/**
+ * Whether `Run it without the deletion` can do anything (#192): the daemon holds this plan and will
+ * apply it by name. A plan from the `--dry-run` child has no token and no holder, so the button is
+ * hidden rather than faked — `06-plan.md`'s own rule.
+ */
+export function filterableFor(state = {}) {
+  const token = state.dryRun?.token;
+  return typeof token === "string" && token.length > 0;
+}
+
+/**
+ * `8,431 of 12,480 files`, or the honest fragment of it (#209).
+ *
+ * `null` when the pass has not reached the local scan, so the line is absent rather than `0 of …`.
+ * `PLAN.checkingProgressBare` when the corpus size is unknown or zero — a first run has an empty
+ * index, and a denominator of zero is not a denominator.
+ */
+export function checkingProgressText(progress) {
+  const scanned = progress?.scanned;
+  if (typeof scanned !== "number") return null;
+  const total = progress?.total;
+  return typeof total === "number" && total > 0
+    ? PLAN.checkingProgress(scanned, total)
+    : PLAN.checkingProgressBare(scanned);
 }
 
 /**
@@ -804,7 +872,7 @@ export function renderPlan(state = {}) {
   const handlers = state.handlers ?? {};
   const nodes =
     v.body === "checking"
-      ? checkingBody(handlers)
+      ? checkingBody(handlers, v.progress)
       : v.body === "failed"
         ? failedBody(v.error)
         : v.body === "safe"
@@ -821,8 +889,49 @@ export function renderPlan(state = {}) {
 export function updatePlan(state = {}) {
   if (!view) return null;
   const v = viewOf(state);
-  if (signatureOf(v) === view.sig) return null;
+  if (signatureOf(v) === view.sig) {
+    patchCheckingProgress(v);
+    return null;
+  }
   return renderPlan(state);
+}
+
+/** The progress line, built and masked in one place so the first render and the patch agree. */
+function insertCheckingProgress(body, text) {
+  const node = fid(el("div", { class: "pl-checking-progress" }, text), "checkingProgress");
+  seamMask(node, { pad: 14, padY: 2 });
+  // Before `Stop`, which is the frame's order and the order `.pl-stop`'s 22px gap is measured from.
+  body.insertBefore(node, body.querySelector(".pl-stop"));
+  return node;
+}
+
+/**
+ * Add, move or drop the progress line without rebuilding the body (#209).
+ *
+ * `signatureOf` returns a constant for the checking body on purpose — folding anything into it
+ * would restart the mark's two CSS animations from 0% on every poll, which is the failure
+ * `updateHexagon` exists to prevent. So the line has to be maintained in place, exactly as the
+ * bar's `Checked N ago` is.
+ *
+ * **Adding it here is not an optimisation, it is the only way it is ever drawn.** The screen renders
+ * the checking body the instant the rehearsal is *requested* — before the daemon has acked it, let
+ * alone started scanning — so the first render never has a number and a patch that could only
+ * update existing text would leave the line permanently absent. Inserting a sibling is safe where
+ * `replaceChildren` is not: the mark's own element is untouched, so its animations do not restart.
+ */
+function patchCheckingProgress(v) {
+  if (v.body !== "checking") return;
+  const body = view?.nodes?.[0];
+  if (!body?.querySelector) return;
+  const text = checkingProgressText(v.progress);
+  const node = body.querySelector(".pl-checking-progress");
+  if (text == null) {
+    node?.remove();
+  } else if (!node) {
+    insertCheckingProgress(body, text);
+  } else if (node.textContent !== text) {
+    node.textContent = text;
+  }
 }
 
 /** Drop the cached view — the screen is going away, and the next mount must build from scratch. */

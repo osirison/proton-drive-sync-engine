@@ -68,6 +68,52 @@ pub enum ControlCommand {
     /// [`ListingOutcome::Busy`] instead of waiting. Wire value `"list"`; an older daemon rejects it
     /// as an unknown command.
     List,
+    /// Compute a **plan-only pass** — the rehearsal the Plan screen reviews — on the daemon's own
+    /// client, behind the one CLI gate (#100/#192/#209, and the on-demand half of #317).
+    ///
+    /// **`Syncnow`-shaped, deliberately not `List`-shaped.** A plan is a full local stat-walk plus
+    /// an O(folders) remote walk that can run half an hour; it must never run on the IPC task. So
+    /// this is an immediate ack plus a latch, and the pass runs on the daemon's main loop — which
+    /// is also what makes the existing [`SyncActivity`] describe it, closing #209's progress line
+    /// with no second progress channel. Its pause semantics mirror `syncnow`'s exactly: a paused
+    /// daemon schedules nothing and answers [`PlanOutcome::Paused`].
+    ///
+    /// **The pass observes and consumes nothing.** It persists no event cursor, drains no pending
+    /// changes, clears no first-pass or rescan flag, moves no warm-start counter, writes no history
+    /// row, consumes no delete approval and re-stamps no withheld deletion — one rule with one
+    /// reason: a rehearsal that consumed evidence would leave the real pass unable to re-derive it.
+    ///
+    /// The ack carries the request number to wait for; read the answer with [`Self::PlanResult`].
+    /// Wire value `"plan"`; an older daemon rejects it as an unknown command.
+    Plan,
+    /// Read the last computed plan (and the last apply's verdict) — a query, answered straight from
+    /// the published snapshot like `status`, never by running work. The sibling of [`Self::Plan`]
+    /// exactly as `status` is the sibling of `syncnow`.
+    ///
+    /// Wire value `"plan_result"`; an older daemon rejects it as an unknown command.
+    #[serde(rename = "plan_result")]
+    PlanResult,
+    /// Execute a plan the user reviewed, named by its token in `argument` (#100).
+    ///
+    /// **Re-plan-and-compare, never replay.** The daemon runs a *normal* pass, canonicalises the
+    /// plan it freshly computes, and executes it only if its token equals the one presented. It
+    /// never executes frozen rows: `sync::compute_directory_deletion_verdicts` proves a recursive
+    /// delete against the actions that will *really* be planned (#282), so a verdict proved against
+    /// a tree that has since moved would authorise a deletion nothing re-derived — and an upload of
+    /// since-changed content would ship under a review of different bytes. On divergence nothing is
+    /// executed and the fresh plan is published with a new token, which is the Plan screen's
+    /// re-confirm workaround made atomic instead of racy.
+    ///
+    /// With `skip_destructive` set this is #192's filtered apply: the reviewed plan minus its
+    /// destructive rows.
+    ///
+    /// **Not a latch.** `Resync` and `ResetIndex` survive a pause because they describe what the
+    /// next pass should do; an apply performs deletions under a review that is already minutes old,
+    /// so a pause that overtakes it *cancels* it ([`ApplyOutcome::Failed`]) rather than firing it
+    /// on some later tick. The plan is untouched, so resuming and applying the same token works.
+    ///
+    /// Wire value `"apply"`; an older daemon rejects it as an unknown command.
+    Apply,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,6 +151,21 @@ pub struct ControlRequest {
     /// command. `#[serde(default)]` keeps both directions of the wire compatible.
     #[serde(default)]
     pub direction: Option<DeleteDirection>,
+    /// [`ControlCommand::Apply`] only: run the reviewed plan **minus its destructive rows** (#192's
+    /// `Run it without the deletion`).
+    ///
+    /// The membership test is [`crate::sync::SyncAction::is_destructive`] — the same one
+    /// [`PlanSummary::destructive_actions`] counts with — so the rows dropped are exactly the rows
+    /// the user was shown as destructive.
+    ///
+    /// **This is not the approval gate, and it overrides it.** A destructive row is dropped even
+    /// when a standing approval would have authorised it: the user asked for *this run* without
+    /// them, and an approval answers a different question ("may this deletion ever apply"). The
+    /// approval is left standing and unconsumed, and the deletion re-plans next pass.
+    /// `#[serde(default)]` keeps both directions of the wire compatible, and every other command
+    /// ignores it.
+    #[serde(default)]
+    pub skip_destructive: bool,
 }
 
 /// Default and hard cap on the rows one [`ControlCommand::Activity`] reply carries. A control
@@ -130,6 +191,7 @@ impl ControlRequest {
             window_secs: None,
             limit: None,
             direction: None,
+            skip_destructive: false,
         }
     }
 }
@@ -197,6 +259,123 @@ pub enum ListingOutcome {
     /// `auth` field already says so.
     Failed { error: String },
     /// A state added by a newer daemon. Render it as "unavailable"; never as an empty folder.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Default and hard cap on the plan rows one reply carries **beyond its destructive ones**. Same
+/// reason as [`LIST_ENTRIES_DEFAULT_LIMIT`]: the reply is one JSON line read into memory whole, and
+/// a first sync of a large folder plans tens of thousands of rows.
+///
+/// **It is not a bound on the reply, and the difference is deliberate.** A reply carries *every*
+/// destructive row plus at most this many of the rest, so its worst case is
+/// `summary.destructive_actions + limit` — a plan that deletes 12,000 files sends 12,000 rows
+/// whatever the cap. That is the trade this window is built around: `files_at_risk` is safety copy
+/// and a plan whose deletions fell off the end reads as safe, so the deletions are the one thing a
+/// cap may not reach. A client sizing a buffer must read the sum, not this constant.
+///
+/// **Truncating the rest is safe only because of the token.** A client applies a plan by naming its
+/// token, never by sending rows back, so the window is a *rendering* and the daemon still executes
+/// the whole plan either way.
+pub const PLAN_ACTIONS_DEFAULT_LIMIT: usize = 500;
+pub const PLAN_ACTIONS_MAX_LIMIT: usize = 5_000;
+
+/// The answer to a [`ControlCommand::Plan`] or [`ControlCommand::PlanResult`] request.
+///
+/// Typed, internally tagged, and `#[serde(other)]`-terminated, following [`ListingOutcome`]: a
+/// client must never tell "still working" from "it failed" by matching a sentence (#103).
+///
+/// **`plan_seq` is the whole synchronisation contract.** [`Self::Scheduled`] carries the request
+/// number the ack booked; every other variant carries the number the daemon has *answered*. A
+/// client waits until `plan_seq >= its ack's plan_seq`, exactly as `syncnow` waits on
+/// `reconcile_seq` — but on its own counter, because a plan pass deliberately does **not** bump
+/// `reconcile_seq`: doing so would satisfy a concurrent `syncnow` watcher's target early and make
+/// it report a sync that never ran.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum PlanOutcome {
+    /// Ack for [`ControlCommand::Plan`]: a plan-only pass is scheduled. Wait for `plan_seq`.
+    Scheduled { plan_seq: u64 },
+    /// A plan pass is scheduled or running. Retryable as-is.
+    ///
+    /// **`plan_seq` is the last generation *answered*, not the one in flight** — the only number
+    /// the plane can state, since the request being computed has no answer yet. It is therefore
+    /// strictly below every outstanding request, and a client must read this arm as "not yet, keep
+    /// polling" and **never** compare it against its own ack's `plan_seq`: that comparison would
+    /// resolve a wait with the *previous* plan, which is the exact confusion booking a generation
+    /// before the ack is built exists to prevent. Only [`Self::Computed`] and [`Self::Failed`]
+    /// carry a generation that answers anything.
+    Computing { plan_seq: u64 },
+    /// The reviewed plan. Boxed because it is two orders of magnitude larger than every other arm,
+    /// and this enum rides on a reply that mostly carries the small ones.
+    Computed(Box<ReviewedPlan>),
+    /// The plan pass failed. Display-only text; a client must not classify it by matching it.
+    Failed { plan_seq: u64, error: String },
+    /// Syncing is paused, so nothing was scheduled — the same answer `syncnow` gives, for the same
+    /// reason: a paused daemon runs no passes, and a plan is a pass.
+    Paused,
+    /// Nothing has been planned in this daemon run. Not an empty plan.
+    Absent,
+    /// A state added by a newer daemon. Render it as "unavailable"; never as an empty plan.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The payload of [`PlanOutcome::Computed`]: one plan, as the user reviews it.
+///
+/// Flattened onto the outcome by serde's internally-tagged representation, so on the wire this is
+/// `{"state":"computed", "token":…, "summary":…, …}` — one object, not a nested one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewedPlan {
+    pub plan_seq: u64,
+    /// The plan's identity (see [`crate::sync::plan_token`]) — what an `apply` is pinned to.
+    pub token: String,
+    pub computed_epoch_secs: u64,
+    pub summary: PlanSummary,
+    /// A window over the plan: **every** destructive row, then as many of the rest as the request's
+    /// limit allows (see [`PLAN_ACTIONS_MAX_LIMIT`], which bounds only that second part — this
+    /// vector can be longer). `total` is the untruncated plan length, and `truncated` says whether
+    /// anything was held back.
+    pub actions: Vec<crate::sync::PlannedAction>,
+    pub total: usize,
+    pub truncated: bool,
+    /// What the plan's own local walk **dropped** as unsyncable (#315/#232). Deliberately not
+    /// spelled `unsyncable`, which on [`ControlResponse`] means the persistent merged store — this
+    /// is one observation, with no age and nothing merged into it.
+    #[serde(default)]
+    pub cannot_sync: Vec<crate::index::UnsyncableEntry>,
+}
+
+/// The answer to a [`ControlCommand::Apply`] request — the ack states, then the verdict the pass
+/// leaves behind for the next [`ControlCommand::PlanResult`] to collect.
+///
+/// Same rules as [`PlanOutcome`], and the same counter discipline on `apply_seq`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum ApplyOutcome {
+    /// Ack: the token names the current plan, and a pass is scheduled to re-plan, compare and
+    /// execute. Wait for `apply_seq`.
+    Scheduled { apply_seq: u64 },
+    /// The token names no current plan — superseded by a newer one, or left over from a previous
+    /// daemon run. **Nothing was scheduled**: one stored plan at a time, latest wins, and a stale
+    /// token is refused rather than silently upgraded into a fresh apply of something unreviewed.
+    Stale,
+    /// Syncing is paused, so nothing was scheduled (as `syncnow`).
+    Paused,
+    /// The pass executed the reviewed plan. `skipped_destructive` is #192's dropped-row count —
+    /// `0` on an ordinary apply — and `failed` is the partial-pass count (#136).
+    Applied {
+        apply_seq: u64,
+        executed: usize,
+        skipped_destructive: usize,
+        failed: usize,
+    },
+    /// The freshly computed plan differed from the reviewed one, so **nothing was executed**. The
+    /// same reply's `plan` field carries the new plan and its new token: re-review, then apply that.
+    Diverged { apply_seq: u64 },
+    /// The pass failed before it could decide. Display-only text.
+    Failed { apply_seq: u64, error: String },
+    /// A state added by a newer daemon. Never render it as "applied".
     #[serde(other)]
     Unknown,
 }
@@ -474,6 +653,15 @@ pub struct PassHistory {
 /// draws.
 pub const PASS_HISTORY_REPORTED: usize = 20;
 
+/// [`PassProgress::kind`] for a plan-only pass (#209) — the rehearsal, not a sync.
+///
+/// Deliberately **not** an `index::PassKind` variant: a plan pass writes no `sync_passes` row, so
+/// it has no stored kind, and inventing one would put a value in that column's vocabulary that no
+/// row can ever hold. `kind` is an open token precisely so a live-only value can live here, and a
+/// client that does not know this one renders it verbatim. What it buys: a screen reading
+/// `files_scanned` can tell "my rehearsal is running" from "a sync started".
+pub const PLAN_PASS_KIND: &str = "plan";
+
 /// One row of the transfer queue: a file moving now, or one planned and not started.
 ///
 /// **A PER-FILE PERCENTAGE IS UNREACHABLE HERE, BY CONSTRUCTION — NOT UNIMPLEMENTED (#98).**
@@ -727,6 +915,16 @@ pub struct ControlResponse {
     /// The answer to a [`ControlCommand::List`] request, and `None` on every other reply.
     #[serde(default)]
     pub listing: Option<ListingOutcome>,
+    /// The answer to a [`ControlCommand::Plan`] / [`ControlCommand::PlanResult`] request, and
+    /// `None` on every other reply — including `status`, deliberately: a reviewed plan can be tens
+    /// of thousands of rows and the GUI polls status every two seconds.
+    #[serde(default)]
+    pub plan: Option<PlanOutcome>,
+    /// The answer to a [`ControlCommand::Apply`] request, and — on a
+    /// [`ControlCommand::PlanResult`] reply — the verdict the last apply pass left behind. `None`
+    /// on every other reply.
+    #[serde(default)]
+    pub apply: Option<ApplyOutcome>,
     /// What the daemon believes about the Proton session (see [`AuthState`]). Rides on **every**
     /// reply, not just `status`: a `list` that is refused for an expired session is the fastest
     /// evidence there is, and the client that asked for it is the one that most needs to know.
@@ -1078,6 +1276,112 @@ mod tests {
         assert_eq!(decoded.argument.as_deref(), Some("a/b"));
         // No reserved word, so no `literal_path` to set: a folder named `all` is just a folder.
         assert!(!decoded.literal_path);
+    }
+
+    #[test]
+    fn the_plan_family_commands_have_stable_wire_values() {
+        // Wire-visible names, pinned. `plan_result` needs the explicit rename for the same reason
+        // `reset_index` does — the container is `rename_all = "lowercase"`, which would spell it
+        // `planresult`.
+        for (command, wire) in [
+            (ControlCommand::Plan, r#""command":"plan""#),
+            (ControlCommand::PlanResult, r#""command":"plan_result""#),
+            (ControlCommand::Apply, r#""command":"apply""#),
+        ] {
+            let encoded =
+                serde_json::to_string(&ControlRequest::new(command.clone())).expect("encode");
+            assert!(encoded.contains(wire), "{encoded}");
+        }
+        let decoded: ControlRequest = serde_json::from_str(
+            r#"{"command":"apply","argument":"1:abc","skip_destructive":true}"#,
+        )
+        .expect("decode");
+        assert_eq!(decoded.command, ControlCommand::Apply);
+        assert_eq!(decoded.argument.as_deref(), Some("1:abc"));
+        assert!(decoded.skip_destructive);
+        // An older client omits the flag, and omitting it means "run the whole plan".
+        let legacy: ControlRequest =
+            serde_json::from_str(r#"{"command":"apply","argument":"1:abc"}"#).expect("decode");
+        assert!(!legacy.skip_destructive);
+    }
+
+    #[test]
+    fn a_plan_outcome_round_trips_and_an_unknown_state_is_not_an_empty_plan() {
+        let computed = PlanOutcome::Computed(Box::new(ReviewedPlan {
+            plan_seq: 3,
+            token: "1:abc".to_owned(),
+            computed_epoch_secs: 42,
+            summary: PlanSummary::default(),
+            actions: Vec::new(),
+            total: 0,
+            truncated: false,
+            cannot_sync: Vec::new(),
+        }));
+        let json = serde_json::to_string(&computed).expect("serialize");
+        assert!(json.contains(r#""state":"computed""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<PlanOutcome>(&json).expect("round trip"),
+            computed
+        );
+        assert_eq!(
+            serde_json::to_string(&PlanOutcome::Paused).expect("serialize"),
+            r#"{"state":"paused"}"#
+        );
+
+        // A state a newer daemon invented degrades rather than failing the reply — and critically
+        // does NOT land on `computed` with no rows, which a client would draw as "nothing to do".
+        let future: PlanOutcome =
+            serde_json::from_str(r#"{"state":"queued-behind-a-sync","eta":30}"#)
+                .expect("an unknown state must parse");
+        assert_eq!(future, PlanOutcome::Unknown);
+    }
+
+    #[test]
+    fn an_apply_outcome_round_trips_and_an_unknown_state_is_never_applied() {
+        let applied = ApplyOutcome::Applied {
+            apply_seq: 2,
+            executed: 7,
+            skipped_destructive: 1,
+            failed: 0,
+        };
+        let json = serde_json::to_string(&applied).expect("serialize");
+        assert!(json.contains(r#""state":"applied""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ApplyOutcome>(&json).expect("round trip"),
+            applied
+        );
+        assert_eq!(
+            serde_json::to_string(&ApplyOutcome::Stale).expect("serialize"),
+            r#"{"state":"stale"}"#
+        );
+        let future: ApplyOutcome =
+            serde_json::from_str(r#"{"state":"queued"}"#).expect("an unknown state must parse");
+        assert_eq!(future, ApplyOutcome::Unknown);
+        assert!(
+            !matches!(future, ApplyOutcome::Applied { .. }),
+            "an unrecognised verdict must never read as a completed apply"
+        );
+    }
+
+    #[test]
+    fn a_status_reply_carries_no_plan_and_an_older_daemons_reply_still_parses() {
+        // The plan rides only on the plan-family replies: a reviewed plan can be tens of thousands
+        // of rows and the GUI polls `status` every two seconds.
+        let legacy = r#"{
+            "status": "running",
+            "paused": false,
+            "pending_changes": 0,
+            "message": "daemon status",
+            "last_sync_epoch_secs": null,
+            "last_error": null,
+            "last_plan_summary": null,
+            "last_successful_sync_summary": null,
+            "status_history": []
+        }"#;
+        let response: ControlResponse =
+            serde_json::from_str(legacy).expect("legacy reply must parse");
+        assert!(response.plan.is_none());
+        assert!(response.apply.is_none());
     }
 
     #[test]
@@ -1456,6 +1760,33 @@ mod tests {
                 total: 1,
                 truncated: false,
             }),
+            // A plan is nothing but paths, and #270 guarantees a non-UTF-8 one is *planned* rather
+            // than dropped — so a reviewed plan holding one must not fail the reply that carries it
+            // (the #300 rule, one layer up).
+            plan: Some(PlanOutcome::Computed(Box::new(ReviewedPlan {
+                plan_seq: 1,
+                token: "1:abc".to_owned(),
+                computed_epoch_secs: 5,
+                summary: PlanSummary::default(),
+                actions: vec![crate::sync::PlannedAction {
+                    path: non_utf8_path(b"-planned.txt"),
+                    destination_path: Some(non_utf8_path(b"-moved-to.txt")),
+                    action: SyncAction::MoveLocal,
+                    entity_kind: EntityKind::File,
+                    conflict_path: None,
+                    remote_id: None,
+                    sidecar_from_local_copy: false,
+                    skip_reason: None,
+                    size_bytes: None,
+                }],
+                total: 1,
+                truncated: false,
+                cannot_sync: vec![crate::index::UnsyncableEntry {
+                    relative_path: non_utf8_path(b"-socket"),
+                    reason: UnsyncableReason::LocalSocket,
+                }],
+            }))),
+            apply: Some(ApplyOutcome::Diverged { apply_seq: 1 }),
             auth: AuthState::SignedOut,
         }
     }
@@ -1519,6 +1850,24 @@ mod tests {
         assert_eq!(
             event.source_path,
             Some(PathBuf::from(&*wire_path(&non_utf8_path(b"-original"))))
+        );
+        // The reviewed plan is the newest wire surface made of paths, and both halves of it — the
+        // rows and the walk's own drops (#315) — go through the same rendering.
+        let PlanOutcome::Computed(plan) = back.plan.expect("plan") else {
+            panic!("the plan outcome must survive the round trip as `computed`");
+        };
+        let (actions, cannot_sync) = (&plan.actions, &plan.cannot_sync);
+        assert_eq!(
+            actions[0].path,
+            PathBuf::from(&*wire_path(&non_utf8_path(b"-planned.txt")))
+        );
+        assert_eq!(
+            actions[0].destination_path,
+            Some(PathBuf::from(&*wire_path(&non_utf8_path(b"-moved-to.txt"))))
+        );
+        assert_eq!(
+            cannot_sync[0].relative_path,
+            PathBuf::from(&*wire_path(&non_utf8_path(b"-socket")))
         );
     }
 

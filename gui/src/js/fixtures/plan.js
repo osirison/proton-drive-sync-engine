@@ -140,24 +140,23 @@ export const PLAN_FIXTURES = {
   // There is no `dryRun` key because the command has not resolved. That is the whole state.
   //
   // The progress line `8,431 of 12,480 files` is `PLAN.checkingProgress(done, total)`, so the
-  // fixture pins two numbers and the app renders the string (rule 2). NEITHER HALF HAS A SOURCE, and
-  // they are two separate gaps that happen to meet in one sentence:
+  // fixture pins two numbers and the app renders the string (rule 2). BOTH HALVES NOW HAVE A SOURCE,
+  // and they still come from two different places:
   //
-  //   · `8,431` — `run_dry_run` is a single async command with NO progress channel: it resolves
-  //     once, at the end. The daemon's `SyncActivity` does carry `files_scanned`, but it describes
-  //     the daemon's own reconcile, not the GUI's separate `--dry-run` child process. **G9 (#209.)**
-  //   · `of 12,480` — the index-wide file count, which nothing reports. **G7 (#207)**, and the same
-  //     number `7a Activity quiet` and `8a Settings` draw.
+  //   · `8,431` — `activity.files_scanned`, published by the daemon's own plan-only pass. The
+  //     rehearsal moved onto the daemon's main loop (#209), so the activity surface that already
+  //     described a sync now describes this walk too; `activity.pass.kind === "plan"` is what makes
+  //     it THIS rehearsal's number rather than a sync's.
+  //   · `of 12,480` — `index_totals.files`, the corpus size (#207), and the same number
+  //     `7a Activity quiet` and `8a Settings` draw.
   //
-  // Both are pinned rather than omitted, and the distinction is the one the contract draws: neither
-  // is a field SHAPE that could pre-empt the design of the thing that fills it. `12,480` is a scalar
-  // and will be a scalar whatever #207 lands as, so carrying it settles nothing — where a
-  // `{ upBytes, downBytes }` for G2 would have. `activity.js` and `settings.js` carry the same count
-  // for the same reason, so the three frames drawing it agree.
+  // Pinned under `ui` rather than assembled from a `status` reply because the *shape* of a live
+  // reply mid-pass is not what this frame is about: it is one drawn line, and the screen's own
+  // `planProgress()` is what turns a poll into this pair.
   "5a Checking": {
     status: idleDaemon(),
     localTotals: { files: 12_480 },
-    ui: { checking: true, scanned: 8431 },
+    ui: { checking: true, progress: { scanned: 8431, total: 12_480 } },
     route: "plan",
     fids: planFids("checking"),
   },
@@ -189,6 +188,12 @@ export const PLAN_FIXTURES = {
       // Only gated rows contribute — the user-data files a destructive apply would remove. A purge
       // would never appear here even though it is tinted like one.
       files_at_risk: ["archive/old-notes.md"],
+      // The plan's token (#100) — present because the DAEMON computed this plan and is holding it.
+      // It is what `Run it without the deletion` names (#192), so this key is exactly the difference
+      // between that button existing and not: a plan from the `--dry-run` child carries none, and
+      // the button is hidden rather than faked. The value is a `sync::plan_token` rendering
+      // (`<version>:<sha1>`), pinned as a literal because nothing here computes one.
+      token: "1:0f3a9c1d7e5b2a48c6d0e9f18b3427a5cd06e2f4",
     },
     route: "plan",
     fids: planFids("plan"),
