@@ -252,6 +252,33 @@ impl LocalEntityState {
     }
 }
 
+/// One entry the local walk **dropped because the engine cannot sync it** — a socket, a symlink, a
+/// FIFO, a device node (#232). The local half of [`crate::sync::UnsyncableItem`], minus the
+/// first-seen stamp, which belongs to whoever merges these into the standing list
+/// (`daemon::record_unsyncable`); the scan itself observes only what is there now.
+///
+/// This is deliberately **not** every entry the walk skipped. A path an exclude glob, an include
+/// filter, `.proton-sync.toml`, a conflict sidecar or the `.sync` state directory hides is
+/// *excluded*, not unsyncable — the user's own rules are the other group on the same dialog, and
+/// conflating the two would file a rule the user wrote under "cannot be synced at all".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsyncableEntry {
+    /// Relative to the scan root.
+    pub relative_path: PathBuf,
+    pub reason: UnsyncableReason,
+}
+
+/// Everything one local stat-walk observed: the entities it kept, and the entries it dropped as
+/// unsyncable. One struct so the two can only ever come from the same walk — a caller that merges
+/// the second into a standing list is asserting that the first is a complete view of the tree at
+/// the same moment, and two separately-obtained halves could not carry that.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalScan {
+    pub entities: HashMap<PathBuf, LocalEntityState>,
+    /// Ordered by discovery, which is `read_dir` order — the caller sorts or keys as it needs.
+    pub unsyncable: Vec<UnsyncableEntry>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
     ignored_relative_paths: Vec<PathBuf>,
@@ -1347,6 +1374,44 @@ pub fn file_events(
     })
 }
 
+/// The most recent side effect at `path` that actually **moved bytes** — the newest event row
+/// whose action has a [`SyncAction::transfer_direction`] — or `None` (#233).
+///
+/// This is the only remote-side timestamp the engine has, and it is a fact about a transfer this
+/// daemon performed, never a local file's mtime. `file_index` holds no remote revision time: the
+/// CLI listing is parsed for `activeRevision.claimedDigests.sha1` and nothing else, so there is no
+/// column to read and none is added — the history log written behind every landed side effect
+/// (#308) already answers "when did bytes last cross for this path", which is the question.
+///
+/// **`None` means the engine has no record of moving this path's bytes**, which is four honest
+/// cases and not an error: nothing ever transferred; the last transfer aged out of
+/// [`HistoryRetention`] (20k rows / 90 days); the file was adopted rather than transferred
+/// (`AutoLink` moves no bytes); or it has been moved since, because an event row keeps the path the
+/// action landed at and this query does not chase `source_path` chains backwards.
+///
+/// The direction on the returned event is load-bearing for anything that renders it: a `Download`
+/// (or a conflict sidecar fetch, which records the **file's** path, not the sidecar's) says when
+/// *this computer* received bytes, and only an `Upload` says when Proton Drive did.
+///
+/// Scans newest-first and stops at the first hit, so a path with a long history costs one row read.
+pub fn last_transfer(connection: &Connection, path: &Path) -> AppResult<Option<FileEvent>> {
+    let mut statement = connection.prepare(
+        "SELECT pass_id, path, source_path, action, bytes, at FROM sync_events \
+         WHERE path = ?1 ORDER BY id DESC",
+    )?;
+    let rows = statement.query_map(params![index_key(path)], read_file_event)?;
+    for row in rows {
+        // A row whose action token this build cannot name is `None` here, and an unknown action
+        // has no known direction either — skipping it is the same decision `file_events` makes.
+        if let Some(event) = row?
+            && event.action.transfer_direction().is_some()
+        {
+            return Ok(Some(event));
+        }
+    }
+    Ok(None)
+}
+
 /// Every distinct path in the event log within a window. Small by construction (the log is bounded
 /// by [`HistoryRetention`]), and the only way to reach a **non-UTF-8** path from the wire: those
 /// are published as `to_string_lossy`, so a selector a user copies off the screen no longer has the
@@ -1660,18 +1725,42 @@ pub fn scan_local_entities_observed(
     known: &HashMap<PathBuf, FileRecord>,
     observer: Option<ScanObserver<'_>>,
 ) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
-    let mut entities = HashMap::new();
-    let mut files_seen = 0u64;
-    visit_directory(
-        root,
+    Ok(scan_local_tree(root, options, known, observer)?.entities)
+}
+
+/// The full local stat-walk: every entity the engine can sync, **and** every entry it dropped as
+/// unsyncable (#232). The other `scan_local_*` functions are this one with the second half thrown
+/// away; a caller that reports what cannot be synced wants this one.
+///
+/// There is no partial form. The walk always starts at `root` and visits the whole tree (minus
+/// untraversable subtrees), which is what lets a caller treat the absence of a path from
+/// [`LocalScan::unsyncable`] as evidence rather than as a gap.
+pub fn scan_local_tree(
+    root: &Path,
+    options: &ScanOptions,
+    known: &HashMap<PathBuf, FileRecord>,
+    observer: Option<ScanObserver<'_>>,
+) -> AppResult<LocalScan> {
+    let context = WalkContext {
         root,
         options,
         known,
-        &mut entities,
         observer,
-        &mut files_seen,
-    )?;
-    Ok(entities)
+    };
+    let mut scan = LocalScan::default();
+    let mut files_seen = 0u64;
+    visit_directory(&context, root, &mut scan, &mut files_seen)?;
+    Ok(scan)
+}
+
+/// The inputs [`visit_directory`] carries unchanged down the recursion, bundled so the recursive
+/// call stays under clippy's argument limit and so adding an input is one field, not one parameter
+/// at every level.
+struct WalkContext<'a> {
+    root: &'a Path,
+    options: &'a ScanOptions,
+    known: &'a HashMap<PathBuf, FileRecord>,
+    observer: Option<ScanObserver<'a>>,
 }
 
 /// See [`scan_local_files`] for the default-naming caveat.
@@ -1681,14 +1770,17 @@ pub fn scan_local_entities(root: &Path) -> AppResult<HashMap<PathBuf, LocalEntit
 }
 
 fn visit_directory(
-    root: &Path,
+    context: &WalkContext<'_>,
     directory: &Path,
-    options: &ScanOptions,
-    known: &HashMap<PathBuf, FileRecord>,
-    entities: &mut HashMap<PathBuf, LocalEntityState>,
-    observer: Option<ScanObserver<'_>>,
+    scan: &mut LocalScan,
     files_seen: &mut u64,
 ) -> AppResult<()> {
+    let WalkContext {
+        root,
+        options,
+        known,
+        observer,
+    } = *context;
     // Note: this `read_dir` is NOT vanish-tolerant on purpose. For a *child* directory the
     // recursion call below maps its NotFound to a skip, but the top-level call must still
     // fail when the scan root itself is gone — treating a missing root as an empty tree
@@ -1717,7 +1809,7 @@ fn visit_directory(
                     else {
                         continue;
                     };
-                    entities.insert(
+                    scan.entities.insert(
                         state.relative_path.clone(),
                         LocalEntityState::Directory(state),
                     );
@@ -1725,13 +1817,25 @@ fn visit_directory(
                 // A NotFound surfacing here is this child directory's own `read_dir`
                 // failing (the directory vanished mid-scan) — deeper vanishes were
                 // already skipped inside the recursion.
-                vanished_entry_to_skip(visit_directory(
-                    root, &path, options, known, entities, observer, files_seen,
-                ))?;
+                vanished_entry_to_skip(visit_directory(context, &path, scan, files_seen))?;
             }
             continue;
         }
-        if !file_type.is_file() || !options.allows_relative_file(relative_path) {
+        // Everything below this point is a non-directory entry, and the two ways it can be
+        // dropped are two different facts about it (#232). The rule test comes FIRST, so a
+        // socket the user's own exclude glob already hides is never also reported as
+        // unsyncable: "you told it to skip these" and "these can't be synced at all" are the
+        // two groups on one dialog, and a path that answers to a rule belongs to the first.
+        if !options.allows_relative_file(relative_path) {
+            continue;
+        }
+        // A symlink, socket, FIFO or device node. It was already dropped here before #232 — the
+        // only change is that the drop is now *reported* instead of silent.
+        if !file_type.is_file() {
+            scan.unsyncable.push(UnsyncableEntry {
+                relative_path: relative_path.to_path_buf(),
+                reason: local_unsyncable_reason(&file_type),
+            });
             continue;
         }
         if let Some(observe) = observer {
@@ -1743,9 +1847,36 @@ fn visit_directory(
         else {
             continue;
         };
-        entities.insert(state.relative_path.clone(), LocalEntityState::File(state));
+        scan.entities
+            .insert(state.relative_path.clone(), LocalEntityState::File(state));
     }
     Ok(())
+}
+
+/// Why the walk cannot sync a local entry that is neither a regular file nor a directory (#232).
+///
+/// `file_type` comes from [`fs::DirEntry::file_type`], which does **not** traverse a symlink — so a
+/// link to a regular file lands here rather than being followed, which is the behaviour this engine
+/// has always had. Reporting it does not change it: following links would let the tree escape its
+/// own root, cycle, and store the target's bytes under a second name.
+///
+/// The final arm is unreachable on a POSIX filesystem (the seven types above it are all of them)
+/// and exists so an entry the scan drops is always *named*. A silent `_` here would be the shape
+/// this whole issue is about.
+fn local_unsyncable_reason(file_type: &fs::FileType) -> UnsyncableReason {
+    use std::os::unix::fs::FileTypeExt;
+
+    if file_type.is_symlink() {
+        UnsyncableReason::LocalSymlink
+    } else if file_type.is_socket() {
+        UnsyncableReason::LocalSocket
+    } else if file_type.is_fifo() {
+        UnsyncableReason::LocalFifo
+    } else if file_type.is_block_device() || file_type.is_char_device() {
+        UnsyncableReason::LocalDevice
+    } else {
+        UnsyncableReason::LocalSpecialFile
+    }
 }
 
 /// Maps a per-entry scan error to a skip when the entry vanished between `read_dir` listing
@@ -2347,19 +2478,18 @@ mod tests {
         // A child directory that vanished before its own read_dir (the recursion call site).
         let options = ScanOptions::new(directory.path(), &[], &[], &[], &ConflictNaming::default())
             .expect("options");
-        let mut entities = HashMap::new();
+        let known = HashMap::new();
+        let context = WalkContext {
+            root: directory.path(),
+            options: &options,
+            known: &known,
+            observer: None,
+        };
+        let mut scan = LocalScan::default();
         assert!(
-            vanished_entry_to_skip(visit_directory(
-                directory.path(),
-                &missing,
-                &options,
-                &HashMap::new(),
-                &mut entities,
-                None,
-                &mut 0,
-            ))
-            .expect("a directory vanishing before its read_dir maps to a skip")
-            .is_none()
+            vanished_entry_to_skip(visit_directory(&context, &missing, &mut scan, &mut 0))
+                .expect("a directory vanishing before its read_dir maps to a skip")
+                .is_none()
         );
 
         // Any other error propagates unchanged: a permission failure must still fail the

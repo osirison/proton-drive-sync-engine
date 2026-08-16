@@ -1,17 +1,17 @@
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
-    EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals,
-    LocalEntityState, LocalFileState, PassKind, PassOutcomeKind, ScanOptions, SyncStatus,
+    EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals, LocalEntityState,
+    LocalFileState, LocalScan, PassKind, PassOutcomeKind, ScanOptions, SyncStatus, UnsyncableEntry,
     WithheldDeletion, begin_pass, byte_totals_since, delete_delete_approval, file_events,
     finish_pass, get_record, index_totals, insert_file_events, last_full_sweep, load_event_cursor,
     load_existing_index, load_index, load_sole_event_cursor, load_unsyncable_items,
     load_warm_start_count, load_withheld_deletions, local_directory_state, local_file_state,
     mark_modified, matching_delete_approval, open_database, path_for_proton_id, prune_history,
     purge_record, purge_subtree_records, recent_passes, replace_unsyncable_items,
-    replace_withheld_deletions, reset_index_state, scan_local_entities_observed,
-    scan_local_entities_reusing_hashes, store_event_cursor, store_warm_start_count,
-    upsert_delete_approval, upsert_record,
+    replace_withheld_deletions, reset_index_state, scan_local_entities_reusing_hashes,
+    scan_local_tree, store_event_cursor, store_warm_start_count, upsert_delete_approval,
+    upsert_record,
 };
 use crate::ipc::{
     ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ControlCommand, ControlResponse,
@@ -27,8 +27,8 @@ use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remot
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
     ConflictNaming, DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction,
-    TransferDirection, UnsyncableItem, directory_move_descendant_path_pairs, is_strict_descendant,
-    plan_sync_entities_with_stats, unsyncable_items,
+    TransferDirection, UnsyncableItem, UnsyncableOrigin, directory_move_descendant_path_pairs,
+    is_strict_descendant, plan_sync_entities_with_stats, unsyncable_items,
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -1720,8 +1720,8 @@ impl<C: ProtonClient> Daemon<C> {
             return Ok(IncrementalOutcome::Idle);
         }
 
-        let local_entities = self.scan_local_entities_reporting_progress(base_records)?;
-        let local_files = local_files_from_entities(&local_entities);
+        let local_scan = self.scan_local_entities_reporting_progress(base_records)?;
+        let local_files = local_files_from_entities(&local_scan.entities);
         let base_index = filter_base_index(base_records.clone(), &self.scan_options);
 
         let remote_entities = {
@@ -1749,7 +1749,7 @@ impl<C: ProtonClient> Daemon<C> {
         };
 
         let outcome = self.execute_plan_and_commit(
-            &local_entities,
+            &local_scan,
             &local_files,
             &remote_entities,
             &base_index,
@@ -1805,10 +1805,14 @@ impl<C: ProtonClient> Daemon<C> {
 
     /// The daemon's local scan, surfacing per-file progress into [`ControlShared`] so a slow
     /// pass over large files (SHA-1 hashing is the cost) reads as alive in status replies.
+    ///
+    /// Returns the whole [`LocalScan`], entries dropped as unsyncable included (#232). Every caller
+    /// walks the **entire** tree — there is no partial local scan — which is what lets
+    /// [`Self::record_unsyncable`] read the absence of a path from `scan.unsyncable` as evidence.
     fn scan_local_entities_reporting_progress(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
-    ) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
+    ) -> AppResult<LocalScan> {
         self.shared
             .begin_activity(new_activity(PHASE_SCANNING_LOCAL));
         let observer = |files_seen: u64, path: &Path| {
@@ -1823,7 +1827,7 @@ impl<C: ProtonClient> Daemon<C> {
                     activity.detail = Some(display);
                 });
         };
-        scan_local_entities_observed(
+        scan_local_tree(
             &self.config.local_root,
             &self.scan_options,
             base_records,
@@ -1851,8 +1855,8 @@ impl<C: ProtonClient> Daemon<C> {
         // periodic resync (`events_full_scan_every = N`).
         let pre_snapshot_cursor = self.capture_pre_snapshot_cursor(&base_records);
 
-        let local_entities = self.scan_local_entities_reporting_progress(&base_records)?;
-        let local_files = local_files_from_entities(&local_entities);
+        let local_scan = self.scan_local_entities_reporting_progress(&base_records)?;
+        let local_files = local_files_from_entities(&local_scan.entities);
         // The client's progress sink updates the per-folder count/path from inside the walk;
         // this just flips the phase so status shows "listing remote" the moment it starts.
         self.shared
@@ -1871,7 +1875,7 @@ impl<C: ProtonClient> Daemon<C> {
         );
 
         let outcome = self.execute_plan_and_commit(
-            &local_entities,
+            &local_scan,
             &local_files,
             &remote_entities,
             &base_index,
@@ -1978,8 +1982,16 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
-    /// Folds this pass's `SkipUnsupported` rows into the standing unsyncable list, names each new
-    /// one at `warn` exactly once per run, and persists the result (#295).
+    /// Folds this pass's evidence into the standing unsyncable list, names each new entry at `warn`
+    /// exactly once per run, and persists the result (#295, #232).
+    ///
+    /// Two producers feed it, and they are two different observations:
+    ///
+    /// * the plan's `SkipUnsupported` rows — a remote node the CLI cannot download as bytes, or a
+    ///   local name that is not valid UTF-8;
+    /// * `local_unsyncable`, the entries the local stat-walk **dropped** (a socket, symlink, FIFO
+    ///   or device node). These never reach the planner at all: nothing records them in
+    ///   `file_index`, and the planner is only ever handed entities the scan kept.
     ///
     /// A merge rather than a replacement, because a skipped entity is **never recorded in
     /// `file_index`**: it is absent from the baseline `reconstruct_remote` overlays, so an
@@ -1988,16 +2000,30 @@ impl<C: ProtonClient> Daemon<C> {
     /// (event-driven by default, warm start on boot), which is the invisibility being fixed. The
     /// three clauses:
     ///
-    /// * every skip this pass planned is added (first-seen preserved for one already listed);
+    /// * everything this pass observed is added (first-seen preserved for one already listed);
     /// * a path this pass planned some *other* action for is dropped — it became syncable, and any
-    ///   pass can prove that;
-    /// * only a `full_snapshot` pass drops the paths it did not re-derive, since only a full-tree
-    ///   walk can prove a path is unsyncable no longer by its *absence*.
+    ///   pass can prove that — **unless this pass also observed it as unsyncable**, which happens
+    ///   when a synced file is replaced by a socket: the planner sees the file gone and plans a
+    ///   delete while the scan sees the socket. Direct observation wins, and the path is reported
+    ///   as both, because it *is* both;
+    /// * a path this pass did **not** observe is dropped only when this pass's evidence covers
+    ///   where that reason comes from — see [`UnsyncableOrigin`]. Local reasons prune here
+    ///   unconditionally: every caller of this function ran the whole local stat-walk first (both
+    ///   `bootstrap_reconcile` and `try_incremental_reconcile` scan before planning, and the
+    ///   events-mode idle fast-path returns before either), so its silence about a local path is
+    ///   evidence. Remote and unknown reasons need a `full_snapshot`, since an incremental pass's
+    ///   remote map is `base ⊕ delta` over a baseline no skip is in.
     ///
-    /// So an entity that disappears remotely between full walks lingers in the list until the next
-    /// one (`proton-sync resync` forces it). Display-only data: a stale row misleads nobody into a
-    /// side effect, and the planner re-derives every skip from ground truth regardless.
-    fn record_unsyncable(&mut self, plan: &[PlannedAction], full_snapshot: bool) {
+    /// So a Proton Docs file deleted remotely between full walks lingers in the list until the next
+    /// one (`proton-sync resync` forces it), while a deleted socket goes on the next pass that
+    /// plans anything at all. Display-only data either way: a stale row misleads nobody into a side
+    /// effect, and the planner re-derives every skip from ground truth regardless.
+    fn record_unsyncable(
+        &mut self,
+        plan: &[PlannedAction],
+        local_unsyncable: &[UnsyncableEntry],
+        full_snapshot: bool,
+    ) {
         // `destination_path` counts as much as `path`: a move's destination is a path this pass
         // planned a real action ONTO, so a stale entry there is contradicted by the same evidence.
         let superseded: HashSet<&Path> = plan
@@ -2007,18 +2033,35 @@ impl<C: ProtonClient> Daemon<C> {
                 std::iter::once(action.path.as_path()).chain(action.destination_path.as_deref())
             })
             .collect();
-        let skips = unsyncable_items(plan, current_epoch_secs());
-        let rederived: HashSet<&Path> = skips.iter().map(|item| item.path.as_path()).collect();
+        let now = current_epoch_secs();
+        let mut observed = unsyncable_items(plan, now);
+        observed.extend(local_unsyncable.iter().map(|entry| UnsyncableItem {
+            path: entry.relative_path.clone(),
+            // The engine knows two kinds and none of these is a directory it would descend into —
+            // a symlink to a folder is not followed either — so every local drop is filed as a
+            // file. The `reason` is what says *what* it really is.
+            entity_kind: EntityKind::File,
+            reason: entry.reason.clone(),
+            first_seen_epoch_secs: now,
+        }));
+        let rederived: HashSet<&Path> = observed.iter().map(|item| item.path.as_path()).collect();
         let mut merged: BTreeMap<PathBuf, UnsyncableItem> = self
             .unsyncable
             .iter()
             .filter(|item| {
-                !superseded.contains(item.path.as_path())
-                    && (!full_snapshot || rederived.contains(item.path.as_path()))
+                if rederived.contains(item.path.as_path()) {
+                    // Observed again this pass. Kept for its first-seen epoch; the `or_insert`
+                    // below is what preserves it.
+                    return true;
+                }
+                if superseded.contains(item.path.as_path()) {
+                    return false;
+                }
+                !pass_proves_absence_of(item.reason.origin(), full_snapshot)
             })
             .map(|item| (item.path.clone(), item.clone()))
             .collect();
-        for item in skips {
+        for item in observed {
             // `or_insert`, so a path already listed keeps the epoch it was FIRST seen at.
             merged.entry(item.path.clone()).or_insert(item);
         }
@@ -2065,13 +2108,14 @@ impl<C: ProtonClient> Daemon<C> {
     /// pass, exactly as before, and is never re-attempted within one.
     fn execute_plan_and_commit(
         &mut self,
-        local_entities: &HashMap<PathBuf, LocalEntityState>,
+        local_scan: &LocalScan,
         local_files: &HashMap<PathBuf, LocalFileState>,
         remote_entities: &HashMap<PathBuf, RemoteEntity>,
         base_index: &HashMap<PathBuf, FileRecord>,
         remote_map: RemoteMapShape,
         cursor_update: Option<CursorUpdate>,
     ) -> AppResult<PassOutcome> {
+        let local_entities = &local_scan.entities;
         let remote_root_missing = remote_map.remote_root_missing;
         let outcome = plan_sync_entities_with_stats(
             local_entities,
@@ -2098,7 +2142,7 @@ impl<C: ProtonClient> Daemon<C> {
         self.pass_log.planned_changes = Some(planned_changes);
         self.shared
             .update_pass_progress(|pass| pass.changes = Some(planned_changes));
-        self.record_unsyncable(&plan, remote_map.proves_absence());
+        self.record_unsyncable(&plan, &local_scan.unsyncable, remote_map.proves_absence());
 
         // Delete-approval gate: decide, per destructive action, whether to execute it now or
         // withhold it pending the user's approval (see `decide_delete_gate`). This filters the
@@ -4171,6 +4215,23 @@ impl RemoteMapShape {
     /// no index record is not in the baseline it overlays (see [`Daemon::record_unsyncable`]).
     fn proves_absence(self) -> bool {
         self.full_snapshot && !self.remote_root_missing
+    }
+}
+
+/// Whether a pass may drop a standing [`UnsyncableItem`] with this origin **by absence** — i.e.
+/// whether this pass looked everywhere the reason could have come from (#232).
+///
+/// `full_snapshot` here is [`RemoteMapShape::proves_absence`]: a full-tree walk that found its
+/// root. It deliberately does not gate the local arm. A missing remote root voids the *remote*
+/// evidence and nothing else — the local stat-walk still ran, and it is the whole tree either way,
+/// because every caller of [`Daemon::record_unsyncable`] scans locally before it plans.
+///
+/// Exhaustive by variant, no `_`: a new origin has to answer this question rather than inherit an
+/// arm's guess.
+fn pass_proves_absence_of(origin: UnsyncableOrigin, full_snapshot: bool) -> bool {
+    match origin {
+        UnsyncableOrigin::Local => true,
+        UnsyncableOrigin::Remote | UnsyncableOrigin::Unknown => full_snapshot,
     }
 }
 
@@ -11336,12 +11397,12 @@ mod tests {
 
         // An incremental pass cannot re-derive the node at all: an empty plan must not drop it,
         // and the first-seen epoch must not restart.
-        daemon.record_unsyncable(&[], false);
+        daemon.record_unsyncable(&[], &[], false);
         assert_eq!(daemon.unsyncable.len(), 1, "an incremental pass only adds");
         assert_eq!(daemon.unsyncable[0].first_seen_epoch_secs, first_seen);
 
         // A full-tree walk is the only pass whose silence is evidence.
-        daemon.record_unsyncable(&[], true);
+        daemon.record_unsyncable(&[], &[], true);
         assert!(
             daemon.unsyncable.is_empty(),
             "a full snapshot that no longer plans the skip clears it"
@@ -11373,6 +11434,7 @@ mod tests {
                 Some("vol~node".to_owned()),
                 UnsyncableReason::RemoteNotDownloadable,
             )],
+            &[],
             true,
         );
         assert_eq!(daemon.unsyncable.len(), 1);
@@ -11384,6 +11446,7 @@ mod tests {
                 EntityKind::File,
                 Some("vol~node".to_owned()),
             )],
+            &[],
             false,
         );
         assert!(daemon.unsyncable.is_empty());
@@ -11397,6 +11460,7 @@ mod tests {
                 None,
                 UnsyncableReason::RemoteNotDownloadable,
             )],
+            &[],
             true,
         );
         assert_eq!(daemon.unsyncable.len(), 1);
@@ -11410,6 +11474,7 @@ mod tests {
                     None,
                 )
             }],
+            &[],
             false,
         );
         assert!(daemon.unsyncable.is_empty());
@@ -11435,20 +11500,20 @@ mod tests {
             )]
         };
 
-        daemon.record_unsyncable(&skip(), true);
-        daemon.record_unsyncable(&skip(), true);
+        daemon.record_unsyncable(&skip(), &[], true);
+        daemon.record_unsyncable(&skip(), &[], true);
         assert_eq!(
             daemon.reported_unsyncable.len(),
             1,
             "the second pass must not re-report the same standing path"
         );
 
-        daemon.record_unsyncable(&[], true);
+        daemon.record_unsyncable(&[], &[], true);
         assert!(
             daemon.reported_unsyncable.is_empty(),
             "a path that leaves the list is un-reported, so a recurrence is announced again"
         );
-        daemon.record_unsyncable(&skip(), true);
+        daemon.record_unsyncable(&skip(), &[], true);
         assert_eq!(daemon.reported_unsyncable.len(), 1);
     }
 
