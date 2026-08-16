@@ -6197,18 +6197,24 @@ fn truncate_selector(selector: &str) -> String {
 /// One body rather than a truncation per call site — three had accumulated by #313, and a fourth
 /// would have been a fourth chance to get the inclusive-of-the-ellipsis arithmetic wrong.
 ///
-/// Both callers pass a limit far above the ellipsis. A limit *below* it asks for something
-/// unsatisfiable, and yields the ellipsis alone rather than an underflow panic.
+/// **The cap holds for every `limit`, including one too small to hold the ellipsis.** Both named
+/// limits are far above it, but this is the shared primitive now, and a caller has to be able to
+/// trust the sentence above rather than a second one qualifying it — so when the marker will not
+/// fit it is the *marker* that gives way, not the bound. Such a result cannot say it was cut, which
+/// is the honest answer for a budget that leaves no room to say anything (Copilot review).
 fn truncate_for_display(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_owned();
     }
-    let budget = limit.saturating_sub(ELLIPSIS.len());
+    let (budget, marker) = match limit.checked_sub(ELLIPSIS.len()) {
+        Some(budget) => (budget, ELLIPSIS),
+        None => (limit, ""),
+    };
     let end = (0..=budget)
         .rev()
         .find(|index| text.is_char_boundary(*index))
         .unwrap_or(0);
-    format!("{}{ELLIPSIS}", &text[..end])
+    format!("{}{marker}", &text[..end])
 }
 
 const ELLIPSIS: &str = "…";
@@ -11179,6 +11185,20 @@ mod tests {
         let truncated = truncate_error(&multibyte);
         assert!(truncated.len() <= FAILED_ITEM_ERROR_LIMIT);
         assert!(truncated.ends_with('…'));
+
+        // The cap is the promise, at EVERY limit — including one too small to hold the ellipsis,
+        // where the marker gives way rather than the bound. Unreachable from the two named limits,
+        // but this is the shared primitive and its doc states the rule without qualification.
+        for limit in 0..=ELLIPSIS.len() {
+            let cut = truncate_for_display("éàü-and-more", limit);
+            assert!(
+                cut.len() <= limit,
+                "limit {limit} produced {} bytes: {cut:?}",
+                cut.len()
+            );
+        }
+        assert_eq!(truncate_for_display("abcdef", 2), "ab");
+        assert_eq!(truncate_for_display("abcdef", 4), "a…");
 
         let mut failures = PassFailures::default();
         for index in 0..(FAILED_ITEMS_REPORTED + 7) {
