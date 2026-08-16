@@ -142,6 +142,51 @@ pub fn validate_relative_path_non_empty(path: &std::path::Path) -> Option<std::p
     validate_relative_path(path).filter(|normalized| !normalized.as_os_str().is_empty())
 }
 
+/// Validate and normalize an **absolute remote** path — a location on Proton Drive named without
+/// reference to any configured root, which is a *third* rung of the path-safety ladder and not a
+/// variant of either other one (#323).
+///
+/// [`validate_relative_path`] exists to stop a path escaping a root it is about to be joined onto.
+/// This one is joined onto nothing: it *is* the location, and the only caller today is
+/// [`ipc::ControlCommand::List`]'s absolute selector, which prices a candidate folder before any
+/// pair is configured — a question that is outside every root by definition, so a relative form
+/// cannot ask it.
+///
+/// # What it may reach, and what it may not
+///
+/// **It may name anywhere in this user's Proton Drive, including outside `remote_root`.** That is
+/// the point, and it grants nothing new: the control socket is mode `0600` inside a `0700`
+/// directory (#62), so the only caller is the user themselves, and the daemon shells the same
+/// `proton-drive` CLI, logged into the same account, that the user can run by hand. Routing the
+/// walk through the daemon is what puts it behind the one [`proton::CliGate`] (#23) — it is not a
+/// privilege boundary.
+///
+/// **It may not be relative, carry `..`, or carry a platform prefix.** `..` is refused rather than
+/// resolved: two spellings of one directory are two cache keys and two renderings, and a caller
+/// that meant the parent can say so. `.` is stripped, exactly as in the relative form.
+///
+/// **It is a `read`-only guard.** `/` normalizes to `/` and is accepted, because the root of an
+/// absolute namespace is a legitimate *value* for a listing in the same way `""` is for the
+/// relative form — a browser's landing page. Anything that ever turns an absolute remote path into
+/// a **side effect** (a delete, an upload target) needs its own non-root form, exactly as
+/// [`validate_relative_path_non_empty`] is to [`validate_relative_path`] (#72).
+pub fn validate_absolute_remote_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir) {
+        return None;
+    }
+    let mut normalized = std::path::PathBuf::from("/");
+    for component in components {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +203,45 @@ mod tests {
             validate_relative_path(Path::new("./")),
             Some(PathBuf::new())
         );
+    }
+
+    /// The third rung (#323). It accepts what neither relative form does, and refuses the same
+    /// escapes — including a *relative* path, which is the mistake the two forms make easy.
+    #[test]
+    fn validate_absolute_remote_path_takes_only_a_rooted_normal_path() {
+        assert_eq!(
+            validate_absolute_remote_path(Path::new("/Drive/Photos")),
+            Some(PathBuf::from("/Drive/Photos"))
+        );
+        // `.` is stripped, as in the relative form, so one directory has one spelling.
+        assert_eq!(
+            validate_absolute_remote_path(Path::new("/Drive/./Photos/")),
+            Some(PathBuf::from("/Drive/Photos"))
+        );
+        // The root of an absolute namespace is a value for a *read*, exactly as `""` is for the
+        // relative form. A side-effecting caller would need its own non-root form (#72's rule).
+        assert_eq!(
+            validate_absolute_remote_path(Path::new("/")),
+            Some(PathBuf::from("/"))
+        );
+
+        for refused in [
+            "Drive/Photos",
+            "",
+            ".",
+            "..",
+            "/Drive/../..",
+            "/Drive/../Other",
+        ] {
+            assert_eq!(
+                validate_absolute_remote_path(Path::new(refused)),
+                None,
+                "{refused:?} must not pass the absolute guard"
+            );
+        }
+        // And the two guards do not overlap: neither accepts the other's input, so a caller cannot
+        // pass the wrong one and get a plausible answer.
+        assert_eq!(validate_relative_path(Path::new("/Drive/Photos")), None);
     }
 
     #[test]

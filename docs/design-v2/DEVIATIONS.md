@@ -4960,7 +4960,7 @@ covered by `plan.test.js` instead, which is where an undrawn state belongs.
 bounded window with a daemon-sized remainder behind it — and `MAIN.authExpiredSub`, quoted by S1
 from `11a Outage`, is the precedent for a deck entry outliving its screen name.
 
-### 99b. `list_remote` is deleted, not ported
+### 99b. `list_remote` is deleted, not ported — and the probe that outlived it now asks the daemon
 
 The GUI shelled `proton-drive filesystem list --json` from its own process, outside the daemon's
 `CliGate`, against a CLI whose SQLite store is not concurrency-safe (#23). #311 proposed replacing it
@@ -4970,13 +4970,30 @@ is gone rather than rewritten: a socket-backed command with no caller moves "a v
 one layer up instead of removing it. A picker, when it is built, calls `list` through `gui_core::ipc`
 like every other verb.
 
-**One CLI-shelling path survives and is deliberately out of scope — #323.** `probe_folder`'s remote
-side (`gui_core::folder_probe::probe_remote_via_cli`, up to `MAX_REMOTE_LISTINGS` = 64 subprocesses)
-prices a **candidate** folder during onboarding — a path outside `remote_root`, before any pair is
-configured, which is precisely the question `ControlCommand::List` cannot answer: its selector is
-`remote_root`-relative. It is also the worse of the two, because unlike `list_remote` it is called:
-`9a Folders` is a drawn screen. Filed rather than absorbed, because closing it needs a daemon verb
-that does not exist and inventing one is a design decision, not a cleanup.
+**The one CLI-shelling path that survived this section is closed — #323.** `probe_folder`'s remote
+side (`gui_core::folder_probe`, up to `MAX_REMOTE_LISTINGS` = 64 subprocesses) prices a **candidate**
+folder — a path outside `remote_root`, before any pair is configured, which was precisely the
+question `ControlCommand::List` could not answer: its selector was `remote_root`-relative. That
+selector now also accepts an **absolute** one, so the probe walks over the socket, one `list` per
+directory, every child spawned by the daemon behind its one `CliGate`.
+
+The walk stayed on the client, which is the decision worth recording: `list` may run on the daemon's
+IPC task only because it is *one* invocation under a bounded gate wait, and the other daemon-side
+shape (`Plan`'s ack-plus-latch on the main loop) queues behind whatever pass is running — up to half
+an hour for a number a user is waiting on. One request per directory answers in the *gaps* of a live
+pass instead, because the gate is held for one child and not one pass.
+
+`probe_remote_via_cli` remains for the case with no daemon to ask — onboarding, where four of the
+five `9a` frames are drawn — under `run_dry_run`'s rule: the child **only** when nothing answers the
+socket at all, decided by a follow-up `status` rather than by the failed request.
+
+**Correction to the issue's premise, recorded because it changes what "unbuilt" means here.** #323
+says the probe is called where `list_remote` was not — "`9a Folders` is a drawn screen". The screen
+is drawn; the call is not made. `probe_folder` has no `gui/src/js` caller, and `onboarding.js` says
+so at the site: *"The stats row and the account line are omitted, not blanked: nothing counts the
+files or bytes under a candidate folder on either side (#240)"*. So the hazard was latent rather than
+live. It was fixed rather than deleted anyway — unlike `list_remote`, #240 is closed with this
+capability as its answer, and the command is registered and invokable.
 
 ### 99c. One number the `+n more` line made visible, also filed — #324
 

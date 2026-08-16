@@ -2,10 +2,10 @@ use clap::Parser;
 use proton_drive_sync_engine::config::{
     DEFAULT_LOG_LEVEL, DaemonConfigInput, DeletionPolicy, resolve_runtime_config,
 };
-use proton_drive_sync_engine::daemon::{Daemon, preview_plan};
-use std::path::PathBuf;
+use proton_drive_sync_engine::daemon::{Daemon, GlobalLockProbe, preview_plan, probe_daemon_lock};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -125,6 +125,7 @@ async fn main() -> ExitCode {
     };
 
     if dry_run {
+        warn_if_a_daemon_is_already_running(&config.global_lock_path);
         info!("running dry-run sync plan");
         return match preview_plan(&config) {
             Ok(report) => match serde_json::to_string_pretty(&report) {
@@ -197,6 +198,42 @@ impl From<Cli> for DaemonConfigInput {
             rust_log: std::env::var("RUST_LOG").ok(),
             conflict_suffix: cli.conflict_suffix,
         }
+    }
+}
+
+/// Warns — and only warns — when `--dry-run` is about to run beside a live daemon (#317/#23).
+///
+/// `preview_plan` returns before `Daemon::new`, so it takes neither the per-root nor the
+/// user-global lock and builds its **own** `ProtonDriveClient`. One client is one
+/// `proton::CliGate`, and two gates serialize nothing: the preview's O(folders) remote walk then
+/// shells `proton-drive` beside a daemon doing the same, against the CLI's shared SQLite cache and
+/// session store, which is not concurrency-safe (`SQLITE_BUSY`). This says so *before* the walk
+/// starts, so it reads as the explanation for the failures that may follow rather than as an
+/// unrelated line after them.
+///
+/// **A warning and never a refusal.** Taking the global lock here would make the preview fail
+/// whenever a daemon is up, which is the only case it matters in — and the GUI still legitimately
+/// spawns this child when it has no daemon to ask (see `run_dry_run_impl`, which prefers
+/// `ControlCommand::Plan` and falls back only when nothing answers the socket).
+///
+/// **stderr only**, through `tracing` like everything else here: stdout carries the machine-readable
+/// report, and one stray line on it corrupts a caller's parse.
+fn warn_if_a_daemon_is_already_running(global_lock_path: &Path) {
+    match probe_daemon_lock(global_lock_path) {
+        GlobalLockProbe::Held => warn!(
+            "a proton-syncd daemon is already running for this user; this dry run walks Proton \
+             Drive with a SECOND proton-drive client, whose SQLite cache and session store are \
+             shared and not safe for concurrent use (#23) — expect it to be slow, and either \
+             process to fail with a database error. `proton-sync plan` asks the running daemon \
+             instead, which is the same rehearsal behind one CLI gate."
+        ),
+        // Said at debug, not warn: this is "could not tell", and a scary line on every dry run
+        // because of an unusual `$XDG_STATE_HOME` would teach the reader to ignore the one above.
+        // Named as its own state so it is not a fall-through arm meaning "fine".
+        GlobalLockProbe::Unknown(reason) => {
+            debug!(%reason, "could not tell whether a daemon is already running")
+        }
+        GlobalLockProbe::Free => {}
     }
 }
 

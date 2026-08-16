@@ -48,12 +48,17 @@ pub mod wire {
     pub use proton_drive_sync_engine::index::{EntityKind, FileEvent, FileRecord};
     pub use proton_drive_sync_engine::ipc::{
         ApplyOutcome, AuthState, ControlCommand, ControlRequest, ControlResponse,
-        PLAN_ACTIONS_MAX_LIMIT, PLAN_PASS_KIND, PendingDeletion, PlanOutcome, ReviewedPlan,
-        RunningConfigInfo, StatusHistoryEntry,
+        LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PLAN_ACTIONS_MAX_LIMIT, PLAN_PASS_KIND,
+        PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo,
+        StatusHistoryEntry,
     };
     pub use proton_drive_sync_engine::sync::{
         DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction, TransferDirection,
     };
+    /// The one definition of how a `PathBuf` crosses this engine's wire (lossy out, verbatim
+    /// back). A client that builds a path-shaped `ControlRequest::argument` renders it with this,
+    /// never with its own `to_string_lossy`.
+    pub use proton_drive_sync_engine::wire_path;
 }
 
 pub use state::DaemonState;

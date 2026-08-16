@@ -58,6 +58,24 @@ pub enum ControlCommand {
     /// `validate_relative_path` rather than its non-empty sibling — a listing reads, it does not
     /// join a path onto a root to produce a side effect.
     ///
+    /// **An `argument` that starts with `/` is an absolute location on Proton Drive instead**
+    /// (#323), validated by `validate_absolute_remote_path`, which states what it may and may not
+    /// reach. That is the folder probe's question — "how much is under this candidate?" — asked
+    /// before any pair is configured, against a path that is outside every root by definition, so
+    /// no relative selector can express it. The two frames are not an overload: an absolute
+    /// selector was previously *refused* by the relative guard, so no client can have depended on
+    /// the old meaning, and **the reply always answers in the frame the request used** — a relative
+    /// selector's entries stay relative to `remote_root`, an absolute one's come back absolute, so
+    /// any entry can be fed straight back as the next selector.
+    ///
+    /// **A subtree is walked by the client, one request per directory, and that is the design.**
+    /// This verb runs on the IPC task, which it may do only because it is *one* `proton-drive`
+    /// child under a bounded gate wait; a daemon-side recursive walk would be neither (see
+    /// [`Self::Plan`] for the shape work that long has to take, and note that a plan pass queues
+    /// behind the main loop — unusable for a question asked while a user waits on a folder
+    /// picker). One child per request is also what lets a walk interleave with a live pass rather
+    /// than block it: [`crate::proton::CliGate`] is held for one child, not one pass.
+    ///
     /// **`literal_path` has no meaning here.** There is no reserved word: a folder named `all`
     /// lists like any other. The `Approve`/`Deny`/`Keep` selector is the only place `"all"` means
     /// anything, and a read-only verb must not grow a second sentinel.
@@ -209,9 +227,14 @@ pub use crate::wire_path;
 /// the second question has `status`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteEntry {
-    /// Path relative to the daemon's `remote_root`. Lossy on the wire like every other path this
-    /// engine publishes (see [`crate::lossy_path`]), so it is a **rendering**: a client must not
-    /// feed it back as a selector for anything destructive.
+    /// The entry's path **in the frame the request's selector used**: relative to the daemon's
+    /// `remote_root` for a relative selector, absolute for an absolute one (#323). One rule, so a
+    /// client never has to know which root a path it was handed is relative to, and any entry can
+    /// be sent straight back as the next selector.
+    ///
+    /// Lossy on the wire like every other path this engine publishes (see [`crate::lossy_path`]),
+    /// so it is a **rendering**: a client must not feed it back as a selector for anything
+    /// destructive.
     #[serde(with = "crate::lossy_path")]
     pub path: PathBuf,
     /// The node's own name, as the remote reports it.
@@ -242,8 +265,9 @@ pub enum ListingOutcome {
     /// The directory was listed. `entries` is capped (see [`LIST_ENTRIES_MAX_LIMIT`]); `total` is
     /// the untruncated count, so `truncated` is `total > entries.len()`.
     Listed {
-        /// The listed directory, relative to `remote_root` — empty for the root itself. Echoed
-        /// back so a reply can be matched to the request that asked for it.
+        /// The listed directory, in the request's own frame: relative to `remote_root` (empty for
+        /// the root itself), or absolute when the selector was (#323). Echoed back so a reply can
+        /// be matched to the request that asked for it.
         #[serde(with = "crate::lossy_path")]
         path: PathBuf,
         entries: Vec<RemoteEntry>,
@@ -494,6 +518,22 @@ pub struct FailedItem {
 /// Hard cap on a [`FailedItem::error`] string in bytes, *inclusive* of the truncation ellipsis: a
 /// CLI failure can carry kilobytes of stderr.
 pub const FAILED_ITEM_ERROR_LIMIT: usize = 500;
+
+/// Hard cap, in bytes and inclusive of the ellipsis, on a **client selector rendered back into a
+/// reply message** — `approve`/`deny`/`keep`'s `no pending deletion matches '…'`, `activity`'s
+/// refusals, `list`'s refused path (#313).
+///
+/// Those strings are the caller's own bytes coming back: a request may carry up to
+/// `MAX_REQUEST_BYTES` (64 KiB) and nothing narrower bounds `argument`, so an unbounded echo puts it
+/// on a wire whose replies are read into memory whole — and prints it to a terminal, or into a GUI
+/// toast. Smaller than [`FAILED_ITEM_ERROR_LIMIT`] on purpose: that one bounds a *diagnostic* whose
+/// tail can matter, while this bounds a path the user typed, where the surrounding sentence is the
+/// part that must survive.
+///
+/// **A display bound only.** Selector *matching* is unchanged and must stay so: `approve`/`deny`
+/// match in the wire form and refuse an ambiguous selector (#61), and truncating before the match
+/// would make two different paths compare equal.
+pub const SELECTOR_DISPLAY_LIMIT: usize = 200;
 
 /// The daemon's resolved folder pair + index location, surfaced over IPC so a UI can reflect the
 /// *live* configuration no matter how the daemon was launched (config file, flags, or defaults).
