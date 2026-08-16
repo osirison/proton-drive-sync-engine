@@ -865,20 +865,30 @@ pub async fn apply_plan(
         let mut consecutive_errors = 0u32;
         loop {
             std::thread::sleep(PLAN_POLL_INTERVAL);
-            let response =
-                match ipc::command(&socket, ControlCommand::PlanResult, ipc::DEFAULT_TIMEOUT) {
-                    Ok(response) => {
-                        consecutive_errors = 0;
-                        response
+            // The smallest window the daemon will build, because this loop reads `apply` and
+            // nothing else — unlike the CLI's wait, which renders the fresh plan out of this same
+            // reply when an apply diverges. Without it every 300ms poll ships up to
+            // `PLAN_ACTIONS_DEFAULT_LIMIT` rows nobody looks at, for as long as the apply runs.
+            // `1`, not `0`: the daemon clamps the limit to at least one row, and a literal that
+            // does not survive the clamp reads as a stronger claim than it is. Destructive rows are
+            // never truncated whatever the limit, so this bounds the ordinary case only (#321).
+            let request = ControlRequest {
+                limit: Some(1),
+                ..ControlRequest::new(ControlCommand::PlanResult)
+            };
+            let response = match ipc::send_request(&socket, &request, ipc::DEFAULT_TIMEOUT) {
+                Ok(response) => {
+                    consecutive_errors = 0;
+                    response
+                }
+                Err(error) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= PLAN_POLL_ERROR_LIMIT {
+                        return Err(error);
                     }
-                    Err(error) => {
-                        consecutive_errors += 1;
-                        if consecutive_errors >= PLAN_POLL_ERROR_LIMIT {
-                            return Err(error);
-                        }
-                        continue;
-                    }
-                };
+                    continue;
+                }
+            };
             match response.apply {
                 Some(
                     outcome @ (ApplyOutcome::Applied { apply_seq, .. }
