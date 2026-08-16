@@ -755,6 +755,135 @@ exit 64
         )
     }
 
+    /// #100/#192/#209, end to end through the real daemon, the real socket and the real
+    /// `proton-sync` client — the layer where "the GUI shells `proton-syncd --dry-run` itself" is
+    /// actually replaced (#317's on-demand instance).
+    #[test]
+    fn the_plan_verb_reviews_and_the_token_applies_that_exact_plan() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_delete_approval_proton_drive(directory.path());
+        // The guard off, so the plan's deletion is a row the apply really executes — with it on,
+        // an ordinary apply and a filtered one would both leave the file alone and the test would
+        // prove nothing about `--skip-destructive`.
+        let mut daemon = DaemonProcess::spawn_with_args(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+            &["--no-delete-approval"],
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+        // The startup reconcile downloads keep.txt and records a synced baseline.
+        let local_file = local_root.join("keep.txt");
+        wait_for_marker(&local_file, &mut daemon.child);
+        wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+
+        // Remove the local copy: the plan is now one RemoteDelete.
+        fs::remove_file(&local_file).expect("remove local file");
+        let trash_marker = PathBuf::from(format!("{}.trash", fake_proton_drive.display()));
+
+        let plan = run_control_args(&socket_path, &["--json", "plan"]);
+        assert_eq!(plan["state"], "computed");
+        assert_eq!(plan["total"].as_u64(), Some(1), "{plan}");
+        assert_eq!(plan["actions"][0]["action"], "remote_delete");
+        assert_eq!(plan["actions"][0]["path"], "keep.txt");
+        assert_eq!(plan["summary"]["destructive_actions"].as_u64(), Some(1));
+        let token = plan["token"].as_str().expect("token").to_owned();
+        assert!(token.starts_with("1:"), "{token}");
+
+        // A rehearsal changes nothing: it did not trash anything, and it did not move the
+        // sequence a `syncnow` watcher polls.
+        assert!(
+            !trash_marker.exists(),
+            "a rehearsal must perform no side effect"
+        );
+        let status = run_control(&socket_path, "status");
+        assert_eq!(
+            status["reconcile_seq"].as_u64(),
+            Some(1),
+            "a plan pass must not bump the reconcile sequence a syncnow watcher polls: {status}"
+        );
+
+        // A token that is not the current plan's authorises nothing, and schedules nothing.
+        let (stale, ok) =
+            run_control_args_any_exit(&socket_path, &["--json", "apply", "1:not-a-real-plan"]);
+        assert_eq!(stale["state"], "stale");
+        assert!(!ok, "a refused apply must exit non-zero");
+        assert!(!trash_marker.exists(), "a stale token must run nothing");
+
+        // The real token applies that exact plan.
+        let applied = run_control_args(&socket_path, &["--json", "apply", &token]);
+        assert_eq!(applied["state"], "applied", "{applied}");
+        assert_eq!(applied["executed"].as_u64(), Some(1));
+        assert_eq!(applied["skipped_destructive"].as_u64(), Some(0));
+        assert_eq!(applied["failed"].as_u64(), Some(0));
+        assert!(
+            trash_marker.exists(),
+            "the reviewed deletion must have reached the remote"
+        );
+        // And the token is spent: the plan it named is no longer the current one.
+        let (stale, ok) = run_control_args_any_exit(&socket_path, &["--json", "plan"]);
+        assert_eq!(stale["state"], "computed");
+        assert_ne!(stale["token"].as_str(), Some(token.as_str()));
+        assert!(ok);
+    }
+
+    /// #192: `Run it without the deletion`. The plan holds a deletion, the apply is asked to skip
+    /// it, and both copies survive.
+    #[test]
+    fn a_filtered_apply_runs_the_plan_without_its_deletions() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_delete_approval_proton_drive(directory.path());
+        let mut daemon = DaemonProcess::spawn_with_args(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+            &["--no-delete-approval"],
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+        let local_file = local_root.join("keep.txt");
+        wait_for_marker(&local_file, &mut daemon.child);
+        wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+        fs::remove_file(&local_file).expect("remove local file");
+        let trash_marker = PathBuf::from(format!("{}.trash", fake_proton_drive.display()));
+
+        let plan = run_control_args(&socket_path, &["--json", "plan"]);
+        assert_eq!(
+            plan["summary"]["destructive_actions"].as_u64(),
+            Some(1),
+            "precondition: the plan holds exactly one destructive row: {plan}"
+        );
+        let token = plan["token"].as_str().expect("token").to_owned();
+
+        let applied = run_control_args(
+            &socket_path,
+            &["--json", "apply", &token, "--skip-destructive"],
+        );
+        assert_eq!(applied["state"], "applied", "{applied}");
+        assert_eq!(applied["skipped_destructive"].as_u64(), Some(1));
+        assert_eq!(applied["executed"].as_u64(), Some(0));
+        assert!(
+            !trash_marker.exists(),
+            "a filtered apply must issue no remote delete, guard or no guard"
+        );
+        // The deletion re-plans: nothing about it was consumed.
+        let again = run_control_args(&socket_path, &["--json", "plan"]);
+        assert_eq!(again["summary"]["destructive_actions"].as_u64(), Some(1));
+    }
+
     /// A fake `proton-drive` whose every command fails the way an expired session does.
     fn write_signed_out_proton_drive(directory: &Path) -> PathBuf {
         write_script(
@@ -834,6 +963,46 @@ exit 64
                 // Isolate the user-global single-instance lock per test: `default_global_lock_path`
                 // keys on `$XDG_STATE_HOME`, so pointing it at this test's tempdir stops parallel
                 // ipc_cli daemons contending on one machine-global lock (they would else exit 1).
+                .env(
+                    "XDG_STATE_HOME",
+                    lockfile_path.parent().expect("lockfile has a parent dir"),
+                )
+                .env("RUST_LOG", "error")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn proton-syncd");
+            Self { child }
+        }
+
+        /// `spawn` plus arbitrary extra daemon flags, for tests that need a non-default
+        /// configuration (`--no-delete-approval`).
+        fn spawn_with_args(
+            local_root: &Path,
+            socket_path: &Path,
+            lockfile_path: &Path,
+            db_path: &Path,
+            proton_cli: &Path,
+            extra_args: &[&str],
+        ) -> Self {
+            let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
+                .arg("--local-root")
+                .arg(local_root)
+                .arg("--remote-root")
+                .arg("/Drive/RemoteFolder")
+                .arg("--socket-path")
+                .arg(socket_path)
+                .arg("--lockfile-path")
+                .arg(lockfile_path)
+                .arg("--db-path")
+                .arg(db_path)
+                .arg("--proton-cli")
+                .arg(proton_cli)
+                .arg("--scan-interval-secs")
+                .arg("60")
+                .arg("--no-events-driven")
+                .args(extra_args)
+                // Same isolation as `spawn` above (#77).
                 .env(
                     "XDG_STATE_HOME",
                     lockfile_path.parent().expect("lockfile has a parent dir"),

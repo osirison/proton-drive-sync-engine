@@ -3034,7 +3034,6 @@ impl<C: ProtonClient> Daemon<C> {
         // Destructive rows dropped by a filtered apply (#192). Same shape as the two above, and
         // for the same reason: an action the pass declined to perform holds the cursor.
         let mut skipped_destructive = 0usize;
-        let mut executed_actions = 0usize;
         // Per-item failures this pass, and the paths to re-queue for the next one (#136).
         let mut failures = PassFailures::default();
 
@@ -3717,7 +3716,6 @@ impl<C: ProtonClient> Daemon<C> {
                 }
             } else {
                 failures.note_success();
-                executed_actions += 1;
             }
             if checkpoint_after {
                 // Land this action's outcome durably before moving on: a later failure — or a
@@ -3820,7 +3818,12 @@ impl<C: ProtonClient> Daemon<C> {
         if let PassIntent::Apply { apply_seq, .. } = self.pass_intent {
             self.apply_report = Some(ApplyOutcome::Applied {
                 apply_seq,
-                executed: executed_actions,
+                // `PassLog::changed` — side effects that actually **committed**, not actions the
+                // loop got through. A withheld deletion, a vanished node and a `SkipUnsupported`
+                // all return `Ok` from the action closure, so counting successful closures would
+                // report a withheld deletion as executed. This is the fold that already builds the
+                // history rollup, so the apply's count and the pass's row can never disagree.
+                executed: self.pass_log.changed,
                 skipped_destructive,
                 failed: failures.count,
             });
