@@ -60,7 +60,12 @@ export const api = {
   // the backend is what expands `~` and strips the sync root, so the screen must not re-derive it.
   searchFiles: (query, limit) => invoke("search_files", { query, limit: limit ?? null }),
   startService: () => invoke("start_service"),
-  restartService: () => invoke("restart_service"),
+  // `{ restarted, detail }`, and REJECTS on failure — the save path reads the flag to tell "your new
+  // settings are running" from "the service was not running, so it will pick them up when it
+  // starts". `onlyIfRunning` is the save's own question (#320): a save must not start a daemon
+  // nobody asked to start, and the probe belongs on the Rust side because the GUI's status is up to
+  // one poll old. The retry after a failed restart passes `false` — it has a stopped daemon to fix.
+  restartService: (onlyIfRunning = false) => invoke("restart_service", { onlyIfRunning }),
   // The four openers (#220/#231). ALL OF THEM REJECT on failure — unlike the status commands, whose
   // error travels inside a resolved payload — so a caller that does not catch loses the only account
   // of why nothing opened. `openPaths` takes RELATIVE paths (both sides of a conflict); the backend
@@ -429,9 +434,11 @@ function mockInvoke(cmd, args) {
       });
     case "restart_service":
       // Simulate the real stop→start latency so the Settings screen's "Restarting…" state is
-      // visible in browser preview.
+      // visible in browser preview. THE SHAPE IS THE COMMAND'S, not a string: the save path branches
+      // on `restarted`, and a mock that resolved with prose would exercise a path the app does not
+      // have (#320).
       return new Promise((resolve) => {
-        setTimeout(() => resolve("daemon restarted (preview mock)"), 1200);
+        setTimeout(() => resolve({ restarted: true, detail: "daemon restarted (preview mock)" }), 1200);
       });
     case "pause":
       return Promise.resolve({

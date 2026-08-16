@@ -187,11 +187,18 @@ const NOT_DRAWN = new Map([
   ["SETTINGS.ruleUnchecked", "no frame draws a rule the walk could not evaluate (`RuleUsage.error`)"],
   ["SETTINGS.ruleChecking", "no frame draws the tab while the local-tree walk is still running"],
   ["SETTINGS.ruleNotSaved", "no frame draws a rule added and not yet saved"],
+  // THE THREE ENDINGS OF A SAVE (#320). No frame draws a settled save at all, and since the save
+  // restarts the service itself there are three of them: it restarted, it was not running so there
+  // was nothing to restart, or the restart failed and the file is running ahead of the daemon.
+  // `SETTINGS.savedNote` — "still running the old settings until it restarts" — was here until the
+  // wait it described stopped existing.
+  ["SETTINGS.savedRestarted", "no frame draws a settled save"],
+  ["SETTINGS.savedNotRunning", "no frame draws a save made while the service is stopped"],
   [
-    "SETTINGS.savedNote",
-    "no frame draws a settled save — and §68 records that a save takes effect on restart, not on the next sync",
+    "SETTINGS.saveInterrupts",
+    "no frame draws the bar with a staged change over a running pass — the warning before a save that restarts the service",
   ],
-  ["SETTINGS.restart", "the action on that state"],
+  ["SETTINGS.restart", "the retry after a restart that failed"],
   ["SETTINGS.restarting", "no frame draws a restart in flight"],
   ["SETTINGS.saving", "no frame draws a save in flight"],
   ["SETTINGS.sweeping", "no frame draws a sweep being asked for"],

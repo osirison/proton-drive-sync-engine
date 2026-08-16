@@ -2912,10 +2912,26 @@ was saved — your old settings are still running."_ — and the daemon's reason
 `config would be rejected by the daemon: ` prefix stripped, because that prefix is the GUI's sentence
 about the daemon's words and the body already says it.
 
-**And a save that succeeds is not live either.** There is no config-reload path in the engine — no
-SIGHUP handler, no watcher (§68) — so `Changes here take effect on the next sync` is true only after
-a restart. The bar's second slot, which holds `Discard changes` while there is something to discard,
-becomes `Restart it now` in the one moment there is not.
+**And a save that succeeds restarts the service** ([#320](https://github.com/osirison/proton-drive-sync-engine/issues/320)).
+There is still no config-reload path in the engine — no SIGHUP handler, no watcher (§68) — so a
+written file and a running daemon disagreed until somebody pressed a second button, and that gap was
+reachable by an ordinary sequence: change the sync folder, open Plan, and the preview describes the
+file's pair while `Run` executes the daemon's. The save now asks the daemon to shut down and starts
+it again (`restart_service`, `ControlCommand::Shutdown`), which makes the mismatch unreachable
+rather than reporting it.
+
+Three consequences, all of them drawn nowhere:
+
+- **The interruption is announced before the click.** While something is staged and a pass is
+  running, the bar reads `Saving restarts the sync service, which stops the sync that is running
+  now.` — above the cost line, which is the only ordering this decision settles.
+- **A save never STARTS a service that was not running.** `restart_service` takes `only_if_running`
+  for the save path: a stopped daemon has nothing to interrupt and nothing stale to correct, it
+  reads the file when it next starts, and a save is not a request to begin syncing.
+- **A failed restart is loud.** The file is written and the daemon is on the old settings — exactly
+  the state this removes — so the bar says both halves and the second slot keeps `Restart it now`
+  until it is fixed. That slot holds `Discard changes` in every other state, including a settled
+  save, which no longer has an action of its own.
 
 ### 78i. The one node this screen adds, and why it is not on a mapped one
 
