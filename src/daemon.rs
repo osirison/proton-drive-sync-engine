@@ -17,9 +17,9 @@ use crate::ipc::{
     ControlCommand, ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem,
     LIST_ENTRIES_DEFAULT_LIMIT, LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PASS_HISTORY_REPORTED,
     PLAN_ACTIONS_DEFAULT_LIMIT, PLAN_ACTIONS_MAX_LIMIT, PLAN_PASS_KIND, PassHistory, PassProgress,
-    PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo, StatusHistoryEntry,
-    SyncActivity, TRANSFERS_REPORTED, TransferActivity, bind_listener, read_request,
-    write_response,
+    PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo,
+    SELECTOR_DISPLAY_LIMIT, StatusHistoryEntry, SyncActivity, TRANSFERS_REPORTED, TransferActivity,
+    bind_listener, read_request, write_response,
 };
 use crate::proton::{
     AuthFailure, CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient,
@@ -4482,7 +4482,7 @@ fn apply_approval_command(
             Some(path) if approve => {
                 return pre_approve_planned_deletion(connection, path, direction);
             }
-            Some(path) => format!("no pending deletion matches '{path}'"),
+            Some(path) => format!("no pending deletion matches '{}'", truncate_selector(path)),
             // NEVER a pre-approval: "all" means every currently-pending item, never everything
             // for ever, and there is nothing to enumerate ahead of a pass.
             None => "no deletions are pending approval".to_owned(),
@@ -4540,16 +4540,20 @@ fn pre_approve_planned_deletion(
     selector: &str,
     direction: Option<DeleteDirection>,
 ) -> AppResult<String> {
+    // Bounded once, here, and every sentence below interpolates the bounded form: the selector is
+    // the client's own bytes and a reply is read into memory whole (#313). The *matching* above and
+    // the validation below still use the full `selector`.
+    let shown = truncate_selector(selector);
     let Some(direction) = direction else {
         return Ok(format!(
-            "no pending deletion matches '{selector}'; to approve a deletion that is planned but \
+            "no pending deletion matches '{shown}'; to approve a deletion that is planned but \
              not yet withheld, name its direction (`--direction local` to delete it here, \
              `--direction remote` to delete it on Proton Drive)"
         ));
     };
     let Some(path) = crate::validate_relative_path_non_empty(Path::new(selector)) else {
         return Ok(format!(
-            "'{selector}' is not a valid relative path inside the sync root"
+            "'{shown}' is not a valid relative path inside the sync root"
         ));
     };
     let Some(fingerprint) = get_record(connection, &path)?.and_then(|record| {
@@ -4559,7 +4563,7 @@ fn pre_approve_planned_deletion(
             .or_else(|| record.proton_id.clone())
     }) else {
         return Ok(format!(
-            "'{selector}' has no synced record to pin an approval to; nothing was approved — \
+            "'{shown}' has no synced record to pin an approval to; nothing was approved — \
              approve it from the deletions queue once the daemon has planned it"
         ));
     };
@@ -4572,7 +4576,7 @@ fn pre_approve_planned_deletion(
     )?;
     Ok(format!(
         "approved 1 planned deletion(s); it applies when the daemon plans it, and only while \
-         '{selector}' still matches what you approved"
+         '{shown}' still matches what you approved"
     ))
 }
 
@@ -4607,7 +4611,7 @@ fn apply_keep_command(
     if matches.is_empty() {
         return Ok((
             match target {
-                Some(path) => format!("no pending deletion matches '{path}'"),
+                Some(path) => format!("no pending deletion matches '{}'", truncate_selector(path)),
                 None => "no deletions are pending approval".to_owned(),
             },
             false,
@@ -4735,6 +4739,10 @@ fn ambiguous_selector_message(
     if matches.len() < 2 {
         return None;
     }
+    // The client's own selector, not a path the daemon published — #313's issue body reads this
+    // arm the other way round. Bounded like every other echo of it (the *matching* above is
+    // untouched and still compares the full wire form).
+    let target = truncate_selector(target);
     let past_tense = if command == "keep" {
         "kept"
     } else {
@@ -5133,14 +5141,73 @@ fn schedule_apply(
     }
 }
 
+/// Which directory a [`ControlCommand::List`] selector names — the two frames the verb accepts, so
+/// that "what does this path mean" is decided once rather than at each use (#99/#323).
+enum BrowseTarget {
+    /// The historical selector: a path relative to the daemon's configured `remote_root`, empty for
+    /// the root itself.
+    UnderRoot(PathBuf),
+    /// An absolute location on Proton Drive, outside every configured root. The folder probe's
+    /// question — "how much is under this candidate?" — is asked before any pair exists, so no
+    /// relative form can express it.
+    Absolute(PathBuf),
+}
+
+impl BrowseTarget {
+    /// `(root, relative)` for [`ProtonClient::browse_directory`]. An absolute target is its own
+    /// root with an empty relative part, which is the same shape the remote-root browse already
+    /// takes — so the CLI call, the wrapper-node drop and the parent filter below are one code
+    /// path, not two.
+    fn request<'a>(&'a self, remote_root: &'a Path) -> (&'a Path, &'a Path) {
+        match self {
+            Self::UnderRoot(relative) => (remote_root, relative.as_path()),
+            Self::Absolute(absolute) => (absolute.as_path(), Path::new("")),
+        }
+    }
+
+    /// One listed key, moved into the frame the *selector* was written in.
+    ///
+    /// **The reply always speaks the request's own frame**, which is the rule that keeps the
+    /// extension from being an overload: entries under a relative selector stay relative to
+    /// `remote_root` exactly as before, and entries under an absolute one come back absolute — so a
+    /// client can feed any entry straight back as the next selector, and never has to know which
+    /// root a path it was handed is relative to. (Relative-to-the-*requested-directory* was the
+    /// other option and is worse: for the absolute case it would duplicate `RemoteEntry::name`.)
+    fn entry_path(&self, key: PathBuf) -> PathBuf {
+        match self {
+            Self::UnderRoot(_) => key,
+            Self::Absolute(absolute) => absolute.join(key),
+        }
+    }
+
+    /// The directory this reply echoes back, in that same frame.
+    fn echo(&self) -> PathBuf {
+        match self {
+            Self::UnderRoot(relative) => relative.clone(),
+            Self::Absolute(absolute) => absolute.clone(),
+        }
+    }
+}
+
 /// Answers a [`ControlCommand::List`] request: one non-recursive remote directory listing (#99).
 ///
-/// The selector is an **external path**, so it is validated before it is joined onto the remote
-/// root — but with the plain `validate_relative_path`, not the non-empty form the path-safety
-/// ladder demands of a side effect. The empty path is a legitimate *value* here: it is the remote
-/// root, which is a remote browser's landing page. Joining it onto the root promotes nothing,
-/// because listing a directory is a read; the rule the non-empty form exists for (#72) is about a
-/// per-entry download or delete silently becoming a whole-root one.
+/// The selector is an **external path**, so it is validated before it reaches the CLI — and *which*
+/// guard it takes is decided by the selector itself, because the verb accepts two frames:
+///
+/// * **Relative** (the default): [`crate::validate_relative_path`], not the non-empty form the
+///   path-safety ladder demands of a side effect. The empty path is a legitimate *value* here: it
+///   is the remote root, a remote browser's landing page. Joining it onto the root promotes
+///   nothing, because listing a directory is a read; the rule the non-empty form exists for (#72)
+///   is about a per-entry download or delete silently becoming a whole-root one.
+/// * **Absolute** (#323): [`crate::validate_absolute_remote_path`], whose doc states exactly what
+///   an absolute selector may and may not reach. It names a folder outside every configured root,
+///   which is the folder probe's question — asked before a pair is chosen, so `remote_root` does
+///   not exist yet to be relative to. Absolute selectors were previously *refused* by the relative
+///   guard, so no client can have been relying on the old meaning: this is a pure extension.
+///
+/// Both frames are one CLI invocation under one bounded gate wait. A caller that wants a whole
+/// subtree walks it by issuing one request per directory, which is the shape that keeps this verb
+/// on the IPC task at all — see [`ControlCommand::List`].
 ///
 /// Every failure is reported as a [`ListingOutcome`] rather than by dropping the connection: a
 /// client that asked for a listing must be told which of "retry", "gone" and "broken" it got, and
@@ -5152,25 +5219,35 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
     limit: Option<usize>,
 ) -> ListingOutcome {
     let selector = selector.unwrap_or("");
-    let Some(relative) = crate::validate_relative_path(Path::new(selector)) else {
+    let validated = if Path::new(selector).is_absolute() {
+        crate::validate_absolute_remote_path(Path::new(selector)).map(BrowseTarget::Absolute)
+    } else {
+        crate::validate_relative_path(Path::new(selector)).map(BrowseTarget::UnderRoot)
+    };
+    let Some(target) = validated else {
         return ListingOutcome::Failed {
             // Bounded like the other two failure arms, and here it is the *client's* bytes being
             // echoed: a control request may carry up to `MAX_REQUEST_BYTES`, so a 64 KiB selector
             // that fails validation would otherwise put 64 KiB of someone else's string on the
             // wire. The one rule covers all three arms rather than the two that happened to
-            // originate remotely (Copilot review).
-            error: truncate_error(&format!("unsafe remote path: {selector}")),
+            // originate remotely (Copilot review). The bound is on the *selector* rather than on
+            // the finished sentence (#313), so the prefix naming the failure always survives.
+            error: format!("unsafe remote path: {}", truncate_selector(selector)),
         };
     };
     let proton = Arc::clone(&browse.proton);
-    let remote_root = browse.remote_root.clone();
     let gate_wait = browse.gate_wait;
-    let target = relative.clone();
+    // What the CLI is asked for, in the CLI's own terms: an absolute target is its own root with an
+    // empty relative part. `relative` is what the reply's entry keys are relative to, and is used
+    // again by the parent filter below.
+    let (root, relative) = target.request(&browse.remote_root);
+    let (root, relative) = (root.to_path_buf(), relative.to_path_buf());
+    let (call_root, call_relative) = (root.clone(), relative.clone());
     // `spawn_blocking`: the listing is a synchronous subprocess. Running it inline would block a
     // runtime worker, which is exactly what would stop the *other* control connections being
     // served — the property this whole task layout exists for.
     let listed = tokio::task::spawn_blocking(move || {
-        proton.browse_directory(&remote_root, &target, gate_wait)
+        proton.browse_directory(&call_root, &call_relative, gate_wait)
     })
     .await;
 
@@ -5190,7 +5267,9 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
             // Per-request, not per-pass: a user asked for this, so one line per request is
             // information rather than the pass-rate noise `note_event_scope_declined` guards
             // against.
-            warn!(path = %relative.display(), %error, "remote listing failed");
+            // The selector's own frame, not `relative` — which is empty for an absolute target and
+            // would log every failed probe as a failure at the remote root.
+            warn!(path = %target.echo().display(), %error, "remote listing failed");
             if is_auth_failure_error(error.as_ref()) {
                 publish_auth_evidence(shared, AuthState::SignedOut);
             }
@@ -5219,6 +5298,10 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
         // parent is not `relative` either, so a browse cannot silently flatten a subtree into what
         // reads as one folder's contents.
         .filter(|(path, _)| path.parent() == Some(relative.as_path()))
+        // Into the selector's own frame, and only here: everything above works in the frame the
+        // CLI answered in (relative to whatever root was listed), so the reframing is one map, not
+        // a rule each branch has to remember. A relative request is the identity.
+        .map(|(path, entity)| (target.entry_path(path), entity))
         .map(|(path, entity)| match entity {
             RemoteEntity::File(file) => RemoteEntry {
                 path,
@@ -5251,7 +5334,7 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
         .clamp(1, LIST_ENTRIES_MAX_LIMIT);
     entries.truncate(limit);
     ListingOutcome::Listed {
-        path: relative,
+        path: target.echo(),
         truncated: total > entries.len(),
         total,
         entries,
@@ -5327,8 +5410,15 @@ fn resolve_history_path(
     selector: &str,
     since_epoch_secs: u64,
 ) -> AppResult<PathBuf> {
-    let validated = crate::validate_relative_path_non_empty(Path::new(selector))
-        .ok_or_else(|| boxed_error(format!("unsafe history path: {selector}")))?;
+    // Both messages below reach the wire as `ControlResponse.last_error`, so the selector they
+    // echo is bounded like every other rendering of the client's own bytes (#313).
+    let validated =
+        crate::validate_relative_path_non_empty(Path::new(selector)).ok_or_else(|| {
+            boxed_error(format!(
+                "unsafe history path: {}",
+                truncate_selector(selector)
+            ))
+        })?;
     // A selector that is already a stored key needs no scan. `distinct_event_paths` is bounded by
     // retention, but this keeps the common case a point query.
     if !selector.contains(char::REPLACEMENT_CHARACTER) {
@@ -5347,8 +5437,9 @@ fn resolve_history_path(
         // window, which is the truthful answer for a path with no recorded events.
         0 => Ok(validated),
         count => Err(boxed_error(format!(
-            "{selector} names {count} different recorded paths that render identically; the \
-             history cannot say which one is meant"
+            "{} names {count} different recorded paths that render identically; the \
+             history cannot say which one is meant",
+            truncate_selector(selector)
         ))),
     }
 }
@@ -6085,15 +6176,36 @@ impl PassFailures {
 /// on a char boundary — so the documented cap is the real one and no consumer has to budget for an
 /// overshoot.
 fn truncate_error(error: &str) -> String {
-    if error.len() <= FAILED_ITEM_ERROR_LIMIT {
-        return error.to_owned();
+    truncate_for_display(error, FAILED_ITEM_ERROR_LIMIT)
+}
+
+/// Bounds a **client selector** to [`SELECTOR_DISPLAY_LIMIT`] before it is rendered back into a
+/// reply message (#313).
+///
+/// **Display only, and never on the matching path.** `approve`/`deny`/`keep` match a selector in its
+/// wire form and refuse one that names more than one pending deletion (#61); truncating before that
+/// comparison would make two different paths compare equal, which is the opposite of what those
+/// rules are for. So this is called on the way *out*, on the value being interpolated into a
+/// sentence, and on nothing else.
+fn truncate_selector(selector: &str) -> String {
+    truncate_for_display(selector, SELECTOR_DISPLAY_LIMIT)
+}
+
+/// The one body behind every bounded string this engine puts in a reply: cut to `limit` **bytes
+/// inclusive of the ellipsis**, on a char boundary, so the documented cap is the real one.
+///
+/// One body rather than a truncation per call site — three had accumulated by #313, and a fourth
+/// would have been a fourth chance to get the inclusive-of-the-ellipsis arithmetic wrong.
+fn truncate_for_display(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
     }
-    let budget = FAILED_ITEM_ERROR_LIMIT - ELLIPSIS.len();
+    let budget = limit.saturating_sub(ELLIPSIS.len());
     let end = (0..=budget)
         .rev()
-        .find(|index| error.is_char_boundary(*index))
+        .find(|index| text.is_char_boundary(*index))
         .unwrap_or(0);
-    format!("{}{ELLIPSIS}", &error[..end])
+    format!("{}{ELLIPSIS}", &text[..end])
 }
 
 const ELLIPSIS: &str = "…";
@@ -6500,6 +6612,81 @@ impl Drop for LockGuard {
     }
 }
 
+/// What looking at the user-global single-instance lock could tell about a running daemon (#317).
+///
+/// **Three states, and the third is not a synonym for either other one** — the rule
+/// [`crate::ipc::AuthState`] already follows. A probe that could not answer must not be read as
+/// "nothing is running": the whole point of the caller is to warn, and a fall-through arm meaning
+/// "fine" is the #246 shape.
+#[derive(Debug)]
+pub enum GlobalLockProbe {
+    /// Something holds the lock, so a `proton-syncd` is running for this user.
+    Held,
+    /// Nothing holds it. Includes "the lockfile does not exist at all", which is what a user who
+    /// has never started a daemon has — and which the probe must not create.
+    Free,
+    /// The lock could not be looked at (its path could not be resolved, it could not be opened, the
+    /// lock call failed for some reason other than contention). Evidence of **neither** state.
+    Unknown(String),
+}
+
+/// [`probe_daemon_lock`] against the real user-global lock path.
+pub fn probe_global_daemon_lock() -> GlobalLockProbe {
+    match crate::paths::default_global_lock_path() {
+        Ok(path) => probe_daemon_lock(&path),
+        Err(error) => GlobalLockProbe::Unknown(error.to_string()),
+    }
+}
+
+/// Is a daemon holding `path`?
+///
+/// **`flock` has no query operation, so "check without acquiring" is not literally satisfiable.**
+/// What this does instead is the closest thing that has the same effect: take a **shared** lock
+/// non-blockingly and drop it in the next statement. Three properties make that the right reading
+/// of #317's requirement (never hold the lock, never refuse a dry run because a daemon is up):
+///
+/// * **It never waits and never holds.** A held lock answers immediately from `EWOULDBLOCK`; a free
+///   one is released before this function returns. Acquiring the *exclusive* lock for the duration
+///   of the preview — the obvious alternative — would block a daemon from starting for as long as
+///   the walk runs, which is worse than the hazard being warned about.
+/// * **Shared, not exclusive**, so two dry runs probing at once do not refuse each other. It is the
+///   weakest lock that still conflicts with the daemon's exclusive one.
+/// * **It never creates the file.** A dry run must leave no state behind, and a missing lockfile is
+///   itself an answer (nothing has ever locked it). `LockGuard::acquire` creates; this does not.
+///
+/// The residual, stated rather than hidden: a daemon whose own `LockGuard::acquire` lands inside the
+/// few microseconds this holds the shared lock sees it held and refuses to start, with its usual
+/// message, and starting again works. That window did not exist before, and it is the price of
+/// there being no `flock` query.
+fn probe_daemon_lock(path: &Path) -> GlobalLockProbe {
+    let file = match OpenOptions::new().read(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return GlobalLockProbe::Free,
+        Err(error) => {
+            return GlobalLockProbe::Unknown(format!(
+                "cannot read the lockfile {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    // Called through `fs2::FileExt` by name, not as `file.try_lock_shared()`: std grew an
+    // *inherent* `File::try_lock_shared` whose error is a `TryLockError`, and an inherent method
+    // wins method resolution — so the unqualified spelling would silently pick a different API from
+    // the `try_lock_exclusive` two functions up, and this file would hold two lock vocabularies.
+    match FileExt::try_lock_shared(&file) {
+        Ok(()) => {
+            // Dropping `file` would release it too; unlocking here says so at the point it matters.
+            let _ = file.unlock();
+            GlobalLockProbe::Free
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => GlobalLockProbe::Held,
+        Err(error) => GlobalLockProbe::Unknown(format!(
+            "cannot test the lockfile {}: {error}",
+            path.display()
+        )),
+    }
+}
+
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
@@ -6711,6 +6898,240 @@ mod tests {
         }
     }
 
+    /// A client that keys its remote by **absolute** path and answers a listing the way the real
+    /// one does: the children of `root/relative`, keyed *relative to `root`*, plus the CLI's own
+    /// wrapper node for the directory it was asked about.
+    ///
+    /// `RecordingProtonClient` cannot stand in here: it ignores `remote_root` entirely, so it
+    /// answers an absolute selector and a relative one identically — which is precisely the
+    /// distinction #323 introduces.
+    /// The `(root, relative)` pairs a listing client was asked for.
+    type ListingRequests = Arc<Mutex<Vec<(PathBuf, PathBuf)>>>;
+
+    #[derive(Debug)]
+    struct AbsoluteListingClient {
+        entities: HashMap<PathBuf, RemoteEntity>,
+        seen: ListingRequests,
+    }
+
+    impl AbsoluteListingClient {
+        fn new(paths: &[(&str, bool)]) -> (Self, ListingRequests) {
+            let entities = paths
+                .iter()
+                .map(|(path, is_dir)| {
+                    let name = Path::new(path)
+                        .file_name()
+                        .expect("name")
+                        .to_string_lossy()
+                        .into_owned();
+                    let entity = if *is_dir {
+                        RemoteEntity::Directory(RemoteDirectory {
+                            path: PathBuf::from(path),
+                            id: Some(format!("dir-{name}")),
+                            name,
+                        })
+                    } else {
+                        RemoteEntity::File(RemoteFile {
+                            path: PathBuf::from(path),
+                            id: format!("file-{name}"),
+                            name,
+                            sha1_hash: Some("aa".to_owned()),
+                            downloadable: true,
+                        })
+                    };
+                    (PathBuf::from(path), entity)
+                })
+                .collect();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    entities,
+                    seen: Arc::clone(&seen),
+                },
+                seen,
+            )
+        }
+    }
+
+    impl ProtonClient for AbsoluteListingClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            Ok(HashMap::new())
+        }
+
+        fn list_directory(
+            &self,
+            remote_root: &Path,
+            relative_directory: &Path,
+        ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            self.seen
+                .lock()
+                .expect("seen lock")
+                .push((remote_root.to_path_buf(), relative_directory.to_path_buf()));
+            let directory = if relative_directory.as_os_str().is_empty() {
+                remote_root.to_path_buf()
+            } else {
+                remote_root.join(relative_directory)
+            };
+            let mut listing: HashMap<PathBuf, RemoteEntity> = self
+                .entities
+                .iter()
+                .filter(|(absolute, _)| absolute.parent() == Some(directory.as_path()))
+                .filter_map(|(absolute, entity)| {
+                    Some((
+                        absolute.strip_prefix(remote_root).ok()?.to_path_buf(),
+                        entity.clone(),
+                    ))
+                })
+                .collect();
+            // The wrapper node the CLI includes for the directory being listed.
+            if let Some(entity) = self.entities.get(&directory) {
+                listing.insert(relative_directory.to_path_buf(), entity.clone());
+            }
+            Ok(listing)
+        }
+
+        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected ensure directory"))
+        }
+
+        fn upload(&self, _local: &Path, _root: &Path, _relative: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected upload"))
+        }
+
+        fn download(&self, _remote_path: &Path, _destination: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected download"))
+        }
+
+        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected delete"))
+        }
+    }
+
+    fn absolute_browsing_daemon(
+        directory: &Path,
+        local_root: &Path,
+    ) -> (Daemon<AbsoluteListingClient>, ListingRequests) {
+        let (client, seen) = AbsoluteListingClient::new(&[
+            ("/Drive/Candidate", true),
+            ("/Drive/Candidate/a.txt", false),
+            ("/Drive/Candidate/sub", true),
+            ("/Drive/Candidate/sub/b.txt", false),
+            // Inside the daemon's own configured root, which the absolute selector must not be
+            // resolved against.
+            ("/Drive/RemoteFolder/mine.txt", false),
+        ]);
+        let daemon =
+            Daemon::with_client(test_config(directory, local_root), client).expect("daemon");
+        (daemon, seen)
+    }
+
+    fn browse_absolute(
+        daemon: &Daemon<AbsoluteListingClient>,
+        selector: Option<&str>,
+    ) -> ListingOutcome {
+        let context = BrowseContext {
+            proton: Arc::clone(&daemon.proton),
+            remote_root: daemon.config.remote_root.clone(),
+            gate_wait: daemon.browse_gate_wait,
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(browse_remote_directory(
+                &context,
+                &daemon.shared,
+                selector,
+                None,
+            ))
+    }
+
+    /// #323: the folder probe's question is about a path **outside every configured root**, asked
+    /// before a pair exists, so the selector has to be absolute — and the reply has to answer in
+    /// that same frame, or a walk cannot use an entry as its next selector.
+    #[test]
+    fn an_absolute_selector_lists_a_folder_outside_the_configured_root() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (daemon, seen) = absolute_browsing_daemon(directory.path(), &local_root);
+        assert_eq!(
+            daemon.config.remote_root,
+            PathBuf::from("/Drive/RemoteFolder"),
+            "the candidate below is deliberately not under this"
+        );
+
+        let outcome = browse_absolute(&daemon, Some("/Drive/Candidate"));
+        let ListingOutcome::Listed {
+            path,
+            entries,
+            total,
+            truncated,
+        } = &outcome
+        else {
+            panic!("expected a listing, got {outcome:?}");
+        };
+        assert_eq!(
+            path,
+            Path::new("/Drive/Candidate"),
+            "the echo answers in the frame the request used"
+        );
+        assert_eq!((*total, *truncated), (2, false));
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/Drive/Candidate/sub"),
+                PathBuf::from("/Drive/Candidate/a.txt"),
+            ],
+            "entries come back absolute — not relative to remote_root (which they are not under) \
+             and not bare names (which would duplicate `name`)"
+        );
+        // The CLI was asked for the candidate as its own root, so nothing was resolved against
+        // `remote_root`, and the folder's own wrapper node did not come back as an entry.
+        assert_eq!(
+            seen.lock().expect("seen lock").as_slice(),
+            [(PathBuf::from("/Drive/Candidate"), PathBuf::new())]
+        );
+
+        // And an entry can be fed straight back, which is what makes a client-side walk possible.
+        let deeper = browse_absolute(&daemon, Some("/Drive/Candidate/sub"));
+        assert_eq!(
+            listed_names(&deeper),
+            vec!["b.txt"],
+            "the walk's next step, got {deeper:?}"
+        );
+    }
+
+    /// The new boundary, guarded where it enters (#323). An absolute selector is validated by
+    /// `validate_absolute_remote_path`, so `..` is refused rather than resolved — and the refusal
+    /// happens before any CLI child is spawned, not after one has listed the wrong folder.
+    #[test]
+    fn an_absolute_selector_that_escapes_is_refused_before_anything_is_listed() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (daemon, seen) = absolute_browsing_daemon(directory.path(), &local_root);
+
+        for selector in [
+            "/Drive/Candidate/..",
+            "/Drive/../Drive/Candidate",
+            "/Drive/./../x",
+        ] {
+            let outcome = browse_absolute(&daemon, Some(selector));
+            let ListingOutcome::Failed { error } = &outcome else {
+                panic!("{selector} must be refused, got {outcome:?}");
+            };
+            assert!(error.starts_with("unsafe remote path:"), "{error:?}");
+        }
+        assert!(
+            seen.lock().expect("seen lock").is_empty(),
+            "a refused selector must never reach the CLI"
+        );
+    }
+
     #[test]
     fn a_browse_answers_one_level_even_when_the_listing_hands_back_a_whole_subtree() {
         // "In this folder" is one level down, and the daemon says so rather than trusting the
@@ -6812,7 +7233,7 @@ mod tests {
         fs::create_dir(&local_root).expect("local root");
         let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::None);
 
-        for selector in ["../etc", "/etc", "all/../.."] {
+        for selector in ["../etc", "all/../..", "sub/../../escape"] {
             match browse(&daemon, Some(selector), None) {
                 ListingOutcome::Failed { error } => {
                     assert!(error.contains("unsafe remote path"), "{selector}: {error}");
@@ -6824,6 +7245,20 @@ mod tests {
             daemon.shared.auth_state(),
             AuthState::Unknown,
             "a refused selector never reached Proton, so it proves nothing about the session"
+        );
+
+        // `/etc` WAS IN THAT LIST AND IS DELIBERATELY NOT ANY MORE (#323). A leading `/` now
+        // selects the absolute frame, where the selector names a location on **Proton Drive** —
+        // `proton-drive filesystem list /etc` asks about a remote node, and nothing on this machine
+        // is reachable through a verb that only ever hands paths to that CLI. Its own escapes go
+        // through `validate_absolute_remote_path` instead, guarded by
+        // `an_absolute_selector_that_escapes_is_refused_before_anything_is_listed`.
+        assert!(
+            matches!(
+                browse(&daemon, Some("/etc"), None),
+                ListingOutcome::Listed { .. }
+            ),
+            "an absolute selector is a remote location, not an escape"
         );
     }
 
@@ -8759,6 +9194,142 @@ mod tests {
                 .expect("approvals")
                 .is_empty(),
             "a deny is not gated: revoking more than asked is the safe direction"
+        );
+    }
+
+    /// #313: every arm that renders the caller's selector back into a reply bounds it, and
+    /// **nothing on the matching path is bounded** — a display cap that reached the comparison
+    /// would make two different long paths compare equal, which is the opposite of the #61 rule
+    /// that a wire path is a rendering and an ambiguous selector authorizes nothing.
+    #[test]
+    fn an_oversized_selector_is_bounded_where_it_is_echoed_and_nowhere_else() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        // A control request may carry up to `ipc::MAX_REQUEST_BYTES`, and nothing narrower bounds
+        // `argument` — so this is what a client can actually send.
+        let huge = "a".repeat(64 * 1024);
+        let bounded = |message: &str| {
+            assert!(
+                message.len() <= SELECTOR_DISPLAY_LIMIT + 400,
+                "an echoed selector must not carry the client's 64 KiB back: {} bytes",
+                message.len()
+            );
+        };
+
+        bounded(
+            &apply_approval_command(&daemon.connection, &[], Some(&huge), true, false, None)
+                .expect("deny with no match"),
+        );
+        bounded(
+            &apply_keep_command(&daemon.connection, &[], Some(&huge), true)
+                .expect("keep with no match")
+                .0,
+        );
+        // The pre-approval arm (#227), reached by an `approve` nothing pending matches.
+        bounded(
+            &apply_approval_command(&daemon.connection, &[], Some(&huge), true, true, None)
+                .expect("pre-approve without a direction"),
+        );
+        bounded(
+            &apply_approval_command(
+                &daemon.connection,
+                &[],
+                Some(&huge),
+                true,
+                true,
+                Some(DeleteDirection::Remote),
+            )
+            .expect("pre-approve with no index record"),
+        );
+
+        // The ambiguous arm renders the *client's* selector too (the issue body reads it as the
+        // daemon's own paths; it is not).
+        let long_prefix = "b".repeat(SELECTOR_DISPLAY_LIMIT * 2);
+        let ambiguous: Vec<PendingDeletion> = [0xffu8, 0xfeu8]
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| {
+                let mut bytes = long_prefix.clone().into_bytes();
+                bytes.push(*byte);
+                bytes.extend_from_slice(b".txt");
+                PendingDeletion {
+                    path: PathBuf::from(OsStr::from_bytes(&bytes)),
+                    direction: DeleteDirection::Remote,
+                    entity_kind: EntityKind::File,
+                    fingerprint: format!("fp-{index}"),
+                    detected_epoch_secs: 1,
+                    first_seen_epoch_secs: 1,
+                    subtree_files: None,
+                    subtree_bytes: None,
+                }
+            })
+            .collect();
+        let lossy = crate::ipc::wire_path(&ambiguous[0].path).into_owned();
+        assert_eq!(lossy, crate::ipc::wire_path(&ambiguous[1].path));
+        let message = apply_approval_command(
+            &daemon.connection,
+            &ambiguous,
+            Some(&lossy),
+            true,
+            true,
+            None,
+        )
+        .expect("ambiguous approve");
+        assert!(message.contains("cannot be told apart"), "{message}");
+        bounded(&message);
+
+        // And the load-bearing half, which is what a display cap would destroy if it ever reached
+        // the comparison: two pending deletions that differ ONLY beyond the cap. A truncating
+        // matcher renders them one selector, so the targeted approve either refuses both as
+        // ambiguous or authorizes a deletion nobody picked. Neither is acceptable, and neither is
+        // visible from a test that approves a single long path (which matches its own truncation).
+        let shared_prefix = "c".repeat(SELECTOR_DISPLAY_LIMIT * 2);
+        let pending: Vec<PendingDeletion> = ["one.txt", "two.txt"]
+            .iter()
+            .enumerate()
+            .map(|(index, leaf)| PendingDeletion {
+                path: PathBuf::from(format!("{shared_prefix}/{leaf}")),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::File,
+                fingerprint: format!("fp-long-{index}"),
+                detected_epoch_secs: 1,
+                first_seen_epoch_secs: 1,
+                subtree_files: None,
+                subtree_bytes: None,
+            })
+            .collect();
+        let selector = crate::ipc::wire_path(&pending[1].path).into_owned();
+        let message = apply_approval_command(
+            &daemon.connection,
+            &pending,
+            Some(&selector),
+            true,
+            true,
+            None,
+        )
+        .expect("approve a long path");
+        assert!(
+            message.contains("approved 1"),
+            "a path longer than the display cap must still be approvable, and unambiguously: \
+             {message}"
+        );
+        let approved: Vec<PathBuf> = crate::index::load_delete_approvals(&daemon.connection)
+            .expect("approvals")
+            .into_iter()
+            .map(|approval| approval.path)
+            .collect();
+        assert_eq!(
+            approved,
+            vec![pending[1].path.clone()],
+            "exactly the one named, pinned to the whole path rather than the shortened rendering"
         );
     }
 
@@ -13112,6 +13683,44 @@ mod tests {
         let second = LockGuard::acquire(&lock_path);
 
         assert!(second.is_err(), "second live daemon must not acquire lock");
+        drop(guard);
+    }
+
+    /// #317: `--dry-run` returns before `Daemon::new`, so it can neither take nor be refused by the
+    /// user-global lock — it must therefore be able to *look* at it. The look answers all three
+    /// states, leaves no file behind, and above all leaves no lock behind.
+    #[test]
+    fn the_global_lock_probe_answers_without_creating_or_keeping_anything() {
+        let directory = tempdir().expect("tempdir");
+        // Deliberately under a directory that does not exist either: `LockGuard::acquire` would
+        // create both, and a dry run must leave nothing behind on a machine that has never run a
+        // daemon.
+        let lock_path = directory.path().join("state").join("single-instance.lock");
+
+        assert!(
+            matches!(probe_daemon_lock(&lock_path), GlobalLockProbe::Free),
+            "a lockfile that has never existed means nothing is holding it"
+        );
+        assert!(
+            !lock_path.exists() && !lock_path.parent().expect("parent").exists(),
+            "and looking must not create it"
+        );
+
+        let guard = LockGuard::acquire(&lock_path).expect("a daemon takes the lock");
+        assert!(
+            matches!(probe_daemon_lock(&lock_path), GlobalLockProbe::Held),
+            "a live daemon's lock must be visible, or the warning never fires"
+        );
+        // The property the whole design turns on: probing a *held* lock must not have waited for
+        // it, and probing a free one must not have kept it. If the probe held anything, this
+        // acquire — the daemon's own — would fail.
+        drop(guard);
+        assert!(matches!(
+            probe_daemon_lock(&lock_path),
+            GlobalLockProbe::Free
+        ));
+        let guard = LockGuard::acquire(&lock_path)
+            .expect("a probe that kept the lock would refuse the next daemon start");
         drop(guard);
     }
 

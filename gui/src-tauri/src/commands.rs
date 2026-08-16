@@ -779,18 +779,40 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
 /// refused, closed early, timed out) is evidence of absence. Guard:
 /// `an_undecodable_status_reply_is_a_live_daemon_not_an_absent_one`.
 fn classify_unreachable_plan(socket: &std::path::Path, error: ipc::IpcError) -> DaemonPlanFailure {
-    match ipc::command(socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT) {
-        Ok(_) => DaemonPlanFailure::Reported(format!(
+    match daemon_presence(socket) {
+        DaemonPresence::Answering => DaemonPlanFailure::Reported(format!(
             "the sync daemon is running but could not work out a plan ({error}). It is \
              probably older than this app; restart it from Settings and try again."
         )),
-        Err(reply) if !status_error_proves_no_daemon(&reply) => {
-            DaemonPlanFailure::Reported(format!(
-                "the sync daemon answered with something this app could not read ({reply}). \
-                 Restart it from Settings and try again."
-            ))
-        }
-        Err(_) => DaemonPlanFailure::Unavailable,
+        DaemonPresence::Undecodable(reply) => DaemonPlanFailure::Reported(format!(
+            "the sync daemon answered with something this app could not read ({reply}). \
+             Restart it from Settings and try again."
+        )),
+        DaemonPresence::Absent => DaemonPlanFailure::Unavailable,
+    }
+}
+
+/// Whether a daemon is there at all — asked of `status`, which every daemon that has ever existed
+/// answers, and therefore the one question worth asking when a *newer* verb did not complete.
+///
+/// One definition, two callers ([`classify_unreachable_plan`] and [`probe_folder`]'s remote side),
+/// because both are deciding the same thing: whether it is safe to spawn a `proton-drive` child of
+/// our own. Each still writes its **own** sentences — the advice differs, and one sentence with the
+/// feature interpolated would fit neither.
+enum DaemonPresence {
+    /// `status` was answered and decoded. A daemon is running.
+    Answering,
+    /// It replied and the reply could not be decoded — which is still a daemon.
+    Undecodable(ipc::IpcError),
+    /// Nothing answered the socket: no socket, refused, closed early, timed out.
+    Absent,
+}
+
+fn daemon_presence(socket: &std::path::Path) -> DaemonPresence {
+    match ipc::command(socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT) {
+        Ok(_) => DaemonPresence::Answering,
+        Err(reply) if !status_error_proves_no_daemon(&reply) => DaemonPresence::Undecodable(reply),
+        Err(_) => DaemonPresence::Absent,
     }
 }
 
@@ -1890,28 +1912,75 @@ pub async fn skip_rule_usage(
 /// Takes the candidate `path` outright rather than reading the configured roots — this runs during
 /// onboarding, before either root exists.
 ///
-/// Async: the local side walks a tree and the remote side spawns subprocesses, and either on the
-/// GTK main loop would freeze the window.
+/// The remote side **asks the daemon** (#323): one `list` per directory, so every `proton-drive`
+/// child is spawned by the daemon behind its one `CliGate` rather than by this process beside it
+/// (#23). It falls back to spawning children here only when nothing answers the socket at all,
+/// which is `run_dry_run`'s rule and is exactly onboarding, where no daemon exists yet.
+///
+/// Async: the local side walks a tree and the remote side does up to 64 socket round trips (or, on
+/// the fallback, spawns subprocesses), and either on the GTK main loop would freeze the window.
 #[tauri::command]
 pub async fn probe_folder(
     app: tauri::AppHandle,
     side: String,
     path: String,
 ) -> Result<gui_core::folder_probe::FolderProbe, String> {
-    let proton_cli = {
+    let (proton_cli, socket) = {
         let paths = app.state::<Mutex<RuntimePaths>>();
-        let cli = paths.lock().unwrap().proton_cli.clone();
-        cli
+        let paths = paths.lock().unwrap();
+        (paths.proton_cli.clone(), paths.socket_path.clone())
     };
     tauri::async_runtime::spawn_blocking(move || match side.as_str() {
         "local" => gui_core::folder_probe::probe_local(std::path::Path::new(&path)),
-        "remote" => {
-            gui_core::folder_probe::probe_remote_via_cli(&proton_cli, std::path::Path::new(&path))
-        }
+        "remote" => probe_remote_folder(socket, std::path::Path::new(&path), &proton_cli),
         other => Err(format!("unknown side: {other}")),
     })
     .await
     .map_err(|error| format!("folder probe failed: {error}"))?
+}
+
+/// The remote probe's daemon-first, child-only-if-nothing-answers rule (#323), split out so it is
+/// testable without a Tauri handle.
+///
+/// The fallback is taken on **one** condition: the very first `list` never reached the socket. Every
+/// other answer — a refusal, an outcome this build cannot read, a socket that died mid-walk — is a
+/// daemon, and reported. Falling back on any of those would put a second `proton-drive` client
+/// beside a live one, which is the whole hazard.
+///
+/// An unresolvable socket path (#74's fail-closed default) counts as "no daemon": there is nothing
+/// to ask, and the child is the only thing that can answer at all.
+fn probe_remote_folder(
+    socket: Result<std::path::PathBuf, String>,
+    candidate: &std::path::Path,
+    proton_cli: &str,
+) -> Result<gui_core::folder_probe::FolderProbe, String> {
+    use gui_core::folder_probe::{describe_probe_failure, probe_remote_via_cli, ProbeListingError};
+
+    let fall_back = || probe_remote_via_cli(proton_cli, candidate);
+    let Ok(socket) = socket else {
+        return fall_back();
+    };
+    match gui_core::folder_probe::probe_remote_via_daemon(&socket, candidate) {
+        Ok(probe) => Ok(probe),
+        Err(ProbeListingError::Unreachable(error)) => match daemon_presence(&socket) {
+            // It answered `status` but not `list` with an absolute selector: a daemon older than
+            // this app. Say so — do not walk beside it.
+            DaemonPresence::Answering => Err(format!(
+                "the sync daemon is running but could not measure that folder ({error}). It is \
+                 probably older than this app; restart it from Settings and try again."
+            )),
+            DaemonPresence::Undecodable(reply) => Err(format!(
+                "the sync daemon answered with something this app could not read ({reply}). \
+                 Restart it from Settings and try again."
+            )),
+            DaemonPresence::Absent => fall_back(),
+        },
+        // Exhaustive by variant, no `_`: both of these are the daemon's own answer and are
+        // reported, and a variant added later must be *given* an arm rather than inherit this one.
+        Err(error @ (ProbeListingError::Busy | ProbeListingError::Failed(_))) => {
+            Err(describe_probe_failure(error))
+        }
+    }
 }
 
 /// The state files the daemon keeps out of its own scan, so a relocated index inside the sync root
@@ -2578,6 +2647,120 @@ mod socket_tests {
             }
         });
         (path, dir)
+    }
+
+    /// A fake daemon that keeps answering, one canned reply per request, in order — and repeats the
+    /// last one for ever after. Needed for the probe, which is a *walk*: one `list` request per
+    /// directory, and a `status` follow-up when one of them does not complete.
+    /// An **empty** reply means "close the connection without answering" — which is exactly what a
+    /// daemon does with a command it cannot parse, and therefore the only way to model a daemon
+    /// older than a verb.
+    fn spawn_repeating_daemon(replies: Vec<String>) -> (std::path::PathBuf, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proton-sync.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        thread::spawn(move || {
+            let mut index = 0usize;
+            while let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(&stream);
+                let mut request_line = String::new();
+                let _ = reader.read_line(&mut request_line);
+                let reply = replies[index.min(replies.len() - 1)].clone();
+                index += 1;
+                if !reply.is_empty() {
+                    let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
+                }
+            }
+        });
+        (path, dir)
+    }
+
+    /// The canned status reply with a `listing` field spliced in.
+    fn listing_reply(listing: serde_json::Value) -> String {
+        let mut reply: serde_json::Value = serde_json::from_str(CANNED_REPLY).expect("canned");
+        reply["listing"] = listing;
+        serde_json::to_string(&reply).expect("serialize")
+    }
+
+    /// A `proton_cli` name nothing can execute, so taking the child fallback is *observable*: the
+    /// walk's first listing fails with this binary's name in it, which no daemon-side sentence
+    /// contains.
+    const UNRUNNABLE_CLI: &str = "proton-drive-that-does-not-exist-323";
+
+    /// #323's fallback rule, which is the one thing this change must not get wrong: the GUI may
+    /// spawn its own `proton-drive` children **only** when nothing answers the socket at all.
+    #[test]
+    fn the_remote_probe_falls_back_to_a_child_only_when_no_daemon_answers() {
+        let candidate = std::path::Path::new("/Drive/Candidate");
+
+        // 1. No socket path could even be resolved (#74 fails closed). There is nothing to ask.
+        let error = probe_remote_folder(
+            Err("cannot resolve the control socket path".to_owned()),
+            candidate,
+            UNRUNNABLE_CLI,
+        )
+        .expect_err("the bogus CLI cannot answer either");
+        assert!(
+            error.contains(UNRUNNABLE_CLI),
+            "an unresolvable socket must take the child, which is the only thing left: {error}"
+        );
+
+        // 2. A socket path that nothing is listening on — onboarding, the case the child exists for.
+        let dir = tempfile::tempdir().unwrap();
+        let error = probe_remote_folder(
+            Ok(dir.path().join("nothing-here.sock")),
+            candidate,
+            UNRUNNABLE_CLI,
+        )
+        .expect_err("the bogus CLI cannot answer either");
+        assert!(error.contains(UNRUNNABLE_CLI), "{error}");
+
+        // 3. A daemon that answers `status` but never a listing — one older than this app, which
+        // knows `list` but refuses an absolute selector. It ANSWERED, so the child must not run.
+        let (socket, _dir) = spawn_repeating_daemon(vec![CANNED_REPLY.to_owned()]);
+        let error = probe_remote_folder(Ok(socket), candidate, UNRUNNABLE_CLI)
+            .expect_err("a daemon that listed nothing is not a probe result");
+        assert!(
+            !error.contains(UNRUNNABLE_CLI),
+            "a live daemon must never send a second proton-drive client out (#23/#317): {error}"
+        );
+        assert!(error.contains("sync daemon"), "{error}");
+
+        // 4. THE ARM THAT MATTERS. A daemon that drops the `list` connection without replying —
+        // which is precisely what one predating the verb does with a command it cannot parse — and
+        // then answers `status` normally. At the transport that first failure is `Unreachable`,
+        // indistinguishable from a missing socket, so the fallback rule cannot be read off it: the
+        // follow-up `status` is what decides, and it says a daemon is there.
+        let (socket, _dir) = spawn_repeating_daemon(vec![String::new(), CANNED_REPLY.to_owned()]);
+        let error = probe_remote_folder(Ok(socket), candidate, UNRUNNABLE_CLI)
+            .expect_err("a daemon too old for the verb is reported, not walked beside");
+        assert!(
+            !error.contains(UNRUNNABLE_CLI),
+            "a dropped connection from a LIVE daemon must not be read as absence: {error}"
+        );
+        assert!(error.contains("older than this app"), "{error}");
+
+        // 5. A daemon that answers the listing: the walk succeeds and nothing is spawned here.
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "listed",
+            "path": "/Drive/Candidate",
+            "entries": [{
+                "path": "/Drive/Candidate/a.txt",
+                "name": "a.txt",
+                "entity_kind": "file",
+                "sha1": null,
+                "downloadable": true
+            }],
+            "total": 1,
+            "truncated": false
+        }))]);
+        let probe = probe_remote_folder(Ok(socket), candidate, UNRUNNABLE_CLI)
+            .expect("the daemon answered the walk");
+        assert_eq!(probe.files, 1);
+        assert_eq!(
+            probe.bytes, None,
+            "a remote listing exposes no usable size, however it was obtained"
+        );
     }
 
     /// A headless mock app (no webview/display) managing `RuntimePaths` pointed at `socket`.

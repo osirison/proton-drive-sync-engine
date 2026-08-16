@@ -1451,15 +1451,63 @@ async fn watch_apply(
     }
     let outcome = poll_until(
         socket_path,
-        || ControlRequest::new(ControlCommand::PlanResult),
+        // The smallest window the daemon will build, because this wait reads `apply` and nothing
+        // else. Without it every 300 ms poll rebuilds and ships up to `PLAN_ACTIONS_DEFAULT_LIMIT`
+        // rows nobody looks at, for as long as the apply runs — minutes, on a large plan (#321).
+        // `Some(1)`, not `Some(0)`: `StoredPlan::outcome` clamps the limit to at least one row, so
+        // a literal that does not survive the clamp would read as a stronger claim than it is. It
+        // bounds the ordinary rows only — destructive rows are never truncated at any limit.
+        || ControlRequest {
+            limit: Some(1),
+            ..ControlRequest::new(ControlCommand::PlanResult)
+        },
         |response| apply_generation(response.apply.as_ref()).is_some_and(|seq| seq >= target),
     )
     .await;
     match outcome {
-        Ok(response) => report_apply(&response, json, style),
+        Ok(response) => {
+            let response = refetch_plan_if_diverged(socket_path, response, target).await;
+            report_apply(&response, json, style)
+        }
         Err(message) => {
             eprintln!("lost contact with the daemon while waiting: {message}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The other half of the minimal poll window: a **divergence** is the one verdict whose reply is
+/// read for its plan as well, so fetch that plan once, at the display limit, when the wait ends on
+/// one (#321).
+///
+/// Only the `plan` field is taken from the second reply. The verdict stays the one this wait was
+/// watching for: `plan_result` re-reads the published slot, so a newer apply landing between the two
+/// requests would otherwise have this command report *its* outcome under our token.
+///
+/// A failed re-request degrades to the divergence **without** the plan rather than failing the
+/// command: nothing was applied either way, and that is the fact the user needs. `report_apply`
+/// prints `proton-sync plan` as the way to see the new one.
+async fn refetch_plan_if_diverged(
+    socket_path: &Path,
+    waited: ControlResponse,
+    target: u64,
+) -> ControlResponse {
+    if !matches!(waited.apply, Some(ApplyOutcome::Diverged { apply_seq }) if apply_seq >= target) {
+        return waited;
+    }
+    // The daemon's default window (`PLAN_ACTIONS_DEFAULT_LIMIT`), which is what this wait shipped on
+    // every poll before #321 — `apply` has no `--limit` of its own to raise it with.
+    match request_with_timeout(socket_path, ControlRequest::new(ControlCommand::PlanResult)).await {
+        Ok(fresh) => ControlResponse {
+            plan: fresh.plan,
+            ..waited
+        },
+        Err(message) => {
+            eprintln!("could not fetch the new plan: {message}");
+            ControlResponse {
+                plan: None,
+                ..waited
+            }
         }
     }
 }
@@ -1658,12 +1706,24 @@ fn report_apply(response: &ControlResponse, json: bool, style: &Style) -> ExitCo
         }
         Some(ApplyOutcome::Diverged { .. }) => {
             if !json {
-                eprintln!(
-                    "The plan changed since you reviewed it, so nothing was applied. The new plan:"
-                );
-                // Not a second rendering: the same reply carries the fresh plan under the same
-                // field `plan` prints from.
-                report_plan(response, false, style);
+                // Two sentences, because the plan is no longer guaranteed to be here. The wait
+                // polls with a minimal window and fetches the real one once, on this verdict alone
+                // (#321) — and that fetch can fail, which is not a reason to fail the command:
+                // nothing was applied either way.
+                if response.plan.is_some() {
+                    eprintln!(
+                        "The plan changed since you reviewed it, so nothing was applied. The new \
+                         plan:"
+                    );
+                    // Not a second rendering: the reply carries the fresh plan under the same field
+                    // `plan` prints from.
+                    report_plan(response, false, style);
+                } else {
+                    eprintln!(
+                        "The plan changed since you reviewed it, so nothing was applied. Run \
+                         `proton-sync plan` to see the new one."
+                    );
+                }
             }
             ExitCode::FAILURE
         }
@@ -1819,6 +1879,7 @@ mod tests {
     use super::*;
     use proton_drive_sync_engine::ipc::TransferActivity;
     use proton_drive_sync_engine::sync::UnsyncableReason;
+    use std::sync::{Arc, Mutex};
 
     fn blank_activity(phase: &str) -> SyncActivity {
         SyncActivity {
@@ -2258,6 +2319,16 @@ mod tests {
     /// Serves one canned [`ControlResponse`] per connection, in order, on a real control socket —
     /// the smallest fake daemon [`poll_until`] cannot tell from the real one.
     async fn serve_scripted(socket_path: PathBuf, replies: Vec<ControlResponse>) {
+        serve_recording(socket_path, replies, Arc::new(Mutex::new(Vec::new()))).await
+    }
+
+    /// [`serve_scripted`], keeping every request it was sent — the only way to assert the *shape*
+    /// of a poll (its `limit`), which is what #321 is about.
+    async fn serve_recording(
+        socket_path: PathBuf,
+        replies: Vec<ControlResponse>,
+        seen: Arc<Mutex<Vec<ControlRequest>>>,
+    ) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
         for reply in replies {
@@ -2265,6 +2336,9 @@ mod tests {
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).await.expect("read request");
+            seen.lock().expect("seen lock").push(
+                serde_json::from_str::<ControlRequest>(line.trim_end()).expect("decode request"),
+            );
             let mut stream = reader.into_inner();
             let mut body = serde_json::to_vec(&reply).expect("serialize");
             body.push(b'\n');
@@ -2340,6 +2414,152 @@ mod tests {
             plan_generation(response.plan.as_ref()),
             Some(1),
             "the wait must return the daemon's own sealed verdict, not a pause the client inferred"
+        );
+    }
+
+    fn reviewed(token: &str) -> PlanOutcome {
+        PlanOutcome::Computed(Box::new(ReviewedPlan {
+            plan_seq: 3,
+            token: token.to_owned(),
+            computed_epoch_secs: 100,
+            summary: PlanSummary::default(),
+            actions: Vec::new(),
+            total: 0,
+            truncated: false,
+            cannot_sync: Vec::new(),
+        }))
+    }
+
+    /// #321: the apply wait reads `response.apply` and nothing else, so it must not ask for a plan
+    /// window on every 300 ms poll — and a **divergence** is the one verdict that does need the
+    /// plan, fetched once, afterwards, at the display limit.
+    #[test]
+    fn an_apply_wait_polls_a_minimal_window_and_fetches_the_plan_only_on_a_divergence() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let socket_path = directory.path().join("control.sock");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        let ack = ControlResponse {
+            apply: Some(ApplyOutcome::Scheduled { apply_seq: 7 }),
+            ..blank_response()
+        };
+        // The verdict the wait ends on. Its own reply carries no plan, because the minimal window
+        // is what the poll asked for.
+        let diverged = ControlResponse {
+            apply: Some(ApplyOutcome::Diverged { apply_seq: 7 }),
+            plan: None,
+            ..blank_response()
+        };
+        // The follow-up. Its `apply` is deliberately a DIFFERENT, newer verdict: only `plan` may be
+        // taken from it, or a second client's apply landing between the two requests would be
+        // reported under this command's token.
+        let refetched = ControlResponse {
+            apply: Some(ApplyOutcome::Applied {
+                apply_seq: 9,
+                executed: 4,
+                skipped_destructive: 0,
+                failed: 0,
+            }),
+            plan: Some(reviewed("tok-new")),
+            ..blank_response()
+        };
+
+        let code = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let server = tokio::spawn(serve_recording(
+                    socket_path.clone(),
+                    vec![diverged, refetched],
+                    Arc::clone(&seen),
+                ));
+                let code = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    watch_apply(&socket_path, ack, false, false, &Style { enabled: false }),
+                )
+                .await
+                .expect("the wait must finish well inside the timeout");
+                server.abort();
+                code
+            });
+
+        assert_eq!(
+            code,
+            ExitCode::FAILURE,
+            "a divergence applied nothing, so it is not a success"
+        );
+        let requests = seen.lock().expect("seen lock").clone();
+        assert_eq!(
+            requests.len(),
+            2,
+            "one poll, then one plan fetch: {requests:?}"
+        );
+        assert_eq!(
+            requests[0].limit,
+            Some(1),
+            "the poll must ask for the smallest window the daemon will build, not the default 500"
+        );
+        assert_eq!(
+            requests[1].limit, None,
+            "and the divergence fetch must ask at the display limit, which is the daemon's default"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.command == ControlCommand::PlanResult),
+            "both round trips are plan_result reads: {requests:?}"
+        );
+    }
+
+    /// The other half of the same rule, tested at the seam because the merge is invisible from
+    /// outside `watch_apply`: a failed re-fetch reports the divergence **without** a plan rather
+    /// than failing the command, and the verdict reported is always the one the wait waited for.
+    #[test]
+    fn a_failed_divergence_refetch_keeps_the_verdict_and_drops_the_plan() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let missing_socket = directory.path().join("nothing-here.sock");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let diverged = ControlResponse {
+            apply: Some(ApplyOutcome::Diverged { apply_seq: 7 }),
+            plan: Some(reviewed("tok-stale")),
+            ..blank_response()
+        };
+        let answered = runtime.block_on(refetch_plan_if_diverged(
+            &missing_socket,
+            diverged.clone(),
+            7,
+        ));
+        assert_eq!(
+            answered.apply,
+            Some(ApplyOutcome::Diverged { apply_seq: 7 }),
+            "nothing was applied, and that is the fact the user needs even with no plan to show"
+        );
+        assert_eq!(
+            answered.plan, None,
+            "the stale window must not be printed as the new plan"
+        );
+
+        // Anything that is not this wait's divergence is passed straight through — a re-fetch on an
+        // `Applied` verdict would be a round trip for a field nothing reads.
+        let applied = ControlResponse {
+            apply: Some(ApplyOutcome::Applied {
+                apply_seq: 7,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 0,
+            }),
+            plan: Some(reviewed("tok-kept")),
+            ..blank_response()
+        };
+        let answered = runtime.block_on(refetch_plan_if_diverged(&missing_socket, applied, 7));
+        assert!(
+            matches!(answered.plan, Some(PlanOutcome::Computed(_))),
+            "a non-divergent verdict must not be touched at all"
         );
     }
 }
