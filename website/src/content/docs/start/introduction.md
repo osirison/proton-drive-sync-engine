@@ -61,7 +61,9 @@ Read [How sync works](/concepts/how-sync-works/) for the full model.
   for now. Linux is the primary target (Fedora, Ubuntu, Arch).
 - **One folder pair** per daemon. The config and UI are shaped for many, but today it's
   one local root ↔ one remote root.
-- **No symlink sync.** Symlinks under the local root are skipped in both directions.
+- **No symlink sync.** Symlinks under the local root are skipped in both directions — along
+  with sockets, named pipes and device nodes. All of them are *reported* by name under
+  `proton-sync status`'s `can't sync`, so nothing is skipped in silence.
 - **No local-side directory rename detection.** A directory renamed *locally* is planned
   as a delete-and-recreate rather than a move (remote-side directory renames are detected).
 - **No Proton Docs/Sheets sync.** Native Proton document types are reported as unsupported

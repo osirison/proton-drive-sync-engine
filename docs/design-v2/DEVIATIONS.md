@@ -3112,7 +3112,7 @@ the exact measurement, so the day the capability lands the build fails until the
 | `files · 1.4 GB` / `files · 38.4 GB` | `files` | no level of the dry-run surface carries a size | #191 |
 | `Needs 38.4 GB free. You have 214 GB.` | `You have 214 GB.` | C4 answers the free space; the *needed* half is a byte total of a download plan, which nothing carries | #206 |
 | `11,798 files already match on both sides` | row omitted | a count of files the plan does **not** act on, absent from `PlanSummary` by construction | #242 |
-| `3 files can't be synced — a socket and two shortcuts` | `3 files can't be synced` | nothing enumerates the kinds; those files never enter the index | #232 |
+| `3 files can't be synced — a socket and two shortcuts` | `3 files can't be synced` | the kinds ARE enumerated since #232 — but by the daemon's standing list, and this row's count is `PlanSummary::skipped_unsupported`, a statistic of the dry-run plan. The two describe different sets and cannot be summed (§98b) | #315 |
 | `worked out 40 seconds ago · about 25 minutes to finish` | the first clause | `run_dry_run` reports what would happen, never how long it would take | #229 |
 | `159 of 471 done · about 17 minutes left` | the first clause | same estimate | #229 |
 | `nothing deleted · 2 conflicts kept as copies` | drawn from the approved plan; omitted with none in hand | no reply carries a per-pass summary *while the pass runs* | #213 |
@@ -4888,3 +4888,21 @@ by the stylesheet, so with no panel it is still spacing nothing. The tail's `mar
 recorded at `106.812px vs 85.8125px` and blamed on the missing panel — the panel accounts for
 exactly 71px of it, and what is left is `35.8125px vs 85.8125px`: the 50px §94's doors take off every
 content region. So the row is re-recorded against that decision, which is what it always was.
+
+### 98b. One row that reads like the same gap and is not
+
+`9a Review`'s `3 files can't be synced — a socket and two shortcuts` still draws without its kinds,
+and §79c recorded the reason as "those files never enter the index". They still do not — and that is
+no longer what stops this row.
+
+The number on it is `PlanSummary::skipped_unsupported`, a statistic of the **dry-run plan**, which
+counts remote nodes the CLI cannot fetch as bytes. The local kinds are deliberately kept out of a
+plan (a socket that replaced a synced file would put two rows for one path in one plan), and
+`DryRunReport` deliberately carries no `unsyncable` list: that list is a *persistent merged* store,
+and a one-shot report has no store to merge into, so the same field name on it would mean something
+else. The two facts describe different sets, cannot be summed, and on a first run the standing list
+is empty anyway because no pass has run.
+
+So the row survives, repointed at #315. Corrected rather than deleted, and corrected rather than
+left: a row whose stated reason has quietly become false is how "nothing enumerates the kinds" gets
+believed twice.
