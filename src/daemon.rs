@@ -4200,7 +4200,12 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
     let selector = selector.unwrap_or("");
     let Some(relative) = crate::validate_relative_path(Path::new(selector)) else {
         return ListingOutcome::Failed {
-            error: format!("unsafe remote path: {selector}"),
+            // Bounded like the other two failure arms, and here it is the *client's* bytes being
+            // echoed: a control request may carry up to `MAX_REQUEST_BYTES`, so a 64 KiB selector
+            // that fails validation would otherwise put 64 KiB of someone else's string on the
+            // wire. The one rule covers all three arms rather than the two that happened to
+            // originate remotely (Copilot review).
+            error: truncate_error(&format!("unsafe remote path: {selector}")),
         };
     };
     let proton = Arc::clone(&browse.proton);
@@ -5949,6 +5954,20 @@ mod tests {
             error.ends_with('…'),
             "and it must say it was cut rather than look complete: {error:?}"
         );
+
+        // The *refused selector* arm is bound by the same rule, and it is the one where the bytes
+        // are the client's own: a control request may carry up to `ipc::MAX_REQUEST_BYTES`, so an
+        // unbounded echo here would put 64 KiB of somebody else's string on the wire.
+        let huge = format!("../{}", "a".repeat(64 * 1024));
+        let ListingOutcome::Failed { error } = browse(&daemon, Some(&huge), None) else {
+            panic!("expected a refused selector");
+        };
+        assert!(
+            error.len() <= FAILED_ITEM_ERROR_LIMIT,
+            "a refused selector must not echo itself unbounded, got {} bytes",
+            error.len()
+        );
+        assert!(error.starts_with("unsafe remote path:"), "{error:?}");
     }
 
     #[test]
