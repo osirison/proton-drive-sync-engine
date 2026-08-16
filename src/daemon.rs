@@ -17149,6 +17149,61 @@ mod tests {
         assert_eq!(window.actions.len(), 3, "one deletion plus the capped rest");
     }
 
+    /// The reply's real bound, pinned because the doc states it: **`destructive + limit`**, not
+    /// `limit`. A cap that reached the destructive rows would be the one truncation this window
+    /// exists to prevent, so a plan with more deletions than the cap sends all of them.
+    #[test]
+    fn the_action_window_bounds_the_ordinary_rows_and_never_the_destructive_ones() {
+        let stored = StoredPlan {
+            token: "1:abc".to_owned(),
+            computed_epoch_secs: 1,
+            summary: PlanSummary::default(),
+            actions: (0..40)
+                .map(|index| {
+                    PlannedAction::new(
+                        Path::new(&format!("doomed-{index}.txt")),
+                        SyncAction::LocalDelete,
+                        EntityKind::File,
+                        None,
+                    )
+                })
+                .chain((0..40).map(|index| {
+                    PlannedAction::new(
+                        Path::new(&format!("upload-{index}.txt")),
+                        SyncAction::Upload,
+                        EntityKind::File,
+                        None,
+                    )
+                }))
+                .collect(),
+            cannot_sync: Vec::new(),
+        };
+
+        let PlanOutcome::Computed(window) = stored.outcome(1, Some(5)) else {
+            panic!("expected a computed plan");
+        };
+        assert_eq!(
+            window.actions.len(),
+            45,
+            "forty deletions the cap may not reach, plus five of the rest"
+        );
+        assert!(
+            window.actions.len() > 5,
+            "the limit bounds the tail, not the reply — a client sizing a buffer reads the sum"
+        );
+        assert_eq!(
+            window
+                .actions
+                .iter()
+                .filter(|action| action.action.is_destructive())
+                .count(),
+            40,
+            "every destructive row survives whatever the cap"
+        );
+        assert!(window.truncated);
+        assert_eq!(window.total, 80);
+    }
+
     /// An apply that dies before the comparison must still seal a verdict, or its client polls a
     /// request nothing will ever answer.
     #[test]

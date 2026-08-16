@@ -263,16 +263,20 @@ pub enum ListingOutcome {
     Unknown,
 }
 
-/// Default and hard cap on the plan rows one reply carries. Same reason as
-/// [`LIST_ENTRIES_DEFAULT_LIMIT`]: the reply is one JSON line read into memory whole, and a first
-/// sync of a large folder plans tens of thousands of rows.
+/// Default and hard cap on the plan rows one reply carries **beyond its destructive ones**. Same
+/// reason as [`LIST_ENTRIES_DEFAULT_LIMIT`]: the reply is one JSON line read into memory whole, and
+/// a first sync of a large folder plans tens of thousands of rows.
 ///
-/// **Truncation is safe here only because of the token.** A client applies a plan by naming its
-/// token, never by sending rows back, so a window is a *rendering* and the daemon still executes
-/// the whole plan. What must never be truncated away is a destructive row — `files_at_risk` is
-/// safety copy, and a plan whose deletions fell off the end reads as safe — so
-/// [`PlanOutcome::Computed`]'s window is built destructive-first and the cap applies to what
-/// follows.
+/// **It is not a bound on the reply, and the difference is deliberate.** A reply carries *every*
+/// destructive row plus at most this many of the rest, so its worst case is
+/// `summary.destructive_actions + limit` — a plan that deletes 12,000 files sends 12,000 rows
+/// whatever the cap. That is the trade this window is built around: `files_at_risk` is safety copy
+/// and a plan whose deletions fell off the end reads as safe, so the deletions are the one thing a
+/// cap may not reach. A client sizing a buffer must read the sum, not this constant.
+///
+/// **Truncating the rest is safe only because of the token.** A client applies a plan by naming its
+/// token, never by sending rows back, so the window is a *rendering* and the daemon still executes
+/// the whole plan either way.
 pub const PLAN_ACTIONS_DEFAULT_LIMIT: usize = 500;
 pub const PLAN_ACTIONS_MAX_LIMIT: usize = 5_000;
 
@@ -320,8 +324,10 @@ pub struct ReviewedPlan {
     pub token: String,
     pub computed_epoch_secs: u64,
     pub summary: PlanSummary,
-    /// A bounded window over the plan, destructive rows first, capped at
-    /// [`PLAN_ACTIONS_MAX_LIMIT`]. `total` is the untruncated count.
+    /// A window over the plan: **every** destructive row, then as many of the rest as the request's
+    /// limit allows (see [`PLAN_ACTIONS_MAX_LIMIT`], which bounds only that second part — this
+    /// vector can be longer). `total` is the untruncated plan length, and `truncated` says whether
+    /// anything was held back.
     pub actions: Vec<crate::sync::PlannedAction>,
     pub total: usize,
     pub truncated: bool,
