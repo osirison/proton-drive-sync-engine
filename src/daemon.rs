@@ -4236,23 +4236,30 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
                 publish_auth_evidence(shared, AuthState::SignedOut);
             }
             return ListingOutcome::Failed {
-                error: error.to_string(),
+                // Bounded like every other error this engine puts on the wire (#136's
+                // `FailedItem::error`): a failing CLI invocation can carry kilobytes of stderr,
+                // and the reply is read into memory whole. The log line above kept it in full.
+                error: truncate_error(&error.to_string()),
             };
         }
         Err(join_error) => {
             warn!(%join_error, "the remote-listing task failed");
             return ListingOutcome::Failed {
-                error: format!("remote listing task failed: {join_error}"),
+                error: truncate_error(&format!("remote listing task failed: {join_error}")),
             };
         }
     };
 
     let mut entries: Vec<RemoteEntry> = entities
         .into_iter()
-        // The CLI wraps a listing in the directory's own node, so the requested directory comes
-        // back as an entry keyed by its own path. Dropping it is what makes this the folder's
-        // *contents*; without it, browsing the root would report the root inside itself.
-        .filter(|(path, _)| path != &relative)
+        // "In this folder" is exactly "one level down from it", and saying it that way covers two
+        // things with one rule. The CLI wraps a listing in the directory's own node, so the
+        // requested directory comes back keyed by its own path — its parent is not `relative`, so
+        // it drops, and browsing the root does not report the root inside itself. And the listing
+        // is supposed to be non-recursive: if the CLI ever nests a second level, a grandchild's
+        // parent is not `relative` either, so a browse cannot silently flatten a subtree into what
+        // reads as one folder's contents.
+        .filter(|(path, _)| path.parent() == Some(relative.as_path()))
         .map(|(path, entity)| match entity {
             RemoteEntity::File(file) => RemoteEntry {
                 path,
@@ -5665,6 +5672,117 @@ mod tests {
         assert_eq!(listed_names(&inside), vec!["inside.txt"]);
     }
 
+    /// A `ProtonClient` whose single-directory listing hands back the WHOLE tree, however deep —
+    /// what a CLI that nested a second level of `entries` would produce. The browse must still
+    /// answer one folder's contents.
+    #[derive(Debug)]
+    struct OverdeepListingClient {
+        entities: HashMap<PathBuf, RemoteEntity>,
+    }
+
+    impl ProtonClient for OverdeepListingClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            Ok(HashMap::new())
+        }
+
+        fn list_directory(
+            &self,
+            _remote_root: &Path,
+            _relative_directory: &Path,
+        ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            Ok(self.entities.clone())
+        }
+
+        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected ensure directory"))
+        }
+
+        fn upload(&self, _local: &Path, _root: &Path, _relative: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected upload"))
+        }
+
+        fn download(&self, _remote_path: &Path, _destination: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected download"))
+        }
+
+        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected delete"))
+        }
+    }
+
+    #[test]
+    fn a_browse_answers_one_level_even_when_the_listing_hands_back_a_whole_subtree() {
+        // "In this folder" is one level down, and the daemon says so rather than trusting the
+        // listing to be non-recursive. A CLI that nested a second level would otherwise flatten a
+        // subtree into what a browser draws as one folder's contents — and the folder's own
+        // wrapper node would appear inside itself.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut entities = HashMap::new();
+        for path in [
+            "photos",
+            "photos/beach.jpg",
+            "photos/2019",
+            "photos/2019/ski.jpg",
+        ] {
+            let name = Path::new(path)
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned();
+            entities.insert(
+                PathBuf::from(path),
+                if path.ends_with(".jpg") {
+                    RemoteEntity::File(RemoteFile {
+                        path: PathBuf::from("/Drive/RemoteFolder").join(path),
+                        id: format!("id-{name}"),
+                        name,
+                        sha1_hash: Some("abc".to_owned()),
+                        downloadable: true,
+                    })
+                } else {
+                    RemoteEntity::Directory(RemoteDirectory {
+                        path: PathBuf::from("/Drive/RemoteFolder").join(path),
+                        id: Some(format!("id-{name}")),
+                        name,
+                    })
+                },
+            );
+        }
+        let daemon = Daemon::with_client(
+            test_config(directory.path(), &local_root),
+            OverdeepListingClient { entities },
+        )
+        .expect("daemon");
+
+        let context = browse_context(&daemon);
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(browse_remote_directory(
+                &context,
+                &daemon.shared,
+                Some("photos"),
+                None,
+            ));
+
+        let ListingOutcome::Listed { entries, total, .. } = outcome else {
+            panic!("expected a listing");
+        };
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["2019", "beach.jpg"],
+            "neither the folder itself nor anything below `2019/`"
+        );
+        assert_eq!(
+            total, 2,
+            "the total counts what the folder holds, not the subtree"
+        );
+    }
+
     #[test]
     fn a_folder_named_all_is_listed_rather_than_treated_as_a_sentinel() {
         // The reserved-word trap: `"all"` means "every pending deletion" to approve/deny/keep, and
@@ -5807,6 +5925,30 @@ mod tests {
             ListingOutcome::Failed { .. }
         ));
         assert_eq!(daemon.shared.auth_state(), AuthState::SignedOut);
+    }
+
+    #[test]
+    fn a_failed_listings_error_is_bounded_like_every_other_error_on_the_wire() {
+        // A `proton-drive` failure can carry kilobytes of stderr, and the reply is one JSON line
+        // read into memory whole — the same reason `FailedItem::error` is capped (#136).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::Verbose);
+
+        let ListingOutcome::Failed { error } = browse(&daemon, None, None) else {
+            panic!("expected a failed listing");
+        };
+
+        assert!(
+            error.len() <= FAILED_ITEM_ERROR_LIMIT,
+            "the wire error must be bounded, got {} bytes",
+            error.len()
+        );
+        assert!(
+            error.ends_with('…'),
+            "and it must say it was cut rather than look complete: {error:?}"
+        );
     }
 
     #[test]
@@ -6023,6 +6165,8 @@ mod tests {
         Auth,
         /// Anything else — the arm that must move no auth verdict at all.
         Other,
+        /// A failure whose message is far past the wire's error bound.
+        Verbose,
     }
 
     impl RecordingProtonClient {
@@ -6148,6 +6292,9 @@ mod tests {
                 }
                 ListingFailure::Other => {
                     return Err(boxed_error("proton-drive list timed out after 60s"));
+                }
+                ListingFailure::Verbose => {
+                    return Err(boxed_error("x".repeat(FAILED_ITEM_ERROR_LIMIT * 4)));
                 }
             }
             let mut listing: HashMap<PathBuf, RemoteEntity> = self

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tracing::warn;
+use tracing::{debug, warn};
 use wait_timeout::ChildExt;
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1432,6 +1432,21 @@ impl ProtonDriveClient {
         for attempt in 1..=attempts {
             let output = match self.run_once(operation, args, timeout, gate_wait) {
                 Ok(output) => output,
+                // A busy gate is not a failed command: nothing was spawned, so there is nothing to
+                // report and nothing a retry could fix — waiting again would just spend the budget
+                // a second time on the answer the caller already has. Returned immediately, and at
+                // `debug`, because the only callers that can see it are interactive: an
+                // unconditional `warn` here would log on every poll of a client browsing during a
+                // long sync, which is exactly the pass-rate noise the daemon's own listing path
+                // avoids by the same rule (Copilot review).
+                Err(error) if is_cli_busy_error(error.as_ref()) => {
+                    debug!(
+                        operation,
+                        error = %error,
+                        "proton-drive command skipped: another invocation held the CLI gate"
+                    );
+                    return Err(error);
+                }
                 Err(error) if attempt < attempts => {
                     warn!(
                         operation,
@@ -5221,6 +5236,51 @@ exit 0
             )
             .expect("a free gate admits the browse");
         assert!(entries.is_empty(), "the fake CLI lists nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_busy_gate_is_returned_at_once_rather_than_retried() {
+        // A busy gate is not a failed command — nothing ran — so the retry policy must not apply
+        // to it. With `list_attempts = 3` a retried refusal would spend the budget three times
+        // over before answering, turning a fast "try again" into a slow one.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "proton-drive",
+            "#!/bin/sh\nsleep 2\necho '[]'\n",
+        );
+        let client = Arc::new(ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(10), 3),
+        ));
+
+        let holder = Arc::clone(&client);
+        let running = std::thread::spawn(move || {
+            let _ = holder.list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""));
+        });
+        std::thread::sleep(Duration::from_millis(300));
+
+        let budget = Duration::from_millis(150);
+        let started = Instant::now();
+        let error = client
+            .run_proton_drive_with_logging(
+                "list",
+                &[OsString::from("filesystem")],
+                3,
+                true,
+                Duration::from_secs(10),
+                GateWait::AtMost(budget),
+            )
+            .expect_err("a held gate must refuse a bounded caller");
+        let elapsed = started.elapsed();
+        running.join().expect("the holder finishes");
+
+        assert!(is_cli_busy_error(error.as_ref()), "{error}");
+        assert!(
+            elapsed < budget * 2,
+            "the refusal must not be retried through the budget again: {elapsed:?}"
+        );
     }
 
     #[cfg(unix)]
