@@ -18,23 +18,31 @@ socket, and the `proton-drive` CLI.
 | `sync.rs` | The **pure planner**. `plan_sync` turns the three maps into a `Vec<PlannedAction>` with no I/O. Owns bootstrap vs. ongoing logic, the `(local_delta, remote_delta)` decision matrix, and `.proton-cloud` conflict-sidecar naming. |
 | `daemon.rs` | The **runtime**. Reconciles once on startup, then runs a `select!` loop over filesystem-watch events, IPC connections, a periodic scan, an events-poll interval, and shutdown signals. Dispatches between full-tree bootstrap and event-driven incremental reconcile; funnels every side effect and the incremental checkpoint commits through one path. Holds the delete-approval gate and an advisory lockfile. |
 | `reconstruct.rs` | Pure `reconstruct_remote(base ⊕ delta)` — overlays a volume-event delta onto the last-known remote view so the planner gets a complete remote map without a full walk. Falls back to a full snapshot when anything is unresolvable. |
-| `proton.rs` | The `ProtonClient` trait and the impl that shells out to `proton-drive`. Parses the tree-shaped remote JSON and extracts SHA-1 digests. Governs per-command timeouts and list-retry policy. |
+| `proton.rs` | The `ProtonClient` trait and the impl that shells out to `proton-drive`. Parses the tree-shaped remote JSON and extracts SHA-1 digests. Governs per-command timeouts and list-retry policy, serializes every CLI invocation behind one gate, and classifies a session failure once so nothing downstream matches error text. |
 | `events.rs` | **Remote change detection** via Proton's volume-event stream. Pure and transport-agnostic: normalizes the cleartext event delta and fetches it through injected HTTP-transport and session seams, refreshing once on `401`. Ships no networking dependency. |
 | `session.rs` | The concrete seams for today's approach: reuse the logged-in `proton-drive` CLI's keyring session, and a dependency-free HTTP transport that shells `curl`. |
 | `index.rs` | The **SQLite layer**: schema, local directory scanning, SHA-1 hashing, selective-sync `ScanOptions`, record CRUD, the per-volume event cursor, and the `delete_approvals` table. |
 | `config.rs` | Layered config resolution — precedence is **explicit CLI flag > TOML file value > XDG default**. Validates roots and globs and resolves delete-approval defaults. |
 | `dirconfig.rs` | **Hierarchical per-directory config** — a `.gitignore`-style layer where a `.proton-sync.toml` in any directory applies to it and everything beneath it, nearest wins. Machine-local and never synced. |
-| `ipc.rs` | The JSON-line request/response protocol over the Unix control socket, bound at mode `0600`. |
+| `ipc.rs` | The JSON-line request/response protocol over the Unix control socket, bound at mode `0600`. Carries the read-only [`list`](/cli/reference/#browsing-the-remote) verb and the [sign-in state](/cli/reference/#sign-in-state). |
 | `paths.rs` | Default state paths — the index and per-root lockfile in `<local-root>/.sync/`, the control socket under `$XDG_RUNTIME_DIR`, and the user-global lock keyed on `$XDG_STATE_HOME` — plus the two-tier locking scheme. |
 | `lib.rs` | Shared helpers: the `AppResult` alias, `boxed_error`, and the `validate_relative_path` path-safety guard. |
 
-### Two-tier locking
+### One `proton-drive` call at a time
 
 Because every daemon shells the same `proton-drive` CLI — whose shared SQLite cache is not
 concurrency-safe — the engine enforces **one daemon per user**. A per-root lockfile stops
 two daemons on the same root; a user-global lock stops a second daemon anywhere for the
 same user. On contention the daemon fails to start with a clear error naming the locked
 lockfile, rather than failing silently.
+
+*Inside* one daemon, a gate in `proton.rs` admits one CLI child at a time. That used to
+follow for free from a sync pass being the only thing running the CLI; it stopped being
+true when the control socket gained the read-only
+[`list`](/cli/reference/#browsing-the-remote) verb, which runs a listing while a pass may be
+in flight. The gate is held for one CLI *call*, not one pass, so a listing slips between the
+many short calls a full-tree walk makes — and a listing that still cannot get in answers
+`busy` rather than waiting out a large transfer.
 
 ## The two binaries
 
