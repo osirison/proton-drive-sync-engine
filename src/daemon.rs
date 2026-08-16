@@ -43,6 +43,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::btree_map::Entry;
 use std::fs::{self, File, OpenOptions};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -2370,8 +2371,31 @@ impl<C: ProtonClient> Daemon<C> {
             .map(|item| (item.path.clone(), item.clone()))
             .collect();
         for item in observed {
-            // `or_insert`, so a path already listed keeps the epoch it was FIRST seen at.
-            merged.entry(item.path.clone()).or_insert(item);
+            // A path already listed keeps the epoch it was FIRST seen at — but only while it is
+            // the SAME fact. A socket replaced by a symlink under one name is one path and two
+            // different problems, and carrying the old row would go on reporting `local_socket`
+            // for a socket that is gone, indefinitely, because the path never leaves the list to
+            // be re-added. So the reason (and the kind) always come from this pass's observation,
+            // and only the age is carried.
+            //
+            // The age is carried across a *changed* reason rather than re-stamped, which is where
+            // this parts company with `withheld_deletions`: that table pins to a fingerprint
+            // because an approval must authorise exactly what the user saw, and a changed
+            // fingerprint makes the approval inert. Nothing here authorises anything. The question
+            // this epoch answers is "how long has this path been unsyncable", and a path that was
+            // a socket in March and is a symlink today has been unsyncable since March.
+            match merged.entry(item.path.clone()) {
+                Entry::Occupied(mut slot) => {
+                    let first_seen_epoch_secs = slot.get().first_seen_epoch_secs;
+                    slot.insert(UnsyncableItem {
+                        first_seen_epoch_secs,
+                        ..item
+                    });
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(item);
+                }
+            }
         }
         let merged: Vec<UnsyncableItem> = merged.into_values().collect();
 
@@ -13061,6 +13085,40 @@ mod tests {
 
         daemon.record_unsyncable(&[], &[], true);
         assert!(daemon.unsyncable.is_empty(), "a full sweep drops it");
+    }
+
+    #[test]
+    fn a_path_whose_kind_changes_reports_the_new_kind_and_keeps_its_age() {
+        // A socket replaced by a symlink under one name is one path and two different problems.
+        // The path never leaves the list to be re-added, so a carried row would go on reporting
+        // `local_socket` for a socket that is gone — indefinitely, and on the one surface whose
+        // whole job is saying what the thing is. (Copilot, PR #316, suppressed.)
+        let directory = tempdir().expect("tempdir");
+        let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
+
+        daemon.record_unsyncable(&[], &[socket_entry("thing")], false);
+        daemon.unsyncable[0].first_seen_epoch_secs -= 600;
+        let first_seen = daemon.unsyncable[0].first_seen_epoch_secs;
+
+        daemon.record_unsyncable(
+            &[],
+            &[UnsyncableEntry {
+                relative_path: PathBuf::from("thing"),
+                reason: UnsyncableReason::LocalSymlink,
+            }],
+            false,
+        );
+
+        assert_eq!(daemon.unsyncable.len(), 1, "{:?}", daemon.unsyncable);
+        assert_eq!(
+            daemon.unsyncable[0].reason,
+            UnsyncableReason::LocalSymlink,
+            "the reason must be this pass's observation, not the one it replaced"
+        );
+        assert_eq!(
+            daemon.unsyncable[0].first_seen_epoch_secs, first_seen,
+            "the age is about the PATH being unsyncable, and it has been since then"
+        );
     }
 
     #[test]
