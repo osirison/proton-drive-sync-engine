@@ -23,10 +23,12 @@
 //
 // WHAT PHASE 1 CANNOT DRAW, all recorded in DEVIATIONS.md §63 with the issue that closes each:
 // the settled sub-line's `12,480 files · 41.2 GB` (G7/#207), the footer's `386 MB sent · 1.1 GB
-// received today` (G2/#191 — the shell draws the folder pair instead), the second and third transfer
-// rows and the queued one (#211 — `SyncActivity` carries a single in-flight transfer), and the
-// per-file progress bar (#98 — `bytes_total` and `bytes_done` are never both present, so no
-// percentage exists to draw).
+// received today` (G2/#191 — the shell draws the folder pair instead), and the per-file progress bar
+// (#98 — `bytes_total` and `bytes_done` are never both present, so no percentage exists to draw).
+//
+// The transfer LIST is no longer among them (#211): `activity.transfers` is a bounded window of the
+// rows in flight and the ones queued behind them, and `activity.transfers_remaining` is what sizes
+// `+n more`. The bar inside those rows is still #98's and still absent.
 
 import { el } from "../ui/el.js";
 import { MAIN, TRAY } from "../ui/copy.js";
@@ -187,33 +189,80 @@ export function mainView(props = {}) {
     // band. `null` renders no numeral at all rather than a zero.
     numeral: hero === "syncing" ? changes : hero === "decision" ? waiting : null,
     transfers: transfersOf(activity),
+    // The daemon's count of everything this pass has left to move, which is what sizes `+n more`.
+    // `null` means unknown (not executing, or a daemon predating #211) — never 0.
+    transfersRemaining: activity?.transfers_remaining ?? null,
   };
 }
 
 /**
- * The rows the columns draw, from the one transfer the reply can describe.
+ * The rows the columns draw, from the transfer window the reply carries (#211).
  *
- * An array of one, not a scalar, because the shape the screen wants is the list the design draws and
- * the shape the wire has is a single `Option<TransferActivity>`. Keeping the seam between them here
- * means the day #211 lands, this function grows a branch and nothing below it changes.
+ * TWO WIRE SHAPES, ONE LIST. A current daemon sends `transfers`; one predating #211 sends only the
+ * singular `transfer`, which meant exactly "the row in flight". Reading the list when it has rows
+ * and falling back to the mirror otherwise is the same rule the engine writes down once in
+ * `SyncActivity::active_transfer`. It is NOT a merge: the daemon derives the mirror FROM the list,
+ * so a reply carrying both carries the same transfer twice and reading the list wins.
  *
- * `detail` is the size chip, and it is present on an upload and absent on a download — not a choice:
- * `bytes_total` is the local file's size for an upload, and a remote listing carries no size at all.
+ * `detail` is the chip, and what goes in it is a fact about the row rather than one thing:
+ *
+ *   · a queued row says `queued`, which is what `2a Syncing` draws in that slot — same 39.61px chip
+ *     as the size on the row above it, measured;
+ *   · a batched download says `25 files`, because one row stands for a whole chunk landing in one
+ *     folder and a folder name under a `←` would otherwise read as a filename;
+ *   · everything else is the size when the daemon knows it, which is uploads only — a remote listing
+ *     carries no size, so a download's chip is omitted rather than em-dashed (§63).
+ *
+ * EXPORTED, AND THE TRAY IMPORTS IT rather than keeping its own — the same rule, and for the same
+ * reason, as `heroStateOf` two functions up: the window and the panel are one moment seen twice, and
+ * the panel had a second copy of this that had already drifted (it read only the singular field, so
+ * the day the list landed it would have kept drawing one row while the window drew six). `compact`
+ * drops the chip only: `10a Syncing`'s rows are flat and neither of them carries one.
  */
-function transfersOf(activity) {
-  const t = activity?.transfer;
-  if (!t) return [];
-  return [
-    {
-      direction: t.direction === "download" ? "down" : "up",
-      name: t.path,
-      detail: t.bytes_total == null ? null : bytes(t.bytes_total),
-      state: "active",
-      // No percentage is computable from a reply that never carries both ends of one — see the
-      // module header and `transferRow`'s own note. `null` means "no track", not "0%".
-      progress: t.bytes_done != null && t.bytes_total != null ? t.bytes_done / t.bytes_total : null,
-    },
-  ];
+export function transfersOf(activity, { compact = false } = {}) {
+  const rows = activity?.transfers?.length
+    ? activity.transfers
+    : activity?.transfer
+      ? [activity.transfer]
+      : [];
+  return rows.map((t) => ({
+    direction: t.direction === "download" ? "down" : "up",
+    name: t.path,
+    detail: compact ? null : detailOf(t),
+    // Verbatim, defaulting exactly as the wire does (an absent `state` is `active`, which is what
+    // the singular field meant before the list existed). A token this build does not know draws an
+    // unstyled row rather than being coerced into `active` — a row is still a real transfer.
+    state: t.state ?? "active",
+    // No percentage is computable from a reply that never carries both ends of one — see the
+    // module header and `transferRow`'s own note. `null` means "no track", not "0%".
+    progress: t.bytes_done != null && t.bytes_total != null ? t.bytes_done / t.bytes_total : null,
+    // Carried so `hiddenTransfers` can weigh a batched row as its whole chunk.
+    files: t.files ?? null,
+  }));
+}
+
+function detailOf(t) {
+  if (t.state === "queued") return MAIN.queued;
+  if (t.files != null) return MAIN.batchFiles(t.files);
+  return t.bytes_total == null ? null : bytes(t.bytes_total);
+}
+
+/**
+ * How many transfers `+n more` stands for.
+ *
+ * NOT `transfers.length - shown.length`: the daemon caps the window it sends, so the list can never
+ * be longer than what is drawn and that subtraction is always 0 — the `+n more` node would be dead
+ * code that looks live. `transfers_remaining` is the daemon's own count of everything this pass has
+ * left, and a batched row weighs as its whole chunk, which is the same arithmetic
+ * `SyncActivity::transfers_past_the_window` does on the other side of the wire.
+ *
+ * `null` remaining is UNKNOWN — an older daemon, or a pass not executing yet — and yields no node
+ * rather than `+0 more`.
+ */
+export function hiddenTransfers(remaining, shown) {
+  if (remaining == null) return 0;
+  const named = shown.reduce((total, t) => total + (t.files ?? 1), 0);
+  return Math.max(0, remaining - named);
 }
 
 // ------------------------------------------------------------------------------ the copy ----
@@ -761,7 +810,17 @@ function fillColumns(v) {
   const sig =
     v.hero !== "syncing"
       ? ""
-      : signature(v.transfers.map((t) => `${t.direction}|${t.name}|${t.detail}|${t.progress}`));
+      : signature([
+          // `state` is in the identity because a row flipping queued → active is the change that
+          // grows it a progress track and a body wrapper, and it can happen with the name, the
+          // direction and the (absent) fraction all unchanged — the poll would keep the stale row.
+          ...v.transfers.map(
+            (t) => `${t.direction}|${t.name}|${t.detail}|${t.progress}|${t.state}|${t.files}`,
+          ),
+          // And the tail count, so `+n more` counting down is a rebuild even when the six drawn
+          // rows are identical.
+          v.transfersRemaining,
+        ]);
   if (view.columnsSig === sig) return;
   view.columnsSig = sig;
 
@@ -773,7 +832,7 @@ function fillColumns(v) {
   const right = el("div", { class: "main-column main-column-right" });
   const shown = v.transfers.slice(0, MAX_ROWS);
   for (const t of shown) (t.direction === "up" ? left : right).append(transferRow(t));
-  const hidden = v.transfers.length - shown.length;
+  const hidden = hiddenTransfers(v.transfersRemaining, shown);
   if (hidden > 0) right.append(el("div", { class: "main-more" }, MAIN.andMore(hidden)));
   view.columns.replaceChildren(left, right);
 }
@@ -883,19 +942,25 @@ function stampFids(v) {
     fid(view.columns, "columns");
     fid(view.columns.children[0], "columnLeft");
     fid(view.columns.children[1], "columnRight");
-    // ONE ROW IS MAPPED, and which one is the fixture's business rather than this loop's: the
-    // frames draw two columns of rows and Phase 1 fills exactly one of them (#211). `mainFids`
-    // names the row the frame puts first in whichever column the in-flight transfer landed in.
-    const row = view.columns.querySelector(".transfer-row");
-    if (row) {
-      fid(row, "transferRow");
-      const body = row.querySelector(".transfer-body");
-      fid(body, "transferBody");
-      fid(row.querySelector(".transfer-name"), "transferName");
-      fid(row.querySelector(".transfer-detail"), "transferDetail");
-      fid(row.querySelector(".transfer-arrow"), "transferArrow");
-      fid(row.querySelector(".transfer-track"), "transferTrack");
-      fid(row.querySelector(".transfer-fill"), "transferFill");
+    // EVERY row in BOTH columns, keyed by side and position (#211). Which of them the frame
+    // actually declares is `mainFids`' business — a factory slot may answer `null` for a row this
+    // frame does not draw, or for a child whose shape differs from the drawn one. The `+n more`
+    // node is a child of the right column too, so the row query is scoped to `.transfer-row`.
+    // 0 = left, 1 = right — an INDEX, not a name, because `mainFids` is probed with numbers.
+    for (const [side, column] of [
+      [0, view.columns.children[0]],
+      [1, view.columns.children[1]],
+    ]) {
+      const drawn = [...(column?.querySelectorAll(".transfer-row") ?? [])];
+      for (const [i, row] of drawn.entries()) {
+        fid(row, "transferRow", side, i);
+        fid(row.querySelector(".transfer-body"), "transferBody", side, i);
+        fid(row.querySelector(".transfer-name"), "transferName", side, i);
+        fid(row.querySelector(".transfer-detail"), "transferDetail", side, i);
+        fid(row.querySelector(".transfer-arrow"), "transferArrow", side, i);
+        fid(row.querySelector(".transfer-track"), "transferTrack", side, i);
+        fid(row.querySelector(".transfer-fill"), "transferFill", side, i);
+      }
     }
   } else {
     fid(view.glow, "glow");

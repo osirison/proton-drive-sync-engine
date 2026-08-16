@@ -260,7 +260,26 @@ export const ONBOARDING_FIXTURES = {
           action_index: 159,
           action_total: 471,
           transfer: null,
+          transfers: [],
+          transfers_remaining: null,
           since_epoch_secs: ago(480),
+          // THE SPLIT BAR'S TWO NUMBERS (#243), and they are the pass block's because they survive
+          // a phase change — `begin_activity` replaces the activity once per action, so a counter
+          // stored beside `action_index` would reset a few hundred times a pass.
+          //
+          // `44 + 115 = 159`, which is `action_index`: on this frame every action is a transfer, so
+          // the counters and the step counter agree. The bytes are the same fold's other half and
+          // this screen draws neither, so they are pinned at a plausible pair rather than left out
+          // — the shape is the daemon's whole pass block or it is not the daemon's.
+          pass: {
+            started_epoch_secs: ago(480),
+            changes: 471,
+            kind: "full-sweep",
+            uploaded_files: 44,
+            downloaded_files: 115,
+            uploaded_bytes: 386_000_000,
+            downloaded_bytes: 1_100_000_000,
+          },
         },
       },
     },
@@ -275,14 +294,16 @@ export const ONBOARDING_FIXTURES = {
       requires_delete_gate: false,
       files_at_risk: [],
     },
-    // The split bar and its two labels. NO COMMAND REPORTS PER-DIRECTION PROGRESS WITHIN A PASS:
-    // `SyncActivity` counts actions, not directions, and G2 (#191) covers byte totals per direction
-    // for a finished window rather than a running pass. So all four are pinned.
+    // What is left of the old `progress` pin. The two COUNTS are the daemon's now (#243) and live
+    // in `activity.pass` above; `remainingSecs` is still nobody's — no command says how long a pass
+    // has left (#229) — so that one stays pinned here, read by nothing.
     //
-    // `up`/`down` are the two fills as fractions — 48px and 88px of the 400px track — and not
-    // 44/471 and 115/471, which would be 9% and 24%. The frame's bar is drawn, not computed, and the
-    // fixture reproduces the frame.
-    progress: { sent: 44, received: 115, up: 0.12, down: 0.22, remainingSecs: 1020 },
+    // The two FILL FRACTIONS are gone rather than moved. They pinned 48px and 88px of the 400px
+    // track, which is what the frame paints and NOT what its own labels say: 48:88 is 0.55 against
+    // 44:115's 0.38, and no denominator yields both. The app computes each fill from the count over
+    // `action_total` (9% and 24%, summing to the 34% the frame's total gets right), so the fixture
+    // would have been pinning a number nothing reads. DEVIATIONS §63b.
+    progress: { remainingSecs: 1020 },
     fids: onboardingFids("firstSync"),
     ui: { step: "firstSync", dialog: "firstSync" },
   },

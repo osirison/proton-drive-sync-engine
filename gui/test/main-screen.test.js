@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import {
   clearsStartError,
   headlineOf,
+  hiddenTransfers,
   heroActionsOf,
   heroStateOf,
   mainView,
@@ -294,6 +295,70 @@ test("a start that failed is quoted, and only under the hero it explains", () =>
   assert.equal(quotedError({ hero: "failed", startError: why }), null);
   assert.equal(quotedError({ hero: "settled", startError: why }), null);
   assert.equal(quotedError({ hero: "syncing", startError: why }), null);
+});
+
+test("the transfer window reads the list, and falls back to the singular field", () => {
+  // TWO WIRE SHAPES. A current daemon sends `transfers`; one predating #211 sends only `transfer`,
+  // which meant "the row in flight". Reading the list when it has rows is what keeps a reply
+  // carrying both — the daemon derives the mirror FROM the list — from drawing the same file twice.
+  const activity = {
+    phase: "executing",
+    transfers: [
+      { direction: "upload", path: "docs/spec.md", bytes_total: 1200000, state: "active" },
+      { direction: "upload", path: "notes/scratch.md", bytes_total: 8400, state: "queued" },
+      { direction: "download", path: "q3.pdf", state: "queued" },
+    ],
+    transfers_remaining: 3,
+    transfer: { direction: "upload", path: "docs/spec.md", bytes_total: 1200000 },
+  };
+  const rows = mainView({ response: { syncing: true, activity } }).transfers;
+  assert.equal(rows.length, 3, "the list, not the list plus its own mirror");
+  assert.equal(rows[0].detail, "1.2 MB", "an upload in flight shows the size the scan measured");
+  assert.equal(rows[1].detail, MAIN.queued, "a queued row's chip is the word `2a Syncing` draws");
+  assert.equal(rows[2].direction, "down");
+  // Never a fraction: no reply carries both ends of one (#98). `null` is "no track", not 0%.
+  assert.equal(rows[0].progress, null);
+
+  // A batched download is ONE row over a folder's chunk, and says so rather than reading as a file.
+  const batch = mainView({
+    response: {
+      syncing: true,
+      activity: {
+        phase: "executing",
+        transfers: [{ direction: "download", path: "photos/2024", state: "active", files: 25 }],
+        transfers_remaining: 25,
+      },
+    },
+  }).transfers;
+  assert.equal(batch[0].detail, "25 files");
+
+  // The older shape still draws its one row, with the state the field used to imply.
+  const legacy = mainView({
+    response: {
+      syncing: true,
+      activity: { phase: "executing", transfer: { direction: "download", path: "a.bin" } },
+    },
+  });
+  assert.deepEqual(
+    legacy.transfers.map((t) => [t.direction, t.name, t.state]),
+    [["down", "a.bin", "active"]],
+  );
+  assert.equal(legacy.transfersRemaining, null, "unknown, and never rendered as `+0 more`");
+});
+
+test("`+n more` is the daemon's count, and a batched row weighs as its whole chunk", () => {
+  // NOT `transfers.length - shown.length`: the daemon caps the window it sends, so that subtraction
+  // is always 0 and the `+n more` node would be dead code that looks live. Every number below is
+  // computed here so the claim and the assertion cannot drift apart.
+  const q = (name) => ({ files: null, name });
+  assert.equal(hiddenTransfers(118, [{ files: 25 }, q("a"), q("b")]), 91, "118 - (25 + 1 + 1)");
+  assert.equal(hiddenTransfers(3, [q("a"), q("b"), q("c")]), 0, "the window names everything left");
+  assert.equal(hiddenTransfers(0, []), 0, "a pass with no transfers left");
+  // `null` is UNKNOWN — not executing, or a daemon predating the field — and yields no node at all
+  // rather than `+0 more`, which is the same rule the sub-line's null clauses follow.
+  assert.equal(hiddenTransfers(null, [q("a")]), 0);
+  // A remainder smaller than what is drawn cannot go negative into the copy deck.
+  assert.equal(hiddenTransfers(1, [q("a"), q("b")]), 0);
 });
 
 test("a start failure stops being the reason the moment the socket answers", () => {

@@ -1517,9 +1517,14 @@ every case is `14-behaviour-and-state.md`'s: **omit the clause, never fake it.**
 | drawn                                                    | frame        | what exists                                                    | issue                                                                       |
 | -------------------------------------------------------- | ------------ | -------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `· 12,480 files · 41.2 GB` on the settled sub-line       | `2a Settled` | `last_sync_epoch_secs` and nothing else — no index-wide totals | G7 [#207](https://github.com/osirison/proton-drive-sync-engine/issues/207)  |
-| three transfer rows, two directions, a `queued` one      | `2a Syncing` | `activity.transfer`, a single `Option<TransferActivity>`       | G10 [#211](https://github.com/osirison/proton-drive-sync-engine/issues/211) |
 | a 2px progress bar at the real percentage                | `2a Syncing` | see below — no percentage is computable at all                 | E1 [#98](https://github.com/osirison/proton-drive-sync-engine/issues/98)    |
 | `386 MB sent · 1.1 GB received today` in the footer line | `2a Syncing` | nothing; the shell draws the folder pair instead               | G2 [#191](https://github.com/osirison/proton-drive-sync-engine/issues/191)  |
+
+**The transfer LIST is no longer one of them (#211, 2026-08-16).** `SyncActivity.transfers` carries a
+bounded window — every row in flight, then the next planned transfers as `queued` rows, capped at
+`TRANSFERS_REPORTED` (6, the design's own "~6 visible with `+n more`") — and
+`transfers_remaining` is the untruncated count `+n more` is sized from. What did **not** become
+drawable is a second row *in flight*: see §63c.
 
 **The progress bar is unreachable by construction, not merely unimplemented**, and that is sharper
 than #98 states it. `TransferActivity` carries `bytes_total` and `bytes_done` and **never both on the
@@ -1531,6 +1536,39 @@ stalled — `rows.js` already carried that distinction for queued rows and it no
 
 **The size chip is drawn on uploads and omitted on downloads** for the same reason, rather than
 em-dashed: an em-dash means UNKNOWN in this design, and the daemon was never asked.
+
+### 63b. `9a First sync`'s split bar disagrees with its own labels
+
+The frame paints the sent fill **48px** and the received fill **88px** of a 400px track, and prints
+`44 sent` and `115 received` directly underneath them. 48:88 is 0.55; 44:115 is 0.38. No denominator
+produces both, so the two halves of the block contradict each other.
+
+Its **total** is right: 48 + 88 = 136 of 400 is 34%, and the line above reads `159 of 471 done` =
+33.8%. That is what identifies the split, rather than the extent, as the hand-drawn half.
+
+So the app computes each fill from the count the same block prints — `uploaded_files / action_total`
+and `downloaded_files / action_total`, 9.3% and 24.4%, summing to the 33.8% the frame's total already
+agrees with. Reproducing 48:88 would mean drawing a split that contradicts the numbers beside it.
+**Decided 2026-08-16**; two `decision` rows in `known-deviations.mjs` carry the exact widths.
+
+### 63c. The second transfer row is *queued*, because the engine transfers one file at a time
+
+`2a Syncing` draws an upload and a download **both in flight**, and `2a Needs you` and the compact
+frames draw the same pair. The daemon cannot report that and it is not a gap in the payload:
+`execute_plan_and_commit` is a sequential loop, so at any instant exactly one transfer is running —
+or one *batch*, which is one `download_many` invocation over a chunk of files in one folder and is
+reported as one row carrying `files`.
+
+What #211 makes drawable is the rest of the picture: the queue. So the app draws the in-flight row
+in its own column and the queue's next transfers in theirs, which on `2a Syncing` puts a `queued`
+download where the frame has an active one. That row is a different construction — flat where the
+frame's is wrapped, with no track — so it is left **unmapped** rather than allow-listed on fourteen
+properties, the same call §79 makes for the remote folder card's `<input>`, and for the same reason:
+comparing two differently-built nodes property by property is not a missing capability. The queued
+row's construction is measured, on the left column of the same frame, which draws one too.
+
+**Decided 2026-08-16.** A second *active* row needs concurrent transfers in the executor, which is a
+sync-engine change and not a reporting one.
 
 ### 63a. The style gate had no way to hold a recorded deviation
 
@@ -2056,7 +2094,7 @@ Phase 2. Each Phase-1 fallback gets a row here as its screen lands — G1–G5 c
 | screen | frame            | drawn                                  | Phase 1 draws                       | closed by |
 | ------ | ---------------- | -------------------------------------- | ----------------------------------- | --------- |
 | S1     | `2a Settled`     | `· 12,480 files · 41.2 GB`             | the timestamp alone                 | G7 #207   |
-| S1     | `2a Syncing`     | three transfer rows, one queued        | the one in-flight transfer          | G10 #211  |
+| S1     | `2a Syncing`     | a second transfer **in flight**        | the queue's next row there (§63c)   | (decided) |
 | S1     | `2a Syncing`     | a progress bar at the real percentage  | no track at all                     | E1 #98    |
 | S1     | `2a Syncing`     | `386 MB sent · 1.1 GB received today`  | the folder pair (the shell's line)  | G2 #191   |
 | S7     | `9a Review`      | `Needs 38.4 GB free. You have 214 GB.` | the free-space half only (§71)      | G6 #206   |
@@ -2662,8 +2700,9 @@ frame's own sentence, says nothing the daemon has not reported, and is what the 
 `7a File pending` is reached, and `routes.js` had no id for it. `7a File lookup` and `7a File
 pending` are the same lookup in two states — a file that is settled, and a file that is moving right
 now — so looking up the file the daemon is currently transferring is what tells them apart. Nothing
-else could: `SyncActivity` carries exactly ONE in-flight transfer (#211), so a lookup for any other
-moving file cannot reach this state. It is latched, because the condition stays true for as long as
+else could: exactly one transfer is ever in flight — `execute_plan_and_commit` is a sequential loop,
+which is why `SyncActivity.transfers` has one `active` row and a queue behind it (§63c) — so a lookup
+for any other moving file cannot reach this state. It is latched, because the condition stays true for as long as
 the transfer runs and Esc would otherwise reopen it on the next render, and it closes itself when
 the transfer ends rather than degrading to the not-built-yet placeholder.
 
@@ -3075,7 +3114,6 @@ the exact measurement, so the day the capability lands the build fails until the
 | `11,798 files already match on both sides` | row omitted | a count of files the plan does **not** act on, absent from `PlanSummary` by construction | #242 |
 | `3 files can't be synced — a socket and two shortcuts` | `3 files can't be synced` | nothing enumerates the kinds; those files never enter the index | #232 |
 | `worked out 40 seconds ago · about 25 minutes to finish` | the first clause | `run_dry_run` reports what would happen, never how long it would take | #229 |
-| the split progress bar, `44 sent` / `115 received` | omitted | `SyncActivity` counts actions, not directions | #243 |
 | `159 of 471 done · about 17 minutes left` | the first clause | same estimate | #229 |
 | `nothing deleted · 2 conflicts kept as copies` | drawn from the approved plan; omitted with none in hand | no reply carries a per-pass summary *while the pass runs* | #213 |
 | `12,480 files, 41.2 GB.` | dropped from the consent sub-line | no command reports index-wide totals | #207 |
@@ -3338,8 +3376,10 @@ the same blanking costs 1,101 assertions after it.)
 half; the rest of this section records the shortfall as it stood, because the way it was found is the
 point. The intended motive was S8: the tray panel reuses the compact panel, whose two progress bars
 draw today only because the fixture hands them `progress: 0.64` and `0.31` as literals — there is no
-live caller yet. The moment S8 wires it to `SyncActivity`, #98 removes the fraction and #211 removes
-the second row.
+live caller yet. The moment S8 wires it to `SyncActivity`, #98 removes the fraction and #211 gives
+the second row a real source. (Both halves have since happened, and only one of them the way this
+predicted: S8 wired the panel to `SyncActivity`, and #211 landed the queue — so the second row is
+real but it is the queue's next transfer, not a second one in flight. §63c.)
 
 **The gate read static fid slots only** — 620 of 838, because a factory slot resolves to a different
 key per call — and the compact panel declares `transferTrack`/`transferFill` as factories. So that

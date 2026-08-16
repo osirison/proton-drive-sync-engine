@@ -78,10 +78,10 @@ const ROOTS = { local_root: "~/ProtonDrive", remote_root: "/Drive/RemoteFolder" 
  * The pass `2a Syncing` and `2a Needs you` are both in the middle of: three changes, two leaving and
  * one arriving, fourteen seconds old, with `docs/spec.md` on the wire.
  *
- * `activity` is verbatim `SyncActivity` (src/ipc.rs) and carries ONE transfer, because that is what
- * the type holds — `activity.transfer` is a single `Option<TransferActivity>`, set at the top of each
- * upload or download and replaced by the next one. The frames draw three rows and two directions at
- * once; the reply cannot say that, and the gap is filed rather than invented here (DEVIATIONS §63).
+ * `activity` is verbatim `SyncActivity` (src/ipc.rs), and since #211 it carries the transfer WINDOW:
+ * every row in flight, then the queue behind it. The frames draw three rows and two directions at
+ * once and the reply still cannot say the second one is *in flight* — one transfer runs at a time —
+ * so the second column holds the queue's next download instead (DEVIATIONS §63c).
  *
  * `bytes_done` IS NULL AND CANNOT BE OTHERWISE ON AN UPLOAD. daemon.rs fills `bytes_total` from the
  * local file's size for an upload and leaves `bytes_done` empty; for a download it samples
@@ -114,16 +114,72 @@ const PASS = {
       started_epoch_secs: ago(14),
       changes: summary.uploads + summary.downloads,
       kind: "incremental",
+      // Nothing has landed yet on this frame — the first upload is still in flight, and the
+      // per-direction counters only move when a transfer COMMITS (#243). S1 draws none of them;
+      // they are here so the shape is the daemon's rather than a subset of it.
+      uploaded_files: 0,
+      downloaded_files: 0,
+      uploaded_bytes: 0,
+      downloaded_bytes: 0,
     },
-    transfer: {
-      direction: "upload",
-      path: "docs/spec.md",
-      // 1.2 MB through `format.bytes` — the size chip the frame draws on this row.
-      bytes_total: 1200000,
-      bytes_done: null,
-      started_epoch_secs: ago(14),
-    },
+    /**
+     * THE TRANSFER WINDOW (#211), AND WHY EXACTLY ONE ROW IS ACTIVE.
+     *
+     * `2a Syncing` draws two transfers in flight — one leaving, one arriving — and this engine
+     * cannot report that: `execute_plan_and_commit` is a sequential loop, so at any instant one
+     * file is moving and the rest are queued behind it. The window is therefore the active upload
+     * plus the queue, which is what the daemon really publishes; the second column's row is the
+     * queue's next download rather than a second in-flight transfer. Inventing a second `active`
+     * row here would pin a reply the daemon cannot emit — the shape §61 records the `9a Review`
+     * fixture getting wrong — so the deviation is recorded instead.
+     *
+     * `transfers_remaining` counts the in-flight row too, so three rows and nothing past the
+     * window is `3`. It is NOT `transfers.length`: that would make `+n more` unreachable.
+     *
+     * The download rows carry no `bytes_total` — a remote listing has no file size, which is why
+     * the frame's `2.4 MB` chip is undrawable (§63) and the size chip is an uploads-only fact.
+     */
+    transfers: [
+      {
+        direction: "upload",
+        path: "docs/spec.md",
+        // 1.2 MB through `format.bytes` — the size chip the frame draws on this row.
+        bytes_total: 1200000,
+        bytes_done: null,
+        state: "active",
+        started_epoch_secs: ago(14),
+      },
+      { direction: "upload", path: "notes/scratch.md", bytes_total: 8400, state: "queued" },
+      { direction: "download", path: "reports/q3-summary.pdf", state: "queued" },
+    ],
+    transfers_remaining: 3,
   }),
+};
+
+/**
+ * `2a Needs you` draws ONE row per column, so its window is two rows rather than three.
+ *
+ * IT IS A LATER MOMENT OF THE SAME PASS, not the same moment with a row deleted, and the whole block
+ * has to move together or it becomes a reply the daemon cannot emit (DEVIATIONS §61 — the shape
+ * Copilot caught on this very fixture, in `action_total`). A window of two against `action_index: 1`
+ * and `uploaded_files: 0` would claim a five-action pass had reached its first action with one of
+ * its three transfers already gone from the queue, and the executor's window cannot produce that.
+ *
+ * So: the first upload has landed. `action_index` is 2, `uploaded_files` is 1, `uploaded_bytes` is
+ * that file's pinned size, and `transfers_remaining` is 2 — the row in flight plus the one queued.
+ * The hexagon still reads 3, because its numeral is `uploads + downloads` off the plan summary and
+ * not a count of the rows drawn.
+ */
+const needsYouActivity = (summary) => {
+  const activity = PASS.activityFor(summary);
+  const [inFlight, landed, queued] = activity.transfers;
+  return {
+    ...activity,
+    action_index: 2,
+    pass: { ...activity.pass, uploaded_files: 1, uploaded_bytes: landed.bytes_total },
+    transfers: [inFlight, queued],
+    transfers_remaining: 2,
+  };
 };
 
 /** `2a Needs you`'s plan: the same three transfers, plus the two deletions its band is about. */
@@ -153,7 +209,14 @@ export const MAIN_FIXTURES = {
   "2a Syncing": {
     fids: {
       ...SHELL_FIDS["2a Syncing"],
-      ...mainFids({ state: "syncing", tail: "columns", column: "left", rowIndex: 0, rowsInColumn: 2 }),
+      ...mainFids({
+        state: "syncing",
+        tail: "columns",
+        // The frame's right-hand row is an active download; the app draws the queue's next download
+        // there instead (see `activityFor`), which is a differently-shaped row — left unmapped, and
+        // measured on the left column where `2a Syncing` draws a queued row too. §63c.
+        rows: { left: ["active", "queued"], right: [{ state: "queued", mapped: false }] },
+      }),
     },
     status: {
       state: "running",
@@ -177,9 +240,7 @@ export const MAIN_FIXTURES = {
       ...mainFids({
         state: "syncing",
         tail: "columns",
-        column: "left",
-        rowIndex: 0,
-        rowsInColumn: 1,
+        rows: { left: ["active"], right: [{ state: "queued", mapped: false }] },
         band: 2,
       }),
     },
@@ -227,7 +288,7 @@ export const MAIN_FIXTURES = {
           },
         ],
         config: ROOTS,
-        activity: PASS.activityFor(NEEDS_YOU_PLAN),
+        activity: needsYouActivity(NEEDS_YOU_PLAN),
       },
     },
     // `scan_conflicts` returns `{ original, sidecar }` pairs (gui-core/src/conflicts.rs) — NOT a

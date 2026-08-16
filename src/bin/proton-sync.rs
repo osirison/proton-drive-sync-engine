@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use proton_drive_sync_engine::config::resolve_control_socket_path;
-use proton_drive_sync_engine::index::PassRecord;
+use proton_drive_sync_engine::index::{EntityKind, PassRecord};
 use proton_drive_sync_engine::ipc::{
-    ControlCommand, ControlRequest, ControlResponse, PendingDeletion, SyncActivity, send_request,
-    wire_path,
+    AuthState, ControlCommand, ControlRequest, ControlResponse, ListingOutcome, PendingDeletion,
+    SyncActivity, send_request, wire_path,
 };
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, SyncAction, UnsyncableItem};
 use std::collections::BTreeMap;
@@ -103,6 +103,15 @@ enum Commands {
         /// Revoke approval for every currently-pending deletion.
         #[arg(long)]
         all: bool,
+    },
+    /// List one folder on Proton Drive, as the daemon sees it right now. Read-only: it shows what
+    /// is on the remote, not what would sync — selective-sync rules are not applied.
+    List {
+        /// Folder to list, relative to the daemon's configured remote root. Omit for the root.
+        path: Option<PathBuf>,
+        /// Cap on the entries shown.
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Refuse a withheld deletion and put the two sides back in step: the surviving copy is sent
     /// back to the side it was deleted from on the next sync, and the item leaves the queue for
@@ -236,6 +245,19 @@ async fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Commands::List { .. } => {
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response.listing)
+                        .expect("serialize the remote listing")
+                );
+            }
+            // A listing that did not happen exits non-zero even under `--json`, so a script can
+            // branch on the exit code rather than parsing `state` out of the payload — and so
+            // `busy` is never mistaken for an empty folder.
+            print_listing(&response, cli.json, &style)
+        }
     }
 }
 
@@ -271,6 +293,12 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         }
         Commands::Deny { path, all } => (ControlCommand::Deny, approval_selector(path, *all)?),
         Commands::Keep { path, all } => (ControlCommand::Keep, approval_selector(path, *all)?),
+        // No `literal_path` and no `--all`: a listing has no reserved word, so a folder named
+        // `all` lists like any other (see `ControlCommand::List`).
+        Commands::List { path, .. } => (
+            ControlCommand::List,
+            path.as_ref().map(|path| wire_path(path).into_owned()),
+        ),
     };
     // A `<PATH>` selector is always a literal path on the wire: `proton-sync approve all`
     // targets a pending deletion literally named `all` instead of silently becoming the
@@ -281,6 +309,7 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         Commands::Activity { days, limit, .. } => {
             (days.map(|days| days.saturating_mul(86_400)), *limit)
         }
+        Commands::List { limit, .. } => (None, *limit),
         _ => (None, None),
     };
     let literal_path = matches!(
@@ -431,6 +460,12 @@ fn print_status(response: &ControlResponse, style: &Style) {
         && let Some(activity) = &response.activity
     {
         rows.push(("activity", describe_activity(activity)));
+        if let Some(queue) = describe_transfer_queue(activity) {
+            rows.push(("queued", queue));
+        }
+        if let Some(moved) = describe_pass_transfers(activity) {
+            rows.push(("moved", moved));
+        }
     }
     rows.push((
         "last sync",
@@ -469,6 +504,15 @@ fn print_status(response: &ControlResponse, style: &Style) {
             format!("{} item(s) — listed below", response.unsyncable.len()),
         ));
     }
+    // Only when there is something to say. `Unknown` is not a problem to report — it is the
+    // daemon having learned nothing yet (or an older daemon that classifies nothing), and a
+    // `sign-in unknown` row on every healthy status would train the reader to skip the block.
+    if response.auth == AuthState::SignedOut {
+        rows.push((
+            "sign-in",
+            style.red("Proton refused the session — run `proton-drive login`"),
+        ));
+    }
     if let Some(error) = &response.last_error {
         rows.push(("error", style.red(error)));
     }
@@ -488,6 +532,79 @@ fn print_status(response: &ControlResponse, style: &Style) {
         );
     }
     print_unsyncable(&response.unsyncable, style);
+}
+
+/// Renders a `list` reply, and returns the exit code with it: the three outcomes are three
+/// different things to a script, and folding `busy` into `0` would make "the CLI was busy" look
+/// like "the folder is empty".
+fn print_listing(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
+    match &response.listing {
+        Some(ListingOutcome::Listed {
+            path,
+            entries,
+            total,
+            truncated,
+        }) => {
+            if !json {
+                let where_ = if path.as_os_str().is_empty() {
+                    "the remote root".to_owned()
+                } else {
+                    path.display().to_string()
+                };
+                if entries.is_empty() {
+                    println!("{where_} is empty.");
+                } else {
+                    println!("{}", style.dim(&where_));
+                    for entry in entries {
+                        let is_directory = entry.entity_kind == EntityKind::Directory;
+                        // A trailing slash, as `ls -p` does it: the kind is the first thing a
+                        // browser needs and the cheapest thing to render.
+                        let name = if is_directory {
+                            format!("{}/", entry.name)
+                        } else {
+                            entry.name.clone()
+                        };
+                        // A node the engine cannot fetch is named as such rather than listed as an
+                        // ordinary file that simply never arrives (#295's lesson, one layer up).
+                        // Only for files: `downloadable` is meaningless on a directory and says
+                        // nothing about what is inside it.
+                        let note = if !is_directory && !entry.downloadable {
+                            format!("  {}", style.dim("(can't be downloaded)"))
+                        } else {
+                            String::new()
+                        };
+                        println!("  {name}{note}");
+                    }
+                    if *truncated {
+                        println!(
+                            "  {}",
+                            style.dim(&format!(
+                                "… {} of {total} shown; raise --limit for more",
+                                entries.len()
+                            ))
+                        );
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Some(ListingOutcome::Busy) => {
+            eprintln!(
+                "The proton-drive CLI is busy with a sync operation; nothing was listed. Try again."
+            );
+            ExitCode::FAILURE
+        }
+        Some(ListingOutcome::Failed { error }) => {
+            eprintln!("Could not list that folder: {error}");
+            ExitCode::FAILURE
+        }
+        // A state this client does not know, and the `None` an older daemon sends. Both mean the
+        // same thing to a user — no listing — and neither is an empty folder.
+        Some(ListingOutcome::Unknown) | None => {
+            eprintln!("The daemon did not return a listing for that folder.");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The entities the daemon cannot sync, by name and cause. A count alone is unactionable: the
@@ -923,11 +1040,18 @@ fn describe_activity(activity: &SyncActivity) -> String {
         "fetching-events" => format!("checking the remote change feed{phase_elapsed}"),
         "committing" => format!("committing the sync index{phase_elapsed}"),
         "executing" => {
-            if let Some(transfer) = &activity.transfer {
+            if let Some(transfer) = activity.active_transfer() {
                 let verb = if transfer.direction == "upload" {
                     "uploading"
                 } else {
                     "downloading"
+                };
+                // A batched download is one row over a whole chunk, so it names the folder and how
+                // many files are landing in it — "downloading 25 files in photos/2024", not a
+                // folder rendered as if it were the file.
+                let what = match transfer.files {
+                    Some(files) => format!("{files} files in {}", transfer.path.display()),
+                    None => transfer.path.display().to_string(),
                 };
                 let progress = match (transfer.bytes_done, transfer.bytes_total) {
                     (Some(done), Some(total)) if total > 0 => format!(
@@ -940,11 +1064,11 @@ fn describe_activity(activity: &SyncActivity) -> String {
                     (None, Some(total)) => format!(" — {}", human_bytes(total)),
                     (None, None) => String::new(),
                 };
-                let elapsed = elapsed_label(transfer.started_epoch_secs);
-                format!(
-                    "{verb} {}{progress}{elapsed}{step}",
-                    transfer.path.display()
-                )
+                let elapsed = transfer
+                    .started_epoch_secs
+                    .map(elapsed_label)
+                    .unwrap_or_default();
+                format!("{verb} {what}{progress}{elapsed}{step}")
             } else {
                 // Non-transfer actions (directory creation, moves, deletes) can still take
                 // noticeable time — keep the elapsed clock ticking for them too.
@@ -961,6 +1085,57 @@ fn describe_activity(activity: &SyncActivity) -> String {
             None => other.to_owned(),
         },
     }
+}
+
+/// What is waiting behind the transfer in flight (#211): the next few paths, then a count for the
+/// tail the window does not name.
+///
+/// ```text
+/// queued     notes/scratch.md, reports/q3-summary.pdf and 115 more
+/// ```
+///
+/// `None` when nothing is queued — an omitted row, never `0 queued`.
+fn describe_transfer_queue(activity: &SyncActivity) -> Option<String> {
+    let named: Vec<String> = activity
+        .queued_transfers()
+        .map(|transfer| transfer.path.display().to_string())
+        .collect();
+    let more = activity.transfers_past_the_window();
+    if named.is_empty() && more == 0 {
+        return None;
+    }
+    let tail = match more {
+        0 => String::new(),
+        1 => " and 1 more".to_owned(),
+        n => format!(" and {n} more"),
+    };
+    if named.is_empty() {
+        // Everything left is past the window (a chunk wide enough to fill it on its own).
+        return Some(format!("{more} more"));
+    }
+    Some(format!("{}{tail}", named.join(", ")))
+}
+
+/// This pass's per-direction progress (#243 counts, #98 bytes), from the pass block.
+///
+/// ```text
+/// moved      44 sent · 115 received — 386.0 MB up, 1.1 GB down
+/// ```
+///
+/// `None` before anything has landed: a pass that has moved nothing says nothing, rather than
+/// printing a row of zeroes for every folder-creation pass.
+fn describe_pass_transfers(activity: &SyncActivity) -> Option<String> {
+    let pass = activity.pass.as_ref()?;
+    if pass.uploaded_files == 0 && pass.downloaded_files == 0 {
+        return None;
+    }
+    Some(format!(
+        "{} sent · {} received — {} up, {} down",
+        pass.uploaded_files,
+        pass.downloaded_files,
+        human_bytes(pass.uploaded_bytes),
+        human_bytes(pass.downloaded_bytes),
+    ))
 }
 
 /// ` · 3m12s` since `epoch_secs`, empty within the first couple of seconds.
@@ -1262,6 +1437,8 @@ mod tests {
             files_scanned: None,
             action_index: None,
             action_total: None,
+            transfers: Vec::new(),
+            transfers_remaining: None,
             transfer: None,
             since_epoch_secs: None,
             pass: None,
@@ -1310,17 +1487,46 @@ mod tests {
         let mut transfer = blank_activity("executing");
         transfer.action_index = Some(812);
         transfer.action_total = Some(6377);
-        transfer.transfer = Some(TransferActivity {
-            direction: "download".to_owned(),
-            path: PathBuf::from("Companies/takeout.tgz"),
-            bytes_total: None,
+        transfer.transfers = vec![TransferActivity {
             bytes_done: Some(1_500_000_000),
             // Far future → zero elapsed → no elapsed fragment, keeping the assertion stable.
-            started_epoch_secs: u64::MAX,
-        });
+            ..TransferActivity::active(
+                "download",
+                PathBuf::from("Companies/takeout.tgz"),
+                None,
+                u64::MAX,
+            )
+        }];
         assert_eq!(
             describe_activity(&transfer),
             "downloading Companies/takeout.tgz — 1.4 GiB so far [step 812/6377]"
+        );
+
+        // A batched download is one row over a chunk: it names the folder and the file count, so
+        // the folder is not rendered as if it were the file.
+        let mut batch = blank_activity("executing");
+        batch.action_index = Some(40);
+        batch.action_total = Some(100);
+        batch.transfers = vec![TransferActivity {
+            files: Some(25),
+            ..TransferActivity::active("download", PathBuf::from("photos/2024"), None, u64::MAX)
+        }];
+        assert_eq!(
+            describe_activity(&batch),
+            "downloading 25 files in photos/2024 [step 40/100]"
+        );
+
+        // A daemon predating #211 sends only the singular mirror, and the line is unchanged.
+        let mut legacy = blank_activity("executing");
+        legacy.action_index = Some(1);
+        legacy.action_total = Some(2);
+        legacy.transfer = Some(TransferActivity {
+            bytes_total: Some(4_400_000),
+            ..TransferActivity::active("upload", PathBuf::from("docs/report.pdf"), None, u64::MAX)
+        });
+        assert_eq!(
+            describe_activity(&legacy),
+            "uploading docs/report.pdf — 4.2 MiB [step 1/2]"
         );
 
         let mut plain = blank_activity("executing");
@@ -1360,6 +1566,8 @@ mod tests {
             history: None,
             file_history: None,
             index_totals: None,
+            listing: None,
+            auth: AuthState::Unknown,
         }
     }
 

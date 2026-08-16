@@ -151,24 +151,34 @@ function hexFids(under, state) {
  *   · `2a Settled` draws two hero buttons (`button[0]`/`button[1]`); `2a Syncing` draws one, keyed
  *     `button` with no index at all. Hence `buttons`.
  *   · `2a Syncing`'s LEFT column holds an active row and a queued one (`div[0]`/`div[1]`); its right
- *     column and both of `2a Needs you`'s hold exactly one, keyed `div`. Hence `rowsInColumn`.
+ *     column and both of `2a Needs you`'s hold exactly one, keyed `div`. Hence the per-column `rows`
+ *     lists — one entry per row the APP draws there, in order.
  *   · The settled mark has two paths and the syncing mark three, which `hexFids` already handles.
  *
- * @param state        "settled" | "syncing" — which mark and which hero arrangement
- * @param tail         "spacer" | "columns" — the empty flex:1 block, or the transfer grid
- * @param buttons      how many buttons in the hero's action row
- * @param column       "left" | "right" — which column the mapped transfer row is in
- * @param rowIndex     its position among that column's rows
- * @param rowsInColumn how many rows that column holds (1 means the key carries no index)
- * @param band         how many attention-band rows, or 0 for no band
+ * A row entry is its state (`"active"` or `"queued"`), or `{ state, mapped: false }` for a row the
+ * app draws in a **different shape** than the frame does, which is left UNMAPPED — the same call
+ * §79 makes for the remote folder card's `<input>`, and for the same reason: comparing two
+ * differently-constructed nodes property by property is not a missing capability, so it is not what
+ * `known-deviations.mjs` is for.
+ *
+ * `2a Syncing`'s right column is the case. The frame draws a download in flight beside an upload in
+ * flight, and this engine transfers one file at a time (`execute_plan_and_commit` is a sequential
+ * loop), so what the app can honestly draw there is the queue's next download — a flat queued row
+ * where the frame has a wrapped active one, differing on all fourteen asserted properties of the
+ * row and putting its three spans at different keys. The queued row's construction IS measured, on
+ * the left column of the same frame, where `2a Syncing` draws one too. DEVIATIONS §63c.
+ *
+ * @param state   "settled" | "syncing" — which mark and which hero arrangement
+ * @param tail    "spacer" | "columns" — the empty flex:1 block, or the transfer grid
+ * @param buttons how many buttons in the hero's action row
+ * @param rows    `{ left: [...], right: [...] }` — the rows each column draws, in order
+ * @param band    how many attention-band rows, or 0 for no band
  */
 export function mainFids({
   state = "settled",
   tail = "spacer",
   buttons = 1,
-  column = "left",
-  rowIndex = 0,
-  rowsInColumn = 1,
+  rows = { left: [], right: [] },
   band = 0,
 } = {}) {
   const hero = "div[0]";
@@ -204,22 +214,60 @@ export function mainFids({
   };
 
   if (tail === "columns") {
-    const col = `div[1]/div[${column === "right" ? 1 : 0}]`;
-    const row = rowsInColumn > 1 ? `${col}/div[${rowIndex}]` : `${col}/div`;
+    // One entry per drawn row, normalized so a bare state string and the `{ children: false }` form
+    // read the same below.
+    //
+    // SIDE IS AN INDEX, 0 = left/leaving and 1 = right/arriving — the same convention `card(i)` and
+    // `cardFact(side, i)` take below, and NOT a name. `assert.mjs` finds a factory's keys by probing
+    // it with numbers (`probeSlot`), so a slot behind a string argument answers `null` to every
+    // probe and vanishes from the unstamped report — the blind spot that gate's own note calls out
+    // ("a mapping … behind a non-numeric argument would stamp nothing and report nothing").
+    const drawn = (side) =>
+      (rows[side === 1 ? "right" : "left"] ?? []).map((entry) =>
+        typeof entry === "string" ? { state: entry, mapped: true } : { mapped: true, ...entry },
+      );
+    const rowAt = (side, i) => {
+      if (side !== 0 && side !== 1) return null;
+      const list = drawn(side);
+      if (i >= list.length || !list[i].mapped) return null;
+      const col = `div[1]/div[${side}]`;
+      // One row is `div`; two or more are `div[0]`, `div[1]` — the same rule as the band and the
+      // hero's buttons.
+      return { ...list[i], key: list.length > 1 ? `${col}/div[${i}]` : `${col}/div` };
+    };
+    // The main screen's ACTIVE row wraps its three spans in a flex body and hangs the 2px track
+    // beside it; its queued row is flat, and so is every row in the compact panel. Measured, not
+    // generalised — DEVIATIONS §65.
+    const spans = (side, i) => {
+      const row = rowAt(side, i);
+      if (!row) return null;
+      return row.state === "active" ? `${row.key}/div[0]` : row.key;
+    };
+    const span = (side, i, index) => {
+      const parent = spans(side, i);
+      return parent == null ? null : `${parent}/span[${index}]`;
+    };
+    // `rows.js` `transferSlotOrder`: an arriving row leads with its arrow, a leaving one trails it.
+    // The DETAIL is declared on leaving rows only — a download's chip is the size the daemon does
+    // not have (§63), so the app draws no third span there at all.
+    const leaving = (side) => side === 0;
     Object.assign(map, {
       columns: "div[1]",
       columnLeft: "div[1]/div[0]",
       columnRight: "div[1]/div[1]",
-      transferRow: row,
-      // The main screen's ACTIVE row wraps its three spans in a flex body and hangs the 2px track
-      // beside it; its queued row is flat, and so is every row in the compact panel. Measured, not
-      // generalised — DEVIATIONS §65.
-      transferBody: `${row}/div[0]`,
-      transferName: `${row}/div[0]/span[0]`,
-      transferDetail: `${row}/div[0]/span[1]`,
-      transferArrow: `${row}/div[0]/span[2]`,
-      transferTrack: `${row}/div[1]`,
-      transferFill: `${row}/div[1]/div`,
+      transferRow: (side, i) => rowAt(side, i)?.key ?? null,
+      transferBody: (side, i) => (rowAt(side, i)?.state === "active" ? spans(side, i) : null),
+      transferName: (side, i) => span(side, i, leaving(side) ? 0 : 1),
+      transferDetail: (side, i) => (leaving(side) ? span(side, i, 1) : null),
+      transferArrow: (side, i) => span(side, i, leaving(side) ? 2 : 0),
+      transferTrack: (side, i) => {
+        const row = rowAt(side, i);
+        return row?.state === "active" ? `${row.key}/div[1]` : null;
+      },
+      transferFill: (side, i) => {
+        const row = rowAt(side, i);
+        return row?.state === "active" ? `${row.key}/div[1]/div` : null;
+      },
     });
   } else {
     map.spacer = "div[1]";
@@ -1341,7 +1389,8 @@ export function settingsFids(view) {
 //   · `9a Review` — the already-matching fact row (`div[1]/div[1]/div[0]`, #242) and
 //     `See all 471 actions` (`div[1]/div[2]/button`, #244), which has nowhere to open from inside a
 //     takeover that covers the plan door.
-//   · `9a First sync` — the split progress bar and its two labels (`div[0]/div[5]`, #243).
+//   (`9a First sync` has nothing undeclared left: the split progress bar it was waiting on is drawn
+//   since #243, and every node of it is mapped below.)
 //   · `9a CLI missing` — the command box (`div/div/div[2]`, #218) and `Installation help`
 //     (`div/div/div[3]/button[1]`, #244). #231 shipped the opener half; what is still missing is a
 //     URL to send it to, and a takeover with nowhere to open from.
@@ -1445,6 +1494,17 @@ const ONBOARDING_FIRST_SYNC_FIDS = {
   mergeNumeral: "div[0]/svg/text",
   mergeTitle: "div[0]/div[3]",
   mergeSub: "div[0]/div[4]",
+  // The split progress bar (#243). The two fills are mapped even though their widths are a recorded
+  // departure (DEVIATIONS §63b — the frame's 48:88 contradicts its own `44 sent` / `115 received`):
+  // an unmapped node is a node nobody measures, and everything else about them — the gradients, the
+  // height, the clipping — is exact.
+  mergeProgress: "div[0]/div[5]",
+  mergeTrack: "div[0]/div[5]/div[0]",
+  mergeFillUp: "div[0]/div[5]/div[0]/div[0]",
+  mergeFillDown: "div[0]/div[5]/div[0]/div[1]",
+  mergeCounts: "div[0]/div[5]/div[1]",
+  mergeCountUp: "div[0]/div[5]/div[1]/span[0]",
+  mergeCountDown: "div[0]/div[5]/div[1]/span[1]",
   mergeClose: "div[0]/div[6]",
   mergeFoot: "div[1]",
   // `mergeFootText` IS mapped, and the fixture is what makes that possible: the sentence is built
