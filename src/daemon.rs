@@ -5242,12 +5242,12 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
     // again by the parent filter below.
     let (root, relative) = target.request(&browse.remote_root);
     let (root, relative) = (root.to_path_buf(), relative.to_path_buf());
-    let (call_root, call_relative) = (root.clone(), relative.clone());
+    let listed_relative = relative.clone();
     // `spawn_blocking`: the listing is a synchronous subprocess. Running it inline would block a
     // runtime worker, which is exactly what would stop the *other* control connections being
     // served — the property this whole task layout exists for.
     let listed = tokio::task::spawn_blocking(move || {
-        proton.browse_directory(&call_root, &call_relative, gate_wait)
+        proton.browse_directory(&root, &listed_relative, gate_wait)
     })
     .await;
 
