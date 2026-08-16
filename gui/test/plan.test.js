@@ -19,6 +19,7 @@ import {
   footerKindOf,
   gateSatisfied,
   gatedKind,
+  hiddenActions,
   isDisplayDestructive,
   isGated,
   markOf,
@@ -27,7 +28,7 @@ import {
   sortedForDisplay,
   summarise,
 } from "../src/js/screens/plan.js";
-import { PLAN } from "../src/js/ui/copy.js";
+import { MAIN, PLAN } from "../src/js/ui/copy.js";
 import { outcomeOf } from "../src/js/ui/format.js";
 
 const row = (path, action, extra = {}) => ({
@@ -391,6 +392,41 @@ test("a windowed reply counts the whole plan, never the rows it happened to carr
   assert.equal(summarise(rows, null).total, 2);
   // The per-direction counts stay what the window really holds — they describe drawn rows.
   assert.equal(summarise(rows, 12_480).uploads, 2);
+});
+
+test("`+n more` is sized from the daemon's total and not from the list it was handed", () => {
+  // #319. THE WHOLE POINT IS THE SUBTRACTION'S LEFT-HAND SIDE. `report.plan` is a window
+  // (`PLAN_ACTIONS_MAX_LIMIT` 5000) and `report.summary.total` counts the plan, so anything
+  // computed from the rows alone is 0 for ever and the node is dead code that looks live —
+  // `hiddenTransfers` on the main screen carries the same warning for the same reason.
+  //
+  // Driven from a `DryRunPayload`-shaped report through the call the screen really makes, not from
+  // a hand-made model: the two seams that could disagree are `summarise`'s arguments and this
+  // subtraction, and a test that builds the model itself asserts neither.
+  const windowed = (carried, total) => {
+    const plan = Array.from({ length: carried }, (_, i) => row(`bulk/${i}.txt`, "upload"));
+    const report = { summary: { total }, plan };
+    return hiddenActions(summarise(report.plan, report.summary.total));
+  };
+
+  assert.equal(windowed(5000, 12_480), 7480, "12,480 planned, 5,000 carried");
+  assert.equal(MAIN.andMore(windowed(5000, 12_480)), "+7,480 more");
+
+  // A WHOLE PLAN IN HAND DRAWS NOTHING, and never `+0 more`. The child `--dry-run` path returns
+  // every row, so this is the ordinary case and not an edge one.
+  assert.equal(windowed(9, 9), 0);
+  assert.equal(windowed(0, 0), 0);
+
+  // A summary the daemon did not send (an older reply) leaves `summarise` counting the rows, so
+  // the two numbers are the same one and the answer is "nothing hidden" rather than a guess.
+  assert.equal(hiddenActions(summarise([row("a.txt", "upload")], null)), 0);
+  assert.equal(hiddenActions(summarise([row("a.txt", "upload")])), 0);
+
+  // NEVER NEGATIVE. `summarise` already floors `total` at the rows in hand, and this floors again:
+  // a reply whose summary undercounts its own rows must not produce `+-3 more`.
+  assert.equal(windowed(5, 2), 0);
+  assert.equal(hiddenActions({ total: 2, rows: [1, 2, 3, 4, 5] }), 0);
+  assert.equal(hiddenActions(undefined), 0);
 });
 
 test("a plan nobody is holding cannot be run without its deletions", () => {

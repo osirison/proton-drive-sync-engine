@@ -49,7 +49,6 @@ pub fn run() {
             commands::choose_folder,
             commands::run_dry_run,
             commands::apply_plan,
-            commands::list_remote,
             commands::scan_conflicts,
             commands::resolve_conflict,
             commands::read_conflict_pair,

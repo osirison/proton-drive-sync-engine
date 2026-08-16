@@ -35,6 +35,18 @@ const summary = (over = {}) => ({
 
 const report = (over = {}) => ({ report: { summary: summary(over), plan: [] } });
 
+/**
+ * `DryRunReport.cannot_sync` as the wire carries it (#315): `index::UnsyncableEntry`, which spells
+ * its path `relative_path` and has neither an age nor an `entity_kind`. `9a Review`'s own three —
+ * one socket and two symlinks, which is what makes the drawn `a socket and two shortcuts` a counted
+ * phrase rather than a list of distinct kinds.
+ */
+const cannotSync = () => [
+  { relative_path: "run/daemon.sock", reason: "local_socket" },
+  { relative_path: "Desktop/proton.desktop", reason: "local_symlink" },
+  { relative_path: "Desktop/inbox.lnk", reason: "local_symlink" },
+];
+
 // ---- which body ------------------------------------------------------------------------------
 
 test("step 1 draws step 1, whatever the rehearsal is doing", () => {
@@ -83,7 +95,7 @@ test("the fact rows are keyed by the drawn row they stand for", () => {
   // Row 0 (`11,798 files already match`) is #242 and never drawn, so the app's first row is the
   // frame's second. The index is what the gate compares against, not the position in this list.
   assert.deepEqual(
-    factRows(summary()).map((r) => r.at),
+    factRows(summary(), cannotSync()).map((r) => r.at),
     [1, 2, 3],
   );
 });
@@ -101,7 +113,7 @@ test("`Nothing will be deleted` is only said of a plan that deletes nothing", ()
 });
 
 test("a count that reads zero gets no row", () => {
-  const rows = factRows(summary({ conflicts: 0, skipped_unsupported: 0 }));
+  const rows = factRows(summary({ conflicts: 0 }), []);
   assert.deepEqual(
     rows.map((r) => r.at),
     [3],
@@ -112,11 +124,54 @@ test("no summary draws no facts at all — an empty strip, never a strip of zero
   assert.deepEqual(factRows(null), []);
 });
 
-test("the unsyncable row counts and does not name the kinds", () => {
-  // The drawn sentence says `a socket and two shortcuts` and nothing enumerates them (#232).
-  const row = factRows(summary()).find((r) => r.at === 2);
-  assert.equal(row.label, "3 files can't be synced");
+test("the unsyncable row draws the frame's whole sentence, kinds and all", () => {
+  // #315. Both halves come from `cannot_sync` — the plan's own local stat-walk reporting what it
+  // dropped — so the sentence is the drawn one rather than the count with its clause cut off.
+  const row = factRows(summary(), cannotSync()).find((r) => r.at === 2);
+  assert.equal(row.label, "3 files can't be synced — a socket and two shortcuts");
   assert.equal(row.note, ONBOARDING.skipped);
+});
+
+test("the unsyncable row is not `skipped_unsupported`, however large that number is", () => {
+  // THE SOURCE CHANGE, ASSERTED AS A SOURCE CHANGE. `PlanSummary.skipped_unsupported` counts
+  // `SkipUnsupported` PLAN rows, which are overwhelmingly remote nodes the CLI cannot fetch — a
+  // Proton-native Docs file. That is a different set from the local non-files this sentence names,
+  // the two cannot be summed, and the Activity screen already excludes `remote_not_downloadable`
+  // from this very group for the same reason. So a plan full of them draws no row here at all,
+  // while the count keeps its own job in `actionsThatHappen`.
+  const rows = factRows(summary({ skipped_unsupported: 900 }), []);
+  assert.deepEqual(
+    rows.map((r) => r.at),
+    [1, 3],
+  );
+  assert.equal(actionsThatHappen(summary({ total: 900, skipped_unsupported: 900 })), 0);
+});
+
+test("the kinds are counted, or the sentence names two things beside a number that says three", () => {
+  // The bug an UNCOUNTED list of distinct kinds has, and the reason `kindsPhrase` had to change:
+  // this exact fixture — one socket, two symlinks — rendered `a socket and a shortcut`.
+  const label = (list) => factRows(summary(), list).find((r) => r.at === 2)?.label;
+  assert.equal(label(cannotSync()), "3 files can't be synced — a socket and two shortcuts");
+  // One of each keeps the singular form, which is what `8a Skip rules` draws.
+  assert.equal(label(cannotSync().slice(0, 2)), "2 files can't be synced — a socket and a shortcut");
+  // One alone is singular in both halves of the sentence.
+  assert.equal(label(cannotSync().slice(0, 1)), "1 file can't be synced — a socket");
+  // One kind, several of them.
+  assert.equal(label(cannotSync().slice(1)), "2 files can't be synced — two shortcuts");
+});
+
+test("a report with no `cannot_sync` key at all draws no row and throws nothing", () => {
+  // `#[serde(default, skip_serializing_if = "Vec::is_empty")]`: a report with nothing to say omits
+  // the field, as does every build older than #318. Absent is empty, not a crash and not a zero.
+  assert.deepEqual(
+    factRows(summary(), undefined).map((r) => r.at),
+    [1, 3],
+  );
+  assert.deepEqual(factRows(null, undefined), []);
+  assert.deepEqual(
+    factRows(null, cannotSync()).map((r) => r.at),
+    [2],
+  );
 });
 
 // ---- the merge footer ------------------------------------------------------------------------

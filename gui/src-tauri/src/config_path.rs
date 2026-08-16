@@ -163,12 +163,12 @@ impl RuntimePaths {
             .or_else(|| self.daemon_local_root.clone())
     }
 
-    /// The remote root for remote listings: GUI config first, daemon-reported second.
-    pub fn effective_remote_root(&self) -> Option<PathBuf> {
-        self.remote_root
-            .clone()
-            .or_else(|| self.daemon_remote_root.clone())
-    }
+    // `effective_remote_root` WAS HERE and went with `list_remote` (#311). It resolved the remote
+    // root for a listing the GUI ran itself, and that is the one question this process must not
+    // answer: `run_dry_run` reads the two `remote_root` fields RAW and separately, because
+    // `daemon_plans_the_same_roots` has to tell a configured root from a daemon-reported one
+    // rather than collapse them. A resolver that hides which of the two answered has no caller
+    // left, and would be the wrong shape for the one caller there is.
 
     /// The index DB for read-only lookups: GUI config first, daemon-reported second.
     pub fn effective_db_path(&self) -> Option<PathBuf> {

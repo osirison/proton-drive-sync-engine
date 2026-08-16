@@ -755,7 +755,7 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.h"],
     detail: "147 vs 58",
     issue: "#99",
-    why: "the remote card, missing both its stats row (#240) and `Browse Proton Drive…` — `list_remote` reads a path and there is no picker for one",
+    why: "the remote card, missing both its stats row (#240) and `Browse Proton Drive…` — the daemon's `list` verb could feed a picker and nothing has built one",
   },
   {
     frame: "9a Folders",

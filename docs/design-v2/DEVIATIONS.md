@@ -3123,7 +3123,6 @@ the exact measurement, so the day the capability lands the build fails until the
 | `files · 1.4 GB` / `files · 38.4 GB` | `files` | no level of the dry-run surface carries a size | #191 |
 | `Needs 38.4 GB free. You have 214 GB.` | `You have 214 GB.` | C4 answers the free space; the *needed* half is a byte total of a download plan, which nothing carries | #206 |
 | `11,798 files already match on both sides` | row omitted | a count of files the plan does **not** act on, absent from `PlanSummary` by construction | #242 |
-| `3 files can't be synced — a socket and two shortcuts` | `3 files can't be synced` | the kinds ARE enumerated since #232 — but by the daemon's standing list, and this row's count is `PlanSummary::skipped_unsupported`, a statistic of the dry-run plan. The two describe different sets and cannot be summed (§98b) | #315 |
 | `worked out 40 seconds ago · about 25 minutes to finish` | the first clause | `run_dry_run` reports what would happen, never how long it would take | #229 |
 | `159 of 471 done · about 17 minutes left` | the first clause | same estimate | #229 |
 | `nothing deleted · 2 conflicts kept as copies` | drawn from the approved plan; omitted with none in hand | no reply carries a per-pass summary *while the pass runs* | #213 |
@@ -3163,7 +3162,8 @@ listener to a disabled kind — so one armed later paints live and does nothing)
 ### 79e. The remote path is a field where the frame draws a line
 
 `9a Folders` draws `Browse Proton Drive…` under the remote card. S6 already settled that a remote
-folder cannot be browsed for — `list_remote` reads a path and no picker exists for one — and drew
+folder cannot be browsed for — nothing browses Proton Drive, and the daemon's `list` verb (#99) has
+no picker in front of it — and drew
 `8a Settings`' remote side as a field with no button for exactly that reason. S7 takes the same
 answer: the button goes, and the path itself becomes editable so the step can still produce a pair.
 
@@ -4900,20 +4900,93 @@ recorded at `106.812px vs 85.8125px` and blamed on the missing panel — the pan
 exactly 71px of it, and what is left is `35.8125px vs 85.8125px`: the 50px §94's doors take off every
 content region. So the row is re-recorded against that decision, which is what it always was.
 
-### 98b. One row that reads like the same gap and is not
+### 98b. One row that read like the same gap and was not — now closed
 
-`9a Review`'s `3 files can't be synced — a socket and two shortcuts` still draws without its kinds,
-and §79c recorded the reason as "those files never enter the index". They still do not — and that is
-no longer what stops this row.
+**Closed by #315.** The row is gone from §79c and this section is kept for the diagnosis, which is
+the part worth having: it took two wrong reasons before the real one.
 
-The number on it is `PlanSummary::skipped_unsupported`, a statistic of the **dry-run plan**, which
-counts remote nodes the CLI cannot fetch as bytes. The local kinds are deliberately kept out of a
-plan (a socket that replaced a synced file would put two rows for one path in one plan), and
-`DryRunReport` deliberately carries no `unsyncable` list: that list is a *persistent merged* store,
-and a one-shot report has no store to merge into, so the same field name on it would mean something
-else. The two facts describe different sets, cannot be summed, and on a first run the standing list
-is empty anyway because no pass has run.
+`9a Review`'s `3 files can't be synced — a socket and two shortcuts` drew without its kinds, and
+§79c recorded the reason as "those files never enter the index". They still do not — and that was
+never what stopped this row. The number on it was `PlanSummary::skipped_unsupported`, a statistic of
+the **dry-run plan**, which counts remote nodes the CLI cannot fetch as bytes. The local kinds are
+deliberately kept out of a plan (a socket that replaced a synced file would put two rows for one
+path in one plan), and `DryRunReport` deliberately carried no `unsyncable` list: that list is a
+*persistent merged* store, and a one-shot report has no store to merge into, so the same field name
+on it would mean something else. Two different sets, unsummable, and on a first run the standing
+list is empty anyway because no pass has run.
 
-So the row survives, repointed at #315. Corrected rather than deleted, and corrected rather than
-left: a row whose stated reason has quietly become false is how "nothing enumerates the kinds" gets
-believed twice.
+**What closed it was a third field, not a reconciliation of the two.** `DryRunReport.cannot_sync`
+(PR #318) is the plan's own local stat-walk reporting what it dropped — one observation, no age,
+nothing merged into it, and named so that it cannot be mistaken for the store. Both halves of the
+sentence come off it, so the clause has one source; `skipped_unsupported` is not summed into it and
+is not drawn on this screen at all, which is the same verdict S5 already reached from the other side
+(`cannotSyncFrom` excludes `remote_not_downloadable` outright — a Proton Docs file is a real file on
+Proton Drive, not a non-file in your folder). The count survives where it means something: the
+Activity counters, and `actionsThatHappen`, which still subtracts those rows from `See all N
+actions`.
+
+The general lesson stands and is why this is kept: a row whose stated reason has quietly become
+false is how "nothing enumerates the kinds" gets believed twice. The corrected reason then said the
+two facts could not be sourced from one place *today* — which was true, and was a statement about a
+missing producer rather than an impossibility. Naming the producer it lacked is what let the next
+change build it.
+
+## The GUI catches up with the daemon it now has (2026-08-16)
+
+## 99. One node no frame draws, and one command with no caller
+
+Three surfaces where the daemon had already published a fact and the GUI was still deciding it for
+itself (#311, #315, #319). Two of them are covered above — #315 closes §98b, and #311's half of §79e
+is reworded because the function that sentence blamed no longer exists. This section is the third
+and the two decisions that have no drawn evidence behind them.
+
+### 99a. `+n more` is drawn by no frame, and that is not a `KNOWN_UNSTAMPED` row
+
+`ControlCommand::PlanResult` bounds its rows (`PLAN_ACTIONS_DEFAULT_LIMIT` 500,
+`PLAN_ACTIONS_MAX_LIMIT` 5000). The screen already counted the plan rather than the window —
+`summarise` takes `summary.total`, so `The next sync moves 12,480 things` is right over 5,000 rows —
+and what was missing was the line saying the list is a window. It is now the last line inside the
+scroller, `+7,480 more`, sized from `summary.total - rows.length`.
+
+**None of the three plan frames has a plan long enough to truncate**, so no frame draws this node.
+The issue expected a `KNOWN_UNSTAMPED` row and that is the wrong instrument: that file is for a node
+**the frame draws and the app cannot**, and every row in it names a `key` that exists in a frame.
+This is the opposite — a node the app draws and no frame has. It needs nothing from the fidelity
+gate at all: it is not declared in `fids.js` (a slot whose key exists in no declaring frame fails
+`check-fixtures.mjs`), it stamps nothing, and no fixture reaches the cap that would render it. It is
+covered by `plan.test.js` instead, which is where an undrawn state belongs.
+
+`MAIN.andMore` is borrowed rather than copied. It is the same sentence about the same thing — a
+bounded window with a daemon-sized remainder behind it — and `MAIN.authExpiredSub`, quoted by S1
+from `11a Outage`, is the precedent for a deck entry outliving its screen name.
+
+### 99b. `list_remote` is deleted, not ported
+
+The GUI shelled `proton-drive filesystem list --json` from its own process, outside the daemon's
+`CliGate`, against a CLI whose SQLite store is not concurrency-safe (#23). #311 proposed replacing it
+with the socket's `list` verb. **Nothing called it** — no `listRemote` call site exists in
+`gui/src/js`, and the surface that would want one (`Browse Proton Drive…`, §79e) is unbuilt — so it
+is gone rather than rewritten: a socket-backed command with no caller moves "a verb nothing calls"
+one layer up instead of removing it. A picker, when it is built, calls `list` through `gui_core::ipc`
+like every other verb.
+
+**One CLI-shelling path survives and is deliberately out of scope — #323.** `probe_folder`'s remote
+side (`gui_core::folder_probe::probe_remote_via_cli`, up to `MAX_REMOTE_LISTINGS` = 64 subprocesses)
+prices a **candidate** folder during onboarding — a path outside `remote_root`, before any pair is
+configured, which is precisely the question `ControlCommand::List` cannot answer: its selector is
+`remote_root`-relative. It is also the worse of the two, because unlike `list_remote` it is called:
+`9a Folders` is a drawn screen. Filed rather than absorbed, because closing it needs a daemon verb
+that does not exist and inventing one is a design decision, not a cleanup.
+
+### 99c. One number the `+n more` line made visible, also filed — #324
+
+`summarise` builds one model from two sources: `total` is the daemon's, and `conflicts` /
+`uploads` / `downloads` / `newFolders` / `renames` are counted over the **window**. The list head
+puts two of them in one sentence, so a truncated plan reads `12,480 actions · 1 conflict kept as
+both copies` where the `1` counts only the conflicts that fit. Measured, not reasoned: 5,000 rows
+carried out of 12,480 renders exactly that.
+
+Nothing dangerous is understated — destructive rows are never truncated out, so the band, the gate
+and `files_at_risk` are unaffected — and the honest fix has two different answers (head counts can
+read `summary.*` today; the safe body's side *lists* cannot, being lists of rows nobody sent). Two
+answers for one function is why it is its own issue rather than the tail of this one.

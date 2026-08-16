@@ -381,8 +381,8 @@ export const SETTINGS_FIXTURES = {
    * builds the dialog:
    *   · `write_config` refuses on `ConfigDoc::validate`, which is a serde/TOML check against
    *     `FileConfig`. It never probes Proton Drive, so it cannot say `not found` about a remote
-   *     folder. Producing this refusal at all needs a remote-existence probe (`list_remote`) before
-   *     the write — nobody's issue today.
+   *     folder. Producing this refusal at all needs a remote-existence probe before the write —
+   *     the daemon's `list` verb (#99) is the one that could answer it, and nothing asks.
    *   · the error that IS produced arrives as `config would be rejected by the daemon: …`
    *     (`ConfigError::Display`), while the frame draws the bare reason. Whatever S6 shows in that
    *     mono box must be the reason alone.

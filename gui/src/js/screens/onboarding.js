@@ -20,6 +20,12 @@ import { button, textInput, checkbox, setButtonKind } from "../ui/controls.js";
 import { consentPanel, warnGlyph } from "../ui/bands.js";
 import { renderActionBar } from "../ui/chrome.js";
 import { dot, eyebrow } from "../ui/rows.js";
+// THE ONE PLACE THE `CAN'T BE SYNCED` GROUP IS DECIDED, imported rather than re-derived (#315).
+// It owns the membership rule (`remote_not_downloadable` is excluded — a Docs file is a real file
+// on Proton Drive, not a non-file in your folder), the noun for each reason token, and the counted
+// kinds phrase. `tray.js` borrows `transfersOf` from `main.js` on exactly this argument: a second
+// copy of a group's definition is how two screens come to disagree about one set.
+import { cannotSyncFrom } from "./activity.js";
 import { fid } from "../fixtures/frames.js";
 
 /** The marks, at the five sizes this flow draws them. 80 is two-valued in `strokeForSize`. */
@@ -107,8 +113,11 @@ function folderSide(props, s) {
   label.append(...(local ? [mark, label2] : [label2, mark]));
 
   const card = fid(el("div", { class: "ob-card" }), "card", s);
-  // The remote path is EDITABLE and the local one is not: `list_remote` reads a path and no picker
-  // exists for one (S6 settled the same asymmetry on `8a Settings`). #99.
+  // The remote path is EDITABLE and the local one is not: nothing browses Proton Drive, so there is
+  // no picker to open (S6 settled the same asymmetry on `8a Settings`). #99 gave the daemon a `list`
+  // verb that could feed one; the screen for it is unbuilt, and #311 removed the GUI's own
+  // CLI-shelling `list_remote` rather than leave a second, ungated client behind a button nobody
+  // draws.
   // UNMAPPED on the remote side, deliberately: an `<input>` is `inline-block` with `overflow:clip`
   // by UA rule and the frame draws a `<div>`, so the two can never agree on either — a construction
   // difference, which is not what `known-deviations.mjs` is for. §79. The fixture's `cardPath`
@@ -228,7 +237,7 @@ function countSide(props, s, summary) {
  * drawn only when the plan really has none. A plan that would delete something cannot say this, and
  * no frame draws that state.
  */
-export function factRows(summary) {
+export function factRows(summary, cannotSync = []) {
   const rows = [];
   // `11,798 files already match on both sides` counts files the plan does NOT act on; `PlanSummary`
   // has no such field, by construction rather than omission. #242.
@@ -241,16 +250,29 @@ export function factRows(summary) {
       noteTone: "decision",
     });
   }
-  if (summary?.skipped_unsupported) {
+  // `3 files can't be synced — a socket and two shortcuts`, BOTH HALVES FROM ONE SOURCE (#315).
+  //
+  // `DryRunReport.cannot_sync` is the plan's own local stat-walk reporting what it dropped — a
+  // socket, a symlink, a FIFO, a device node (#232) — carried on the report since PR #318, and it
+  // arrives the same way down both paths this screen can take: the child `proton-syncd --dry-run`
+  // (onboarding, before any daemon exists) parses it out of the report, and the daemon's `plan`
+  // verb copies `ReviewedPlan.cannot_sync` onto the same field.
+  //
+  // `PlanSummary.skipped_unsupported` USED TO BE THIS NUMBER AND IS DELIBERATELY NOT ANY MORE. It
+  // counts `SkipUnsupported` plan rows, which are overwhelmingly *remote* nodes the CLI cannot
+  // fetch — a Proton-native Docs or Sheets file. Summing the two would put one sentence over two
+  // sets, and naming the kinds of one beside the count of the other is worse. The Activity screen
+  // reached the same verdict from the other side and already ships it: `cannotSyncFrom` EXCLUDES
+  // `remote_not_downloadable` from this group entirely, because a Docs file is a real file on
+  // Proton Drive rather than a non-file in your folder. So this row is silent about it, and the
+  // count survives where it means something — S5's counters, and `actionsThatHappen` above, which
+  // still subtracts those rows from `See all N actions`.
+  const cannot = cannotSyncFrom(cannotSync);
+  if (cannot.count) {
     rows.push({
       at: 2,
       tone: "inert",
-      // The drawn sentence names the kinds (`a socket and two shortcuts`). They ARE enumerated
-      // since #232 — but by the daemon's STANDING list, while this number is
-      // `PlanSummary::skipped_unsupported`, a statistic of the dry-run plan that counts remote
-      // nodes the CLI cannot fetch. Two different sets, so they cannot be summed and the kinds
-      // cannot be borrowed for this count (#315). The count is the half that is true.
-      label: ONBOARDING.cannotSyncPlain(summary.skipped_unsupported),
+      label: ONBOARDING.cannotSync(cannot.count, cannot.kinds),
       note: ONBOARDING.skipped,
       dim: true,
     });
@@ -261,8 +283,8 @@ export function factRows(summary) {
   return rows;
 }
 
-function factsBlock(summary) {
-  const rows = factRows(summary);
+function factsBlock(summary, cannotSync) {
+  const rows = factRows(summary, cannotSync);
   if (!rows.length) return null;
   const block = fid(el("div", { class: "ob-facts" }), "facts");
   // KEYED BY THE ROW IT STANDS FOR, not by its position here: row 0 is omitted (#242), so the app's
@@ -297,6 +319,10 @@ function factsBlock(summary) {
 
 function reviewBody(props) {
   const summary = props.dryRun?.report?.summary ?? null;
+  // `#[serde(default, skip_serializing_if = "Vec::is_empty")]` on the engine side, so a report with
+  // nothing to say here omits the key entirely — including every report a build older than #318
+  // emitted. Absent is empty, and empty draws no row.
+  const cannotSync = props.dryRun?.report?.cannot_sync ?? [];
 
   const hero = fid(el("div", { class: "ob-hero" }), "hero");
   hero.append(fid(renderSeam({ site: "onboardingReview" }), "heroSeam"));
@@ -321,7 +347,7 @@ function reviewBody(props) {
   const counts = fid(el("div", { class: "ob-counts" }), "counts");
   counts.append(countSide(props, 0, summary), countSide(props, 1, summary));
   body.append(counts);
-  const facts = factsBlock(summary);
+  const facts = factsBlock(summary, cannotSync);
   if (facts) body.append(facts);
   // `See all N actions` has nowhere to open — the plan screen is a door the takeover covers (#244) —
   // so the row is its timing line alone. `about 25 minutes to finish` is #229.
@@ -394,6 +420,11 @@ function signatureOf(props) {
   return JSON.stringify([
     "review",
     s && [s.uploads, s.downloads, s.conflicts, s.skipped_unsupported, s.destructive_actions],
+    // The `can't be synced` row's own source (#315), and it must be in here or the row goes stale:
+    // `skipped_unsupported` above no longer draws anything, so a rehearsal that gained or lost a
+    // socket would leave the previous sentence on screen. The KINDS and not just the count — one
+    // socket replaced by one symlink is the same number and a different sentence.
+    cannotSyncFrom(props.dryRun?.report?.cannot_sync ?? []).kinds,
     props.freeSpace?.available ?? null,
     props.checkedAt == null ? null : since(props.checkedAt),
   ]);
