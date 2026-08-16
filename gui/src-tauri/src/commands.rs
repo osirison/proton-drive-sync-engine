@@ -768,17 +768,41 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
 
 /// Which failure a `plan` request that never completed really was.
 ///
+/// Which failure a `plan` request that never completed really was.
+///
 /// `Unavailable` — and therefore the child `--dry-run` — **only** when nothing answers the socket at
 /// all. A daemon that answers `status` but not `plan` is one this app is newer than, and the honest
 /// answer there is to say so: falling back would put a second `proton-drive` client beside a live
 /// daemon (#23/#317), which is exactly what this verb removed.
+///
+/// So the follow-up `status` is read by **variant, not by `is_err()`**: [`ipc::IpcError::Protocol`]
+/// means the daemon *replied* and the reply could not be decoded, which is evidence a daemon is
+/// there — the opposite of what a fallback needs. Only [`ipc::IpcError::Unreachable`] (no socket,
+/// refused, closed early, timed out) is evidence of absence. Guard:
+/// `an_undecodable_status_reply_is_a_live_daemon_not_an_absent_one`.
 fn classify_unreachable_plan(socket: &std::path::Path, error: ipc::IpcError) -> DaemonPlanFailure {
     match ipc::command(socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT) {
         Ok(_) => DaemonPlanFailure::Reported(format!(
             "the sync daemon is running but could not work out a plan ({error}). It is \
              probably older than this app; restart it from Settings and try again."
         )),
+        Err(reply) if !status_error_proves_no_daemon(&reply) => {
+            DaemonPlanFailure::Reported(format!(
+                "the sync daemon answered with something this app could not read ({reply}). \
+                 Restart it from Settings and try again."
+            ))
+        }
         Err(_) => DaemonPlanFailure::Unavailable,
+    }
+}
+
+/// The one question [`classify_unreachable_plan`] asks of a failed `status`, split out so it can be
+/// tested without a socket: **is this evidence there is no daemon?** Only an unreachable socket is.
+fn status_error_proves_no_daemon(error: &ipc::IpcError) -> bool {
+    match error {
+        ipc::IpcError::Unreachable(_) => true,
+        // It answered. Undecodably, but it answered.
+        ipc::IpcError::Protocol(_) => false,
     }
 }
 
@@ -2126,8 +2150,10 @@ pub fn hide_tray_panel(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        daemon_ignored_paths, daemon_plans_the_same_roots, probe_cli, relative_query, strip_ansi,
+        daemon_ignored_paths, daemon_plans_the_same_roots, probe_cli, relative_query,
+        status_error_proves_no_daemon, strip_ansi,
     };
+    use gui_core::ipc::IpcError;
     use std::path::Path;
 
     /// Every user-facing sentence this module builds, rendered rather than merely constructed.
@@ -2155,6 +2181,24 @@ mod tests {
             let message = super::unexpected_plan_ack(outcome.as_ref());
             assert!(!message.contains("  "), "{message:?}");
         }
+    }
+
+    /// The fallback to `proton-syncd --dry-run` may only be taken as evidence of **absence**, and
+    /// an undecodable reply is the opposite: something is bound to that socket and answering.
+    ///
+    /// `classify_unreachable_plan` reads the follow-up `status` by variant rather than `is_err()`
+    /// for exactly this. A `Protocol` error means a daemon replied and this app could not read it —
+    /// a version skew — and spawning a child there puts a second `proton-drive` client beside a
+    /// live daemon (#23/#317), the hazard the whole verb exists to retire. Only `Unreachable` (no
+    /// socket, refused, closed early, timed out) says nothing is there.
+    #[test]
+    fn an_undecodable_status_reply_is_a_live_daemon_not_an_absent_one() {
+        assert!(status_error_proves_no_daemon(&IpcError::Unreachable(
+            "no such file".to_owned()
+        )));
+        assert!(!status_error_proves_no_daemon(&IpcError::Protocol(
+            "expected value at line 1".to_owned()
+        )));
     }
 
     /// The fork behind the plan verb (#100/#209/#317), and the second condition is the subtle one:
