@@ -1394,19 +1394,21 @@ export function settingsFids(view) {
 // which on this screen is most of what the frames carry — DEVIATIONS §79 has the issue per row:
 //
 //   · `9a Folders` — each card's stats row (`…/div[1]/div[1]`, #240), the account line
-//     (`…/div[1]/div[2]`, #241), `Browse Proton Drive…` (`…/div[1]/div[1]/button`, #99) and
-//     `Add skip rules` (`div[1]/div[2]/button`, #244). The remote card's PATH is drawn and still
-//     undeclared: it is an `<input>` where the frame has a `<div>`, and a UA rule pins an input's
-//     `overflow` to `clip` and its `display` to `inline-block` — a construction difference, which
-//     is not what `known-deviations.mjs` is for.
-//   · `9a Review` — the already-matching fact row (`div[1]/div[1]/div[0]`, #242) and
-//     `See all 471 actions` (`div[1]/div[2]/button`, #244), which has nowhere to open from inside a
-//     takeover that covers the plan door.
+//     (`…/div[1]/div[2]`, #241) and `Browse Proton Drive…` (`…/div[1]/div[1]/button`, #99). The
+//     remote card's PATH is drawn and still undeclared: it is an `<input>` where the frame has a
+//     `<div>`, and a UA rule pins an input's `overflow` to `clip` and its `display` to
+//     `inline-block` — a construction difference, which is not what `known-deviations.mjs` is for.
+//   · `9a Review` — the already-matching fact row (`div[1]/div[1]/div[0]`, #242).
+//   (`9a Folders`' `Add skip rules` and `9a Review`'s `See all 471 actions` were both here until
+//   #244 gave each one a sub-screen inside the takeover to open; both are declared below.)
 //   (`9a First sync` has nothing undeclared left: the split progress bar it was waiting on is drawn
 //   since #243, and every node of it is mapped below.)
 //   · `9a CLI missing` — the command box (`div/div/div[2]`, #218) and `Installation help`
-//     (`div/div/div[3]/button[1]`, #244). #231 shipped the opener half; what is still missing is a
-//     URL to send it to, and a takeover with nowhere to open from.
+//     (`div/div/div[3]/button[1]`). #244 gave the other two buttons a destination and deliberately
+//     did NOT give this one: #231 shipped the opener and the blocker was never the opener. There is
+//     no true instruction to put in the box and no URL to send a help button to — this project's own
+//     documentation says `proton-drive` is in no distribution's repository — which is #218, still
+//     open and still a design decision rather than a code one.
 //
 // The two window frames' header has no `menu` slot — onboarding drops the ⋯ — and no `chipDot`:
 // `step N of 2` is text only.
@@ -1454,6 +1456,10 @@ const ONBOARDING_FOLDERS_FIDS = {
   skipPanel: "div[1]/div[2]",
   skipGlyph: "div[1]/div[2]/span",
   skipText: "div[1]/div[2]/div",
+  // `Add skip rules`, drawn since #244 gave it a destination inside the takeover. The panel's box is
+  // not comparable in either document — its `⊘` is an unbundled glyph, and the taint reaches every
+  // child — so what this slot asserts is the button's colour, border, radius, padding and type.
+  skipButton: "div[1]/div[2]/button",
   bar: "div[2]",
   barText: "div[2]/span[0]",
   barSpacer: "div[2]/span[1]",
@@ -1488,6 +1494,10 @@ const ONBOARDING_REVIEW_FIDS = {
   factMarkPath: (i) => `div[1]/div[1]/div[${i}]/svg/path`,
   timing: "div[1]/div[2]",
   timingText: "div[1]/div[2]/span[0]",
+  // The row's spacer and `See all 471 actions`, drawn since #244 gave the button a destination —
+  // a sub-screen inside the takeover rather than the Plan door the takeover covers.
+  timingSpacer: "div[1]/div[2]/span[1]",
+  timingButton: "div[1]/div[2]/button",
   bar: "div[2]",
   barBack: "div[2]/button[0]",
   barSpacer: "div[2]/span",

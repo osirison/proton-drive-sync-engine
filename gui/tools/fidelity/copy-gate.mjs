@@ -257,6 +257,13 @@ const NOT_DRAWN = new Map([
     "likewise — a name that is not valid UTF-8, so the remote listing could never name it (#270)",
   ],
   ["ACTIVITY.neverSyncedDialog.cannotKind.unrepresentable_path.many", "and its plural"],
+  // S7's two sub-screens (#244). The deck draws `Add skip rules` and `See all 471 actions` and no
+  // destination for either, so the two headings and the empty-list line are written rather than
+  // measured. Everything else on both screens is borrowed from a surface the deck DOES draw, which
+  // is why only three entries land here.
+  ["ONBOARDING.skipTitle", "no frame draws the skip editor the takeover's own button opens"],
+  ["ONBOARDING.noSkipRules", "no frame draws that editor with an empty list"],
+  ["ONBOARDING.actionsTitle", "no frame draws the action list `See all N actions` opens"],
 ]);
 
 /**

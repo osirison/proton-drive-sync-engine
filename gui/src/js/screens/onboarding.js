@@ -12,14 +12,19 @@
 // `Browse Proton Drive…`, which is #99.
 
 import { el } from "../ui/el.js";
-import { MAIN, ONBOARDING, PLAN } from "../ui/copy.js";
-import { count, since } from "../ui/format.js";
+import { MAIN, ONBOARDING, PLAN, SETTINGS } from "../ui/copy.js";
+import { count, outcomeOf, since } from "../ui/format.js";
 import { renderHexagon, updateHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button, textInput, checkbox, setButtonKind } from "../ui/controls.js";
 import { consentPanel, warnGlyph } from "../ui/bands.js";
 import { renderActionBar } from "../ui/chrome.js";
-import { dot, eyebrow } from "../ui/rows.js";
+import { dot, eyebrow, planActionRow } from "../ui/rows.js";
+// THE PLAN SCREEN'S OWN MODEL AND ROW GRAMMAR (#244), imported rather than rewritten: the actions
+// detour draws the same rows the Plan screen draws, and a second copy of "which mark, which side,
+// which outcome" is how two surfaces come to disagree about one plan. `summarise` brings #324's
+// rule with it — the counts are the daemon's, the rows are the window's.
+import { isDisplayDestructive, isGated, markOf, pathOf, summarise } from "./plan.js";
 // THE ONE PLACE THE `CAN'T BE SYNCED` GROUP IS DECIDED, imported rather than re-derived (#315).
 // It owns the membership rule (`remote_not_downloadable` is excluded — a Docs file is a real file
 // on Proton Drive, not a non-file in your folder), the noun for each reason token, and the counted
@@ -38,11 +43,27 @@ const CLI_MARK = 34;
 
 // ------------------------------------------------------------------------------- the model ----
 
+/** The two sub-screens the takeover can detour into (#244), and the only values `detour` takes. */
+export const DETOURS = ["skip", "actions"];
+
 /**
  * What the flow is showing. `checking` outranks a payload for the same reason `5a Checking` does:
  * the plan on screen is the old one.
+ *
+ * A DETOUR OUTRANKS EVERYTHING, and it is its own arm rather than a fall-through (#244). It is a
+ * place the person asked to be, so nothing the daemon does may move them off it; and left to fall
+ * through, a detour opened from step 1 would land in the `folders` arm and draw the step it was
+ * opened from. The step itself does not change while a detour is open — which is the whole answer
+ * to "return to the right step": there is no step to restore, only a sub-screen to close.
  */
-export function bodyOf({ step = "folders", dryRun = null, checking = false, error = null } = {}) {
+export function bodyOf({
+  step = "folders",
+  detour = null,
+  dryRun = null,
+  checking = false,
+  error = null,
+} = {}) {
+  if (DETOURS.includes(detour)) return detour;
   if (step !== "review") return "folders";
   if (checking) return "checking";
   if (error) return "failed";
@@ -177,13 +198,30 @@ function foldersBody(props) {
   grid.append(folderSide(props, 0), folderSide(props, 1));
   block.append(grid);
 
-  // The skip prompt keeps its sentence and loses its button: there is no skip-rules editor inside a
-  // takeover that cannot be dismissed, and leaving for Settings is a one-way door on a machine with
-  // no daemon (#244). The sentence's "or any time later in Settings" is the half that works today.
+  // The skip prompt has its button back (#244). It opens a sub-screen INSIDE the takeover rather
+  // than the Settings tab it names: leaving for Settings was the one-way door — on a machine with
+  // no daemon the main screen offers `Try again now` and nothing that resumes setup. The sentence
+  // keeps its "or any time later in Settings", which is still true and is now the second way in
+  // rather than the only one.
   const skip = fid(el("div", { class: "ob-skip" }), "skipPanel");
   skip.append(
     fid(warnGlyph(), "skipGlyph"),
     fid(el("div", { class: "ob-skip-text" }, ONBOARDING.skipHint), "skipText"),
+    // The frame's own button, at its own measurements: 12.5px in `--text-3` on a `--border`
+    // hairline, 9px radius, 8/15 padding (`9a Folders`, `div[1]/div[2]/button`).
+    fid(
+      button({
+        kind: "secondary",
+        size: "standard",
+        label: ONBOARDING.addSkipRules,
+        padding: "8px 15px",
+        radius: "var(--r-9)",
+        fontSize: "12.5px",
+        class: "ob-skip-button",
+        onClick: () => props.handlers?.onDetour?.("skip"),
+      }),
+      "skipButton",
+    ),
   );
   block.append(skip);
   return [title, block];
@@ -349,22 +387,44 @@ function reviewBody(props) {
   body.append(counts);
   const facts = factsBlock(summary, cannotSync);
   if (facts) body.append(facts);
-  // `See all N actions` has nowhere to open — the plan screen is a door the takeover covers (#244) —
-  // so the row is its timing line alone. `about 25 minutes to finish` is #229.
-  if (props.checkedAt != null) {
-    body.append(
-      fid(
-        el(
-          "div",
-          { class: "ob-timing" },
-          fid(
-            el("span", { class: "ob-timing-text" }, ONBOARDING.workedOutPlain(since(props.checkedAt))),
-            "timingText",
-          ),
+  // `See all N actions` opens the plan INSIDE the takeover (#244). The Plan screen itself is behind
+  // a footer door the takeover covers, and leaving for it would be the same one-way door the skip
+  // panel's button was; the sub-screen is the same list of rows with a `Back` into this step.
+  // `about 25 minutes to finish` is still #229.
+  //
+  // Drawn on the timing row whether or not the timing text is: the row is a flex line with a
+  // spacer, and a rehearsal that has not stamped `checkedAt` still has a plan to look at. `9a
+  // Review` draws both, which is the state the gate compares.
+  const actions = actionsThatHappen(summary);
+  if (props.checkedAt != null || actions != null) {
+    const timing = fid(el("div", { class: "ob-timing" }), "timing");
+    if (props.checkedAt != null) {
+      timing.append(
+        fid(
+          el("span", { class: "ob-timing-text" }, ONBOARDING.workedOutPlain(since(props.checkedAt))),
+          "timingText",
         ),
-        "timing",
-      ),
-    );
+      );
+    }
+    timing.append(fid(el("span", { class: "shell-spacer" }), "timingSpacer"));
+    if (actions != null) {
+      // The frame's measurements again (`9a Review`, `div[1]/div[2]/button`): 12px, 7/14, radius 8.
+      timing.append(
+        fid(
+          button({
+            kind: "secondary",
+            size: "standard",
+            label: ONBOARDING.seeAllActions(actions),
+            padding: "7px 14px",
+            radius: "var(--r-8)",
+            fontSize: "12px",
+            onClick: () => props.handlers?.onDetour?.("actions"),
+          }),
+          "timingButton",
+        ),
+      );
+    }
+    body.append(timing);
   }
   return [hero, body];
 }
@@ -396,6 +456,143 @@ function failedBody(error) {
   return [body];
 }
 
+// ------------------------------------------------------------------------ the two detours ----
+//
+// #244's answer, and the shape of it is the point: a sub-screen INSIDE the takeover, with a `Back`
+// that closes it. The takeover covers everything and cannot be dismissed, which is what makes it
+// reliable on a fresh machine — so a button that left for Settings or for the Plan door would be a
+// one-way door out of setup, on exactly the machine where nothing else can bring you back.
+//
+// Neither is drawn by any frame, so both are built from shapes the deck already has: the two steps'
+// own title block, S6's rule rows, S4's action rows. No slot is stamped in either.
+
+/** One heading pair, in the takeover's own type. */
+function detourTitle(title, sub) {
+  return el(
+    "div",
+    { class: "ob-title-block" },
+    el("div", { class: "ob-title" }, title),
+    el("div", { class: "ob-sub" }, sub),
+  );
+}
+
+/**
+ * `Add skip rules` — onboarding's own skip-rules editor.
+ *
+ * STAGED, NOT WRITTEN. The rules go into the config with the folder pair when `See what will
+ * happen` writes it (`app.js`'s `onNext`), which is what keeps the flow's one promise — nothing is
+ * written until you continue — and what makes the rehearsal on the next screen a rehearsal OF these
+ * rules. Settings' own tab is the other way in, and stays: the panel's sentence still names it.
+ */
+function skipBody(props) {
+  const rules = props.skipRules ?? [];
+  const body = el("div", { class: "ob-detour" });
+  const list = el("div", { class: "ob-rules" });
+  if (rules.length) {
+    for (const pattern of rules) {
+      const row = el("div", { class: "ob-rule" });
+      row.append(
+        el("span", { class: "ob-rule-pattern mono" }, pattern),
+        el("span", { class: "shell-spacer" }),
+        button({
+          kind: "secondary",
+          label: SETTINGS.remove,
+          padding: "6px 13px",
+          radius: "var(--r-8)",
+          fontSize: "12px",
+          onClick: () => props.handlers?.onRemoveSkipRule?.(pattern),
+        }),
+      );
+      list.append(row);
+    }
+  } else {
+    list.append(el("div", { class: "ob-rules-empty" }, ONBOARDING.noSkipRules));
+  }
+  // The add row. The FIELD'S VALUE IS THE FLOW'S, not the DOM's: this body is rebuilt on the ~2s
+  // status poll, so a draft living in the input would be retyped from empty twice a second — the
+  // caret bug S6 and step 1 both already carry a note about. `signatureOf` therefore leaves the
+  // draft out (so a keystroke does not rebuild) and keeps the rules in (so `Add` redraws the list).
+  const field = textInput({
+    value: props.skipDraft ?? "",
+    class: "input ob-rule-input",
+    placeholder: SETTINGS.addRulePlaceholder,
+    "aria-label": SETTINGS.addRulePlaceholder,
+    onInput: (e) => props.handlers?.onSkipDraft?.(e.target.value),
+  });
+  const add = el(
+    "div",
+    { class: "ob-rule-add" },
+    field,
+    button({
+      kind: "secondaryFilled",
+      label: SETTINGS.add,
+      padding: "9px 16px",
+      radius: "var(--r-10)",
+      fontSize: "12.5px",
+      onClick: () => props.handlers?.onAddSkipRule?.(),
+    }),
+  );
+  body.append(list, add, el("div", { class: "ob-detour-note" }, ONBOARDING.nothingUntilApproved));
+  return [detourTitle(ONBOARDING.skipTitle, SETTINGS.skipIntro), body];
+}
+
+/**
+ * `See all N actions` — the plan the review screen summarises, row by row.
+ *
+ * THE SAME N AS THE BUTTON. `actionsThatHappen` is the count both read, and the rows are filtered by
+ * the same fact: a `skip_unsupported` row is a thing that will NOT happen, so it is not in a list
+ * called every action and is not in the number above it. The window's own truncation is named at
+ * the foot, from the daemon's count, exactly as the Plan screen does it (#319/#324).
+ */
+export function actionsModel(dryRun) {
+  const report = dryRun?.report ?? null;
+  const model = summarise(report?.plan ?? [], report?.summary ?? null);
+  const rows = model.rows.filter((row) => row.action !== "skip_unsupported");
+  const total = actionsThatHappen(report?.summary) ?? rows.length;
+  return {
+    rows,
+    total,
+    conflicts: model.conflicts,
+    gated: model.gated.length,
+    // Against the SAME total the head claims, so the list and the sentence above it cannot describe
+    // different sets. Never negative: a plan whose summary undercounts its own rows draws no line.
+    hidden: Math.max(0, total - rows.length),
+  };
+}
+
+function actionsBody(props) {
+  const model = actionsModel(props.dryRun);
+  const rows = model.rows;
+  const total = model.total;
+  const body = el("div", { class: "ob-detour" });
+  const head = el(
+    "div",
+    { class: "ob-actions-head" },
+    eyebrow({ tone: "neutral", text: PLAN.everyAction }),
+    el("span", { class: "shell-spacer" }),
+    el("span", { class: "ob-actions-count" }, PLAN.actionSummary(total, model.conflicts)),
+  );
+  const list = el("div", { class: "ob-actions" });
+  for (const row of rows) {
+    const { glyph, tone } = markOf(row.action);
+    list.append(
+      planActionRow({
+        glyph,
+        tone,
+        path: pathOf(row),
+        outcome: outcomeOf(row.action, "plan"),
+        tinted: isDisplayDestructive(row.action),
+        destructive: isGated(row.action),
+      }),
+    );
+  }
+  if (model.hidden > 0) list.append(el("div", { class: "ob-actions-more" }, MAIN.andMore(model.hidden)));
+  body.append(head, list);
+  // `5a Plan`'s own second line, which is the same sentence about the same thing: this is a
+  // rehearsal, and it says how many of its rows cannot be undone — nought, on a first sync.
+  return [detourTitle(ONBOARDING.actionsTitle, PLAN.sub(model.gated)), body];
+}
+
 // -------------------------------------------------------------------------------- the screen ----
 
 /** What the last render was built from, so a poll can decide whether to build at all. */
@@ -414,6 +611,18 @@ function signatureOf(props) {
   // path is text the picker replaces (so it must rebuild) and the remote one is the field's own
   // value (so it must not).
   if (body === "folders") return JSON.stringify(["folders", props.local]);
+  // THE RULES AND NOT THE DRAFT, the same asymmetry one screen along (#244): `Add` has to redraw the
+  // list, and a keystroke in the add field must not — this body is rebuilt on the ~2s poll and a
+  // rebuilt `<input>` loses the caret and everything typed since the last one.
+  if (body === "skip") return JSON.stringify(["skip", props.skipRules ?? []]);
+  // The plan's rows, by the same rule the Plan screen's own signature uses.
+  if (body === "actions") {
+    return JSON.stringify([
+      "actions",
+      (props.dryRun?.report?.plan ?? []).map((row) => [row.path, row.destination_path, row.action]),
+      props.dryRun?.report?.summary?.total ?? null,
+    ]);
+  }
   if (body === "checking") return "checking";
   if (body === "failed") return JSON.stringify(["failed", props.error]);
   const s = props.dryRun?.report?.summary ?? null;
@@ -434,6 +643,10 @@ function signatureOf(props) {
 export function renderOnboarding(props = {}) {
   const nodes = (() => {
     switch (bodyOf(props)) {
+      case "skip":
+        return skipBody(props);
+      case "actions":
+        return actionsBody(props);
       case "checking":
         return checkingBody();
       case "failed":
@@ -469,6 +682,27 @@ export function onboardingBarShape(props = {}) {
 export function renderOnboardingBar(props = {}) {
   const body = bodyOf(props);
   const handlers = props.handlers ?? {};
+  // A DETOUR'S OWN ARM, before anything else and never by falling through (#244). `Back` here means
+  // "close this sub-screen", which is a different destination from step 2's `Back` (that one goes
+  // to step 1 and re-runs the rehearsal) — and the arm below would have given it the right SHAPE
+  // with the wrong handler, which is the kind of accident a fall-through hands you.
+  if (DETOURS.includes(body)) {
+    const bar = renderActionBar({
+      consequence: fid(
+        button({
+          kind: "quietOutlined",
+          size: "bar",
+          label: ONBOARDING.back,
+          padding: "11px 18px",
+          onClick: () => handlers.onCloseDetour?.(),
+        }),
+        "barBack",
+      ),
+      bottom: 18,
+    });
+    fid(bar.querySelector(".shell-spacer"), "barSpacer");
+    return fid(bar, "bar");
+  }
   if (body === "folders") {
     const ready = pairReady(props);
     const next = fid(

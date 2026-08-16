@@ -2982,6 +2982,26 @@ const PROPOSED_LOCAL = "~/ProtonDrive";
 const PROPOSED_REMOTE = "/Drive/RemoteFolder";
 
 let onboardingStep = "folders";
+/**
+ * The sub-screen the flow has open, or null (#244) — `skip` or `actions`.
+ *
+ * ORTHOGONAL TO THE STEP, deliberately. A detour is opened from a step and closed back onto it, and
+ * the step never moves while one is open — so "return to the point in setup you left" needs nothing
+ * remembered and cannot restore the wrong one. It is also why the header still reads `step 1 of 2`
+ * inside a detour: the step it belongs to is the step you are on.
+ */
+let onboardingDetour = null;
+/**
+ * The skip rules the flow has staged, or null before anything is staged (then the config's own).
+ *
+ * NOT WRITTEN UNTIL `See what will happen` WRITES THE PAIR. The flow promises nothing happens until
+ * you approve the plan, and the rehearsal on step 2 has to be a rehearsal OF these rules — which it
+ * is, because `run_dry_run` shells `proton-syncd --dry-run` against the file step 1 has just
+ * written.
+ */
+let onboardingSkipRules = null;
+/** The add field's draft. Module state, not the input's: this body is rebuilt on the ~2s poll. */
+let onboardingSkipDraft = "";
 let onboardingRoots = null; // { local, remote } — proposals until step 1 writes them
 let onboardingSeq = 0; // the rehearsal token, the same shape as the plan screen's
 let onboardingAnswered = null;
@@ -3016,6 +3036,19 @@ function onboardingStepNow() {
   const named = activeFixture()?.ui?.step;
   if (named === "review" || named === "folders") return named;
   return onboardingStep;
+}
+
+/**
+ * The skip rules as they stand: staged if anything has been staged, else the config's own.
+ *
+ * A FUNCTION, not a value captured per render — the same rule `onboardingRootsNow` states. And the
+ * config's own rather than an empty list, because the takeover is entered on `firstRun` too: a
+ * reachable daemon that has never synced HAS a config, and offering an empty list over it would
+ * stage the removal of every rule already in the file the moment anything else was added.
+ */
+function onboardingSkipRulesNow() {
+  if (onboardingSkipRules) return onboardingSkipRules;
+  return activeFixture()?.config?.exclude ?? configInfo?.exclude ?? [];
 }
 
 /** Which dialog the flow has open, if any. A fixture may name one directly. */
@@ -3126,6 +3159,9 @@ function onboardingProps() {
   }
   return {
     step,
+    detour: onboardingDetour,
+    skipRules: onboardingSkipRulesNow(),
+    skipDraft: onboardingSkipDraft,
     local: roots.local,
     remote: roots.remote,
     dryRun: onboardingAnswered === onboardingSeq ? onboardingDryRun : null,
@@ -3153,6 +3189,37 @@ function onboardingProps() {
           console.error("choose_folder failed:", error);
         }
       },
+      // The two sub-screens (#244). Opening one changes nothing else about the flow: the step is
+      // untouched, so closing it returns to exactly where it was opened from.
+      onDetour: (id) => {
+        onboardingDetour = id;
+        onboardingSkipDraft = "";
+        render();
+      },
+      onCloseDetour: () => {
+        onboardingDetour = null;
+        onboardingSkipDraft = "";
+        render();
+      },
+      onSkipDraft: (value) => {
+        // NO RENDER. The field is a live `<input>` and this body is rebuilt on the ~2s poll — a
+        // render per keystroke would rebuild the field under the caret. The draft is read back on
+        // the next rebuild, and `Add` is what makes it visible.
+        onboardingSkipDraft = value;
+      },
+      onAddSkipRule: () => {
+        const pattern = onboardingSkipDraft.trim();
+        // A duplicate is not an error and not a second row — S6's own rule for the same field.
+        if (pattern && !onboardingSkipRulesNow().includes(pattern)) {
+          onboardingSkipRules = [...onboardingSkipRulesNow(), pattern];
+        }
+        onboardingSkipDraft = "";
+        render();
+      },
+      onRemoveSkipRule: (pattern) => {
+        onboardingSkipRules = onboardingSkipRulesNow().filter((p) => p !== pattern);
+        render();
+      },
       onNext: async () => {
         if (onboardingStarting) return;
         onboardingStarting = true;
@@ -3160,7 +3227,13 @@ function onboardingProps() {
           // The pair has to be ON DISK before the rehearsal: `run_dry_run` shells
           // `proton-syncd --dry-run`, which reads the config file and not this screen.
           const pair = onboardingRootsNow();
-          await api.writeConfig({ local_root: pair.local, remote_root: pair.remote });
+          // THE SKIP RULES GO WITH IT, and only when they were changed (#244). `write_config` edits
+          // the TOML in place and a field sent as `Some` is a key written, so sending an unchanged
+          // list would materialise an `exclude = []` line in a file that never had one — the same
+          // promise `configUpdate` keeps on the Settings screen.
+          const update = { local_root: pair.local, remote_root: pair.remote };
+          if (onboardingSkipRules) update.exclude = onboardingSkipRules;
+          await api.writeConfig(update);
           await refreshConfig();
           onboardingStep = "review";
           onboardingSeq += 1;
@@ -3311,6 +3384,12 @@ function onboardingDialogContent(id) {
 function resetOnboardingFlow() {
   onboardingStage = null;
   onboardingStep = "folders";
+  // WITH THE STEP, because a detour is a place inside one (#244): a later re-entry must open at
+  // step 1 and not inside a sub-screen of the flow that ended. The staged rules go for the same
+  // reason the roots do — they were written when the pair was, and a re-entry is a new decision.
+  onboardingDetour = null;
+  onboardingSkipRules = null;
+  onboardingSkipDraft = "";
   onboardingRoots = null;
   onboardingSeq += 1;
   onboardingAnswered = null;

@@ -799,11 +799,11 @@ export const KNOWN_DEVIATIONS = [
   },
   {
     frame: "9a Review",
-    key: "div[1]/div[2]",
-    props: ["box.h"],
-    detail: "31 vs 14",
-    issue: "#244",
-    why: "the same row without `See all 471 actions`: the action list is the Plan screen, behind a door the takeover covers",
+    key: "div[1]/div[2]/span[1]",
+    props: ["box.w"],
+    detail: "467.58 vs 665.58",
+    issue: "#229",
+    why: "the same 198px, on the other side of the row: the spacer between the timing line and `See all 471 actions` takes exactly the width the missing estimate does not. The button itself (`div[1]/div[2]/button`) is drawn and asserted since #244",
   },
   {
     frame: "9a First sync",

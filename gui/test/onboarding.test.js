@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  actionsModel,
   bodyOf,
   actionsThatHappen,
   pairReady,
@@ -257,4 +258,95 @@ test("a FAILED first sync on a machine that has never synced is not `waiting` fo
   const failed = reply({ reconcile_seq: 1, last_sync_epoch_secs: null, last_error: "not logged in" });
   assert.equal(mergeOutcomeOf(failed, null), "failed");
   assert.equal(mergeOutcomeOf(failed, 0), "failed");
+});
+
+// ---- the two sub-screens (#244) ----------------------------------------------------------------
+
+test("a detour is a body of its own and outranks everything the daemon does", () => {
+  // The takeover covers everything and cannot be dismissed, so `Add skip rules` and
+  // `See all N actions` open INSIDE it. A detour is a place someone asked to be: no poll, no
+  // rehearsal and no failure may move them off it.
+  assert.equal(bodyOf({ step: "folders", detour: "skip" }), "skip");
+  assert.equal(bodyOf({ step: "review", detour: "actions", dryRun: report() }), "actions");
+  assert.equal(bodyOf({ step: "review", detour: "actions", checking: true }), "actions");
+  assert.equal(bodyOf({ step: "review", detour: "skip", error: "boom" }), "skip");
+});
+
+test("closing a detour returns to the step it was opened from, because the step never moved", () => {
+  // The whole reason `detour` is orthogonal to `step`: there is nothing to restore. The same props
+  // with the detour cleared are the step's own props.
+  assert.equal(bodyOf({ step: "folders", detour: null }), "folders");
+  assert.equal(bodyOf({ step: "review", detour: null, dryRun: report() }), "review");
+  assert.equal(bodyOf({ step: "review", detour: null, checking: true }), "checking");
+});
+
+test("an unknown detour draws the step, not a blank window", () => {
+  // A NAMED SET, not "anything truthy". `renderOnboarding` switches on this string and its default
+  // arm is step 1 — so a value nothing builds a body for would draw step 1 under a `Back` bar with
+  // no way forward. Both readers key on `DETOURS`, so neither can be reached with a value the other
+  // does not know.
+  for (const bogus of ["settings", "plan", true, 1, ""]) {
+    assert.equal(bodyOf({ step: "review", detour: bogus, dryRun: report() }), "review", String(bogus));
+  }
+});
+
+test("the footer rebuilds when a detour opens, or `See what will happen` stays on screen", () => {
+  // `onboardingBarShape` is what app.js compares to decide whether to leave the bar alone. A detour
+  // carries `Back` and nothing else, so a shape that missed it would leave the previous step's
+  // primary button under a sub-screen — live, and doing the previous step's job.
+  const step = { step: "folders", local: "~/ProtonDrive", remote: "/Drive/RemoteFolder" };
+  assert.notEqual(onboardingBarShape(step), onboardingBarShape({ ...step, detour: "skip" }));
+  assert.notEqual(
+    onboardingBarShape({ ...step, detour: "skip" }),
+    onboardingBarShape({ ...step, detour: "actions" }),
+  );
+});
+
+test("the action list shows the actions its own heading counts, and nothing else", () => {
+  // `See all 471 actions` draws `total - skipped_unsupported`, so the list behind it must not draw
+  // the skipped rows either: a `skip_unsupported` row is a thing that will NOT happen, and a list
+  // called every action with three more rows than its heading claims is the #324 mixture again.
+  const plan = [
+    { path: "a.txt", action: "upload", destination_path: null },
+    { path: "b.txt", action: "download", destination_path: null },
+    { path: "docs/spec.gdoc", action: "skip_unsupported", destination_path: null },
+  ];
+  const model = actionsModel({
+    report: { plan, summary: summary({ total: 3, skipped_unsupported: 1 }) },
+  });
+  assert.equal(model.total, 2);
+  assert.deepEqual(
+    model.rows.map((row) => row.path),
+    ["a.txt", "b.txt"],
+  );
+  assert.equal(model.hidden, 0);
+});
+
+test("a windowed plan names what it is not showing, from the daemon's own count", () => {
+  // The daemon's `plan` verb bounds its rows (`PLAN_ACTIONS_*`) while the summary counts the whole
+  // plan, so the list is a window and says so — the same `+n more` line, sized the same way, as the
+  // Plan screen's (#319/#324).
+  const plan = Array.from({ length: 500 }, (_, i) => ({
+    path: `bulk/${i}.txt`,
+    action: "upload",
+    destination_path: null,
+  }));
+  const model = actionsModel({
+    report: { plan, summary: summary({ total: 12_480, skipped_unsupported: 0, conflicts: 400 }) },
+  });
+  assert.equal(model.total, 12_480);
+  assert.equal(model.rows.length, 500);
+  assert.equal(model.hidden, 11_980);
+  // And the head's conflict count is the plan's, not the window's — there is no conflict row in
+  // hand at all.
+  assert.equal(model.conflicts, 400);
+});
+
+test("a plan nobody has fetched yet draws an empty list rather than throwing", () => {
+  // Unreachable from the button (it is drawn only once `actionsThatHappen` has an answer), and the
+  // detour survives a re-check that clears the payload underneath it.
+  const model = actionsModel(null);
+  assert.deepEqual(model.rows, []);
+  assert.equal(model.total, 0);
+  assert.equal(model.hidden, 0);
 });

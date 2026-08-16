@@ -1041,6 +1041,14 @@ export const ONBOARDING = {
   skipHint:
     "You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.",
   addSkipRules: "Add skip rules",
+  // THE TWO SUB-SCREENS THE TAKEOVER OPENS (#244). No frame draws either — the design has the two
+  // buttons and no destination for them — so the headings are written rather than measured, and
+  // everything else on both screens is borrowed from a surface the deck does draw: S6's skip tab
+  // (`skipIntro`, `add`, `remove`, `addRulePlaceholder`) and S4's plan list (`everyAction`,
+  // `actionSummary`, `andMore`).
+  skipTitle: "What should it skip?",
+  noSkipRules: "No rules yet — everything in the folder syncs.",
+  actionsTitle: "Everything the first sync will do",
   nothingUntilApproved: "Nothing is copied or changed until you approve the plan.",
   seeWhatHappens: "See what will happen",
 

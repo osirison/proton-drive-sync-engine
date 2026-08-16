@@ -104,6 +104,11 @@
   line-height: 1.5;
   color: var(--text-3);
 }
+/* `flex-shrink: 0` is the frame's own (`9a Folders`, `div[1]/div[2]/button`); the other two are the
+   flex initials it leaves at their defaults. */
+.ob-skip-button {
+  flex: none;
+}
 
 /* ------------------------------------------------------------- step 2 · nothing deleted ---- */
 
@@ -221,6 +226,87 @@
   align-items: center;
   gap: 12px;
   margin-top: 20px;
+}
+
+/* ------------------------------------------------------- the two sub-screens (#244) -------- */
+
+/* Neither is drawn by any frame, so every value here is borrowed from a surface that is: the
+   takeover's own 32px gutter, S6's rule rows, S4's action list. The block SCROLLS rather than
+   growing — the window is a fixed 764 and cannot, and a skip list of any length or a plan of five
+   thousand rows would otherwise push the footer off the bottom (02-shell.md's "found twice"). */
+.ob-detour {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  margin-top: 24px;
+  padding: 0 32px;
+}
+.ob-detour-note {
+  flex: none;
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--text-5);
+}
+
+.ob-rules {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-12);
+  background: var(--panel);
+}
+.ob-rule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ob-rule:last-child {
+  border-bottom: none;
+}
+.ob-rule-pattern {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.ob-rules-empty {
+  padding: 16px;
+  font-size: 12.5px;
+  color: var(--text-5);
+}
+.ob-rule-add {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  margin-top: 14px;
+}
+.ob-rule-input {
+  flex: 1;
+}
+
+.ob-actions-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+}
+.ob-actions-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+}
+.ob-actions {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ob-actions-more {
+  padding: 10px 2px 2px;
+  font-size: 12px;
+  color: var(--text-5);
 }
 .ob-timing-text {
   font-family: var(--font-mono);
