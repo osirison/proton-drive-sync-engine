@@ -1,14 +1,14 @@
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
-    EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals, LocalEntityState,
-    LocalFileState, LocalScan, PassKind, PassOutcomeKind, ScanOptions, SyncStatus, UnsyncableEntry,
-    WithheldDeletion, begin_pass, byte_totals_since, delete_delete_approval, file_events,
-    finish_pass, get_record, index_totals, insert_file_events, last_full_sweep, load_event_cursor,
-    load_existing_index, load_index, load_sole_event_cursor, load_unsyncable_items,
-    load_warm_start_count, load_withheld_deletions, local_directory_state, local_file_state,
-    mark_modified, matching_delete_approval, open_database, path_for_proton_id, prune_history,
-    purge_record, purge_subtree_records, recent_passes, replace_unsyncable_items,
+    EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals,
+    LocalEntityState, LocalFileState, LocalScan, PassKind, PassOutcomeKind, ScanOptions,
+    SyncStatus, UnsyncableEntry, WithheldDeletion, begin_pass, byte_totals_since,
+    delete_delete_approval, file_events, finish_pass, get_record, index_totals, insert_file_events,
+    last_full_sweep, load_event_cursor, load_existing_index, load_index, load_sole_event_cursor,
+    load_unsyncable_items, load_warm_start_count, load_withheld_deletions, local_directory_state,
+    local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
+    prune_history, purge_record, purge_subtree_records, recent_passes, replace_unsyncable_items,
     replace_withheld_deletions, reset_index_state, scan_local_entities_reusing_hashes,
     scan_local_tree, store_event_cursor, store_warm_start_count, upsert_delete_approval,
     upsert_record,
@@ -12947,6 +12947,202 @@ mod tests {
         );
         daemon.record_unsyncable(&skip(), &[], true);
         assert_eq!(daemon.reported_unsyncable.len(), 1);
+    }
+
+    /// A daemon over an empty local root, for the `record_unsyncable` merge tests.
+    fn unsyncable_test_daemon(
+        directory: &tempfile::TempDir,
+    ) -> (
+        PathBuf,
+        Daemon<RecordingProtonClient>,
+        Arc<Mutex<Vec<RecordedOperation>>>,
+    ) {
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, ops) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        (local_root, daemon, ops)
+    }
+
+    fn socket_entry(path: &str) -> UnsyncableEntry {
+        UnsyncableEntry {
+            relative_path: PathBuf::from(path),
+            reason: UnsyncableReason::LocalSocket,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_local_socket_reaches_the_standing_list_and_the_status_reply() {
+        // #232's whole point: the scan drops it, so nothing downstream can name it — the list has
+        // to be fed from the walk itself, not from the plan.
+        let directory = tempdir().expect("tempdir");
+        let (local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
+        let _listener = std::os::unix::net::UnixListener::bind(local_root.join("session.sock"))
+            .expect("socket");
+
+        daemon.reconcile_blocking().expect_clean("bootstrap");
+
+        assert_eq!(daemon.unsyncable.len(), 1, "{:?}", daemon.unsyncable);
+        assert_eq!(daemon.unsyncable[0].path, PathBuf::from("session.sock"));
+        assert_eq!(daemon.unsyncable[0].reason, UnsyncableReason::LocalSocket);
+        assert_eq!(
+            daemon.unsyncable[0].entity_kind,
+            EntityKind::File,
+            "the engine knows two kinds and this is not a directory it would descend into"
+        );
+        assert_eq!(
+            daemon.status_response("status").unsyncable,
+            daemon.unsyncable,
+            "and it rides the status payload a client reads"
+        );
+        assert_eq!(
+            load_unsyncable_items(&daemon.connection).expect("reload"),
+            daemon.unsyncable,
+            "persisted, so a restart that warm-starts does not re-hide it"
+        );
+    }
+
+    #[test]
+    fn a_local_reason_prunes_on_any_pass_while_a_remote_one_waits_for_a_full_sweep() {
+        // The asymmetry, stated as a test. A local skip is observed by the stat-walk, which every
+        // pass reaching the executor runs over the WHOLE tree — so its silence is evidence. A
+        // remote skip is absent from the baseline an incremental pass reconstructs from, so only a
+        // full-tree walk's silence is. Without the split, a deleted socket would sit on the list
+        // until a full sweep — which, with the periodic resync off by default and restarts warm-
+        // starting, is close to never.
+        let directory = tempdir().expect("tempdir");
+        let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
+        let remote_skip = vec![PlannedAction::skip_unsupported(
+            Path::new("Networth"),
+            EntityKind::File,
+            None,
+            UnsyncableReason::RemoteNotDownloadable,
+        )];
+
+        daemon.record_unsyncable(&remote_skip, &[socket_entry("session.sock")], true);
+        assert_eq!(daemon.unsyncable.len(), 2);
+
+        // An incremental pass that re-derives neither: it walked the local tree and did not find
+        // the socket, but its remote map cannot speak about the Docs node at all.
+        daemon.record_unsyncable(&[], &[], false);
+        assert_eq!(
+            daemon
+                .unsyncable
+                .iter()
+                .map(|item| item.path.display().to_string())
+                .collect::<Vec<_>>(),
+            vec!["Networth".to_owned()],
+            "the socket goes, the remote skip stays: {:?}",
+            daemon.unsyncable
+        );
+
+        daemon.record_unsyncable(&[], &[], true);
+        assert!(daemon.unsyncable.is_empty(), "{:?}", daemon.unsyncable);
+    }
+
+    #[test]
+    fn an_unknown_reason_from_a_newer_build_waits_for_the_pass_that_walks_both_sides() {
+        // A token this build cannot place could have come from either producer, so the only pass
+        // whose silence is evidence is the one that walked both. Dropping it on an incremental
+        // pass would blank a newer daemon's report every 30 seconds after a downgrade.
+        let directory = tempdir().expect("tempdir");
+        let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
+        daemon.unsyncable = vec![UnsyncableItem {
+            path: PathBuf::from("mystery"),
+            entity_kind: EntityKind::File,
+            reason: UnsyncableReason::Other("local_wormhole".to_owned()),
+            first_seen_epoch_secs: 1,
+        }];
+
+        daemon.record_unsyncable(&[], &[], false);
+        assert_eq!(daemon.unsyncable.len(), 1, "an incremental pass keeps it");
+
+        daemon.record_unsyncable(&[], &[], true);
+        assert!(daemon.unsyncable.is_empty(), "a full sweep drops it");
+    }
+
+    #[test]
+    fn a_local_entry_keeps_the_epoch_it_was_first_seen_at() {
+        let directory = tempdir().expect("tempdir");
+        let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
+
+        daemon.record_unsyncable(&[], &[socket_entry("session.sock")], false);
+        let first_seen = daemon.unsyncable[0].first_seen_epoch_secs;
+        daemon.unsyncable[0].first_seen_epoch_secs = first_seen.saturating_sub(600);
+        let expected = daemon.unsyncable[0].first_seen_epoch_secs;
+
+        daemon.record_unsyncable(&[], &[socket_entry("session.sock")], true);
+        assert_eq!(
+            daemon.unsyncable[0].first_seen_epoch_secs, expected,
+            "'how long has this been stuck' must not restart every pass"
+        );
+    }
+
+    #[test]
+    fn a_path_the_scan_still_reports_survives_a_delete_planned_for_the_file_it_replaced() {
+        // Replace a synced file with a socket and one pass holds two true statements about one
+        // path: the planner sees the file gone and plans a delete, the scan sees the socket. The
+        // supersession rule means "this path became syncable", which is not what happened, so
+        // direct observation this pass outranks it. Visible in the FIRST-SEEN epoch: dropping the
+        // carried entry and re-adding the observed one restarts the age, so "stuck since Tuesday"
+        // would read as "stuck since just now" on every pass the delete is re-planned — and while
+        // the deletion is withheld awaiting approval, that is every pass.
+        let directory = tempdir().expect("tempdir");
+        let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
+
+        daemon.record_unsyncable(&[], &[socket_entry("session.sock")], true);
+        daemon.unsyncable[0].first_seen_epoch_secs -= 600;
+        let first_seen = daemon.unsyncable[0].first_seen_epoch_secs;
+
+        daemon.record_unsyncable(
+            &[PlannedAction::new(
+                Path::new("session.sock"),
+                SyncAction::RemoteDelete,
+                EntityKind::File,
+                None,
+            )],
+            &[socket_entry("session.sock")],
+            true,
+        );
+
+        assert_eq!(daemon.unsyncable.len(), 1, "{:?}", daemon.unsyncable);
+        assert_eq!(daemon.unsyncable[0].reason, UnsyncableReason::LocalSocket);
+        assert_eq!(
+            daemon.unsyncable[0].first_seen_epoch_secs, first_seen,
+            "the entry was carried, not re-created"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_deleted_socket_leaves_the_list_on_the_next_pass_that_plans_anything() {
+        // End to end over a real filesystem, because the freshness argument is about which passes
+        // run the stat-walk — not about what `record_unsyncable` does when handed a list.
+        let directory = tempdir().expect("tempdir");
+        let (local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
+        let socket_path = local_root.join("session.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("socket");
+
+        daemon.reconcile_blocking().expect_clean("bootstrap");
+        assert_eq!(daemon.unsyncable.len(), 1);
+
+        drop(listener);
+        fs::remove_file(&socket_path).expect("remove socket");
+        daemon.reconcile_blocking().expect_clean("second pass");
+
+        assert!(
+            daemon.unsyncable.is_empty(),
+            "the walk no longer finds it: {:?}",
+            daemon.unsyncable
+        );
+        assert!(
+            load_unsyncable_items(&daemon.connection)
+                .expect("reload")
+                .is_empty(),
+            "and the shorter list is persisted"
+        );
     }
 
     fn event_config(directory: &Path, local_root: &Path) -> DaemonConfig {

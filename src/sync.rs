@@ -2707,16 +2707,56 @@ mod tests {
         );
     }
 
-    // #232 will add local kinds (sockets, symlinks, devices) to this vocabulary. A derived enum
-    // would make the first new token fail an older client's whole status reply, so an unknown one
-    // must survive verbatim instead.
+    // #232 added the local kinds (sockets, symlinks, devices) this test used to use as its
+    // *unknown* example — which is the point: a derived enum would have made that addition fail an
+    // older client's whole status reply, and instead it parses verbatim there. The example moves on
+    // to a token no build has yet defined.
     #[test]
     fn an_unknown_reason_token_survives_instead_of_failing_the_document() {
-        let json = r#""local_socket""#;
+        let json = r#""local_wormhole""#;
         let reason: UnsyncableReason = serde_json::from_str(json).expect("parses");
-        assert_eq!(reason, UnsyncableReason::Other("local_socket".to_owned()));
+        assert_eq!(reason, UnsyncableReason::Other("local_wormhole".to_owned()));
         assert_eq!(serde_json::to_string(&reason).expect("serialize"), json);
-        assert_eq!(reason.as_str(), "local_socket");
+        assert_eq!(reason.as_str(), "local_wormhole");
+        // Unknown, so nothing can say where it came from — and an origin that cannot be placed is
+        // pruned only by the one pass that walks both sides.
+        assert_eq!(reason.origin(), UnsyncableOrigin::Unknown);
+    }
+
+    #[test]
+    fn every_reason_token_round_trips_and_declares_an_origin() {
+        // The wire token IS the storage key (`unsyncable_items.reason`), so a token that does not
+        // round-trip silently rewrites a persisted row into `Other` on the next load. And a reason
+        // with no origin has no rule for when it may be dropped by absence (#232).
+        let all = [
+            (
+                UnsyncableReason::UnrepresentablePath,
+                UnsyncableOrigin::Local,
+            ),
+            (
+                UnsyncableReason::RemoteNotDownloadable,
+                UnsyncableOrigin::Remote,
+            ),
+            (UnsyncableReason::LocalSymlink, UnsyncableOrigin::Local),
+            (UnsyncableReason::LocalSocket, UnsyncableOrigin::Local),
+            (UnsyncableReason::LocalFifo, UnsyncableOrigin::Local),
+            (UnsyncableReason::LocalDevice, UnsyncableOrigin::Local),
+            (UnsyncableReason::LocalSpecialFile, UnsyncableOrigin::Local),
+        ];
+        for (reason, origin) in all {
+            assert_eq!(
+                UnsyncableReason::from_token(reason.as_str()),
+                reason,
+                "{} must survive a storage round trip",
+                reason.as_str()
+            );
+            assert_eq!(reason.origin(), origin, "{}", reason.as_str());
+            assert!(
+                !reason.describe().is_empty(),
+                "{} must say what the user would have to change",
+                reason.as_str()
+            );
+        }
     }
 
     // #270: the remote listing arrives as JSON, so a non-UTF-8 filename comes back lossy and the
