@@ -671,10 +671,12 @@ fn payload_from_report(report: DryRunReport, token: Option<String>) -> DryRunPay
 /// the transport bail-out below, so the only way to wait for ever is a socket that keeps answering
 /// while the daemon never runs the pass, which cannot happen.
 ///
-/// **And deliberately no paused bail-out.** `proton-sync`'s `poll_until` bails on
-/// `paused && !syncing`, which is right for `syncnow` because a paused daemon genuinely skips that
-/// pass. Here it would be a *false positive*: `ControlCommand::Plan` refuses a paused daemon at the
-/// ack (handled above), and a pause landing after that ack does **not** cancel the booked pass —
+/// **And deliberately no paused bail-out.** `proton-sync`'s `watch_syncnow` bails on
+/// `paused && !syncing`, which is right *there* because a paused `syncnow` is never sealed —
+/// `reconcile_if_needed` early-returns without bumping `reconcile_seq`, so only the client can end
+/// that wait. A plan request is always sealed, so the same rule here is a *false positive*:
+/// `ControlCommand::Plan` refuses a paused daemon at the ack (handled above), and a pause landing
+/// after that ack does **not** cancel the booked pass —
 /// `LoopCommand::PlanNow` goes straight to `Daemon::plan_now`, which has no pause check, so the
 /// inert rehearsal still runs and still seals (daemon guard:
 /// `a_plan_pass_booked_before_a_pause_still_runs_and_seals`). Between that ack and `plan_now`'s

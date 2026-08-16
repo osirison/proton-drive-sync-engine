@@ -1465,8 +1465,21 @@ async fn watch_apply(
 }
 
 /// The shared wait: poll `plan_result` on the `syncnow` cadence until `ready` says the answer has
-/// landed, bailing out on a pause that will never run the pass and on
-/// [`WAIT_ERROR_LIMIT`] consecutive transport failures.
+/// landed, bailing out only on [`WAIT_ERROR_LIMIT`] consecutive transport failures.
+///
+/// **Deliberately no paused bail-out, unlike [`watch_syncnow`].** That is not an inconsistency —
+/// the two waits watch counters with opposite guarantees. A `syncnow` skipped by a pause is never
+/// sealed: `reconcile_if_needed` early-returns without bumping `reconcile_seq`, so its target is
+/// unreachable and only the client can end the wait. Every `plan`/`apply` request, by contrast, is
+/// *always* sealed — a plan booked before a pause still runs (`plan_now` has no pause check), an
+/// apply overtaken by one is sealed `Failed` by `discard_queued_apply_for_pause`, and a daemon that
+/// died stops answering and trips `WAIT_ERROR_LIMIT`. So a pause here proves nothing about this
+/// request, and bailing on it was a **false positive**: between the `plan` ack and `plan_now`'s
+/// `syncing.store(true)` a poller reads `paused && !syncing` for a pass that is about to run, and
+/// would report "paused before the pass ran" for a plan that then completes and seals normally. For
+/// `apply` it raced the daemon's own typed verdict and answered with a sentence this client made up
+/// instead — exactly the #103 shape. Guard:
+/// `a_pause_mid_wait_does_not_end_a_plan_or_apply_wait`.
 async fn poll_until(
     socket_path: &Path,
     request: impl Fn() -> ControlRequest,
@@ -1482,14 +1495,6 @@ async fn poll_until(
                 consecutive_errors = 0;
                 if ready(&response) {
                     break Ok(response);
-                }
-                // Paused with nothing running: the daemon skips scheduled work while paused, so
-                // the pass will never start. Stop rather than spin (the `syncnow` bail-out).
-                if response.paused && !response.syncing {
-                    break Err(
-                        "syncing was paused before the scheduled pass ran; resume and retry"
-                            .to_owned(),
-                    );
                 }
                 spinner.tick(&started, &response);
             }
@@ -2193,6 +2198,94 @@ mod tests {
         assert_eq!(
             missing_history_message("daemon status", None),
             "This daemon does not report per-file activity."
+        );
+    }
+
+    /// Serves one canned [`ControlResponse`] per connection, in order, on a real control socket —
+    /// the smallest fake daemon [`poll_until`] cannot tell from the real one.
+    async fn serve_scripted(socket_path: PathBuf, replies: Vec<ControlResponse>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        for reply in replies {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read request");
+            let mut stream = reader.into_inner();
+            let mut body = serde_json::to_vec(&reply).expect("serialize");
+            body.push(b'\n');
+            stream.write_all(&body).await.expect("write response");
+            stream.flush().await.expect("flush");
+        }
+    }
+
+    /// A pause **does not** end a `plan`/`apply` wait, and must not be "made consistent" with
+    /// [`watch_syncnow`], which does bail on one.
+    ///
+    /// The two watch counters with opposite guarantees: a paused `syncnow` is never sealed (no
+    /// `reconcile_seq` bump), so only the client can end that wait, while every plan/apply request
+    /// is always sealed. Bailing here was a false positive — a plan booked before a pause still
+    /// runs (`plan_now` has no pause check), so the poller must keep asking until the seal lands
+    /// rather than report a pause for a plan that completes. The scripted daemon below is paused
+    /// with nothing running on the first poll and answers on the second, which is exactly the
+    /// ack→`syncing.store(true)` window.
+    #[test]
+    fn a_pause_mid_wait_does_not_end_a_plan_or_apply_wait() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let socket_path = directory.path().join("control.sock");
+
+        let paused_and_idle = ControlResponse {
+            paused: true,
+            syncing: false,
+            plan: None,
+            ..blank_response()
+        };
+        // The seal. `Failed` is the smallest one that still counts as an answer to generation 1
+        // (see `plan_generation`), so the test needs no fixture plan to assert the rule.
+        let sealed = ControlResponse {
+            paused: true,
+            syncing: false,
+            plan: Some(PlanOutcome::Failed {
+                plan_seq: 1,
+                error: "the walk failed".to_owned(),
+            }),
+            ..blank_response()
+        };
+
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let server = tokio::spawn(serve_scripted(
+                    socket_path.clone(),
+                    vec![paused_and_idle, sealed],
+                ));
+                // Bounded, and the server is aborted rather than awaited: a regression here must
+                // FAIL, not hang. Two polls at `WAIT_POLL_INTERVAL` sit far inside this, while a
+                // wait that ended early leaves the scripted daemon holding a reply nobody asks for.
+                let outcome = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    poll_until(
+                        &socket_path,
+                        || ControlRequest::new(ControlCommand::PlanResult),
+                        |response| {
+                            plan_generation(response.plan.as_ref()).is_some_and(|seq| seq >= 1)
+                        },
+                    ),
+                )
+                .await;
+                server.abort();
+                outcome
+            });
+
+        let response = outcome
+            .expect("the wait must finish well inside the timeout")
+            .expect("a pause mid-wait must not end the wait");
+        assert_eq!(
+            plan_generation(response.plan.as_ref()),
+            Some(1),
+            "the wait must return the daemon's own sealed verdict, not a pause the client inferred"
         );
     }
 }
