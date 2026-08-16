@@ -555,14 +555,19 @@ fn plan_row_preimage(action: &PlannedAction) -> Vec<u8> {
         row.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         row.extend_from_slice(bytes);
     }
+    // A present field is `len(1 + bytes)` · `PRESENT_FIELD` · `bytes`, written straight into `row`
+    // rather than through a tagged temporary — same bytes, one less allocation per optional field
+    // per row, and the token is recomputed for every plan and every apply. Byte-for-byte identical
+    // to the tagged form by construction: the length prefix counts the tag, exactly as `field`
+    // would have counted it. Pinned by `a_plan_row_preimage_is_length_prefixed_and_presence_tagged`
+    // so a future re-encoding has to be a decision rather than a slip.
     fn optional(row: &mut Vec<u8>, bytes: Option<&[u8]>) {
         match bytes {
             None => field(row, &[ABSENT_FIELD]),
             Some(bytes) => {
-                let mut tagged = Vec::with_capacity(bytes.len() + 1);
-                tagged.push(PRESENT_FIELD);
-                tagged.extend_from_slice(bytes);
-                field(row, &tagged);
+                row.extend_from_slice(&((bytes.len() + 1) as u64).to_le_bytes());
+                row.push(PRESENT_FIELD);
+                row.extend_from_slice(bytes);
             }
         }
     }
@@ -5166,6 +5171,48 @@ mod tests {
         let mut other_id = base;
         other_id.remote_id = Some("x".to_owned());
         assert_ne!(token(&empty_id), token(&other_id));
+    }
+
+    /// The row preimage's **exact bytes**, because the token is plan identity and the encoding is
+    /// the only thing standing between two different plans and one token.
+    ///
+    /// The other token tests pin *behaviour* — absent ≠ empty, order independence, raw path bytes —
+    /// and a uniform re-encoding passes all of them while changing every token. This pins the
+    /// layout itself: each field is a `u64` little-endian length followed by that many bytes, and
+    /// an optional field spends one of those bytes on `ABSENT_FIELD`/`PRESENT_FIELD` *inside* the
+    /// counted run. So writing a present field straight into the row and building a tagged
+    /// temporary first are the same bytes, and any future field, tag or ordering change has to be a
+    /// deliberate decision — with `PLAN_TOKEN_VERSION` bumped — rather than a slip nothing notices.
+    #[test]
+    fn a_plan_row_preimage_is_length_prefixed_and_presence_tagged() {
+        let mut action =
+            PlannedAction::new(Path::new("a"), SyncAction::Download, EntityKind::File, None);
+        action.remote_id = Some("i".to_owned());
+
+        let len = |n: u64| n.to_le_bytes().to_vec();
+        let expected: Vec<u8> = [
+            len(8), // "download"
+            b"download".to_vec(),
+            len(4), // "file"
+            b"file".to_vec(),
+            len(1), // path "a"
+            b"a".to_vec(),
+            len(1), // destination_path: absent
+            vec![ABSENT_FIELD],
+            len(1), // conflict_path: absent
+            vec![ABSENT_FIELD],
+            len(2), // remote_id: present, tag counted in the length
+            vec![PRESENT_FIELD, b'i'],
+            len(1), // sidecar_from_local_copy: false
+            vec![0],
+            len(1), // skip_reason: absent
+            vec![ABSENT_FIELD],
+            len(1), // size_bytes: absent
+            vec![ABSENT_FIELD],
+        ]
+        .concat();
+
+        assert_eq!(plan_row_preimage(&action), expected);
     }
 
     /// Two paths differing only in invalid UTF-8 collapse to one string on the wire (#61/#300), so
