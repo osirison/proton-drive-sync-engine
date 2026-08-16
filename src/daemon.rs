@@ -1741,6 +1741,7 @@ impl<C: ProtonClient> Daemon<C> {
 
     async fn reconcile_if_needed(&mut self) -> AppResult<()> {
         if self.is_paused() {
+            self.discard_queued_apply_for_pause();
             return Ok(());
         }
         match self.reconcile().await {
@@ -1762,6 +1763,30 @@ impl<C: ProtonClient> Daemon<C> {
         // The pass is over either way; never let a stale "downloading X" outlive it.
         self.shared.clear_activity();
         result
+    }
+
+    /// Drops an apply that was booked and then overtaken by a pause, and seals it as failed.
+    ///
+    /// **A latch is the wrong shape for a destructive request.** `resync` and `reset_index` survive
+    /// a pause because they are latches for what the *next* pass should do, and the next pass is
+    /// the user's own resume. An apply is different in two ways: it performs deletions, and it
+    /// authorises a plan the user reviewed minutes ago. Letting it sit through a pause would fire a
+    /// destructive side effect on some later interval tick, hours after the user paused precisely
+    /// to stop things happening — and `reconcile_if_needed`'s early return means nothing would seal
+    /// it in the meantime either.
+    ///
+    /// Sealed as `Failed` rather than silently dropped: a booked request that nothing answers is a
+    /// client polling for ever, and "the apply did not happen" is exactly what `Failed` says. The
+    /// plan itself is untouched, so resuming and applying the same token again just works.
+    fn discard_queued_apply_for_pause(&mut self) {
+        let PassIntent::Apply { apply_seq, .. } = self.shared.take_apply_request() else {
+            return;
+        };
+        info!("syncing was paused before the scheduled apply ran; it was not applied");
+        self.shared.seal_apply_pass(ApplyOutcome::Failed {
+            apply_seq,
+            error: "syncing was paused before the apply ran; nothing was applied".to_owned(),
+        });
     }
 
     /// One plan-only pass (#100/#192/#209): the rehearsal, run on the main loop so the existing
@@ -17125,6 +17150,51 @@ mod tests {
         }
         // And the intent is gone: the next pass is an ordinary sync, not a second attempt.
         assert_eq!(daemon.pass_intent, PassIntent::Sync);
+    }
+
+    /// An apply overtaken by a pause is cancelled, not latched: a destructive request must not fire
+    /// on some later interval tick, hours after the user paused to stop things happening.
+    #[test]
+    fn a_pause_cancels_an_apply_it_overtook_rather_than_latching_it() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = plan_verb_daemon(&directory);
+        daemon.shared.book_plan_request();
+        run_plan_pass(&mut daemon);
+        let plan = computed_plan(&daemon.shared);
+        let apply_seq = daemon
+            .shared
+            .book_apply_request(&plan.token, false)
+            .expect("token accepted");
+        // The pause lands after the ack, so the loop reaches its paused early-return.
+        daemon.shared.paused.store(true, Ordering::SeqCst);
+
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(daemon.reconcile_if_needed())
+            .expect("a paused tick is not an error");
+
+        // Cancelled and sealed, so the client stops polling…
+        match daemon.shared.apply_outcome().expect("verdict") {
+            ApplyOutcome::Failed {
+                apply_seq: sealed, ..
+            } => assert_eq!(sealed, apply_seq),
+            other => panic!("expected a cancelled apply, got {other:?}"),
+        }
+        assert!(!daemon.config.local_root.join("remote-only.txt").exists());
+
+        // …and resuming does NOT fire it: the intent is gone, so the next pass is an ordinary sync.
+        daemon.shared.paused.store(false, Ordering::SeqCst);
+        assert_eq!(daemon.shared.take_apply_request(), PassIntent::Sync);
+        // The plan itself survives, so the same token applies again once syncing resumes.
+        assert!(
+            daemon
+                .shared
+                .book_apply_request(&plan.token, false)
+                .is_some()
+        );
     }
 
     /// The events-mode idle fast-path returns before `execute_plan_and_commit`, so an apply that

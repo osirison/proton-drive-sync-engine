@@ -760,12 +760,13 @@ const planSides = (at) => ({
 /**
  * `5a Plan` — the plan that would destroy something.
  *
- * Two frame slots are deliberately undeclared: `div[2]/div/button` (`Leave it alone`) and
- * `div[4]/button[0]` (`Run it without the deletion`) both need the filtered apply (G3, #192), and
- * `06-plan.md` says hide a button rather than fake it — so neither is drawn nor mapped.
+ * One frame slot is deliberately undeclared: `div[2]/div/button` (`Leave it alone`). It reads two
+ * ways — drop this action and run the rest (the filtered apply, now landed) or refuse this deletion
+ * durably (#224, which the Deletions screen's `Keep it` owns) — and a button that means whichever
+ * the reader assumed is worse than one that is absent. `06-plan.md` says hide rather than fake.
  *
- * `run` is `button[1]`: with the frame's first button gone the app's button is still the frame's
- * second, and `button[0]` would compare a primary against a secondary.
+ * `Run it without the deletion` IS drawn since #192: `div[4]/button[0]`, the frame's first button,
+ * with `run` still `button[1]`.
  */
 const PLAN_FIDS = {
   titleRow: "div[0]",
@@ -803,6 +804,7 @@ const PLAN_FIDS = {
   gateField: "div[4]/div/input",
   gateWhy: "div[4]/div/span",
   barSpacer: "div[4]/span",
+  runWithout: "div[4]/button[0]",
   run: "div[4]/button[1]",
 };
 
@@ -838,8 +840,8 @@ const PLAN_SAFE_FIDS = {
 /**
  * `5a Checking` — the rehearsal in flight. The mark is the syncing construction with F2's `dryRun`
  * dash, so it carries a gradient `defs` subtree the other two states have none of.
- * `div[0]/div[3]` (`8,431 of 12,480 files`) is undeclared: neither half of it has a source
- * (G9 #209, G7 #207) and the app draws no node for it.
+ * `div[0]/div[3]` (`8,431 of 12,480 files`) is drawn since #209 gave the rehearsal a progress
+ * channel and #207 a denominator.
  */
 const PLAN_CHECKING_FIDS = {
   checking: "div[0]",
@@ -851,6 +853,7 @@ const PLAN_CHECKING_FIDS = {
   checkingMarkPath: (i) => `div[0]/svg/path[${i}]`,
   checkingTitle: "div[0]/div[1]",
   checkingSub: "div[0]/div[2]",
+  checkingProgress: "div[0]/div[3]",
   stop: "div[0]/button",
 
   footerNav: "div[1]",

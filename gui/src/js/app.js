@@ -1848,6 +1848,7 @@ function planProps() {
     error: planAnswered === planSeq ? planError : null,
     checking: ui?.checking ?? planAnswered !== planSeq,
     checkedAt: ui?.checkedAt ?? planCheckedAt,
+    progress: ui?.progress ?? planProgress(),
     handlers: {
       // A re-check keeps what it will replace until the replacement lands: the token moves (so the
       // screen draws `checking`, nothing stale) but the plan stays in hand for `Stop`. Focus follows
@@ -1887,11 +1888,66 @@ function planProps() {
       // where both outcomes are legible (syncing hero vs unreachable).
       onRun: async () => {
         await approvePlannedDeletions(planDryRun?.report?.plan ?? []);
-        await command(api.syncNow);
-        navigate("main");
+        await runReviewedPlan(false);
       },
+      // `Run it without the deletion` (#192). No approvals: the deletions are what is being left
+      // out, and approving them here would authorise on the Deletions screen exactly what this
+      // button says it is not doing.
+      onRunWithout: () => runReviewedPlan(true),
     },
   };
+}
+
+/**
+ * The `5a Checking` progress line's two numbers (#209), or `null` while nothing can say them.
+ *
+ * Both come off the status poll the shell already runs. The `kind` test is what makes them THIS
+ * rehearsal's: a plan pass publishes `PLAN_PASS_KIND` on its pass block, so a sync that happened to
+ * start while the screen was open cannot lend its `files_scanned` to a rehearsal's line.
+ */
+function planProgress() {
+  const reply = store.select.response();
+  const activity = reply?.activity ?? null;
+  if (activity?.pass?.kind !== "plan") return null;
+  if (typeof activity.files_scanned !== "number") return null;
+  return { scanned: activity.files_scanned, total: reply?.index_totals?.files ?? null };
+}
+
+/**
+ * Apply the plan the user just reviewed, by its token (#100), and act on the typed answer.
+ *
+ * The token is what makes this different from the `syncnow` it replaces: the daemon re-plans and
+ * runs the plan only if it is still the same plan. On a divergence nothing ran and the daemon holds
+ * a NEW plan, so the screen stays put and re-checks — `06-plan.md`: "if the plan changes while the
+ * gate is armed, clear the input", which a rebuild of the bar does by construction.
+ *
+ * Without a token (the `--dry-run` child path, i.e. onboarding before a daemon exists) there is
+ * nothing holding the plan to apply by name, so this falls back to the pre-#100 `syncnow`.
+ */
+async function runReviewedPlan(skipDestructive) {
+  const token = planDryRun?.token ?? null;
+  if (!token) {
+    await command(api.syncNow);
+    navigate("main");
+    return;
+  }
+  let outcome;
+  try {
+    outcome = await api.applyPlan(token, skipDestructive);
+  } catch (error) {
+    // A dead socket. Reported where every socket failure is legible.
+    console.error("apply failed:", error);
+    navigate("main");
+    return;
+  }
+  // Typed, never matched as prose (#103). `diverged` and `stale` are the two that keep the user
+  // here, because both mean "the plan you reviewed is not the plan any more".
+  if (outcome?.state === "diverged" || outcome?.state === "stale") {
+    planSeq += 1;
+    render();
+    return;
+  }
+  navigate("main");
 }
 
 /** A `start_service` asked for and not yet answered. Drives the main screen's busy button. */

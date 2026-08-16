@@ -47,8 +47,8 @@ pub mod wire {
     pub use proton_drive_sync_engine::daemon::MetricsSnapshot;
     pub use proton_drive_sync_engine::index::{EntityKind, FileEvent, FileRecord};
     pub use proton_drive_sync_engine::ipc::{
-        ControlCommand, ControlRequest, ControlResponse, PendingDeletion, RunningConfigInfo,
-        StatusHistoryEntry,
+        ApplyOutcome, ControlCommand, ControlRequest, ControlResponse, PLAN_PASS_KIND,
+        PendingDeletion, PlanOutcome, ReviewedPlan, RunningConfigInfo, StatusHistoryEntry,
     };
     pub use proton_drive_sync_engine::sync::{
         DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction, TransferDirection,

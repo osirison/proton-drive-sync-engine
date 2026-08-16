@@ -107,6 +107,11 @@ pub enum ControlCommand {
     /// With `skip_destructive` set this is #192's filtered apply: the reviewed plan minus its
     /// destructive rows.
     ///
+    /// **Not a latch.** `Resync` and `ResetIndex` survive a pause because they describe what the
+    /// next pass should do; an apply performs deletions under a review that is already minutes old,
+    /// so a pause that overtakes it *cancels* it ([`ApplyOutcome::Failed`]) rather than firing it
+    /// on some later tick. The plan is untouched, so resuming and applying the same token works.
+    ///
     /// Wire value `"apply"`; an older daemon rejects it as an unknown command.
     Apply,
 }

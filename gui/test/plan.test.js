@@ -14,6 +14,8 @@ import assert from "node:assert/strict";
 import {
   GATE_WORD,
   bodyOf,
+  checkingProgressText,
+  filterableFor,
   footerKindOf,
   gateSatisfied,
   gatedKind,
@@ -357,4 +359,33 @@ test("a move draws both of its ends in one row", () => {
     "notes/old.md → notes/archive/old.md",
   );
   assert.equal(pathOf(row("docs/spec.md", "upload")), "docs/spec.md");
+});
+
+// ------------------------------------------------------------------- the rehearsal's progress
+
+test("the progress line needs a numerator, and drops the denominator rather than inventing one", () => {
+  // #209. `null` is the pass that has not reached the local scan yet — the line is absent, not
+  // `0 of 12,480`, which reads as stalled.
+  assert.equal(checkingProgressText(null), null);
+  assert.equal(checkingProgressText({}), null);
+  assert.equal(checkingProgressText({ total: 12_480 }), null);
+  // Both halves: the drawn line.
+  assert.equal(checkingProgressText({ scanned: 8431, total: 12_480 }), PLAN.checkingProgress(8431, 12_480));
+  // A FIRST RUN has an empty index, and a denominator of zero is not a denominator.
+  assert.equal(checkingProgressText({ scanned: 8431, total: 0 }), PLAN.checkingProgressBare(8431));
+  assert.equal(checkingProgressText({ scanned: 8431, total: null }), PLAN.checkingProgressBare(8431));
+  // Zero scanned is a real answer — the walk started and has seen nothing yet.
+  assert.equal(checkingProgressText({ scanned: 0, total: 12_480 }), PLAN.checkingProgress(0, 12_480));
+});
+
+// --------------------------------------------------------------------------- the filtered apply
+
+test("a plan nobody is holding cannot be run without its deletions", () => {
+  // #192's button names a token, and a plan from the `--dry-run` child (onboarding, before any
+  // daemon exists) has none — so the button is hidden rather than faked, `06-plan.md`'s own rule.
+  const plan = { report: { plan: [row("gone.txt", "remote_delete")] } };
+  assert.equal(filterableFor({ dryRun: plan }), false);
+  assert.equal(filterableFor({ dryRun: { ...plan, token: "" } }), false);
+  assert.equal(filterableFor({ dryRun: { ...plan, token: 42 } }), false);
+  assert.equal(filterableFor({ dryRun: { ...plan, token: "1:abc" } }), true);
 });

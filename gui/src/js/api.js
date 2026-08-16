@@ -43,6 +43,11 @@ export const api = {
   // indistinguishable from a closed one.
   chooseFolder: (start) => invoke("choose_folder", { start: start ?? null }),
   runDryRun: () => invoke("run_dry_run"),
+  // `apply <token>` (#100). Resolves with the daemon's typed `ApplyOutcome` — `applied`,
+  // `diverged`, `stale`, `paused`, `failed` — because what the screen does next depends on
+  // which one, and a client must never tell them apart by matching a sentence (#103).
+  applyPlan: (token, skipDestructive) =>
+    invoke("apply_plan", { token, skipDestructive: skipDestructive === true }),
   listRemote: (path) => invoke("list_remote", { path: path ?? null }),
   scanConflicts: () => invoke("scan_conflicts"),
   resolveConflict: (conflict, choice) => invoke("resolve_conflict", { conflict, choice }),
