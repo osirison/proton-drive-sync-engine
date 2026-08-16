@@ -670,6 +670,19 @@ fn payload_from_report(report: DryRunReport, token: Option<String>) -> DryRunPay
 /// daemon's own sealing discipline — every plan pass seals its request, success or failure — plus
 /// the transport bail-out below, so the only way to wait for ever is a socket that keeps answering
 /// while the daemon never runs the pass, which cannot happen.
+///
+/// **And deliberately no paused bail-out.** `proton-sync`'s `poll_until` bails on
+/// `paused && !syncing`, which is right for `syncnow` because a paused daemon genuinely skips that
+/// pass. Here it would be a *false positive*: `ControlCommand::Plan` refuses a paused daemon at the
+/// ack (handled above), and a pause landing after that ack does **not** cancel the booked pass —
+/// `LoopCommand::PlanNow` goes straight to `Daemon::plan_now`, which has no pause check, so the
+/// inert rehearsal still runs and still seals (daemon guard:
+/// `a_plan_pass_booked_before_a_pause_still_runs_and_seals`). Between that ack and `plan_now`'s
+/// `syncing.store(true)` a poller observes `paused && !syncing` for a pass that is about to run and
+/// will answer, so such a bail-out would report "paused before the pass ran" for a plan that then
+/// completes normally. An overall timeout is no better: a legitimate walk can run 30 minutes, so
+/// any bound large enough to be safe is too large to help, and `PLAN_POLL_ERROR_LIMIT` below
+/// already covers the real failure — a daemon that stopped answering at all.
 fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, DaemonPlanFailure> {
     let ack = match ipc::command(socket, ControlCommand::Plan, ipc::DEFAULT_TIMEOUT) {
         Ok(ack) => ack,
@@ -803,6 +816,13 @@ fn unexpected_plan_ack(outcome: Option<&PlanOutcome>) -> &'static str {
 /// Returns the typed [`ApplyOutcome`] rather than a `StatusPayload`, because the caller's next act
 /// depends on *which* answer it got and a client must never tell those apart by matching a sentence
 /// (#103). `Err` only when the daemon could not be reached at all.
+///
+/// The wait below needs no paused bail-out either, for a different reason than the plan loop's: a
+/// pause *does* cancel a booked apply, and cancelling it is itself a seal —
+/// `daemon::discard_queued_apply_for_pause` takes the queued request and seals it `Failed`, which
+/// this loop exits on. `schedule_apply` always sends a `LoopCommand::SyncNow`, so the pass that
+/// reaches that discard is always scheduled (daemon guard:
+/// `a_pause_cancels_an_apply_it_overtook_rather_than_latching_it`).
 #[tauri::command]
 pub async fn apply_plan(
     app: tauri::AppHandle,

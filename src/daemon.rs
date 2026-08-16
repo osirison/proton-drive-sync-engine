@@ -1844,7 +1844,10 @@ impl<C: ProtonClient> Daemon<C> {
         // `syncing` gates `activity` onto status replies, so a plan pass must claim it or #209's
         // progress line has nothing to read. The pause check lives at the ack (as `syncnow`'s
         // does); a pause landing after it lets this inert pass finish rather than orphan a booked
-        // request that nothing would ever seal.
+        // request that nothing would ever seal. **Do not add one here to match
+        // `discard_queued_apply_for_pause`**: cancelling an apply IS a seal, returning from here is
+        // not, and the GUI's plan poller has no bail-out to rescue it. Guard:
+        // `a_plan_pass_booked_before_a_pause_still_runs_and_seals`.
         // `plan_pass` BEFORE `syncing`, and cleared after it, so no reply can ever observe
         // `syncing` without the flag that says which kind of pass it is.
         self.shared.plan_pass.store(true, Ordering::SeqCst);
@@ -17307,6 +17310,46 @@ mod tests {
                 .book_apply_request(&plan.token, false)
                 .is_some()
         );
+    }
+
+    /// The **other half of that asymmetry**, and the reason it is not an inconsistency to be fixed:
+    /// a pause cancels a booked *apply*, but a booked *plan* still runs to completion.
+    ///
+    /// `LoopCommand::PlanNow` goes straight to [`Daemon::plan_now`], which deliberately has no
+    /// pause check — the check lives at the ack (`ControlCommand::Plan` → `PlanOutcome::Paused`),
+    /// so a pause landing *after* the ack finds a request already booked, and only the pass can
+    /// seal it. **Adding a pause guard to `plan_now` as an obvious consistency fix would orphan
+    /// that request**: `plan_outcome` answers `Computing` for ever while `requested > completed`,
+    /// and the GUI's plan poller (`plan_through_daemon`) has neither a paused bail-out nor a
+    /// timeout — it would hang a `spawn_blocking` thread with the Plan screen stuck on `Checking…`.
+    /// The apply may be cancelled precisely because cancelling it *is* a seal.
+    ///
+    /// Safe because the pass is **inert**: it runs through the pause and still syncs nothing, which
+    /// is what `a_plan_pass_observes_and_consumes_nothing` proves in full.
+    #[test]
+    fn a_plan_pass_booked_before_a_pause_still_runs_and_seals() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = plan_verb_daemon(&directory);
+        let plan_seq = daemon.shared.book_plan_request();
+        // The pause lands after the ack booked the request — the one window the ack cannot cover.
+        daemon.shared.paused.store(true, Ordering::SeqCst);
+
+        run_plan_pass(&mut daemon);
+
+        // Sealed: a poller that acked before the pause is answered rather than left on `Computing`.
+        let plan = computed_plan(&daemon.shared);
+        assert!(
+            plan.plan_seq >= plan_seq,
+            "the pass must answer the request booked before the pause ({} < {plan_seq})",
+            plan.plan_seq
+        );
+        // …and the rehearsal really was one: it planned work and performed none of it, so running a
+        // plan through a pause never moves a byte.
+        assert!(
+            plan.total > 0,
+            "precondition: the fixture's two sides differ, so there is something to plan"
+        );
+        assert!(!daemon.config.local_root.join("remote-only.txt").exists());
     }
 
     /// The events-mode idle fast-path returns before `execute_plan_and_commit`, so an apply that
