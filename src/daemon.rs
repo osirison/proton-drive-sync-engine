@@ -6196,6 +6196,9 @@ fn truncate_selector(selector: &str) -> String {
 ///
 /// One body rather than a truncation per call site — three had accumulated by #313, and a fourth
 /// would have been a fourth chance to get the inclusive-of-the-ellipsis arithmetic wrong.
+///
+/// Both callers pass a limit far above the ellipsis. A limit *below* it asks for something
+/// unsatisfiable, and yields the ellipsis alone rather than an underflow panic.
 fn truncate_for_display(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_owned();
