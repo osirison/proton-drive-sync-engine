@@ -52,6 +52,22 @@ pub enum ControlCommand {
     /// (#229/#238) and today's byte totals (#191) ride on every `Status` reply instead — the
     /// screens that draw them are already polling it.
     Activity,
+    /// List one **remote** directory, non-recursively (#99). `argument` names it relative to the
+    /// daemon's configured `remote_root`; absent or empty means the root itself, which is the
+    /// legitimate landing page of a remote browser and the reason this selector is validated with
+    /// `validate_relative_path` rather than its non-empty sibling — a listing reads, it does not
+    /// join a path onto a root to produce a side effect.
+    ///
+    /// **`literal_path` has no meaning here.** There is no reserved word: a folder named `all`
+    /// lists like any other. The `Approve`/`Deny`/`Keep` selector is the only place `"all"` means
+    /// anything, and a read-only verb must not grow a second sentinel.
+    ///
+    /// Read-only and answered on the IPC task, but unlike every other verb it *does* run work —
+    /// one `proton-drive` invocation, behind the process's CLI gate. See
+    /// [`crate::proton::CliGate`] for why that gate exists and why this verb may answer
+    /// [`ListingOutcome::Busy`] instead of waiting. Wire value `"list"`; an older daemon rejects it
+    /// as an unknown command.
+    List,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,8 +90,10 @@ pub struct ControlRequest {
     /// compat.
     #[serde(default)]
     pub window_secs: Option<u64>,
-    /// [`ControlCommand::Activity`] only: cap on returned rows. `None` uses
-    /// [`ACTIVITY_EVENTS_DEFAULT_LIMIT`]; the reply's `total` is untruncated either way.
+    /// Cap on returned rows. [`ControlCommand::Activity`] uses
+    /// [`ACTIVITY_EVENTS_DEFAULT_LIMIT`] when it is `None`, [`ControlCommand::List`] uses
+    /// [`LIST_ENTRIES_DEFAULT_LIMIT`]; both report an untruncated `total` either way, and both
+    /// clamp to their own maximum because a control reply is read into memory whole.
     #[serde(default)]
     pub limit: Option<usize>,
     /// Which deletion at `argument` an `Approve` authorizes when **nothing pending matches it** —
@@ -93,6 +111,13 @@ pub struct ControlRequest {
 /// reply is read into memory whole, so the limit is the daemon's to enforce, not the client's.
 pub const ACTIVITY_EVENTS_DEFAULT_LIMIT: usize = 50;
 pub const ACTIVITY_EVENTS_MAX_LIMIT: usize = 500;
+
+/// Default and hard cap on the entries one [`ControlCommand::List`] reply carries, for the same
+/// reason [`ACTIVITY_EVENTS_DEFAULT_LIMIT`] exists: the whole reply is one JSON line read into
+/// memory, so the bound is the daemon's to enforce and not the client's to be trusted with. A
+/// remote folder can hold tens of thousands of nodes.
+pub const LIST_ENTRIES_DEFAULT_LIMIT: usize = 500;
+pub const LIST_ENTRIES_MAX_LIMIT: usize = 5_000;
 
 impl ControlRequest {
     /// A request carrying nothing but its command. Every optional field is a later addition, so
@@ -113,6 +138,122 @@ impl ControlRequest {
 /// definition for every wire this engine publishes — see [`crate::wire_path`], which also states
 /// the rule a client may act on a lossy path under.
 pub use crate::wire_path;
+
+/// One entry of a [`ControlCommand::List`] reply: a node that exists on Proton right now.
+///
+/// **Remote ground truth, not sync state.** Nothing here is filtered by the selective-sync globs
+/// and nothing is read from the baseline index: the verb answers "what is on Proton under this
+/// folder", which is a different question from "what would this daemon sync". A client that wants
+/// the second question has `status`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteEntry {
+    /// Path relative to the daemon's `remote_root`. Lossy on the wire like every other path this
+    /// engine publishes (see [`crate::lossy_path`]), so it is a **rendering**: a client must not
+    /// feed it back as a selector for anything destructive.
+    #[serde(with = "crate::lossy_path")]
+    pub path: PathBuf,
+    /// The node's own name, as the remote reports it.
+    pub name: String,
+    pub entity_kind: EntityKind,
+    /// The remote's claimed SHA-1, when it exposes one. `None` for a directory, and for a file
+    /// that has no byte content to digest — a Proton-native Docs/Sheets node — which is also the
+    /// commonest reason `downloadable` is `false`.
+    #[serde(default)]
+    pub sha1: Option<String>,
+    /// Whether the engine could fetch this node's bytes. `false` marks a node the sync planner
+    /// treats as unsupported, so a browser can show it as present-but-not-syncable rather than
+    /// implying it will arrive.
+    pub downloadable: bool,
+}
+
+/// The answer to a [`ControlCommand::List`] request, and the reason the reply carries a typed
+/// state rather than prose in `message`: a client deciding "retry in a moment" versus "this folder
+/// is gone" by pattern-matching a sentence is exactly the bug #103 exists to remove, and it would
+/// be no better for having been introduced by #99.
+///
+/// Internally tagged with `state`, and an unrecognized tag parses as [`Self::Unknown`] rather than
+/// failing the whole reply — the rule [`crate::sync::UnsyncableReason`] already follows, so a newer
+/// daemon can add a state without breaking an older client's parse.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum ListingOutcome {
+    /// The directory was listed. `entries` is capped (see [`LIST_ENTRIES_MAX_LIMIT`]); `total` is
+    /// the untruncated count, so `truncated` is `total > entries.len()`.
+    Listed {
+        /// The listed directory, relative to `remote_root` — empty for the root itself. Echoed
+        /// back so a reply can be matched to the request that asked for it.
+        #[serde(with = "crate::lossy_path")]
+        path: PathBuf,
+        entries: Vec<RemoteEntry>,
+        total: usize,
+        truncated: bool,
+    },
+    /// A `proton-drive` invocation was already running and did not finish within this request's
+    /// budget, so **nothing was attempted**. Retryable as-is; it says nothing about the remote.
+    /// See [`crate::proton::CliGate`].
+    Busy,
+    /// The listing was attempted and failed. Carries the failure for display only — a client must
+    /// not classify it by matching this text. If the cause was the Proton session, the reply's
+    /// `auth` field already says so.
+    Failed { error: String },
+    /// A state added by a newer daemon. Render it as "unavailable"; never as an empty folder.
+    #[serde(other)]
+    Unknown,
+}
+
+/// What the daemon currently believes about the Proton session (#103), so a UI stops deciding it
+/// by matching error strings.
+///
+/// **Three states, and the third is not a synonym for either other one.** Only *evidence of
+/// success* moves this to [`Self::SignedIn`], and only a failure the engine *classified* as an auth
+/// failure moves it to [`Self::SignedOut`]; an unclassified failure — a timeout, a missing binary,
+/// a disk error — moves it nowhere. A classifier whose fall-through arm reported "signed in and
+/// fine" would turn every unrecognized failure into a false all-clear, which is the shape that has
+/// shipped here before (#246).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthState {
+    /// Nothing has yet proved or disproved the session — a freshly started daemon, or one whose
+    /// only failures were of some other kind. Not "signed in", and not "signed out".
+    #[default]
+    Unknown,
+    /// Something reached Proton successfully.
+    SignedIn,
+    /// A `proton-drive` invocation was refused for the session (see
+    /// [`crate::proton::AuthFailure`]). The user has to sign in again.
+    SignedOut,
+}
+
+impl AuthState {
+    /// The wire token. Hand-written (like [`crate::sync::UnsyncableReason`]'s) so the mapping is
+    /// visible in one place and an unknown token can degrade to [`Self::Unknown`] instead of
+    /// failing an older client's whole reply.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::SignedIn => "signed-in",
+            Self::SignedOut => "signed-out",
+        }
+    }
+}
+
+impl Serialize for AuthState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let token = String::deserialize(deserializer)?;
+        Ok(match token.as_str() {
+            "signed-in" => Self::SignedIn,
+            "signed-out" => Self::SignedOut,
+            // Including the literal `"unknown"`, and anything a newer daemon invents: an
+            // unrecognized verdict is not a verdict.
+            _ => Self::Unknown,
+        })
+    }
+}
 
 /// One withheld deletion surfaced to the user for review. `path` + `direction` identify it for an
 /// `approve`; `fingerprint` (a file's baseline SHA-1 or a directory's `proton_id`) is what the
@@ -363,6 +504,16 @@ pub struct ControlResponse {
     /// genuinely empty index. `#[serde(default)]` keeps both directions of the wire compatible.
     #[serde(default)]
     pub index_totals: Option<IndexTotals>,
+    /// The answer to a [`ControlCommand::List`] request, and `None` on every other reply.
+    #[serde(default)]
+    pub listing: Option<ListingOutcome>,
+    /// What the daemon believes about the Proton session (see [`AuthState`]). Rides on **every**
+    /// reply, not just `status`: a `list` that is refused for an expired session is the fastest
+    /// evidence there is, and the client that asked for it is the one that most needs to know.
+    /// `#[serde(default)]` gives a reply from an older daemon [`AuthState::Unknown`], which is the
+    /// honest reading — that daemon classified nothing.
+    #[serde(default)]
+    pub auth: AuthState,
 }
 
 /// One completed reconcile **attempt**, including the idle ones — a rolling debug trail of the
@@ -690,6 +841,105 @@ mod tests {
     }
 
     #[test]
+    fn the_list_command_has_a_stable_wire_value_and_carries_a_plain_path() {
+        // Wire-visible name, pinned. An older daemon rejecting `list` as an unknown command is the
+        // documented behaviour (as for `resync`/`keep`/`activity`), so the string must not drift.
+        let request = ControlRequest {
+            argument: Some("photos/2019".to_owned()),
+            limit: Some(20),
+            ..ControlRequest::new(ControlCommand::List)
+        };
+        let encoded = serde_json::to_string(&request).expect("encode");
+        assert!(encoded.contains(r#""command":"list""#), "{encoded}");
+
+        let decoded: ControlRequest =
+            serde_json::from_str(r#"{"command":"list","argument":"a/b"}"#).expect("decode");
+        assert_eq!(decoded.command, ControlCommand::List);
+        assert_eq!(decoded.argument.as_deref(), Some("a/b"));
+        // No reserved word, so no `literal_path` to set: a folder named `all` is just a folder.
+        assert!(!decoded.literal_path);
+    }
+
+    #[test]
+    fn a_listing_outcome_round_trips_and_an_unknown_state_is_not_an_empty_folder() {
+        let listed = ListingOutcome::Listed {
+            path: PathBuf::from("photos"),
+            entries: vec![RemoteEntry {
+                path: PathBuf::from("photos/a.jpg"),
+                name: "a.jpg".to_owned(),
+                entity_kind: EntityKind::File,
+                sha1: Some("abc".to_owned()),
+                downloadable: true,
+            }],
+            total: 1,
+            truncated: false,
+        };
+        let json = serde_json::to_string(&listed).expect("serialize");
+        assert!(json.contains(r#""state":"listed""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ListingOutcome>(&json).expect("round trip"),
+            listed
+        );
+        assert_eq!(
+            serde_json::to_string(&ListingOutcome::Busy).expect("serialize"),
+            r#"{"state":"busy"}"#
+        );
+
+        // A state a newer daemon invented must degrade, not fail the whole reply — and must not
+        // land on `Listed` with no entries, which a client would draw as an empty folder.
+        let future: ListingOutcome =
+            serde_json::from_str(r#"{"state":"rate-limited","retry_after":30}"#)
+                .expect("an unknown state must parse");
+        assert_eq!(future, ListingOutcome::Unknown);
+    }
+
+    #[test]
+    fn an_auth_state_is_an_open_token_and_an_unknown_one_is_no_verdict() {
+        // #103: the wire form is a hand-written token so an unrecognised value degrades to
+        // `Unknown` instead of failing an older client's whole reply — and, critically, instead of
+        // defaulting to "signed in and fine".
+        for state in [
+            AuthState::Unknown,
+            AuthState::SignedIn,
+            AuthState::SignedOut,
+        ] {
+            let json = serde_json::to_string(&state).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", state.as_str()));
+            assert_eq!(
+                serde_json::from_str::<AuthState>(&json).expect("round trip"),
+                state
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<AuthState>(r#""needs-2fa""#).expect("unknown token"),
+            AuthState::Unknown,
+            "an unrecognised verdict is not a verdict"
+        );
+        assert_eq!(AuthState::default(), AuthState::Unknown);
+    }
+
+    #[test]
+    fn a_reply_from_a_daemon_that_predates_both_fields_parses_as_no_listing_and_no_verdict() {
+        // Both are additive. An older daemon classified nothing, so `Unknown` is the honest
+        // reading of its silence — and it sends no listing at all, which is not an empty folder.
+        let legacy = r#"{
+            "status": "running",
+            "paused": false,
+            "pending_changes": 0,
+            "message": "daemon status",
+            "last_sync_epoch_secs": null,
+            "last_error": null,
+            "last_plan_summary": null,
+            "last_successful_sync_summary": null,
+            "status_history": []
+        }"#;
+        let response: ControlResponse =
+            serde_json::from_str(legacy).expect("legacy reply must parse");
+        assert!(response.listing.is_none());
+        assert_eq!(response.auth, AuthState::Unknown);
+    }
+
+    #[test]
     fn control_response_without_activity_still_parses() {
         // A reply from an older daemon carries no `activity` field; a newer client must parse
         // it (as None) rather than error — the same guarantee the other `#[serde(default)]`
@@ -864,6 +1114,21 @@ mod tests {
                 files: 12_480,
                 bytes: 41_200_000_000,
             }),
+            // A listing is all paths, so it belongs in this fixture more than anything else on the
+            // reply does — a browse of a folder holding a non-UTF-8 name must not fail the reply.
+            listing: Some(ListingOutcome::Listed {
+                path: non_utf8_path(b"-folder"),
+                entries: vec![RemoteEntry {
+                    path: non_utf8_path(b"-folder/bad.bin"),
+                    name: "bad.bin".to_owned(),
+                    entity_kind: EntityKind::File,
+                    sha1: None,
+                    downloadable: true,
+                }],
+                total: 1,
+                truncated: false,
+            }),
+            auth: AuthState::SignedOut,
         }
     }
 

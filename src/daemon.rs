@@ -14,14 +14,16 @@ use crate::index::{
     upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
-    ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ControlCommand, ControlResponse,
-    FAILED_ITEM_ERROR_LIMIT, FailedItem, PASS_HISTORY_REPORTED, PassHistory, PassProgress,
-    PendingDeletion, RunningConfigInfo, StatusHistoryEntry, SyncActivity, TransferActivity,
-    bind_listener, read_request, write_response,
+    ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, AuthState, ControlCommand,
+    ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem, LIST_ENTRIES_DEFAULT_LIMIT,
+    LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PASS_HISTORY_REPORTED, PassHistory, PassProgress,
+    PendingDeletion, RemoteEntry, RunningConfigInfo, StatusHistoryEntry, SyncActivity,
+    TransferActivity, bind_listener, read_request, write_response,
 };
 use crate::proton::{
-    CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient, RemoteEntity,
-    RemoteListingStatus, is_node_not_found_error,
+    AuthFailure, CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient,
+    RemoteEntity, RemoteListingStatus, is_auth_failure_error, is_cli_busy_error,
+    is_node_not_found_error,
 };
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
@@ -45,7 +47,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::{UnixListener, UnixStream};
@@ -57,6 +59,12 @@ pub(crate) const STATUS_HISTORY_LIMIT: usize = 20;
 /// concurrently on their own task, so a stalled client cannot block the daemon — the timeout
 /// just stops silent clients from accumulating parked connection tasks forever.
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the read-only `list` verb (#99) may wait for the `proton::CliGate` before answering
+/// [`ListingOutcome::Busy`]. Long enough to slip between the short listings of a full-tree walk —
+/// which is the point of gating per invocation rather than per pass — and short enough to stay well
+/// inside a client's own round-trip budget (`proton-sync`'s is 10s), so a refusal arrives as an
+/// answer rather than as a timeout.
+const BROWSE_GATE_WAIT: Duration = Duration::from_secs(2);
 /// How often the daemon polls the volume event stream while event-driven detection is **live** —
 /// `events_driven` on *and* an event source built. Matches the ~30s cadence Proton's own client
 /// uses (ADR 0001). Only the incremental (O(changes)) path runs at this cadence: the select arm is
@@ -190,7 +198,11 @@ pub struct DaemonConfig {
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     config: DaemonConfig,
     connection: Connection,
-    proton: C,
+    /// The `proton-drive` client. Behind an `Arc` because the control-socket task holds it too:
+    /// the read-only `list` verb (#99) runs a CLI invocation from that task, and it must be the
+    /// *same* client instance as the main loop's — one client is one `proton::CliGate`, and a
+    /// second instance would be a second gate, i.e. no serialization at all (#23).
+    proton: Arc<C>,
     pending_changes: BTreeSet<PathBuf>,
     /// Relative paths the daemon itself wrote into the watched tree during the current pass
     /// (`Download` destinations and `MoveLocal` *file* destinations). The `notify` watcher echoes
@@ -220,6 +232,9 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     metrics_path: PathBuf,
     status_history: Vec<StatusHistoryEntry>,
     ipc_io_timeout: Duration,
+    /// How long the read-only `list` verb may wait for the CLI gate ([`BROWSE_GATE_WAIT`]); a field
+    /// for the same reason [`Self::ipc_io_timeout`] is one — a test needs a budget it can outlast.
+    browse_gate_wait: Duration,
     /// Poll cadence of the events select arm ([`EVENTS_POLL_INTERVAL`]); a field so tests can drive
     /// the run loop at a cadence they can observe, exactly like [`Self::ipc_io_timeout`].
     events_poll_interval: Duration,
@@ -355,6 +370,15 @@ struct ControlShared {
     reset_index: AtomicBool,
     /// The daemon core's most recently published status. The IPC task only ever reads it.
     snapshot: StdMutex<StatusSnapshot>,
+    /// What the daemon believes about the Proton session (#103), as an [`AuthState`] discriminant.
+    ///
+    /// An atomic slot of its own, deliberately **not** a `snapshot` field: the snapshot is
+    /// published wholesale by the daemon core and only ever read by the IPC task, whereas this has
+    /// two writers. The core writes it from each pass's outcome, and the IPC task writes it from
+    /// the `list` verb — a browse refused for an expired session is the fastest auth evidence the
+    /// daemon can get, and making it wait for the next pass would be the whole point of designing
+    /// #99 and #103 together thrown away.
+    auth: AtomicU8,
     /// Live activity for the in-flight pass (see [`SyncActivity`]). Written from inside the
     /// blocking reconcile (phase changes, per-folder walk progress, per-file scan progress,
     /// per-action execution) and read by the IPC task on every status reply, so clients see
@@ -425,12 +449,32 @@ impl ControlShared {
                 config,
                 history: None,
             }),
+            auth: AtomicU8::new(auth_discriminant(AuthState::Unknown)),
             activity: StdMutex::new(ActivityState::default()),
         }
     }
 
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    fn auth_state(&self) -> AuthState {
+        auth_from_discriminant(self.auth.load(Ordering::SeqCst))
+    }
+
+    /// Records a verdict about the Proton session, returning `true` when it actually changed.
+    ///
+    /// Both writers call this and neither may pass [`AuthState::Unknown`]: this is where evidence
+    /// lands, and "I learned nothing" is the absence of a call, not a call. A caller with an
+    /// unclassified failure in hand must therefore leave the state alone rather than reset it —
+    /// which is the point, because the alternative reads a timeout as proof of being signed in.
+    fn record_auth_state(&self, state: AuthState) -> bool {
+        debug_assert!(
+            state != AuthState::Unknown,
+            "`Unknown` is the absence of evidence; do not publish it as a verdict"
+        );
+        let previous = self.auth.swap(auth_discriminant(state), Ordering::SeqCst);
+        auth_from_discriminant(previous) != state
     }
 
     /// Starts a new activity phase, replacing whatever was current (and dropping any stale
@@ -593,6 +637,10 @@ impl ControlShared {
             // A clone of an `Option<IndexTotals>` (two `u64`s, `Copy`) — the reply path never
             // queries the index. See `StatusSnapshot::index_totals`.
             index_totals: snapshot.index_totals,
+            // Only a `list` reply carries a listing; every other one omits it rather than
+            // implying an empty folder.
+            listing: None,
+            auth: self.auth_state(),
         }
     }
 
@@ -618,6 +666,28 @@ impl ControlShared {
             unsyncable: snapshot.unsyncable,
             index_totals: snapshot.index_totals,
         }
+    }
+}
+
+/// [`ControlShared::auth`] holds an [`AuthState`] as a `u8`, since there is no atomic for the enum
+/// itself. The two functions below are the only mapping; keeping them adjacent (and total, with no
+/// fall-through that invents a verdict) is what stops a stray discriminant from reading as
+/// "signed in".
+fn auth_discriminant(state: AuthState) -> u8 {
+    match state {
+        AuthState::Unknown => 0,
+        AuthState::SignedIn => 1,
+        AuthState::SignedOut => 2,
+    }
+}
+
+fn auth_from_discriminant(value: u8) -> AuthState {
+    match value {
+        1 => AuthState::SignedIn,
+        2 => AuthState::SignedOut,
+        // Everything else, `0` included: no verdict. A value this function cannot name is exactly
+        // the case that must not become an all-clear.
+        _ => AuthState::Unknown,
     }
 }
 
@@ -871,7 +941,7 @@ impl<C: ProtonClient> Daemon<C> {
         let mut daemon = Self {
             config,
             connection,
-            proton,
+            proton: Arc::new(proton),
             pending_changes: BTreeSet::new(),
             authored_writes: HashSet::new(),
             force_local_rescan: false,
@@ -885,6 +955,7 @@ impl<C: ProtonClient> Daemon<C> {
             metrics_path,
             status_history,
             ipc_io_timeout: IPC_IO_TIMEOUT,
+            browse_gate_wait: BROWSE_GATE_WAIT,
             events_poll_interval: EVENTS_POLL_INTERVAL,
             event_source,
             event_source_factory,
@@ -917,7 +988,12 @@ impl<C: ProtonClient> Daemon<C> {
         Ok(daemon)
     }
 
-    pub async fn run(mut self) -> AppResult<()> {
+    /// `C: 'static` because the control-socket task holds an `Arc<C>` for the `list` verb (#99),
+    /// and a spawned task may outlive this frame.
+    pub async fn run(mut self) -> AppResult<()>
+    where
+        C: 'static,
+    {
         info!(
             local_root = %self.config.local_root.display(),
             remote_root = %self.config.remote_root.display(),
@@ -925,14 +1001,22 @@ impl<C: ProtonClient> Daemon<C> {
             "starting daemon"
         );
         let cancel_flag = Arc::clone(&self.cancel_flag);
-        self.proton.install_cancel_flag(Arc::clone(&cancel_flag));
-        // Live-progress plumbing: the client reports per-folder walk progress and download
-        // staging locations straight into `ControlShared`, so status replies stay alive while
-        // this task is blocked inside a reconcile.
-        self.proton
-            .install_progress_sink(Arc::new(SharedProgressSink {
+        {
+            // The only `&mut` the client ever needs, and it is taken *before* the control-socket
+            // task below is handed its own `Arc` clone — so the reference count is still one and
+            // this cannot fail. (`Daemon::run` consumes `self`, and nothing between construction
+            // and here clones the client.)
+            let proton = Arc::get_mut(&mut self.proton).expect(
+                "the proton client is not shared until the control-socket task is spawned below",
+            );
+            proton.install_cancel_flag(Arc::clone(&cancel_flag));
+            // Live-progress plumbing: the client reports per-folder walk progress and download
+            // staging locations straight into `ControlShared`, so status replies stay alive while
+            // this task is blocked inside a reconcile.
+            proton.install_progress_sink(Arc::new(SharedProgressSink {
                 shared: Arc::clone(&self.shared),
             }));
+        }
         // Runs independently of the select! loop below so it can still observe a
         // shutdown signal and flip the flag while the main task is blocked inside
         // `reconcile()`'s synchronous `block_in_place` call, letting an in-flight
@@ -958,12 +1042,22 @@ impl<C: ProtonClient> Daemon<C> {
         let approvals_connection = open_database(&self.config.db_path)?;
         let ipc_task = tokio::spawn(serve_control_socket(
             listener,
-            Arc::clone(&self.shared),
-            approvals_connection,
-            loop_tx,
-            self.ipc_io_timeout,
-            self.metrics_path.clone(),
-            Arc::clone(&cancel_flag),
+            Arc::new(ControlPlane {
+                shared: Arc::clone(&self.shared),
+                approvals: tokio::sync::Mutex::new(approvals_connection),
+                loop_tx,
+                io_timeout: self.ipc_io_timeout,
+                metrics_path: self.metrics_path.clone(),
+                cancel_flag: Arc::clone(&cancel_flag),
+                browse: BrowseContext {
+                    // The SAME client the main loop uses, not a second one built from the same
+                    // config: one client is one `proton::CliGate`, and two gates serialize
+                    // nothing.
+                    proton: Arc::clone(&self.proton),
+                    remote_root: self.config.remote_root.clone(),
+                    gate_wait: self.browse_gate_wait,
+                },
+            }),
         ));
         let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
@@ -1262,6 +1356,25 @@ impl<C: ProtonClient> Daemon<C> {
         self.shared
             .begin_pass_progress(self.pass_log.started_epoch_secs, self.pass_log.kind);
         let result = self.reconcile_blocking_inner();
+        // What this pass proved about the session (#103), decided before the message below so the
+        // reply that carries the message already carries the verdict.
+        //
+        // Three inputs, and the third one moves nothing. A pass that completed — cleanly or with
+        // failed items — reached Proton: a bootstrap listed the tree, an incremental fetched the
+        // event delta, and a partial pass landed at least one action by definition (the breaker
+        // trips only when *nothing* succeeded). A pass that failed on a **classified** auth failure
+        // is a sign-out. A pass that failed any other way — a timeout, a missing binary, a full
+        // disk — says nothing either way and must leave the state alone: this is precisely the
+        // fall-through that would otherwise read "not recognised" as "signed in and fine".
+        match &result {
+            Ok(PassOutcome::Clean | PassOutcome::Partial { .. }) => {
+                self.note_auth_evidence(AuthState::SignedIn);
+            }
+            Err(error) if is_auth_failure_error(error.as_ref()) => {
+                self.note_auth_evidence(AuthState::SignedOut);
+            }
+            Err(_) => {}
+        }
         // Three outcomes, three arms, no fall-through: a pass that landed most of its plan and
         // failed some of it is neither of the other two, and absorbing it into either is how a
         // failed pass came to render as "everything is up to date" (#246). The history record
@@ -1637,6 +1750,33 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
+    /// Records what this pass proved about the Proton session (#103), and reports a sign-out
+    /// through the **existing** one-reason-per-cause latch rather than opening a second channel.
+    ///
+    /// "Why is this daemon not doing what I expect" already has one message family
+    /// ([`Self::note_event_scope_declined`]): one line per cause, said once, re-said when the cause
+    /// changes. An expired session is another cause in it — and a real one, since the events fetch
+    /// and the CLI share that session, so a sign-out degrades detection exactly as a locked keyring
+    /// does. Two surfaces independently deciding why the daemon is degraded would disagree.
+    ///
+    /// Recovery clears the latch **only when it holds this reason**: a working session says nothing
+    /// about a missing volume or an unreadable cursor, and erasing their line would re-report it
+    /// next pass as if it were new.
+    fn note_auth_evidence(&mut self, state: AuthState) {
+        publish_auth_evidence(&self.shared, state);
+        match state {
+            AuthState::SignedOut => self.note_event_scope_declined(AUTH_DECLINE_REASON.to_owned()),
+            AuthState::SignedIn => {
+                if self.event_scope_declined.as_deref() == Some(AUTH_DECLINE_REASON) {
+                    self.event_scope_declined = None;
+                }
+            }
+            // Unreachable by contract — `record_auth_state` asserts it — and deliberately inert
+            // rather than "reset to unknown": absence of evidence is not evidence.
+            AuthState::Unknown => {}
+        }
+    }
+
     /// Reports why the event-driven path is unavailable, once per distinct cause. Info level: this
     /// is the only signal distinguishing "still full-walking because it cannot stream" from the
     /// other causes of repeated full syncs.
@@ -1728,7 +1868,7 @@ impl<C: ProtonClient> Daemon<C> {
             // Built here and dropped at the end of this block: its listing memo lives exactly as
             // long as the pass.
             let resolver = TargetedResolver {
-                proton: &self.proton,
+                proton: self.proton.as_ref(),
                 connection: &self.connection,
                 remote_root: &self.config.remote_root,
                 volume_id: &volume,
@@ -1856,8 +1996,11 @@ impl<C: ProtonClient> Daemon<C> {
         // this just flips the phase so status shows "listing remote" the moment it starts.
         self.shared
             .begin_activity(new_activity(PHASE_LISTING_REMOTE));
-        let (remote_entities, remote_root_missing) =
-            load_remote_entities(&self.proton, &self.config.remote_root, &self.scan_options)?;
+        let (remote_entities, remote_root_missing) = load_remote_entities(
+            self.proton.as_ref(),
+            &self.config.remote_root,
+            &self.scan_options,
+        )?;
         let mut base_index = filter_base_index(base_records, &self.scan_options);
         if remote_root_missing {
             base_index.clear();
@@ -2855,12 +2998,7 @@ impl<C: ProtonClient> Daemon<C> {
                 self.pass_log.truncate(events_before);
                 failures.record(action, error.as_ref());
                 if failures.breaker_tripped() {
-                    return Err(boxed_error(format!(
-                        "reconciliation abandoned: {} actions in a row failed and nothing in this \
-                         pass succeeded (last: {error}); the failure looks systemic rather than \
-                         per-item, so the rest of the plan is not attempted",
-                        failures.consecutive
-                    )));
+                    return Err(failures.abandoned(Some(&error.to_string())));
                 }
             } else {
                 failures.note_success();
@@ -3250,12 +3388,7 @@ impl<C: ProtonClient> Daemon<C> {
             failures.note_success();
         }
         if failures.breaker_tripped() {
-            return Err(boxed_error(format!(
-                "reconciliation abandoned: {} actions in a row failed and nothing in this pass \
-                 succeeded; the failure looks systemic rather than per-item, so the rest of the \
-                 plan is not attempted",
-                failures.consecutive
-            )));
+            return Err(failures.abandoned(None));
         }
         Ok(vanished_nodes)
     }
@@ -3819,39 +3952,45 @@ fn ambiguous_selector_message(
     ))
 }
 
-/// Accept loop for the control socket, run on its own task so control requests are served while
-/// the daemon core is blocked in a reconcile. Each connection is handled on a further spawned
-/// task, so one stalled client cannot delay the others. Aborted by `run()` on shutdown.
-async fn serve_control_socket(
-    listener: UnixListener,
+/// What the control task needs to answer the read-only `list` verb (#99) without going near the
+/// daemon core: the daemon's **own** client (so every `proton-drive` invocation in this process
+/// shares one `proton::CliGate`) and the remote root its selectors resolve against.
+struct BrowseContext<C: ProtonClient> {
+    proton: Arc<C>,
+    remote_root: PathBuf,
+    /// How long a browse may wait for the CLI gate before answering `busy`. A field rather than
+    /// the constant so tests can drive it at a cadence they can observe, like `ipc_io_timeout`.
+    gate_wait: Duration,
+}
+
+/// Everything a control connection is served from, in one place: the published snapshot, the IPC
+/// task's own database handle, the channel to the daemon core, and the `list` verb's context.
+/// Built once in [`Daemon::run`] and shared by every connection task.
+struct ControlPlane<C: ProtonClient> {
     shared: Arc<ControlShared>,
-    approvals_connection: Connection,
+    /// The IPC task's *second* connection to the index — the core owns the first. Both set a busy
+    /// timeout, so a rare same-database collision waits rather than failing.
+    approvals: tokio::sync::Mutex<Connection>,
     loop_tx: mpsc::UnboundedSender<LoopCommand>,
     io_timeout: Duration,
     metrics_path: PathBuf,
     cancel_flag: Arc<AtomicBool>,
+    browse: BrowseContext<C>,
+}
+
+/// Accept loop for the control socket, run on its own task so control requests are served while
+/// the daemon core is blocked in a reconcile. Each connection is handled on a further spawned
+/// task, so one stalled client cannot delay the others. Aborted by `run()` on shutdown.
+async fn serve_control_socket<C: ProtonClient + 'static>(
+    listener: UnixListener,
+    plane: Arc<ControlPlane<C>>,
 ) {
-    let approvals = Arc::new(tokio::sync::Mutex::new(approvals_connection));
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                let shared = Arc::clone(&shared);
-                let approvals = Arc::clone(&approvals);
-                let loop_tx = loop_tx.clone();
-                let metrics_path = metrics_path.clone();
-                let cancel_flag = Arc::clone(&cancel_flag);
+                let plane = Arc::clone(&plane);
                 tokio::spawn(async move {
-                    let outcome = handle_control_connection(
-                        stream,
-                        &shared,
-                        &approvals,
-                        &loop_tx,
-                        io_timeout,
-                        &metrics_path,
-                        &cancel_flag,
-                    )
-                    .await;
-                    if let Err(error) = outcome {
+                    if let Err(error) = handle_control_connection(stream, &plane).await {
                         warn!(%error, "failed to handle control connection");
                     }
                 });
@@ -3866,15 +4005,20 @@ async fn serve_control_socket(
 /// `shutdown` are acknowledged immediately and forwarded to the daemon core over `loop_tx`; a
 /// client that wants to observe the requested sync finishing polls `status` until
 /// `reconcile_seq` advances past the value in its ack and `syncing` is false again.
-async fn handle_control_connection(
+async fn handle_control_connection<C: ProtonClient + 'static>(
     stream: UnixStream,
-    shared: &ControlShared,
-    approvals: &tokio::sync::Mutex<Connection>,
-    loop_tx: &mpsc::UnboundedSender<LoopCommand>,
-    io_timeout: Duration,
-    metrics_path: &Path,
-    cancel_flag: &AtomicBool,
+    plane: &ControlPlane<C>,
 ) -> AppResult<()> {
+    let ControlPlane {
+        shared,
+        approvals,
+        loop_tx,
+        io_timeout,
+        metrics_path,
+        cancel_flag,
+        browse,
+    } = plane;
+    let io_timeout = *io_timeout;
     // Time-bound the request read (it is also length-bounded in `read_request`) so silent
     // clients do not accumulate parked connection tasks.
     let (request, mut stream) = match tokio::time::timeout(io_timeout, read_request(stream)).await {
@@ -4041,6 +4185,32 @@ async fn handle_control_connection(
             };
             shared.response(&message)
         }
+        ControlCommand::List => {
+            // The one control command that runs work on this task, and the only place the
+            // "answer from the snapshot, never by running work here" contract bends. Two
+            // properties keep that bend bounded, and neither is the connection's own IO timeout
+            // (which covers the read and the write, not the work between them):
+            //
+            //   * the wait for the CLI gate is capped at `gate_wait`, so a browse behind a
+            //     multi-GB transfer answers `busy` rather than parking the connection;
+            //   * the gate then admits ONE listing at a time, so however often a client retries,
+            //     at most one request is ever running the CLI and every other one is refused
+            //     within `gate_wait` — there is no pile-up of blocking tasks.
+            //
+            // The listing itself is bounded only by the CLI's own command timeout, which can
+            // outlast a client's patience; that costs a dropped reply, not a stuck daemon.
+            let outcome =
+                browse_remote_directory(browse, shared, request.argument.as_deref(), request.limit)
+                    .await;
+            let message = match &outcome {
+                ListingOutcome::Listed { .. } => "remote listing",
+                ListingOutcome::Busy => "remote listing unavailable: the proton-drive CLI is busy",
+                ListingOutcome::Failed { .. } | ListingOutcome::Unknown => "remote listing failed",
+            };
+            let mut response = shared.response(message);
+            response.listing = Some(outcome);
+            response
+        }
         ControlCommand::Shutdown => {
             info!("shutdown requested over control socket");
             // Same teeth as a delivered signal: cancel any in-flight proton-drive command so
@@ -4062,6 +4232,153 @@ async fn handle_control_connection(
     }
     Ok(())
 }
+
+/// Answers a [`ControlCommand::List`] request: one non-recursive remote directory listing (#99).
+///
+/// The selector is an **external path**, so it is validated before it is joined onto the remote
+/// root — but with the plain `validate_relative_path`, not the non-empty form the path-safety
+/// ladder demands of a side effect. The empty path is a legitimate *value* here: it is the remote
+/// root, which is a remote browser's landing page. Joining it onto the root promotes nothing,
+/// because listing a directory is a read; the rule the non-empty form exists for (#72) is about a
+/// per-entry download or delete silently becoming a whole-root one.
+///
+/// Every failure is reported as a [`ListingOutcome`] rather than by dropping the connection: a
+/// client that asked for a listing must be told which of "retry", "gone" and "broken" it got, and
+/// must never have to read that out of prose.
+async fn browse_remote_directory<C: ProtonClient + 'static>(
+    browse: &BrowseContext<C>,
+    shared: &ControlShared,
+    selector: Option<&str>,
+    limit: Option<usize>,
+) -> ListingOutcome {
+    let selector = selector.unwrap_or("");
+    let Some(relative) = crate::validate_relative_path(Path::new(selector)) else {
+        return ListingOutcome::Failed {
+            // Bounded like the other two failure arms, and here it is the *client's* bytes being
+            // echoed: a control request may carry up to `MAX_REQUEST_BYTES`, so a 64 KiB selector
+            // that fails validation would otherwise put 64 KiB of someone else's string on the
+            // wire. The one rule covers all three arms rather than the two that happened to
+            // originate remotely (Copilot review).
+            error: truncate_error(&format!("unsafe remote path: {selector}")),
+        };
+    };
+    let proton = Arc::clone(&browse.proton);
+    let remote_root = browse.remote_root.clone();
+    let gate_wait = browse.gate_wait;
+    let target = relative.clone();
+    // `spawn_blocking`: the listing is a synchronous subprocess. Running it inline would block a
+    // runtime worker, which is exactly what would stop the *other* control connections being
+    // served — the property this whole task layout exists for.
+    let listed = tokio::task::spawn_blocking(move || {
+        proton.browse_directory(&remote_root, &target, gate_wait)
+    })
+    .await;
+
+    let entities = match listed {
+        Ok(Ok(entities)) => {
+            // Success evidence, and the freshest there is: something reached Proton just now.
+            publish_auth_evidence(shared, AuthState::SignedIn);
+            entities
+        }
+        Ok(Err(error)) if is_cli_busy_error(error.as_ref()) => {
+            // Nothing was attempted, so this is evidence of nothing. Leaving the auth state alone
+            // here is the same rule the unclassified-failure arm below follows.
+            debug!(%error, "remote listing skipped: the proton-drive CLI is busy");
+            return ListingOutcome::Busy;
+        }
+        Ok(Err(error)) => {
+            // Per-request, not per-pass: a user asked for this, so one line per request is
+            // information rather than the pass-rate noise `note_event_scope_declined` guards
+            // against.
+            warn!(path = %relative.display(), %error, "remote listing failed");
+            if is_auth_failure_error(error.as_ref()) {
+                publish_auth_evidence(shared, AuthState::SignedOut);
+            }
+            return ListingOutcome::Failed {
+                // Bounded like every other error this engine puts on the wire (#136's
+                // `FailedItem::error`): a failing CLI invocation can carry kilobytes of stderr,
+                // and the reply is read into memory whole. The log line above kept it in full.
+                error: truncate_error(&error.to_string()),
+            };
+        }
+        Err(join_error) => {
+            warn!(%join_error, "the remote-listing task failed");
+            return ListingOutcome::Failed {
+                error: truncate_error(&format!("remote listing task failed: {join_error}")),
+            };
+        }
+    };
+
+    let mut entries: Vec<RemoteEntry> = entities
+        .into_iter()
+        // "In this folder" is exactly "one level down from it", and saying it that way covers two
+        // things with one rule. The CLI wraps a listing in the directory's own node, so the
+        // requested directory comes back keyed by its own path — its parent is not `relative`, so
+        // it drops, and browsing the root does not report the root inside itself. And the listing
+        // is supposed to be non-recursive: if the CLI ever nests a second level, a grandchild's
+        // parent is not `relative` either, so a browse cannot silently flatten a subtree into what
+        // reads as one folder's contents.
+        .filter(|(path, _)| path.parent() == Some(relative.as_path()))
+        .map(|(path, entity)| match entity {
+            RemoteEntity::File(file) => RemoteEntry {
+                path,
+                name: file.name,
+                entity_kind: EntityKind::File,
+                sha1: file.sha1_hash,
+                downloadable: file.downloadable,
+            },
+            RemoteEntity::Directory(directory) => RemoteEntry {
+                path,
+                name: directory.name,
+                entity_kind: EntityKind::Directory,
+                sha1: None,
+                // A directory is not a download; `false` here says nothing about its contents.
+                downloadable: false,
+            },
+        })
+        .collect();
+    // Directories first, then by name: a stable order a browser can render without sorting, and
+    // one a test can assert on. `HashMap` iteration order is otherwise arbitrary.
+    entries.sort_by(|left, right| {
+        (left.entity_kind == EntityKind::File)
+            .cmp(&(right.entity_kind == EntityKind::File))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let total = entries.len();
+    let limit = limit
+        .unwrap_or(LIST_ENTRIES_DEFAULT_LIMIT)
+        .clamp(1, LIST_ENTRIES_MAX_LIMIT);
+    entries.truncate(limit);
+    ListingOutcome::Listed {
+        path: relative,
+        truncated: total > entries.len(),
+        total,
+        entries,
+    }
+}
+
+/// Publishes an auth verdict and logs the transition once; `true` when it changed.
+///
+/// Only ever called with real evidence — something reached Proton, or a failure the engine
+/// *classified* as an auth failure (see [`AuthState`]). Both writers go through here: the control
+/// task calls it directly, and the daemon core wraps it in [`Daemon::note_auth_evidence`] to route
+/// a sign-out through the once-per-cause latch as well, which needs a `&mut Daemon` the IPC task
+/// does not have.
+fn publish_auth_evidence(shared: &ControlShared, state: AuthState) -> bool {
+    let changed = shared.record_auth_state(state);
+    if changed {
+        info!(auth = state.as_str(), "proton sign-in state changed");
+    }
+    changed
+}
+
+/// The standing reason reported when the Proton session is the thing that is wrong.
+///
+/// A `const` because [`Daemon::note_auth_evidence`] both sets it and — on recovery — clears it,
+/// and clearing by comparison only works if there is exactly one spelling to compare against.
+const AUTH_DECLINE_REASON: &str = "the proton-drive CLI session is signed out or expired; run `proton-drive login` \
+     (the daemon reuses that CLI's session)";
 
 /// Answers a [`ControlCommand::Activity`] request. The selector is a **relative path** and is
 /// validated like every other externally-sourced path before it reaches a query — it is only ever
@@ -4735,12 +5052,21 @@ struct PassFailures {
     consecutive: usize,
     /// Whether any action succeeded this pass.
     any_success: bool,
+    /// Whether any failure this pass was classified by `proton.rs` as an auth failure. Recorded
+    /// here because `record` is the last place the *typed* error exists — a `FailedItem` keeps only
+    /// the message, and re-matching that message downstream is the second-classifier bug shape
+    /// (#103). Read only by [`Self::abandoned`], so a systemic sign-out is reported as one.
+    auth_failure: bool,
     /// Paths to re-queue into `pending_changes` once the pass clears it.
     rescan_next_pass: BTreeSet<PathBuf>,
 }
 
 impl PassFailures {
-    fn record(&mut self, action: &PlannedAction, error: &(dyn std::error::Error + Send + Sync)) {
+    fn record(
+        &mut self,
+        action: &PlannedAction,
+        error: &(dyn std::error::Error + Send + Sync + 'static),
+    ) {
         // Named at `warn` only while the reported list has room, then dropped to `debug`: a pass
         // that fails thousands of actions must not bury its own summary line (and everything else
         // in the journal) under thousands of copies of it. The count is always exact — the
@@ -4767,12 +5093,38 @@ impl PassFailures {
         }
         self.count += 1;
         self.consecutive += 1;
+        self.auth_failure |= is_auth_failure_error(error);
         self.rescan_next_pass.insert(action.path.clone());
     }
 
     fn note_success(&mut self) {
         self.any_success = true;
         self.consecutive = 0;
+    }
+
+    /// The error that abandons a systemically failing pass — **one** constructor for both trip
+    /// sites, which is also the only way its auth classification can be in one place. `last` is the
+    /// most recent failure's message where the caller has it (the single-action site); the batched
+    /// site does not, since one chunk covers many files.
+    ///
+    /// Typed [`AuthFailure`] when any failure this pass was one: the breaker's whole premise is
+    /// "this is not a per-item problem", and an expired session is the named example in its own
+    /// doc comment — so the pass-level reader gets the same verdict a single failed listing gives.
+    fn abandoned(&self, last: Option<&str>) -> Box<dyn std::error::Error + Send + Sync> {
+        let last = last
+            .map(|last| format!(" (last: {last})"))
+            .unwrap_or_default();
+        let details = format!(
+            "reconciliation abandoned: {} actions in a row failed and nothing in this pass \
+             succeeded{last}; the failure looks systemic rather than per-item, so the rest of the \
+             plan is not attempted",
+            self.consecutive
+        );
+        if self.auth_failure {
+            Box::new(AuthFailure { details })
+        } else {
+            boxed_error(details)
+        }
     }
 
     fn breaker_tripped(&self) -> bool {
@@ -5238,6 +5590,541 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
+    /// The `list`-verb context a control connection is served with, built from a test daemon
+    /// exactly as `run` builds it — same client instance, hence the same `CliGate`.
+    fn browse_context<C: ProtonClient>(daemon: &Daemon<C>) -> BrowseContext<C> {
+        BrowseContext {
+            proton: Arc::clone(&daemon.proton),
+            remote_root: daemon.config.remote_root.clone(),
+            gate_wait: daemon.browse_gate_wait,
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // #99 (the read-only `list` verb) and #103 (daemon-side auth classification).
+    // ---------------------------------------------------------------------------------------
+
+    /// A daemon whose remote holds `notes.txt`, `all/` and `all/inside.txt`, with `failure`
+    /// governing how a listing fails.
+    fn browsing_daemon(
+        directory: &Path,
+        local_root: &Path,
+        failure: ListingFailure,
+    ) -> Daemon<RecordingProtonClient> {
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("notes.txt"),
+            RemoteEntity::File(RemoteFile {
+                path: PathBuf::from("/Drive/RemoteFolder/notes.txt"),
+                id: "file-notes".to_owned(),
+                name: "notes.txt".to_owned(),
+                sha1_hash: Some("abc".to_owned()),
+                downloadable: true,
+            }),
+        );
+        remote_entities.insert(
+            PathBuf::from("design.gdoc"),
+            RemoteEntity::File(RemoteFile {
+                path: PathBuf::from("/Drive/RemoteFolder/design.gdoc"),
+                id: "file-doc".to_owned(),
+                name: "design.gdoc".to_owned(),
+                sha1_hash: None,
+                downloadable: false,
+            }),
+        );
+        // A folder literally named `all`: the reserved-word trap the approve/deny selector has,
+        // and which a read-only verb must not inherit.
+        remote_entities.insert(
+            PathBuf::from("all"),
+            RemoteEntity::Directory(RemoteDirectory {
+                path: PathBuf::from("/Drive/RemoteFolder/all"),
+                id: Some("dir-all".to_owned()),
+                name: "all".to_owned(),
+            }),
+        );
+        remote_entities.insert(
+            PathBuf::from("all/inside.txt"),
+            RemoteEntity::File(RemoteFile {
+                path: PathBuf::from("/Drive/RemoteFolder/all/inside.txt"),
+                id: "file-inside".to_owned(),
+                name: "inside.txt".to_owned(),
+                sha1_hash: Some("def".to_owned()),
+                downloadable: true,
+            }),
+        );
+        let (mut client, _operations) = RecordingProtonClient::new(HashMap::new());
+        client.remote_entities = remote_entities;
+        client.listing_failure = failure;
+        Daemon::with_client(test_config(directory, local_root), client).expect("daemon")
+    }
+
+    fn browse(
+        daemon: &Daemon<RecordingProtonClient>,
+        selector: Option<&str>,
+        limit: Option<usize>,
+    ) -> ListingOutcome {
+        let context = browse_context(daemon);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(browse_remote_directory(
+                &context,
+                &daemon.shared,
+                selector,
+                limit,
+            ))
+    }
+
+    fn listed_names(outcome: &ListingOutcome) -> Vec<String> {
+        match outcome {
+            ListingOutcome::Listed { entries, .. } => {
+                entries.iter().map(|entry| entry.name.clone()).collect()
+            }
+            other => panic!("expected a listing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_list_verb_answers_a_folders_contents_and_not_the_folder_itself() {
+        // #99. The empty selector is the remote root — the legitimate `Some("")` case the plain
+        // path guard exists for — and the CLI's own wrapper node must not come back as an entry,
+        // or every folder would appear to contain itself.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::None);
+
+        let root = browse(&daemon, None, None);
+        // Directories first, then by name.
+        assert_eq!(
+            listed_names(&root),
+            vec!["all", "design.gdoc", "notes.txt"],
+            "the root's immediate children, and nothing from inside `all/`"
+        );
+        let ListingOutcome::Listed {
+            path,
+            total,
+            truncated,
+            entries,
+        } = &root
+        else {
+            panic!("expected a listing");
+        };
+        assert_eq!(
+            path,
+            Path::new(""),
+            "the root echoes back as the empty path"
+        );
+        assert_eq!((*total, *truncated), (3, false));
+        // A Proton-native node is named as present-but-unfetchable rather than as an ordinary
+        // file that simply never arrives.
+        let doc = entries
+            .iter()
+            .find(|entry| entry.name == "design.gdoc")
+            .expect("the doc");
+        assert!(!doc.downloadable);
+        assert_eq!(doc.sha1, None);
+
+        // …and a subfolder lists its own contents, with itself dropped.
+        let inside = browse(&daemon, Some("all"), None);
+        assert_eq!(listed_names(&inside), vec!["inside.txt"]);
+    }
+
+    /// A `ProtonClient` whose single-directory listing hands back the WHOLE tree, however deep —
+    /// what a CLI that nested a second level of `entries` would produce. The browse must still
+    /// answer one folder's contents.
+    #[derive(Debug)]
+    struct OverdeepListingClient {
+        entities: HashMap<PathBuf, RemoteEntity>,
+    }
+
+    impl ProtonClient for OverdeepListingClient {
+        fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
+            Ok(HashMap::new())
+        }
+
+        fn list_directory(
+            &self,
+            _remote_root: &Path,
+            _relative_directory: &Path,
+        ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            Ok(self.entities.clone())
+        }
+
+        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected ensure directory"))
+        }
+
+        fn upload(&self, _local: &Path, _root: &Path, _relative: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected upload"))
+        }
+
+        fn download(&self, _remote_path: &Path, _destination: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected download"))
+        }
+
+        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
+            Err(boxed_error("unexpected delete"))
+        }
+    }
+
+    #[test]
+    fn a_browse_answers_one_level_even_when_the_listing_hands_back_a_whole_subtree() {
+        // "In this folder" is one level down, and the daemon says so rather than trusting the
+        // listing to be non-recursive. A CLI that nested a second level would otherwise flatten a
+        // subtree into what a browser draws as one folder's contents — and the folder's own
+        // wrapper node would appear inside itself.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut entities = HashMap::new();
+        for path in [
+            "photos",
+            "photos/beach.jpg",
+            "photos/2019",
+            "photos/2019/ski.jpg",
+        ] {
+            let name = Path::new(path)
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned();
+            entities.insert(
+                PathBuf::from(path),
+                if path.ends_with(".jpg") {
+                    RemoteEntity::File(RemoteFile {
+                        path: PathBuf::from("/Drive/RemoteFolder").join(path),
+                        id: format!("id-{name}"),
+                        name,
+                        sha1_hash: Some("abc".to_owned()),
+                        downloadable: true,
+                    })
+                } else {
+                    RemoteEntity::Directory(RemoteDirectory {
+                        path: PathBuf::from("/Drive/RemoteFolder").join(path),
+                        id: Some(format!("id-{name}")),
+                        name,
+                    })
+                },
+            );
+        }
+        let daemon = Daemon::with_client(
+            test_config(directory.path(), &local_root),
+            OverdeepListingClient { entities },
+        )
+        .expect("daemon");
+
+        let context = browse_context(&daemon);
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(browse_remote_directory(
+                &context,
+                &daemon.shared,
+                Some("photos"),
+                None,
+            ));
+
+        let ListingOutcome::Listed { entries, total, .. } = outcome else {
+            panic!("expected a listing");
+        };
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["2019", "beach.jpg"],
+            "neither the folder itself nor anything below `2019/`"
+        );
+        assert_eq!(
+            total, 2,
+            "the total counts what the folder holds, not the subtree"
+        );
+    }
+
+    #[test]
+    fn a_folder_named_all_is_listed_rather_than_treated_as_a_sentinel() {
+        // The reserved-word trap: `"all"` means "every pending deletion" to approve/deny/keep, and
+        // a read-only verb must not grow a second meaning for it. Browsing `all` lists the folder.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::None);
+
+        assert_eq!(
+            listed_names(&browse(&daemon, Some("all"), None)),
+            vec!["inside.txt"]
+        );
+        assert_eq!(
+            listed_names(&browse(&daemon, Some("All"), None)),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_list_selector_that_escapes_the_root_is_refused_before_it_is_joined() {
+        // The path-safety boundary. A listing is a read, so the EMPTY path is legitimate here —
+        // but `..` never is, and the refusal must happen before anything is joined onto the root.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::None);
+
+        for selector in ["../etc", "/etc", "all/../.."] {
+            match browse(&daemon, Some(selector), None) {
+                ListingOutcome::Failed { error } => {
+                    assert!(error.contains("unsafe remote path"), "{selector}: {error}");
+                }
+                other => panic!("{selector} must be refused, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            daemon.shared.auth_state(),
+            AuthState::Unknown,
+            "a refused selector never reached Proton, so it proves nothing about the session"
+        );
+    }
+
+    #[test]
+    fn a_listing_is_capped_by_the_daemon_and_says_how_many_it_held_back() {
+        // The reply is one JSON line read into memory whole, so the bound is the daemon's. A
+        // truncated listing must say so rather than read as a short folder.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::None);
+
+        let ListingOutcome::Listed {
+            entries,
+            total,
+            truncated,
+            ..
+        } = browse(&daemon, None, Some(1))
+        else {
+            panic!("expected a listing");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(total, 3, "the total is untruncated");
+        assert!(truncated);
+
+        // A limit past the hard cap clamps to it rather than being honoured.
+        let ListingOutcome::Listed { entries, .. } = browse(&daemon, None, Some(usize::MAX)) else {
+            panic!("expected a listing");
+        };
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn a_busy_cli_answers_busy_and_moves_no_sign_in_verdict() {
+        // The concurrency decision's user-visible half (#99): a browse that could not get past the
+        // CLI gate reports a retryable state — NOT a failure, and not an empty folder. Nothing ran,
+        // so it is evidence of nothing about the session either.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::Busy);
+        daemon.shared.record_auth_state(AuthState::SignedIn);
+
+        assert_eq!(browse(&daemon, None, None), ListingOutcome::Busy);
+        assert_eq!(
+            daemon.shared.auth_state(),
+            AuthState::SignedIn,
+            "a busy gate says nothing about the session"
+        );
+    }
+
+    #[test]
+    fn a_listing_refused_for_the_session_reports_signed_out_on_the_very_same_reply() {
+        // #99 and #103 designed together: a read-only verb is where an auth failure surfaces
+        // first, and the client that asked is the one that needs to know. The verdict rides on the
+        // same reply, so a UI does not wait for the next pass to learn it is signed out.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::Auth);
+
+        match browse(&daemon, None, None) {
+            ListingOutcome::Failed { error } => assert!(error.contains("401")),
+            other => panic!("expected a failed listing, got {other:?}"),
+        }
+        assert_eq!(daemon.shared.auth_state(), AuthState::SignedOut);
+        assert_eq!(
+            daemon.shared.response("x").auth,
+            AuthState::SignedOut,
+            "and it is on the wire, not just in memory"
+        );
+    }
+
+    #[test]
+    fn an_unclassified_listing_failure_leaves_the_sign_in_verdict_exactly_where_it_was() {
+        // THE fall-through guard (#246's shape, one layer over). A timeout is not a sign-out and
+        // is not a sign-in: an "unknown error" arm that resolved either way would turn every
+        // unrecognised failure into a verdict the daemon has no evidence for.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::Other);
+
+        assert_eq!(daemon.shared.auth_state(), AuthState::Unknown);
+        assert!(matches!(
+            browse(&daemon, None, None),
+            ListingOutcome::Failed { .. }
+        ));
+        assert_eq!(
+            daemon.shared.auth_state(),
+            AuthState::Unknown,
+            "an unclassified failure must not read as signed in OR as signed out"
+        );
+
+        // The same from the other starting point: a known-bad session is not repaired by a
+        // timeout, and a known-good one is not condemned by one.
+        daemon.shared.record_auth_state(AuthState::SignedOut);
+        assert!(matches!(
+            browse(&daemon, None, None),
+            ListingOutcome::Failed { .. }
+        ));
+        assert_eq!(daemon.shared.auth_state(), AuthState::SignedOut);
+    }
+
+    #[test]
+    fn a_failed_listings_error_is_bounded_like_every_other_error_on_the_wire() {
+        // A `proton-drive` failure can carry kilobytes of stderr, and the reply is one JSON line
+        // read into memory whole — the same reason `FailedItem::error` is capped (#136).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::Verbose);
+
+        let ListingOutcome::Failed { error } = browse(&daemon, None, None) else {
+            panic!("expected a failed listing");
+        };
+
+        assert!(
+            error.len() <= FAILED_ITEM_ERROR_LIMIT,
+            "the wire error must be bounded, got {} bytes",
+            error.len()
+        );
+        assert!(
+            error.ends_with('…'),
+            "and it must say it was cut rather than look complete: {error:?}"
+        );
+
+        // The *refused selector* arm is bound by the same rule, and it is the one where the bytes
+        // are the client's own: a control request may carry up to `ipc::MAX_REQUEST_BYTES`, so an
+        // unbounded echo here would put 64 KiB of somebody else's string on the wire.
+        let huge = format!("../{}", "a".repeat(64 * 1024));
+        let ListingOutcome::Failed { error } = browse(&daemon, Some(&huge), None) else {
+            panic!("expected a refused selector");
+        };
+        assert!(
+            error.len() <= FAILED_ITEM_ERROR_LIMIT,
+            "a refused selector must not echo itself unbounded, got {} bytes",
+            error.len()
+        );
+        assert!(error.starts_with("unsafe remote path:"), "{error:?}");
+    }
+
+    #[test]
+    fn a_successful_listing_is_the_evidence_that_clears_a_stale_sign_out() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let daemon = browsing_daemon(directory.path(), &local_root, ListingFailure::None);
+        daemon.shared.record_auth_state(AuthState::SignedOut);
+
+        assert!(matches!(
+            browse(&daemon, None, None),
+            ListingOutcome::Listed { .. }
+        ));
+        assert_eq!(daemon.shared.auth_state(), AuthState::SignedIn);
+    }
+
+    #[test]
+    fn a_successful_pass_reports_the_session_as_signed_in() {
+        // The daemon core's half of the same verdict: a pass that completed reached Proton.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        assert_eq!(daemon.shared.auth_state(), AuthState::Unknown);
+
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        assert_eq!(daemon.shared.auth_state(), AuthState::SignedIn);
+    }
+
+    #[test]
+    fn a_pass_that_failed_on_the_session_reports_it_once_through_the_existing_latch() {
+        // #103's reporting rule: an expired session is another cause in the ONE
+        // "why is this daemon degraded" family (`note_event_scope_declined`), said once and
+        // re-said only when the cause changes — not a second channel that can disagree with it.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+
+        daemon.note_auth_evidence(AuthState::SignedOut);
+        assert_eq!(daemon.shared.auth_state(), AuthState::SignedOut);
+        assert_eq!(
+            daemon.event_scope_declined.as_deref(),
+            Some(AUTH_DECLINE_REASON),
+            "the sign-out is reported through the scope latch, not beside it"
+        );
+        // The reason is a log line and a status string, so it must read as one sentence. The
+        // source spells it across two lines with a `\` continuation, which strips the newline AND
+        // the next line's indentation — but that is invisible at the call site and easy to
+        // "fix" into a real run of spaces (Copilot review read it as one). Assert the rendered
+        // form rather than trusting the escape.
+        assert!(
+            !AUTH_DECLINE_REASON.contains("  ") && !AUTH_DECLINE_REASON.contains('\n'),
+            "the reason must render as one line with no whitespace run: {AUTH_DECLINE_REASON:?}"
+        );
+
+        // Recovery clears it, because it is OUR reason…
+        daemon.note_auth_evidence(AuthState::SignedIn);
+        assert_eq!(daemon.event_scope_declined, None);
+
+        // …and only ours: a working session says nothing about a missing volume, so a sign-in
+        // must not erase that line and let it re-report as new next pass.
+        daemon.note_event_scope_declined("no event volume: nothing carries a proton_id".to_owned());
+        daemon.note_auth_evidence(AuthState::SignedIn);
+        assert_eq!(
+            daemon.event_scope_declined.as_deref(),
+            Some("no event volume: nothing carries a proton_id")
+        );
+    }
+
+    #[test]
+    fn a_systemically_auth_failing_pass_abandons_with_a_classified_error() {
+        // The breaker's own doc names an expired session as its motivating case, so the error it
+        // raises must carry that classification through to the pass-level reader — otherwise a
+        // whole pass of 401s reads as an unexplained failure while a single failed listing does
+        // not.
+        let mut failures = PassFailures::default();
+        let action = PlannedAction::new(
+            Path::new("a.txt"),
+            SyncAction::Upload,
+            EntityKind::File,
+            None,
+        );
+        let auth = AuthFailure {
+            details: "proton-drive upload failed: 401 Unauthorized".to_owned(),
+        };
+        failures.record(&action, &auth);
+        let abandoned = failures.abandoned(Some("401 Unauthorized"));
+        assert!(is_auth_failure_error(abandoned.as_ref()));
+        assert!(abandoned.to_string().contains("reconciliation abandoned"));
+
+        // …and a pass that failed for other reasons is not retyped into a session verdict.
+        let mut ordinary = PassFailures::default();
+        ordinary.record(&action, &*boxed_error("ENOSPC"));
+        assert!(!is_auth_failure_error(ordinary.abandoned(None).as_ref()));
+    }
+
     /// Unwraps a pass and pins it CLEAN. Every test that is not specifically about item failures
     /// says this, so a partial pass (#136) can never be waved through as "it returned Ok" — the
     /// shape of bug that once let a failed pass render as success (#246).
@@ -5335,6 +6222,24 @@ mod tests {
         /// node trashed between the listing and the transfer (#31). Honoured by both the
         /// single-file and the batched path.
         vanished_downloads: BTreeSet<PathBuf>,
+        /// How `list_directory` fails, for the `list` verb's three outcomes. A field rather than a
+        /// boxed error because the client is `Clone` — and because the point of the test is the
+        /// *type* the daemon classifies on, which an enum names better than a message.
+        listing_failure: ListingFailure,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    enum ListingFailure {
+        #[default]
+        None,
+        /// The CLI gate refused an interactive listing: nothing ran.
+        Busy,
+        /// The CLI blamed the Proton session.
+        Auth,
+        /// Anything else — the arm that must move no auth verdict at all.
+        Other,
+        /// A failure whose message is far past the wire's error bound.
+        Verbose,
     }
 
     impl RecordingProtonClient {
@@ -5352,6 +6257,7 @@ mod tests {
                     failed_batch_downloads: BTreeSet::new(),
                     unstaged_batch_downloads: BTreeSet::new(),
                     vanished_downloads: BTreeSet::new(),
+                    listing_failure: ListingFailure::None,
                 },
                 operations,
             )
@@ -5372,6 +6278,7 @@ mod tests {
                     failed_batch_downloads: BTreeSet::new(),
                     unstaged_batch_downloads: BTreeSet::new(),
                     vanished_downloads: BTreeSet::new(),
+                    listing_failure: ListingFailure::None,
                 },
                 operations,
             )
@@ -5392,6 +6299,7 @@ mod tests {
                     failed_batch_downloads: BTreeSet::new(),
                     unstaged_batch_downloads: BTreeSet::new(),
                     vanished_downloads: BTreeSet::new(),
+                    listing_failure: ListingFailure::None,
                 },
                 operations,
             )
@@ -5418,6 +6326,7 @@ mod tests {
                     failed_batch_downloads: BTreeSet::new(),
                     unstaged_batch_downloads: BTreeSet::new(),
                     vanished_downloads: BTreeSet::new(),
+                    listing_failure: ListingFailure::None,
                 },
                 operations,
             )
@@ -5431,6 +6340,46 @@ mod tests {
 
         fn list_entities(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
             Ok(self.remote_entities.clone())
+        }
+
+        /// Models the real client closely enough for the `list` verb to be worth testing: the
+        /// directory's immediate children **plus the directory itself**, because the CLI wraps a
+        /// listing in its own node and the daemon's browse is what has to drop it again.
+        fn list_directory(
+            &self,
+            _remote_root: &Path,
+            relative_directory: &Path,
+        ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            match self.listing_failure {
+                ListingFailure::None => {}
+                ListingFailure::Busy => {
+                    return Err(Box::new(crate::proton::CliBusy {
+                        operation: "list".to_owned(),
+                        waited: Duration::from_millis(1),
+                    }));
+                }
+                ListingFailure::Auth => {
+                    return Err(Box::new(AuthFailure {
+                        details: "proton-drive list failed: 401 Unauthorized".to_owned(),
+                    }));
+                }
+                ListingFailure::Other => {
+                    return Err(boxed_error("proton-drive list timed out after 60s"));
+                }
+                ListingFailure::Verbose => {
+                    return Err(boxed_error("x".repeat(FAILED_ITEM_ERROR_LIMIT * 4)));
+                }
+            }
+            let mut listing: HashMap<PathBuf, RemoteEntity> = self
+                .remote_entities
+                .iter()
+                .filter(|(path, _)| path.parent().unwrap_or(Path::new("")) == relative_directory)
+                .map(|(path, entity)| (path.clone(), entity.clone()))
+                .collect();
+            if let Some(wrapper) = self.remote_entities.get(relative_directory) {
+                listing.insert(relative_directory.to_path_buf(), wrapper.clone());
+            }
+            Ok(listing)
         }
 
         fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
@@ -10416,27 +11365,26 @@ mod tests {
         let (client, _) = RecordingProtonClient::new(HashMap::new());
         let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
-        let approvals = tokio::sync::Mutex::new(
-            open_database(&daemon.config.db_path).expect("second connection"),
-        );
         let (loop_tx, _loop_rx) = mpsc::unbounded_channel();
+        let plane = ControlPlane {
+            shared: Arc::clone(&daemon.shared),
+            approvals: tokio::sync::Mutex::new(
+                open_database(&daemon.config.db_path).expect("second connection"),
+            ),
+            loop_tx,
+            io_timeout: Duration::from_millis(50),
+            metrics_path: daemon.metrics_path.clone(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            browse: browse_context(&daemon),
+        };
 
         let (control_client, server) = UnixStream::pair().expect("socket pair");
 
         // The outer timeout is a generous test-only guard: if the handler regressed to
         // blocking forever it fails here instead of hanging the suite.
-        let cancel_flag = AtomicBool::new(false);
         let outcome = tokio::time::timeout(
             Duration::from_secs(5),
-            handle_control_connection(
-                server,
-                &daemon.shared,
-                &approvals,
-                &loop_tx,
-                Duration::from_millis(50),
-                &daemon.metrics_path,
-                &cancel_flag,
-            ),
+            handle_control_connection(server, &plane),
         )
         .await
         .expect("an idle control connection must be dropped after the IO timeout");

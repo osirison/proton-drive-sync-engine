@@ -8,11 +8,11 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tracing::warn;
+use tracing::{debug, warn};
 use wait_timeout::ChildExt;
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
@@ -221,6 +221,9 @@ pub struct ProtonDriveClient {
     /// Test seam only; always `None` in production, where `run_once` waits via
     /// `wait_timeout::ChildExt`. See [`WaitHook`].
     wait_hook: Option<WaitHook>,
+    /// Serializes this client's `proton-drive` invocations — see [`CliGate`] for the decision and
+    /// why one is needed at all. Shared by clones, so a cloned client is still the same gate.
+    gate: Arc<CliGate>,
 }
 
 // Manual impl: `dyn ProgressSink` has no `Debug`, so the derive is no longer available.
@@ -232,6 +235,7 @@ impl std::fmt::Debug for ProtonDriveClient {
             .field("cancel_flag", &self.cancel_flag)
             .field("progress_sink", &self.progress_sink.is_some())
             .field("wait_hook", &self.wait_hook.is_some())
+            .field("gate", &self.gate)
             .finish()
     }
 }
@@ -268,6 +272,21 @@ pub trait ProtonClient: Send + Sync {
             "single-directory listing is not supported by this Proton client: {}",
             relative_directory.display()
         )))
+    }
+    /// [`Self::list_directory`] for an **interactive, read-only** caller: the control socket's
+    /// `list` verb (#99), which runs on the IPC task while the daemon's main loop may be mid-pass
+    /// on this same client. `wait` bounds how long it may wait for the [`CliGate`] before failing
+    /// with [`CliBusy`], so a browse never parks a control connection behind a multi-GB transfer.
+    ///
+    /// The default implementation ignores `wait` and delegates: a client that does not shell out
+    /// has no gate to contend for, which is exactly what a test double wants.
+    fn browse_directory(
+        &self,
+        remote_root: &Path,
+        relative_directory: &Path,
+        _wait: Duration,
+    ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+        self.list_directory(remote_root, relative_directory)
     }
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
         Err(boxed_error(format!(
@@ -368,6 +387,252 @@ pub fn is_node_not_found_error(error: &(dyn std::error::Error + Send + Sync + 's
     error.downcast_ref::<NodeNotFound>().is_some()
 }
 
+/// The CLI blamed the **Proton session** rather than the request: signed out, expired, refused
+/// with 401. Typed for the same reason [`NodeNotFound`] is — stderr is read for meaning exactly
+/// once, here, where the CLI's output is in hand, and every caller classifies by downcast
+/// ([`is_auth_failure_error`]) instead of re-matching text. A second matcher elsewhere is a second
+/// definition of "signed out", and two definitions disagree.
+///
+/// Carries the message it replaces, so nothing is lost from the log or from `last_error`.
+#[derive(Debug)]
+pub struct AuthFailure {
+    pub details: String,
+}
+
+impl std::fmt::Display for AuthFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl std::error::Error for AuthFailure {}
+
+/// True when `error` is an [`AuthFailure`] — the CLI said the session, not the file, is the
+/// problem. Only an error built at a site that saw the CLI's stderr classifies here, so the
+/// killing exits of `run_once` (timeout, cancellation, a missing binary) never do: an unclassified
+/// failure must never read as an auth verdict in either direction.
+pub fn is_auth_failure_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    error.downcast_ref::<AuthFailure>().is_some()
+}
+
+/// The vocabulary a Proton/HTTP auth failure actually uses. Deliberately narrow: broad tokens like
+/// a bare `auth` match unrelated words (`author.txt`), and a false positive here reports a healthy
+/// daemon as signed out. `401` is matched only as a standalone token (see
+/// [`contains_standalone_token`]) so `401k-statement.pdf` is not a sign-in problem.
+const AUTH_FAILURE_NEEDLES: &[&str] = &[
+    "unauthor",    // unauthorized / unauthorised
+    "authenticat", // authentication / failed to authenticate
+    "authoriz",    // authorization
+    "sign in",
+    "sign-in",
+    "signed out",
+    "session expired",
+    "session has expired",
+    "not logged in",
+    "logged out",
+    "re-authenticate",
+    "reauthenticate",
+    "expired token",
+    "token expired",
+    "invalid token",
+    "invalid session",
+    "credential",
+];
+
+/// `needle` appears in `haystack` with no alphanumeric character on either side. Used for `401`,
+/// which is a status code in `HTTP 401 Unauthorized` and a filename in `401k.pdf`.
+fn contains_standalone_token(haystack: &str, needle: &str) -> bool {
+    haystack.match_indices(needle).any(|(start, _)| {
+        let before = haystack[..start].chars().next_back();
+        let after = haystack[start + needle.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric()) && !after.is_some_and(|c| c.is_alphanumeric())
+    })
+}
+
+/// Whether a finished `proton-drive` invocation's stderr blames the Proton session. **The one
+/// place in this engine that reads an auth failure out of text** (#103) — the daemon and every UI
+/// downstream read the typed [`AuthFailure`] or the classified state on the control reply.
+fn is_auth_failure(output: &Output) -> bool {
+    let stderr = trimmed_stderr(output).to_ascii_lowercase();
+    contains_standalone_token(&stderr, "401")
+        || AUTH_FAILURE_NEEDLES
+            .iter()
+            .any(|needle| stderr.contains(needle))
+}
+
+/// The error for a `proton-drive` invocation that exited unsuccessfully. **One constructor for
+/// every such site**, so each keeps its own message while the classification stays in a single
+/// place. `NodeNotFound` is checked *before* this by the two sites that can produce it: a vanished
+/// node is a per-action skip, which is more specific — and more actionable — than "the session may
+/// be bad".
+fn cli_failure(message: String, output: &Output) -> Box<dyn std::error::Error + Send + Sync> {
+    if is_auth_failure(output) {
+        Box::new(AuthFailure { details: message })
+    } else {
+        boxed_error(message)
+    }
+}
+
+/// How long a caller may wait for the [`CliGate`] before giving up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateWait {
+    /// Wait as long as it takes. Everything the daemon's own reconcile passes do uses this: that
+    /// work is the reason the gate exists and must never be dropped for being queued.
+    Forever,
+    /// Give up after this long and fail with [`CliBusy`]. Interactive, read-only requests use
+    /// this — see [`CliGate`] for why the two callers differ.
+    AtMost(Duration),
+}
+
+/// Serializes every `proton-drive` child process a client spawns.
+///
+/// **Why it exists.** The CLI is not concurrency-safe: two invocations share its SQLite cache and
+/// session store and lose to `SQLITE_BUSY` (#23). That is what the user-global lock in
+/// [`crate::paths::default_global_lock_path`] buys *across* daemons; this gate buys the same thing
+/// *inside* one, now that the control socket answers a read-only `list` verb (#99) from the IPC
+/// task while the main loop may be mid-pass on the same client. Without it, #99 would reintroduce
+/// inside one process exactly the race the global lock prevents between processes.
+///
+/// **The decision, recorded at the definition rather than in a review thread.** Two properties are
+/// in tension: every invocation must serialize, and a control reply must stay instant while a
+/// reconcile blocks the main task (the whole point of `daemon::serve_control_socket`).
+///
+/// * The gate is held for the duration of **one child process**, never for a pass. A 30-minute
+///   full-tree walk is thousands of short listings, so an interactive request lands in one of the
+///   gaps instead of waiting out the walk.
+/// * The wait is **bounded for interactive callers only**. A browse that still cannot get in —
+///   a multi-GB upload holds the gate — fails fast with [`CliBusy`], which the control plane
+///   reports as a typed `busy` state the client retries.
+///
+/// The two alternatives were rejected. *Serialize-and-block* lets one upload park a control
+/// connection for the CLI's whole timeout budget. *Refuse while syncing* both races (a pass can
+/// start between the check and the invocation, so it is not actually a gate) and refuses during
+/// the many stretches of a pass that hold no child at all.
+///
+/// One gate per client instance, shared by its clones. The daemon builds exactly one client and
+/// shares it (`Arc<C>`) between its main loop and its IPC task, so that is one gate for every
+/// invocation the daemon makes.
+#[derive(Debug)]
+pub struct CliGate {
+    /// `true` while a `proton-drive` child is running under this gate.
+    held: Mutex<bool>,
+    released: Condvar,
+}
+
+impl Default for CliGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CliGate {
+    pub const fn new() -> Self {
+        Self {
+            held: Mutex::new(false),
+            released: Condvar::new(),
+        }
+    }
+
+    /// Takes the gate, waiting for as long as it takes. Infallible by construction — see
+    /// [`Self::wait_for_gate`], whose only early exit is a deadline this call does not set.
+    pub fn enter(&self) -> CliGateGuard<'_> {
+        self.wait_for_gate(None)
+            .expect("a wait with no deadline can only end by taking the gate")
+    }
+
+    /// Takes the gate, giving up after `budget`. `None` means it was still held when the budget
+    /// ran out — the caller must not run its command.
+    pub fn enter_within(&self, budget: Duration) -> Option<CliGateGuard<'_>> {
+        self.wait_for_gate(Some(Instant::now() + budget))
+    }
+
+    /// The one wait loop behind both, so there is one place the condvar protocol lives.
+    ///
+    /// Lock poisoning is recovered from rather than propagated: the protected state is one `bool`
+    /// whose only writer is [`CliGateGuard::drop`], which runs while unwinding, so a panic inside a
+    /// CLI invocation still leaves the flag consistent. Refusing every later invocation because an
+    /// unrelated one panicked would be strictly worse.
+    fn wait_for_gate(&self, deadline: Option<Instant>) -> Option<CliGateGuard<'_>> {
+        let mut held = self.held.lock().unwrap_or_else(|error| error.into_inner());
+        while *held {
+            let Some(deadline) = deadline else {
+                held = self
+                    .released
+                    .wait(held)
+                    .unwrap_or_else(|error| error.into_inner());
+                continue;
+            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let (next, outcome) = self
+                .released
+                .wait_timeout(held, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            held = next;
+            // Re-check `*held`: a spurious or racing wakeup can time out *and* find the gate free,
+            // and giving up there would refuse a caller that could have gone straight in.
+            if outcome.timed_out() && *held {
+                return None;
+            }
+        }
+        *held = true;
+        Some(CliGateGuard { gate: self })
+    }
+}
+
+/// Holds the [`CliGate`] until dropped. Release notifies **all** waiters, not one: a bounded
+/// waiter woken past its deadline returns without taking the gate and without re-notifying, so a
+/// single notify could strand an unbounded waiter on a free gate.
+#[derive(Debug)]
+pub struct CliGateGuard<'a> {
+    gate: &'a CliGate,
+}
+
+impl Drop for CliGateGuard<'_> {
+    fn drop(&mut self) {
+        {
+            let mut held = self
+                .gate
+                .held
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *held = false;
+        }
+        self.gate.released.notify_all();
+    }
+}
+
+/// An interactive request gave up waiting for the [`CliGate`]: another `proton-drive` invocation
+/// was still running when its budget expired. Typed, like [`NodeNotFound`] and [`AuthFailure`], so
+/// the control plane reports a retryable "busy" rather than a failure — nothing was attempted, and
+/// nothing about the remote is implied.
+#[derive(Debug)]
+pub struct CliBusy {
+    pub operation: String,
+    pub waited: Duration,
+}
+
+impl std::fmt::Display for CliBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the proton-drive CLI was busy with another operation for the whole {} this {} request \
+             waited; it was not run",
+            format_duration(self.waited),
+            self.operation
+        )
+    }
+}
+
+impl std::error::Error for CliBusy {}
+
+/// True when `error` is a [`CliBusy`] — the request never ran, so it can be retried as-is.
+pub fn is_cli_busy_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    error.downcast_ref::<CliBusy>().is_some()
+}
+
 /// Receiver for the concrete client's live progress callbacks (see
 /// [`ProtonClient::install_progress_sink`]). The daemon publishes these into its status
 /// snapshot so `proton-sync status` / the GUI can show what a long pass is doing. Callbacks
@@ -383,6 +648,52 @@ pub trait ProgressSink: Send + Sync {
 }
 
 impl ProtonDriveClient {
+    /// The one body behind [`ProtonClient::list_directory`] and [`ProtonClient::browse_directory`]:
+    /// the same non-recursive listing, differing only in how long it may wait for the [`CliGate`].
+    /// One body rather than two, because a second copy of "how this engine lists one folder" is a
+    /// second thing to keep in step with the `{ok, value}` parsing rules (#59).
+    ///
+    /// `interactive_wait: None` is the daemon's own path — unbounded wait, and the configured
+    /// list-retry policy. `Some(wait)` is the control socket's `list` verb: bounded wait, one
+    /// attempt (see [`Self::run_proton_drive_interactive`]).
+    fn list_one_directory(
+        &self,
+        remote_root: &Path,
+        relative_directory: &Path,
+        interactive_wait: Option<Duration>,
+    ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+        let remote_directory = if relative_directory.as_os_str().is_empty() {
+            remote_root.to_path_buf()
+        } else {
+            remote_root.join(relative_directory)
+        };
+        let args = [
+            OsString::from("filesystem"),
+            OsString::from("list"),
+            OsString::from("--json"),
+            remote_directory.as_os_str().to_os_string(),
+        ];
+        let output = match interactive_wait {
+            None => self.run_proton_drive("list", &args, self.command_policy.list_attempts)?,
+            Some(wait) => self.run_proton_drive_interactive("list", &args, wait)?,
+        };
+        if !output.status.success() {
+            return Err(cli_failure(
+                format!(
+                    "proton-drive list failed for {}: {}",
+                    remote_directory.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                &output,
+            ));
+        }
+        let stdout = String::from_utf8(output.stdout)?;
+        // Non-recursive: `parse_remote_listing` over a single directory's JSON yields that
+        // directory's immediate entries, which is all the resolver needs to locate the changed
+        // node among its siblings.
+        Ok(parse_remote_listing(&stdout, remote_root, relative_directory)?.into_entities())
+    }
+
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
@@ -390,6 +701,7 @@ impl ProtonDriveClient {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             progress_sink: None,
             wait_hook: None,
+            gate: Arc::new(CliGate::new()),
         }
     }
 
@@ -410,6 +722,7 @@ impl ProtonDriveClient {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             progress_sink: None,
             wait_hook: None,
+            gate: Arc::new(CliGate::new()),
         }
     }
 }
@@ -486,11 +799,14 @@ impl ProtonClient for ProtonDriveClient {
                 if relative_directory.as_os_str().is_empty() && is_node_not_found(&output) {
                     return Ok(RemoteListingStatus::RootMissing);
                 }
-                return Err(boxed_error(format!(
-                    "proton-drive list failed for {}: {}",
-                    remote_directory.display(),
-                    String::from_utf8_lossy(&output.stderr)
-                )));
+                return Err(cli_failure(
+                    format!(
+                        "proton-drive list failed for {}: {}",
+                        remote_directory.display(),
+                        String::from_utf8_lossy(&output.stderr)
+                    ),
+                    &output,
+                ));
             }
             let stdout = String::from_utf8(output.stdout)?;
             let listing = parse_remote_listing(&stdout, remote_root, &relative_directory)?;
@@ -518,33 +834,16 @@ impl ProtonClient for ProtonDriveClient {
         remote_root: &Path,
         relative_directory: &Path,
     ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
-        let remote_directory = if relative_directory.as_os_str().is_empty() {
-            remote_root.to_path_buf()
-        } else {
-            remote_root.join(relative_directory)
-        };
-        let output = self.run_proton_drive(
-            "list",
-            &[
-                OsString::from("filesystem"),
-                OsString::from("list"),
-                OsString::from("--json"),
-                remote_directory.as_os_str().to_os_string(),
-            ],
-            self.command_policy.list_attempts,
-        )?;
-        if !output.status.success() {
-            return Err(boxed_error(format!(
-                "proton-drive list failed for {}: {}",
-                remote_directory.display(),
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-        let stdout = String::from_utf8(output.stdout)?;
-        // Non-recursive: `parse_remote_listing` over a single directory's JSON yields that
-        // directory's immediate entries, which is all the resolver needs to locate the changed
-        // node among its siblings.
-        Ok(parse_remote_listing(&stdout, remote_root, relative_directory)?.into_entities())
+        self.list_one_directory(remote_root, relative_directory, None)
+    }
+
+    fn browse_directory(
+        &self,
+        remote_root: &Path,
+        relative_directory: &Path,
+        wait: Duration,
+    ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+        self.list_one_directory(remote_root, relative_directory, Some(wait))
     }
 
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
@@ -624,11 +923,14 @@ impl ProtonClient for ProtonDriveClient {
         if output.status.success() {
             Ok(())
         } else {
-            Err(boxed_error(format!(
-                "proton-drive upload failed for {}: {}",
-                local_path.display(),
-                String::from_utf8_lossy(&output.stderr)
-            )))
+            Err(cli_failure(
+                format!(
+                    "proton-drive upload failed for {}: {}",
+                    local_path.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                &output,
+            ))
         }
     }
 
@@ -691,7 +993,7 @@ impl ProtonClient for ProtonDriveClient {
                     details: message,
                 }));
             }
-            return Err(boxed_error(message));
+            return Err(cli_failure(message, &output));
         }
 
         // The CLI exited 0, so if the scratch directory does not now hold exactly the downloaded
@@ -743,11 +1045,14 @@ impl ProtonClient for ProtonDriveClient {
         if output.status.success() {
             Ok(())
         } else {
-            Err(boxed_error(format!(
-                "proton-drive trash failed for {}: {}",
-                remote_path.display(),
-                String::from_utf8_lossy(&output.stderr)
-            )))
+            Err(cli_failure(
+                format!(
+                    "proton-drive trash failed for {}: {}",
+                    remote_path.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                &output,
+            ))
         }
     }
 
@@ -860,11 +1165,14 @@ impl ProtonDriveClient {
         if output.status.success() {
             Ok(())
         } else {
-            Err(boxed_error(format!(
-                "proton-drive rename failed for {}: {}",
-                remote_path.display(),
-                String::from_utf8_lossy(&output.stderr)
-            )))
+            Err(cli_failure(
+                format!(
+                    "proton-drive rename failed for {}: {}",
+                    remote_path.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                &output,
+            ))
         }
     }
 
@@ -882,11 +1190,14 @@ impl ProtonDriveClient {
         if output.status.success() {
             Ok(())
         } else {
-            Err(boxed_error(format!(
-                "proton-drive move failed for {}: {}",
-                remote_path.display(),
-                String::from_utf8_lossy(&output.stderr)
-            )))
+            Err(cli_failure(
+                format!(
+                    "proton-drive move failed for {}: {}",
+                    remote_path.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                &output,
+            ))
         }
     }
 
@@ -924,11 +1235,14 @@ impl ProtonDriveClient {
                 parent = target;
                 continue;
             }
-            return Err(boxed_error(format!(
-                "proton-drive create-folder failed for {}: {}",
-                target.display(),
-                trimmed_stderr(&output)
-            )));
+            return Err(cli_failure(
+                format!(
+                    "proton-drive create-folder failed for {}: {}",
+                    target.display(),
+                    trimmed_stderr(&output)
+                ),
+                &output,
+            ));
         }
 
         Ok(())
@@ -961,40 +1275,6 @@ impl ProtonDriveClient {
         Ok(None)
     }
 
-    /// Runs a single `proton-drive` subcommand (with `attempts` bounded retries).
-    ///
-    /// ## The CLI is not safe to run concurrently — issue #23
-    ///
-    /// The vendored `proton-drive` CLI keeps shared, writable SQLite cache stores
-    /// (`~/.cache/proton-drive-cli`). Two overlapping invocations race on those stores and one
-    /// aborts with `SQLITE_BUSY: database is locked` — a non-zero exit plus a `====` banner and JS
-    /// stack trace printed to its output, which would then also fail our JSON parse.
-    ///
-    /// The engine does not trigger this itself. A **user-global single-instance lock**
-    /// (`paths::default_global_lock_path`) admits at most one `proton-syncd` per user account, and
-    /// within it reconcile is **single-flight** (serialized on `&mut self` via `block_in_place` in
-    /// the daemon `select!` loop) while event polling shells `curl` (`session.rs`), not this CLI —
-    /// so the engine drives at most one `proton-drive` process at a time. The only remaining way to
-    /// reach `SQLITE_BUSY` is an *external* `proton-drive` process sharing this user's cache; on
-    /// Linux — the platform this project targets, precisely because there is no Proton desktop
-    /// client — that reduces to the user running `proton-drive` by hand while the daemon is live.
-    /// Narrow; hence this note rather than in-engine retries. (The lock is keyed on `$XDG_STATE_HOME`,
-    /// so the one way to defeat it is to deliberately point two daemons at different state homes —
-    /// an explicit opt-in to the contention.)
-    ///
-    /// Defenses already in place, by command class:
-    /// - **Read-only** listings (`list` / `list_directory`) pass `list_attempts` (> 1), so a
-    ///   transient busy crash is retried and usually self-heals.
-    /// - **Mutating** commands (upload/download/trash/rename/move/create-folder) pass `attempts = 1`
-    ///   and are never auto-retried, so a busy crash mid-write fails the reconcile cleanly — the
-    ///   failed action is never recorded (index writes happen only after their side effect
-    ///   succeeded; completed actions keep their checkpoints) — and the remainder replans next
-    ///   cycle.
-    ///
-    /// The real fix — one long-lived process owning the cache instead of many short-lived CLI
-    /// spawns fighting over shared SQLite — is the SDK-sidecar tracked in #18. Until then, do **not**
-    /// add engine-side parallelism across `proton-drive` invocations (this is also why #17,
-    /// parallelizing the list BFS, stays deferred).
     /// Executes the batched form of [`ProtonClient::download_many`]: one `filesystem download`
     /// invocation naming every remote path, staged through a single private scratch directory
     /// and moved into place with one rename per file — the same "content lands at exactly
@@ -1048,12 +1328,7 @@ impl ProtonDriveClient {
                     requests.len(),
                     trimmed_stderr(&output)
                 );
-                salvage_staged_downloads(
-                    &scratch_dir,
-                    requests,
-                    &failure,
-                    is_node_not_found(&output),
-                )
+                salvage_staged_downloads(&scratch_dir, requests, &failure, Some(&output))
             }
             Err(error) => {
                 let failure = format!(
@@ -1072,8 +1347,9 @@ impl ProtonDriveClient {
                         .collect();
                 }
                 // No `Output` here (spawn error, timeout, cancellation), so there is no stderr to
-                // classify: a transport failure is never a vanished node.
-                salvage_staged_downloads(&scratch_dir, requests, &failure, false)
+                // classify: a transport failure is never a vanished node, and has no stderr to
+                // read a session verdict out of either.
+                salvage_staged_downloads(&scratch_dir, requests, &failure, None)
             }
         }
     }
@@ -1090,6 +1366,7 @@ impl ProtonDriveClient {
             attempts,
             true,
             self.command_policy.timeout,
+            GateWait::Forever,
         )
     }
 
@@ -1105,6 +1382,7 @@ impl ProtonDriveClient {
             attempts,
             false,
             self.command_policy.timeout,
+            GateWait::Forever,
         )
     }
 
@@ -1117,7 +1395,27 @@ impl ProtonDriveClient {
         args: &[OsString],
         timeout: Duration,
     ) -> AppResult<Output> {
-        self.run_proton_drive_with_logging(operation, args, 1, true, timeout)
+        self.run_proton_drive_with_logging(operation, args, 1, true, timeout, GateWait::Forever)
+    }
+
+    /// As [`Self::run_proton_drive`] with `attempts = 1`, but the wait for the [`CliGate`] is
+    /// bounded: the invocation is abandoned with [`CliBusy`] rather than queued behind a long
+    /// transfer. One attempt on purpose — an interactive caller retries by asking again, and a
+    /// retry behind a gate only adds latency to an answer the user is waiting on.
+    fn run_proton_drive_interactive(
+        &self,
+        operation: &str,
+        args: &[OsString],
+        wait: Duration,
+    ) -> AppResult<Output> {
+        self.run_proton_drive_with_logging(
+            operation,
+            args,
+            1,
+            true,
+            self.command_policy.timeout,
+            GateWait::AtMost(wait),
+        )
     }
 
     fn run_proton_drive_with_logging(
@@ -1127,12 +1425,28 @@ impl ProtonDriveClient {
         attempts: usize,
         warn_on_unsuccessful_exit: bool,
         timeout: Duration,
+        gate_wait: GateWait,
     ) -> AppResult<Output> {
         let attempts = attempts.max(1);
         let mut last_error = None;
         for attempt in 1..=attempts {
-            let output = match self.run_once(operation, args, timeout) {
+            let output = match self.run_once(operation, args, timeout, gate_wait) {
                 Ok(output) => output,
+                // A busy gate is not a failed command: nothing was spawned, so there is nothing to
+                // report and nothing a retry could fix — waiting again would just spend the budget
+                // a second time on the answer the caller already has. Returned immediately, and at
+                // `debug`, because the only callers that can see it are interactive: an
+                // unconditional `warn` here would log on every poll of a client browsing during a
+                // long sync, which is exactly the pass-rate noise the daemon's own listing path
+                // avoids by the same rule (Copilot review).
+                Err(error) if is_cli_busy_error(error.as_ref()) => {
+                    debug!(
+                        operation,
+                        error = %error,
+                        "proton-drive command skipped: another invocation held the CLI gate"
+                    );
+                    return Err(error);
+                }
                 Err(error) if attempt < attempts => {
                     warn!(
                         operation,
@@ -1186,7 +1500,73 @@ impl ProtonDriveClient {
         })))
     }
 
-    fn run_once(&self, operation: &str, args: &[OsString], timeout: Duration) -> AppResult<Output> {
+    /// Runs one `proton-drive` child process to completion, under this client's [`CliGate`].
+    ///
+    /// ## The CLI is not safe to run concurrently — issue #23
+    ///
+    /// The vendored `proton-drive` CLI keeps shared, writable SQLite cache stores
+    /// (`~/.cache/proton-drive-cli`). Two overlapping invocations race on those stores and one
+    /// aborts with `SQLITE_BUSY: database is locked` — a non-zero exit plus a `====` banner and JS
+    /// stack trace printed to its output, which would then also fail our JSON parse.
+    ///
+    /// The engine does not trigger this itself, and the guarantee is layered:
+    /// - a **user-global single-instance lock** (`paths::default_global_lock_path`) admits at most
+    ///   one `proton-syncd` per user account;
+    /// - inside one daemon, the gate taken below admits one child at a time. That used to follow
+    ///   for free from reconcile being single-flight (serialized on `&mut self` via
+    ///   `block_in_place` in the daemon's `select!` loop), and **no longer does**: the control
+    ///   socket's read-only `list` verb (#99) runs CLI work from the IPC task, concurrently with a
+    ///   pass. See [`CliGate`] for that decision — it is not restated here, so there is one place
+    ///   to read it;
+    /// - event polling shells `curl` (`session.rs`), not this CLI.
+    ///
+    /// The only remaining way to reach `SQLITE_BUSY` is an *external* `proton-drive` process
+    /// sharing this user's cache; on Linux — the platform this project targets, precisely because
+    /// there is no Proton desktop client — that reduces to the user running `proton-drive` by hand
+    /// while the daemon is live. Narrow; hence this note rather than in-engine retries. (The lock
+    /// is keyed on `$XDG_STATE_HOME`, so the one way to defeat it is to deliberately point two
+    /// daemons at different state homes — an explicit opt-in to the contention.)
+    ///
+    /// Defenses already in place, by command class:
+    /// - **Read-only** listings (`list` / `list_directory`) pass `list_attempts` (> 1), so a
+    ///   transient busy crash is retried and usually self-heals. The interactive `browse_directory`
+    ///   is the exception: one attempt, because a user is waiting on the answer.
+    /// - **Mutating** commands (upload/download/trash/rename/move/create-folder) pass `attempts = 1`
+    ///   and are never auto-retried, so a busy crash mid-write fails the reconcile cleanly — the
+    ///   failed action is never recorded (index writes happen only after their side effect
+    ///   succeeded; completed actions keep their checkpoints) — and the remainder replans next
+    ///   cycle.
+    ///
+    /// The real fix — one long-lived process owning the cache instead of many short-lived CLI
+    /// spawns fighting over shared SQLite — is the SDK-sidecar tracked in #18. Until then, do **not**
+    /// add engine-side parallelism across `proton-drive` invocations (this is also why #17,
+    /// parallelizing the list BFS, stays deferred).
+    fn run_once(
+        &self,
+        operation: &str,
+        args: &[OsString],
+        timeout: Duration,
+        gate_wait: GateWait,
+    ) -> AppResult<Output> {
+        // THE serialization point: every `proton-drive` child this client spawns passes through
+        // here, so taking the gate around the child is what makes "one invocation at a time" a
+        // property of the code rather than of the call sites. Held for this child only — see
+        // [`CliGate`] for why that granularity is the decision, and why only an interactive caller
+        // may give up.
+        let _gate = match gate_wait {
+            GateWait::Forever => self.gate.enter(),
+            GateWait::AtMost(waited) => match self.gate.enter_within(waited) {
+                Some(guard) => guard,
+                // Nothing was spawned, so nothing about the remote is implied and the caller may
+                // retry the request unchanged.
+                None => {
+                    return Err(Box::new(CliBusy {
+                        operation: operation.to_owned(),
+                        waited,
+                    }));
+                }
+            },
+        };
         let mut child = self.spawn_once(args)?;
         // Drain stdout and stderr on separate threads *while the child runs*. A `proton-drive`
         // command whose output exceeds the OS pipe buffer (~64 KiB) fills that buffer and then
@@ -1655,17 +2035,21 @@ fn promote_staged_download(
 /// file can never match its digest, and without a claimed digest there is nothing safe to
 /// verify against, so every other request fails with the batch error.
 ///
-/// `node_not_found` says the batch's stderr reported a missing node. One CLI invocation covers
-/// many files and names no single one, so the signal cannot be attributed: every unsalvaged
-/// request is typed [`NodeNotFound`], which makes the executor skip them (recording nothing,
-/// holding the event cursor) instead of failing the pass. Their downloads simply replan next
-/// pass, when the vanished node is no longer listed.
+/// `output` is the finished invocation, or `None` when there was none to finish (a timeout, a
+/// cancellation, a CLI that could not be spawned) — the only two states its stderr can be read in.
+/// A batch whose stderr reported a missing node types **every** unsalvaged request [`NodeNotFound`]:
+/// one CLI invocation covers many files and names no single one, so the signal cannot be
+/// attributed, and typing them makes the executor skip them (recording nothing, holding the event
+/// cursor) instead of failing the pass. Their downloads simply replan next pass, when the vanished
+/// node is no longer listed. Everything else goes through [`cli_failure`], so a batch refused for
+/// an expired session is classified exactly like a single-file one.
 fn salvage_staged_downloads(
     scratch_dir: &Path,
     requests: &[DownloadRequest],
     failure: &str,
-    node_not_found: bool,
+    output: Option<&Output>,
 ) -> Vec<AppResult<()>> {
+    let node_not_found = output.is_some_and(is_node_not_found);
     let unsalvaged = |request: &DownloadRequest| -> Box<dyn std::error::Error + Send + Sync> {
         if node_not_found {
             Box::new(NodeNotFound {
@@ -1676,7 +2060,10 @@ fn salvage_staged_downloads(
                 ),
             })
         } else {
-            boxed_error(failure.to_owned())
+            match output {
+                Some(output) => cli_failure(failure.to_owned(), output),
+                None => boxed_error(failure.to_owned()),
+            }
         }
     };
     requests
@@ -4756,6 +5143,256 @@ exit 0
     }
 
     #[cfg(unix)]
+    #[test]
+    fn the_cli_gate_admits_one_holder_at_a_time() {
+        // The whole point: while a holder is in, nobody else gets in. A bounded waiter gives up
+        // with its budget spent rather than running a second `proton-drive` child (#23).
+        let gate = CliGate::new();
+        let held = gate.enter();
+        let started = Instant::now();
+        assert!(
+            gate.enter_within(Duration::from_millis(120)).is_none(),
+            "a held gate must refuse a bounded waiter"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "the waiter must actually wait out its budget, not return instantly: {:?}",
+            started.elapsed()
+        );
+        drop(held);
+        assert!(
+            gate.enter_within(Duration::from_millis(10)).is_some(),
+            "a released gate must admit immediately"
+        );
+    }
+
+    #[test]
+    fn a_released_gate_wakes_an_unbounded_waiter_even_after_a_bounded_one_expired() {
+        // `notify_all`, not `notify_one`: a bounded waiter woken past its deadline leaves without
+        // taking the gate and without re-notifying, so a single notify could strand the unbounded
+        // waiter on a gate that is free.
+        let gate = Arc::new(CliGate::new());
+        let held = gate.enter();
+
+        let unbounded_gate = Arc::clone(&gate);
+        let unbounded = std::thread::spawn(move || drop(unbounded_gate.enter()));
+        let bounded_gate = Arc::clone(&gate);
+        let bounded = std::thread::spawn(move || {
+            bounded_gate
+                .enter_within(Duration::from_millis(50))
+                .is_none()
+        });
+
+        assert!(bounded.join().expect("bounded waiter"), "it must expire");
+        drop(held);
+        unbounded
+            .join()
+            .expect("the unbounded waiter must be woken");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_browse_answers_busy_instead_of_queueing_behind_a_running_command() {
+        // The #99 concurrency decision, end to end: the daemon's own invocation holds the gate,
+        // and an interactive listing gives up rather than parking. It must be a TYPED CliBusy, so
+        // the control plane reports "retry" instead of "this folder is broken".
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "proton-drive",
+            "#!/bin/sh\nsleep 3\necho '[]'\n",
+        );
+        let client = Arc::new(ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(10), 1),
+        ));
+
+        let holder = Arc::clone(&client);
+        let running = std::thread::spawn(move || {
+            let _ = holder.list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""));
+        });
+        // Let the holder actually reach `run_once` and take the gate.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let error = client
+            .browse_directory(
+                Path::new("/Drive/RemoteFolder"),
+                Path::new(""),
+                Duration::from_millis(150),
+            )
+            .expect_err("a browse must not queue behind a running command");
+        assert!(
+            is_cli_busy_error(error.as_ref()),
+            "the refusal must be typed CliBusy, not a message to match: {error}"
+        );
+        running.join().expect("the holder finishes");
+
+        // …and once the gate is free the very same call succeeds, so `busy` really is transient.
+        let entries = client
+            .browse_directory(
+                Path::new("/Drive/RemoteFolder"),
+                Path::new(""),
+                Duration::from_millis(150),
+            )
+            .expect("a free gate admits the browse");
+        assert!(entries.is_empty(), "the fake CLI lists nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_busy_gate_is_returned_at_once_rather_than_retried() {
+        // A busy gate is not a failed command — nothing ran — so the retry policy must not apply
+        // to it. With `list_attempts = 3` a retried refusal would spend the budget three times
+        // over before answering, turning a fast "try again" into a slow one.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "proton-drive",
+            "#!/bin/sh\nsleep 2\necho '[]'\n",
+        );
+        let client = Arc::new(ProtonDriveClient::with_command_policy(
+            executable,
+            CommandPolicy::new(Duration::from_secs(10), 3),
+        ));
+
+        let holder = Arc::clone(&client);
+        let running = std::thread::spawn(move || {
+            let _ = holder.list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""));
+        });
+        std::thread::sleep(Duration::from_millis(300));
+
+        let budget = Duration::from_millis(150);
+        let started = Instant::now();
+        let error = client
+            .run_proton_drive_with_logging(
+                "list",
+                &[OsString::from("filesystem")],
+                3,
+                true,
+                Duration::from_secs(10),
+                GateWait::AtMost(budget),
+            )
+            .expect_err("a held gate must refuse a bounded caller");
+        let elapsed = started.elapsed();
+        running.join().expect("the holder finishes");
+
+        assert!(is_cli_busy_error(error.as_ref()), "{error}");
+        assert!(
+            elapsed < budget * 2,
+            "the refusal must not be retried through the budget again: {elapsed:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_browse_never_runs_the_cli_when_it_gives_up() {
+        // A refusal that still spawned the child would be the #23 race with extra steps. Count the
+        // invocations: exactly one, the holder's.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "proton-drive",
+            "#!/bin/sh\necho x >> \"$0.attempts\"\nsleep 2\necho '[]'\n",
+        );
+        let client = Arc::new(ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(10), 1),
+        ));
+
+        let holder = Arc::clone(&client);
+        let running = std::thread::spawn(move || {
+            let _ = holder.list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""));
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = client.browse_directory(
+            Path::new("/Drive/RemoteFolder"),
+            Path::new(""),
+            Duration::from_millis(100),
+        );
+        running.join().expect("the holder finishes");
+
+        let attempts = fs::read_to_string(attempt_counter_path(&executable)).unwrap_or_default();
+        assert_eq!(
+            attempts.lines().count(),
+            1,
+            "the refused browse must not have spawned a second proton-drive: {attempts:?}"
+        );
+    }
+
+    #[test]
+    fn an_auth_shaped_stderr_is_classified_and_an_ordinary_failure_is_not() {
+        // #103: one classifier, and it must not fire on ordinary text. The `author.txt` case is
+        // the one the GUI's own workaround tests pin, ported with it.
+        let signed_out = [
+            "Error: 401 Unauthorized",
+            "HTTP/1.1 401",
+            "proton-drive: session expired, please sign in",
+            "you are not logged in",
+            "failed to authenticate with Proton",
+            "invalid session token",
+        ];
+        for stderr in signed_out {
+            let error = cli_failure("proton-drive list failed".to_owned(), &fake_output(stderr));
+            assert!(
+                is_auth_failure_error(error.as_ref()),
+                "should classify as an auth failure: {stderr}"
+            );
+        }
+
+        let other = [
+            "author.txt could not be read",
+            "ENOSPC: no space left on device",
+            "node not found",
+            "401k-statement.pdf could not be uploaded",
+            "",
+        ];
+        for stderr in other {
+            let error = cli_failure(
+                "proton-drive upload failed".to_owned(),
+                &fake_output(stderr),
+            );
+            assert!(
+                !is_auth_failure_error(error.as_ref()),
+                "must NOT classify as an auth failure: {stderr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_classified_failure_keeps_the_message_its_site_wrote() {
+        // The type is added, nothing is replaced: the log line and `last_error` must read exactly
+        // as they did before the classification existed.
+        let error = cli_failure(
+            "proton-drive list failed for /Drive/RemoteFolder: 401 Unauthorized".to_owned(),
+            &fake_output("401 Unauthorized"),
+        );
+        assert_eq!(
+            error.to_string(),
+            "proton-drive list failed for /Drive/RemoteFolder: 401 Unauthorized"
+        );
+    }
+
+    /// An `Output` carrying only stderr — enough for every classifier in this module, all of which
+    /// read stderr and the exit status only.
+    fn fake_output(stderr: &str) -> Output {
+        Output {
+            status: failing_status(),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn failing_status() -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(1 << 8)
+    }
+
+    #[cfg(not(unix))]
+    fn failing_status() -> ExitStatus {
+        Command::new("false").status().expect("a failing status")
+    }
+
     fn write_script(directory: &Path, name: &str, content: &str) -> PathBuf {
         let path = directory.join(name);
         fs::write(&path, content).expect("write fake proton-drive");

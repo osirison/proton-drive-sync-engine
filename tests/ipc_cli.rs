@@ -598,6 +598,209 @@ mod unix_tests {
         );
     }
 
+    /// #99: the read-only `list` verb, end to end through the real daemon, the real socket and
+    /// the real `proton-sync` client — the layer where "the GUI shells the CLI itself" is actually
+    /// replaced.
+    #[test]
+    fn the_list_verb_browses_the_remote_through_the_daemon() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_browsable_proton_drive(directory.path());
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+
+        // No path argument: the remote root, which is the legitimate empty-selector case.
+        let root = run_control_args(&socket_path, &["--json", "list"]);
+        assert_eq!(root["state"], "listed");
+        assert_eq!(root["path"], "");
+        assert_eq!(root["total"].as_u64(), Some(2));
+        assert_eq!(root["truncated"], false);
+        let names: Vec<&str> = root["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|entry| entry["name"].as_str().expect("name"))
+            .collect();
+        // Directories first, then by name — and the root itself is not inside itself.
+        assert_eq!(names, vec!["photos", "notes.txt"]);
+        assert_eq!(root["entries"][0]["entity_kind"], "directory");
+        assert_eq!(root["entries"][1]["entity_kind"], "file");
+        assert_eq!(root["entries"][1]["downloadable"], true);
+
+        // A subfolder lists its own contents.
+        let photos = run_control_args(&socket_path, &["--json", "list", "photos"]);
+        assert_eq!(photos["state"], "listed");
+        assert_eq!(photos["path"], "photos");
+        assert_eq!(photos["entries"][0]["name"], "beach.jpg");
+        assert_eq!(photos["entries"][0]["path"], "photos/beach.jpg");
+
+        // The daemon reached Proton, so `status` reports the session as usable — evidence, not a
+        // default (#103).
+        let status = run_control(&socket_path, "status");
+        assert_eq!(status["auth"], "signed-in");
+        // …and every other verb omits the listing rather than implying an empty folder.
+        assert!(status["listing"].is_null());
+
+        // A selector that escapes the root is refused before it is joined, and the CLI exits
+        // non-zero so a script never mistakes a refusal for an empty folder.
+        let escape = run_control_args_any_exit(&socket_path, &["--json", "list", "../etc"]);
+        assert_eq!(escape.0["state"], "failed");
+        assert!(
+            escape.0["error"]
+                .as_str()
+                .expect("error")
+                .contains("unsafe remote path"),
+            "{escape:?}"
+        );
+        assert!(!escape.1, "a refused listing must exit non-zero");
+    }
+
+    /// #103: an auth failure is classified by the engine and published as an explicit state, so a
+    /// UI never has to pattern-match the error string. Also the other half of the pair — the
+    /// classification is what a *listing* reports when it is refused.
+    #[test]
+    fn an_expired_session_is_classified_and_published_as_an_auth_state() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_signed_out_proton_drive(directory.path());
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+
+        let status = run_control(&socket_path, "status");
+        assert_eq!(
+            status["auth"], "signed-out",
+            "the daemon classifies the CLI's own refusal rather than leaving it to the client"
+        );
+        // The error text is still there for humans; it is simply no longer the thing a client has
+        // to parse to know what happened.
+        assert!(
+            status["last_error"]
+                .as_str()
+                .expect("last_error")
+                .contains("401"),
+            "{status}"
+        );
+
+        // The human output names it too, with the action that fixes it.
+        let human = run_control_raw(&socket_path, &["status"]);
+        assert!(human.contains("proton-drive login"), "{human}");
+
+        // A listing refused for the same reason reports itself as failed, not as empty.
+        let (listing, success) = run_control_args_any_exit(&socket_path, &["--json", "list"]);
+        assert_eq!(listing["state"], "failed");
+        assert!(!success);
+    }
+
+    /// A fake `proton-drive` with a browsable two-level tree: `notes.txt` and `photos/beach.jpg`,
+    /// both downloadable so the daemon's own bootstrap pass completes cleanly.
+    fn write_browsable_proton_drive(directory: &Path) -> PathBuf {
+        // SHA-1 of the literal bytes "hello" (what `download` writes below).
+        let hello_sha1 = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d";
+        write_script(
+            directory,
+            "fake-browsable-proton-drive",
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  case "$4" in
+    */RemoteFolder/photos)
+      printf '{{"id":"remote-photos","name":"photos","path":"/Drive/RemoteFolder/photos","type":"folder","entries":[{{"id":"remote-beach","name":"beach.jpg","path":"/Drive/RemoteFolder/photos/beach.jpg","activeRevision":{{"claimedDigests":{{"sha1":"{hello_sha1}"}}}}}}]}}\n'
+      ;;
+    */RemoteFolder)
+      printf '{{"entries":[{{"id":"remote-notes","name":"notes.txt","path":"/Drive/RemoteFolder/notes.txt","activeRevision":{{"claimedDigests":{{"sha1":"{hello_sha1}"}}}}}},{{"id":"remote-photos","name":"photos","path":"/Drive/RemoteFolder/photos","type":"folder","entries":[]}}]}}\n'
+      ;;
+    *)
+      echo "unexpected list target: $4" >&2
+      exit 64
+      ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "download" ]; then
+  shift 2
+  for argument in "$@"; do scratch="$argument"; done
+  for argument in "$@"; do
+    if [ "$argument" != "$scratch" ]; then
+      printf 'hello' > "$scratch/$(basename "$argument")"
+    fi
+  done
+  exit 0
+fi
+echo "unexpected proton-drive args: $*" >&2
+exit 64
+"#
+            ),
+        )
+    }
+
+    /// A fake `proton-drive` whose every command fails the way an expired session does.
+    fn write_signed_out_proton_drive(directory: &Path) -> PathBuf {
+        write_script(
+            directory,
+            "fake-signed-out-proton-drive",
+            "#!/bin/sh\necho 'Error: request failed: 401 Unauthorized' >&2\nexit 1\n",
+        )
+    }
+
+    fn write_script(directory: &Path, name: &str, content: &str) -> PathBuf {
+        let path = directory.join(name);
+        fs::write(&path, content).expect("write fake proton-drive");
+        let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).expect("script permissions");
+        path
+    }
+
+    /// `proton-sync <args...> --json`, parsed. Unlike `run_control` this takes the whole argument
+    /// vector, so a subcommand with its own positional argument (`list photos`) can be driven.
+    fn run_control_args(socket_path: &Path, args: &[&str]) -> Value {
+        let (value, success) = run_control_args_any_exit(socket_path, args);
+        assert!(success, "proton-sync {args:?} exited non-zero: {value}");
+        value
+    }
+
+    /// As `run_control_args`, but reports the exit status instead of asserting on it: `list`
+    /// deliberately exits non-zero when nothing was listed, so a script can branch on the code
+    /// rather than on the payload.
+    fn run_control_args_any_exit(socket_path: &Path, args: &[&str]) -> (Value, bool) {
+        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
+            .arg("--socket-path")
+            .arg(socket_path)
+            .args(args)
+            .output()
+            .expect("run proton-sync");
+        let value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "proton-sync {args:?} did not print JSON ({error}); stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (value, output.status.success())
+    }
+
     struct DaemonProcess {
         child: Child,
     }

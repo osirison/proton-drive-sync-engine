@@ -147,6 +147,8 @@ mod tests {
             history: None,
             file_history: None,
             index_totals: None,
+            listing: None,
+            auth: Default::default(),
         }
     }
 

@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use proton_drive_sync_engine::config::resolve_control_socket_path;
-use proton_drive_sync_engine::index::PassRecord;
+use proton_drive_sync_engine::index::{EntityKind, PassRecord};
 use proton_drive_sync_engine::ipc::{
-    ControlCommand, ControlRequest, ControlResponse, PendingDeletion, SyncActivity, send_request,
-    wire_path,
+    AuthState, ControlCommand, ControlRequest, ControlResponse, ListingOutcome, PendingDeletion,
+    SyncActivity, send_request, wire_path,
 };
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, SyncAction, UnsyncableItem};
 use std::collections::BTreeMap;
@@ -103,6 +103,15 @@ enum Commands {
         /// Revoke approval for every currently-pending deletion.
         #[arg(long)]
         all: bool,
+    },
+    /// List one folder on Proton Drive, as the daemon sees it right now. Read-only: it shows what
+    /// is on the remote, not what would sync — selective-sync rules are not applied.
+    List {
+        /// Folder to list, relative to the daemon's configured remote root. Omit for the root.
+        path: Option<PathBuf>,
+        /// Cap on the entries shown.
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Refuse a withheld deletion and put the two sides back in step: the surviving copy is sent
     /// back to the side it was deleted from on the next sync, and the item leaves the queue for
@@ -236,6 +245,19 @@ async fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Commands::List { .. } => {
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response.listing)
+                        .expect("serialize the remote listing")
+                );
+            }
+            // A listing that did not happen exits non-zero even under `--json`, so a script can
+            // branch on the exit code rather than parsing `state` out of the payload — and so
+            // `busy` is never mistaken for an empty folder.
+            print_listing(&response, cli.json, &style)
+        }
     }
 }
 
@@ -271,6 +293,12 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         }
         Commands::Deny { path, all } => (ControlCommand::Deny, approval_selector(path, *all)?),
         Commands::Keep { path, all } => (ControlCommand::Keep, approval_selector(path, *all)?),
+        // No `literal_path` and no `--all`: a listing has no reserved word, so a folder named
+        // `all` lists like any other (see `ControlCommand::List`).
+        Commands::List { path, .. } => (
+            ControlCommand::List,
+            path.as_ref().map(|path| wire_path(path).into_owned()),
+        ),
     };
     // A `<PATH>` selector is always a literal path on the wire: `proton-sync approve all`
     // targets a pending deletion literally named `all` instead of silently becoming the
@@ -281,6 +309,7 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         Commands::Activity { days, limit, .. } => {
             (days.map(|days| days.saturating_mul(86_400)), *limit)
         }
+        Commands::List { limit, .. } => (None, *limit),
         _ => (None, None),
     };
     let literal_path = matches!(
@@ -469,6 +498,15 @@ fn print_status(response: &ControlResponse, style: &Style) {
             format!("{} item(s) — listed below", response.unsyncable.len()),
         ));
     }
+    // Only when there is something to say. `Unknown` is not a problem to report — it is the
+    // daemon having learned nothing yet (or an older daemon that classifies nothing), and a
+    // `sign-in unknown` row on every healthy status would train the reader to skip the block.
+    if response.auth == AuthState::SignedOut {
+        rows.push((
+            "sign-in",
+            style.red("Proton refused the session — run `proton-drive login`"),
+        ));
+    }
     if let Some(error) = &response.last_error {
         rows.push(("error", style.red(error)));
     }
@@ -488,6 +526,79 @@ fn print_status(response: &ControlResponse, style: &Style) {
         );
     }
     print_unsyncable(&response.unsyncable, style);
+}
+
+/// Renders a `list` reply, and returns the exit code with it: the three outcomes are three
+/// different things to a script, and folding `busy` into `0` would make "the CLI was busy" look
+/// like "the folder is empty".
+fn print_listing(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
+    match &response.listing {
+        Some(ListingOutcome::Listed {
+            path,
+            entries,
+            total,
+            truncated,
+        }) => {
+            if !json {
+                let where_ = if path.as_os_str().is_empty() {
+                    "the remote root".to_owned()
+                } else {
+                    path.display().to_string()
+                };
+                if entries.is_empty() {
+                    println!("{where_} is empty.");
+                } else {
+                    println!("{}", style.dim(&where_));
+                    for entry in entries {
+                        let is_directory = entry.entity_kind == EntityKind::Directory;
+                        // A trailing slash, as `ls -p` does it: the kind is the first thing a
+                        // browser needs and the cheapest thing to render.
+                        let name = if is_directory {
+                            format!("{}/", entry.name)
+                        } else {
+                            entry.name.clone()
+                        };
+                        // A node the engine cannot fetch is named as such rather than listed as an
+                        // ordinary file that simply never arrives (#295's lesson, one layer up).
+                        // Only for files: `downloadable` is meaningless on a directory and says
+                        // nothing about what is inside it.
+                        let note = if !is_directory && !entry.downloadable {
+                            format!("  {}", style.dim("(can't be downloaded)"))
+                        } else {
+                            String::new()
+                        };
+                        println!("  {name}{note}");
+                    }
+                    if *truncated {
+                        println!(
+                            "  {}",
+                            style.dim(&format!(
+                                "… {} of {total} shown; raise --limit for more",
+                                entries.len()
+                            ))
+                        );
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Some(ListingOutcome::Busy) => {
+            eprintln!(
+                "The proton-drive CLI is busy with a sync operation; nothing was listed. Try again."
+            );
+            ExitCode::FAILURE
+        }
+        Some(ListingOutcome::Failed { error }) => {
+            eprintln!("Could not list that folder: {error}");
+            ExitCode::FAILURE
+        }
+        // A state this client does not know, and the `None` an older daemon sends. Both mean the
+        // same thing to a user — no listing — and neither is an empty folder.
+        Some(ListingOutcome::Unknown) | None => {
+            eprintln!("The daemon did not return a listing for that folder.");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The entities the daemon cannot sync, by name and cause. A count alone is unactionable: the
@@ -1360,6 +1471,8 @@ mod tests {
             history: None,
             file_history: None,
             index_totals: None,
+            listing: None,
+            auth: AuthState::Unknown,
         }
     }
 
