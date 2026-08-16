@@ -552,6 +552,30 @@ function quietBody(props) {
 
 // ------------------------------------------------------------------------- the lookup body ----
 
+/**
+ * The Proton-side card's `received HH:MM`, or `null` when nothing sources it (#233).
+ *
+ * ONLY AN UPLOAD SAYS "RECEIVED". `EmblemStatus.last_transfer` is when this engine last moved the
+ * file's bytes and which way, off the daemon's history log — and only `up` means Proton Drive
+ * received them. A `down` row says when THIS COMPUTER received them, and a conflict sidecar's fetch
+ * is a `down` row filed under the file's own path, so labelling either as a remote event would tell
+ * someone the opposite of what happened on the one screen whose job is saying where a file stands.
+ *
+ * `null` is the ordinary answer, not an error: nothing ever transferred, the last transfer aged out
+ * of the log's 90-day retention, the file was adopted rather than transferred, or it has moved
+ * since. The clause is omitted. There is deliberately NO fallback to `mtime` — that is the local
+ * modification time, and wearing a remote label is precisely what this card refused to ship.
+ *
+ * `pinned` is the frame's clock literal and is read only once the field is there, so a fixture can
+ * never conjure the clause out of a status that has no transfer (the `clock.js` rule: an absolute
+ * time moves with the machine's timezone, so a drawn one is pinned beside the epoch).
+ */
+export function receivedAtFrom(status, pinned = null) {
+  const transfer = status?.last_transfer;
+  if (!transfer || transfer.direction !== "up") return null;
+  return pinned ?? clock(transfer.epoch_secs);
+}
+
 /** One side card: the size, and the absolute path that side keeps the file at. */
 function lookupCard(which, { size, root, relative, meta }) {
   const up = which === "local";
@@ -565,10 +589,10 @@ function lookupCard(which, { size, root, relative, meta }) {
       "div",
       { class: "activity-card-meta" },
       sizeSpan,
-      // `edited HH:MM` only on the LOCAL side. `EmblemStatus.mtime` is `record.mtime`, the local
-      // modification time; the reply carries no remote-side timestamp at all, so the frame's
-      // `received 14:32` has nothing behind it (G20) and the clause is omitted rather than
-      // filled with the local time wearing a remote label.
+      // `edited HH:MM` on the LOCAL side from `EmblemStatus.mtime`, `received HH:MM` on the Proton
+      // side from `EmblemStatus.last_transfer` (#233). Two different fields for two different
+      // events — see `receivedAtFrom` for why the remote clause can never be filled from the
+      // local mtime, and why it is often absent.
       meta ? el("span", {}, meta) : null,
     ),
     "cardMeta",
@@ -652,6 +676,7 @@ function lookupBody(props) {
   // The two cards are drawn only for a path the index actually knows. A miss has no sides to
   // describe, and a folder has no single size.
   const carded = status?.tracked && status.entity_kind !== "directory";
+  const receivedAt = receivedAtFrom(status, props.receivedAt);
   if (carded) {
     seamBlock.append(
       fid(
@@ -675,7 +700,9 @@ function lookupBody(props) {
                 size: status.file_size,
                 root: remoteRoot,
                 relative: lookup.path,
-                meta: null,
+                // Absent far more often than the local clause — a downloaded file has no `up` row
+                // at all — so the card is built to stand without it.
+                meta: receivedAt ? `received ${receivedAt}` : null,
               })
             : null,
         ),

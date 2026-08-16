@@ -374,10 +374,13 @@ export const ACTIVITY_FIXTURES = {
   // 07-activity.md says so itself: "If it can only answer 'current state', ship the verdict and the
   // two side cards and omit the history block."
   //
-  // One thing the two side cards need that even Phase 1 cannot give: `received 14:32` on the Proton
-  // card. `EmblemStatus.mtime` is the LOCAL modification time and there is no remote-side timestamp
-  // in the reply at all. Both clock literals are pinned below (rule 3), but only the local one has
-  // a field behind it.
+  // `received 14:32` on the Proton card IS sourced now (#233). `EmblemStatus.last_transfer` is the
+  // newest side effect that moved this path's bytes, read off the daemon's history log
+  // (`index::last_transfer`), and only its `up` direction means Proton Drive received anything — a
+  // `down` row is when THIS computer did. `mtime` beside it is still the LOCAL modification time
+  // and still feeds only the local clause: two different fields for two different events, which is
+  // the whole reason the clause was omitted rather than filled from `mtime`. Both clock literals
+  // are pinned below (rule 3), and each has a field behind it now.
   "7a File lookup": {
     fids: activityFids("lookup"),
     status: idleDaemon(),
@@ -395,6 +398,10 @@ export const ACTIVITY_FIXTURES = {
         // 14:31, a minute before the 14:32 pass that agreed the two sides.
         mtime: ago(180),
         proton_id: "8b3c1f2a~4c8f2e7d10b64f2ca39c5e0b8d7f9a21",
+        // The upload that carried the 14:31 edit, one minute later — which is exactly the story the
+        // two cards tell side by side. `up`, because only an upload means Proton Drive received
+        // anything; a `down` row here would correctly draw no `received` clause at all.
+        last_transfer: { epoch_secs: ago(120), direction: "up" },
       },
     },
     route: "activity",
@@ -416,6 +423,9 @@ export const ACTIVITY_FIXTURES = {
             return ago(180);
           },
           proton_id: "8b3c1f2a~4c8f2e7d10b64f2ca39c5e0b8d7f9a21",
+          get last_transfer() {
+            return { epoch_secs: ago(120), direction: "up" };
+          },
         },
       },
       clock: { edited: "14:31", received: "14:32", agreed: "14:32" },

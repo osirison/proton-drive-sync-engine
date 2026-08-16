@@ -2249,6 +2249,9 @@ function activityProps() {
     // the verdict and never the chooser. Only a live search fills this.
     matches: ui?.lookup ? null : (ui?.matches ?? activityMatches),
     editedAt: ui?.clock?.edited ?? null,
+    // The Proton card's twin. Read only when `last_transfer` is actually there — see
+    // `receivedAtFrom`, which takes this as the pinned rendering of a time it has already sourced.
+    receivedAt: ui?.clock?.received ?? null,
     never,
     history,
     localRoot: response?.config?.local_root ?? configInfo?.local_root ?? null,
