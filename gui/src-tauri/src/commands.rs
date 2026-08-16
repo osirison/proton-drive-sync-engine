@@ -1238,19 +1238,58 @@ pub async fn start_service(state: Paths<'_>) -> Result<String, String> {
         .map_err(|error| format!("start-service task failed: {error}"))?
 }
 
+/// What a restart did — **`restarted` is the fact, `detail` is the sentence** (#320).
+///
+/// A typed answer rather than prose the caller matches on: the Settings screen says something
+/// different for "the service restarted with your new settings" and "the service was not running,
+/// so it will pick them up when it starts", and telling those apart by reading `detail` is the bug
+/// #103 removes everywhere else on this wire.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RestartOutcome {
+    pub restarted: bool,
+    pub detail: String,
+}
+
+/// Does this request want a service running when it is finished?
+///
+/// The whole of `only_if_running`, as one expression with no I/O in it — the branch decides whether
+/// a `systemctl` runs, so a test of it may not be a test that runs one. `false` here is the save
+/// path declining to start a daemon nobody asked for; every other combination restarts, including
+/// the explicit retry against a daemon a failed restart left stopped, which is the case that must
+/// not be folded into "it was not running, so do nothing".
+fn restart_is_wanted(only_if_running: bool, was_running: bool) -> bool {
+    was_running || !only_if_running
+}
+
 /// Restart the sync daemon so a saved config change takes effect. Works no matter how the daemon
 /// was launched: ask it to exit gracefully over IPC (its `shutdown` control command), wait for
 /// the control socket to go quiet, then start it again through the shared start logic (systemd
 /// unit first, direct spawn against the GUI config as fallback). The unit ships
 /// `Restart=on-failure`, so systemd does not race us by respawning the clean exit itself.
+///
+/// `only_if_running` is the save path's (#320). A settings save restarts the daemon so the Plan
+/// screen can never preview one folder pair while `Run` executes another — but a daemon that is
+/// NOT running has nothing to interrupt and nothing stale to correct: it reads the file on its next
+/// start, whenever the user asks for one. Starting it here would make a save mean "and start
+/// syncing", which is a decision the Settings screen was never asked to take. The probe is made
+/// here rather than in the webview because it has to be the same instant as the shutdown: the GUI's
+/// own status is up to a poll old, and a daemon that came up in that window would be left running
+/// the old settings — exactly the state this change exists to remove.
 pub(crate) fn restart_service_impl(
     config_path: &std::path::Path,
     socket_path: &std::path::Path,
-) -> Result<String, String> {
+    only_if_running: bool,
+) -> Result<RestartOutcome, String> {
     use std::time::{Duration, Instant};
 
     let was_running =
         ipc::command(socket_path, ControlCommand::Status, ipc::DEFAULT_TIMEOUT).is_ok();
+    if !restart_is_wanted(only_if_running, was_running) {
+        return Ok(RestartOutcome {
+            restarted: false,
+            detail: "the sync service is not running".to_string(),
+        });
+    }
     if was_running {
         // Best-effort: if the shutdown call itself errors the daemon may already be exiting;
         // the socket probe below is the authoritative "has it stopped" signal.
@@ -1270,26 +1309,32 @@ pub(crate) fn restart_service_impl(
             std::thread::sleep(Duration::from_millis(200));
         }
     }
-    start_service_impl(config_path).map(|detail| {
-        if was_running {
+    start_service_impl(config_path).map(|detail| RestartOutcome {
+        restarted: true,
+        detail: if was_running {
             format!("daemon restarted ({detail})")
         } else {
             format!("daemon was not running; started it ({detail})")
-        }
+        },
     })
 }
 
 /// Async so the up-to-~10s stop/start sequence never runs on the UI thread; the blocking work
 /// itself happens on a runtime blocking thread.
 #[tauri::command]
-pub async fn restart_service(state: Paths<'_>) -> Result<String, String> {
+pub async fn restart_service(
+    state: Paths<'_>,
+    only_if_running: bool,
+) -> Result<RestartOutcome, String> {
     let (config_path, socket_path) = {
         let paths = state.lock().unwrap();
         (paths.config_path.clone(), paths.socket_path.clone()?)
     };
-    tauri::async_runtime::spawn_blocking(move || restart_service_impl(&config_path, &socket_path))
-        .await
-        .map_err(|error| format!("restart task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        restart_service_impl(&config_path, &socket_path, only_if_running)
+    })
+    .await
+    .map_err(|error| format!("restart task failed: {error}"))?
 }
 
 // ------------------------------------------------------------------ notifications (S9) ----
@@ -2852,6 +2897,39 @@ mod socket_tests {
             error.contains("owned by uid 1234"),
             "the engine's own reason must survive: {error}"
         );
+    }
+
+    /// #320. A settings save restarts the daemon so the Plan screen can never preview one folder
+    /// pair while `Run` executes another — but it must not START one that was not running: that
+    /// would make a save mean "and begin syncing", which is not what the button says. The truth
+    /// table is pinned here rather than through `restart_service_impl`, because the branch decides
+    /// whether `systemctl --user start proton-syncd` runs and a test of it may not be a test that
+    /// runs one.
+    #[test]
+    fn a_save_never_starts_a_service_that_was_not_running() {
+        // The save path, against a daemon that is not there: the one combination that does nothing.
+        assert!(!restart_is_wanted(true, false));
+        // The save path against a live daemon: the whole point — its roots are about to be stale.
+        assert!(restart_is_wanted(true, true));
+        // The explicit retry, which must start a daemon a failed restart left stopped. Folding this
+        // into the arm above would leave the one state #320 exists to remove with no way out of it.
+        assert!(restart_is_wanted(false, false));
+        assert!(restart_is_wanted(false, true));
+    }
+
+    /// The wiring: a socket nothing is listening on, asked the save path's way, answers "not
+    /// running" rather than starting anything. `restarted` is the field the UI branches on — the
+    /// detail is a sentence, and no caller matches on it.
+    #[test]
+    fn a_save_restart_against_a_dead_socket_reports_that_nothing_was_restarted() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = restart_service_impl(
+            &dir.path().join("nothing-here.toml"),
+            &dir.path().join("unused.sock"),
+            true,
+        )
+        .expect("a service that is not running is not a failed restart");
+        assert!(!outcome.restarted);
     }
 
     /// A mock app whose managed paths name `root` as the sync folder. The socket is deliberately a

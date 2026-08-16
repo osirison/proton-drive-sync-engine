@@ -2912,10 +2912,26 @@ was saved — your old settings are still running."_ — and the daemon's reason
 `config would be rejected by the daemon: ` prefix stripped, because that prefix is the GUI's sentence
 about the daemon's words and the body already says it.
 
-**And a save that succeeds is not live either.** There is no config-reload path in the engine — no
-SIGHUP handler, no watcher (§68) — so `Changes here take effect on the next sync` is true only after
-a restart. The bar's second slot, which holds `Discard changes` while there is something to discard,
-becomes `Restart it now` in the one moment there is not.
+**And a save that succeeds restarts the service** ([#320](https://github.com/osirison/proton-drive-sync-engine/issues/320)).
+There is still no config-reload path in the engine — no SIGHUP handler, no watcher (§68) — so a
+written file and a running daemon disagreed until somebody pressed a second button, and that gap was
+reachable by an ordinary sequence: change the sync folder, open Plan, and the preview describes the
+file's pair while `Run` executes the daemon's. The save now asks the daemon to shut down and starts
+it again (`restart_service`, `ControlCommand::Shutdown`), which makes the mismatch unreachable
+rather than reporting it.
+
+Three consequences, all of them drawn nowhere:
+
+- **The interruption is announced before the click.** While something is staged and a pass is
+  running, the bar reads `Saving restarts the sync service, which stops the sync that is running
+  now.` — above the cost line, which is the only ordering this decision settles.
+- **A save never STARTS a service that was not running.** `restart_service` takes `only_if_running`
+  for the save path: a stopped daemon has nothing to interrupt and nothing stale to correct, it
+  reads the file when it next starts, and a save is not a request to begin syncing.
+- **A failed restart is loud.** The file is written and the daemon is on the old settings — exactly
+  the state this removes — so the bar says both halves and the second slot keeps `Restart it now`
+  until it is fixed. That slot holds `Discard changes` in every other state, including a settled
+  save, which no longer has an action of its own.
 
 ### 78i. The one node this screen adds, and why it is not on a mapped one
 
@@ -3143,18 +3159,28 @@ must be installed, authenticated, and on your `PATH` first" — there is no true
 box. So the box goes and the dialog is `mark · title · body · Check again`. The `Detected Debian`
 half of C5 is what still works, and it stays.
 
-Three more drawn buttons have nowhere to go, all for the same structural reason — the takeover covers
-everything and cannot be dismissed, so there is no sub-screen to visit and come back from (#244):
+Three more drawn buttons had nowhere to go, all for the same structural reason — the takeover covers
+everything and cannot be dismissed, so there was no sub-screen to visit and come back from (#244).
+**Two of the three are drawn now, and open a sub-screen INSIDE the takeover** (#244):
 
-- **`Add skip rules`** — the editor is `8a Skip rules`, a Settings tab. Leaving for it is a one-way
-  door: on a machine with no daemon the main screen offers `Try again now` and nothing that resumes
-  setup. The panel keeps its sentence, whose "or any time later in Settings" is the half that works.
-- **`See all 471 actions`** — the action list is the Plan screen, behind a footer door the takeover
-  covers.
-- **`Installation help`** — needed G18 (#231) as well, and half of that is now gone: `open_remote`
-  proves the command surface can open a URL. What is missing is a URL worth opening (this project's
-  own docs record that no distribution packages the CLI, #218) and somewhere to come back from —
-  so #244 alone still holds this one.
+- **`Add skip rules`** — opens onboarding's own rules editor: the staged list, a `Remove` per rule,
+  an add field, and a `Back` that closes it. The rules are staged rather than written, and go into
+  the config with the folder pair when `See what will happen` writes it — so the rehearsal on step 2
+  is a rehearsal of them. The editor is still `8a Skip rules` as well, and the panel keeps its
+  sentence: "or any time later in Settings" is now the second way in rather than the only one.
+- **`See all 471 actions`** — opens the plan itself, row by row, with the Plan screen's own row
+  grammar (`markOf`, `pathOf`, `outcomeOf`) imported rather than rewritten. Its heading counts what
+  the button counts (`actionsThatHappen`), and it therefore leaves the `skip_unsupported` rows out
+  of the list as well as out of the number. A windowed reply names what it is not showing.
+- **`Installation help` is still not drawn, and #231 is not what was holding it.** `open_remote`
+  proves the command surface can open a URL — that half landed. What is missing is a URL worth
+  opening: this project's own documentation records that no distribution packages the CLI and tells
+  the reader to follow "its own documentation" without naming where that is (#218). A button that
+  opened something plausible would be the drawn command box's own bug one layer up.
+
+**A detour is orthogonal to the step, which is what makes `Back` correct rather than remembered.**
+The step does not move while a sub-screen is open, so closing one restores nothing — there is
+nothing to restore. The header still reads `step 1 of 2` inside a detour for the same reason.
 
 A disabled button would be worse than an absent one (§76's own rule, and `button()` attaches no
 listener to a disabled kind — so one armed later paints live and does nothing).
@@ -4810,9 +4836,11 @@ case and names the file it could not open. On `6a Details`, the one dialog with 
 line goes INSIDE the body rather than under the foot: `.dialog` clips what overflows it, and a
 message nobody can see is the bug this whole change is about.
 
-**`Installation help` is still not drawn.** #231 was half of what it needed; #218 (no distribution
-packages the CLI, so there is no true help URL) and #244 (a takeover has nowhere to come back from)
-are the other half, and neither moved.
+**`Installation help` is still not drawn, and #231 was never what held it.** #244 has since given
+the takeover sub-screens with a way back, so the "nowhere to come back from" half is gone too —
+what remains is #218: no distribution packages the CLI, and this project's own documentation names
+no URL to send anyone to. A button that opened something plausible would be the drawn command box's
+own bug one layer up.
 
 ## Two facts the index did not record (2026-08-16)
 

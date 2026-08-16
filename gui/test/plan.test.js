@@ -59,7 +59,38 @@ const NINE = [
   row("notes/todo.txt", "conflict", { conflict_path: "notes/todo.proton-cloud.txt" }),
 ];
 
-const payload = (plan) => ({ report: { plan }, requires_delete_gate: false, files_at_risk: [] });
+/**
+ * A payload as the daemon sends it: a summary DERIVED from the rows, never written beside them.
+ *
+ * `PlanSummary::from_plan` is one counter per row, so a summary that disagrees with its own plan is
+ * a payload the daemon cannot emit — the same rule `fixtures/dryrun.js` enforces for the frames. The
+ * tests that drive a windowed reply build the disagreement deliberately, and say so.
+ */
+const summaryOf = (plan) => {
+  const of = (...actions) => plan.filter((entry) => actions.includes(entry.action)).length;
+  return {
+    total: plan.length,
+    uploads: of("upload"),
+    downloads: of("download"),
+    remote_directories_created: of("create_remote_directory"),
+    local_directories_created: of("create_local_directory"),
+    remote_moves: of("move_remote"),
+    local_moves: of("move_local"),
+    conflicts: of("conflict"),
+    type_conflicts: of("type_conflict"),
+    remote_deletes: of("remote_delete"),
+    local_deletes: of("local_delete"),
+    purges: of("purge"),
+    skipped_unsupported: of("skip_unsupported"),
+    destructive_actions: of("remote_delete", "local_delete", "purge"),
+  };
+};
+
+const payload = (plan) => ({
+  report: { plan, summary: summaryOf(plan) },
+  requires_delete_gate: false,
+  files_at_risk: [],
+});
 
 // ------------------------------------------------------------------------ the two destructive sets
 
@@ -177,14 +208,14 @@ test("two deletions keep their own relative order", () => {
 // -------------------------------------------------------------------------------- the counts
 
 test("the side counts are files, and the folder and the rename are sentences", () => {
-  const model = summarise(NINE);
+  const model = summarise(NINE, summaryOf(NINE));
   // The frame's own numerals: `3` over `files` on the left, `2` on the right, `9 actions` in the
   // tally.
   assert.equal(model.total, 9);
   assert.equal(model.uploads, 3);
   assert.equal(model.downloads, 2);
-  assert.equal(model.newFolders, 1);
-  assert.equal(model.renames, 1);
+  assert.equal(model.remoteFolders, 1);
+  assert.equal(model.localMoves, 1);
   assert.equal(model.conflicts, 1);
   // The new folder (leaving) and the rename (arriving) are listed but not counted as files — the
   // distinction `5a Plan safe` makes saying `Five files move` over seven actions, so each side
@@ -265,14 +296,19 @@ test("the side unit omits a size it was not given", () => {
 test("both directions are counted, and each sentence names its own side", () => {
   // The engine emits `create_local_directory` and `move_remote` too; counting only their mirrors
   // left a side with no sentence and — before the row test in `seamBlock` — no column at all.
-  const model = summarise([
+  const both = [
     row("here/new", "create_local_directory", { entity_kind: "directory" }),
     row("there/new", "create_remote_directory", { entity_kind: "directory" }),
     row("a.md", "move_remote", { destination_path: "b.md" }),
     row("c.md", "move_local", { destination_path: "d.md" }),
-  ]);
-  assert.equal(model.newFolders, 2);
-  assert.equal(model.renames, 2);
+  ];
+  const model = summarise(both, summaryOf(both));
+  // Kept apart rather than summed: each names the side it happens on, and `sideNote` draws four
+  // different sentences from them (#324).
+  assert.equal(model.remoteFolders, 1);
+  assert.equal(model.localFolders, 1);
+  assert.equal(model.remoteMoves, 1);
+  assert.equal(model.localMoves, 1);
   assert.equal(model.leaving.length, 2);
   assert.equal(model.arriving.length, 2);
   // Nought files either way, and neither side is empty.
@@ -386,12 +422,80 @@ test("a windowed reply counts the whole plan, never the rows it happened to carr
   // same plan. The title must not claim the shorter number — the token applies all of it.
   const rows = [row("a.txt", "upload"), row("b.txt", "upload")];
   assert.equal(summarise(rows).total, 2);
-  assert.equal(summarise(rows, 12_480).total, 12_480);
+  assert.equal(summarise(rows, { total: 12_480 }).total, 12_480);
   // Never below the rows in hand: a count under the list beside it would be visibly wrong.
-  assert.equal(summarise(rows, 1).total, 2);
+  assert.equal(summarise(rows, { total: 1 }).total, 2);
   assert.equal(summarise(rows, null).total, 2);
-  // The per-direction counts stay what the window really holds — they describe drawn rows.
-  assert.equal(summarise(rows, 12_480).uploads, 2);
+});
+
+test("every count in the head comes off the daemon's summary, not off the window", () => {
+  // #324. THE MIXTURE, driven exactly as the issue reports it: 12,480 planned, 5,000 carried, one
+  // conflict inside the window and four hundred in the plan. Before this, `model.total` was the
+  // daemon's and `model.conflicts` was the window's, and `PLAN.actionSummary` printed them in one
+  // sentence — `12,480 actions · 1 conflict kept as both copies`.
+  const carried = [
+    ...Array.from({ length: 4998 }, (_, i) => row(`bulk/${i}.txt`, "upload")),
+    row("notes/todo.txt", "conflict"),
+    row("photos/trip", "create_remote_directory", { entity_kind: "directory" }),
+  ];
+  const summary = {
+    total: 12_480,
+    uploads: 9000,
+    downloads: 2000,
+    conflicts: 400,
+    remote_directories_created: 40,
+    local_directories_created: 30,
+    remote_moves: 6,
+    local_moves: 4,
+  };
+  const model = summarise(carried, summary);
+
+  assert.equal(model.total, 12_480);
+  assert.equal(model.conflicts, 400, "the plan's conflicts, not the ones that fit");
+  assert.equal(
+    PLAN.actionSummary(model.total, model.conflicts),
+    "12,480 actions · 400 conflicts kept as both copies",
+  );
+  // Both side numerals, and the four sentence counts beneath them.
+  assert.equal(model.uploads, 9000);
+  assert.equal(model.downloads, 2000);
+  assert.equal(model.remoteFolders, 40);
+  assert.equal(model.localFolders, 30);
+  assert.equal(model.remoteMoves, 6);
+  assert.equal(model.localMoves, 4);
+  // The LISTS stay the window's — a row that was not sent cannot be drawn — and the `+n more` line
+  // is the difference between the two.
+  assert.equal(model.rows.length, 5000);
+  assert.equal(model.leaving.length, 4999);
+  assert.equal(hiddenActions(model), 7480);
+});
+
+test("a reply with no summary at all still counts, from the rows it has", () => {
+  // An older daemon, or the `--dry-run` child before #100 — the window IS the plan there, so the
+  // row fallback is exact rather than a guess.
+  const model = summarise(NINE);
+  assert.equal(model.total, 9);
+  assert.equal(model.uploads, 3);
+  assert.equal(model.downloads, 2);
+  assert.equal(model.conflicts, 1);
+  assert.equal(model.remoteFolders, 1);
+  assert.equal(model.localMoves, 1);
+  // Field by field, not reply by reply: `PlanSummary` carries two `Option`s (`upload_bytes`,
+  // `matched_files`), so a present summary is no promise that a given key is present.
+  const partial = summarise(NINE, { total: 9, conflicts: 1 });
+  assert.equal(partial.conflicts, 1);
+  assert.equal(partial.uploads, 3, "absent from the summary, so counted from the rows");
+});
+
+test("the safe body is only ever reached by a plan that arrived whole", () => {
+  // #324's other half. Every row here crosses the seam, so the old rule drew the hero and two side
+  // lists — over 5,000 of 12,480 rows, with `Five thousand files move` under it and nothing saying
+  // the list stopped. The list body has a row for everything and names its own truncation.
+  const carried = Array.from({ length: 500 }, (_, i) => row(`bulk/${i}.txt`, "upload"));
+  const windowed = { report: { plan: carried, summary: { total: 12_480, uploads: 12_480 } } };
+  assert.equal(bodyOf({ dryRun: windowed }), "plan");
+  // The same rows, whole: the frame's own state, unchanged.
+  assert.equal(bodyOf({ dryRun: payload(carried) }), "safe");
 });
 
 test("`+n more` is sized from the daemon's total and not from the list it was handed", () => {
@@ -406,7 +510,7 @@ test("`+n more` is sized from the daemon's total and not from the list it was ha
   const windowed = (carried, total) => {
     const plan = Array.from({ length: carried }, (_, i) => row(`bulk/${i}.txt`, "upload"));
     const report = { summary: { total }, plan };
-    return hiddenActions(summarise(report.plan, report.summary.total));
+    return hiddenActions(summarise(report.plan, report.summary));
   };
 
   assert.equal(windowed(5000, 12_480), 7480, "12,480 planned, 5,000 carried");

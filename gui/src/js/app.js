@@ -2580,16 +2580,24 @@ let settingsSweeping = false;
 /** The daemon's refusal, verbatim. Non-null is what opens `8a Save refused`. */
 let settingsError = null;
 /**
- * A save landed and the daemon is still running the old config — see `SETTINGS.savedNote`.
+ * What the save that just landed left behind — one of `SETTINGS.savedRestarted`,
+ * `SETTINGS.savedNotRunning` or `SETTINGS.savedNotRestarted`, or null for no save.
  *
  * SET FOR A CONFIG WRITE ONLY. A policy-only save writes `gui.toml`, which the daemon never reads,
- * so "the sync service is still running the old settings until it restarts" would be a sentence
- * about a file nothing is waiting on — and it also swaps `Discard changes` for `Restart the
- * service`, offering to bounce the daemon for a setting the daemon has never heard of. What a
- * policy-only save leaves behind is what any form leaves behind: a `Save` that has gone quiet
- * because there is nothing left to save.
+ * so a sentence about the sync service would be about a file nothing is waiting on — and the
+ * restart itself is skipped for the same reason, rather than bouncing the daemon for a setting it
+ * has never heard of. What a policy-only save leaves behind is what any form leaves behind: a
+ * `Save` that has gone quiet because there is nothing left to save.
  */
-let settingsSaved = false;
+let settingsSavedNote = null;
+/**
+ * The restart's reason for failing, or null — the state that keeps `Restart it now` on the bar.
+ *
+ * ITS OWN VARIABLE AND NOT A FLAVOUR OF THE NOTE ABOVE, because it is the one post-save state with
+ * an action attached: the file is written, the daemon is still on the old settings, and `Save` is
+ * disabled because nothing is staged (#320).
+ */
+let settingsRestartFailed = null;
 /** A restart asked for and not yet answered. `restart_service` can take ten seconds. */
 let settingsRestarting = false;
 /**
@@ -2617,15 +2625,27 @@ function resetSettingsScreen() {
   settingsRestarting = false;
   settingsNotice = null;
   settingsError = null;
-  settingsSaved = false;
+  settingsSavedNote = null;
+  settingsRestartFailed = null;
   skipRuleReport = null;
   skipRuleAsked = false;
+}
+
+/**
+ * Forget what the last save left behind. BOTH halves, always: the note and the failed restart are
+ * two facts about one save, and an edit invalidates the pair — the next `Save` writes again and
+ * restarts again, so a `Restart it now` left standing beside a staged change would be offering to
+ * bounce the daemon onto a file that is about to be rewritten.
+ */
+function clearSaveOutcome() {
+  settingsSavedNote = null;
+  settingsRestartFailed = null;
 }
 
 /** Stage one field. Any edit clears the saved notice: it is no longer describing what is on disk. */
 function stageSetting(key, value) {
   settingsEdits = { ...settingsEdits, [key]: value };
-  settingsSaved = false;
+  clearSaveOutcome();
   settingsNotice = null;
   render();
 }
@@ -2675,7 +2695,9 @@ function settingsProps() {
     notifyPolicy: ui?.notifyPolicy ?? notifyPolicyEdit ?? notifyPolicy,
     drafts: settingsDrafts,
     saving: settingsSaving,
-    justSaved: settingsSaved,
+    // The restart the last save asked for did not happen (#320) — the one post-save state with an
+    // action attached, which is why the bar reads it rather than reading the note it also sets.
+    restartFailed: settingsRestartFailed,
     // The amber line, when a single removal is staged. Any other staged change leaves the neutral
     // note: the deck has one cost sentence and it says `One rule removed`, so a second removal has
     // no wording and inventing a plural would be inventing the number in it too.
@@ -2683,10 +2705,14 @@ function settingsProps() {
     // WHAT JUST HAPPENED, which outranks even the cost line — see `barNoteOf`. A control that
     // failed has to be able to say so over standing information about a staged change, or the fix
     // for one silence introduces another.
+    // `restarting` OUTRANKS `saving`, and it did not have to before: the restart now happens INSIDE
+    // a save (#320), where `settingsSaving` is still true and is the slower of the two by an order
+    // of magnitude. Reporting `Saving…` for the eight seconds the daemon takes to stop would name
+    // the wrong step and look stuck on it.
     notice:
-      settingsNotice ?? (settingsSaving ? SETTINGS.saving : settingsRestarting ? SETTINGS.restarting : null),
-    // What a save left behind: the daemon is still running the old config until it restarts.
-    note: settingsSaved ? SETTINGS.savedNote : null,
+      settingsNotice ?? (settingsRestarting ? SETTINGS.restarting : settingsSaving ? SETTINGS.saving : null),
+    // What the save left behind: which of the three endings it had (#320).
+    note: settingsSavedNote,
     // WHETHER THE CONFIG IS KNOWN AT ALL. `read_config` rejects an unparseable file and
     // `refreshConfig` swallows it, so `configInfo` stays null — and `?? {}` would draw that as an
     // empty, valid config: both folder fields blank, live updates on, and a deletion policy card
@@ -2718,7 +2744,7 @@ function settingsProps() {
       onPolicy: (policy) => {
         settingsNotice = null;
         settingsEdits = { ...settingsEdits, deletion_policy: policy.id };
-        settingsSaved = false;
+        clearSaveOutcome();
         render();
       },
       // Staged, not written. `null` once it matches what is saved, so choosing the card that is
@@ -2727,7 +2753,7 @@ function settingsProps() {
       onNotifyPolicy: (id) => {
         settingsNotice = null;
         notifyPolicyEdit = id === notifyPolicy ? null : id;
-        settingsSaved = false;
+        clearSaveOutcome();
         render();
       },
       // The Activity link inside the rules sheet. A real route change, not decoration.
@@ -2747,7 +2773,7 @@ function settingsProps() {
         settingsEdits = {};
         settingsDrafts = { exclude: "", include: "" };
         notifyPolicyEdit = null;
-        settingsSaved = false;
+        clearSaveOutcome();
         render();
       },
       onRestart: restartAfterSave,
@@ -2764,7 +2790,7 @@ function addPattern(key) {
   // clears and nothing is staged.
   if (pattern && !stagedList(key).includes(pattern)) {
     settingsEdits = { ...settingsEdits, [key]: [...stagedList(key), pattern] };
-    settingsSaved = false;
+    clearSaveOutcome();
   }
   settingsDrafts = { ...settingsDrafts, [key]: "" };
   render();
@@ -2773,7 +2799,7 @@ function addPattern(key) {
 /** Un-stages an addition and stages a removal, from one path — both are "not in the staged list". */
 function removePattern(key, pattern) {
   settingsEdits = { ...settingsEdits, [key]: stagedList(key).filter((p) => p !== pattern) };
-  settingsSaved = false;
+  clearSaveOutcome();
   render();
 }
 
@@ -2816,12 +2842,22 @@ async function sweepNow() {
 }
 
 /**
- * Write the staged edits, and only them.
+ * Write the staged edits, and only them — then restart the service that has to run them (#320).
  *
  * The refusal opens `8a Save refused` rather than being swallowed: `write_config` rejects a config
  * the daemon's own parser would refuse, and a save that silently did nothing is the failure that
- * dialog exists to prevent. A successful save clears the staging and leaves the note saying the
- * daemon is still running the old config, because it is — there is no reload path in the engine.
+ * dialog exists to prevent.
+ *
+ * **A CONFIG SAVE RESTARTS THE DAEMON.** There is no reload path in the engine — no SIGHUP, no
+ * watcher — so a written file and a running daemon disagreed until somebody pressed a second
+ * button, and that gap is reachable by an ordinary sequence: change the sync folder, open Plan, and
+ * the preview is the file's pair while `Run` executes the daemon's (#320). Restarting here makes
+ * the mismatch unreachable rather than reporting it. The interruption is the accepted cost, and
+ * `SETTINGS.saveInterrupts` is what makes it something the person saw coming.
+ *
+ * Three endings, all of them said out loud: restarted, not running (so nothing to restart — see
+ * `restart_service`'s `only_if_running`), or a restart that failed, which leaves the file written
+ * over a daemon on the old settings and keeps `Restart it now` on the bar until it is fixed.
  */
 async function saveSettings() {
   const saved = activeFixture()?.config ?? configInfo ?? {};
@@ -2850,12 +2886,14 @@ async function saveSettings() {
       notifyPolicyEdit = null;
     }
     if (settingsEdits === sent) settingsEdits = {};
-    settingsSaved = Object.keys(update).length > 0;
     // The rules changed under the report, so the counts on the skip tab are about a config that is
     // no longer on disk. Ask again rather than showing yesterday's numbers next to today's rules.
     skipRuleReport = null;
     skipRuleAsked = false;
     await refreshConfig();
+    // ONLY FOR A DAEMON-CONFIG WRITE. A policy-only save touches `gui.toml`, which the daemon never
+    // reads, so bouncing it would interrupt a transfer for a setting it has never heard of.
+    if (Object.keys(update).length) await restartForSave();
   } catch (error) {
     settingsError = String(error?.message ?? error);
     openOverlay("saveRefused");
@@ -2864,7 +2902,36 @@ async function saveSettings() {
   render();
 }
 
-/** The saved-but-not-live prompt's action. Failure leaves the note saying so, not silence. */
+/**
+ * The restart a save owns. Sets the note whichever way it ends, and never throws: its caller's
+ * `catch` opens `8a Save refused`, whose sentence is `Nothing was saved` — false here, because the
+ * file is written and only the restart failed.
+ */
+async function restartForSave() {
+  settingsRestarting = true;
+  render();
+  try {
+    // `onlyIfRunning`: a save is not a request to start syncing. See `restart_service`.
+    const outcome = await api.restartService(true);
+    settingsSavedNote = outcome?.restarted ? SETTINGS.savedRestarted : SETTINGS.savedNotRunning;
+    settingsRestartFailed = null;
+  } catch (error) {
+    settingsRestartFailed = String(error?.message ?? error);
+    settingsSavedNote = SETTINGS.savedNotRestarted(settingsRestartFailed);
+  }
+  settingsRestarting = false;
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * `Restart it now` — the retry a failed save-restart leaves behind, and the only place that button
+ * survives (#320).
+ *
+ * NOT `onlyIfRunning`. The failure this answers may have stopped the daemon and failed to start it
+ * again, which is the state where "it was not running, so do nothing" would be exactly wrong: the
+ * screen would report success and leave nothing running.
+ */
 async function restartAfterSave() {
   if (settingsRestarting) return;
   settingsRestarting = true;
@@ -2872,14 +2939,16 @@ async function restartAfterSave() {
   render();
   try {
     await api.restartService();
-    settingsSaved = false;
+    clearSaveOutcome();
+    settingsSavedNote = SETTINGS.savedRestarted;
     settingsNotice = null;
   } catch (error) {
     // `restart_service` DOES reject, unlike the status commands — and it waits up to eight seconds
     // for the daemon to stop, so this is both a real failure path and a slow one. Its reason went
     // into `settingsError` before the review, which only the refusal dialog reads and only
     // `saveSettings` opens.
-    settingsNotice = SETTINGS.restartFailed(String(error?.message ?? error));
+    settingsRestartFailed = String(error?.message ?? error);
+    settingsNotice = SETTINGS.restartFailed(settingsRestartFailed);
   }
   settingsRestarting = false;
   clearTimeout(pollTimer);
@@ -2913,6 +2982,26 @@ const PROPOSED_LOCAL = "~/ProtonDrive";
 const PROPOSED_REMOTE = "/Drive/RemoteFolder";
 
 let onboardingStep = "folders";
+/**
+ * The sub-screen the flow has open, or null (#244) — `skip` or `actions`.
+ *
+ * ORTHOGONAL TO THE STEP, deliberately. A detour is opened from a step and closed back onto it, and
+ * the step never moves while one is open — so "return to the point in setup you left" needs nothing
+ * remembered and cannot restore the wrong one. It is also why the header still reads `step 1 of 2`
+ * inside a detour: the step it belongs to is the step you are on.
+ */
+let onboardingDetour = null;
+/**
+ * The skip rules the flow has staged, or null before anything is staged (then the config's own).
+ *
+ * NOT WRITTEN UNTIL `See what will happen` WRITES THE PAIR. The flow promises nothing happens until
+ * you approve the plan, and the rehearsal on step 2 has to be a rehearsal OF these rules — which it
+ * is, because `run_dry_run` shells `proton-syncd --dry-run` against the file step 1 has just
+ * written.
+ */
+let onboardingSkipRules = null;
+/** The add field's draft. Module state, not the input's: this body is rebuilt on the ~2s poll. */
+let onboardingSkipDraft = "";
 let onboardingRoots = null; // { local, remote } — proposals until step 1 writes them
 let onboardingSeq = 0; // the rehearsal token, the same shape as the plan screen's
 let onboardingAnswered = null;
@@ -2947,6 +3036,19 @@ function onboardingStepNow() {
   const named = activeFixture()?.ui?.step;
   if (named === "review" || named === "folders") return named;
   return onboardingStep;
+}
+
+/**
+ * The skip rules as they stand: staged if anything has been staged, else the config's own.
+ *
+ * A FUNCTION, not a value captured per render — the same rule `onboardingRootsNow` states. And the
+ * config's own rather than an empty list, because the takeover is entered on `firstRun` too: a
+ * reachable daemon that has never synced HAS a config, and offering an empty list over it would
+ * stage the removal of every rule already in the file the moment anything else was added.
+ */
+function onboardingSkipRulesNow() {
+  if (onboardingSkipRules) return onboardingSkipRules;
+  return activeFixture()?.config?.exclude ?? configInfo?.exclude ?? [];
 }
 
 /** Which dialog the flow has open, if any. A fixture may name one directly. */
@@ -3057,6 +3159,9 @@ function onboardingProps() {
   }
   return {
     step,
+    detour: onboardingDetour,
+    skipRules: onboardingSkipRulesNow(),
+    skipDraft: onboardingSkipDraft,
     local: roots.local,
     remote: roots.remote,
     dryRun: onboardingAnswered === onboardingSeq ? onboardingDryRun : null,
@@ -3084,6 +3189,37 @@ function onboardingProps() {
           console.error("choose_folder failed:", error);
         }
       },
+      // The two sub-screens (#244). Opening one changes nothing else about the flow: the step is
+      // untouched, so closing it returns to exactly where it was opened from.
+      onDetour: (id) => {
+        onboardingDetour = id;
+        onboardingSkipDraft = "";
+        render();
+      },
+      onCloseDetour: () => {
+        onboardingDetour = null;
+        onboardingSkipDraft = "";
+        render();
+      },
+      onSkipDraft: (value) => {
+        // NO RENDER. The field is a live `<input>` and this body is rebuilt on the ~2s poll — a
+        // render per keystroke would rebuild the field under the caret. The draft is read back on
+        // the next rebuild, and `Add` is what makes it visible.
+        onboardingSkipDraft = value;
+      },
+      onAddSkipRule: () => {
+        const pattern = onboardingSkipDraft.trim();
+        // A duplicate is not an error and not a second row — S6's own rule for the same field.
+        if (pattern && !onboardingSkipRulesNow().includes(pattern)) {
+          onboardingSkipRules = [...onboardingSkipRulesNow(), pattern];
+        }
+        onboardingSkipDraft = "";
+        render();
+      },
+      onRemoveSkipRule: (pattern) => {
+        onboardingSkipRules = onboardingSkipRulesNow().filter((p) => p !== pattern);
+        render();
+      },
       onNext: async () => {
         if (onboardingStarting) return;
         onboardingStarting = true;
@@ -3091,7 +3227,19 @@ function onboardingProps() {
           // The pair has to be ON DISK before the rehearsal: `run_dry_run` shells
           // `proton-syncd --dry-run`, which reads the config file and not this screen.
           const pair = onboardingRootsNow();
-          await api.writeConfig({ local_root: pair.local, remote_root: pair.remote });
+          // THE SKIP RULES GO WITH IT, and only when they are DIFFERENT from what is on disk
+          // (#244). `write_config` edits the TOML in place and a field sent as `Some` is a key
+          // written, so sending an unchanged list would materialise an `exclude = []` line in a
+          // file that never had one — the same promise `configUpdate` keeps on the Settings screen,
+          // and by the same array comparison. "Touched" is not the test: adding a rule and removing
+          // it again leaves a staged `[]` that is identical to the absent key it would write.
+          const update = { local_root: pair.local, remote_root: pair.remote };
+          const staged = configUpdate(
+            { exclude: configInfo?.exclude ?? [] },
+            { exclude: onboardingSkipRulesNow() },
+          );
+          if ("exclude" in staged) update.exclude = staged.exclude;
+          await api.writeConfig(update);
           await refreshConfig();
           onboardingStep = "review";
           onboardingSeq += 1;
@@ -3242,6 +3390,12 @@ function onboardingDialogContent(id) {
 function resetOnboardingFlow() {
   onboardingStage = null;
   onboardingStep = "folders";
+  // WITH THE STEP, because a detour is a place inside one (#244): a later re-entry must open at
+  // step 1 and not inside a sub-screen of the flow that ended. The staged rules go for the same
+  // reason the roots do — they were written when the pair was, and a re-entry is a new decision.
+  onboardingDetour = null;
+  onboardingSkipRules = null;
+  onboardingSkipDraft = "";
   onboardingRoots = null;
   onboardingSeq += 1;
   onboardingAnswered = null;

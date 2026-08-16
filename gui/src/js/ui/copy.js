@@ -919,6 +919,12 @@ export const SETTINGS = {
 
   saveNote:
     "Saving writes only what you changed. Your comments and anything the app doesn't understand are left alone.",
+  // WHAT SAVING NOW WOULD COST, said before the click (#320). A save restarts the sync service so
+  // the daemon can never be running a different folder pair from the one the Plan screen previews —
+  // the trade is a brief interruption, and the one thing that is not acceptable is an interruption
+  // nobody saw coming. Drawn only while there is something staged AND a pass is running: with
+  // nothing staged the button is disabled, and with nothing running there is nothing to interrupt.
+  saveInterrupts: "Saving restarts the sync service, which stops the sync that is running now.",
   discard: "Discard changes",
   save: "Save",
   ruleRemovedCost: (n, size) => `One rule removed — ${count(n)} files, ${bytes(size)} will start syncing.`,
@@ -938,16 +944,30 @@ export const SETTINGS = {
   refusedTitleUnknown: "That change wasn't saved",
   refusedBodyUnknown: "Nothing was saved — your old settings are still running.",
 
-  // The save landed, and the daemon is still running the old config. There is no config-reload path
-  // in the engine — no SIGHUP handler, no watcher (DEVIATIONS §68) — so `Changes here take effect on
-  // the next sync` is true only after a restart. Undrawn: no frame draws a settled save.
-  savedNote: "Saved. The sync service is still running the old settings until it restarts.",
+  // WHAT A SAVE LEAVES BEHIND, and there are three of them now (#320). There is no config-reload
+  // path in the engine — no SIGHUP handler, no watcher (DEVIATIONS §68) — so a save restarts the
+  // service itself rather than leaving a notice saying somebody should. Undrawn: no frame draws a
+  // settled save.
+  //
+  // `savedNote` — "still running the old settings until it restarts" — is GONE with the state it
+  // described. It was true only while the restart was a separate button, and leaving it would be a
+  // sentence about a wait that no longer happens.
+  savedRestarted: "Saved. The sync service restarted, and is running your new settings.",
+  // The service was not running, so nothing was interrupted and nothing is stale: it reads the file
+  // when it next starts. A save is not a reason to start syncing, so the app does not.
+  savedNotRunning: "Saved. The sync service isn't running — it will use these settings when it starts.",
   restart: "Restart it now",
   restarting: "Restarting the sync service…",
   // Templates, so the daemon's own words go in unrewritten (voice rule 4). Every one of these is a
   // state the bar reports and no frame draws — a control that answered with silence is the failure
   // #140 already recorded once.
   restartFailed: (reason) => `The sync service did not restart — ${reason}`,
+  // THE LOUD FAILURE (#320). The file is written and the service is still on the old settings —
+  // precisely the state the automatic restart exists to remove — so it says both halves, and the
+  // second slot of the bar keeps `Restart it now` for as long as it is true. Failing quietly here
+  // would put the app back to the behaviour this change replaced, without saying so.
+  savedNotRestarted: (reason) =>
+    `Saved, but the sync service did not restart — ${reason}. It is still running the old settings.`,
   saving: "Saving…",
   sweeping: "Starting a full sweep…",
   sweepFailed: (reason) => `The full sweep didn't start — ${reason}`,
@@ -1021,6 +1041,14 @@ export const ONBOARDING = {
   skipHint:
     "You can tell it to skip things — screenshots, huge exports, scratch folders — now or any time later in Settings.",
   addSkipRules: "Add skip rules",
+  // THE TWO SUB-SCREENS THE TAKEOVER OPENS (#244). No frame draws either — the design has the two
+  // buttons and no destination for them — so the headings are written rather than measured, and
+  // everything else on both screens is borrowed from a surface the deck does draw: S6's skip tab
+  // (`skipIntro`, `add`, `remove`, `addRulePlaceholder`) and S4's plan list (`everyAction`,
+  // `actionSummary`, `andMore`).
+  skipTitle: "What should it skip?",
+  noSkipRules: "No rules yet — everything in the folder syncs.",
+  actionsTitle: "Everything the first sync will do",
   nothingUntilApproved: "Nothing is copied or changed until you approve the plan.",
   seeWhatHappens: "See what will happen",
 

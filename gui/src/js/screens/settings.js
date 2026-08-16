@@ -1198,21 +1198,20 @@ export function renderSettings(props = {}) {
  * nothing; the same trap S4 records.
  */
 export function renderSettingsBar(props = {}) {
-  const { cost, dirty, saving, justSaved, handlers } = props;
+  const { cost, dirty, saving, restartFailed, handlers } = props;
+  // AMBER FOR EITHER WARNING. The cost line is one; so is "saving stops the sync that is running",
+  // and so is a restart that did not happen — all three are a consequence rather than a promise.
+  const warned = Boolean(cost) || Boolean(restartFailed) || interrupts(props);
   const note = fid(
-    el("span", { class: `bar-consequence settings-bar-note${cost ? " tone-cost" : ""}` }, barNoteOf(props)),
+    el("span", { class: `bar-consequence settings-bar-note${warned ? " tone-cost" : ""}` }, barNoteOf(props)),
     "barNote",
   );
-  // THE SECOND SLOT IS `Discard changes` UNTIL THERE IS NOTHING TO DISCARD. A save that landed
-  // leaves the daemon running the old config — the engine has no reload path, no SIGHUP and no
-  // watcher (§68) — so the one useful action in that moment is a restart, and the slot the drawn
-  // bar gives to discarding is free exactly then. Undrawn: no frame draws a settled save.
-  const restarting = Boolean(justSaved) && !dirty;
+  const retry = barActionOf(props) === "restart";
   const discard = fid(
     button({
       kind: "secondary",
-      label: restarting ? SETTINGS.restart : SETTINGS.discard,
-      onClick: () => (restarting ? handlers?.onRestart?.() : handlers?.onDiscard?.()),
+      label: retry ? SETTINGS.restart : SETTINGS.discard,
+      onClick: () => (retry ? handlers?.onRestart?.() : handlers?.onDiscard?.()),
       padding: "11px 20px",
       radius: "var(--r-10)",
       fontSize: "13px",
@@ -1245,15 +1244,49 @@ export function renderSettingsBar(props = {}) {
 }
 
 /**
- * The bar's left-hand sentence: what just happened, the cost of a staged change, the state a save
- * left behind, or the standing promise about what saving writes — in that order.
+ * Which action the bar's second slot carries: `discard`, or the retry after a failed restart.
+ *
+ * THE SLOT IS `Discard changes` UNTIL A RESTART FAILS. A save restarts the service itself now
+ * (#320), so the settled-save state no longer needs an action of its own — but a restart that
+ * FAILED leaves the file written and the daemon on the old settings, and `Save` is disabled by then
+ * (nothing is staged), so without this there is no way to try again from inside the app at all. The
+ * slot the drawn bar gives to discarding is free exactly then; a staged change takes it back,
+ * because saving again restarts again. Undrawn: no frame draws either state.
+ *
+ * Its own predicate rather than a line inside the builder: the tests here are pure (no DOM), so a
+ * decision that only exists inside a `render` is a decision no test can reach.
  */
-export function barNoteOf({ notice = null, cost = null, note = null } = {}) {
-  // `notice` FIRST. It is the only one of the three that is about something that just happened —
-  // a sweep that did not start, a restart that failed — and a cost line is standing information
-  // about a change that has not been made yet. Reporting the cost over the failure would put the
-  // silence back one layer up.
-  return notice ?? cost ?? note ?? SETTINGS.saveNote;
+export function barActionOf({ restartFailed = null, dirty = false } = {}) {
+  return restartFailed && !dirty ? "restart" : "discard";
+}
+
+/**
+ * Is a save about to interrupt a pass? (#320)
+ *
+ * Both halves, and neither alone: with nothing staged `Save` is disabled and cannot interrupt
+ * anything, and with no pass running there is nothing to interrupt. `syncing` is the daemon's own
+ * flag — the same one that disables `Sweep now` — plus a sweep this screen has just asked for.
+ */
+const interrupts = ({ dirty = false, syncing = false } = {}) => Boolean(dirty) && Boolean(syncing);
+
+/**
+ * The bar's left-hand sentence: what just happened, what saving now would cost, the cost of a
+ * staged change, the state a save left behind, or the standing promise about what saving writes —
+ * in that order.
+ */
+export function barNoteOf(props = {}) {
+  const { notice = null, cost = null, note = null } = props;
+  // `notice` FIRST. It is the only one of these that is about something that just happened — a
+  // sweep that did not start, a restart that failed — and everything below it is standing
+  // information about a change that has not been made yet. Reporting the cost over the failure
+  // would put the silence back one layer up.
+  //
+  // THE INTERRUPTION OUTRANKS THE COST LINE, and that is the one ordering #320 decides. Both are
+  // standing information, but the cost line describes what a staged change would let through once
+  // saved, while this describes what pressing `Save` does to a transfer that is happening now —
+  // and the decision that made the restart automatic accepts the interruption only on condition
+  // that it is never a surprise. A note it can hide would not satisfy that.
+  return notice ?? (interrupts(props) ? SETTINGS.saveInterrupts : null) ?? cost ?? note ?? SETTINGS.saveNote;
 }
 
 /**
@@ -1265,7 +1298,9 @@ export const settingsBarShape = (props = {}) =>
   [
     props.dirty ? "dirty" : "clean",
     props.saving ? "saving" : "idle",
-    props.justSaved ? "saved" : "unsaved",
+    // The second slot's LABEL and handler, which is what this decides — `Discard changes` or the
+    // retry a failed restart leaves behind (#320).
+    props.restartFailed ? "restart-failed" : "restart-fine",
     barNoteOf(props),
   ].join("|");
 

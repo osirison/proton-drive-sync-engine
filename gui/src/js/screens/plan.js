@@ -101,8 +101,30 @@ export function bodyOf({ dryRun = null, checking = false, error = null } = {}) {
   if (checking) return "checking";
   if (error) return "failed";
   if (!dryRun) return "checking";
-  const plan = dryRun.report?.plan ?? [];
-  return plan.every((row) => sideOf(row.action)) ? "safe" : "plan";
+  return isSafeBody(modelFor(dryRun)) ? "safe" : "plan";
+}
+
+/**
+ * THE SAFE BODY IS ONLY EVER REACHED BY A PLAN THAT ARRIVED WHOLE (#324).
+ *
+ * Two conditions, and the second is the one a window can break. `rows.every(sideOf)` is a statement
+ * about the ROWS IN HAND: with a bounded reply (`PLAN_ACTIONS_*`) a 12,480-row plan whose first 500
+ * rows are all transfers takes this arm while a conflict sits past the cap — drawn nowhere, because
+ * the safe body has no row for one. Worse, this body's every figure is now the daemon's whole-plan
+ * count (`summarise`), and its two side lists can only ever be the window: `Five files move` over a
+ * truncated list, with no `+n more` line to say so, is the mixture #324 exists to remove.
+ *
+ * So a windowed plan takes the LIST body, which has a row for every action and names its own
+ * truncation (`hiddenActions`). Below the cap the window IS the plan, so `every` is exact and this
+ * changes nothing about the two frames that draw it.
+ */
+function isSafeBody(model) {
+  return hiddenActions(model) === 0 && model.rows.every((row) => sideOf(row.action));
+}
+
+/** The model for a `DryRunPayload`, from the one call every path here makes. */
+function modelFor(dryRun) {
+  return summarise(dryRun?.report?.plan ?? [], dryRun?.report?.summary ?? null);
 }
 
 /**
@@ -121,31 +143,76 @@ export function gateSatisfied(value) {
 }
 
 /**
- * Everything the screen counts, counted once.
+ * Everything the screen counts, counted once — and **every count is the daemon's** (#324).
+ *
+ * ONE SENTENCE MAY NOT HAVE TWO SOURCES. `report.plan` is a bounded window (`PLAN_ACTIONS_*`) while
+ * `report.summary` describes the whole plan, so a model mixing the two puts `12,480 actions` beside
+ * a conflict count that only counted the conflicts that fit. Every figure below therefore comes off
+ * `PlanSummary`, which carries one field per `SyncAction` variant, and the window is used for
+ * exactly one thing: the LISTS, which are rows and cannot be drawn for a row that was not sent.
+ *
+ * The row fallback is for a reply that carries no summary at all — an older daemon, or a hand-made
+ * payload in a test. It is the pre-#324 behaviour, correct whenever the window is the whole plan,
+ * which is every reply the `--dry-run` child produces.
  *
  * The side counts are files, not actions: `5a Plan` draws `3` for a leaving side of three uploads
  * and a new folder — the folder is the sentence underneath. `5a Plan safe`, likewise: seven actions,
- * `Five files move`.
+ * `Five files move`. The per-side folder and rename counts are kept apart rather than summed,
+ * because each names the side it happens on and `sideNote` draws four different sentences from
+ * them; `PlanSummary` splits them the same way, so this is its shape and not a second one.
  */
-export function summarise(plan = [], reportedTotal = null) {
+export function summarise(plan = [], summary = null) {
   const rows = sortedForDisplay(plan);
   const countOf = (...actions) => rows.filter((row) => actions.includes(row.action)).length;
+  // The daemon's field when it sent one, the window's count when it did not. Asked per field rather
+  // than per reply: `PlanSummary` gained `matched_files` and `upload_bytes` as `Option`s, so a
+  // present summary is not a promise that every key is present.
+  const counted = (key, ...actions) =>
+    typeof summary?.[key] === "number" ? summary[key] : countOf(...actions);
   return {
     rows,
     // The daemon's own count when it gave one and it exceeds the rows in hand — a windowed reply
     // is fewer rows describing the same plan. Never *below* the rows: a count under the list
-    // beside it would be visibly wrong.
-    total: typeof reportedTotal === "number" ? Math.max(reportedTotal, rows.length) : rows.length,
-    uploads: countOf("upload"),
-    downloads: countOf("download"),
-    // Both directions. The engine emits `create_local_directory` and `move_remote` as well, and a
-    // side counting only its mirror loses its sentence — and, before the row test below, its column.
-    newFolders: countOf("create_remote_directory", "create_local_directory"),
-    renames: countOf("move_local", "move_remote"),
-    conflicts: countOf("conflict"),
+    // beside it would be visibly wrong, and `hiddenActions` would go negative. Spelled out rather
+    // than routed through `counted`, whose row fallback for `total` would be a count of nothing.
+    total: typeof summary?.total === "number" ? Math.max(summary.total, rows.length) : rows.length,
+    uploads: counted("uploads", "upload"),
+    downloads: counted("downloads", "download"),
+    // Both directions, each on its own side. The engine emits `create_local_directory` and
+    // `move_remote` as well, and a side counting only its mirror loses its sentence — and, before
+    // the count test in `seamBlock`, its column.
+    remoteFolders: counted("remote_directories_created", "create_remote_directory"),
+    localFolders: counted("local_directories_created", "create_local_directory"),
+    remoteMoves: counted("remote_moves", "move_remote"),
+    localMoves: counted("local_moves", "move_local"),
+    // `conflicts` ALONE, never plus `type_conflicts`: the head's clause is `kept as both copies`,
+    // which is what a `Conflict` sidecar is. A `TypeConflict` is a folder against a file — it takes
+    // the list body's own row and has no copy to keep.
+    conflicts: counted("conflicts", "conflict"),
+    // THE THREE ROW LISTS, and they stay the window's. `gated` is complete whatever the cap —
+    // `daemon::StoredPlan::outcome` builds the window destructive-first — which is what lets the
+    // typed-`DELETE` gate and the band be drawn from rows at all.
     gated: rows.filter((row) => isGated(row.action)),
     leaving: rows.filter((row) => sideOf(row.action) === "leaving"),
     arriving: rows.filter((row) => sideOf(row.action) === "arriving"),
+  };
+}
+
+/**
+ * One side of the seam, as the three counts a side draws: its files, its new folders, its renames.
+ *
+ * One definition for both bodies. `seamBlock` asks it whether the column exists at all and draws the
+ * numeral from it; `sideNote` writes its sentence from the same three numbers, where it used to
+ * filter the side's rows a second time — which was the same window-vs-summary mixture one level
+ * down, and would have said `Plus one new folder` about a plan with four hundred of them.
+ */
+function sideCounts(model, side) {
+  const leaving = side === "leaving";
+  return {
+    rows: leaving ? model.leaving : model.arriving,
+    files: leaving ? model.uploads : model.downloads,
+    folders: leaving ? model.remoteFolders : model.localFolders,
+    renames: leaving ? model.remoteMoves : model.localMoves,
   };
 }
 
@@ -274,12 +341,17 @@ function seamBlock({ model, site, detail, aligned, bounded = false }) {
   const sides = fid(el("div", { class: "pl-sides" }), "sides");
   for (const [s, side] of ["leaving", "arriving"].entries()) {
     const leaving = side === "leaving";
-    const rows = leaving ? model.leaving : model.arriving;
+    const counts = sideCounts(model, side);
     const tail = detail(side, s);
-    // Nothing that reads zero gets a tile (`06-plan.md`). Asked of the side's ROWS, not its file
-    // count: a side whose only action is a folder create or a rename has something to show and a
-    // count of nought. Both drawn frames have traffic both ways, so only the rule settles this.
-    if (!rows.length) continue;
+    // Nothing that reads zero gets a tile (`06-plan.md`). Asked of everything the side HAS, not of
+    // its file count: a side whose only action is a folder create or a rename has something to show
+    // and a count of nought. Both drawn frames have traffic both ways, so only the rule settles it.
+    //
+    // The daemon's three counts, not the side's rows: a windowed reply can carry no row for a side
+    // the plan really has work on, and dropping the column would then hide a number this block is
+    // about to draw. Safe in the other direction too — the safe body, whose rows ARE the tile, is
+    // unreachable for a windowed plan (`isSafeBody`), so a drawn column can never hold an empty list.
+    if (!counts.files && !counts.folders && !counts.renames) continue;
     const column = fid(el("div", { class: `pl-side${leaving ? "" : " is-arriving"}` }), "side", s);
     // Placed, not flowed: a grid child with no sibling falls into the first cell, so a plan with
     // nothing leaving would draw `Arriving from Proton` on this computer's side of the seam.
@@ -295,7 +367,7 @@ function seamBlock({ model, site, detail, aligned, bounded = false }) {
         s,
       ),
     );
-    const files = leaving ? model.uploads : model.downloads;
+    const files = counts.files;
     column.append(
       fid(
         el(
@@ -321,10 +393,8 @@ function seamBlock({ model, site, detail, aligned, bounded = false }) {
 /** `5a Plan`'s third child per side: the sentence about what is not a file. */
 function sideNote(model) {
   return (side, s) => {
-    const rows = side === "leaving" ? model.leaving : model.arriving;
     const leaving = side === "leaving";
-    const folders = rows.filter((row) => FOLDER_ACTIONS.has(row.action)).length;
-    const renames = rows.filter((row) => MOVE_ACTIONS.has(row.action)).length;
+    const { folders, renames } = sideCounts(model, side);
     // Four sentences, not two: a folder can be created on either side and a rename applied on
     // either side, and each names where it happens. Only the two `5a Plan` draws are in the deck.
     const parts = [
@@ -849,11 +919,11 @@ let view = null;
 function viewOf(state) {
   return {
     body: bodyOf(state),
-    // `summary.total` is the WHOLE plan; `report.plan` may be a bounded window when the daemon
-    // computed it (#100's reply cap). Counting from the rows alone would make the title claim a
-    // shorter plan than the one the token applies — and the summary is the daemon's own count, so
-    // this is not a second derivation of it.
-    model: summarise(state.dryRun?.report?.plan ?? [], state.dryRun?.report?.summary?.total),
+    // THE WHOLE SUMMARY, not just its `total` (#324). `report.plan` may be a bounded window when the
+    // daemon computed it (#100's reply cap) while every field of `report.summary` describes the whole
+    // plan — so passing one field and counting the rest from the window is what made the head say
+    // `12,480 actions · 1 conflict` about a plan with four hundred conflicts.
+    model: modelFor(state.dryRun),
     error: state.error ?? null,
     checkedAt: state.checkedAt ?? null,
     filterable: filterableFor(state),

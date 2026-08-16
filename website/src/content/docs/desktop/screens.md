@@ -114,13 +114,19 @@ parser would reject (so a save can't brick startup). The file is written atomica
 - **Service** — the config file path and a **Restart daemon now** button (the equivalent
   manual command is shown alongside).
 
-The daemon only reads its config at startup, so after a successful save the screen prompts
-you to restart it and offers a one-click **Restart daemon now** button. The restart asks the
-running daemon to exit gracefully over IPC (this works however it was launched), waits for
-the control socket to go quiet, then starts it again — via the systemd unit when installed,
-else by spawning `proton-syncd` directly against the saved config. Changing a root
-additionally promotes a "Preview plan" button ahead of the restart, since a root change
-re-bootstraps the index.
+The daemon only reads its config at startup, so **a successful save restarts it for you**.
+The restart asks the running daemon to exit gracefully over IPC (this works however it was
+launched), waits for the control socket to go quiet, then starts it again — via the systemd
+unit when installed, else by spawning `proton-syncd` directly against the saved config.
+
+Three things follow, and the screen says which one happened:
+
+- If a sync is in progress when you have a change staged, the footer warns you before you
+  press **Save** — the restart stops that pass, and it starts again on the new settings.
+- If the service was **not running**, nothing is started: it picks the new settings up
+  whenever you next start it. A save is not a request to begin syncing.
+- If the restart **fails**, the screen says so and keeps a **Restart it now** button, because
+  the file is written and the daemon is still on the old settings until it is restarted.
 
 ## Onboarding
 

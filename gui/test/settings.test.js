@@ -24,6 +24,7 @@ import {
   refusalReason,
   intervalLabel,
   stepInterval,
+  barActionOf,
   barNoteOf,
   settingsBarShape,
   MIN_INTERVAL_SECS,
@@ -333,11 +334,42 @@ test("the bar says what just happened first, and only then the standing informat
   assert.equal(barNoteOf({}), SETTINGS.saveNote);
 });
 
+test("a save that would interrupt a running sync says so before the click", () => {
+  // #320. Saving restarts the sync service now, so the bar has to warn while there is something
+  // staged AND a pass in flight — the decision accepts a brief interruption and refuses one nobody
+  // saw coming.
+  assert.equal(barNoteOf({ dirty: true, syncing: true }), SETTINGS.saveInterrupts);
+  // NOT HIDDEN BY THE COST LINE, which is the one ordering this decides: the cost describes what a
+  // staged change lets through once saved, this describes what the click does to a transfer that is
+  // happening now.
+  assert.equal(barNoteOf({ dirty: true, syncing: true, cost: "c" }), SETTINGS.saveInterrupts);
+  // Something that just happened still outranks it — a failed sweep is news, this is standing.
+  assert.equal(barNoteOf({ dirty: true, syncing: true, notice: "x" }), "x");
+  // Neither half alone: with nothing staged `Save` is disabled, and with nothing running there is
+  // nothing to interrupt.
+  assert.equal(barNoteOf({ dirty: true, syncing: false }), SETTINGS.saveNote);
+  assert.equal(barNoteOf({ dirty: false, syncing: true }), SETTINGS.saveNote);
+});
+
 test("the bar's shape carries the sentence, so a moving number rebuilds it", () => {
   const one = settingsBarShape({ dirty: true, cost: SETTINGS.ruleRemovedCost(2, 100) });
   const two = settingsBarShape({ dirty: true, cost: SETTINGS.ruleRemovedCost(3, 100) });
   assert.notEqual(one, two);
   assert.notEqual(settingsBarShape({ dirty: false }), settingsBarShape({ dirty: true }));
   assert.notEqual(settingsBarShape({ saving: true }), settingsBarShape({ saving: false }));
-  assert.notEqual(settingsBarShape({ justSaved: true }), settingsBarShape({ justSaved: false }));
+  // The second slot's label and handler change with it (#320): `Discard changes`, or the retry a
+  // failed restart leaves behind.
+  assert.notEqual(settingsBarShape({ restartFailed: "boom" }), settingsBarShape({ restartFailed: null }));
+});
+
+test("a restart that failed keeps a way to try again, and nothing else does", () => {
+  // #320. The save wrote the file and the daemon is still on the old settings — `Save` is disabled
+  // by then (nothing staged), so this button is the only way out of the state from inside the app.
+  assert.equal(barActionOf({ restartFailed: "the daemon did not stop within 8s" }), "restart");
+  // A save that went through leaves no action: the restart already happened.
+  assert.equal(barActionOf({ note: SETTINGS.savedRestarted }), "discard");
+  assert.equal(barActionOf({ note: SETTINGS.savedNotRunning }), "discard");
+  // …and a staged change is a change to discard, whatever the last save did.
+  assert.equal(barActionOf({ restartFailed: "boom", dirty: true }), "discard");
+  assert.equal(barActionOf({}), "discard");
 });
