@@ -368,6 +368,15 @@ struct ControlShared {
     paused: AtomicBool,
     /// `true` while a reconcile pass is in flight (drives the `syncing` status).
     syncing: AtomicBool,
+    /// `true` while the in-flight pass is a **plan-only** one (#100/#209).
+    ///
+    /// It exists because a plan pass claims [`Self::syncing`] — it must, or `activity` is gated off
+    /// every status reply and #209's progress line has nothing to read — while deliberately not
+    /// bumping [`Self::reconcile_seq`]. Without this discriminator a `syncnow` issued during a
+    /// rehearsal would be told "already in progress" and its client (`watch_syncnow`) would wait
+    /// for `reconcile_seq + 2`, when the pass it is queued behind contributes 0 — so it would sit
+    /// until some later unrelated pass reached that number and then report *that* pass's outcome.
+    plan_pass: AtomicBool,
     /// Count of completed reconcile attempts since startup (see `ControlResponse::reconcile_seq`).
     reconcile_seq: AtomicU64,
     /// Set by the IPC `resync` command to force the daemon's next reconcile to a full-tree walk
@@ -546,6 +555,7 @@ impl ControlShared {
         Self {
             paused: AtomicBool::new(false),
             syncing: AtomicBool::new(false),
+            plan_pass: AtomicBool::new(false),
             reconcile_seq: AtomicU64::new(0),
             force_full_walk: AtomicBool::new(false),
             reset_index: AtomicBool::new(false),
@@ -865,6 +875,13 @@ impl ControlShared {
 
     fn is_syncing(&self) -> bool {
         self.syncing.load(Ordering::SeqCst)
+    }
+
+    /// Whether a pass that will bump [`Self::reconcile_seq`] is in flight — i.e. a real reconcile,
+    /// not a rehearsal. The one question the `syncnow`/`resync` acks must ask, because their
+    /// clients count passes by that sequence.
+    fn a_counted_pass_is_running(&self) -> bool {
+        self.is_syncing() && !self.plan_pass.load(Ordering::SeqCst)
     }
 
     fn response(&self, message: &str) -> ControlResponse {
@@ -1828,10 +1845,14 @@ impl<C: ProtonClient> Daemon<C> {
         // progress line has nothing to read. The pause check lives at the ack (as `syncnow`'s
         // does); a pause landing after it lets this inert pass finish rather than orphan a booked
         // request that nothing would ever seal.
+        // `plan_pass` BEFORE `syncing`, and cleared after it, so no reply can ever observe
+        // `syncing` without the flag that says which kind of pass it is.
+        self.shared.plan_pass.store(true, Ordering::SeqCst);
         self.shared.syncing.store(true, Ordering::SeqCst);
         self.shared.begin_plan_progress(current_epoch_secs());
         let result = tokio::task::block_in_place(|| self.plan_only_blocking());
         self.shared.syncing.store(false, Ordering::SeqCst);
+        self.shared.plan_pass.store(false, Ordering::SeqCst);
         self.shared.clear_activity();
         // #103's rule, unchanged: a pass that reached Proton is evidence of a session, a classified
         // auth failure is evidence against one, and anything else moves nothing.
@@ -4822,7 +4843,10 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             if shared.is_paused() {
                 shared.response("sync skipped because daemon is paused")
             } else {
-                let message = if shared.is_syncing() {
+                // `a_counted_pass_is_running`, not `is_syncing`: a rehearsal claims `syncing`
+                // but bumps no `reconcile_seq`, so telling a client "another pass will follow"
+                // would make it wait for a count the queued sync cannot reach alone.
+                let message = if shared.a_counted_pass_is_running() {
                     "sync already in progress; another pass will follow"
                 } else {
                     "sync scheduled"
@@ -4842,7 +4866,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             if shared.is_paused() {
                 shared.response("full resync queued; it will run when syncing resumes")
             } else {
-                let message = if shared.is_syncing() {
+                let message = if shared.a_counted_pass_is_running() {
                     "full resync scheduled; it will run after the current pass"
                 } else {
                     "full resync scheduled"
@@ -17150,6 +17174,39 @@ mod tests {
         }
         // And the intent is gone: the next pass is an ordinary sync, not a second attempt.
         assert_eq!(daemon.pass_intent, PassIntent::Sync);
+    }
+
+    /// A rehearsal claims `syncing` but bumps no `reconcile_seq`, so a `syncnow` issued during one
+    /// must be told "scheduled", not "already in progress" — its client counts passes by that
+    /// sequence, and would otherwise wait for a number the queued sync cannot reach alone.
+    #[test]
+    fn a_syncnow_during_a_rehearsal_is_told_it_is_scheduled_not_queued_behind_a_pass() {
+        let directory = tempdir().expect("tempdir");
+        let daemon = plan_verb_daemon(&directory);
+
+        // Idle: nothing is running.
+        assert!(!daemon.shared.a_counted_pass_is_running());
+
+        // A rehearsal in flight. It MUST claim `syncing` (or `activity` is gated off every status
+        // reply and #209's progress line has nothing to read) …
+        daemon.shared.plan_pass.store(true, Ordering::SeqCst);
+        daemon.shared.syncing.store(true, Ordering::SeqCst);
+        assert!(
+            daemon.shared.is_syncing(),
+            "a rehearsal must still publish its activity"
+        );
+        // … and must NOT read as a pass a `syncnow` can be queued behind.
+        assert!(!daemon.shared.a_counted_pass_is_running());
+        assert_eq!(daemon.shared.response("x").status, "syncing");
+
+        // A real pass is both.
+        daemon.shared.plan_pass.store(false, Ordering::SeqCst);
+        assert!(daemon.shared.a_counted_pass_is_running());
+
+        // And the flag is cleared inside `syncing`'s window, so no reply can see `syncing` without
+        // knowing which kind of pass it is.
+        daemon.shared.syncing.store(false, Ordering::SeqCst);
+        assert!(!daemon.shared.a_counted_pass_is_running());
     }
 
     /// An apply overtaken by a pause is cancelled, not latched: a destructive request must not fire

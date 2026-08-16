@@ -380,6 +380,19 @@ test("the progress line needs a numerator, and drops the denominator rather than
 
 // --------------------------------------------------------------------------- the filtered apply
 
+test("a windowed reply counts the whole plan, never the rows it happened to carry", () => {
+  // #100's reply is bounded (`PLAN_ACTIONS_*`), so `report.plan` can be fewer rows describing the
+  // same plan. The title must not claim the shorter number — the token applies all of it.
+  const rows = [row("a.txt", "upload"), row("b.txt", "upload")];
+  assert.equal(summarise(rows).total, 2);
+  assert.equal(summarise(rows, 12_480).total, 12_480);
+  // Never below the rows in hand: a count under the list beside it would be visibly wrong.
+  assert.equal(summarise(rows, 1).total, 2);
+  assert.equal(summarise(rows, null).total, 2);
+  // The per-direction counts stay what the window really holds — they describe drawn rows.
+  assert.equal(summarise(rows, 12_480).uploads, 2);
+});
+
 test("a plan nobody is holding cannot be run without its deletions", () => {
   // #192's button names a token, and a plan from the `--dry-run` child (onboarding, before any
   // daemon exists) has none — so the button is hidden rather than faked, `06-plan.md`'s own rule.

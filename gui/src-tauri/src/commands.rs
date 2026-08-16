@@ -35,8 +35,8 @@ use crate::config_path::RuntimePaths;
 use gui_core::conflicts::{self, Conflict, Resolution};
 use gui_core::state::derive_state;
 use gui_core::wire::{
-    ApplyOutcome, ControlCommand, ControlResponse, DeleteDirection, DryRunReport, PendingDeletion,
-    PlanOutcome,
+    ApplyOutcome, ControlCommand, ControlRequest, ControlResponse, DeleteDirection, DryRunReport,
+    PendingDeletion, PlanOutcome, PLAN_ACTIONS_MAX_LIMIT,
 };
 use gui_core::{config_io, index_read, ipc, plan};
 use std::process::Command;
@@ -476,16 +476,14 @@ pub struct DryRunPayload {
     /// naming it, and the screen falls back to the approve-then-syncnow route.
     #[serde(skip_serializing_if = "Option::is_none")]
     token: Option<String>,
-    /// How many rows the reply held back (`total - actions.len()`). `0` from the child path, which
-    /// carries the whole plan.
-    hidden_rows: usize,
 }
 
 /// How long a plan poll waits between `plan_result` requests. The same cadence
 /// `proton-sync plan` polls at.
 const PLAN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
-/// Consecutive transport failures that end a plan wait, as `watch_syncnow`'s bail-out. Fewer than
-/// the CLI's five because the GUI re-fires on the next `Check again`.
+/// Consecutive transport failures that end a plan wait — `watch_syncnow`'s bail-out, at the same
+/// count the CLI uses, because it answers the same question: a daemon that has not replied five
+/// polls running is not a pass that is still working.
 const PLAN_POLL_ERROR_LIMIT: u32 = 5;
 
 /// Async so the full-tree dry run — which is a remote walk that can take many seconds against a
@@ -648,14 +646,10 @@ fn run_dry_run_impl(
     let report = plan::parse_dry_run(&String::from_utf8_lossy(&output.stdout))?;
     // No token: nothing holds this plan, so nothing can apply it by name. The screen falls back to
     // the approve-then-syncnow route, which is what it did before #100.
-    Ok(payload_from_report(report, None, 0))
+    Ok(payload_from_report(report, None))
 }
 
-fn payload_from_report(
-    report: DryRunReport,
-    token: Option<String>,
-    hidden_rows: usize,
-) -> DryRunPayload {
+fn payload_from_report(report: DryRunReport, token: Option<String>) -> DryRunPayload {
     let files_at_risk = plan::files_at_risk(&report)
         .iter()
         .map(|p| p.display().to_string())
@@ -664,7 +658,6 @@ fn payload_from_report(
         requires_delete_gate: plan::requires_delete_gate(&report),
         files_at_risk,
         token,
-        hidden_rows,
         report,
     }
 }
@@ -678,8 +671,14 @@ fn payload_from_report(
 /// the transport bail-out below, so the only way to wait for ever is a socket that keeps answering
 /// while the daemon never runs the pass, which cannot happen.
 fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, DaemonPlanFailure> {
-    let ack = ipc::command(socket, ControlCommand::Plan, ipc::DEFAULT_TIMEOUT)
-        .map_err(|_| DaemonPlanFailure::Unavailable)?;
+    let ack = match ipc::command(socket, ControlCommand::Plan, ipc::DEFAULT_TIMEOUT) {
+        Ok(ack) => ack,
+        // The request did not complete. That is EITHER no daemon (onboarding, the case the child
+        // exists for) OR a daemon too old to parse the verb — which drops the connection without
+        // replying, so at this layer the two look identical. Ask `status`, which every daemon that
+        // has ever existed answers, and let the answer decide.
+        Err(error) => return Err(classify_unreachable_plan(socket, error)),
+    };
     let target = match ack.plan {
         Some(PlanOutcome::Scheduled { plan_seq }) => plan_seq,
         Some(PlanOutcome::Paused) => {
@@ -688,15 +687,29 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
                     .to_owned(),
             ));
         }
-        // A daemon too old to know the verb rejects the command; so does one that is shutting
-        // down. Both mean "ask the child instead".
-        _ => return Err(DaemonPlanFailure::Unavailable),
+        // A daemon ANSWERED and did not schedule a plan — an outcome this build does not know, or
+        // none at all. Reported, never fallen back from: spawning `proton-syncd --dry-run` beside a
+        // live daemon is two `proton-drive` clients against the CLI's shared, not-concurrency-safe
+        // store (#23/#317), which is the hazard this verb exists to retire.
+        other => {
+            return Err(DaemonPlanFailure::Reported(format!(
+                "the sync daemon did not work out a plan — {}. It may be older than this app;                  restart it from Settings and try again.",
+                describe_plan_outcome(other.as_ref())
+            )));
+        }
     };
     let mut consecutive_errors = 0u32;
     loop {
         std::thread::sleep(PLAN_POLL_INTERVAL);
-        let response = match ipc::command(socket, ControlCommand::PlanResult, ipc::DEFAULT_TIMEOUT)
-        {
+        // Ask for the daemon's own maximum rather than its default 500: the screen draws a row per
+        // action, and a window is a rendering the user decides from. Destructive rows are never
+        // truncated whatever the cap (`StoredPlan::outcome`), so what a bigger cap buys is the
+        // ordinary rows of an unusually large plan, not safety.
+        let request = ControlRequest {
+            limit: Some(PLAN_ACTIONS_MAX_LIMIT),
+            ..ControlRequest::new(ControlCommand::PlanResult)
+        };
+        let response = match ipc::send_request(socket, &request, ipc::DEFAULT_TIMEOUT) {
             Ok(response) => {
                 consecutive_errors = 0;
                 response
@@ -716,8 +729,11 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
         };
         match response.plan {
             Some(PlanOutcome::Computed(plan)) if plan.plan_seq >= target => {
-                let hidden_rows = plan.total.saturating_sub(plan.actions.len());
                 let token = plan.token.clone();
+                // `summary` describes the WHOLE plan; `actions` may be a window (see
+                // `PLAN_ACTIONS_*`). The screen counts from the summary for exactly that reason,
+                // so a windowed reply cannot make it claim a shorter plan than the one the token
+                // applies.
                 return Ok(payload_from_report(
                     DryRunReport {
                         summary: plan.summary,
@@ -725,7 +741,6 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
                         cannot_sync: plan.cannot_sync,
                     },
                     Some(token),
-                    hidden_rows,
                 ));
             }
             Some(PlanOutcome::Failed { plan_seq, error }) if plan_seq >= target => {
@@ -733,6 +748,36 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
             }
             // Still computing, or an older answer than the one asked for.
             _ => {}
+        }
+    }
+}
+
+/// Which failure a `plan` request that never completed really was.
+///
+/// `Unavailable` — and therefore the child `--dry-run` — **only** when nothing answers the socket at
+/// all. A daemon that answers `status` but not `plan` is one this app is newer than, and the honest
+/// answer there is to say so: falling back would put a second `proton-drive` client beside a live
+/// daemon (#23/#317), which is exactly what this verb removed.
+fn classify_unreachable_plan(socket: &std::path::Path, error: ipc::IpcError) -> DaemonPlanFailure {
+    match ipc::command(socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT) {
+        Ok(_) => DaemonPlanFailure::Reported(format!(
+            "the sync daemon is running but could not work out a plan ({error}). It is probably              older than this app; restart it from Settings and try again."
+        )),
+        Err(_) => DaemonPlanFailure::Unavailable,
+    }
+}
+
+/// A plan outcome as a short phrase, for the one message that has to name one. Never used to
+/// *decide* anything — that is what the typed outcome is for (#103).
+fn describe_plan_outcome(outcome: Option<&PlanOutcome>) -> &'static str {
+    match outcome {
+        None => "it sent no plan at all",
+        Some(PlanOutcome::Absent) => "it has none",
+        Some(PlanOutcome::Computing { .. }) => "it is still working one out",
+        Some(PlanOutcome::Failed { .. }) => "it failed",
+        Some(PlanOutcome::Unknown) => "it answered in a way this app does not understand",
+        Some(PlanOutcome::Scheduled { .. } | PlanOutcome::Computed(_) | PlanOutcome::Paused) => {
+            "unexpectedly"
         }
     }
 }

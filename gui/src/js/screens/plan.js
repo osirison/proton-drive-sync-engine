@@ -123,12 +123,15 @@ export function gateSatisfied(value) {
  * and a new folder — the folder is the sentence underneath. `5a Plan safe`, likewise: seven actions,
  * `Five files move`.
  */
-export function summarise(plan = []) {
+export function summarise(plan = [], reportedTotal = null) {
   const rows = sortedForDisplay(plan);
   const countOf = (...actions) => rows.filter((row) => actions.includes(row.action)).length;
   return {
     rows,
-    total: rows.length,
+    // The daemon's own count when it gave one and it exceeds the rows in hand — a windowed reply
+    // is fewer rows describing the same plan. Never *below* the rows: a count under the list
+    // beside it would be visibly wrong.
+    total: typeof reportedTotal === "number" ? Math.max(reportedTotal, rows.length) : rows.length,
     uploads: countOf("upload"),
     downloads: countOf("download"),
     // Both directions. The engine emits `create_local_directory` and `move_remote` as well, and a
@@ -575,11 +578,6 @@ function checkingBody(handlers, progress) {
   // empty (a first run has nothing to count against), which is the one clause the design's fixed
   // fraction cannot express. DEVIATIONS §76.
   const progressText = checkingProgressText(progress);
-  const progressLine =
-    progressText == null
-      ? null
-      : fid(el("div", { class: "pl-checking-progress" }, progressText), "checkingProgress");
-  if (progressLine) seamMask(progressLine, { pad: 14, padY: 2 });
   const stop = fid(
     button({
       kind: "secondary",
@@ -598,7 +596,11 @@ function checkingBody(handlers, progress) {
   // fill without the `position` that makes it work, and an unpositioned mask is the `1a Compact` bug
   // F3 records (the seam paints over the fill). The `position` difference is recorded in §76.
   seamMask(stop, { pad: null });
-  body.append(mark, title, sub, progressLine, stop);
+  body.append(mark, title, sub, stop);
+  // Appended CONDITIONALLY, never as a `null` child: `Element.append(null)` inserts the literal
+  // string "null", which no gate here can see (every frame's fixture carries the progress, so the
+  // absent case is undrawn).
+  if (progressText != null) insertCheckingProgress(body, progressText);
   return [body];
 }
 
@@ -809,7 +811,11 @@ let view = null;
 function viewOf(state) {
   return {
     body: bodyOf(state),
-    model: summarise(state.dryRun?.report?.plan ?? []),
+    // `summary.total` is the WHOLE plan; `report.plan` may be a bounded window when the daemon
+    // computed it (#100's reply cap). Counting from the rows alone would make the title claim a
+    // shorter plan than the one the token applies — and the summary is the daemon's own count, so
+    // this is not a second derivation of it.
+    model: summarise(state.dryRun?.report?.plan ?? [], state.dryRun?.report?.summary?.total),
     error: state.error ?? null,
     checkedAt: state.checkedAt ?? null,
     filterable: filterableFor(state),
@@ -890,24 +896,42 @@ export function updatePlan(state = {}) {
   return renderPlan(state);
 }
 
+/** The progress line, built and masked in one place so the first render and the patch agree. */
+function insertCheckingProgress(body, text) {
+  const node = fid(el("div", { class: "pl-checking-progress" }, text), "checkingProgress");
+  seamMask(node, { pad: 14, padY: 2 });
+  // Before `Stop`, which is the frame's order and the order `.pl-stop`'s 22px gap is measured from.
+  body.insertBefore(node, body.querySelector(".pl-stop"));
+  return node;
+}
+
 /**
- * Move the progress line's numbers without rebuilding the body (#209).
+ * Add, move or drop the progress line without rebuilding the body (#209).
  *
  * `signatureOf` returns a constant for the checking body on purpose — folding anything into it
  * would restart the mark's two CSS animations from 0% on every poll, which is the failure
- * `updateHexagon` exists to prevent. So a climbing count has to be patched in place, exactly as the
+ * `updateHexagon` exists to prevent. So the line has to be maintained in place, exactly as the
  * bar's `Checked N ago` is.
  *
- * Only the TEXT is patched, never the node's presence: a line that appeared or vanished mid-pass
- * would change the block's height under a running animation. The first render decides whether the
- * line exists, and the pass has always reached the local scan by the time a second poll lands.
+ * **Adding it here is not an optimisation, it is the only way it is ever drawn.** The screen renders
+ * the checking body the instant the rehearsal is *requested* — before the daemon has acked it, let
+ * alone started scanning — so the first render never has a number and a patch that could only
+ * update existing text would leave the line permanently absent. Inserting a sibling is safe where
+ * `replaceChildren` is not: the mark's own element is untouched, so its animations do not restart.
  */
 function patchCheckingProgress(v) {
   if (v.body !== "checking") return;
-  const node = view?.nodes?.[0]?.querySelector?.(".pl-checking-progress");
-  if (!node) return;
+  const body = view?.nodes?.[0];
+  if (!body?.querySelector) return;
   const text = checkingProgressText(v.progress);
-  if (text != null && node.textContent !== text) node.textContent = text;
+  const node = body.querySelector(".pl-checking-progress");
+  if (text == null) {
+    node?.remove();
+  } else if (!node) {
+    insertCheckingProgress(body, text);
+  } else if (node.textContent !== text) {
+    node.textContent = text;
+  }
 }
 
 /** Drop the cached view — the screen is going away, and the next mount must build from scratch. */
