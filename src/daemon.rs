@@ -1843,12 +1843,11 @@ impl<C: ProtonClient> Daemon<C> {
         // The cursor asserts "every remote change up to this event has been applied", which is only
         // true of a cursor read *before* the walk: a change landing mid-walk in an already-listed
         // folder is missed by this snapshot, so anchoring after the walk skips it in the delta too
-        // (#294). Read it up front whenever the volume is already known; when that read fails, this
-        // pass persists no cursor rather than a false one — see `resolve_bootstrap_cursor_update`.
-        // The first-ever bootstrap is the one case that still anchors after the walk (the volume is
-        // only knowable from the snapshot). That residual gap does *not* heal on restart — warm
-        // start replays the cursor (ADR 0004) — only via `proton-sync resync` or the opt-in
-        // periodic resync (`events_full_scan_every = N`).
+        // (#294). Read it up front — including on a first-ever bootstrap, which names its volume
+        // from one targeted listing of the remote root rather than from the snapshot (#303). When
+        // any of that fails, this pass persists no cursor rather than a false one; only a remote
+        // root that names no volume at all still anchors after the walk, and there the post-walk
+        // read has nothing to name a volume with either. See `resolve_bootstrap_cursor_update`.
         let pre_snapshot_cursor = self.capture_pre_snapshot_cursor(&base_records);
 
         let local_entities = self.scan_local_entities_reporting_progress(&base_records)?;
@@ -1894,10 +1893,10 @@ impl<C: ProtonClient> Daemon<C> {
         Ok(outcome)
     }
 
-    /// Reads the current latest cursor before a snapshot, when event-driven and the volume is
-    /// already known (from the baseline or a previously stored cursor). The distinction the return
-    /// type carries is the point: "nothing names a volume" and "a lookup failed" are different
-    /// answers, and only the former may be repaired after the walk (#294).
+    /// Reads the current latest cursor before a snapshot, when event-driven and the volume can be
+    /// named *before* the walk. The distinction the return type carries is the point: "nothing
+    /// names a volume" and "a lookup failed" are different answers, and only the former may be
+    /// repaired after the walk (#294).
     fn capture_pre_snapshot_cursor(
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
@@ -1905,13 +1904,23 @@ impl<C: ProtonClient> Daemon<C> {
         if !self.config.events_driven {
             return PreSnapshotCursor::Unavailable;
         }
+        // Every remaining arm needs an event source, and the one below also spends a CLI
+        // invocation: a degraded session (events on, no source) already pays a full snapshot per
+        // `scan_interval` tick and must not also pay a listing whose answer it could not use.
         let Some(source) = self.event_source.as_ref() else {
             return PreSnapshotCursor::Unavailable;
         };
         let volume = match self.volume_id_for_scope(base_records) {
             Ok(volume) => volume,
-            // Nothing *names* a volume: the first-ever bootstrap, with no prior cursor to lose.
-            Err(VolumeScopeError::Unnameable(_)) => return PreSnapshotCursor::VolumeUnknown,
+            // Nothing *stored* names a volume: the first-ever bootstrap, with no prior cursor to
+            // lose. Ask the remote instead (#303) — one targeted listing of the remote root, the
+            // O(1) call the event resolver already makes, whose nodes carry the composed
+            // `volumeId~nodeId`. Only when that too names nothing does the pass fall back to
+            // today's post-walk anchor.
+            Err(VolumeScopeError::Unnameable(_)) => match self.volume_id_from_remote_root() {
+                Some(volume) => volume,
+                None => return PreSnapshotCursor::VolumeUnknown,
+            },
             // The lookup itself failed, so a stored cursor may well exist and simply be invisible
             // right now; anchoring after the walk would overwrite it with a post-walk value.
             Err(VolumeScopeError::Unreadable(reason)) => {
@@ -1927,9 +1936,49 @@ impl<C: ProtonClient> Daemon<C> {
             Err(error) => {
                 // Typically an unhealthy events endpoint — the same condition that forced this
                 // snapshot in the first place, so this arm fires exactly when a fabricated cursor
-                // would skip the most.
+                // would skip the most. Reached from *both* volume sources, deliberately: once the
+                // volume is named, a post-walk retry would re-open the very window this read
+                // exists to close, so a first-ever bootstrap whose cursor read fails persists
+                // nothing and re-derives next pass like every other pass does.
                 warn!(%error, "could not capture the pre-snapshot events cursor; this pass persists no cursor, so a change made during the walk is re-derived next pass instead of being skipped forever");
                 PreSnapshotCursor::Unavailable
+            }
+        }
+    }
+
+    /// Names the event volume from the remote itself, for the one case nothing stored can name it:
+    /// a first-ever bootstrap, whose baseline is empty and whose cursor row does not exist yet
+    /// (#303). One **targeted** listing of the remote root — `list_directory`, the O(1) call the
+    /// event resolver uses, not the O(folders) walk — is enough, because every listed node carries
+    /// the composed `volumeId~nodeId` that [`derive_volume_id_from_entities`] splits.
+    ///
+    /// `None` for every failure, and a `None` costs only the pre-#303 post-walk anchor: this must
+    /// never add a way for a first sync to fail. Two causes reach it — the listing errored, or it
+    /// named no volume: an **empty** remote root (whose own wrapper node the listing drops, so a
+    /// childless root yields nothing), or nodes carrying only legacy uncomposed ids. The post-walk
+    /// derive reads the same ids, so it is equally empty-handed on the second cause and on the
+    /// first — a walk that listed no node can have missed no change to one.
+    ///
+    /// Note the derivation itself is not a second definition of "what volume is this scope": it is
+    /// [`derive_volume_id_from_entities`], the same function the post-walk arm calls, over a
+    /// smaller map.
+    fn volume_id_from_remote_root(&self) -> Option<String> {
+        match self
+            .proton
+            .list_directory(&self.config.remote_root, Path::new(""))
+        {
+            Ok(entities) => {
+                let volume = derive_volume_id_from_entities(&entities);
+                if volume.is_none() {
+                    debug!(
+                        "the remote root listing names no event volume; this bootstrap anchors its cursor after the walk"
+                    );
+                }
+                volume
+            }
+            Err(error) => {
+                debug!(%error, "could not list the remote root to name the event volume; this bootstrap anchors its cursor after the walk");
+                None
             }
         }
     }
@@ -1937,9 +1986,14 @@ impl<C: ProtonClient> Daemon<C> {
     /// Chooses the cursor to persist with a bootstrap. `Captured` → persist it. `Unavailable` →
     /// persist **nothing**: a lookup failed while prior state may exist, and a cursor read *after*
     /// the walk would assert that every change made during it had been applied when the snapshot
-    /// never saw it (#294). `VolumeUnknown` → the first-ever bootstrap, where the volume is only
-    /// knowable from the fresh snapshot and there is no prior state to lose; anchor from a
-    /// post-walk read, or the event path could never engage at all.
+    /// never saw it (#294). `VolumeUnknown` → nothing could name the volume before the walk, not
+    /// even the remote root listing [`Self::capture_pre_snapshot_cursor`] tries (#303); anchor from
+    /// a post-walk read, or the event path could never engage at all. This arm keeps the mid-walk
+    /// window #303 closed everywhere else, and it is *not* claimed to be safe — it is the
+    /// deliberate degrade, chosen because the alternative is failing a first sync over a listing.
+    /// What narrows it is that its commonest cause is an **empty** remote root — the listing drops
+    /// the root's own wrapper node, so a childless root names nothing — and a walk that listed no
+    /// node can have missed no change to one.
     ///
     /// This is one of three places that can suppress the cursor, but they are one decision, not
     /// three that can disagree: all of them only ever force the single `cursor_update` toward
@@ -11107,6 +11161,11 @@ mod tests {
         /// When `true`, every targeted single-directory listing fails the way `proton::collect_node`
         /// fails an incomplete listing (a node present remotely that this listing cannot describe).
         fail_directory_lists: bool,
+        /// A remote that keeps changing *while the walk runs*: the full-tree walk overwrites this
+        /// shared cursor (a [`FakeEventSource::latest_handle`]) with the second value. A cursor
+        /// read before the walk therefore reads the first value and one read after reads the
+        /// second, which is what makes "when was the cursor read" observable (#303/#294).
+        cursor_advanced_by_the_walk: Option<(Arc<Mutex<String>>, String)>,
     }
 
     impl EventFakeClient {
@@ -11118,6 +11177,20 @@ mod tests {
                 failed_uploads: BTreeSet::new(),
                 fail_next_upload: Arc::new(AtomicBool::new(false)),
                 fail_directory_lists: false,
+                cursor_advanced_by_the_walk: None,
+            }
+        }
+
+        /// Makes every full-tree walk set `handle` to `advanced`, simulating a remote change that
+        /// lands mid-walk.
+        fn advancing_cursor_on_walk(mut self, handle: Arc<Mutex<String>>, advanced: &str) -> Self {
+            self.cursor_advanced_by_the_walk = Some((handle, advanced.to_owned()));
+            self
+        }
+
+        fn advance_cursor_for_walk(&self) {
+            if let Some((handle, advanced)) = &self.cursor_advanced_by_the_walk {
+                *handle.lock().expect("shared latest cursor lock") = advanced.clone();
             }
         }
     }
@@ -11125,6 +11198,7 @@ mod tests {
     impl ProtonClient for EventFakeClient {
         fn list(&self, _remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             self.full_walks.fetch_add(1, Ordering::SeqCst);
+            self.advance_cursor_for_walk();
             Ok(self
                 .remote_entities
                 .iter()
@@ -11139,6 +11213,7 @@ mod tests {
             _remote_root: &Path,
         ) -> AppResult<RemoteListingStatus> {
             self.full_walks.fetch_add(1, Ordering::SeqCst);
+            self.advance_cursor_for_walk();
             Ok(RemoteListingStatus::Found(self.remote_entities.clone()))
         }
 
@@ -11209,7 +11284,10 @@ mod tests {
     /// events-error fallback.
     struct FakeEventSource {
         pages: Mutex<Vec<VolumeEventPage>>,
-        latest: String,
+        /// Shared so a test can watch it move: [`Self::latest_handle`] hands the same cell to a
+        /// client that advances it mid-walk, which is how "before or after the walk" becomes an
+        /// assertable difference rather than a claim about call order.
+        latest: Arc<Mutex<String>>,
         /// Scripted `latest_cursor` answers, consumed front-first; `None` = the read fails. Once
         /// drained, every call answers `latest` — so an unhealthy endpoint that recovers is one
         /// script (`AppResult` is not `Clone`, hence the queue rather than a stored result).
@@ -11221,7 +11299,7 @@ mod tests {
         fn new(latest: &str) -> Self {
             Self {
                 pages: Mutex::new(Vec::new()),
-                latest: latest.to_owned(),
+                latest: Arc::new(Mutex::new(latest.to_owned())),
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: false,
             }
@@ -11230,7 +11308,7 @@ mod tests {
         fn with_pages(latest: &str, pages: Vec<VolumeEventPage>) -> Self {
             Self {
                 pages: Mutex::new(pages),
-                latest: latest.to_owned(),
+                latest: Arc::new(Mutex::new(latest.to_owned())),
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: false,
             }
@@ -11241,7 +11319,7 @@ mod tests {
         fn with_scripted_latest(latest: &str, scripted: Vec<Option<String>>) -> Self {
             Self {
                 pages: Mutex::new(Vec::new()),
-                latest: latest.to_owned(),
+                latest: Arc::new(Mutex::new(latest.to_owned())),
                 scripted_latest: Mutex::new(scripted),
                 fail_since: false,
             }
@@ -11250,10 +11328,15 @@ mod tests {
         fn failing() -> Self {
             Self {
                 pages: Mutex::new(Vec::new()),
-                latest: "c0".to_owned(),
+                latest: Arc::new(Mutex::new("c0".to_owned())),
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: true,
             }
+        }
+
+        /// The cell `latest_cursor` answers from, for a client that moves the remote mid-walk.
+        fn latest_handle(&self) -> Arc<Mutex<String>> {
+            Arc::clone(&self.latest)
         }
     }
 
@@ -11261,7 +11344,7 @@ mod tests {
         fn latest_cursor(&self, _volume_id: &str) -> AppResult<String> {
             let mut scripted = self.scripted_latest.lock().expect("scripted latest lock");
             if scripted.is_empty() {
-                return Ok(self.latest.clone());
+                return Ok(self.latest.lock().expect("latest cursor lock").clone());
             }
             scripted
                 .remove(0)
@@ -11796,6 +11879,229 @@ mod tests {
             stored, "cursor-old",
             "an unreadable row must not be overwritten by a post-walk cursor"
         );
+    }
+
+    /// Seeds a first-ever-bootstrap shape: an empty baseline, no stored cursor, and a remote whose
+    /// single top-level file matches local (so the pass is clean and reaches the final commit).
+    /// The event source answers `cursor-before-walk` until the full-tree walk runs, which moves it
+    /// to `cursor-after-walk` — so the persisted value *names when it was read*.
+    fn first_bootstrap_fixture(
+        directory: &tempfile::TempDir,
+    ) -> (EventFakeClient, FakeEventSource) {
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let keep = sha1_bytes(b"keep");
+        fs::write(local_root.join("keep.txt"), b"keep").expect("keep file");
+        let source = FakeEventSource::new("cursor-before-walk");
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("keep.txt"),
+            remote_file_entity("keep.txt", "vol~nk", keep.as_str()),
+        )]))
+        .advancing_cursor_on_walk(source.latest_handle(), "cursor-after-walk");
+        (client, source)
+    }
+
+    /// #303: the first-ever bootstrap was the one arm still reading its cursor *after* the walk,
+    /// because nothing stored named a volume yet. A change landing mid-walk in an already-listed
+    /// folder is missed by the snapshot and then skipped by the delta — and since ADR 0004 made
+    /// restarts warm-start from the cursor, with the periodic resync off by default, nothing
+    /// re-derives it. The volume is nameable up front from one targeted listing of the remote root.
+    #[test]
+    fn a_first_ever_bootstrap_anchors_its_cursor_before_the_walk() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let (client, source) = first_bootstrap_fixture(&directory);
+        let full_walks = Arc::clone(&client.full_walks);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(source)),
+        )
+        .expect("daemon");
+        assert!(
+            load_index(&daemon.connection)
+                .expect("load index")
+                .is_empty(),
+            "precondition: nothing indexed, so no baseline composed id names the volume"
+        );
+        assert!(
+            load_sole_event_cursor(&daemon.connection)
+                .expect("load sole cursor")
+                .is_none(),
+            "precondition: no stored cursor names the volume either"
+        );
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("first-ever bootstrap");
+
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("the first-ever bootstrap must anchor a cursor");
+        assert_eq!(
+            cursor.last_event_id, "cursor-before-walk",
+            "the anchored cursor must predate the walk, or every change made during it is skipped"
+        );
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            1,
+            "naming the volume costs exactly one targeted listing, not a second walk"
+        );
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+    }
+
+    /// The listing is an addition to a path that must never gain a way to fail: when it errors, the
+    /// bootstrap degrades to the pre-#303 post-walk anchor rather than aborting a first sync.
+    #[test]
+    fn a_failed_remote_root_listing_degrades_to_the_post_walk_anchor() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let (mut client, source) = first_bootstrap_fixture(&directory);
+        client.fail_directory_lists = true;
+        let full_walks = Arc::clone(&client.full_walks);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(source)),
+        )
+        .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("first-ever bootstrap with an unlistable root");
+
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("a failed listing must not cost the anchor entirely");
+        assert_eq!(
+            cursor.last_event_id, "cursor-after-walk",
+            "exactly the pre-#303 behaviour: unable to name the volume up front, anchor after"
+        );
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            1,
+            "the listing is attempted once and never retried"
+        );
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+    }
+
+    /// Once the volume *is* named, a failed cursor read is the #294 decision, not a reason to retry
+    /// after the walk: a post-walk retry here would re-open the window through a side door. Persist
+    /// nothing and re-derive next pass.
+    #[test]
+    fn a_first_ever_bootstrap_whose_cursor_read_fails_persists_no_cursor() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let (client, _source) = first_bootstrap_fixture(&directory);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            // The pre-walk read fails; a post-walk retry would answer "cursor-live".
+            Some(Box::new(FakeEventSource::with_scripted_latest(
+                "cursor-live",
+                vec![None],
+            ))),
+        )
+        .expect("daemon");
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("first-ever bootstrap with an unhealthy events endpoint");
+
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            1,
+            "precondition: the volume was named, so the failure is the cursor read"
+        );
+        assert!(
+            load_sole_event_cursor(&daemon.connection)
+                .expect("load sole cursor")
+                .is_none(),
+            "a named volume whose cursor read failed must persist nothing, not anchor after the walk"
+        );
+    }
+
+    /// The extra listing is confined to the arm that needs it. A degraded session (events on, no
+    /// source) already pays a full snapshot per `scan_interval` tick and must not also pay a
+    /// listing whose answer it could not use; with events off, nothing reads a cursor at all.
+    #[test]
+    fn a_bootstrap_that_cannot_use_a_cursor_never_lists_the_remote_root() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let (client, _source) = first_bootstrap_fixture(&directory);
+        let degraded_lists = Arc::clone(&client.directory_lists);
+        // `with_client` injects event_source = None: events on, session unavailable.
+        let mut degraded = Daemon::with_client(event_config(directory.path(), &local_root), client)
+            .expect("degraded daemon");
+        // The default factory reads the real keyring; pin it shut so the session stays degraded.
+        degraded.event_source_factory = Box::new(|| None);
+        degraded
+            .reconcile_blocking()
+            .expect_clean("degraded bootstrap");
+        assert_eq!(
+            degraded_lists.load(Ordering::SeqCst),
+            0,
+            "a session that cannot stream events must not spend a listing naming their volume"
+        );
+
+        let other = tempdir().expect("tempdir");
+        let other_local = other.path().join("local");
+        let (client, source) = first_bootstrap_fixture(&other);
+        let events_off_lists = Arc::clone(&client.directory_lists);
+        let mut events_off = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                events_driven: false,
+                ..event_config(other.path(), &other_local)
+            },
+            client,
+            Some(Box::new(source)),
+        )
+        .expect("events-off daemon");
+        events_off
+            .reconcile_blocking()
+            .expect_clean("events-off bootstrap");
+        assert_eq!(
+            events_off_lists.load(Ordering::SeqCst),
+            0,
+            "the snapshot-only path stays byte-identical to the pre-events behaviour"
+        );
+    }
+
+    /// The other half of the confinement: a bootstrap whose volume the *baseline* already names
+    /// spends no listing and — the part that matters — keeps anchoring before the walk.
+    #[test]
+    fn a_bootstrap_that_can_already_name_its_volume_lists_nothing_extra() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let (client, source) = first_bootstrap_fixture(&directory);
+        let directory_lists = Arc::clone(&client.directory_lists);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(source)),
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.connection,
+            &base_record("keep.txt", Some("vol~nk"), sha1_bytes(b"keep").as_str()),
+        )
+        .expect("seed record");
+
+        daemon.reconcile_blocking().expect_clean("bootstrap");
+
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            0,
+            "a baseline composed id already names the volume; the listing must not become a \
+             per-bootstrap cost"
+        );
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("load cursor")
+            .expect("cursor anchored");
+        assert_eq!(cursor.last_event_id, "cursor-before-walk");
     }
 
     #[test]

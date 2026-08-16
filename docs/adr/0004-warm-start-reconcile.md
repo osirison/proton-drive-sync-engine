@@ -97,6 +97,13 @@ the `u64::MAX`-seeded counter).
   pre-change behavior. `--full-walk` and `proton-sync resync` force a walk when wanted.
 - New persisted state (`warm_start_state`) and a new IPC command (`resync`). An older daemon
   rejects `resync` as an unknown command (the client is simply newer).
+- **A restart is no longer a full walk, so any cursor anchored *after* a walk is permanent.**
+  Before this ADR, "the next restart re-snapshots" was the standing repair for a cursor that
+  over-claimed. It is gone: a restart replays the persisted cursor, `events_full_scan_every`
+  defaults to off, and `warm_start_full_walk_every` is 30 restarts away. That is why the bootstrap
+  reads its cursor *before* the walk (#294) and why the last arm that did not — the first-ever
+  bootstrap, which had nothing stored to name its volume with — now names it from a targeted
+  listing of the remote root instead of from the finished snapshot (#303).
 
 ## Alternatives considered
 
