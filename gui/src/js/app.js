@@ -3227,12 +3227,18 @@ function onboardingProps() {
           // The pair has to be ON DISK before the rehearsal: `run_dry_run` shells
           // `proton-syncd --dry-run`, which reads the config file and not this screen.
           const pair = onboardingRootsNow();
-          // THE SKIP RULES GO WITH IT, and only when they were changed (#244). `write_config` edits
-          // the TOML in place and a field sent as `Some` is a key written, so sending an unchanged
-          // list would materialise an `exclude = []` line in a file that never had one — the same
-          // promise `configUpdate` keeps on the Settings screen.
+          // THE SKIP RULES GO WITH IT, and only when they are DIFFERENT from what is on disk
+          // (#244). `write_config` edits the TOML in place and a field sent as `Some` is a key
+          // written, so sending an unchanged list would materialise an `exclude = []` line in a
+          // file that never had one — the same promise `configUpdate` keeps on the Settings screen,
+          // and by the same array comparison. "Touched" is not the test: adding a rule and removing
+          // it again leaves a staged `[]` that is identical to the absent key it would write.
           const update = { local_root: pair.local, remote_root: pair.remote };
-          if (onboardingSkipRules) update.exclude = onboardingSkipRules;
+          const staged = configUpdate(
+            { exclude: configInfo?.exclude ?? [] },
+            { exclude: onboardingSkipRulesNow() },
+          );
+          if ("exclude" in staged) update.exclude = staged.exclude;
           await api.writeConfig(update);
           await refreshConfig();
           onboardingStep = "review";

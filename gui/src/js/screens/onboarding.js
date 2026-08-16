@@ -6,10 +6,12 @@
 //
 // Phase 1 omissions, each in DEVIATIONS §79 with its issue: every per-side file count and byte total
 // (#240), the account line (#241), `Needs 38.4 GB free` (#206 — C4 answers the other half), the
-// already-matching count (#242), the ETA (#229), the merged totals
-// (#207), the install command box (#218), and four buttons with no destination — three of them
-// #244 (`Add skip rules`, `See all N actions`, `Installation help`, the last also #218) and
-// `Browse Proton Drive…`, which is #99.
+// already-matching count (#242), the ETA (#229), the merged totals (#207), the install command box
+// (#218), and two buttons with no destination — `Installation help` (#218: no true instruction and
+// no URL this project's own docs can name) and `Browse Proton Drive…` (#99).
+//
+// `Add skip rules` and `See all N actions` were on that list until #244 gave each one a sub-screen
+// inside the takeover — see "the two detours" below for why a detour rather than a door out.
 
 import { el } from "../ui/el.js";
 import { MAIN, ONBOARDING, PLAN, SETTINGS } from "../ui/copy.js";
