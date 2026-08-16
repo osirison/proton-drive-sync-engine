@@ -1393,7 +1393,12 @@ pub fn file_events(
 /// (or a conflict sidecar fetch, which records the **file's** path, not the sidecar's) says when
 /// *this computer* received bytes, and only an `Upload` says when Proton Drive did.
 ///
-/// Scans newest-first and stops at the first hit, so a path with a long history costs one row read.
+/// Scans newest-first and stops at the first row that HAS a direction, which is not necessarily the
+/// first row: `AutoLink`, `Purge`, a delete and both directory creations all land at a path and move
+/// no bytes, so a file adopted and then re-adopted several times is read through until the transfer
+/// under them. The query is streamed and the statement dropped at the first hit, so nothing past it
+/// is read — but "one row" would be wrong, and the difference is the whole reason the direction
+/// filter cannot be pushed into the SQL (it is a property of the action, not a column).
 pub fn last_transfer(connection: &Connection, path: &Path) -> AppResult<Option<FileEvent>> {
     let mut statement = connection.prepare(
         "SELECT pass_id, path, source_path, action, bytes, at FROM sync_events \
