@@ -533,40 +533,48 @@ impl CliGate {
         }
     }
 
-    /// Takes the gate, waiting per `wait`. `None` means the budget expired with the gate still
-    /// held — the caller must not run its command.
+    /// Takes the gate, waiting for as long as it takes. Infallible by construction — see
+    /// [`Self::wait_for_gate`], whose only early exit is a deadline this call does not set.
+    pub fn enter(&self) -> CliGateGuard<'_> {
+        self.wait_for_gate(None)
+            .expect("a wait with no deadline can only end by taking the gate")
+    }
+
+    /// Takes the gate, giving up after `budget`. `None` means it was still held when the budget
+    /// ran out — the caller must not run its command.
+    pub fn enter_within(&self, budget: Duration) -> Option<CliGateGuard<'_>> {
+        self.wait_for_gate(Some(Instant::now() + budget))
+    }
+
+    /// The one wait loop behind both, so there is one place the condvar protocol lives.
     ///
     /// Lock poisoning is recovered from rather than propagated: the protected state is one `bool`
     /// whose only writer is [`CliGateGuard::drop`], which runs while unwinding, so a panic inside a
     /// CLI invocation still leaves the flag consistent. Refusing every later invocation because an
     /// unrelated one panicked would be strictly worse.
-    pub fn enter(&self, wait: GateWait) -> Option<CliGateGuard<'_>> {
+    fn wait_for_gate(&self, deadline: Option<Instant>) -> Option<CliGateGuard<'_>> {
         let mut held = self.held.lock().unwrap_or_else(|error| error.into_inner());
-        match wait {
-            GateWait::Forever => {
-                while *held {
-                    held = self
-                        .released
-                        .wait(held)
-                        .unwrap_or_else(|error| error.into_inner());
-                }
+        while *held {
+            let Some(deadline) = deadline else {
+                held = self
+                    .released
+                    .wait(held)
+                    .unwrap_or_else(|error| error.into_inner());
+                continue;
+            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
             }
-            GateWait::AtMost(budget) => {
-                let deadline = Instant::now() + budget;
-                while *held {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        return None;
-                    }
-                    let (next, outcome) = self
-                        .released
-                        .wait_timeout(held, remaining)
-                        .unwrap_or_else(|error| error.into_inner());
-                    held = next;
-                    if outcome.timed_out() && *held {
-                        return None;
-                    }
-                }
+            let (next, outcome) = self
+                .released
+                .wait_timeout(held, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            held = next;
+            // Re-check `*held`: a spurious or racing wakeup can time out *and* find the gate free,
+            // and giving up there would refuse a caller that could have gone straight in.
+            if outcome.timed_out() && *held {
+                return None;
             }
         }
         *held = true;
@@ -1530,17 +1538,19 @@ impl ProtonDriveClient {
         // property of the code rather than of the call sites. Held for this child only — see
         // [`CliGate`] for why that granularity is the decision, and why only an interactive caller
         // may give up.
-        let _gate = match self.gate.enter(gate_wait) {
-            Some(guard) => guard,
-            None => {
-                let GateWait::AtMost(waited) = gate_wait else {
-                    unreachable!("an unbounded gate wait cannot expire");
-                };
-                return Err(Box::new(CliBusy {
-                    operation: operation.to_owned(),
-                    waited,
-                }));
-            }
+        let _gate = match gate_wait {
+            GateWait::Forever => self.gate.enter(),
+            GateWait::AtMost(waited) => match self.gate.enter_within(waited) {
+                Some(guard) => guard,
+                // Nothing was spawned, so nothing about the remote is implied and the caller may
+                // retry the request unchanged.
+                None => {
+                    return Err(Box::new(CliBusy {
+                        operation: operation.to_owned(),
+                        waited,
+                    }));
+                }
+            },
         };
         let mut child = self.spawn_once(args)?;
         // Drain stdout and stderr on separate threads *while the child runs*. A `proton-drive`
@@ -5123,11 +5133,10 @@ exit 0
         // The whole point: while a holder is in, nobody else gets in. A bounded waiter gives up
         // with its budget spent rather than running a second `proton-drive` child (#23).
         let gate = CliGate::new();
-        let held = gate.enter(GateWait::Forever).expect("an idle gate admits");
+        let held = gate.enter();
         let started = Instant::now();
         assert!(
-            gate.enter(GateWait::AtMost(Duration::from_millis(120)))
-                .is_none(),
+            gate.enter_within(Duration::from_millis(120)).is_none(),
             "a held gate must refuse a bounded waiter"
         );
         assert!(
@@ -5137,8 +5146,7 @@ exit 0
         );
         drop(held);
         assert!(
-            gate.enter(GateWait::AtMost(Duration::from_millis(10)))
-                .is_some(),
+            gate.enter_within(Duration::from_millis(10)).is_some(),
             "a released gate must admit immediately"
         );
     }
@@ -5149,19 +5157,14 @@ exit 0
         // taking the gate and without re-notifying, so a single notify could strand the unbounded
         // waiter on a gate that is free.
         let gate = Arc::new(CliGate::new());
-        let held = gate.enter(GateWait::Forever).expect("take the gate");
+        let held = gate.enter();
 
         let unbounded_gate = Arc::clone(&gate);
-        let unbounded = std::thread::spawn(move || {
-            let guard = unbounded_gate
-                .enter(GateWait::Forever)
-                .expect("an unbounded wait always ends with the gate");
-            drop(guard);
-        });
+        let unbounded = std::thread::spawn(move || drop(unbounded_gate.enter()));
         let bounded_gate = Arc::clone(&gate);
         let bounded = std::thread::spawn(move || {
             bounded_gate
-                .enter(GateWait::AtMost(Duration::from_millis(50)))
+                .enter_within(Duration::from_millis(50))
                 .is_none()
         });
 

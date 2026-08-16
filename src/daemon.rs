@@ -60,10 +60,10 @@ pub(crate) const STATUS_HISTORY_LIMIT: usize = 20;
 /// just stops silent clients from accumulating parked connection tasks forever.
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the read-only `list` verb (#99) may wait for the `proton::CliGate` before answering
-/// [`ListingOutcome::Busy`]. Long enough to slip between the short listings of a full-tree walk
-/// (which is the point of gating per invocation rather than per pass), short enough that the reply
-/// is still written well inside [`IPC_IO_TIMEOUT`] — a browse that waited past the connection's own
-/// write budget would answer nobody.
+/// [`ListingOutcome::Busy`]. Long enough to slip between the short listings of a full-tree walk —
+/// which is the point of gating per invocation rather than per pass — and short enough to stay well
+/// inside a client's own round-trip budget (`proton-sync`'s is 10s), so a refusal arrives as an
+/// answer rather than as a timeout.
 const BROWSE_GATE_WAIT: Duration = Duration::from_secs(2);
 /// How often the daemon polls the volume event stream while event-driven detection is **live** —
 /// `events_driven` on *and* an event source built. Matches the ~30s cadence Proton's own client
@@ -4132,11 +4132,19 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             shared.response(&message)
         }
         ControlCommand::List => {
-            // The one control command that runs work on this task. It is bounded twice over —
-            // by the CLI gate's `gate_wait` budget and by the invocation's own timeout — so the
-            // "answer from the snapshot, never by running work here" contract still holds for
-            // every other verb, and a browse that cannot get in answers `busy` rather than
-            // parking the connection. See `proton::CliGate`.
+            // The one control command that runs work on this task, and the only place the
+            // "answer from the snapshot, never by running work here" contract bends. Two
+            // properties keep that bend bounded, and neither is the connection's own IO timeout
+            // (which covers the read and the write, not the work between them):
+            //
+            //   * the wait for the CLI gate is capped at `gate_wait`, so a browse behind a
+            //     multi-GB transfer answers `busy` rather than parking the connection;
+            //   * the gate then admits ONE listing at a time, so however often a client retries,
+            //     at most one request is ever running the CLI and every other one is refused
+            //     within `gate_wait` — there is no pile-up of blocking tasks.
+            //
+            // The listing itself is bounded only by the CLI's own command timeout, which can
+            // outlast a client's patience; that costs a dropped reply, not a stuck daemon.
             let outcome =
                 browse_remote_directory(browse, shared, request.argument.as_deref(), request.limit)
                     .await;
@@ -4303,7 +4311,8 @@ fn publish_auth_evidence(shared: &ControlShared, state: AuthState) -> bool {
 ///
 /// A `const` because [`Daemon::note_auth_evidence`] both sets it and — on recovery — clears it,
 /// and clearing by comparison only works if there is exactly one spelling to compare against.
-const AUTH_DECLINE_REASON: &str = "the proton-drive CLI session is signed out or expired; run                                    `proton-drive login` (the daemon reuses that CLI's session)";
+const AUTH_DECLINE_REASON: &str = "the proton-drive CLI session is signed out or expired; run `proton-drive login` \
+     (the daemon reuses that CLI's session)";
 
 /// Answers a [`ControlCommand::Activity`] request. The selector is a **relative path** and is
 /// validated like every other externally-sourced path before it reaches a query — it is only ever
@@ -5849,6 +5858,15 @@ mod tests {
             daemon.event_scope_declined.as_deref(),
             Some(AUTH_DECLINE_REASON),
             "the sign-out is reported through the scope latch, not beside it"
+        );
+        // The reason is a log line and a status string, so it must read as one sentence. The
+        // source spells it across two lines with a `\` continuation, which strips the newline AND
+        // the next line's indentation — but that is invisible at the call site and easy to
+        // "fix" into a real run of spaces (Copilot review read it as one). Assert the rendered
+        // form rather than trusting the escape.
+        assert!(
+            !AUTH_DECLINE_REASON.contains("  ") && !AUTH_DECLINE_REASON.contains('\n'),
+            "the reason must render as one line with no whitespace run: {AUTH_DECLINE_REASON:?}"
         );
 
         // Recovery clears it, because it is OUR reason…
