@@ -1510,6 +1510,22 @@ async fn poll_until(
     result
 }
 
+/// The `Run it with:` footer, or `None` when there is nothing to run.
+///
+/// The token is the whole point of printing it: `apply` names it, and nothing else can authorise
+/// this exact plan. But an **empty** plan has nothing to authorise — applying one is a provable
+/// no-op (the daemon re-plans, compares, and executes nothing) — so offering the command under
+/// "Nothing would change" both contradicts that sentence and invites a pointless pass. Keyed on
+/// `total`, the untruncated plan length, never on `actions`, which is a window over it.
+fn run_it_line(total: usize, token: &str, style: &Style) -> Option<String> {
+    (total > 0).then(|| {
+        format!(
+            "Run it with: {}",
+            style.dim(&format!("proton-sync apply {token}"))
+        )
+    })
+}
+
 /// Renders a plan reply, and returns the exit code with it — the same rule `list` follows: a plan
 /// that did not happen exits non-zero so a script never mistakes it for "nothing to do".
 fn report_plan(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
@@ -1569,12 +1585,9 @@ fn report_plan(response: &ControlResponse, json: bool, style: &Style) -> ExitCod
                         );
                     }
                 }
-                // The token is the whole point of printing it: `apply` names it, and nothing else
-                // can authorise this exact plan.
-                println!(
-                    "\nRun it with: {}",
-                    style.dim(&format!("proton-sync apply {token}"))
-                );
+                if let Some(line) = run_it_line(*total, token, style) {
+                    println!("\n{line}");
+                }
             }
             ExitCode::SUCCESS
         }
@@ -2198,6 +2211,18 @@ mod tests {
         assert_eq!(
             missing_history_message("daemon status", None),
             "This daemon does not report per-file activity."
+        );
+    }
+
+    /// An empty plan offers no `apply` command: there is nothing to authorise, and printing one
+    /// under "Nothing would change — both sides already match" contradicts the line above it.
+    #[test]
+    fn an_empty_plan_offers_nothing_to_run() {
+        let style = plain_style();
+        assert_eq!(run_it_line(0, "1:abc", &style), None);
+        assert_eq!(
+            run_it_line(1, "1:abc", &style),
+            Some("Run it with: proton-sync apply 1:abc".to_owned())
         );
     }
 
