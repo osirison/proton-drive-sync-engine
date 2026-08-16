@@ -51,6 +51,8 @@ $ proton-sync status
 ● syncing — 2 uploads, 1 download planned
   folders    ~/ProtonDrive ⇄ /Drive/RemoteFolder
   activity   downloading Documents/takeout.tgz — 1.4 GiB so far · 3m12s [step 812/6377]
+  queued     notes/scratch.md, reports/q3-summary.pdf and 115 more
+  moved      44 sent · 115 received — 386.0 MB up, 1.1 GB down
   last sync  2m ago
   changes    3 queued locally
 
@@ -85,6 +87,14 @@ now*: which remote folder a full-tree walk is listing (with a running count), wh
 file the scan is hashing, or which file is transferring — with live bytes-so-far for
 downloads, sampled from the staging directory while the transfer runs. The same line
 animates in place on the `syncnow` spinner.
+
+Two lines join it while transfers are running. **queued** names the files waiting behind
+the one in flight, then counts the rest; **moved** is what this pass has actually landed so
+far, per direction — file counts and byte totals from the same fold, so they always
+describe the same transfers. Both are omitted rather than shown at zero.
+
+One transfer runs at a time (a batched download counts as one row covering a folder's
+chunk), so the queue is what is *next*, not what is also moving.
 
 Pass `--json` to any command to get the daemon's raw response instead: `status --json`
 prints the full response object (below), `history --json` the `history` block, `activity
@@ -153,16 +163,35 @@ and schedules nothing.
 - `listing` — the answer to a `list` request, and `null` on every other reply. See
   [Browsing the remote](#browsing-the-remote).
 - `activity` — what the daemon is doing right now (`null` when idle): `{ phase, detail,
-  folders_listed, files_scanned, action_index, action_total, transfer, since_epoch_secs }`,
-  where `phase` is one of `scanning-local`, `listing-remote`, `fetching-events`,
-  `executing`, `committing`, and `transfer` (when a file is moving) carries `direction`,
-  `path`, `bytes_done` (downloads: sampled live from the staging directory), `bytes_total`
-  (uploads only — the remote listing exposes no size), and `started_epoch_secs`. Every
+  folders_listed, files_scanned, action_index, action_total, transfers,
+  transfers_remaining, transfer, since_epoch_secs, pass }`, where `phase` is one of
+  `scanning-local`, `listing-remote`, `fetching-events`, `executing`, `committing`. Every
   field is display-only and best-effort; new phases may appear, so render unknown tokens
   rather than failing. `since_epoch_secs` is when the **phase** began and resets on every
-  phase change; the `pass` block — `{ started_epoch_secs, changes, kind }` — is the pass as
-  a unit and does not, so an elapsed time rendered from it climbs monotonically. `changes`
-  is `null` until the plan exists, which means *unknown*, not zero.
+  phase change; the `pass` block is the pass as a unit and does not, so an elapsed time
+  rendered from it climbs monotonically.
+  - `transfers` is the transfer queue as a **bounded window**: every transfer in flight
+    first, then the next planned ones as `queued` rows, capped at six. Each row carries
+    `direction`, `path`, `state` (`active` or `queued`), `bytes_total` (uploads only — a
+    remote listing exposes no size), `bytes_done` (downloads only — sampled live from the
+    staging directory), `started_epoch_secs` (`null` on a queued row), and `files` when the
+    row stands for a whole batched download rather than one file.
+  - `transfers_remaining` is how many transfers the pass has left, counted **past** the
+    window, so `+n more` comes from the daemon rather than from the length of the list.
+    `null` means the pass is not executing (or the daemon predates the field) — *unknown*,
+    not zero; `0` is the only value that means nothing is left to transfer.
+  - `transfer` is the first `active` row of `transfers`, repeated for clients written before
+    the list existed. It is derived, never set on its own.
+  - `pass` is `{ started_epoch_secs, changes, kind, uploaded_files, downloaded_files,
+    uploaded_bytes, downloaded_bytes }`. `changes` is `null` until the plan exists, which
+    means *unknown*, not zero. The four counters are what this pass has **landed and
+    committed** so far, per direction — files and bytes folded from the same events, so they
+    always describe the same set of transfers.
+
+  There is no per-file percentage, and there will not be one from this client: an upload
+  knows its total and gets no progress from the CLI, a download reports progress and has no
+  total. The honest fraction is per pass — `pass.uploaded_bytes` against
+  `last_plan_summary.upload_bytes`.
 
 ## Browsing the remote
 

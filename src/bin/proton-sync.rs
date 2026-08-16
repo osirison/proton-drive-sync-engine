@@ -460,6 +460,12 @@ fn print_status(response: &ControlResponse, style: &Style) {
         && let Some(activity) = &response.activity
     {
         rows.push(("activity", describe_activity(activity)));
+        if let Some(queue) = describe_transfer_queue(activity) {
+            rows.push(("queued", queue));
+        }
+        if let Some(moved) = describe_pass_transfers(activity) {
+            rows.push(("moved", moved));
+        }
     }
     rows.push((
         "last sync",
@@ -1034,11 +1040,18 @@ fn describe_activity(activity: &SyncActivity) -> String {
         "fetching-events" => format!("checking the remote change feed{phase_elapsed}"),
         "committing" => format!("committing the sync index{phase_elapsed}"),
         "executing" => {
-            if let Some(transfer) = &activity.transfer {
+            if let Some(transfer) = activity.active_transfer() {
                 let verb = if transfer.direction == "upload" {
                     "uploading"
                 } else {
                     "downloading"
+                };
+                // A batched download is one row over a whole chunk, so it names the folder and how
+                // many files are landing in it — "downloading 25 files in photos/2024", not a
+                // folder rendered as if it were the file.
+                let what = match transfer.files {
+                    Some(files) => format!("{files} files in {}", transfer.path.display()),
+                    None => transfer.path.display().to_string(),
                 };
                 let progress = match (transfer.bytes_done, transfer.bytes_total) {
                     (Some(done), Some(total)) if total > 0 => format!(
@@ -1051,11 +1064,11 @@ fn describe_activity(activity: &SyncActivity) -> String {
                     (None, Some(total)) => format!(" — {}", human_bytes(total)),
                     (None, None) => String::new(),
                 };
-                let elapsed = elapsed_label(transfer.started_epoch_secs);
-                format!(
-                    "{verb} {}{progress}{elapsed}{step}",
-                    transfer.path.display()
-                )
+                let elapsed = transfer
+                    .started_epoch_secs
+                    .map(elapsed_label)
+                    .unwrap_or_default();
+                format!("{verb} {what}{progress}{elapsed}{step}")
             } else {
                 // Non-transfer actions (directory creation, moves, deletes) can still take
                 // noticeable time — keep the elapsed clock ticking for them too.
@@ -1072,6 +1085,57 @@ fn describe_activity(activity: &SyncActivity) -> String {
             None => other.to_owned(),
         },
     }
+}
+
+/// What is waiting behind the transfer in flight (#211): the next few paths, then a count for the
+/// tail the window does not name.
+///
+/// ```text
+/// queued     notes/scratch.md, reports/q3-summary.pdf and 115 more
+/// ```
+///
+/// `None` when nothing is queued — an omitted row, never `0 queued`.
+fn describe_transfer_queue(activity: &SyncActivity) -> Option<String> {
+    let named: Vec<String> = activity
+        .queued_transfers()
+        .map(|transfer| transfer.path.display().to_string())
+        .collect();
+    let more = activity.transfers_past_the_window();
+    if named.is_empty() && more == 0 {
+        return None;
+    }
+    let tail = match more {
+        0 => String::new(),
+        1 => " and 1 more".to_owned(),
+        n => format!(" and {n} more"),
+    };
+    if named.is_empty() {
+        // Everything left is past the window (a chunk wide enough to fill it on its own).
+        return Some(format!("{more} more"));
+    }
+    Some(format!("{}{tail}", named.join(", ")))
+}
+
+/// This pass's per-direction progress (#243 counts, #98 bytes), from the pass block.
+///
+/// ```text
+/// moved      44 sent · 115 received — 386.0 MB up, 1.1 GB down
+/// ```
+///
+/// `None` before anything has landed: a pass that has moved nothing says nothing, rather than
+/// printing a row of zeroes for every folder-creation pass.
+fn describe_pass_transfers(activity: &SyncActivity) -> Option<String> {
+    let pass = activity.pass.as_ref()?;
+    if pass.uploaded_files == 0 && pass.downloaded_files == 0 {
+        return None;
+    }
+    Some(format!(
+        "{} sent · {} received — {} up, {} down",
+        pass.uploaded_files,
+        pass.downloaded_files,
+        human_bytes(pass.uploaded_bytes),
+        human_bytes(pass.downloaded_bytes),
+    ))
 }
 
 /// ` · 3m12s` since `epoch_secs`, empty within the first couple of seconds.
@@ -1373,6 +1437,8 @@ mod tests {
             files_scanned: None,
             action_index: None,
             action_total: None,
+            transfers: Vec::new(),
+            transfers_remaining: None,
             transfer: None,
             since_epoch_secs: None,
             pass: None,
@@ -1421,17 +1487,46 @@ mod tests {
         let mut transfer = blank_activity("executing");
         transfer.action_index = Some(812);
         transfer.action_total = Some(6377);
-        transfer.transfer = Some(TransferActivity {
-            direction: "download".to_owned(),
-            path: PathBuf::from("Companies/takeout.tgz"),
-            bytes_total: None,
+        transfer.transfers = vec![TransferActivity {
             bytes_done: Some(1_500_000_000),
             // Far future → zero elapsed → no elapsed fragment, keeping the assertion stable.
-            started_epoch_secs: u64::MAX,
-        });
+            ..TransferActivity::active(
+                "download",
+                PathBuf::from("Companies/takeout.tgz"),
+                None,
+                u64::MAX,
+            )
+        }];
         assert_eq!(
             describe_activity(&transfer),
             "downloading Companies/takeout.tgz — 1.4 GiB so far [step 812/6377]"
+        );
+
+        // A batched download is one row over a chunk: it names the folder and the file count, so
+        // the folder is not rendered as if it were the file.
+        let mut batch = blank_activity("executing");
+        batch.action_index = Some(40);
+        batch.action_total = Some(100);
+        batch.transfers = vec![TransferActivity {
+            files: Some(25),
+            ..TransferActivity::active("download", PathBuf::from("photos/2024"), None, u64::MAX)
+        }];
+        assert_eq!(
+            describe_activity(&batch),
+            "downloading 25 files in photos/2024 [step 40/100]"
+        );
+
+        // A daemon predating #211 sends only the singular mirror, and the line is unchanged.
+        let mut legacy = blank_activity("executing");
+        legacy.action_index = Some(1);
+        legacy.action_total = Some(2);
+        legacy.transfer = Some(TransferActivity {
+            bytes_total: Some(4_400_000),
+            ..TransferActivity::active("upload", PathBuf::from("docs/report.pdf"), None, u64::MAX)
+        });
+        assert_eq!(
+            describe_activity(&legacy),
+            "uploading docs/report.pdf — 4.2 MiB [step 1/2]"
         );
 
         let mut plain = blank_activity("executing");

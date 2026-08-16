@@ -23,7 +23,21 @@
 import { MAIN, TRAY } from "../ui/copy.js";
 import { clock, since } from "../ui/format.js";
 import { renderCompactPanel, updateCompactPanel, trayMenu } from "../ui/compact.js";
-import { heroStateOf } from "./main.js";
+import { heroStateOf, transfersOf } from "./main.js";
+
+/**
+ * How many transfer rows the panel draws, and it is a HARD cap rather than a preference.
+ *
+ * `10a Syncing` and `2a Compact syncing` both draw exactly two, in a 362px panel whose height sizes
+ * the tray window — and the panel has no `+n more` line, because no frame draws one there. Until
+ * #211 the reply could describe one transfer, so nothing ever reached this; the window is now up to
+ * six, and handing all six to a 298px panel would grow it past the height the window was measured
+ * at. The count is not lost: the headline above these rows is `Syncing N changes`.
+ *
+ * The window screen's own cap lives in `screens/main.js` — a different number for a different
+ * surface, which is why neither imports the other's.
+ */
+const PANEL_ROWS = 2;
 
 /**
  * The hero state S1 derives → the panel arrangement `ui/compact.js` draws.
@@ -122,32 +136,9 @@ export function trayView(props = {}) {
     menuState: MENU_STATE[hero],
     hero,
     ...copyFor(hero, { changes, waiting, queued, lastSync, activity, summary }),
-    transfers: PANEL_STATE[hero] === "syncing" ? transfersOf(activity) : [],
+    transfers:
+      PANEL_STATE[hero] === "syncing" ? transfersOf(activity, { compact: true }).slice(0, PANEL_ROWS) : [],
   };
-}
-
-/**
- * The in-flight transfer, at panel scale.
- *
- * `10a Syncing` draws TWO rows and the reply carries at most one: `SyncActivity.transfer` is a
- * single in-flight file (#211, G10 — "status reports one in-flight transfer, the main screen draws a
- * queue"). One row is what is true, and a second invented row would be a file that is not moving.
- *
- * No `detail` and no `state`, unlike S1's: the compact row is flat — `rows.js` takes `size:
- * "compact"` — and neither of the two drawn compact transfer rows carries a size chip.
- */
-function transfersOf(activity) {
-  const t = activity?.transfer;
-  if (!t) return [];
-  return [
-    {
-      direction: t.direction === "download" ? "down" : "up",
-      name: t.path,
-      // `null` is "no track", not "0%" — a reply never carries both ends of a percentage for a
-      // download until the staging directory has something in it.
-      progress: t.bytes_done != null && t.bytes_total != null ? t.bytes_done / t.bytes_total : null,
-    },
-  ];
 }
 
 /**

@@ -356,7 +356,43 @@ pub struct SyncActivity {
     /// Total number of planned actions this pass (`executing`).
     #[serde(default)]
     pub action_total: Option<u64>,
-    /// The in-flight file transfer, when the executing action is an upload or download.
+    /// The transfer queue as a bounded window (#211): every transfer in flight, then the next
+    /// planned ones as [`TRANSFER_STATE_QUEUED`] rows, capped at [`TRANSFERS_REPORTED`].
+    ///
+    /// **Bounded, not truncated-and-silent**: [`Self::transfers_remaining`] carries the untruncated
+    /// figure, so a client draws `+n more` from the daemon's count rather than from the length of a
+    /// list it was handed.
+    #[serde(default)]
+    pub transfers: Vec<TransferActivity>,
+    /// How many transfer actions this pass has left — the in-flight ones plus every one still
+    /// queued behind them, counted past the window above.
+    ///
+    /// **This is what tells an empty [`Self::transfers`] apart from three different things**, and
+    /// an empty list is not one of them on its own:
+    ///
+    /// - `None` — nothing is known about transfers: the pass is not executing yet (it is scanning,
+    ///   walking or committing), or the reply came from a daemon predating #211. A client must NOT
+    ///   render this as "nothing is moving"; it is unknown, not zero.
+    /// - `Some(0)` — the pass is executing and has no transfers left. This is the only reading that
+    ///   licenses "nothing is transferring".
+    /// - `Some(n)` with rows — the window, and `n` counts past it.
+    ///
+    /// `Some(n > 0)` with an *empty* list cannot occur: the window always names as much of the
+    /// remainder as it can hold, and it is republished on every action rather than only on the
+    /// transfer ones, so a delete between two uploads does not blank it.
+    ///
+    /// Owned by the executor's own queue cursor and **never** derived from
+    /// [`PassProgress::uploaded_files`]/[`PassProgress::downloaded_files`]: those count what
+    /// *committed* over a different action set (a conflict sidecar is a download that is not a
+    /// `Download`), so the subtraction would drift and, on a conflict-heavy pass, go negative.
+    #[serde(default)]
+    pub transfers_remaining: Option<u64>,
+    /// The in-flight file transfer — **the first active row of [`Self::transfers`], derived**, and
+    /// kept only so a client built before #211 still renders something.
+    ///
+    /// Written in exactly one place, [`Self::derive_legacy_transfer`], immediately before a reply
+    /// goes out. The daemon core never assigns it: two fields set from two places about the same
+    /// transfer is how they start disagreeing.
     #[serde(default)]
     pub transfer: Option<TransferActivity>,
     /// When this **phase** began (unix seconds). Reset on every phase change, so it is not the
@@ -371,6 +407,11 @@ pub struct SyncActivity {
 }
 
 /// The in-flight pass, as opposed to the phase it is currently in (#213).
+///
+/// Everything here survives a phase change. That is not a convention — it is why the per-direction
+/// progress of #243 and #98 lives here and not on [`SyncActivity`]: `begin_activity` replaces the
+/// current activity once per *action*, so a counter stored there would reset a few hundred times a
+/// pass, which is the exact bug the pass block was added to fix.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PassProgress {
     /// When the pass started (unix seconds) — stable for its whole duration.
@@ -383,6 +424,33 @@ pub struct PassProgress {
     pub changes: Option<u64>,
     /// Open token, [`crate::index::PassKind::as_str`] — render an unrecognized one verbatim.
     pub kind: String,
+    /// Transfers that have landed **and committed** this pass, per direction (#243). Counts, not
+    /// bytes: `44 sent · 115 received` is two action counters, and the bytes below are a different
+    /// question that happens to be folded from the same events.
+    ///
+    /// Both pairs come from one fold — `daemon::PassLog::note_committed`, the same one that builds
+    /// the history rollup — so a count and a byte sum here always describe the same set of side
+    /// effects, and the direction is `SyncAction::transfer_direction` rather than a second
+    /// derivation of it. An action that moved no bytes over the network (a conflict sidecar copied
+    /// from the local file) is in neither.
+    ///
+    /// Invariant a client may rely on: `uploaded_files + downloaded_files <= action_index`, since a
+    /// pass has at least as many actions as it has transfers.
+    #[serde(default)]
+    pub uploaded_files: u64,
+    #[serde(default)]
+    pub downloaded_files: u64,
+    /// Bytes that have landed this pass, per direction (#98). Named to match
+    /// [`crate::index::ByteTotals`], which answers the same question over a finished window.
+    ///
+    /// This is the byte figure #98 can honestly have. A **per-file** percentage is unreachable —
+    /// see [`TransferActivity`] — but a pass-level one is not: `uploaded_bytes` against
+    /// [`crate::sync::PlanSummary::upload_bytes`] is a real fraction of a real total. There is no
+    /// download counterpart, because nothing knows what a download will weigh until it lands.
+    #[serde(default)]
+    pub uploaded_bytes: u64,
+    #[serde(default)]
+    pub downloaded_bytes: u64,
 }
 
 /// The pass-level history that rides on every status reply: enough to draw `Last 20 passes`
@@ -406,14 +474,31 @@ pub struct PassHistory {
 /// draws.
 pub const PASS_HISTORY_REPORTED: usize = 20;
 
-/// A file transfer in flight. For downloads, `bytes_done` is sampled live from the staging
-/// scratch directory each time a status reply is built, so a client polling status watches the
-/// number grow while the CLI child is still running.
+/// One row of the transfer queue: a file moving now, or one planned and not started.
+///
+/// **A PER-FILE PERCENTAGE IS UNREACHABLE HERE, BY CONSTRUCTION — NOT UNIMPLEMENTED (#98).**
+/// `bytes_total` and `bytes_done` are never both present on the same transfer, because the two
+/// directions can see opposite halves of the question:
+///
+/// | direction  | `bytes_total`                                | `bytes_done`                        |
+/// | ---------- | -------------------------------------------- | ----------------------------------- |
+/// | `upload`   | the local file's size, from the scan          | none — the CLI reports no progress  |
+/// | `download` | none — a remote listing carries no file size  | sampled live from the staging dir   |
+///
+/// The remote JSON does carry a `totalStorageSize`, and it is **not** a file size: it reads `0` on
+/// 873 of 5424 healthy files on a real account (those files download fine), and it plausibly
+/// describes the encrypted footprint rather than the plaintext byte count. `proton.rs` deliberately
+/// does not parse it, and nothing may make it a `bytes_total`.
+///
+/// So a client draws no track at all rather than a fraction it had to invent — `null` progress
+/// meaning *no track*, which is a different thing from `0`, which reads as stalled. The figure that
+/// *is* honest is per pass, not per file: see [`PassProgress::uploaded_bytes`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TransferActivity {
     /// `"upload"` or `"download"`.
     pub direction: String,
-    /// Root-relative path of the file being transferred.
+    /// Root-relative path of the file being transferred — or, when `files` is set, of the folder
+    /// the batch is filling.
     #[serde(with = "crate::lossy_path")]
     pub path: PathBuf,
     /// Total size in bytes when known (uploads: the local file's size; downloads: unknown —
@@ -423,8 +508,143 @@ pub struct TransferActivity {
     /// Bytes transferred so far when observable (downloads only; see the type docs).
     #[serde(default)]
     pub bytes_done: Option<u64>,
-    /// When this transfer began (unix seconds).
-    pub started_epoch_secs: u64,
+    /// [`TRANSFER_STATE_ACTIVE`] or [`TRANSFER_STATE_QUEUED`]. Open token — a client renders an
+    /// unrecognized one verbatim rather than failing.
+    ///
+    /// A `String` rather than a tagged enum like [`ListingOutcome`], deliberately: this is the same
+    /// kind of thing as [`SyncActivity::phase`] on the same record — a label with no payload of its
+    /// own — and it follows that field's rule. A tagged enum earns its keep when the arms carry
+    /// *different data* and a client would otherwise pattern-match prose to tell them apart.
+    ///
+    /// Defaults to *active* when absent, which is what a daemon predating #211 meant: it reported
+    /// the in-flight transfer and nothing else.
+    #[serde(default = "transfer_state_active")]
+    pub state: String,
+    /// How many files this row covers, when it covers more than one: a batched download
+    /// (`download_many`) is a single CLI invocation over a whole folder's chunk, so the files in it
+    /// are in flight together and share one staging directory. `None` means one file, and `path` is
+    /// that file.
+    ///
+    /// The batch is one row rather than N because its `bytes_done` is one measurement of one
+    /// directory: split across N rows it would have to be divided, and no division of it is true.
+    #[serde(default)]
+    pub files: Option<u64>,
+    /// When this transfer began (unix seconds). `None` on a queued row — it has not begun.
+    ///
+    /// Stamped when the **executor reaches** the transfer, which is not quite when the child starts
+    /// moving bytes: since #99 every `proton-drive` invocation waits on [`crate::proton::CliGate`],
+    /// so a browse request already in flight can sit between the two. The clock a client renders
+    /// from this is therefore "how long this transfer has been the daemon's current job", which is
+    /// the honest reading — and nothing derives a *rate* from it, which is the figure that gap
+    /// would falsify.
+    ///
+    /// A row built by [`Self::active`] always carries it, and that is load-bearing: the derived
+    /// [`SyncActivity::transfer`] mirror is taken from active rows only, and a client predating
+    /// #211 deserializes that field into a non-optional `u64`, so a `null` there would fail its
+    /// whole reply.
+    #[serde(default)]
+    pub started_epoch_secs: Option<u64>,
+}
+
+/// [`TransferActivity::state`] for a transfer the daemon is running now.
+pub const TRANSFER_STATE_ACTIVE: &str = "active";
+/// [`TransferActivity::state`] for a planned transfer that has not started.
+pub const TRANSFER_STATE_QUEUED: &str = "queued";
+
+fn transfer_state_active() -> String {
+    TRANSFER_STATE_ACTIVE.to_owned()
+}
+
+/// How many transfer rows a status reply carries (#211). The design's own cap — "cap at ~6 visible
+/// with `+n more` in mono if exceeded" — so the window is the display and anything past it is a
+/// number, not a row. Named here because the wire is where the bound is decided; the GUI slices to
+/// its own cap as well, and draws `+n more` from
+/// [`SyncActivity::transfers_remaining`] rather than from this length.
+pub const TRANSFERS_REPORTED: usize = 6;
+
+impl TransferActivity {
+    /// A transfer that is running now. The only constructor that stamps a start time, which is what
+    /// makes "every active row has one" true by construction rather than by review.
+    pub fn active(direction: &str, path: PathBuf, bytes_total: Option<u64>, now: u64) -> Self {
+        Self {
+            direction: direction.to_owned(),
+            path,
+            bytes_total,
+            bytes_done: None,
+            state: transfer_state_active(),
+            files: None,
+            started_epoch_secs: Some(now),
+        }
+    }
+
+    /// A planned transfer that has not started. No start time, no bytes done.
+    pub fn queued(direction: &str, path: PathBuf, bytes_total: Option<u64>) -> Self {
+        Self {
+            direction: direction.to_owned(),
+            path,
+            bytes_total,
+            bytes_done: None,
+            state: TRANSFER_STATE_QUEUED.to_owned(),
+            files: None,
+            started_epoch_secs: None,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.state == TRANSFER_STATE_ACTIVE
+    }
+}
+
+impl SyncActivity {
+    /// The transfer running right now: the first active row of [`Self::transfers`], or — from a
+    /// daemon predating #211, which sent only the singular field — the mirror.
+    ///
+    /// One definition, so no client has to decide which of the two fields to believe.
+    pub fn active_transfer(&self) -> Option<&TransferActivity> {
+        self.transfers
+            .iter()
+            .find(|transfer| transfer.is_active())
+            .or(self.transfer.as_ref())
+    }
+
+    /// The rows waiting behind it, in plan order, as far as the window reaches.
+    pub fn queued_transfers(&self) -> impl Iterator<Item = &TransferActivity> {
+        self.transfers
+            .iter()
+            .filter(|transfer| !transfer.is_active())
+    }
+
+    /// How many transfers this pass still has that the window does not name — the `+n more` figure.
+    ///
+    /// `transfers_remaining` counts the running rows too, and a batched row stands for its whole
+    /// chunk, so the tail is the remainder minus the files the window already accounts for. The
+    /// same arithmetic the GUI's `hiddenTransfers` does, and the reason both are written down: a
+    /// count is a claim.
+    pub fn transfers_past_the_window(&self) -> u64 {
+        let shown: u64 = self
+            .transfers
+            .iter()
+            .map(|transfer| transfer.files.unwrap_or(1))
+            .sum();
+        self.transfers_remaining
+            .unwrap_or(shown)
+            .saturating_sub(shown)
+    }
+
+    /// Recomputes the legacy [`Self::transfer`] mirror from [`Self::transfers`].
+    ///
+    /// Called once, on the way out of the process, and nowhere else. Callers that measure something
+    /// onto a transfer (the download staging sample) must write it into the **list** and then call
+    /// this — deriving first would publish a mirror that is one measurement stale, and writing to
+    /// the mirror instead would leave the list, which is what every #211-aware client reads, short
+    /// of the number.
+    pub fn derive_legacy_transfer(&mut self) {
+        self.transfer = self
+            .transfers
+            .iter()
+            .find(|transfer| transfer.is_active())
+            .cloned();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -970,18 +1190,27 @@ mod tests {
             files_scanned: None,
             action_index: Some(3),
             action_total: Some(10),
+            transfers: vec![
+                TransferActivity {
+                    bytes_done: Some(1024),
+                    ..TransferActivity::active("download", PathBuf::from("a/b.bin"), None, 5)
+                },
+                TransferActivity::queued("upload", PathBuf::from("c/d.bin"), Some(64)),
+            ],
+            transfers_remaining: Some(9),
             transfer: Some(TransferActivity {
-                direction: "download".to_owned(),
-                path: PathBuf::from("a/b.bin"),
-                bytes_total: None,
                 bytes_done: Some(1024),
-                started_epoch_secs: 5,
+                ..TransferActivity::active("download", PathBuf::from("a/b.bin"), None, 5)
             }),
             since_epoch_secs: Some(4),
             pass: Some(PassProgress {
                 started_epoch_secs: 2,
                 changes: Some(3),
                 kind: "incremental".to_owned(),
+                uploaded_files: 4,
+                downloaded_files: 7,
+                uploaded_bytes: 900,
+                downloaded_bytes: 12,
             }),
         };
         let json = serde_json::to_string(&activity).expect("serialize");
@@ -1010,6 +1239,97 @@ mod tests {
         assert!(activity.since_epoch_secs.unwrap() > pass.started_epoch_secs);
         // Unknown is not zero: a client omits the clause rather than printing "0 changes".
         assert_eq!(pass.changes, None);
+        // …and neither are the per-direction counters, which an older daemon simply does not send.
+        assert_eq!(pass.uploaded_files, 0);
+        assert_eq!(pass.downloaded_bytes, 0);
+    }
+
+    #[test]
+    fn a_reply_from_a_daemon_predating_the_transfer_list_still_parses() {
+        // The wire-compat direction that matters for a new client: an older daemon sends the
+        // singular `transfer` with a bare `started_epoch_secs`, no `state`, and no list at all.
+        let json = r#"{"phase":"executing","action_index":3,"action_total":10,
+                       "transfer":{"direction":"upload","path":"a/b.bin",
+                                   "bytes_total":64,"started_epoch_secs":7}}"#;
+        let activity: SyncActivity = serde_json::from_str(json).expect("legacy activity");
+        assert!(activity.transfers.is_empty());
+        assert_eq!(
+            activity.transfers_remaining, None,
+            "unknown, and a client must not read it as `nothing is moving`"
+        );
+        // A row with no `state` is active: that is what the field meant before it existed.
+        let transfer = activity
+            .active_transfer()
+            .expect("the mirror is the in-flight transfer for a client that knows both shapes");
+        assert!(transfer.is_active());
+        assert_eq!(transfer.started_epoch_secs, Some(7));
+        assert_eq!(transfer.files, None);
+    }
+
+    #[test]
+    fn the_window_is_named_rows_plus_a_count_that_outlives_them() {
+        // `+n more` is the daemon's figure, not `transfers.len()`: the window is capped and a
+        // batched row stands for its whole chunk. 25 in flight + 2 named + 91 unnamed = 118.
+        let mut activity = SyncActivity {
+            phase: "executing".to_owned(),
+            transfers: vec![
+                TransferActivity {
+                    files: Some(25),
+                    ..TransferActivity::active("download", PathBuf::from("photos/2024"), None, 1)
+                },
+                TransferActivity::queued("upload", PathBuf::from("a.txt"), Some(10)),
+                TransferActivity::queued("download", PathBuf::from("b.txt"), None),
+            ],
+            transfers_remaining: Some(118),
+            ..blank()
+        };
+        assert_eq!(activity.transfers_past_the_window(), 91);
+        assert_eq!(activity.queued_transfers().count(), 2);
+
+        // The mirror is the first ACTIVE row, never simply the first row, and it is derived rather
+        // than stored — the only writer is this call.
+        assert_eq!(activity.transfer, None);
+        activity.derive_legacy_transfer();
+        let mirror = activity.transfer.as_ref().expect("mirror");
+        assert_eq!(mirror.path, PathBuf::from("photos/2024"));
+        assert!(
+            mirror.started_epoch_secs.is_some(),
+            "an older client deserializes this into a non-optional u64, so a null would fail its \
+             whole reply"
+        );
+
+        // A window holding only queued rows has no mirror — and that is not "nothing is moving",
+        // which `transfers_remaining` is what answers.
+        let mut queued_only = SyncActivity {
+            phase: "executing".to_owned(),
+            transfers: vec![TransferActivity::queued(
+                "upload",
+                PathBuf::from("c.txt"),
+                None,
+            )],
+            transfers_remaining: Some(1),
+            ..blank()
+        };
+        queued_only.derive_legacy_transfer();
+        assert_eq!(queued_only.transfer, None);
+        assert_eq!(queued_only.active_transfer(), None);
+        assert_eq!(queued_only.transfers_past_the_window(), 0);
+    }
+
+    fn blank() -> SyncActivity {
+        SyncActivity {
+            phase: String::new(),
+            detail: None,
+            folders_listed: None,
+            files_scanned: None,
+            action_index: None,
+            action_total: None,
+            transfers: Vec::new(),
+            transfers_remaining: None,
+            transfer: None,
+            since_epoch_secs: None,
+            pass: None,
+        }
     }
 
     /// A path whose bytes are not valid UTF-8 (the engine supports them: `index_key` is a BLOB).
@@ -1062,18 +1382,26 @@ mod tests {
                 files_scanned: None,
                 action_index: Some(1),
                 action_total: Some(1),
-                transfer: Some(TransferActivity {
-                    direction: "download".to_owned(),
-                    path: non_utf8_path(b".bin"),
-                    bytes_total: None,
-                    bytes_done: None,
-                    started_epoch_secs: 2,
-                }),
+                transfers: vec![
+                    TransferActivity::active("download", non_utf8_path(b".bin"), None, 2),
+                    TransferActivity::queued("upload", non_utf8_path(b"-queued.bin"), Some(3)),
+                ],
+                transfers_remaining: Some(2),
+                transfer: Some(TransferActivity::active(
+                    "download",
+                    non_utf8_path(b".bin"),
+                    None,
+                    2,
+                )),
                 since_epoch_secs: None,
                 pass: Some(PassProgress {
                     started_epoch_secs: 1,
                     changes: Some(2),
                     kind: "warm-start".to_owned(),
+                    uploaded_files: 0,
+                    downloaded_files: 1,
+                    uploaded_bytes: 0,
+                    downloaded_bytes: 8,
                 }),
             }),
             unsyncable: vec![UnsyncableItem {

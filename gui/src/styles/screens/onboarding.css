@@ -318,6 +318,51 @@
   font-size: 12px;
   color: var(--text-4);
 }
+/* The split progress bar (#243). ONE track holding two fills side by side, warm then cool, with the
+   two counts beneath it. Measured off `9a First sync`: a 400x3 track at radius 2 on --track-inert,
+   the labels 9px below it at mono 11, and the block 26px tall in total (3 + 9 + 14).
+
+   `overflow:hidden` on the track is what keeps the two fills inside the rounded ends; they are flex
+   items with no basis, so their widths are the only thing that positions them and a fill of 0
+   occupies nothing rather than showing a sliver. */
+.ob-merge-progress {
+  position: relative;
+  width: 400px;
+  margin-top: 20px;
+}
+.ob-merge-track {
+  display: flex;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--track-inert);
+}
+.ob-merge-fill-up {
+  background: var(--up-gradient);
+}
+.ob-merge-fill-down {
+  background: var(--down-gradient);
+}
+/* The row carries the layout and NOTHING typographic: the frame records it at the dialog's own
+   Instrument Sans 16, with the mono 11 on the two spans inside it. Both are asserted, so putting the
+   font here fails the row while looking identical on screen. */
+.ob-merge-counts {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 9px;
+}
+.ob-merge-count-up,
+.ob-merge-count-down {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.ob-merge-count-up {
+  color: var(--up-label);
+}
+.ob-merge-count-down {
+  color: var(--down-label);
+}
+
 .ob-merge-close {
   max-width: 368px;
   margin-top: 22px;

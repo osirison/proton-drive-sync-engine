@@ -572,6 +572,48 @@ export const KNOWN_DEVIATIONS = [
     issue: "#232",
     why: "the tail is pushed to the bottom with `margin-top:auto`, so its used value measures whatever is above it — and what is above it is 71px shorter without the unsyncable panel (G19: a socket or a symlink never enters the index, so there is nothing to count and `See them` would open the one group `7a Never synced` already omits), less the 50px the doors take back off the region (§94)",
   },
+  // ---- §63b · the split bar's fills are computed, and the frame's two are not ----
+  //
+  // `9a First sync` paints the sent fill 48px and the received fill 88px of a 400px track, and
+  // labels them `44 sent` and `115 received` in the same block. 48:88 is 0.55 and 44:115 is 0.38;
+  // no denominator produces both, so the drawing disagrees with its own numbers. Its TOTAL is
+  // right — 48+88 = 136 of 400 is 34%, against the 159/471 the line above reads — which is what
+  // identifies the split as the hand-drawn half.
+  //
+  // #243 landed the two counts, so the app computes each fill as its count over `action_total`:
+  // 9.3% and 24.4%, the same 33.8% total. Reproducing 48:88 would mean drawing a split that
+  // contradicts the labels beside it. Decided 2026-08-16, DEVIATIONS §63b.
+  {
+    frame: "9a First sync",
+    key: "div[0]/div[5]/div[0]/div[0]",
+    props: ["box.w"],
+    detail: "48 vs 37.36",
+    decision: true,
+    why: "the sent fill is `uploaded_files / action_total` = 44/471 of 400px, where the frame paints a 48px fill it also labels `44 sent`",
+  },
+  {
+    frame: "9a First sync",
+    key: "div[0]/div[5]/div[0]/div[1]",
+    props: ["box.w"],
+    detail: "88 vs 97.66",
+    decision: true,
+    why: "the received fill is `downloaded_files / action_total` = 115/471 of the same track — the other half of one hand-drawn split",
+  },
+  // ---- §9 · one node against sixteen, and it is now drawn ----
+  //
+  // The queued row's arrow in light. §9 measured it years of frames ago: `#6D7783` maps to
+  // `#6B7280` at sixteen nodes and to `#9CA3AF` at exactly this one, "a drawing inconsistency, not
+  // a tier", so `--text-5` is the value and `rows.css` has said so at `.transfer-queued
+  // .transfer-arrow` ever since. Nothing reached the node until #211 gave the wire a queued row to
+  // draw; the decision is §9's and its date is that measurement's.
+  {
+    frame: "12a Syncing light",
+    key: "div[1]/div[0]/div[1]/span[2]",
+    props: ["color", "border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(156, 163, 175) vs rgb(107, 114, 128)",
+    decision: true,
+    why: "the queued arrow is `--text-5`, which light resolves to #6B7280 — §9 measured #9CA3AF at this one node against sixteen others and settled it as a drawing inconsistency rather than a tier",
+  },
   // ---- §94 · the doors are drawn on every screen ----
   //
   // The 2026-08-13 decision (DEVIATIONS §94) draws the footer nav under the action bar, so Settings

@@ -18,7 +18,7 @@ use crate::ipc::{
     ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem, LIST_ENTRIES_DEFAULT_LIMIT,
     LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PASS_HISTORY_REPORTED, PassHistory, PassProgress,
     PendingDeletion, RemoteEntry, RunningConfigInfo, StatusHistoryEntry, SyncActivity,
-    TransferActivity, bind_listener, read_request, write_response,
+    TRANSFERS_REPORTED, TransferActivity, bind_listener, read_request, write_response,
 };
 use crate::proton::{
     AuthFailure, CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient,
@@ -493,6 +493,10 @@ impl ControlShared {
             started_epoch_secs,
             changes: None,
             kind: kind.as_str().to_owned(),
+            uploaded_files: 0,
+            downloaded_files: 0,
+            uploaded_bytes: 0,
+            downloaded_bytes: 0,
         });
         Self::restamp_pass(&mut state);
     }
@@ -552,8 +556,15 @@ impl ControlShared {
     /// Snapshot of the current activity for a status reply. Purely in-memory — a download's
     /// live `bytes_done` is filled in separately by [`Self::response_with_sampled_activity`],
     /// so building a plain reply never touches the filesystem.
+    ///
+    /// The legacy `transfer` mirror is derived here rather than stored, so it cannot disagree with
+    /// the list it mirrors (#211).
     fn activity_for_response(&self) -> Option<SyncActivity> {
-        self.activity.lock().expect("activity lock").current.clone()
+        let mut activity = self.activity.lock().expect("activity lock").current.clone();
+        if let Some(activity) = activity.as_mut() {
+            activity.derive_legacy_transfer();
+        }
+        activity
     }
 
     /// [`Self::response`] plus the one live measurement a reply can carry: a download's
@@ -576,12 +587,19 @@ impl ControlShared {
             (state.current.clone(), state.download_scratch.clone())
         };
         response.activity = current;
-        if let Some(activity) = &mut response.activity
-            && let Some(transfer) = &mut activity.transfer
-            && transfer.direction == "download"
-            && let Some(scratch_dir) = scratch
-        {
-            transfer.bytes_done = staged_bytes(&scratch_dir).await;
+        if let Some(activity) = &mut response.activity {
+            // Into the LIST first, then derive the mirror from it. The other order publishes a
+            // mirror one sample stale, and writing the sample into the mirror instead would leave
+            // every #211-aware client reading a list that never grows.
+            if let Some(scratch_dir) = scratch
+                && let Some(transfer) = activity
+                    .transfers
+                    .iter_mut()
+                    .find(|transfer| transfer.is_active() && transfer.direction == "download")
+            {
+                transfer.bytes_done = staged_bytes(&scratch_dir).await;
+            }
+            activity.derive_legacy_transfer();
         }
         response
     }
@@ -708,11 +726,104 @@ fn new_activity(phase: &str) -> SyncActivity {
         files_scanned: None,
         action_index: None,
         action_total: None,
+        transfers: Vec::new(),
+        transfers_remaining: None,
+        // Derived from `transfers` on the way out (`SyncActivity::derive_legacy_transfer`); the
+        // core never sets it.
         transfer: None,
         since_epoch_secs: Some(current_epoch_secs()),
         // Stamped by `begin_activity` from the shared pass block, never built here: the pass
         // outlives the phase (#213).
         pass: None,
+    }
+}
+
+/// This pass's transfers and where they sit in the plan, so the queue behind the row in flight is a
+/// slice rather than a forward scan (#211): a plan with 100k downloads followed by 50k deletes
+/// would otherwise re-scan its own tail once per action.
+///
+/// One borrow rather than three more arguments on two already-long executor signatures — and
+/// `positions.len()` is the pass's transfer total, so nothing counts that a second time.
+struct TransferQueue<'a> {
+    plan: &'a [PlannedAction],
+    /// Indices into `plan` of every `Upload`/`Download`, in plan order.
+    positions: &'a [usize],
+    local_files: &'a HashMap<PathBuf, LocalFileState>,
+}
+
+impl TransferQueue<'_> {
+    fn total(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// The transfer queue as the wire carries it: the rows in flight, then the next planned
+    /// transfers, capped at [`TRANSFERS_REPORTED`] — plus how many transfers this pass still has
+    /// left, counted past the cap.
+    ///
+    /// `started` is how many transfers the pass has begun (the spinner's `transfer_index` after its
+    /// increment), so `positions[started..]` is exactly what has not been reached yet and the
+    /// remainder is that plus the rows still running. Counted from this cursor and never from the
+    /// committed per-direction counters: those fold over a different action set (a conflict sidecar
+    /// is a download that is not a `Download`), so subtracting one from the other would drift.
+    ///
+    /// A queued upload knows its size — the scan measured it — and a queued download does not, for
+    /// the same reason an active one does not.
+    fn window(
+        &self,
+        started: usize,
+        active: Vec<TransferActivity>,
+    ) -> (Vec<TransferActivity>, u64) {
+        // A row's weight is the number of files it covers, not 1: a batched download is one row over
+        // a whole chunk, and counting it as one transfer would under-report the remainder by the
+        // rest of its batch. Same arithmetic the client uses to size `+n more`.
+        let in_flight: u64 = active.iter().map(|row| row.files.unwrap_or(1)).sum();
+        let remaining = (self.total() - started.min(self.total())) as u64 + in_flight;
+        let mut window = active;
+        for position in self.positions.iter().skip(started) {
+            if window.len() >= TRANSFERS_REPORTED {
+                break;
+            }
+            let action = &self.plan[*position];
+            let (direction, bytes_total) = match action.action {
+                SyncAction::Upload => (
+                    "upload",
+                    self.local_files
+                        .get(&action.path)
+                        .map(|local| local.file_size),
+                ),
+                _ => ("download", None),
+            };
+            window.push(TransferActivity::queued(
+                direction,
+                action.path.clone(),
+                bytes_total,
+            ));
+        }
+        (window, remaining)
+    }
+}
+
+/// An `executing` activity, which **always carries its transfer window**.
+///
+/// The one constructor for the phase, so the window cannot be left off. Publishing the phase and
+/// then filling the window in a second `update_activity` is two lock acquisitions with an
+/// observable state between them: a status poll landing there reads `executing` with an empty list
+/// and `transfers_remaining: None`, which is the value that field documents as *not executing* —
+/// and blinks the transfer rows for the length of a CLI spawn. Both publish sites go through here.
+fn executing_activity(
+    detail: String,
+    action_index: usize,
+    action_total: u64,
+    window: (Vec<TransferActivity>, u64),
+) -> SyncActivity {
+    let (transfers, remaining) = window;
+    SyncActivity {
+        detail: Some(detail),
+        action_index: Some(action_index as u64 + 1),
+        action_total: Some(action_total),
+        transfers,
+        transfers_remaining: Some(remaining),
+        ..new_activity(PHASE_EXECUTING)
     }
 }
 
@@ -2347,10 +2458,19 @@ impl<C: ProtonClient> Daemon<C> {
         // terminal, so `begin_transfer_spinner` returns `None` and each arm falls back to its
         // `info!` trace line instead (no progress-bar escape codes in the journal).
         let interactive_progress = std::io::stderr().is_terminal();
-        let transfer_total = plan
+        let transfer_positions: Vec<usize> = plan
             .iter()
-            .filter(|action| matches!(action.action, SyncAction::Upload | SyncAction::Download))
-            .count();
+            .enumerate()
+            .filter(|(_, action)| {
+                matches!(action.action, SyncAction::Upload | SyncAction::Download)
+            })
+            .map(|(position, _)| position)
+            .collect();
+        let transfer_queue = TransferQueue {
+            plan: &plan,
+            positions: &transfer_positions,
+            local_files,
+        };
         let mut transfer_index = 0usize;
         let action_total = plan.len() as u64;
         let mut pending_approval_consumptions: Vec<(PathBuf, DeleteDirection)> = Vec::new();
@@ -2387,7 +2507,7 @@ impl<C: ProtonClient> Daemon<C> {
                         &plan[action_number..action_number + run_length],
                         action_number,
                         action_total,
-                        transfer_total,
+                        &transfer_queue,
                         &mut transfer_index,
                         remote_entities,
                         interactive_progress,
@@ -2401,10 +2521,16 @@ impl<C: ProtonClient> Daemon<C> {
             }
             let checkpoint_after = action_performs_side_effects(&action.action);
             debug!(path = %action.path.display(), action = ?action.action, "executing sync action");
-            self.shared.begin_activity(SyncActivity {
+            // The queue is published on EVERY action, not only on the transfer arms below. A
+            // delete or a folder creation between two uploads is still a pass with transfers left,
+            // and `begin_activity` replaces the whole activity — so publishing only from the
+            // transfer arms would blank the list for the duration of that action, and a client
+            // drawing an empty list as "nothing is moving" would say it mid-upload. `transfers`
+            // holds the queued rows here and gains an active one when a transfer actually starts.
+            self.shared.begin_activity(executing_activity(
                 // Root-level actions have an empty relative path; skip it rather than render
                 // a trailing space ("creating remote folder ").
-                detail: Some(if action.path.as_os_str().is_empty() {
+                if action.path.as_os_str().is_empty() {
                     activity_verb(&action.action).to_owned()
                 } else {
                     format!(
@@ -2412,11 +2538,11 @@ impl<C: ProtonClient> Daemon<C> {
                         activity_verb(&action.action),
                         action.path.display()
                     )
-                }),
-                action_index: Some(action_number as u64 + 1),
-                action_total: Some(action_total),
-                ..new_activity(PHASE_EXECUTING)
-            });
+                },
+                action_number,
+                action_total,
+                transfer_queue.window(transfer_index, Vec::new()),
+            ));
             // Everything this action may mutate, so a failure can roll back to exactly here: no
             // arm records anything before its own side effect lands, but truncating makes "the
             // failed action is never recorded" structural rather than a property of each arm.
@@ -2437,19 +2563,23 @@ impl<C: ProtonClient> Daemon<C> {
                                     .ensure_directory(&self.config.remote_root, parent)?;
                             }
                             transfer_index += 1;
+                            let (transfers, remaining) = transfer_queue.window(
+                                transfer_index,
+                                vec![TransferActivity::active(
+                                    "upload",
+                                    action.path.clone(),
+                                    Some(local.file_size),
+                                    current_epoch_secs(),
+                                )],
+                            );
                             self.shared.update_activity(PHASE_EXECUTING, |activity| {
-                                activity.transfer = Some(TransferActivity {
-                                    direction: "upload".to_owned(),
-                                    path: action.path.clone(),
-                                    bytes_total: Some(local.file_size),
-                                    bytes_done: None,
-                                    started_epoch_secs: current_epoch_secs(),
-                                });
+                                activity.transfers = transfers;
+                                activity.transfers_remaining = Some(remaining);
                             });
                             let spinner = begin_transfer_spinner(
                                 interactive_progress,
                                 transfer_index,
-                                transfer_total,
+                                transfer_queue.total(),
                                 "uploading",
                                 &action.path,
                                 Some(local.file_size),
@@ -2516,19 +2646,23 @@ impl<C: ProtonClient> Daemon<C> {
                         // `bytes_total` stays unknown (the remote listing carries no size), but
                         // `bytes_done` is sampled live from the staging directory the client
                         // reports via the progress sink, so status still shows a growing count.
+                        let (transfers, remaining) = transfer_queue.window(
+                            transfer_index,
+                            vec![TransferActivity::active(
+                                "download",
+                                action.path.clone(),
+                                None,
+                                current_epoch_secs(),
+                            )],
+                        );
                         self.shared.update_activity(PHASE_EXECUTING, |activity| {
-                            activity.transfer = Some(TransferActivity {
-                                direction: "download".to_owned(),
-                                path: action.path.clone(),
-                                bytes_total: None,
-                                bytes_done: None,
-                                started_epoch_secs: current_epoch_secs(),
-                            });
+                            activity.transfers = transfers;
+                            activity.transfers_remaining = Some(remaining);
                         });
                         let spinner = begin_transfer_spinner(
                             interactive_progress,
                             transfer_index,
-                            transfer_total,
+                            transfer_queue.total(),
                             "downloading",
                             &action.path,
                             None,
@@ -3013,6 +3147,7 @@ impl<C: ProtonClient> Daemon<C> {
                     &mut index_mutations,
                     &mut pending_approval_consumptions,
                     &mut self.pass_log,
+                    &self.shared,
                 )?;
             }
             action_number += 1;
@@ -3067,7 +3202,7 @@ impl<C: ProtonClient> Daemon<C> {
         // action that needs no checkpoint of its own).
         let pass_id = self.pass_log.write_pending(&transaction)?;
         transaction.commit()?;
-        self.pass_log.note_committed(pass_id);
+        self.pass_log.note_committed(pass_id, &self.shared);
         // `pending_changes` is a wake-up/status hint, not a plan input, and every pass that
         // reaches this commit ran the local stat-walk (the events-mode idle fast-path returns
         // before `execute_plan_and_commit`), so clearing the whole set here cannot lose work: the
@@ -3125,7 +3260,7 @@ impl<C: ProtonClient> Daemon<C> {
         run: &[PlannedAction],
         first_action_number: usize,
         action_total: u64,
-        transfer_total: usize,
+        transfer_queue: &TransferQueue<'_>,
         transfer_index: &mut usize,
         remote_entities: &HashMap<PathBuf, RemoteEntity>,
         interactive_progress: bool,
@@ -3226,7 +3361,7 @@ impl<C: ProtonClient> Daemon<C> {
                     parent,
                     chunk,
                     action_total,
-                    transfer_total,
+                    transfer_queue,
                     transfer_index,
                     interactive_progress,
                     index_mutations,
@@ -3249,7 +3384,7 @@ impl<C: ProtonClient> Daemon<C> {
         parent: &Path,
         chunk: &[PreparedDownload<'_>],
         action_total: u64,
-        transfer_total: usize,
+        transfer_queue: &TransferQueue<'_>,
         transfer_index: &mut usize,
         interactive_progress: bool,
         index_mutations: &mut Vec<IndexMutation>,
@@ -3267,34 +3402,39 @@ impl<C: ProtonClient> Daemon<C> {
             .last()
             .map(|prepared| prepared.action_number)
             .unwrap_or(0);
-        self.shared.begin_activity(SyncActivity {
-            detail: Some(format!(
-                "downloading {} files in {}",
-                chunk.len(),
-                display_parent.display()
-            )),
-            action_index: Some(last_action_number as u64 + 1),
-            action_total: Some(action_total),
-            ..new_activity(PHASE_EXECUTING)
-        });
         // `bytes_done` is sampled live from the staging directory the client reports via the
         // progress sink; for a chunk it grows across the whole batch. The path names the
         // directory being filled rather than a single file (`display_parent`, so a root-level
         // chunk renders as "." instead of an empty string in `proton-sync status`).
-        self.shared.update_activity(PHASE_EXECUTING, |activity| {
-            activity.transfer = Some(TransferActivity {
-                direction: "download".to_owned(),
-                path: display_parent.to_path_buf(),
-                bytes_total: None,
-                bytes_done: None,
-                started_epoch_secs: current_epoch_secs(),
-            });
-        });
+        //
+        // ONE ROW FOR THE WHOLE CHUNK, carrying `files`, rather than one row per file: the batch is
+        // a single CLI invocation into a single staging directory, so its bytes-so-far is one
+        // measurement of the group and no division of it across N rows would be true. A row that
+        // covers many files says so, so a client cannot read the folder name as a filename (#211).
+        let chunk_row = TransferActivity {
+            files: Some(chunk.len() as u64),
+            ..TransferActivity::active(
+                "download",
+                display_parent.to_path_buf(),
+                None,
+                current_epoch_secs(),
+            )
+        };
+        self.shared.begin_activity(executing_activity(
+            format!(
+                "downloading {} files in {}",
+                chunk.len(),
+                display_parent.display()
+            ),
+            last_action_number,
+            action_total,
+            transfer_queue.window(*transfer_index, vec![chunk_row]),
+        ));
         let verb = format!("downloading {} files from", chunk.len());
         let spinner = begin_transfer_spinner(
             interactive_progress,
             first_transfer_ordinal,
-            transfer_total,
+            transfer_queue.total(),
             &verb,
             display_parent,
             None,
@@ -3381,6 +3521,7 @@ impl<C: ProtonClient> Daemon<C> {
             index_mutations,
             pending_approval_consumptions,
             &mut self.pass_log,
+            &self.shared,
         )?;
         // A chunk is many actions; one landed file in it clears the breaker's consecutive run
         // exactly as a successful single action would. A vanished node landed nothing.
@@ -4597,6 +4738,7 @@ fn commit_checkpoint(
     index_mutations: &mut Vec<IndexMutation>,
     pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
     pass_log: &mut PassLog,
+    shared: &ControlShared,
 ) -> AppResult<()> {
     if index_mutations.is_empty()
         && pending_approval_consumptions.is_empty()
@@ -4618,7 +4760,7 @@ fn commit_checkpoint(
     index_mutations.clear();
     pending_approval_consumptions.clear();
     // Fold the rollup only now: before the commit these events might still have been rolled back.
-    pass_log.note_committed(pass_id);
+    pass_log.note_committed(pass_id, shared);
     Ok(())
 }
 
@@ -4944,6 +5086,11 @@ struct PassLog {
     changed: usize,
     bytes_uploaded: u64,
     bytes_downloaded: u64,
+    /// Transfers that landed and committed, per direction — the live `44 sent · 115 received`
+    /// (#243). Folded in [`Self::note_committed`] beside the byte sums, off the same match arms, so
+    /// a count and a byte sum can never describe different sets of side effects.
+    files_uploaded: u64,
+    files_downloaded: u64,
     /// Side-effecting actions the plan holds, for the live pass block (#213). `None` until the
     /// plan exists.
     planned_changes: Option<u64>,
@@ -4960,6 +5107,8 @@ impl PassLog {
             changed: 0,
             bytes_uploaded: 0,
             bytes_downloaded: 0,
+            files_uploaded: 0,
+            files_downloaded: 0,
             planned_changes: None,
         }
     }
@@ -5010,22 +5159,39 @@ impl PassLog {
         Ok(Some(id))
     }
 
-    /// Folds the just-committed batch into the rollup and adopts the row id.
-    fn note_committed(&mut self, id: Option<i64>) {
+    /// Folds the just-committed batch into the rollup and adopts the row id, then republishes the
+    /// live per-direction progress (#243/#98).
+    ///
+    /// The publish is *inside* the fold rather than beside it at each caller, so the counters a
+    /// status reply shows are the rollup itself and cannot be a caller that forgot to push them.
+    fn note_committed(&mut self, id: Option<i64>, shared: &ControlShared) {
         self.id = id;
         for event in self.pending.drain(..) {
             self.changed += 1;
+            // The per-direction FILE counts fold off exactly these arms, not off the direction
+            // alone: an action that crossed the network with no amount to report is in neither
+            // sum, and counting it here would publish `115 received` beside 0 received bytes. The
+            // one such case today is a conflict sidecar written from the local copy — direction
+            // `Down`, nothing fetched.
             match (event.action.transfer_direction(), event.bytes) {
                 (Some(TransferDirection::Up), Some(bytes)) => {
                     self.bytes_uploaded = self.bytes_uploaded.saturating_add(bytes);
+                    self.files_uploaded = self.files_uploaded.saturating_add(1);
                 }
                 (Some(TransferDirection::Down), Some(bytes)) => {
                     self.bytes_downloaded = self.bytes_downloaded.saturating_add(bytes);
+                    self.files_downloaded = self.files_downloaded.saturating_add(1);
                 }
                 // An action that moves no bytes, or one that moved an unknown number.
                 (Some(_), None) | (None, _) => {}
             }
         }
+        shared.update_pass_progress(|pass| {
+            pass.uploaded_files = self.files_uploaded;
+            pass.downloaded_files = self.files_downloaded;
+            pass.uploaded_bytes = self.bytes_uploaded;
+            pass.downloaded_bytes = self.bytes_downloaded;
+        });
     }
 
     /// Whether this pass earns a durable row. An **idle pass writes nothing**: with events-driven
@@ -11233,6 +11399,243 @@ mod tests {
         })
     }
 
+    /// A planned action, for the window tests below. Only the fields the window reads.
+    fn planned(action: SyncAction, path: &str) -> PlannedAction {
+        PlannedAction::new(Path::new(path), action, EntityKind::File, None)
+    }
+
+    #[test]
+    fn the_transfer_window_is_bounded_and_the_remainder_counts_past_it() {
+        // Eight transfers with a delete in the middle, so the window has to skip a non-transfer
+        // action rather than assume the plan is transfers all the way down.
+        let mut plan: Vec<PlannedAction> = (0..4)
+            .map(|i| planned(SyncAction::Upload, &format!("up/{i}.txt")))
+            .collect();
+        plan.push(planned(SyncAction::LocalDelete, "gone.txt"));
+        plan.extend((0..4).map(|i| planned(SyncAction::Download, &format!("down/{i}.txt"))));
+        let positions: Vec<usize> = plan
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| {
+                matches!(action.action, SyncAction::Upload | SyncAction::Download)
+            })
+            .map(|(position, _)| position)
+            .collect();
+        assert_eq!(positions, vec![0, 1, 2, 3, 5, 6, 7, 8]);
+
+        let mut local_files = HashMap::new();
+        local_files.insert(
+            PathBuf::from("up/1.txt"),
+            LocalFileState {
+                relative_path: PathBuf::from("up/1.txt"),
+                absolute_path: PathBuf::from("/local/up/1.txt"),
+                file_size: 4096,
+                mtime: 0,
+                sha1_hash: "x".to_owned(),
+            },
+        );
+        let queue = TransferQueue {
+            plan: &plan,
+            positions: &positions,
+            local_files: &local_files,
+        };
+        assert_eq!(queue.total(), 8);
+
+        // One transfer started: itself, then five queued rows fill the six-row window, and the
+        // remainder counts the two the window cannot name plus the one running.
+        let active = TransferActivity::active("upload", PathBuf::from("up/0.txt"), Some(10), 9);
+        let (window, remaining) = queue.window(1, vec![active]);
+        assert_eq!(window.len(), TRANSFERS_REPORTED);
+        assert_eq!(remaining, 8, "7 not yet started + 1 in flight");
+        assert!(window[0].is_active());
+        assert!(window[1..].iter().all(|row| !row.is_active()));
+        assert_eq!(
+            window
+                .iter()
+                .map(|row| row.path.display().to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "up/0.txt",
+                "up/1.txt",
+                "up/2.txt",
+                "up/3.txt",
+                "down/0.txt",
+                "down/1.txt"
+            ],
+            "plan order, with the delete stepped over rather than counted"
+        );
+        // A queued UPLOAD carries the size the scan measured; a queued download cannot.
+        assert_eq!(window[1].bytes_total, Some(4096));
+        assert_eq!(window[4].bytes_total, None);
+        assert_eq!(window[4].direction, "download");
+        assert_eq!(
+            window[1].started_epoch_secs, None,
+            "a queued row has not started"
+        );
+
+        // A batched row stands for its whole chunk, so the remainder counts its files and not the
+        // single row: 3 not yet started + 5 in flight.
+        let chunk = TransferActivity {
+            files: Some(5),
+            ..TransferActivity::active("download", PathBuf::from("down"), None, 9)
+        };
+        let (_, remaining) = queue.window(5, vec![chunk]);
+        assert_eq!(remaining, 8);
+
+        // The last transfer running: nothing queued, and the remainder is just it.
+        let last = TransferActivity::active("download", PathBuf::from("down/3.txt"), None, 9);
+        let (window, remaining) = queue.window(8, vec![last]);
+        assert_eq!(window.len(), 1);
+        assert_eq!(remaining, 1);
+
+        // Between two transfers — a delete executing — the window is queued rows only. It is NOT
+        // empty, which is the whole point: an empty list mid-pass would read as "nothing is
+        // moving".
+        let (window, remaining) = queue.window(4, Vec::new());
+        assert_eq!(window.len(), 4);
+        assert!(window.iter().all(|row| !row.is_active()));
+        assert_eq!(remaining, 4);
+    }
+
+    #[test]
+    fn an_executing_activity_always_carries_its_transfer_window() {
+        // Found by review, on the batched-download path: the phase was published first and the
+        // window filled by a second `update_activity`, so a status poll landing between the two
+        // lock acquisitions read `executing` with an empty list and `transfers_remaining: None` —
+        // the value that field documents as "not executing at all" — and blinked the rows.
+        //
+        // `executing_activity` is now the only way to build the phase, so the window rides in the
+        // same publish. This asserts the property that makes it worth having: every state a client
+        // can observe during `executing` says how many transfers are left.
+        let plan = vec![
+            planned(SyncAction::Upload, "a.txt"),
+            planned(SyncAction::LocalDelete, "b.txt"),
+        ];
+        let positions = vec![0usize];
+        let local_files = HashMap::new();
+        let queue = TransferQueue {
+            plan: &plan,
+            positions: &positions,
+            local_files: &local_files,
+        };
+
+        let shared = activity_test_shared();
+        shared.syncing.store(true, Ordering::SeqCst);
+        for (index, window) in [
+            (0, queue.window(0, Vec::new())),
+            (
+                0,
+                queue.window(
+                    1,
+                    vec![TransferActivity::active(
+                        "upload",
+                        PathBuf::from("a.txt"),
+                        None,
+                        1,
+                    )],
+                ),
+            ),
+            // The batched arm: one row standing for a whole chunk.
+            (
+                1,
+                queue.window(
+                    1,
+                    vec![TransferActivity {
+                        files: Some(4),
+                        ..TransferActivity::active("download", PathBuf::from("d"), None, 1)
+                    }],
+                ),
+            ),
+        ] {
+            shared.begin_activity(executing_activity("x".to_owned(), index, 2, window));
+            let activity = shared.activity_for_response().expect("activity");
+            assert_eq!(activity.phase, PHASE_EXECUTING);
+            assert!(
+                activity.transfers_remaining.is_some(),
+                "an executing activity that says `None` is indistinguishable from an idle one"
+            );
+            // …and the other half of the same rule: a positive remainder always names rows.
+            if activity.transfers_remaining > Some(0) {
+                assert!(!activity.transfers.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn per_direction_progress_folds_only_what_actually_crossed_the_network() {
+        let shared = activity_test_shared();
+        shared.begin_pass_progress(100, PassKind::Incremental);
+        shared.begin_activity(new_activity(PHASE_EXECUTING));
+        let mut log = PassLog::new(100);
+
+        log.note(SyncAction::Upload, Path::new("a.txt"), Some(30));
+        log.note(SyncAction::Download, Path::new("b.txt"), Some(70));
+        // A conflict sidecar fetched from the remote IS a download.
+        log.note(SyncAction::Conflict, Path::new("c.txt"), Some(5));
+        // …one written from the local copy crossed nothing, and is in neither count. Reporting it
+        // as received would print a file count beside zero bytes for it.
+        log.note(SyncAction::Conflict, Path::new("d.txt"), None);
+        // Actions that move no bytes at all are in neither, direction or not.
+        log.note(SyncAction::LocalDelete, Path::new("e.txt"), None);
+        log.note(SyncAction::CreateLocalDirectory, Path::new("f"), None);
+        log.note_committed(None, &shared);
+
+        let pass = shared
+            .activity_for_response()
+            .and_then(|activity| activity.pass)
+            .expect("the pass block carries the counters");
+        assert_eq!(pass.uploaded_files, 1);
+        assert_eq!(pass.downloaded_files, 2);
+        assert_eq!(pass.uploaded_bytes, 30);
+        assert_eq!(pass.downloaded_bytes, 75);
+        // The counts and the sums are one fold over one set of events, so they cannot disagree
+        // about which side effects happened.
+        assert_eq!(pass.uploaded_files + pass.downloaded_files, 3);
+        assert_eq!(
+            log.changed, 6,
+            "every landed action still counts as changed"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_legacy_mirror_is_derived_after_the_sample_never_beside_it() {
+        // The ordering rule at `SyncActivity::derive_legacy_transfer`: a status reply samples the
+        // staging directory into the LIST, then derives the mirror. Deriving first would publish a
+        // mirror one sample stale; sampling the mirror instead would starve the list every #211
+        // client reads.
+        let shared = activity_test_shared();
+        shared.syncing.store(true, Ordering::SeqCst);
+        let scratch = tempdir().expect("scratch dir");
+        fs::write(scratch.path().join("part.bin"), vec![0u8; 4096]).expect("staged bytes");
+
+        shared.begin_activity(SyncActivity {
+            transfers: vec![
+                TransferActivity::active("download", PathBuf::from("a/b.bin"), None, 1),
+                TransferActivity::queued("upload", PathBuf::from("c/d.txt"), Some(12)),
+            ],
+            transfers_remaining: Some(2),
+            ..new_activity(PHASE_EXECUTING)
+        });
+        shared.note_download_scratch(scratch.path());
+
+        let activity = shared
+            .response_with_sampled_activity("m")
+            .await
+            .activity
+            .expect("activity");
+        assert_eq!(
+            activity.transfers[0].bytes_done,
+            Some(4096),
+            "the sample lands on the active row of the list"
+        );
+        assert_eq!(
+            activity.transfer.expect("mirror").bytes_done,
+            Some(4096),
+            "and the mirror is derived from that row, after it"
+        );
+        assert_eq!(activity.transfers[1].bytes_done, None);
+    }
+
     #[test]
     fn progress_sink_walk_updates_surface_in_status_replies() {
         let shared = Arc::new(activity_test_shared());
@@ -11284,13 +11687,12 @@ mod tests {
         fs::write(scratch.path().join("partial.bin"), vec![0u8; 2048]).expect("partial file");
 
         shared.begin_activity(SyncActivity {
-            transfer: Some(TransferActivity {
-                direction: "download".to_owned(),
-                path: PathBuf::from("a/b.bin"),
-                bytes_total: None,
-                bytes_done: None,
-                started_epoch_secs: 0,
-            }),
+            transfers: vec![TransferActivity::active(
+                "download",
+                PathBuf::from("a/b.bin"),
+                None,
+                0,
+            )],
             ..new_activity(PHASE_EXECUTING)
         });
         shared.note_download_scratch(scratch.path());
@@ -11332,13 +11734,12 @@ mod tests {
         // Beginning the next action drops the stale staging dir: a following upload must
         // never report the previous download's bytes.
         shared.begin_activity(SyncActivity {
-            transfer: Some(TransferActivity {
-                direction: "upload".to_owned(),
-                path: PathBuf::from("c/d.bin"),
-                bytes_total: Some(10),
-                bytes_done: None,
-                started_epoch_secs: 0,
-            }),
+            transfers: vec![TransferActivity::active(
+                "upload",
+                PathBuf::from("c/d.bin"),
+                Some(10),
+                0,
+            )],
             ..new_activity(PHASE_EXECUTING)
         });
         let transfer = shared
