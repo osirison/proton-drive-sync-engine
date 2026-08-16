@@ -46,7 +46,7 @@
 
 import { el } from "../ui/el.js";
 import { ACTIVITY, CHROME, CONFLICTS, MAIN } from "../ui/copy.js";
-import { bytes, clock, count, dash, plural, since } from "../ui/format.js";
+import { bytes, cardinal, clock, count, dash, plural, since } from "../ui/format.js";
 import { renderHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button, pillTabs } from "../ui/controls.js";
@@ -233,26 +233,85 @@ const CANNOT_SYNC_EXCLUDED = "remote_not_downloadable";
 
 export function cannotSyncFrom(unsyncable) {
   const rows = (unsyncable ?? [])
-    .filter((item) => item?.path != null && item.reason !== CANNOT_SYNC_EXCLUDED)
+    .map((item) => ({ ...item, path: pathOfUnsyncable(item) }))
+    .filter((item) => item.path != null && item.reason !== CANNOT_SYNC_EXCLUDED)
     .map((item) => ({
       path: item.path,
-      note: ACTIVITY.neverSyncedDialog.cannotKind[item.reason] ?? item.reason,
+      reason: item.reason,
+      note: nounFor(item.reason).one,
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
   return { count: rows.length, rows, kinds: kindsPhrase(rows) };
 }
 
 /**
- * `a socket and a shortcut` — the DISTINCT kinds present, in the order they first appear.
+ * TWO WIRE SHAPES, ONE GROUP — the engine spells this path differently on its two carriers, and
+ * both reach this function (#315).
  *
- * S6's skip tab draws this beside its own count (`Two more files can't be synced no matter what —
- * a socket and a shortcut`), so the phrase answers "what sort of things are these" and the number
- * beside it answers "how many". Deliberately not pluralised per kind: `two sockets` would need a
- * second noun for every reason in the table, and the count is already in the sentence — a list of
- * kinds is the question this clause is actually asked.
+ * `ipc::UnsyncableItem.path` is the daemon's persistent merged store on `ControlResponse.unsyncable`
+ * (S5's dialog, S6's skip tab). `index::UnsyncableEntry.relative_path` is one walk's observation on
+ * `DryRunReport.cannot_sync` (S7's review step, which runs before any daemon exists and so has no
+ * store to read). They are deliberately different types — one has an age and a merge rule, the other
+ * has neither — and reading whichever is present is the same accommodation `transfersOf` makes for
+ * `transfers` / `transfer`. It is NOT a merge: one item carries one of the two, never both.
+ *
+ * Reading only `path` would silently drop every row of a `cannot_sync` list and render an empty
+ * group with no error anywhere — the "block that renders nothing passes" shape, which this codebase
+ * has shipped before and now has a gate for.
+ */
+function pathOfUnsyncable(item) {
+  return item?.path ?? item?.relative_path ?? null;
+}
+
+/**
+ * The noun pair for one reason token, or the raw token standing in for both.
+ *
+ * An unfamiliar token is drawn rather than hidden (see `cannotKind`), and it has to survive being
+ * counted as well as being labelled — `two local_doodads` is ugly and true, where dropping the row
+ * is neither.
+ */
+function nounFor(reason) {
+  return ACTIVITY.neverSyncedDialog.cannotKind[reason] ?? { one: reason, many: reason };
+}
+
+/**
+ * `a socket and two shortcuts` — the kinds present, counted, in the deck's own order.
+ *
+ * TWO SCREENS DRAW THIS ONE CLAUSE AT TWO MULTIPLICITIES, which is what settled its shape: S6's
+ * skip tab draws `Two more files can't be synced no matter what — a socket and a shortcut` (one of
+ * each), and S7's review step draws `3 files can't be synced — a socket and two shortcuts` (one
+ * socket, two symlinks). An uncounted list of distinct kinds — what this was until #315 — renders
+ * the second as `a socket and a shortcut`, naming two things beside a number that says three.
+ *
+ * So each kind carries its own count: `one` at one, `cardinal(n, "mid")` plus `many` above it. The
+ * count in the sentence beside this stays the FILE count and this stays the answer to "what sort of
+ * things are these" — the two agree by construction now instead of by coincidence.
+ *
+ * ORDERED BY `cannotKind`, NOT BY THE ROWS. It was first-appearance order over a path-sorted list,
+ * which is a fact about filenames: `9a Review`'s own three sort `Desktop/inbox.lnk`,
+ * `Desktop/proton.desktop`, `run/daemon.sock` and render `two shortcuts and a socket` — the drawn
+ * sentence backwards, because of where a socket happens to live. Renaming a file would reorder a
+ * sentence about kinds. The deck's table is an editorial order (socket, shortcut, pipe, device, and
+ * the two residuals last) and it reads the same whatever the folder holds. A token the table does
+ * not know keeps first-appearance order after all of them — there is nowhere else to put it.
+ *
+ * (`cardinal` hands back to digits above ten, so a folder with twelve sockets reads `12 sockets`
+ * mid-sentence rather than spelling a number the deck spells nowhere.)
  */
 function kindsPhrase(rows) {
-  const kinds = [...new Set(rows.map((row) => row.note))];
+  const counted = new Map();
+  for (const row of rows) counted.set(row.reason, (counted.get(row.reason) ?? 0) + 1);
+  const deck = Object.keys(ACTIVITY.neverSyncedDialog.cannotKind);
+  const rank = (reason) => {
+    const at = deck.indexOf(reason);
+    return at < 0 ? deck.length : at;
+  };
+  const kinds = [...counted]
+    .sort(([a], [b]) => rank(a) - rank(b))
+    .map(([reason, n]) => {
+      const noun = nounFor(reason);
+      return n === 1 ? noun.one : `${cardinal(n, "mid")} ${noun.many}`;
+    });
   if (kinds.length === 0) return "";
   if (kinds.length === 1) return kinds[0];
   return `${kinds.slice(0, -1).join(", ")} and ${kinds[kinds.length - 1]}`;

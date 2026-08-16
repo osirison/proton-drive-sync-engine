@@ -6,7 +6,7 @@
 //! and can't disagree across screens.
 
 use crate::ipc::IpcError;
-use crate::wire::ControlResponse;
+use crate::wire::{AuthState, ControlResponse};
 
 /// The seven reachable UI states (design §6). `Running` is primarily the daemon's own `syncing`
 /// flag (a reconcile pass is in flight); `pending_changes > 0` is kept as a secondary signal so
@@ -20,8 +20,9 @@ pub enum DaemonState {
     Idle,
     /// The daemon reports `paused = true`.
     Paused,
-    /// The last error looks like a Proton sign-in expiry (E6 workaround: pattern-match until the
-    /// daemon classifies auth state itself). Design: "Proton sign-in expired".
+    /// The Proton session is gone and the user has to sign in again. Design: "Proton sign-in
+    /// expired". Reached from the daemon's own [`AuthState::SignedOut`] verdict (#103), or — only
+    /// while that verdict is [`AuthState::Unknown`] — from [`looks_like_auth_error`].
     AuthExpired,
     /// The daemon is reachable and its last pass FAILED for some other reason — a remote list that
     /// timed out, a `proton-drive` binary that is not on `PATH`, a transfer that errored.
@@ -47,9 +48,21 @@ impl DaemonState {
     }
 }
 
-/// Heuristic auth-expiry detector (E6 workaround). Deliberately conservative: it matches the
-/// vocabulary Proton/HTTP auth failures actually use, and avoids broad tokens like bare "auth"
-/// that appear in unrelated words. Replaced by daemon-side classification when E6 lands.
+/// Heuristic auth-expiry detector. Deliberately conservative: it matches the vocabulary
+/// Proton/HTTP auth failures actually use, and avoids broad tokens like bare "auth" that appear in
+/// unrelated words.
+///
+/// **No longer the answer — the fallback for one state (#103/#311).** The daemon classifies the
+/// CLI's stderr once, in `proton.rs`, and publishes an [`AuthState`] on every reply; this runs only
+/// when that verdict is [`AuthState::Unknown`], which a reply from a daemon predating #103
+/// deserializes to. It is kept rather than deleted for the same reason `transfers_remaining: None`
+/// means "older daemon" rather than "nothing left": this app has no version floor against the
+/// daemon it talks to, so the state a missing field lands in must still be readable.
+///
+/// It is a **matcher over a sentence**, so it is wrong in both directions and neither is
+/// hypothetical: `last_error` is written by every failing pass, and a message quoting a filename
+/// like `credentials.txt` trips it, while an auth failure phrased any other way does not. That is
+/// precisely why it must not run once the daemon has said something — see [`derive_state`].
 pub fn looks_like_auth_error(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     const NEEDLES: &[&str] = &[
@@ -88,10 +101,32 @@ pub fn derive_state(reply: Result<&ControlResponse, &IpcError>) -> DaemonState {
     if response.paused {
         return DaemonState::Paused;
     }
-    if let Some(error) = &response.last_error
-        && looks_like_auth_error(error)
-    {
-        return DaemonState::AuthExpired;
+    // THE DAEMON'S VERDICT, AND THE NEEDLE LIST ONLY WHERE IT HAS NONE (#103/#311).
+    //
+    // Three states, and the third is not a synonym for either other one (`ipc::AuthState`), so it
+    // is matched exhaustively rather than left to a fall-through — a trailing arm meaning "fine"
+    // is #246's shape, and this is the field a fall-through would be worst on:
+    //
+    //   · `SignedOut` is the verdict, and it is read WITHOUT consulting `last_error`. The `list`
+    //     verb is a second writer, so an expired session is published the moment an interactive
+    //     request hits it — before any pass has failed and while `last_error` is still `None`.
+    //     That case is invisible to the needle list by construction.
+    //   · `SignedIn` SUPPRESSES the needle list rather than merely outranking it. Something reached
+    //     Proton successfully, so an auth-shaped `last_error` — which outlives its pass, being
+    //     cleared only by a success — is a failure of some other kind, and this is the false
+    //     positive daemon-side classification exists to remove. It falls through to `Failed` below.
+    //   · `Unknown` is no verdict at all (a daemon older than #103, or one whose only failures were
+    //     of another kind), so the pre-#103 heuristic answers, exactly as it did before.
+    match response.auth {
+        AuthState::SignedOut => return DaemonState::AuthExpired,
+        AuthState::SignedIn => {}
+        AuthState::Unknown => {
+            if let Some(error) = &response.last_error
+                && looks_like_auth_error(error)
+            {
+                return DaemonState::AuthExpired;
+            }
+        }
     }
     if response.syncing {
         return DaemonState::Running;
@@ -169,13 +204,74 @@ mod tests {
         r.pending_changes = 9;
         r.last_error = Some("401 unauthorized".into());
         assert_eq!(derive_state(Ok(&r)), DaemonState::Paused);
+        // And beats the daemon's own verdict, not just the heuristic: `paused` is a thing the user
+        // did and the only state with a `Resume` in it.
+        r.last_error = None;
+        r.auth = AuthState::SignedOut;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Paused);
     }
 
     #[test]
     fn auth_error_is_detected() {
+        // `response()` leaves `auth` at its default `Unknown`, which is the ONE state the needle
+        // list still answers in (#311) — a daemon predating #103 sends no field at all.
         let mut r = response();
+        assert_eq!(r.auth, AuthState::Unknown);
         r.last_error = Some("proton-drive: request failed: 401 Unauthorized".into());
         assert_eq!(derive_state(Ok(&r)), DaemonState::AuthExpired);
+    }
+
+    #[test]
+    fn a_signed_out_verdict_needs_no_failed_pass_behind_it() {
+        // #103/#311, and the case the needle list CANNOT see: `auth` has two writers, and the
+        // `list` verb is the one an expired session hits first. It publishes `signed-out` without
+        // any pass having failed, so `last_error` is still `None` and there is no sentence to
+        // match. Before this the GUI drew `Everything is up to date` over a signed-out daemon
+        // until the next scheduled pass happened to fail.
+        let mut r = response();
+        r.auth = AuthState::SignedOut;
+        r.last_error = None;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::AuthExpired);
+    }
+
+    #[test]
+    fn a_signed_in_verdict_suppresses_the_needle_list_rather_than_outranking_it() {
+        // The false positive the daemon's classification exists to remove. `last_error` is cleared
+        // only by a SUCCESSFUL pass, so it outlives its failure; a message merely SHAPED like an
+        // auth error, on a daemon that has since reached Proton, is a failure of some other kind.
+        // It must land on `Failed` — the honest state — and not on the sign-in takeover, whose
+        // whole content is a button that fixes nothing here.
+        let mut r = response();
+        r.auth = AuthState::SignedIn;
+        r.last_error = Some("could not read credentials.txt: permission denied".into());
+        assert!(
+            looks_like_auth_error(r.last_error.as_deref().unwrap()),
+            "the point of this test is a message the heuristic DOES match"
+        );
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Failed);
+    }
+
+    #[test]
+    fn a_signed_in_daemon_with_nothing_wrong_is_still_idle() {
+        // The other half of suppression: skipping the needle list must not skip everything after
+        // it. A healthy signed-in daemon keeps deriving exactly as before.
+        let mut r = response();
+        r.auth = AuthState::SignedIn;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Idle);
+        r.pending_changes = 2;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Running);
+    }
+
+    #[test]
+    fn an_unknown_verdict_is_not_a_verdict_in_either_direction() {
+        // `Unknown` means the daemon has learned nothing — not signed in, and not a problem. With
+        // no error to match it must derive as if the field were not there at all.
+        let mut r = response();
+        r.auth = AuthState::Unknown;
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Idle);
+        r.last_sync_epoch_secs = None;
+        r.status_history = vec![];
+        assert_eq!(derive_state(Ok(&r)), DaemonState::FirstRun);
     }
 
     #[test]

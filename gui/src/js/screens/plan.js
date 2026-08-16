@@ -11,7 +11,11 @@
 // alone` (G3 #192; `06-plan.md` says to hide rather than fake).
 
 import { el } from "../ui/el.js";
-import { PLAN } from "../ui/copy.js";
+// `MAIN.andMore` is the `+n more` template, borrowed rather than copied (#319). It is the same
+// sentence about the same thing — a bounded window with a daemon-sized remainder behind it — and
+// `MAIN.authExpiredSub` is already quoted by a screen that is not the main one, for the same
+// reason: a second identical template is two places to change and one place to forget.
+import { MAIN, PLAN } from "../ui/copy.js";
 import { count, outcomeOf, since } from "../ui/format.js";
 import { renderHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
@@ -185,6 +189,28 @@ export function markOf(action) {
  */
 export function pathOf(row) {
   return row.destination_path ? `${row.path} → ${row.destination_path}` : row.path;
+}
+
+/**
+ * How many plan rows the list is NOT showing (#319).
+ *
+ * SIZED FROM THE DAEMON'S COUNT, NEVER FROM THE LIST'S LENGTH — `hiddenTransfers` on the main
+ * screen is the same arithmetic for the same reason, and the reason is that the only two numbers in
+ * hand are both about the same window unless one of them comes off the wire. `ReviewedPlan` bounds
+ * the rows it carries (`PLAN_ACTIONS_DEFAULT_LIMIT` 500, `PLAN_ACTIONS_MAX_LIMIT` 5000) while
+ * `summary.total` counts the whole plan, so this subtraction is the difference between the plan and
+ * the rendering of it. `total - rows.length` computed from the rows alone would be 0 for ever.
+ *
+ * `model.total` is already `max(reported, rows.length)` (see `summarise`), so this can never go
+ * negative and a summary the daemon did not send yields `0` — no node — rather than a guess.
+ *
+ * A window is safe to draw at all only because every DESTRUCTIVE row is in it whatever the cap
+ * (`daemon::StoredPlan::outcome`) and because applying names the plan's *token* rather than its
+ * rows. So what is behind this line is only ever ordinary work; the deletions are all on screen and
+ * the typed-`DELETE` gate has seen every one of them.
+ */
+export function hiddenActions(model) {
+  return Math.max(0, (model?.total ?? 0) - (model?.rows?.length ?? 0));
 }
 
 // ---------------------------------------------------------------------------- the sections ----
@@ -468,6 +494,18 @@ function actionList(model) {
     fid(node.children[2], "rowOutcome", i);
     rows.append(node);
   }
+  // THE LINE THAT SAYS THE LIST IS A WINDOW (#319). Inside the scroller and after the last row,
+  // because it is a fact about where the list stops rather than a fact about the plan — the title
+  // above already states the plan's own size, and this is the only place the two numbers can be
+  // seen to differ.
+  //
+  // NO FRAME DRAWS IT: none of the three plan frames has a plan long enough to truncate, and no
+  // fixture reaches the daemon's cap. So it is an undrawn state, it stamps no slot, and it is
+  // deliberately not in `fids.js` — a declared slot whose key exists in no frame fails
+  // `check-fixtures.mjs`, and `KNOWN_UNSTAMPED` is for a node the frame draws and the app cannot,
+  // which is the opposite of this.
+  const hidden = hiddenActions(model);
+  if (hidden > 0) rows.append(el("div", { class: "pl-more" }, MAIN.andMore(hidden)));
   return fid(el("div", { class: "pl-list" }, head, rows), "list");
 }
 

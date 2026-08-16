@@ -708,7 +708,8 @@ export const ACTIVITY = {
     cannotHeading: "Can't be synced",
     cannotSub: "Not real files — Proton Drive has nothing to store for them.",
     /**
-     * The note beside each row: WHAT the thing is, in one noun phrase.
+     * WHAT the thing is, in one noun phrase — `one` for a single instance, `many` for the bare
+     * plural a count goes in front of.
      *
      * Keyed by `UnsyncableItem.reason`, the daemon's wire token. This table is also the group's
      * MEMBERSHIP, which is why it is here under the sentence that promises it rather than in a
@@ -720,18 +721,25 @@ export const ACTIVITY = {
      * than in your folder, and both of this dialog's sentences would be false about it.
      * `proton-sync status` lists it, under a heading that claims neither.
      *
-     * A token this build does not know is NOT excluded — it is drawn with the raw token as its
-     * note, the same call `proton-sync status` makes for an unfamiliar reason. It might be a local
-     * kind a newer daemon added, and hiding a file that cannot sync is the failure #295 is about;
-     * showing a remote one under this heading is a smaller wrong than that.
+     * A token this build does not know is NOT excluded — it is drawn with the raw token in place of
+     * both forms, the same call `proton-sync status` makes for an unfamiliar reason. It might be a
+     * local kind a newer daemon added, and hiding a file that cannot sync is the failure #295 is
+     * about; showing a remote one under this heading is a smaller wrong than that.
+     *
+     * TWO FORMS PER KIND, NOT TWO TABLES (#315). `9a Review` draws `a socket and two shortcuts` and
+     * `8a Skip rules` draws `a socket and a shortcut` — one clause, counted, at two multiplicities
+     * — so `kindsPhrase` needs a plural for every reason it can name. A separate plural table keyed
+     * by the same tokens would be one datum in two places, and the day a kind is added the second
+     * one is what gets forgotten. `local_special_file` reads as the residual it is in both numbers:
+     * the daemon reaches it only for a kind it could not name either.
      */
     cannotKind: {
-      local_socket: "a socket",
-      local_symlink: "a shortcut",
-      local_fifo: "a pipe",
-      local_device: "a device",
-      local_special_file: "not a file",
-      unrepresentable_path: "an unreadable name",
+      local_socket: { one: "a socket", many: "sockets" },
+      local_symlink: { one: "a shortcut", many: "shortcuts" },
+      local_fifo: { one: "a pipe", many: "pipes" },
+      local_device: { one: "a device", many: "devices" },
+      local_special_file: { one: "not a file", many: "things that aren't files" },
+      unrepresentable_path: { one: "an unreadable name", many: "unreadable names" },
     },
     reassurance: "Nothing here is at risk — it's just not backed up.",
     done: "Done",
@@ -1027,7 +1035,20 @@ export const ONBOARDING = {
   leftAlone: "left alone",
   differ: (n) => `${count(n)} ${plural(n, "file differs", "files differ")} on both sides`,
   differSub: "both copies kept — you decide later",
-  cannotSync: (n) => `${count(n)} files can't be synced — a socket and two shortcuts`,
+  /**
+   * `3 files can't be synced — a socket and two shortcuts` (#315).
+   *
+   * ONE CLAUSE, ONE SOURCE, AND IT USED TO BE TWO. The count was `PlanSummary.skipped_unsupported`
+   * — a statistic of the *plan*, counting remote nodes the CLI cannot fetch — while the kinds could
+   * only come from the local stat-walk's drops. Two sets that cannot be summed, so the screen drew
+   * the count alone and the sentence lost the half that says what these things are.
+   *
+   * Both halves are now `DryRunReport.cannot_sync`, which is that walk's own drops carried on the
+   * report (PR #318): `n` is its length and `kinds` is `cannotSyncFrom(...).kinds` over the same
+   * list. A caller passing a count from one place and kinds from another is the bug this template's
+   * shape exists to make hard.
+   */
+  cannotSync: (n, kinds) => `${count(n)} ${plural(n, "file", "files")} can't be synced — ${kinds}`,
   skipped: "skipped",
   nothingDeleted: "Nothing will be deleted",
   eitherSide: "on either side",
@@ -1060,8 +1081,9 @@ export const ONBOARDING = {
   sideUnit: (n, size = null) => `${plural(n, "file", "files")}${size ? ` · ${bytes(size)}` : ""}`,
   /** `freeSpace` minus `Needs 38.4 GB free.`, which has no source at any level of the plan (#206). */
   freeSpaceHave: (have) => `You have ${bytes(have)}.`,
-  /** `cannotSync` minus the kinds it names — nothing enumerates them (#232). */
-  cannotSyncPlain: (n) => `${count(n)} ${plural(n, "file", "files")} can't be synced`,
+  // `cannotSyncPlain` WAS HERE — `cannotSync` minus the kinds, "because nothing enumerates them".
+  // Something does (#232 made the local walk report its drops, #318 put them on the report), so the
+  // full sentence is drawable and the Phase-1 form is gone rather than kept beside it. §98b.
   /** `workedOut` minus the estimate; no command reports how long a pass will take (#229). */
   workedOutPlain: (ago) => `worked out ${ago}`,
   /** `progressSub` minus `about 17 minutes left` (#229). The fraction is `SyncActivity`'s own. */

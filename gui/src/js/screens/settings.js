@@ -360,7 +360,8 @@ const keyLine = (text) => el("div", { class: "settings-key" }, text);
  * One side of the folder pair.
  *
  * The two sides are NOT mirrors: the left has a `Choose…` button and the right does not, because a
- * remote folder cannot be browsed for — `list_remote` reads a path and no picker exists for one.
+ * remote folder cannot be browsed for — no screen browses Proton Drive, and the daemon's `list`
+ * verb (#99) has no picker in front of it.
  * The right side's input carries the whole width and right-aligns its text instead, which is what
  * makes the pair read as two ends of one line rather than as two fields.
  */

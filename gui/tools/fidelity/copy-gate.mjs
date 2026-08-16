@@ -215,28 +215,41 @@ const NOT_DRAWN = new Map([
     "SETTINGS.advancedMissing",
     "G23 (#237): the one remaining gap — resetting the index is a command, not a setting",
   ],
-  // The four local kinds no frame happens to draw. `7a Never synced` draws a socket and a symlink,
-  // which are the two `cannotKind` entries the gate checks; a FIFO, a device node, an unnamed
-  // special file and a non-UTF-8 name are the same list's other reasons, all four reachable from a
-  // real machine. They are written rather than measured for the reason S5's undrawn verdicts are:
-  // the daemon can report any of them, and improvising a noun at the call site is how a screen ends
-  // up saying two different things about one kind.
+  // The local kinds no frame happens to draw, now TWO FORMS PER KIND (#315): `cannotKind`'s values
+  // became `{ one, many }` so `kindsPhrase` can count them, and the deck grew a string per kind for
+  // the plural. `9a Review` draws `a socket and two shortcuts` and `8a Skip rules` draws `a socket
+  // and a shortcut`, which between them put four of the twelve in a frame — `local_socket.one`,
+  // `local_symlink.one` and `local_symlink.many` (inside `two shortcuts`); every other string here
+  // is a kind or a multiplicity no drawing has an occasion for.
+  //
+  // They are written rather than measured for the reason S5's undrawn verdicts are: the daemon can
+  // report any of them, and improvising a noun at the call site is how a screen ends up saying two
+  // different things about one kind. A plural is not optional either — the phrase counts, so a kind
+  // with no plural would be unrenderable the moment two of them turn up.
   [
-    "ACTIVITY.neverSyncedDialog.cannotKind.local_fifo",
-    "the dialog draws a socket and a symlink; the daemon can report four more kinds and this is one",
+    "ACTIVITY.neverSyncedDialog.cannotKind.local_socket.many",
+    "one socket is drawn, two are not — `9a Review`'s only plural is its shortcuts",
   ],
   [
-    "ACTIVITY.neverSyncedDialog.cannotKind.local_device",
+    "ACTIVITY.neverSyncedDialog.cannotKind.local_fifo.one",
+    "the frames draw a socket and a symlink; the daemon can report four more kinds and this is one",
+  ],
+  ["ACTIVITY.neverSyncedDialog.cannotKind.local_fifo.many", "and its plural"],
+  [
+    "ACTIVITY.neverSyncedDialog.cannotKind.local_device.one",
     "likewise — a block or character device under the sync folder",
   ],
+  ["ACTIVITY.neverSyncedDialog.cannotKind.local_device.many", "and its plural"],
   [
-    "ACTIVITY.neverSyncedDialog.cannotKind.local_special_file",
+    "ACTIVITY.neverSyncedDialog.cannotKind.local_special_file.one",
     "likewise — the scanner's catch-all for an entry that is neither a regular file nor a directory",
   ],
+  ["ACTIVITY.neverSyncedDialog.cannotKind.local_special_file.many", "and its plural"],
   [
-    "ACTIVITY.neverSyncedDialog.cannotKind.unrepresentable_path",
+    "ACTIVITY.neverSyncedDialog.cannotKind.unrepresentable_path.one",
     "likewise — a name that is not valid UTF-8, so the remote listing could never name it (#270)",
   ],
+  ["ACTIVITY.neverSyncedDialog.cannotKind.unrepresentable_path.many", "and its plural"],
 ]);
 
 /**
@@ -303,6 +316,14 @@ const DRAWN = [
   ["CONFLICTS.clearedSub", [{ total: 3, keptBoth: 2, tookProton: 1 }], "3a Conflicts cleared"],
   ["ONBOARDING.cliMissingBody", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
   ["ONBOARDING.cliInstallCommand", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
+  // Was a template with ONE argument and a hard-coded tail — `${n} files can't be synced — a socket
+  // and two shortcuts` — so it rendered the frame's kinds whatever the machine held, and the app
+  // drew a different, shorter sentence (`cannotSyncPlain`) because it could not produce them. #315
+  // gave it the kinds as an argument, which is what puts it in this table: the arguments below are
+  // read off `9a Review` exactly as every other row's are, and the app now renders this same
+  // sentence from `cannot_sync`. The fifth time a sentence has had to land here in the commit that
+  // made it a template.
+  ["ONBOARDING.cannotSync", [3, "a socket and two shortcuts"], "9a Review"],
   // S3. Nine rows, and SIX OF THEM ARE STRINGS THAT WERE ALREADY DRAWN AND NEVER CHECKED — the
   // deck's own Deletions section lists the four facts (`deleted on Proton 22m ago`, `last opened
   // Mar 2024`, `deleted here 6m ago`, `last edited Jan 2026`) and F7 left them out of copy.js

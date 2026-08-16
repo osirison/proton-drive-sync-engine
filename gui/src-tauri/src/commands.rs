@@ -904,36 +904,21 @@ pub async fn apply_plan(
     ack.map_err(|error| error.to_string())
 }
 
-/// Async so the remote-listing subprocess (`proton-drive filesystem list`, which walks the remote
-/// tree and can be slow) never blocks the GTK main loop.
-#[tauri::command]
-pub async fn list_remote(state: Paths<'_>, path: Option<String>) -> Result<String, String> {
-    let (proton_cli, remote_root) = {
-        let paths = state.lock().unwrap();
-        (paths.proton_cli.clone(), paths.effective_remote_root())
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        let target = path
-            .or_else(|| remote_root.map(|r| r.display().to_string()))
-            .ok_or_else(|| "no remote path given and remote_root is not configured".to_string())?;
-        let output = Command::new(&proton_cli)
-            .arg("filesystem")
-            .arg("list")
-            .arg("--json")
-            .arg(&target)
-            .output()
-            .map_err(|e| format!("failed to launch {proton_cli}: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "{proton_cli} list failed: {}",
-                strip_ansi(String::from_utf8_lossy(&output.stderr).trim())
-            ));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    })
-    .await
-    .map_err(|error| format!("remote-list task failed: {error}"))?
-}
+// `list_remote` WAS HERE, AND IT IS GONE RATHER THAN REWRITTEN (#311).
+//
+// It shelled `proton-drive filesystem list --json` from the GUI process and handed the raw stdout
+// to the webview. That put a second `proton-drive` client beside the daemon's — the CLI's shared
+// SQLite store is not concurrency-safe (#23), which is the whole reason `proton::CliGate` and the
+// user-global lock in `paths.rs` exist — and it did so for **no caller**: nothing in `gui/src/js`
+// ever invoked it, and the one surface that would (`Browse Proton Drive…` on the folders card)
+// is unbuilt in Phase 1 and recorded as such in DEVIATIONS §79e.
+//
+// So this is a deletion and not a port. The daemon already answers the same question over the
+// socket (`ControlCommand::List`, #99), typed and gated; writing a socket-backed `list_remote`
+// with no caller would move "a verb nothing calls" one layer up instead of removing it. When a
+// picker is built, it calls `list` through `gui_core::ipc` like every other verb — the child
+// process is not the shape to reach for, on this or any other remote question (`run_dry_run`'s
+// `classify_unreachable_plan` is the precedent: the child only when *nothing* answers the socket).
 
 /// Async so a full local-tree conflict scan (the sidecar walk) never blocks the GTK main loop on a
 /// large folder.

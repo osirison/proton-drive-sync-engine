@@ -48,7 +48,9 @@ export const api = {
   // which one, and a client must never tell them apart by matching a sentence (#103).
   applyPlan: (token, skipDestructive) =>
     invoke("apply_plan", { token, skipDestructive: skipDestructive === true }),
-  listRemote: (path) => invoke("list_remote", { path: path ?? null }),
+  // `listRemote` WAS HERE and is gone with the command behind it (#311): it shelled the
+  // `proton-drive` CLI from the GUI process, beside the daemon's own client, for no caller at all.
+  // A remote listing is `ControlCommand::List` over the socket when something needs one.
   scanConflicts: () => invoke("scan_conflicts"),
   resolveConflict: (conflict, choice) => invoke("resolve_conflict", { conflict, choice }),
   readConflictPair: (conflict) => invoke("read_conflict_pair", { conflict }),

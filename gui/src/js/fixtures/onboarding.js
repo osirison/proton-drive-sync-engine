@@ -34,25 +34,50 @@ import { onboardingFids } from "./fids.js";
 import { action, bulk, summaryOf } from "./dryrun.js";
 
 /**
- * The first-sync merge `9a Review` previews: 474 rows, of which the frame draws only four counts.
+ * The first-sync merge `9a Review` previews: 471 rows, of which the frame draws only four counts.
  *
  * Generated rather than written out, and derived-from rather than described, because `DryRunReport`'s
  * two halves are one fact — see `dryrun.js`. The bulk paths carry no meaning and say so by being
- * obviously generated; the five rows that the screen names individually are written individually.
+ * obviously generated; the two rows that the screen names individually are written individually.
  *
  * `conflict` rows are the `2 files differ on both sides` line, and they carry a `conflict_path`
  * because the engine writes a sidecar for exactly this case — that is what "both copies kept" is.
+ *
+ * THIS PLAN USED TO CARRY THREE `skip_unsupported` ROWS FOR THE SOCKET AND THE TWO SHORTCUTS, and
+ * that was a fixture describing a payload the daemon cannot emit (#315). The engine's local
+ * stat-walk DROPS those entries — a socket, a symlink, a FIFO, a device node never reach the
+ * planner at all, deliberately, so a socket that replaced a synced file cannot put two rows for one
+ * path in one plan. They are reported on their own channel, `DryRunReport.cannot_sync`, which is
+ * `REVIEW_CANNOT_SYNC` below. A `skip_unsupported` ROW IS A DIFFERENT THING: a remote node the CLI
+ * cannot fetch (a Proton-native Docs file), or a local name that is not valid UTF-8.
+ *
+ * `See all 471 actions` IS UNCHANGED BY THE MOVE, and that is the check on it. It draws
+ * `total - skipped_unsupported`: 474 - 3 before, 471 - 0 now. The frame's number was always the
+ * work that would really happen, and those three were never going to happen.
  */
 const REVIEW_PLAN = [
   ...bulk("first-sync/up", "upload", 128),
   ...bulk("first-sync/down", "download", 341),
   action("notes/todo.txt", "conflict", { conflict_path: "notes/todo.proton-cloud.txt" }),
   action("design/logo.svg", "conflict", { conflict_path: "design/logo.proton-cloud.svg" }),
-  // `3 files can't be synced — a socket and two shortcuts`. The frame names the three kinds, so the
-  // three rows are those kinds rather than three anonymous paths.
-  action("run/daemon.sock", "skip_unsupported"),
-  action("Desktop/proton.desktop", "skip_unsupported"),
-  action("Desktop/inbox.lnk", "skip_unsupported"),
+];
+
+/**
+ * `3 files can't be synced — a socket and two shortcuts`, as `DryRunReport.cannot_sync` carries it.
+ *
+ * `index::UnsyncableEntry` on the wire — `{ relative_path, reason }` and nothing else. No
+ * `first_seen_epoch_secs`, which is the difference between this and `ControlResponse.unsyncable`:
+ * that one is a persistent merged store with an age per entry, and this is one walk's observation
+ * with nothing to merge into. No `entity_kind` either — the reason is what says what the entry is.
+ *
+ * The frame names the kinds, so the three entries ARE those kinds: one socket and two symlinks.
+ * Both symlinks are named as shortcuts a person would recognise; what the engine sees in each case
+ * is a symlink, which is why both carry `local_symlink` and not the extension's own story.
+ */
+const REVIEW_CANNOT_SYNC = [
+  { relative_path: "run/daemon.sock", reason: "local_socket" },
+  { relative_path: "Desktop/proton.desktop", reason: "local_symlink" },
+  { relative_path: "Desktop/inbox.lnk", reason: "local_symlink" },
 ];
 
 /**
@@ -115,7 +140,7 @@ export const ONBOARDING_FIXTURES = {
    *     showing. The cards offer `~/ProtonDrive` and `/Drive/RemoteFolder` for the user to accept.
    *   · the counts and sizes are the point of the step ("it's how someone notices they picked the
    *     wrong folder", 09-onboarding.md), and nothing returns them: the remote side would have to
-   *     come from parsing `list_remote`'s JSON, the local side from a scan the GUI does not do.
+   *     come from a remote listing nothing runs, the local side from a scan the GUI does not do.
    *   · the account line has no source whatsoever — there is no account command, and the daemon
    *     never sees an email address or a quota.
    *
@@ -146,17 +171,23 @@ export const ONBOARDING_FIXTURES = {
    * can compute anything.
    *
    * THE PLAN IS GENERATED, AND THE SUMMARY DERIVED FROM IT, because the alternative does not exist.
-   * `DryRunReport` is `{ summary, plan }` parsed verbatim from the daemon's stdout, and the daemon
-   * builds the summary with `PlanSummary::from_plan` — `total: plan.len()`, one counter incremented
-   * per row. A summary beside an empty plan is a payload the daemon cannot emit, and this fixture
-   * shipped one: `total: 471` against 474 rows' worth of counters and `plan: []`. `summaryOf` makes
-   * that unrepresentable.
+   * `DryRunReport` is `{ summary, plan, cannot_sync }` parsed verbatim from the daemon's stdout, and
+   * the daemon builds the summary with `PlanSummary::from_plan` — `total: plan.len()`, one counter
+   * incremented per row. A summary beside an empty plan is a payload the daemon cannot emit, and
+   * this fixture shipped one: `total: 471` against 474 rows' worth of counters and `plan: []`.
+   * `summaryOf` makes that unrepresentable.
    *
-   * WHERE 471 COMES FROM, since it is not `summary.total`. The frame draws `See all 471 actions` AND
-   * `3 files can't be synced`, and both are true: `SkipUnsupported` IS a plan row (`sync.rs`'s match
-   * counts it like any other), so `total` is 474 and the button names the 471 that will actually
-   * happen — `total - skipped_unsupported`. Not a contradiction in the frame, a derivation the
-   * screen does. **S7 must render it that way**; reading `total` straight would draw `474`.
+   * `cannot_sync` IS THE THIRD HALF, and it does not go through `summaryOf` because no counter on
+   * `PlanSummary` describes it: the entries never reach the planner (#232/#315). See
+   * `REVIEW_CANNOT_SYNC` — it is the *scan's* drops, not the plan's skips, and the frame's
+   * `3 files can't be synced — a socket and two shortcuts` is both halves of it.
+   *
+   * WHERE 471 COMES FROM, since it is not `summary.total`. It is, here — and it stayed 471 through
+   * #315 moving the three unsyncable entries off the plan. `actionsThatHappen` draws
+   * `total - skipped_unsupported`, which was 474 - 3 while those were `skip_unsupported` rows and is
+   * 471 - 0 now that they are `cannot_sync` entries. The subtraction stays because a real plan can
+   * still hold `SkipUnsupported` rows (a Proton-native Docs file, a non-UTF-8 name), and reading
+   * `total` straight would name them as work that will happen.
    *
    * `requires_delete_gate: false` and `files_at_risk: []` are the payload restating the headline:
    * nothing gets deleted today.
@@ -168,6 +199,7 @@ export const ONBOARDING_FIXTURES = {
       report: {
         summary: summaryOf(REVIEW_PLAN),
         plan: REVIEW_PLAN,
+        cannot_sync: REVIEW_CANNOT_SYNC,
       },
       requires_delete_gate: false,
       files_at_risk: [],
