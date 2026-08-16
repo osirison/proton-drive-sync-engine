@@ -28,11 +28,11 @@ mod unix_tests {
             &db_path,
             &fake_proton_drive,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_socket(&socket_path, &mut daemon);
 
         // The control socket answers during the startup reconcile now, so wait for that first
         // pass to complete before asserting on its results.
-        let status = wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+        let status = wait_for_reconcile_seq(&socket_path, &mut daemon, 1);
         assert_eq!(status["status"], "running");
         assert_eq!(status["paused"], false);
         assert!(status["last_error"].is_null());
@@ -133,17 +133,22 @@ mod unix_tests {
         )
         .expect("write config");
 
+        // This daemon is configured entirely from the file, so it cannot go through
+        // `DaemonProcess::spawn_with_args` — but it captures its stderr the same way, so a
+        // timeout here can still say what the daemon was complaining about.
+        let stderr_path = directory.path().join("daemon.stderr");
+        let stderr_file = fs::File::create(&stderr_path).expect("create daemon stderr log");
         let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
             .arg("--config")
             .arg(&config_path)
             .env("XDG_STATE_HOME", directory.path())
-            .env("RUST_LOG", "error")
+            .env("RUST_LOG", "warn")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(stderr_file))
             .spawn()
             .expect("spawn proton-syncd");
-        let mut daemon = DaemonProcess { child };
-        wait_for_socket(&socket_path, &mut daemon.child);
+        let mut daemon = DaemonProcess { child, stderr_path };
+        wait_for_socket(&socket_path, &mut daemon);
 
         // An empty XDG_RUNTIME_DIR, so the default socket path resolves somewhere the daemon is
         // NOT listening: only the config file can produce a successful round trip here.
@@ -209,7 +214,7 @@ mod unix_tests {
             &db_path,
             &fake_proton_drive,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_socket(&socket_path, &mut daemon);
 
         // Send an invalid (non-JSON) request line and drop the connection without
         // reading a response. Before the fix, `read_request`'s parse error propagated
@@ -234,7 +239,7 @@ mod unix_tests {
 
         // Wait past the startup reconcile so the asserted status is the settled "running", not a
         // transient "syncing".
-        let status = wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+        let status = wait_for_reconcile_seq(&socket_path, &mut daemon, 1);
         assert_eq!(status["status"], "running");
     }
 
@@ -257,7 +262,7 @@ mod unix_tests {
             &db_path,
             &fake_proton_drive,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_socket(&socket_path, &mut daemon);
 
         // The watched pass ends with a failed item, so `syncnow --json` exits non-zero while
         // still printing the final status payload.
@@ -334,13 +339,13 @@ mod unix_tests {
             &fake_proton_drive,
             2,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_socket(&socket_path, &mut daemon);
         let pid = daemon.child.id();
 
         // The startup reconcile's upload is now the blocked call; its marker proves we are wedged
         // inside the (interruptible) reconcile before the signal is sent.
         let started_marker = PathBuf::from(format!("{}.started", fake_proton_drive.display()));
-        wait_for_marker(&started_marker, &mut daemon.child);
+        wait_for_marker(&started_marker, &mut daemon);
 
         let status = Command::new("kill")
             .arg("-INT")
@@ -402,11 +407,11 @@ mod unix_tests {
             &fake_proton_drive,
             30,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_socket(&socket_path, &mut daemon);
 
         // The startup reconcile is now wedged inside the fake's endless upload.
         let started_marker = PathBuf::from(format!("{}.started", fake_proton_drive.display()));
-        wait_for_marker(&started_marker, &mut daemon.child);
+        wait_for_marker(&started_marker, &mut daemon);
 
         let asked = Instant::now();
         let status = run_control(&socket_path, "status");
@@ -458,18 +463,27 @@ mod unix_tests {
             &db_path,
             &fake_proton_drive,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_socket(&socket_path, &mut daemon);
 
-        // The startup reconcile downloads keep.txt and records a synced baseline.
+        // The startup reconcile downloads keep.txt and records a synced baseline. Wait for the
+        // BASELINE, not the file: without the record there is nothing to plan a RemoteDelete
+        // against and the pass below plans a plain Download instead (#327).
         let local_file = local_root.join("keep.txt");
-        wait_for_marker(&local_file, &mut daemon.child);
+        let settled =
+            wait_for_synced_baseline(&socket_path, &mut daemon, &db_path, &local_root, "keep.txt");
+        let seq_before = settled["reconcile_seq"].as_u64().expect("reconcile_seq");
 
         // Remove the local copy: the next reconcile plans a RemoteDelete (local gone, remote still
         // present, baseline unchanged). The guard (on by default) must withhold it.
         fs::remove_file(&local_file).expect("remove local file");
         let trash_marker = PathBuf::from(format!("{}.trash", fake_proton_drive.display()));
 
-        let withheld = run_control(&socket_path, "syncnow");
+        // No pass was in flight at `seq_before` (the wait above returns only when idle), so any
+        // pass that reaches `seq_before + 1` scanned the tree after this removal — the ordering is
+        // by construction rather than by the client's own `+ 1` / `+ 2` arithmetic, which is taken
+        // against whatever instant the ack happened to land in.
+        run_control_args(&socket_path, &["--json", "syncnow", "--no-wait"]);
+        let withheld = wait_for_reconcile_seq(&socket_path, &mut daemon, seq_before + 1);
         assert!(
             withheld["last_error"].is_null(),
             "pass should succeed: {withheld}"
@@ -546,16 +560,22 @@ mod unix_tests {
             &db_path,
             &fake_proton_drive,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_socket(&socket_path, &mut daemon);
 
         // The startup reconcile downloads keep.txt and records a synced baseline; removing the
-        // local copy makes the next pass plan a RemoteDelete, which the guard withholds.
+        // local copy makes the next pass plan a RemoteDelete, which the guard withholds. Waiting
+        // for the baseline rather than the file is what makes that first clause true (#327).
         let local_file = local_root.join("keep.txt");
-        wait_for_marker(&local_file, &mut daemon.child);
+        let settled =
+            wait_for_synced_baseline(&socket_path, &mut daemon, &db_path, &local_root, "keep.txt");
+        let seq_before = settled["reconcile_seq"].as_u64().expect("reconcile_seq");
         fs::remove_file(&local_file).expect("remove local file");
         let trash_marker = PathBuf::from(format!("{}.trash", fake_proton_drive.display()));
 
-        let withheld = run_control(&socket_path, "syncnow");
+        // Ordered by construction: nothing was in flight at `seq_before`, so the pass that reaches
+        // `seq_before + 1` scanned the tree after the removal.
+        run_control_args(&socket_path, &["--json", "syncnow", "--no-wait"]);
+        let withheld = wait_for_reconcile_seq(&socket_path, &mut daemon, seq_before + 1);
         let pending = withheld["pending_deletions"]
             .as_array()
             .expect("pending_deletions array");
@@ -571,10 +591,14 @@ mod unix_tests {
             "a withheld deletion reports when it was first seen: {withheld}"
         );
 
-        // Keep it: the local copy comes back and the remote is never trashed.
+        // Keep it: the local copy comes back and the remote is never trashed. The re-adoption is
+        // a fresh download plus a fresh baseline row, so wait for both — the file alone would let
+        // the assertions below read the pass that is still landing it.
         let kept = run_control_raw(&socket_path, &["keep", "keep.txt"]);
         assert!(kept.contains("kept 1"), "keep should confirm: {kept}");
-        wait_for_marker(&local_file, &mut daemon.child);
+        let restored =
+            wait_for_synced_baseline(&socket_path, &mut daemon, &db_path, &local_root, "keep.txt");
+        let seq_restored = restored["reconcile_seq"].as_u64().expect("reconcile_seq");
         assert!(
             !trash_marker.exists(),
             "keeping must never delete the surviving copy"
@@ -582,7 +606,8 @@ mod unix_tests {
 
         // And it is durable: nothing is pending any more, because the planner no longer derives
         // the deletion at all.
-        let after = run_control(&socket_path, "syncnow");
+        run_control_args(&socket_path, &["--json", "syncnow", "--no-wait"]);
+        let after = wait_for_reconcile_seq(&socket_path, &mut daemon, seq_restored + 1);
         assert!(
             after["pending_deletions"]
                 .as_array()
@@ -595,6 +620,82 @@ mod unix_tests {
                 .expect("load index")
                 .contains_key(Path::new("keep.txt")),
             "the restored file is tracked again, as a fresh copy"
+        );
+    }
+
+    /// #327, deterministically: the startup pass lands `keep.txt` on disk and then **fails** the
+    /// action, so the file is there with no baseline row behind it. Removing the local copy at
+    /// that point plans a fresh `Download`, not the `RemoteDelete` the delete-approval tests are
+    /// about — which is how the racing CI run read `pending_deletions: []`.
+    ///
+    /// This is the guard for the wait: a test that mutates the tree must wait for the *baseline*,
+    /// not for the file.
+    #[test]
+    fn a_partial_startup_pass_still_withholds_the_delete_it_should() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_landing_then_failing_download_proton_drive(directory.path());
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon);
+
+        let local_file = local_root.join("keep.txt");
+        let settled =
+            wait_for_synced_baseline(&socket_path, &mut daemon, &db_path, &local_root, "keep.txt");
+        let seq_before = settled["reconcile_seq"].as_u64().expect("reconcile_seq");
+
+        // The forcing really happened: the startup pass is on the record as `partial`. Without
+        // this the fake could quietly become an ordinary one and the test would still pass, having
+        // stopped exercising the state it exists for.
+        let history = run_control(&socket_path, "history");
+        let recent = history["recent"].as_array().expect("recent passes");
+        assert!(
+            recent
+                .iter()
+                .any(|pass| pass["outcome"] == "partial" && pass["failed"].as_u64() == Some(1)),
+            "the startup pass must have failed its download: {history}"
+        );
+        // …and the bytes on disk are the ones that failed pass's own: the CLI was asked to
+        // download exactly once, so nothing re-fetched them. That is the state the file cannot
+        // distinguish and the baseline row can — the second pass adopted what was already there.
+        let downloads = fs::read_to_string(format!("{}.downloads", fake_proton_drive.display()))
+            .unwrap_or_else(|error| {
+                panic!("the fake must have recorded its download attempts: {error}")
+            });
+        assert_eq!(
+            downloads.lines().count(),
+            1,
+            "exactly one download was attempted, and it failed: {downloads}"
+        );
+        assert!(local_file.exists(), "the bytes are still on disk");
+
+        fs::remove_file(&local_file).expect("remove local file");
+        let trash_marker = PathBuf::from(format!("{}.trash", fake_proton_drive.display()));
+
+        run_control_args(&socket_path, &["--json", "syncnow", "--no-wait"]);
+        let withheld = wait_for_reconcile_seq(&socket_path, &mut daemon, seq_before + 1);
+        let pending = withheld["pending_deletions"]
+            .as_array()
+            .expect("pending_deletions array");
+        assert_eq!(
+            pending.len(),
+            1,
+            "the remote delete is withheld: {withheld}"
+        );
+        assert_eq!(pending[0]["direction"], "remote");
+        assert_eq!(pending[0]["path"], "keep.txt");
+        assert!(
+            !trash_marker.exists(),
+            "no remote trash may happen before approval"
         );
     }
 
@@ -617,8 +718,8 @@ mod unix_tests {
             &db_path,
             &fake_proton_drive,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
-        wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_reconcile_seq(&socket_path, &mut daemon, 1);
 
         // No path argument: the remote root, which is the legitimate empty-selector case.
         let root = run_control_args(&socket_path, &["--json", "list"]);
@@ -685,8 +786,8 @@ mod unix_tests {
             &db_path,
             &fake_proton_drive,
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
-        wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_reconcile_seq(&socket_path, &mut daemon, 1);
 
         let status = run_control(&socket_path, "status");
         assert_eq!(
@@ -778,11 +879,15 @@ exit 64
             &fake_proton_drive,
             &["--no-delete-approval"],
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
-        // The startup reconcile downloads keep.txt and records a synced baseline.
+        wait_for_socket(&socket_path, &mut daemon);
+        // The startup reconcile downloads keep.txt and records a synced baseline. The baseline is
+        // the precondition — without the row the plan below is a Download, not a RemoteDelete
+        // (#327) — and a pass that has ended is what makes the sequence assertion below mean
+        // anything.
         let local_file = local_root.join("keep.txt");
-        wait_for_marker(&local_file, &mut daemon.child);
-        wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+        let settled =
+            wait_for_synced_baseline(&socket_path, &mut daemon, &db_path, &local_root, "keep.txt");
+        let seq_before = settled["reconcile_seq"].as_u64().expect("reconcile_seq");
 
         // Remove the local copy: the plan is now one RemoteDelete.
         fs::remove_file(&local_file).expect("remove local file");
@@ -804,9 +909,12 @@ exit 64
             "a rehearsal must perform no side effect"
         );
         let status = run_control(&socket_path, "status");
+        // Against the sequence the startup wait ended on, not a literal `1`: how many passes it
+        // took to reach a synced baseline is the daemon's business, and this assertion is about
+        // the rehearsal adding none of them.
         assert_eq!(
             status["reconcile_seq"].as_u64(),
-            Some(1),
+            Some(seq_before),
             "a plan pass must not bump the reconcile sequence a syncnow watcher polls: {status}"
         );
 
@@ -853,10 +961,9 @@ exit 64
             &fake_proton_drive,
             &["--no-delete-approval"],
         );
-        wait_for_socket(&socket_path, &mut daemon.child);
+        wait_for_socket(&socket_path, &mut daemon);
         let local_file = local_root.join("keep.txt");
-        wait_for_marker(&local_file, &mut daemon.child);
-        wait_for_reconcile_seq(&socket_path, &mut daemon.child, 1);
+        wait_for_synced_baseline(&socket_path, &mut daemon, &db_path, &local_root, "keep.txt");
         fs::remove_file(&local_file).expect("remove local file");
         let trash_marker = PathBuf::from(format!("{}.trash", fake_proton_drive.display()));
 
@@ -932,6 +1039,12 @@ exit 64
 
     struct DaemonProcess {
         child: Child,
+        /// Where this daemon's stderr is captured. It used to be `Stdio::null()`, which is why
+        /// the CI run behind #327 kept no evidence of *why* its startup pass failed its download
+        /// — the one line that would have explained it. Every wait helper's timeout panic tails
+        /// this file, and `RUST_LOG` is `warn` rather than `error` because a failed action is
+        /// reported at `warn` (`PassFailures::record` in `src/daemon.rs`).
+        stderr_path: PathBuf,
     }
 
     impl DaemonProcess {
@@ -942,77 +1055,14 @@ exit 64
             db_path: &Path,
             proton_cli: &Path,
         ) -> Self {
-            let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-                .arg("--local-root")
-                .arg(local_root)
-                .arg("--remote-root")
-                .arg("/Drive/RemoteFolder")
-                .arg("--socket-path")
-                .arg(socket_path)
-                .arg("--lockfile-path")
-                .arg(lockfile_path)
-                .arg("--db-path")
-                .arg(db_path)
-                .arg("--proton-cli")
-                .arg(proton_cli)
-                .arg("--scan-interval-secs")
-                .arg("60")
-                // Keep these process-level tests on the full-tree snapshot path (the default is
-                // now event-driven, which would try to read the CLI keyring session at startup).
-                .arg("--no-events-driven")
-                // Isolate the user-global single-instance lock per test: `default_global_lock_path`
-                // keys on `$XDG_STATE_HOME`, so pointing it at this test's tempdir stops parallel
-                // ipc_cli daemons contending on one machine-global lock (they would else exit 1).
-                .env(
-                    "XDG_STATE_HOME",
-                    lockfile_path.parent().expect("lockfile has a parent dir"),
-                )
-                .env("RUST_LOG", "error")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn proton-syncd");
-            Self { child }
-        }
-
-        /// `spawn` plus arbitrary extra daemon flags, for tests that need a non-default
-        /// configuration (`--no-delete-approval`).
-        fn spawn_with_args(
-            local_root: &Path,
-            socket_path: &Path,
-            lockfile_path: &Path,
-            db_path: &Path,
-            proton_cli: &Path,
-            extra_args: &[&str],
-        ) -> Self {
-            let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-                .arg("--local-root")
-                .arg(local_root)
-                .arg("--remote-root")
-                .arg("/Drive/RemoteFolder")
-                .arg("--socket-path")
-                .arg(socket_path)
-                .arg("--lockfile-path")
-                .arg(lockfile_path)
-                .arg("--db-path")
-                .arg(db_path)
-                .arg("--proton-cli")
-                .arg(proton_cli)
-                .arg("--scan-interval-secs")
-                .arg("60")
-                .arg("--no-events-driven")
-                .args(extra_args)
-                // Same isolation as `spawn` above (#77).
-                .env(
-                    "XDG_STATE_HOME",
-                    lockfile_path.parent().expect("lockfile has a parent dir"),
-                )
-                .env("RUST_LOG", "error")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn proton-syncd");
-            Self { child }
+            Self::spawn_with_args(
+                local_root,
+                socket_path,
+                lockfile_path,
+                db_path,
+                proton_cli,
+                &[],
+            )
         }
 
         fn spawn_with_proton_timeout(
@@ -1023,6 +1073,33 @@ exit 64
             proton_cli: &Path,
             proton_timeout_secs: u64,
         ) -> Self {
+            let proton_timeout_secs = proton_timeout_secs.to_string();
+            Self::spawn_with_args(
+                local_root,
+                socket_path,
+                lockfile_path,
+                db_path,
+                proton_cli,
+                &["--proton-timeout-secs", &proton_timeout_secs],
+            )
+        }
+
+        /// The one spawn body: every daemon these tests start differs only by extra flags, so
+        /// three near-identical copies of the argument list meant three places to keep the
+        /// isolation environment and the log capture in step.
+        fn spawn_with_args(
+            local_root: &Path,
+            socket_path: &Path,
+            lockfile_path: &Path,
+            db_path: &Path,
+            proton_cli: &Path,
+            extra_args: &[&str],
+        ) -> Self {
+            let stderr_path = db_path
+                .parent()
+                .expect("db path has a parent dir")
+                .join("daemon.stderr");
+            let stderr_file = fs::File::create(&stderr_path).expect("create daemon stderr log");
             let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
                 .arg("--local-root")
                 .arg(local_root)
@@ -1041,21 +1118,43 @@ exit 64
                 // Keep these process-level tests on the full-tree snapshot path (the default is
                 // now event-driven, which would try to read the CLI keyring session at startup).
                 .arg("--no-events-driven")
-                .arg("--proton-timeout-secs")
-                .arg(proton_timeout_secs.to_string())
-                // Same isolation as `spawn` above: without this the test daemon contends on
-                // the real user-global single-instance lock and loses to any genuinely
-                // running proton-syncd on this machine (#77).
+                .args(extra_args)
+                // Isolate the user-global single-instance lock per test: `default_global_lock_path`
+                // keys on `$XDG_STATE_HOME`, so pointing it at this test's tempdir stops parallel
+                // ipc_cli daemons contending on one machine-global lock (they would else exit 1,
+                // and a real proton-syncd on this machine would win — #77).
                 .env(
                     "XDG_STATE_HOME",
                     lockfile_path.parent().expect("lockfile has a parent dir"),
                 )
-                .env("RUST_LOG", "error")
+                .env("RUST_LOG", "warn")
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::from(stderr_file))
                 .spawn()
                 .expect("spawn proton-syncd");
-            Self { child }
+            Self { child, stderr_path }
+        }
+
+        /// The tail of this daemon's log, for a wait helper that is about to panic. The tempdir is
+        /// removed as the test unwinds, so a helper that does not quote the log leaves nothing
+        /// behind to read.
+        fn stderr_tail(&self) -> String {
+            match fs::read_to_string(&self.stderr_path) {
+                Ok(log) if log.trim().is_empty() => "daemon stderr: <empty>".to_owned(),
+                Ok(log) => {
+                    let mut lines: Vec<&str> = log.lines().rev().take(20).collect();
+                    lines.reverse();
+                    format!(
+                        "daemon stderr (last {} lines):\n{}",
+                        lines.len(),
+                        lines.join("\n")
+                    )
+                }
+                Err(error) => format!(
+                    "daemon stderr unreadable at {}: {error}",
+                    self.stderr_path.display()
+                ),
+            }
         }
     }
 
@@ -1066,37 +1165,119 @@ exit 64
         }
     }
 
-    fn wait_for_socket(socket_path: &Path, child: &mut Child) {
+    fn wait_for_socket(socket_path: &Path, daemon: &mut DaemonProcess) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if socket_path.exists() {
                 return;
             }
-            if let Some(status) = child.try_wait().expect("daemon status") {
-                panic!("proton-syncd exited before binding socket: {status}");
+            if let Some(status) = daemon.child.try_wait().expect("daemon status") {
+                panic!(
+                    "proton-syncd exited before binding socket: {status}\n{}",
+                    daemon.stderr_tail()
+                );
             }
             thread::sleep(Duration::from_millis(25));
         }
         panic!(
-            "timed out waiting for daemon socket at {}",
-            socket_path.display()
+            "timed out waiting for daemon socket at {}\n{}",
+            socket_path.display(),
+            daemon.stderr_tail()
         );
     }
 
-    fn wait_for_marker(marker_path: &Path, child: &mut Child) {
+    /// Waits for a file to appear, and for nothing else.
+    ///
+    /// Only for the fake CLI's `.started` marker, where the daemon is deliberately **wedged**
+    /// mid-transfer for the rest of the test: `syncing` never goes false there and no baseline is
+    /// ever written, so any condition about the pass would hang. A test that goes on to mutate the
+    /// local tree wants `wait_for_synced_baseline` instead — see its doc for what waiting on the
+    /// file alone cost (#327).
+    fn wait_for_marker(marker_path: &Path, daemon: &mut DaemonProcess) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if marker_path.exists() {
                 return;
             }
-            if let Some(status) = child.try_wait().expect("daemon status") {
-                panic!("proton-syncd exited before reaching the expected marker: {status}");
+            if let Some(status) = daemon.child.try_wait().expect("daemon status") {
+                panic!(
+                    "proton-syncd exited before reaching the expected marker: {status}\n{}",
+                    daemon.stderr_tail()
+                );
             }
             thread::sleep(Duration::from_millis(25));
         }
         panic!(
-            "timed out waiting for marker file at {}",
-            marker_path.display()
+            "timed out waiting for marker file at {}\n{}",
+            marker_path.display(),
+            daemon.stderr_tail()
+        );
+    }
+
+    /// Waits until the daemon has landed `<local_root>/<relative>` on disk **and** recorded a
+    /// baseline row for it, with no pass in flight — the precondition every test that then mutates
+    /// the tree actually depends on. Returns that status reply, whose `reconcile_seq` is a count
+    /// no pass was in flight at.
+    ///
+    /// #327: waiting for the file is not waiting for the pass, twice over. A download lands by
+    /// `fs::rename` out of its staging directory *before* the checkpoint that records it, so the
+    /// file can appear mid-pass; and a pass that lands the bytes and then fails the action leaves
+    /// the file on disk with **no** baseline row at all and `is_first_reconcile` still set. Remove
+    /// the local copy in that state and the next pass plans a fresh `Download` — there is no
+    /// baseline to derive a `RemoteDelete` from — so a test asserting on a withheld deletion reads
+    /// `pending_deletions: []` and blames the delete gate. Waiting for the baseline is what makes
+    /// the precondition true rather than likely.
+    ///
+    /// It **asks** for a pass rather than waiting one out: nothing here reschedules on its own —
+    /// filesystem-watch events only accumulate `pending_changes` (see the `select!` loop in
+    /// `src/daemon.rs`), and `--scan-interval-secs 60` outlives the test — so a startup pass that
+    /// failed its download would otherwise leave the baseline missing for ever.
+    fn wait_for_synced_baseline(
+        socket_path: &Path,
+        daemon: &mut DaemonProcess,
+        db_path: &Path,
+        local_root: &Path,
+        relative: &str,
+    ) -> Value {
+        let marker_path = local_root.join(relative);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut last_nudge: Option<Instant> = None;
+        let mut last_status = Value::Null;
+        while Instant::now() < deadline {
+            if let Some(status) = daemon.child.try_wait().expect("daemon status") {
+                panic!(
+                    "proton-syncd exited before recording a baseline for {relative}: {status}\n{}",
+                    daemon.stderr_tail()
+                );
+            }
+            let status = run_control(socket_path, "status");
+            let idle = !status["syncing"].as_bool().unwrap_or(false);
+            // An unreadable index is "not yet", never a failure: the daemon holds the same
+            // database open, so a poll can land on one of its write transactions.
+            let recorded = load_existing_index(db_path)
+                .map(|index| index.contains_key(Path::new(relative)))
+                .unwrap_or(false);
+            last_status = status;
+            if idle && recorded && marker_path.exists() {
+                return last_status;
+            }
+            if idle
+                && !recorded
+                && last_nudge.is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+            {
+                // `--no-wait`: this asks for a pass, it does not watch one. Watching would lean on
+                // the client's `reconcile_seq + 1` / `+ 2` arithmetic, which is the other half of
+                // the same race.
+                run_control_args(socket_path, &["--json", "syncnow", "--no-wait"]);
+                last_nudge = Some(Instant::now());
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!(
+            "timed out waiting for a synced baseline for {relative} (the file is present: {}); \
+             last status: {last_status}\n{}",
+            marker_path.exists(),
+            daemon.stderr_tail()
         );
     }
 
@@ -1146,11 +1327,18 @@ exit 64
     /// control socket now answers while a reconcile is in flight, so tests that assert on
     /// last-sync state must explicitly wait for the pass to finish instead of relying on the
     /// old accept-queue blocking.
-    fn wait_for_reconcile_seq(socket_path: &Path, child: &mut Child, passes: u64) -> Value {
+    fn wait_for_reconcile_seq(
+        socket_path: &Path,
+        daemon: &mut DaemonProcess,
+        passes: u64,
+    ) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if let Some(status) = child.try_wait().expect("daemon status") {
-                panic!("proton-syncd exited while waiting for a reconcile: {status}");
+            if let Some(status) = daemon.child.try_wait().expect("daemon status") {
+                panic!(
+                    "proton-syncd exited while waiting for a reconcile: {status}\n{}",
+                    daemon.stderr_tail()
+                );
             }
             let status = run_control(socket_path, "status");
             let seq = status["reconcile_seq"].as_u64().unwrap_or(0);
@@ -1160,7 +1348,10 @@ exit 64
             }
             thread::sleep(Duration::from_millis(50));
         }
-        panic!("timed out waiting for reconcile pass {passes}");
+        panic!(
+            "timed out waiting for reconcile pass {passes}\n{}",
+            daemon.stderr_tail()
+        );
     }
 
     /// Runs the control CLI and returns its raw stdout, for subcommands whose output is
@@ -1220,6 +1411,62 @@ if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
 fi
 if [ "$1" = "filesystem" ] && [ "$2" = "download" ]; then
   # $3 = remote path, $4 = scratch directory; name the file after the remote basename.
+  printf 'hello' > "$4/$(basename "$3")"
+  exit 0
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "trash" ]; then
+  printf 'trash:%s\n' "$3" >> "$0.trash"
+  exit 0
+fi
+echo "unexpected proton-drive args: $*" >&2
+exit 64
+"#
+            ),
+        )
+        .expect("fake proton-drive script");
+        let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).expect("script permissions");
+        path
+    }
+
+    /// `write_delete_approval_proton_drive`, except that the **first** download lands its bytes
+    /// straight at their destination and then exits non-zero (#327).
+    ///
+    /// That is the exact state the racing CI run hit: `proton.rs` stages a download in a scratch
+    /// directory *inside* the destination folder and moves it into place, so a CLI that writes to
+    /// the destination itself and fails leaves the file on disk with the action failed — the pass
+    /// ends `partial`, no baseline row is written, and `is_first_reconcile` stays set. A test that
+    /// waits for the FILE then removes it therefore makes the next pass plan a fresh `Download`
+    /// (there is no baseline to derive a `RemoteDelete` from) instead of the withheld deletion it
+    /// is asserting on.
+    ///
+    /// The failure text is deliberately bland: `node not found` would type the error
+    /// [`proton_drive_sync_engine::proton::NodeNotFound`] and make the executor *skip* the action,
+    /// and any of the auth vocabulary would type it `AuthFailure` — either way the pass would not
+    /// be the partial one this fake exists to force.
+    fn write_landing_then_failing_download_proton_drive(directory: &Path) -> PathBuf {
+        let path = directory.join("fake-landing-then-failing-proton-drive");
+        // SHA-1 of the literal bytes "hello" (what `download` writes below).
+        let hello_sha1 = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d";
+        fs::write(
+            &path,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  printf '{{"entries":[{{"id":"remote-keep","name":"keep.txt","activeRevision":{{"claimedDigests":{{"sha1":"{hello_sha1}"}}}}}}]}}\n'
+  exit 0
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "download" ]; then
+  # $3 = remote path, $4 = the scratch directory the daemon stages into, which lives inside the
+  # destination folder — so "$(dirname "$4")" is the local root.
+  printf 'download:%s\n' "$3" >> "$0.downloads"
+  if [ ! -f "$0.first-download" ]; then
+    : > "$0.first-download"
+    printf 'hello' > "$(dirname "$4")/$(basename "$3")"
+    echo "simulated transfer failure after the bytes landed" >&2
+    exit 1
+  fi
   printf 'hello' > "$4/$(basename "$3")"
   exit 0
 fi
