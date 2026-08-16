@@ -2678,12 +2678,12 @@ argument rather than a caller-side `.toLowerCase()`, since above ten `cardinal` 
 | S5     | `7a Activity quiet`  | `12,480` `files · 41.2 GB`, both sides   | both numeral rows omitted               | G7 #207      |
 | S5     | `7a Activity quiet`  | `next full check in 4m`                  | the sub-line omitted                    | G4 #193      |
 | S5     | `7a Activity quiet`  | `Last things to move`, head + three rows | the block's footer row alone            | G17 #230     |
-| S5     | `7a Activity quiet`  | `4 files are never synced`               | the rule-matched count alone            | G19 #232     |
+| S5     | `7a Activity quiet`  | `4 files are never synced`               | ~~the rule-matched count alone~~ both groups (§98) | G19 #232 ✔ |
 | S5     | `7a File lookup`     | `This file's history`, four rows         | the `linked · id` line alone            | G1 #190      |
 | S5     | `7a File lookup`     | the query `spec.md` → `docs/spec.md`     | ~~an exact relative path~~ a search (§94) | G21 #234 ✔   |
-| S5     | `7a File lookup`     | `received 14:32` on the Proton card      | the clause omitted                      | G20 #233     |
+| S5     | `7a File lookup`     | `received 14:32` on the Proton card      | ~~the clause omitted~~ drawn on an upload (§98) | G20 #233 ✔ |
 | S5     | `7a File pending`    | a 3px bar at 41%                         | no track at all (§63)                   | G2 #191, #98 |
-| S5     | `7a Never synced`    | `Can't be synced`, two rows              | the group omitted                       | G19 #232     |
+| S5     | `7a Never synced`    | `Can't be synced`, two rows              | ~~the group omitted~~ drawn; the link's target is not (§98) | G19 #232 ✔ |
 | S5     | `6a Details`         | `Open the system log`                    | ~~omitted~~ drawn; a journal snapshot (§97) | G18 #231 ✔   |
 | S5     | all three            | `Open folder`, `Open on Proton Drive`    | ~~omitted~~ drawn; the Drive app, not the file (§97) | G18 #231 ✔   |
 | S5     | `5a Checking`        | four unlit doors on the plan screen      | `Plan a sync` lit, per `02-shell.md:42` | —            |
@@ -2975,7 +2975,7 @@ ring at .3 over a .04 fill would be invisible.
 | S6     | `8a Settings`         | `Takes about 4 minutes … Last one 2 days ago`                  | what is true every time                   | G24 #238 |
 | S6     | `8a Settings`         | `event_driven_reconcile`                                       | `events_driven`, the key that exists      | —        |
 | S6     | `8a Skip rules`       | `added 14 Jul` on a rule                                       | the folder clause alone                   | —        |
-| S6     | `8a Skip rules`       | the unsyncable panel and `See them`                            | omitted; the `.sync` note stays           | G19 #232 |
+| S6     | `8a Skip rules`       | the unsyncable panel and `See them`                            | ~~omitted~~ drawn from the standing list (§98) | G19 #232 ✔ |
 | S6     | `8a Schedule monthly` | the whole monthly variant                                      | the panel head alone                      | G4 #193  |
 | S6     | `8a Save refused`     | `That folder doesn't exist on Proton Drive`                    | a generic refusal title                   | G22 #236 |
 | S6     | `8a Save refused`     | `Create it on Proton Drive`                                    | omitted; `Go back and fix it` stays       | G22 #236 |
@@ -3112,7 +3112,7 @@ the exact measurement, so the day the capability lands the build fails until the
 | `files · 1.4 GB` / `files · 38.4 GB` | `files` | no level of the dry-run surface carries a size | #191 |
 | `Needs 38.4 GB free. You have 214 GB.` | `You have 214 GB.` | C4 answers the free space; the *needed* half is a byte total of a download plan, which nothing carries | #206 |
 | `11,798 files already match on both sides` | row omitted | a count of files the plan does **not** act on, absent from `PlanSummary` by construction | #242 |
-| `3 files can't be synced — a socket and two shortcuts` | `3 files can't be synced` | nothing enumerates the kinds; those files never enter the index | #232 |
+| `3 files can't be synced — a socket and two shortcuts` | `3 files can't be synced` | the kinds ARE enumerated since #232 — but by the daemon's standing list, and this row's count is `PlanSummary::skipped_unsupported`, a statistic of the dry-run plan. The two describe different sets and cannot be summed (§98b) | #315 |
 | `worked out 40 seconds ago · about 25 minutes to finish` | the first clause | `run_dry_run` reports what would happen, never how long it would take | #229 |
 | `159 of 471 done · about 17 minutes left` | the first clause | same estimate | #229 |
 | `nothing deleted · 2 conflicts kept as copies` | drawn from the approved plan; omitted with none in hand | no reply carries a per-pass summary *while the pass runs* | #213 |
@@ -4802,3 +4802,107 @@ message nobody can see is the bug this whole change is about.
 **`Installation help` is still not drawn.** #231 was half of what it needed; #218 (no distribution
 packages the CLI, so there is no true help URL) and #244 (a takeover has nowhere to come back from)
 are the other half, and neither moved.
+
+## Two facts the index did not record (2026-08-16)
+
+## 98. What cannot be synced is named, and when Proton Drive received it is sourced
+
+G19 (#232) and G20 (#233) are the same shape: one fact about one entity that nothing recorded, so
+the screen omitted the clause that needed it. Neither was closed by looking harder at an existing
+field — a screen that could have derived either would already have drawn it.
+
+**`Can't be synced` was never a question about the index, and it still is not.** The scanner keeps
+only entries where `file_type.is_file()`, so a socket, a symlink, a FIFO or a device node never
+enters the index at all. What changed is that `visit_directory` now REPORTS what it drops instead of
+skipping it silently, and the daemon merges those reports into the standing `unsyncable` list that
+#295 already built — so the dialog's second group is fed by the walk itself, not by a record nothing
+writes.
+
+The rejection it splits is the point. One `continue` used to hide two different facts about a path:
+a rule the user wrote, and a thing that is not a file. Those are the two groups on this very dialog,
+so the rule test now runs first and an excluded socket is reported as neither — filing someone's own
+skip rule under "can't be synced at all" would put the answer in the wrong half of the screen they
+opened to find it.
+
+**One filter decides the group, and four numbers read it.** The band's count, the band's second
+clause, the dialog's title and the dialog's rows are the same number by construction
+(`cannotSyncFrom`), which is this screen's own recorded bug shape. Membership lives in
+`ACTIVITY.neverSyncedDialog.cannotKind` — under the sentence it has to be true of, because that
+table is also the row notes. `remote_not_downloadable` is excluded from it deliberately: a Proton
+Docs document is a real file on Proton Drive, and both of this dialog's sentences (`live in your
+folder`, `Not real files`) would be false about it. `proton-sync status` lists it under a heading
+that claims neither.
+
+**A reason this build does not know is drawn, not dropped.** The wire token is hand-serialized
+precisely so a newer daemon can add a kind, so an unfamiliar one renders verbatim as its own note —
+the call `proton-sync status` already makes. Both directions are wrong in some way and they are not
+symmetric: hiding a file that cannot sync is the failure #295 is about, and showing a remote one
+under this heading is the smaller of the two.
+
+**The band renders on either half alone.** `neverSyncedFrom` returned null when no rule matched,
+which suppressed the whole band — so a machine with a socket and no exclude rules drew nothing at
+all. `neverSyncedSubject` is the pair, and its total is the sum.
+
+**`received 14:32` comes from a transfer that landed, and only from an upload.** `EmblemStatus`
+gains `last_transfer` — `{epoch_secs, direction}`, one nested option rather than two parallel fields
+that could disagree — read off the history log #308 already writes behind every landed side effect.
+No `file_index` column was added: `proton.rs` parses `activeRevision` for `claimedDigests.sha1` and
+nothing else, so there is no remote revision time to read, and a new column would have been a second
+copy of a table that already had the answer.
+
+Only `up` renders the clause. A `down` row says when THIS computer received bytes, and a conflict
+sidecar's fetch is a `down` row filed under the file's own path — either would put the wrong side's
+event on the Proton card. There is no fallback to `mtime`, which is the local modification time and
+is exactly what S5 refused to label as a remote event; `receivedAtFrom` returns null before it ever
+reads the frame's pinned clock literal, so a fixture cannot conjure the clause either.
+
+**The field is absent more often than present, and that is not a gap.** No transfer on record means
+one of four ordinary things: nothing ever transferred, the last transfer aged out of the log's
+retention (20k rows / 90 days), the file was adopted rather than transferred (`AutoLink` moves no
+bytes), or it has moved since — an event row keeps the path the action landed at. The clause is
+omitted in all four.
+
+**One row still falls short of its frame, and it is a fact rather than a command.** `7a Never
+synced` draws `projects/current → ~/work/q3`, naming the link's TARGET. `UnsyncableItem` carries the
+path and the reason; reading the target means resolving a link the engine has decided not to follow,
+which is a second question about the same entity. Invisible to the style gate — `.path-name` is
+`flex:1`, so its box matches whatever text is in it, and `assert.mjs` does not compare text — so it
+is recorded here rather than as a `known-deviations` row that would have nothing to measure.
+
+### 98a. The skip tab's panel, and the 50px that was hiding behind it
+
+`8a Skip rules`' unsyncable panel took the same list. It is a PANEL and not a rule row — `--panel`
+over `--border-subtle` at 11px, where a rule row has neither — because there is nothing in it to
+edit, which is what its own second sentence says. `See them` opens `7a Never synced`, and the three
+surfaces (this count, these kinds, that dialog's rows) read one function rather than three readings
+of one list.
+
+`SETTINGS.unsyncableNote` stopped being a constant and became a template, so it landed in the copy
+gate's `DRAWN` table in the same commit — the rule S1 wrote the first time a sentence left that gate
+by acquiring an argument, and the fourth time it has come up. `cardinal`, not `count`: the sentence
+opens with the number and the frame spells it.
+
+**Two `known-deviations` rows went, and one came back as a decision.** The `.sync` note's 12px
+margin was recorded as belonging to nothing; it belongs to the panel, and is set with it rather than
+by the stylesheet, so with no panel it is still spacing nothing. The tail's `margin-top:auto` was
+recorded at `106.812px vs 85.8125px` and blamed on the missing panel — the panel accounts for
+exactly 71px of it, and what is left is `35.8125px vs 85.8125px`: the 50px §94's doors take off every
+content region. So the row is re-recorded against that decision, which is what it always was.
+
+### 98b. One row that reads like the same gap and is not
+
+`9a Review`'s `3 files can't be synced — a socket and two shortcuts` still draws without its kinds,
+and §79c recorded the reason as "those files never enter the index". They still do not — and that is
+no longer what stops this row.
+
+The number on it is `PlanSummary::skipped_unsupported`, a statistic of the **dry-run plan**, which
+counts remote nodes the CLI cannot fetch as bytes. The local kinds are deliberately kept out of a
+plan (a socket that replaced a synced file would put two rows for one path in one plan), and
+`DryRunReport` deliberately carries no `unsyncable` list: that list is a *persistent merged* store,
+and a one-shot report has no store to merge into, so the same field name on it would mean something
+else. The two facts describe different sets, cannot be summed, and on a first run the standing list
+is empty anyway because no pass has run.
+
+So the row survives, repointed at #315. Corrected rather than deleted, and corrected rather than
+left: a row whose stated reason has quietly become false is how "nothing enumerates the kinds" gets
+believed twice.

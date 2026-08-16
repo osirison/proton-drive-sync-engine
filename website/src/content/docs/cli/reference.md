@@ -137,7 +137,8 @@ and schedules nothing.
   "last_plan_summary": null,
   "last_successful_sync_summary": null,
   "status_history": [],
-  "pending_deletions": []
+  "pending_deletions": [],
+  "unsyncable": []
 }
 ```
 
@@ -158,6 +159,21 @@ and schedules nothing.
 - `history` — the durable pass log: `{ recent, last_full_sweep, today }` (also via
   `history`). See [Pass history](#pass-history).
 - `pending_deletions` — the items awaiting delete approval (also via `pending`).
+- `unsyncable` — the standing list of entities that cannot be synced at all, printed under
+  `can't sync` and grouped by cause. Each item is `{ path, entity_kind, reason,
+  first_seen_epoch_secs }`. `reason` is a token — `remote_not_downloadable` (a Proton
+  Docs/Sheets document, or a node the remote listing could not fully decode),
+  `unrepresentable_path` (a name that is not valid UTF-8), or one of the local kinds
+  `local_symlink` / `local_socket` / `local_fifo` / `local_device` / `local_special_file` —
+  and **an unfamiliar one must be rendered verbatim, not rejected**: more may be added, and
+  that is exactly how these were.
+
+  The list is *merged*, not recomputed per pass, so `first_seen_epoch_secs` answers "how long
+  has this been stuck". A path leaves it when a pass plans a real action for it; it also
+  leaves by absence, but only from a pass whose evidence covers where the reason came from —
+  a local kind on any pass that ran the local scan, a remote one only on a full-tree walk
+  (`proton-sync resync` forces one). A path an exclude glob or include filter hides is **not**
+  here: that is a rule you wrote, not a limitation.
 - `auth` — what the daemon believes about your Proton sign-in: `signed-in`, `signed-out`, or
   `unknown`. See [Sign-in state](#sign-in-state).
 - `listing` — the answer to a `list` request, and `null` on every other reply. See

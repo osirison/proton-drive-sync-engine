@@ -28,9 +28,10 @@
 //     duration exists, and nothing records which past pass was a full sweep.
 //   · `added 14 Jul` on a rule — a TOML array of globs carries no per-entry timestamps. Not a
 //     missing command: an absent fact, and the fixture pins it as a literal that nothing reads.
-//   · the unsyncable panel — `Two more files can't be synced no matter what` and `See them`
-//     (G19 #232). The files it counts never enter the index, and `See them` would open the one
-//     group `7a Never synced` already omits for the same reason.
+//   · (WAS) the unsyncable panel — `Two more files can't be synced no matter what` and `See them`
+//     (G19 #232). Drawn since #232: the files it counts still never enter the index, and the panel
+//     does not read one — `ControlResponse.unsyncable` is the daemon's standing list of what its
+//     own local walk drops, and `See them` opens the `7a Never synced` group fed by the same list.
 //   · `That folder doesn't exist on Proton Drive` and `Create it on Proton Drive` on the refusal
 //     (G22 #236). `write_config` validates TOML and never contacts Proton Drive, so it cannot know.
 //   · four of Advanced's six settings (G23 #237): the socket path, the log level, the conflict
@@ -717,6 +718,20 @@ function skipTab(props) {
   // `.sync` is set brighter inside its own sentence, which makes the note one node with an inline
   // child rather than two — `splitEmphasis` keeps the sentence whole so the copy gate still finds it.
   const [before, name, after] = splitEmphasis(SETTINGS.dotSyncNote, ".sync");
+  // The daemon's standing "cannot be synced" list, already filtered to the local kinds by the one
+  // function that decides that group (#232). The panel is drawn only when it has members: a
+  // reassurance about a group with nothing in it is a sentence about nothing.
+  const cannot = props.cannot ?? { count: 0, rows: [], kinds: "" };
+  const dotSync = el(
+    "div",
+    { class: "settings-dotsync" },
+    before,
+    fid(el("span", { class: "settings-dotsync-name" }, name), "dotSyncName"),
+    after,
+  );
+  // The 12px separates the note FROM THE PANEL, so it is set with the panel and not by the
+  // stylesheet: with no panel above it the margin would be spacing this line against nothing.
+  if (cannot.count > 0) dotSync.style.marginTop = "12px";
   return [
     fid(el("div", { class: "settings-skip-intro" }, SETTINGS.skipIntro), "skipIntro"),
     rulesBlock(props),
@@ -724,16 +739,36 @@ function skipTab(props) {
       el(
         "div",
         { class: "settings-skip-tail" },
-        fid(
-          el(
-            "div",
-            { class: "settings-dotsync" },
-            before,
-            fid(el("span", { class: "settings-dotsync-name" }, name), "dotSyncName"),
-            after,
-          ),
-          "dotSyncNote",
-        ),
+        cannot.count > 0
+          ? fid(
+              el(
+                "div",
+                { class: "settings-unsyncable" },
+                fid(el("span", { class: "settings-unsyncable-glyph" }, "⊘"), "unsyncableGlyph"),
+                fid(
+                  el(
+                    "div",
+                    { class: "settings-unsyncable-note" },
+                    SETTINGS.unsyncableNote(cannot.count, cannot.kinds),
+                  ),
+                  "unsyncableNote",
+                ),
+                fid(
+                  button({
+                    kind: "secondary",
+                    label: SETTINGS.seeThem,
+                    onClick: () => props.onSeeUnsyncable?.(),
+                    padding: "7px 14px",
+                    radius: "var(--r-8)",
+                    fontSize: "12px",
+                  }),
+                  "seeThem",
+                ),
+              ),
+              "unsyncable",
+            )
+          : null,
+        fid(dotSync, "dotSyncNote"),
       ),
       "tail",
     ),

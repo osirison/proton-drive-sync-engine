@@ -8,18 +8,19 @@
 // draws something none of them produces, the fixture leaves it out and says so rather than
 // inventing a field shape that would pre-empt the design of the thing that fills the gap.
 //
-// Six such omissions live in this file. Each is commented at the frame that draws it; collected
-// here so the size of it is visible in one place:
+// Six such omissions were recorded in this file. Each is commented at the frame that draws it;
+// collected here so the size of it is visible in one place, and so is what has since closed:
 //
 //   1. per-pass DURATION — `6a Activity passes`, the twenty chart bars
 //   2. whole-index totals — `7a Activity quiet`, `12,480 files · 41.2 GB` on both seam sides
 //      (now filed as G7, #207; carried as `localTotals`, since a scalar pre-empts no design)
 //   3. per-file recent activity — `7a Activity quiet`, the `Last things to move` rows
-//   4. never-synced enumeration — `7a Never synced`. HALF-CLOSED by C2: `skip_rule_usage` walks
-//      the local tree and reports what each exclude rule matches, with sizes, so the two
-//      rule-matched rows and the band's count are live now. The other two — a socket and a
-//      symlink — remain out of reach for a different reason (see the frame's own note)
-//   5. per-path history — `7a File lookup`, the `This file's history` block (G1, #190)
+//   4. never-synced enumeration — `7a Never synced`. CLOSED, by two commands rather than one:
+//      `skip_rule_usage` (C2) walks the local tree for what each exclude rule matches, and the
+//      daemon's `unsyncable` list (#232) reports what its own walk drops. Both halves of the band's
+//      count and both of the dialog's groups are live
+//   5. per-path history — `7a File lookup`, the `This file's history` block (G1, #190). The card's
+//      `received 14:32` was part of this and is CLOSED separately by #233
 //   6. upload bytes-so-far — `7a File pending`, the progress bar
 //
 // Only (5) is one of the recorded gaps G1–G4.
@@ -104,6 +105,41 @@ function fileConfig(overrides = {}) {
     ...overrides,
   };
 }
+
+/**
+ * The daemon's standing "cannot be synced" list (#232), verbatim `UnsyncableItem`s off the status
+ * reply: path, kind, wire reason token, and the epoch it was FIRST seen at.
+ *
+ * Two of this machine's four never-synced files, and the two `7a Never synced` draws in its second
+ * group. `entity_kind` is `file` for both because the engine knows two kinds and neither of these
+ * is a directory it would descend into — a symlink to a folder is not followed either — and the
+ * `reason` is what says what each really is.
+ *
+ * The `remote_not_downloadable` row is here on purpose and is NOT drawn in that group: it is a real
+ * file on Proton Drive, not a non-file in your folder, so the dialog's own two sentences would be
+ * false about it. Without a row like it the exclusion would be untested — the fixture would agree
+ * with the screen by having nothing to disagree about.
+ */
+const UNSYNCABLE = [
+  {
+    path: ".cache/session.sock",
+    entity_kind: "file",
+    reason: "local_socket",
+    first_seen_epoch_secs: ago(86_400 * 12),
+  },
+  {
+    path: "projects/current",
+    entity_kind: "file",
+    reason: "local_symlink",
+    first_seen_epoch_secs: ago(86_400 * 12),
+  },
+  {
+    path: "Unsorted/Networth",
+    entity_kind: "file",
+    reason: "remote_not_downloadable",
+    first_seen_epoch_secs: ago(86_400 * 150),
+  },
+];
 
 /**
  * One `StatusHistoryEntry`, as `record_status_history` writes it.
@@ -282,13 +318,17 @@ export const ACTIVITY_FIXTURES = {
   // And the "full check" it counts down to is really G4's absent `full_scan_schedule` (#193);
   // `scan_interval` is the Phase-1 stand-in, not the thing the design means.
   //
-  // WHAT NO COMMAND RETURNS — three of this file's six omissions, all on this one frame:
+  // AND `4 files are never synced` IS THE SUM OF TWO GROUPS, which is why it took two commands to
+  // reach. `skip_rule_usage` reports the two a rule hides; the daemon's `unsyncable` list reports
+  // the two nothing can sync (#232). Either half alone draws a band that is short by the other, so
+  // this fixture carries both and `7a Never synced` — the dialog `Show them` opens — carries the
+  // same two.
+  //
+  // WHAT NO COMMAND RETURNS — two of this file's omissions, both on this one frame:
   //
   //   · `12,480` and `41.2 GB`, twice. Nothing returns index-wide totals: `index_read.rs` exposes
   //     `record_for_path` and `path_for_id`, both single-path, and no command wraps anything else.
   //     The byte half is G2 (#191); the file-count half is not covered by any recorded gap.
-  //   · `4 files are never synced`. See `7a Never synced` below for why the count is as unavailable
-  //     as the list.
   //   · `Last things to move` — three rows of path + direction + when, and `7 files in the last 3
   //     days`. `status_history` is per-PASS and carries no paths; `path_sync_status` answers about
   //     one path you already know. Nothing lists recently-moved files. This is adjacent to G1
@@ -300,9 +340,11 @@ export const ACTIVITY_FIXTURES = {
     fids: activityFids("quiet"),
     status: idleDaemon({
       status_history: [pass(ago(120), { done: summary({ uploads: 2, downloads: 1, conflicts: 1 }) })],
+      unsyncable: UNSYNCABLE,
     }),
     // The same machine as `7a Never synced`, which this screen's `Show them` opens: one skip rule,
-    // `*.tmp`. A screen and the dialog it links to must not describe two different configurations.
+    // `*.tmp`, and the same three-entry unsyncable list. A screen and the dialog it links to must
+    // not describe two different configurations.
     config: fileConfig({ scan_interval_secs: 370, exclude: ["*.tmp"] }),
     // G7 (#207). Same key and same numbers as `8a Settings` and `5a Checking` — the three frames
     // that draw this count were describing one missing capability in three different ways until it
@@ -374,10 +416,13 @@ export const ACTIVITY_FIXTURES = {
   // 07-activity.md says so itself: "If it can only answer 'current state', ship the verdict and the
   // two side cards and omit the history block."
   //
-  // One thing the two side cards need that even Phase 1 cannot give: `received 14:32` on the Proton
-  // card. `EmblemStatus.mtime` is the LOCAL modification time and there is no remote-side timestamp
-  // in the reply at all. Both clock literals are pinned below (rule 3), but only the local one has
-  // a field behind it.
+  // `received 14:32` on the Proton card IS sourced now (#233). `EmblemStatus.last_transfer` is the
+  // newest side effect that moved this path's bytes, read off the daemon's history log
+  // (`index::last_transfer`), and only its `up` direction means Proton Drive received anything — a
+  // `down` row is when THIS computer did. `mtime` beside it is still the LOCAL modification time
+  // and still feeds only the local clause: two different fields for two different events, which is
+  // the whole reason the clause was omitted rather than filled from `mtime`. Both clock literals
+  // are pinned below (rule 3), and each has a field behind it now.
   "7a File lookup": {
     fids: activityFids("lookup"),
     status: idleDaemon(),
@@ -395,6 +440,10 @@ export const ACTIVITY_FIXTURES = {
         // 14:31, a minute before the 14:32 pass that agreed the two sides.
         mtime: ago(180),
         proton_id: "8b3c1f2a~4c8f2e7d10b64f2ca39c5e0b8d7f9a21",
+        // The upload that carried the 14:31 edit, one minute later — which is exactly the story the
+        // two cards tell side by side. `up`, because only an upload means Proton Drive received
+        // anything; a `down` row here would correctly draw no `received` clause at all.
+        last_transfer: { epoch_secs: ago(120), direction: "up" },
       },
     },
     route: "activity",
@@ -416,6 +465,9 @@ export const ACTIVITY_FIXTURES = {
             return ago(180);
           },
           proton_id: "8b3c1f2a~4c8f2e7d10b64f2ca39c5e0b8d7f9a21",
+          get last_transfer() {
+            return { epoch_secs: ago(120), direction: "up" };
+          },
         },
       },
       clock: { edited: "14:31", received: "14:32", agreed: "14:32" },
@@ -511,7 +563,7 @@ export const ACTIVITY_FIXTURES = {
   // `*.tmp` is an entry in `read_config`'s `exclude` array, which is a real reply from a real
   // command, so it is pinned.
   //
-  // Everything else is unavailable, and for two different reasons worth keeping apart:
+  // Both groups are sourced now, and by two different commands — which is the fact worth keeping:
   //
   //   · `exports/draft.tmp · 2.1 MB` and `exports/render-final.tmp · 840 KB` — the files a rule is
   //     hiding. SOURCED SINCE C2, and the paragraph this replaces is why it took a command of its
@@ -522,25 +574,30 @@ export const ACTIVITY_FIXTURES = {
   //     index", and `skip_rule_usage` is that walk. `samples` carries a size per file because this
   //     dialog draws `path · size` rows and the walk already stats every file it counts.
   //   · `.cache/session.sock · a socket` and `projects/current → ~/work/q3 · a shortcut` — the
-  //     files nothing could sync. These are further out of reach still: `scan_local_files_with_
-  //     options` keeps only entries where `file_type.is_file()`, so a socket or a symlink never
-  //     enters the index in the first place, and `SkipUnsupported` (the one action that sounds like
-  //     this) is about a REMOTE file the CLI cannot download as bytes — a different fact entirely.
+  //     files nothing could sync. SOURCED SINCE #232, and still not out of the index the way the
+  //     paragraph this replaces described: `visit_directory` keeps only entries where
+  //     `file_type.is_file()` and a socket or a symlink genuinely never enters the index. What
+  //     changed is that the walk now REPORTS what it drops, on `ControlResponse.unsyncable`, so the
+  //     rows come from a list the daemon keeps rather than from a record nothing writes.
   //
-  // So the fixture carries the rule and not the rows. The same absence is why `7a Activity quiet`
-  // cannot draw its `4 files are never synced` band: the count is as unavailable as the list.
+  // ONE ROW STILL FALLS SHORT OF ITS FRAME, and it is a fact and not a command: the frame draws
+  // `projects/current → ~/work/q3`, naming the link's TARGET. `UnsyncableItem` carries the path and
+  // the reason; reading the target means resolving the link, which is a second question about a
+  // thing the engine has decided not to follow. Recorded in `known-deviations.mjs` as a decision.
   "7a Never synced": {
     fids: activityFids("neverSynced"),
     status: idleDaemon({
-      // `skipped_unsupported: 1` is the closest the wire comes to this dialog's subject, and it is
-      // not close: it counts REMOTE files the CLI could not fetch, not local files a rule hides.
-      // Carried so the number is on the page, not as a stand-in for the four rows.
+      // `skipped_unsupported: 1` counts REMOTE files the CLI could not fetch. Kept because a real
+      // machine reports both — and note it does NOT feed this dialog: the `unsyncable` list below
+      // is what the rows come from, and its `remote_not_downloadable` entries are excluded from
+      // this group on purpose (see `ACTIVITY.neverSyncedDialog.cannotKind`).
       last_plan_summary: summary({
         uploads: 2,
         downloads: 1,
         conflicts: 1,
         skipped_unsupported: 1,
       }),
+      unsyncable: UNSYNCABLE,
     }),
     config: fileConfig({ exclude: ["*.tmp"] }),
     // WHAT C2 CHANGED. This block was recorded here as unbuildable — "the command does not exist

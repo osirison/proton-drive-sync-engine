@@ -6,7 +6,7 @@
 //! reimplemented. Full emblem behaviour (mapping the 3 `sync_status` values + derived states) is
 //! built in S10; this is the shared open/query surface.
 
-use crate::wire::FileRecord;
+use crate::wire::{FileEvent, FileRecord};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -32,6 +32,21 @@ pub fn record_for_path(
     relative: &Path,
 ) -> Result<Option<FileRecord>, String> {
     proton_drive_sync_engine::index::get_record(connection, relative).map_err(|e| e.to_string())
+}
+
+/// The last time this engine moved this path's bytes, and which way (#233) — the engine's
+/// `index::last_transfer`, not a second query over the same table.
+///
+/// Read straight off the history log in the same database as the record, so the two are one open.
+/// `None` is honest and common: nothing ever transferred, the last transfer aged out of retention
+/// (20k rows / 90 days), the file was adopted rather than transferred, or it has moved since. A
+/// caller renders the absence as "unknown" and omits the clause — never as a fallback to the
+/// record's `mtime`, which is a LOCAL time and would read as a remote event.
+pub fn last_transfer(
+    connection: &Connection,
+    relative: &Path,
+) -> Result<Option<FileEvent>, String> {
+    proton_drive_sync_engine::index::last_transfer(connection, relative).map_err(|e| e.to_string())
 }
 
 /// The local path for a stored remote node id (composed `volumeId~nodeId`), or `None`.
@@ -190,6 +205,60 @@ mod tests {
         // The gap this closes: `path_sync_status("spec.md")` answers "not tracked" for this index.
         let (_dir, connection) = index_of(&["docs/spec.md", "notes/other.md"]);
         assert_eq!(found(&connection, "spec.md"), vec!["docs/spec.md"]);
+    }
+
+    #[test]
+    fn a_tracked_file_with_no_transfer_on_record_answers_none() {
+        // The common shape, and the one that must NOT be filled in from the record: an adopted
+        // file has a size, an mtime and a `proton_id` and has still never had bytes moved for it.
+        let (_dir, connection) = index_of(&["docs/spec.md"]);
+        assert!(
+            last_transfer(&connection, Path::new("docs/spec.md"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_last_transfer_is_readable_through_the_read_only_connection() {
+        // The history log lives in the same database as the record, so the emblem/lookup path
+        // needs no second open — and the read-only open must actually reach `sync_events`.
+        use proton_drive_sync_engine::index::{FileEvent, PassKind};
+        use proton_drive_sync_engine::sync::{SyncAction, TransferDirection};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sync_index.db");
+        let writer = proton_drive_sync_engine::index::open_database(&db).unwrap();
+        proton_drive_sync_engine::index::initialize_schema(&writer).unwrap();
+        proton_drive_sync_engine::index::upsert_record(&writer, &record("docs/spec.md")).unwrap();
+        let pass =
+            proton_drive_sync_engine::index::begin_pass(&writer, 1_000, PassKind::Incremental)
+                .unwrap();
+        proton_drive_sync_engine::index::insert_file_events(
+            &writer,
+            pass,
+            &[FileEvent {
+                path: PathBuf::from("docs/spec.md"),
+                source_path: None,
+                action: SyncAction::Upload,
+                bytes: Some(1_200_000),
+                epoch_secs: 1_700_000_000,
+                pass_id: pass,
+            }],
+        )
+        .unwrap();
+        drop(writer);
+
+        let connection = open_readonly(&db, DEFAULT_BUSY_TIMEOUT).unwrap();
+        let event = last_transfer(&connection, Path::new("docs/spec.md"))
+            .unwrap()
+            .expect("an upload landed for this path");
+        assert_eq!(event.epoch_secs, 1_700_000_000);
+        assert_eq!(
+            event.action.transfer_direction(),
+            Some(TransferDirection::Up),
+            "only an `up` row means Proton Drive received anything"
+        );
     }
 
     #[test]

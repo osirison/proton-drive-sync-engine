@@ -611,14 +611,22 @@ fn print_listing(response: &ControlResponse, json: bool, style: &Style) -> ExitC
 /// account behind #295 carried one such file for five months, and `skipped_unsupported: 1` was the
 /// only trace of it. Grouped by cause so a Docs-heavy account reads as one fact, not N.
 fn print_unsyncable(items: &[UnsyncableItem], style: &Style) {
-    if items.is_empty() {
-        return;
+    for line in unsyncable_lines(items, style) {
+        println!("{line}");
     }
-    println!();
-    println!(
-        "{}",
-        style.bold(&format!("{} item(s) cannot be synced:", items.len()))
-    );
+}
+
+/// The lines [`print_unsyncable`] prints, built rather than printed so the grouping can be tested.
+/// A stdout-only renderer is one nothing checks, and this one has to keep working as reasons are
+/// added — #232 added five at once.
+fn unsyncable_lines(items: &[UnsyncableItem], style: &Style) -> Vec<String> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        String::new(),
+        style.bold(&format!("{} item(s) cannot be synced:", items.len())),
+    ];
     // `reason` is a wire token an older client may not know, so group on the token itself and
     // render an unfamiliar one verbatim rather than dropping the row.
     let mut groups: BTreeMap<&str, Vec<&UnsyncableItem>> = BTreeMap::new();
@@ -626,28 +634,26 @@ fn print_unsyncable(items: &[UnsyncableItem], style: &Style) {
         groups.entry(item.reason.as_str()).or_default().push(item);
     }
     for (token, group) in groups {
-        println!(
+        lines.push(format!(
             "  {}",
             style.dim(&format!("{token} — {}", group[0].reason.describe()))
-        );
+        ));
         for item in group {
-            println!(
+            lines.push(format!(
                 "    {}  {}",
                 item.path.display(),
                 style.dim(&format!(
                     "(since {})",
                     relative_time(item.first_seen_epoch_secs)
                 ))
-            );
+            ));
         }
     }
-    println!(
-        "{}",
-        style.dim(
-            "These are skipped on every pass; nothing transfers in either direction until the \
-             cause changes."
-        )
-    );
+    lines.push(style.dim(
+        "These are skipped on every pass; nothing transfers in either direction until the \
+         cause changes.",
+    ));
+    lines
 }
 
 /// The status headline: a coloured state dot, the state word, and a one-line detail.
@@ -1428,6 +1434,7 @@ fn print_pending(pending: &[PendingDeletion]) {
 mod tests {
     use super::*;
     use proton_drive_sync_engine::ipc::TransferActivity;
+    use proton_drive_sync_engine::sync::UnsyncableReason;
 
     fn blank_activity(phase: &str) -> SyncActivity {
         SyncActivity {
@@ -1443,6 +1450,89 @@ mod tests {
             since_epoch_secs: None,
             pass: None,
         }
+    }
+
+    /// A plain `Style`, so the assertions below read the words and not the escape codes.
+    fn plain_style() -> Style {
+        Style { enabled: false }
+    }
+
+    fn unsyncable(path: &str, reason: UnsyncableReason) -> UnsyncableItem {
+        UnsyncableItem {
+            path: PathBuf::from(path),
+            entity_kind: EntityKind::File,
+            reason,
+            first_seen_epoch_secs: 0,
+        }
+    }
+
+    #[test]
+    fn cant_sync_groups_by_cause_and_names_each_local_kind() {
+        // #232 added five reasons at once, and the whole value of this section is that it says
+        // WHAT and WHY rather than counting. A group whose cause is blank is a count with extra
+        // steps, which is the state #295 spent five months in.
+        let items = vec![
+            unsyncable(".cache/session.sock", UnsyncableReason::LocalSocket),
+            unsyncable("projects/current", UnsyncableReason::LocalSymlink),
+            unsyncable("run/queue", UnsyncableReason::LocalFifo),
+            unsyncable("dev/loop0", UnsyncableReason::LocalDevice),
+            unsyncable("odd", UnsyncableReason::LocalSpecialFile),
+            unsyncable("Unsorted/Networth", UnsyncableReason::RemoteNotDownloadable),
+        ];
+        let out = unsyncable_lines(&items, &plain_style()).join("\n");
+
+        assert!(out.contains("6 item(s) cannot be synced:"), "{out}");
+        for reason in [
+            UnsyncableReason::LocalSocket,
+            UnsyncableReason::LocalSymlink,
+            UnsyncableReason::LocalFifo,
+            UnsyncableReason::LocalDevice,
+            UnsyncableReason::LocalSpecialFile,
+            UnsyncableReason::RemoteNotDownloadable,
+        ] {
+            let heading = format!("{} — {}", reason.as_str(), reason.describe());
+            assert!(
+                out.contains(&heading),
+                "every cause gets its own heading, and the heading says what to change: {out}"
+            );
+        }
+        for path in [
+            ".cache/session.sock",
+            "projects/current",
+            "run/queue",
+            "dev/loop0",
+            "odd",
+            "Unsorted/Networth",
+        ] {
+            assert!(out.contains(path), "{path} must be named: {out}");
+        }
+    }
+
+    #[test]
+    fn a_cause_this_build_does_not_know_is_still_printed_with_its_paths() {
+        // The rule the hand-written serde impl exists for, at the surface that has to honour it:
+        // a newer daemon's token groups and renders verbatim rather than dropping the rows under
+        // it. Dropping them would make a file that cannot sync invisible to the one command that
+        // exists to name it.
+        let items = vec![
+            unsyncable(
+                "odd-one",
+                UnsyncableReason::Other("local_wormhole".to_owned()),
+            ),
+            unsyncable(".cache/session.sock", UnsyncableReason::LocalSocket),
+        ];
+        let out = unsyncable_lines(&items, &plain_style()).join("\n");
+
+        assert!(out.contains("local_wormhole"), "{out}");
+        assert!(out.contains("odd-one"), "{out}");
+        assert!(out.contains("local_socket"), "{out}");
+    }
+
+    #[test]
+    fn nothing_unsyncable_prints_nothing_at_all() {
+        // Not even the heading: `0 item(s) cannot be synced` is a section about an empty set, and
+        // the reassurance under it would be reassuring nobody about nothing.
+        assert!(unsyncable_lines(&[], &plain_style()).is_empty());
     }
 
     #[test]

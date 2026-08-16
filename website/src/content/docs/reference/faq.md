@@ -55,6 +55,15 @@ A directory renamed **locally** is currently handled as a delete-and-recreate, n
 No. Symlinks under the local root are skipped in both directions, and the daemon refuses to
 write through a symlinked directory that would escape the sync root.
 
+They are **named** rather than skipped in silence: every symlink, socket, named pipe and
+device node the scanner drops is listed by `proton-sync status` under `can't sync`, with the
+reason and how long it has been there. Skipping is unchanged — following a link would take
+the sync outside its own root, cycle, and store the target's bytes under a second name.
+
+A path one of *your* rules hides is not on that list. An exclude glob, an include filter,
+`.proton-sync.toml`, a conflict sidecar and the `.sync` state directory are exclusions, and
+mixing them in would file your own settings under "cannot be synced".
+
 ## Can I run more than one daemon?
 
 No — **one daemon per user**. Every daemon shells the same `proton-drive` CLI, whose shared

@@ -245,8 +245,11 @@ export function factRows(summary) {
     rows.push({
       at: 2,
       tone: "inert",
-      // The drawn sentence names the kinds (`a socket and two shortcuts`) and nothing enumerates
-      // them — the files never enter the index (#232). The count is the half that is true.
+      // The drawn sentence names the kinds (`a socket and two shortcuts`). They ARE enumerated
+      // since #232 — but by the daemon's STANDING list, while this number is
+      // `PlanSummary::skipped_unsupported`, a statistic of the dry-run plan that counts remote
+      // nodes the CLI cannot fetch. Two different sets, so they cannot be summed and the kinds
+      // cannot be borrowed for this count (#315). The count is the half that is true.
       label: ONBOARDING.cannotSyncPlain(summary.skipped_unsupported),
       note: ONBOARDING.skipped,
       dim: true,

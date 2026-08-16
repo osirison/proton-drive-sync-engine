@@ -215,6 +215,28 @@ const NOT_DRAWN = new Map([
     "SETTINGS.advancedMissing",
     "G23 (#237): the one remaining gap — resetting the index is a command, not a setting",
   ],
+  // The four local kinds no frame happens to draw. `7a Never synced` draws a socket and a symlink,
+  // which are the two `cannotKind` entries the gate checks; a FIFO, a device node, an unnamed
+  // special file and a non-UTF-8 name are the same list's other reasons, all four reachable from a
+  // real machine. They are written rather than measured for the reason S5's undrawn verdicts are:
+  // the daemon can report any of them, and improvising a noun at the call site is how a screen ends
+  // up saying two different things about one kind.
+  [
+    "ACTIVITY.neverSyncedDialog.cannotKind.local_fifo",
+    "the dialog draws a socket and a symlink; the daemon can report four more kinds and this is one",
+  ],
+  [
+    "ACTIVITY.neverSyncedDialog.cannotKind.local_device",
+    "likewise — a block or character device under the sync folder",
+  ],
+  [
+    "ACTIVITY.neverSyncedDialog.cannotKind.local_special_file",
+    "likewise — the scanner's catch-all for an entry that is neither a regular file nor a directory",
+  ],
+  [
+    "ACTIVITY.neverSyncedDialog.cannotKind.unrepresentable_path",
+    "likewise — a name that is not valid UTF-8, so the remote listing could never name it (#270)",
+  ],
 ]);
 
 /**
@@ -366,6 +388,11 @@ const DRAWN = [
   ["SETTINGS.skippingSize", [2, 3_100_000_000], "8a Skip rules"],
   ["SETTINGS.ruleAdded", ["14 Jul"], "8a Skip rules"],
   ["SETTINGS.ruleRemovedCost", [2, 3_100_000_000], "8a Skip rules"],
+  // Was a constant until #232 gave it a count and a list of kinds. Both arguments are read off the
+  // frame: `Two more files … a socket and a shortcut`. A sentence that becomes a template leaves
+  // this gate silently unless it lands here in the same commit — S1 wrote that rule, and this is
+  // the fourth time it has come up.
+  ["SETTINGS.unsyncableNote", [2, "a socket and a shortcut"], "8a Skip rules"],
   // S9. The banner sentences. Five of the six are rendered by the app at live values and gated here
   // at the frame's; `deletionTitle` is the sixth and is the `pairLocalNote` shape — the noun is
   // passed to reproduce what the frame draws, and the app never passes one (G8 #208: nothing types

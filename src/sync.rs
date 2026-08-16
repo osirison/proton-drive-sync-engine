@@ -74,13 +74,37 @@ pub struct PlannedAction {
     pub size_bytes: Option<u64>,
 }
 
+/// Which side's evidence can prove an [`UnsyncableReason`] no longer applies — i.e. which passes
+/// are allowed to drop a standing [`UnsyncableItem`] **by absence** (see
+/// `daemon::record_unsyncable`).
+///
+/// The two sides differ because their producers do. A remote skip is derived from the remote map,
+/// and an incremental pass's remote map is `reconstruct_remote(base ⊕ delta)` over a baseline that
+/// never holds a skipped node — so only a full-tree walk's silence is evidence. A local skip is
+/// derived from the local stat-walk, which is *always* a walk of the whole tree (there is no
+/// partial local scan: [`crate::index::scan_local_tree`] visits from the root, and the daemon's
+/// only entry point to it — `Daemon::scan_local_entities_reporting_progress` — adds progress
+/// reporting and nothing else), so any pass that ran it can prove absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsyncableOrigin {
+    /// Observed by the local stat-walk (or by planning against it).
+    Local,
+    /// Observed in the remote map.
+    Remote,
+    /// A token this build does not know, so its producer is unknown. Treated like [`Self::Remote`]
+    /// — pruned only by a full sweep — because a full sweep walks *both* sides, which makes it the
+    /// one pass whose silence is evidence whatever the origin turns out to be.
+    Unknown,
+}
+
 /// Why an entity cannot be synced — the reason behind a [`SyncAction::SkipUnsupported`] row, and
 /// the reason carried on an [`UnsyncableItem`].
 ///
 /// On the wire this is a snake_case token, and a client that meets an unfamiliar one must render
-/// it verbatim rather than fail (the `ipc::SyncActivity::phase` rule). That is what makes #232's
-/// local kinds — sockets, symlinks, devices — addable without a lockstep client upgrade;
-/// [`Self::Other`] is the parse side of it and is never constructed by the planner.
+/// it verbatim rather than fail (the `ipc::SyncActivity::phase` rule). That is what let #232's
+/// local kinds — sockets, symlinks, devices — be added without a lockstep client upgrade: an older
+/// build parses `local_socket` to [`Self::Other`] and prints it, where a derived enum would have
+/// failed its entire status reply. Keep adding reasons that way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnsyncableReason {
     /// The local path is not valid UTF-8, so the CLI's JSON listing can never name it: an upload's
@@ -96,9 +120,45 @@ pub enum UnsyncableReason {
     /// `FileDelta::Unknown` arm plans a skip. A Proton-native document carries no claimed digest
     /// *because* it is not a byte blob, so both facts are symptoms of this one.
     RemoteNotDownloadable,
+    /// A symbolic link under the local root (#232). The scanner has **never** followed one —
+    /// `DirEntry::file_type` is `lstat`-shaped, so a link to a file fails `is_file()` and a link to
+    /// a directory fails `is_dir()` — and this reason reports that long-standing behaviour rather
+    /// than changing it: following links would escape the root, cycle, and upload the target twice.
+    LocalSymlink,
+    /// A unix domain socket under the local root (#232). It has no bytes to copy: its contents are
+    /// a kernel endpoint, not a file.
+    LocalSocket,
+    /// A named pipe (FIFO) under the local root (#232). Reading it would block on a writer, and
+    /// what came out would not be a stored file.
+    LocalFifo,
+    /// A block or character device node under the local root (#232). Its bytes are the device's,
+    /// not the file's.
+    LocalDevice,
+    /// A local entry that is neither a regular file, a directory, nor any kind named above (#232).
+    /// No POSIX type is left, so this is not expected to occur — it exists so an entry the scanner
+    /// drops is always *named*, never silently absent from the report.
+    LocalSpecialFile,
     /// A token from a newer build, preserved verbatim so a downgrade renders it instead of failing
     /// the whole document.
     Other(String),
+}
+
+impl UnsyncableReason {
+    /// Which passes may drop a standing item carrying this reason by absence. See
+    /// [`UnsyncableOrigin`]; the match is exhaustive by variant on purpose — a new reason must
+    /// answer this question rather than inherit a `_` arm's guess.
+    pub fn origin(&self) -> UnsyncableOrigin {
+        match self {
+            Self::UnrepresentablePath
+            | Self::LocalSymlink
+            | Self::LocalSocket
+            | Self::LocalFifo
+            | Self::LocalDevice
+            | Self::LocalSpecialFile => UnsyncableOrigin::Local,
+            Self::RemoteNotDownloadable => UnsyncableOrigin::Remote,
+            Self::Other(_) => UnsyncableOrigin::Unknown,
+        }
+    }
 }
 
 impl UnsyncableReason {
@@ -119,6 +179,11 @@ impl UnsyncableReason {
         match self {
             Self::UnrepresentablePath => "unrepresentable_path",
             Self::RemoteNotDownloadable => "remote_not_downloadable",
+            Self::LocalSymlink => "local_symlink",
+            Self::LocalSocket => "local_socket",
+            Self::LocalFifo => "local_fifo",
+            Self::LocalDevice => "local_device",
+            Self::LocalSpecialFile => "local_special_file",
             Self::Other(token) => token,
         }
     }
@@ -134,6 +199,23 @@ impl UnsyncableReason {
                 "proton-drive cannot download it as a file — a Proton Docs/Sheets document, or a \
                  node the remote listing could not fully decode"
             }
+            Self::LocalSymlink => {
+                "it is a symbolic link, and links are never followed — Proton Drive would have to \
+                 store the target's bytes under a second name"
+            }
+            Self::LocalSocket => {
+                "it is a unix socket — a kernel endpoint with no stored bytes to copy"
+            }
+            Self::LocalFifo => {
+                "it is a named pipe — reading it would wait on a writer, and nothing about it is \
+                 stored content"
+            }
+            Self::LocalDevice => {
+                "it is a device node — its bytes belong to the device, not to the file"
+            }
+            Self::LocalSpecialFile => {
+                "it is not a regular file or a directory, so there is nothing to copy"
+            }
             Self::Other(_) => "the daemon reported a reason this build does not know",
         }
     }
@@ -142,6 +224,11 @@ impl UnsyncableReason {
         match token {
             "unrepresentable_path" => Self::UnrepresentablePath,
             "remote_not_downloadable" => Self::RemoteNotDownloadable,
+            "local_symlink" => Self::LocalSymlink,
+            "local_socket" => Self::LocalSocket,
+            "local_fifo" => Self::LocalFifo,
+            "local_device" => Self::LocalDevice,
+            "local_special_file" => Self::LocalSpecialFile,
             other => Self::Other(other.to_owned()),
         }
     }
@@ -2621,16 +2708,56 @@ mod tests {
         );
     }
 
-    // #232 will add local kinds (sockets, symlinks, devices) to this vocabulary. A derived enum
-    // would make the first new token fail an older client's whole status reply, so an unknown one
-    // must survive verbatim instead.
+    // #232 added the local kinds (sockets, symlinks, devices) this test used to use as its
+    // *unknown* example — which is the point: a derived enum would have made that addition fail an
+    // older client's whole status reply, and instead it parses verbatim there. The example moves on
+    // to a token no build has yet defined.
     #[test]
     fn an_unknown_reason_token_survives_instead_of_failing_the_document() {
-        let json = r#""local_socket""#;
+        let json = r#""local_wormhole""#;
         let reason: UnsyncableReason = serde_json::from_str(json).expect("parses");
-        assert_eq!(reason, UnsyncableReason::Other("local_socket".to_owned()));
+        assert_eq!(reason, UnsyncableReason::Other("local_wormhole".to_owned()));
         assert_eq!(serde_json::to_string(&reason).expect("serialize"), json);
-        assert_eq!(reason.as_str(), "local_socket");
+        assert_eq!(reason.as_str(), "local_wormhole");
+        // Unknown, so nothing can say where it came from — and an origin that cannot be placed is
+        // pruned only by the one pass that walks both sides.
+        assert_eq!(reason.origin(), UnsyncableOrigin::Unknown);
+    }
+
+    #[test]
+    fn every_reason_token_round_trips_and_declares_an_origin() {
+        // The wire token IS the storage key (`unsyncable_items.reason`), so a token that does not
+        // round-trip silently rewrites a persisted row into `Other` on the next load. And a reason
+        // with no origin has no rule for when it may be dropped by absence (#232).
+        let all = [
+            (
+                UnsyncableReason::UnrepresentablePath,
+                UnsyncableOrigin::Local,
+            ),
+            (
+                UnsyncableReason::RemoteNotDownloadable,
+                UnsyncableOrigin::Remote,
+            ),
+            (UnsyncableReason::LocalSymlink, UnsyncableOrigin::Local),
+            (UnsyncableReason::LocalSocket, UnsyncableOrigin::Local),
+            (UnsyncableReason::LocalFifo, UnsyncableOrigin::Local),
+            (UnsyncableReason::LocalDevice, UnsyncableOrigin::Local),
+            (UnsyncableReason::LocalSpecialFile, UnsyncableOrigin::Local),
+        ];
+        for (reason, origin) in all {
+            assert_eq!(
+                UnsyncableReason::from_token(reason.as_str()),
+                reason,
+                "{} must survive a storage round trip",
+                reason.as_str()
+            );
+            assert_eq!(reason.origin(), origin, "{}", reason.as_str());
+            assert!(
+                !reason.describe().is_empty(),
+                "{} must say what the user would have to change",
+                reason.as_str()
+            );
+        }
     }
 
     // #270: the remote listing arrives as JSON, so a non-UTF-8 filename comes back lossy and the

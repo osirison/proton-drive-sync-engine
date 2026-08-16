@@ -655,6 +655,20 @@ pub fn read_conflict_pair(
     conflicts::read_conflict_pair(&local_root, &conflict)
 }
 
+/// When this engine last moved a path's bytes, and which way (#233).
+///
+/// **A fact about a transfer this daemon performed, never a local file time.** `direction` is
+/// `up` (this computer -> Proton Drive) or `down`, taken from the action's own
+/// `SyncAction::transfer_direction`, and only `up` means Proton Drive *received* anything: a `down`
+/// row says when this computer received bytes, and a conflict-sidecar fetch is a `down` row filed
+/// under the file's own path. A renderer that labels a `down` time as a remote event is telling the
+/// user the opposite of what happened, on the one screen whose job is saying where a file stands.
+#[derive(serde::Serialize)]
+pub struct LastTransfer {
+    epoch_secs: u64,
+    direction: String,
+}
+
 /// Per-path index status for the file-manager emblems (S10). Built from the engine's `FileRecord`
 /// (which is not itself `Serialize`). `sync_status` is one of `synced` / `modified` / `conflict`;
 /// "syncing" / "paused" / "excluded" are derived by the frontend from live state + globs.
@@ -664,8 +678,16 @@ pub struct EmblemStatus {
     sync_status: Option<String>,
     entity_kind: Option<String>,
     file_size: Option<u64>,
+    /// The LOCAL modification time, from the record. Not a remote event — see `last_transfer`.
     mtime: Option<i64>,
     proton_id: Option<String>,
+    /// The last transfer this engine performed for the path (#233), or `None` when it has no
+    /// record of one. Four honest causes: nothing ever transferred; the last transfer aged out of
+    /// `HistoryRetention` (20k rows / 90 days); the file was adopted rather than transferred
+    /// (`AutoLink` moves no bytes); or it has been moved since. A consumer omits the clause —
+    /// there is deliberately no fallback to `mtime`, which would render a local time as a remote
+    /// one.
+    last_transfer: Option<LastTransfer>,
 }
 
 impl EmblemStatus {
@@ -677,12 +699,18 @@ impl EmblemStatus {
             file_size: None,
             mtime: None,
             proton_id: None,
+            last_transfer: None,
         }
     }
-}
 
-impl From<gui_core::wire::FileRecord> for EmblemStatus {
-    fn from(record: gui_core::wire::FileRecord) -> Self {
+    /// A record plus the history log's answer for the same path. Not a `From` impl any more,
+    /// because the second half is a query: an `EmblemStatus` built from a record alone would
+    /// silently carry `last_transfer: None` for every file, which is indistinguishable from the
+    /// real answer and so could never be noticed.
+    fn new(
+        record: gui_core::wire::FileRecord,
+        last_transfer: Option<gui_core::wire::FileEvent>,
+    ) -> Self {
         Self {
             tracked: true,
             sync_status: Some(record.sync_status.as_str().to_string()),
@@ -690,6 +718,21 @@ impl From<gui_core::wire::FileRecord> for EmblemStatus {
             file_size: Some(record.file_size),
             mtime: Some(record.mtime),
             proton_id: record.proton_id,
+            last_transfer: last_transfer.and_then(|event| {
+                // `None` here is unreachable — `index::last_transfer` returns only rows whose
+                // action HAS a direction — and is mapped rather than defaulted so it can never
+                // invent one.
+                event
+                    .action
+                    .transfer_direction()
+                    .map(|direction| LastTransfer {
+                        epoch_secs: event.epoch_secs,
+                        direction: match direction {
+                            gui_core::wire::TransferDirection::Up => "up".to_string(),
+                            gui_core::wire::TransferDirection::Down => "down".to_string(),
+                        },
+                    })
+            }),
         }
     }
 }
@@ -702,10 +745,12 @@ pub fn path_sync_status(state: Paths, relative_path: String) -> Result<EmblemSta
         .effective_db_path()
         .ok_or_else(|| "no index database configured or reported by the daemon".to_string())?;
     let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT)?;
-    let record = index_read::record_for_path(&connection, std::path::Path::new(&relative_path))?;
-    Ok(record
-        .map(EmblemStatus::from)
-        .unwrap_or_else(EmblemStatus::untracked))
+    let path = std::path::Path::new(&relative_path);
+    let Some(record) = index_read::record_for_path(&connection, path)? else {
+        return Ok(EmblemStatus::untracked());
+    };
+    let last_transfer = index_read::last_transfer(&connection, path)?;
+    Ok(EmblemStatus::new(record, last_transfer))
 }
 
 /// One file the search found: the path it is stored under, and that record's status.
@@ -758,14 +803,21 @@ pub async fn search_files(
         let query = relative_query(&query, local_root.as_deref());
         let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT)?;
         let (found, total) = index_read::search_records(&connection, &query, limit)?;
-        Ok(FileSearch {
-            matches: found
-                .into_iter()
-                .map(|m| FileMatch {
+        // One indexed point query per row, capped by `limit` (<= 500) and already off the UI
+        // thread. The lookup card is fed by THIS command, not `path_sync_status` (G21), so a
+        // `last_transfer` only the point-query command carried would never reach the screen.
+        let matches = found
+            .into_iter()
+            .map(|m| {
+                let last_transfer = index_read::last_transfer(&connection, &m.path)?;
+                Ok(FileMatch {
                     path: m.path.to_string_lossy().into_owned(),
-                    status: EmblemStatus::from(m.record),
+                    status: EmblemStatus::new(m.record, last_transfer),
                 })
-                .collect(),
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(FileSearch {
+            matches,
             total,
             query,
         })

@@ -704,8 +704,32 @@ export const ACTIVITY = {
     changeRule: "Change this rule",
     cannotHeading: "Can't be synced",
     cannotSub: "Not real files — Proton Drive has nothing to store for them.",
-    socket: "a socket",
-    shortcut: "a shortcut",
+    /**
+     * The note beside each row: WHAT the thing is, in one noun phrase.
+     *
+     * Keyed by `UnsyncableItem.reason`, the daemon's wire token. This table is also the group's
+     * MEMBERSHIP, which is why it is here under the sentence that promises it rather than in a
+     * screen: `Can't be synced` / `Not real files` describes things sitting in your folder that
+     * aren't files, and the dialog's own title says the rows `live in your folder`.
+     *
+     * So `remote_not_downloadable` is deliberately absent and deliberately EXCLUDED (see
+     * `cannotSyncFrom`): a Proton Docs document is a very real file, it is on Proton Drive rather
+     * than in your folder, and both of this dialog's sentences would be false about it.
+     * `proton-sync status` lists it, under a heading that claims neither.
+     *
+     * A token this build does not know is NOT excluded — it is drawn with the raw token as its
+     * note, the same call `proton-sync status` makes for an unfamiliar reason. It might be a local
+     * kind a newer daemon added, and hiding a file that cannot sync is the failure #295 is about;
+     * showing a remote one under this heading is a smaller wrong than that.
+     */
+    cannotKind: {
+      local_socket: "a socket",
+      local_symlink: "a shortcut",
+      local_fifo: "a pipe",
+      local_device: "a device",
+      local_special_file: "not a file",
+      unrepresentable_path: "an unreadable name",
+    },
     reassurance: "Nothing here is at risk — it's just not backed up.",
     done: "Done",
   },
@@ -856,8 +880,17 @@ export const SETTINGS = {
   remove: "Remove",
   addRulePlaceholder: "Add a rule — e.g. *.psd or scratch/**",
   add: "Add",
-  unsyncableNote:
-    "Two more files can't be synced no matter what — a socket and a shortcut. Nothing you can change here.",
+  /**
+   * The panel under the rules (#232). `n` is the count, `kinds` the distinct kinds present — two
+   * different questions, which is why the sentence asks both.
+   *
+   * `more` is against the rules above it: these are files no rule mentions and no rule could fix.
+   * The second sentence is the whole reason the panel is not a rule row — there is nothing to
+   * configure, so it says so rather than offering a control that would do nothing.
+   */
+  unsyncableNote: (n, kinds) =>
+    `${cardinal(n)} more ${plural(n, "file", "files")} can't be synced no matter what — ${kinds}. ` +
+    `Nothing you can change here.`,
   seeThem: "See them",
   dotSyncNote: "The app's own .sync folder is always skipped and can't be added here.",
 

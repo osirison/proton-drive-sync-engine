@@ -81,8 +81,10 @@ Never feed one back to a command as a selector.
 - `skip_reason` — present only on `skip_unsupported`: `remote_not_downloadable` (a Proton
   Docs/Sheets document, or a node the remote listing could not fully decode) or
   `unrepresentable_path` (a name that is not valid UTF-8). Render an unfamiliar token
-  verbatim; more may be added. `proton-sync status` lists the same items under
-  `can't sync`.
+  verbatim; more may be added. `proton-sync status` lists these items under `can't sync` —
+  **and more besides**: a symlink, socket, named pipe or device node is dropped by the local
+  scanner and never becomes a plan row, so it appears there and not here. The daemon's
+  `can't sync` list is a standing, merged one; a one-shot dry run has nothing to merge into.
 
 ## The number that matters: `destructive_actions`
 
