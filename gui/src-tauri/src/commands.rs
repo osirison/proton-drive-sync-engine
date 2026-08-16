@@ -768,8 +768,6 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
 
 /// Which failure a `plan` request that never completed really was.
 ///
-/// Which failure a `plan` request that never completed really was.
-///
 /// `Unavailable` — and therefore the child `--dry-run` — **only** when nothing answers the socket at
 /// all. A daemon that answers `status` but not `plan` is one this app is newer than, and the honest
 /// answer there is to say so: falling back would put a second `proton-drive` client beside a live
