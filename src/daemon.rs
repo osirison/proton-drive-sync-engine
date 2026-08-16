@@ -6630,15 +6630,12 @@ pub enum GlobalLockProbe {
     Unknown(String),
 }
 
-/// [`probe_daemon_lock`] against the real user-global lock path.
-pub fn probe_global_daemon_lock() -> GlobalLockProbe {
-    match crate::paths::default_global_lock_path() {
-        Ok(path) => probe_daemon_lock(&path),
-        Err(error) => GlobalLockProbe::Unknown(error.to_string()),
-    }
-}
-
 /// Is a daemon holding `path`?
+///
+/// The caller passes [`DaemonConfig::global_lock_path`] — the field a daemon's own
+/// `LockGuard::acquire` takes — rather than re-resolving `paths::default_global_lock_path()` here.
+/// A second resolution is a second thing to keep in step with the first, and this one would answer
+/// about a different file the moment the config layer stopped taking the default.
 ///
 /// **`flock` has no query operation, so "check without acquiring" is not literally satisfiable.**
 /// What this does instead is the closest thing that has the same effect: take a **shared** lock
@@ -6658,7 +6655,7 @@ pub fn probe_global_daemon_lock() -> GlobalLockProbe {
 /// few microseconds this holds the shared lock sees it held and refuses to start, with its usual
 /// message, and starting again works. That window did not exist before, and it is the price of
 /// there being no `flock` query.
-fn probe_daemon_lock(path: &Path) -> GlobalLockProbe {
+pub fn probe_daemon_lock(path: &Path) -> GlobalLockProbe {
     let file = match OpenOptions::new().read(true).open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return GlobalLockProbe::Free,

@@ -2,10 +2,8 @@ use clap::Parser;
 use proton_drive_sync_engine::config::{
     DEFAULT_LOG_LEVEL, DaemonConfigInput, DeletionPolicy, resolve_runtime_config,
 };
-use proton_drive_sync_engine::daemon::{
-    Daemon, GlobalLockProbe, preview_plan, probe_global_daemon_lock,
-};
-use std::path::PathBuf;
+use proton_drive_sync_engine::daemon::{Daemon, GlobalLockProbe, preview_plan, probe_daemon_lock};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -127,7 +125,7 @@ async fn main() -> ExitCode {
     };
 
     if dry_run {
-        warn_if_a_daemon_is_already_running();
+        warn_if_a_daemon_is_already_running(&config.global_lock_path);
         info!("running dry-run sync plan");
         return match preview_plan(&config) {
             Ok(report) => match serde_json::to_string_pretty(&report) {
@@ -220,8 +218,8 @@ impl From<Cli> for DaemonConfigInput {
 ///
 /// **stderr only**, through `tracing` like everything else here: stdout carries the machine-readable
 /// report, and one stray line on it corrupts a caller's parse.
-fn warn_if_a_daemon_is_already_running() {
-    match probe_global_daemon_lock() {
+fn warn_if_a_daemon_is_already_running(global_lock_path: &Path) {
+    match probe_daemon_lock(global_lock_path) {
         GlobalLockProbe::Held => warn!(
             "a proton-syncd daemon is already running for this user; this dry run walks Proton \
              Drive with a SECOND proton-drive client, whose SQLite cache and session store are \

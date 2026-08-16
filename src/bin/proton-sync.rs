@@ -107,7 +107,8 @@ enum Commands {
     /// List one folder on Proton Drive, as the daemon sees it right now. Read-only: it shows what
     /// is on the remote, not what would sync — selective-sync rules are not applied.
     List {
-        /// Folder to list, relative to the daemon's configured remote root. Omit for the root.
+        /// Folder to list, relative to the daemon's configured remote root — or an absolute
+        /// Proton Drive path (`/Drive/Other`) to look outside it. Omit for the root.
         path: Option<PathBuf>,
         /// Cap on the entries shown.
         #[arg(long)]
