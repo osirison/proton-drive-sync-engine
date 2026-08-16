@@ -78,10 +78,10 @@ const ROOTS = { local_root: "~/ProtonDrive", remote_root: "/Drive/RemoteFolder" 
  * The pass `2a Syncing` and `2a Needs you` are both in the middle of: three changes, two leaving and
  * one arriving, fourteen seconds old, with `docs/spec.md` on the wire.
  *
- * `activity` is verbatim `SyncActivity` (src/ipc.rs) and carries ONE transfer, because that is what
- * the type holds — `activity.transfer` is a single `Option<TransferActivity>`, set at the top of each
- * upload or download and replaced by the next one. The frames draw three rows and two directions at
- * once; the reply cannot say that, and the gap is filed rather than invented here (DEVIATIONS §63).
+ * `activity` is verbatim `SyncActivity` (src/ipc.rs), and since #211 it carries the transfer WINDOW:
+ * every row in flight, then the queue behind it. The frames draw three rows and two directions at
+ * once and the reply still cannot say the second one is *in flight* — one transfer runs at a time —
+ * so the second column holds the queue's next download instead (DEVIATIONS §63c).
  *
  * `bytes_done` IS NULL AND CANNOT BE OTHERWISE ON AN UPLOAD. daemon.rs fills `bytes_total` from the
  * local file's size for an upload and leaves `bytes_done` empty; for a download it samples
@@ -157,14 +157,27 @@ const PASS = {
 };
 
 /**
- * `2a Needs you` draws ONE row per column and no queued row, so its window is the active upload and
- * the next download — the same shape as `2a Syncing`'s, two rows shorter.
+ * `2a Needs you` draws ONE row per column, so its window is two rows rather than three.
+ *
+ * IT IS A LATER MOMENT OF THE SAME PASS, not the same moment with a row deleted, and the whole block
+ * has to move together or it becomes a reply the daemon cannot emit (DEVIATIONS §61 — the shape
+ * Copilot caught on this very fixture, in `action_total`). A window of two against `action_index: 1`
+ * and `uploaded_files: 0` would claim a five-action pass had reached its first action with one of
+ * its three transfers already gone from the queue, and the executor's window cannot produce that.
+ *
+ * So: the first upload has landed. `action_index` is 2, `uploaded_files` is 1, `uploaded_bytes` is
+ * that file's pinned size, and `transfers_remaining` is 2 — the row in flight plus the one queued.
+ * The hexagon still reads 3, because its numeral is `uploads + downloads` off the plan summary and
+ * not a count of the rows drawn.
  */
 const needsYouActivity = (summary) => {
   const activity = PASS.activityFor(summary);
+  const [inFlight, landed, queued] = activity.transfers;
   return {
     ...activity,
-    transfers: [activity.transfers[0], activity.transfers[2]],
+    action_index: 2,
+    pass: { ...activity.pass, uploaded_files: 1, uploaded_bytes: landed.bytes_total },
+    transfers: [inFlight, queued],
     transfers_remaining: 2,
   };
 };

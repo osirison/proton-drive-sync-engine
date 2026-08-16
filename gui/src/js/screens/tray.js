@@ -26,6 +26,20 @@ import { renderCompactPanel, updateCompactPanel, trayMenu } from "../ui/compact.
 import { heroStateOf, transfersOf } from "./main.js";
 
 /**
+ * How many transfer rows the panel draws, and it is a HARD cap rather than a preference.
+ *
+ * `10a Syncing` and `2a Compact syncing` both draw exactly two, in a 362px panel whose height sizes
+ * the tray window — and the panel has no `+n more` line, because no frame draws one there. Until
+ * #211 the reply could describe one transfer, so nothing ever reached this; the window is now up to
+ * six, and handing all six to a 298px panel would grow it past the height the window was measured
+ * at. The count is not lost: the headline above these rows is `Syncing N changes`.
+ *
+ * The window screen's own cap lives in `screens/main.js` — a different number for a different
+ * surface, which is why neither imports the other's.
+ */
+const PANEL_ROWS = 2;
+
+/**
  * The hero state S1 derives → the panel arrangement `ui/compact.js` draws.
  *
  * Five forms, and `10-tray.md` is explicit that there is no sixth. `authExpired`, `failed` and
@@ -122,7 +136,8 @@ export function trayView(props = {}) {
     menuState: MENU_STATE[hero],
     hero,
     ...copyFor(hero, { changes, waiting, queued, lastSync, activity, summary }),
-    transfers: PANEL_STATE[hero] === "syncing" ? transfersOf(activity, { compact: true }) : [],
+    transfers:
+      PANEL_STATE[hero] === "syncing" ? transfersOf(activity, { compact: true }).slice(0, PANEL_ROWS) : [],
   };
 }
 

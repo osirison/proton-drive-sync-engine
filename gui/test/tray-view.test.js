@@ -201,6 +201,33 @@ test("paused outranks a decision, and unreachable outranks everything", () => {
   assert.equal(decision.action.label, MAIN.compact.review);
 });
 
+test("the panel takes two rows however long the window is", () => {
+  // Unreachable before #211 — the reply could describe one transfer, so nothing ever handed this
+  // panel a list. It can now hand it six, and `10a Syncing` draws two in a 362px panel whose height
+  // sizes the tray window, with no `+n more` line to absorb the rest.
+  const transfers = ["a", "b", "c", "d", "e", "f"].map((name) => ({
+    direction: "download",
+    path: `${name}.bin`,
+    state: name === "a" ? "active" : "queued",
+  }));
+  const view = trayView({
+    daemonState: "running",
+    response: reply({
+      syncing: true,
+      pending_changes: 6,
+      activity: { phase: "executing", transfers, transfers_remaining: 6 },
+    }),
+  });
+  assert.equal(view.transfers.length, 2);
+  assert.deepEqual(
+    view.transfers.map((t) => t.name),
+    ["a.bin", "b.bin"],
+    "the first two of the window, in flight order",
+  );
+  // The count is not lost with the rows: the headline still says how many changes there are.
+  assert.equal(view.count, 6);
+});
+
 test("only the syncing panel carries transfer rows", () => {
   const transfer = { path: "docs/spec.md", direction: "upload", bytes_done: 32, bytes_total: 64 };
   const syncing = trayView({
