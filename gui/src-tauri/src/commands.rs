@@ -1963,11 +1963,16 @@ fn probe_remote_folder(
     match gui_core::folder_probe::probe_remote_via_daemon(&socket, candidate) {
         Ok(probe) => Ok(probe),
         Err(ProbeListingError::Unreachable(error)) => match daemon_presence(&socket) {
-            // It answered `status` but not `list` with an absolute selector: a daemon older than
-            // this app. Say so — do not walk beside it.
+            // It answered `status` but not `list`. **Two causes, and neither may be named as the
+            // one** (Copilot review): a daemon predating the absolute selector drops the connection
+            // unparsed, and a current one busy with a long transfer can outrun
+            // `PROBE_LISTING_TIMEOUT` — `IpcError::Unreachable` covers a timeout and an early close
+            // alike, so this arm cannot tell them apart and must not pretend to. What it can say is
+            // what to try, in the order that costs least. Either way: report, never walk beside it.
             DaemonPresence::Answering => Err(format!(
-                "the sync daemon is running but could not measure that folder ({error}). It is \
-                 probably older than this app; restart it from Settings and try again."
+                "the sync daemon is running but did not measure that folder ({error}). It may be \
+                 busy with a transfer, or older than this app — try again in a moment, and restart \
+                 it from Settings if it keeps happening."
             )),
             DaemonPresence::Undecodable(reply) => Err(format!(
                 "the sync daemon answered with something this app could not read ({reply}). \
@@ -2738,7 +2743,12 @@ mod socket_tests {
             !error.contains(UNRUNNABLE_CLI),
             "a dropped connection from a LIVE daemon must not be read as absence: {error}"
         );
+        // And it must name BOTH causes it cannot tell apart: this same arm is reached by a current
+        // daemon whose listing outran `PROBE_LISTING_TIMEOUT`, since `IpcError::Unreachable` covers
+        // a timeout and an early close alike. Blaming the version alone sends a user to restart a
+        // daemon that was only busy (Copilot review).
         assert!(error.contains("older than this app"), "{error}");
+        assert!(error.contains("busy"), "{error}");
 
         // 5. A daemon that answers the listing: the walk succeeds and nothing is spawned here.
         let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
