@@ -2201,6 +2201,35 @@ mod tests {
         );
     }
 
+    /// `Computing` carries the last generation **answered** (`slot.completed`), never the one in
+    /// flight — so a wait must never resolve on it, even when that number has caught up with its
+    /// own target. It can: our pass completes (`completed == our plan_seq`) and a second client
+    /// books the next one, which is `requested > completed` again. Comparing the number there would
+    /// end our wait on someone else's in-flight request and report a plan we never asked for.
+    #[test]
+    fn a_computing_reply_answers_no_generation_however_high_its_number() {
+        for plan_seq in [0, 1, 2, 7] {
+            assert_eq!(
+                plan_generation(Some(&PlanOutcome::Computing { plan_seq })),
+                None,
+                "Computing must never satisfy a wait (plan_seq {plan_seq})"
+            );
+        }
+        // The ack is not an answer either, for the same reason: it precedes the pass.
+        assert_eq!(
+            plan_generation(Some(&PlanOutcome::Scheduled { plan_seq: 2 })),
+            None
+        );
+        // Only these two answer anything.
+        assert_eq!(
+            plan_generation(Some(&PlanOutcome::Failed {
+                plan_seq: 2,
+                error: "x".to_owned()
+            })),
+            Some(2)
+        );
+    }
+
     /// Serves one canned [`ControlResponse`] per connection, in order, on a real control socket —
     /// the smallest fake daemon [`poll_until`] cannot tell from the real one.
     async fn serve_scripted(socket_path: PathBuf, replies: Vec<ControlResponse>) {

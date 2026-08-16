@@ -296,7 +296,15 @@ pub const PLAN_ACTIONS_MAX_LIMIT: usize = 5_000;
 pub enum PlanOutcome {
     /// Ack for [`ControlCommand::Plan`]: a plan-only pass is scheduled. Wait for `plan_seq`.
     Scheduled { plan_seq: u64 },
-    /// A plan pass is scheduled or running and has not answered `plan_seq` yet. Retryable as-is.
+    /// A plan pass is scheduled or running. Retryable as-is.
+    ///
+    /// **`plan_seq` is the last generation *answered*, not the one in flight** — the only number
+    /// the plane can state, since the request being computed has no answer yet. It is therefore
+    /// strictly below every outstanding request, and a client must read this arm as "not yet, keep
+    /// polling" and **never** compare it against its own ack's `plan_seq`: that comparison would
+    /// resolve a wait with the *previous* plan, which is the exact confusion booking a generation
+    /// before the ack is built exists to prevent. Only [`Self::Computed`] and [`Self::Failed`]
+    /// carry a generation that answers anything.
     Computing { plan_seq: u64 },
     /// The reviewed plan. Boxed because it is two orders of magnitude larger than every other arm,
     /// and this enum rides on a reply that mostly carries the small ones.
