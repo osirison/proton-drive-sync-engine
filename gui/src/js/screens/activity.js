@@ -239,7 +239,23 @@ export function cannotSyncFrom(unsyncable) {
       note: ACTIVITY.neverSyncedDialog.cannotKind[item.reason] ?? item.reason,
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
-  return { count: rows.length, rows };
+  return { count: rows.length, rows, kinds: kindsPhrase(rows) };
+}
+
+/**
+ * `a socket and a shortcut` — the DISTINCT kinds present, in the order they first appear.
+ *
+ * S6's skip tab draws this beside its own count (`Two more files can't be synced no matter what —
+ * a socket and a shortcut`), so the phrase answers "what sort of things are these" and the number
+ * beside it answers "how many". Deliberately not pluralised per kind: `two sockets` would need a
+ * second noun for every reason in the table, and the count is already in the sentence — a list of
+ * kinds is the question this clause is actually asked.
+ */
+function kindsPhrase(rows) {
+  const kinds = [...new Set(rows.map((row) => row.note))];
+  if (kinds.length === 0) return "";
+  if (kinds.length === 1) return kinds[0];
+  return `${kinds.slice(0, -1).join(", ")} and ${kinds[kinds.length - 1]}`;
 }
 
 /**

@@ -880,8 +880,17 @@ export const SETTINGS = {
   remove: "Remove",
   addRulePlaceholder: "Add a rule — e.g. *.psd or scratch/**",
   add: "Add",
-  unsyncableNote:
-    "Two more files can't be synced no matter what — a socket and a shortcut. Nothing you can change here.",
+  /**
+   * The panel under the rules (#232). `n` is the count, `kinds` the distinct kinds present — two
+   * different questions, which is why the sentence asks both.
+   *
+   * `more` is against the rules above it: these are files no rule mentions and no rule could fix.
+   * The second sentence is the whole reason the panel is not a rule row — there is nothing to
+   * configure, so it says so rather than offering a control that would do nothing.
+   */
+  unsyncableNote: (n, kinds) =>
+    `${cardinal(n)} more ${plural(n, "file", "files")} can't be synced no matter what — ${kinds}. ` +
+    `Nothing you can change here.`,
   seeThem: "See them",
   dotSyncNote: "The app's own .sync folder is always skipped and can't be added here.",
 

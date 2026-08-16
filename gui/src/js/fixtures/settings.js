@@ -72,6 +72,45 @@ const IDLE_STATUS = {
 };
 
 /**
+ * The same daemon, plus its standing "cannot be synced" list (#232) — `UnsyncableItem`s verbatim.
+ *
+ * Only the skip tab draws them, so only that frame carries them: on any other tab the panel is a
+ * block the screen does not build, and a fixture that shipped the list everywhere would be claiming
+ * the other three frames chose not to draw it.
+ *
+ * Three rows for a panel that says `Two more files`, and the third is why: `remote_not_downloadable`
+ * is a real file on Proton Drive rather than a non-file in your folder, so it is in neither the
+ * count nor the kinds. `7a Never synced` — which `See them` opens — makes the identical exclusion
+ * from the identical list.
+ */
+const SKIP_STATUS = {
+  ...IDLE_STATUS,
+  response: {
+    ...IDLE_STATUS.response,
+    unsyncable: [
+      {
+        path: ".cache/session.sock",
+        entity_kind: "file",
+        reason: "local_socket",
+        first_seen_epoch_secs: ago(86_400 * 12),
+      },
+      {
+        path: "projects/current",
+        entity_kind: "file",
+        reason: "local_symlink",
+        first_seen_epoch_secs: ago(86_400 * 12),
+      },
+      {
+        path: "Unsorted/Networth",
+        entity_kind: "file",
+        reason: "remote_not_downloadable",
+        first_seen_epoch_secs: ago(86_400 * 150),
+      },
+    ],
+  },
+};
+
+/**
  * The one config dataset, shaped exactly like `read_config`'s `ConfigPayload`.
  *
  * Every value here is a value one of the four frames draws:
@@ -266,13 +305,16 @@ export const SETTINGS_FIXTURES = {
    * the screen decide.
    */
   "8a Skip rules": {
-    status: IDLE_STATUS,
+    status: SKIP_STATUS,
     config: CONFIG,
     skipRules: SKIP_RULES,
     ruleAdded: RULE_ADDED,
-    // Nothing is pinned for the bottom panel: `SETTINGS.unsyncableNote` is a fixed deck string that
-    // already says "Two more files", and the live count behind it is `skipped_unsupported` on a plan
-    // summary — a number this frame's daemon has never produced (no pass has run with a plan).
+    // The bottom panel IS pinned now (#232), and not off a plan summary: `skipped_unsupported`
+    // counts REMOTE files the CLI could not fetch, which is a different fact and was never this
+    // panel's subject. `ControlResponse.unsyncable` is the daemon's standing list of what its own
+    // local walk drops, so `Two more files … a socket and a shortcut` is two rows and their kinds.
+    // The remote row is carried too, and is excluded from both the count and the kinds — the same
+    // exclusion `7a Never synced` makes, which `See them` opens.
     route: "settings",
     ui: { tab: "skip", dirty: true, removing: "video-raw/**" },
     fids: settingsFids("skip"),

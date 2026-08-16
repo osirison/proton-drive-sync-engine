@@ -1189,10 +1189,6 @@ export function activityFids(view) {
 //   · the whole weekly/monthly control and the day/time row (`div[2]/div[5]/div[0]/div[1]` and
 //     `div[2]/div[5]/div[1]`, plus every node the monthly crop draws below its header) — G4 (#193).
 //     There is no `full_scan_schedule` key, no scheduler and no command that returns any of it.
-//   · `div[2]/div[2]/div[0]` on the skip tab — the unsyncable panel and its `See them` (G19 #232):
-//     the files it counts never enter the index, and that button would open the one group `7a
-//     Never synced` already omits for the same reason. Its PARENT `div[2]/div[2]` is declared, as
-//     `tail`, because the app does draw that block — it holds the `.sync` note.
 //   · `div[3]` on the deletions crop, and `div[0]` on the monthly crop. Both are drawn and both
 //     are mapped nowhere, for the reason the module note above gives: a crop cannot say where an
 //     `auto` margin sits, and the two frames disagree about the head row's gap.
@@ -1295,6 +1291,12 @@ const SETTINGS_SKIP_FIDS = {
   addButton: "div[2]/div[1]/div[4]/button",
 
   tail: "div[2]/div[2]",
+  // The unsyncable panel (#232). Its slot moved from undeclared to mapped when the daemon gained a
+  // list to draw it from — see the note above, which used to name it as one of the undeclared.
+  unsyncable: "div[2]/div[2]/div[0]",
+  unsyncableGlyph: "div[2]/div[2]/div[0]/span",
+  unsyncableNote: "div[2]/div[2]/div[0]/div",
+  seeThem: "div[2]/div[2]/div[0]/button",
   dotSyncNote: "div[2]/div[2]/div[1]",
   dotSyncName: "div[2]/div[2]/div[1]/span",
 };

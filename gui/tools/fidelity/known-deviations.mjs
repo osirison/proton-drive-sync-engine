@@ -564,14 +564,6 @@ export const KNOWN_DEVIATIONS = [
     issue: "#193",
     why: "and its sub-line. The height is unaffected: both sentences are one line at either width",
   },
-  {
-    frame: "8a Skip rules",
-    key: "div[2]/div[2]",
-    props: ["margin-top"],
-    detail: "85.8125px vs 106.812px",
-    issue: "#232",
-    why: "the tail is pushed to the bottom with `margin-top:auto`, so its used value measures whatever is above it — and what is above it is 71px shorter without the unsyncable panel (G19: a socket or a symlink never enters the index, so there is nothing to count and `See them` would open the one group `7a Never synced` already omits), less the 50px the doors take back off the region (§94)",
-  },
   // ---- §63b · the split bar's fills are computed, and the frame's two are not ----
   //
   // `9a First sync` paints the sent fill 48px and the received fill 88px of a 400px track, and
@@ -644,6 +636,14 @@ export const KNOWN_DEVIATIONS = [
     why: "the same region on the same screen, and the same 50px: `.settings-content` is one rule for all five tabs",
   },
   {
+    frame: "8a Skip rules",
+    key: "div[2]/div[2]",
+    props: ["margin-top"],
+    detail: "85.8125px vs 35.8125px",
+    decision: true,
+    why: "the same 50px again, arriving as a number rather than as an overflow: the tail is pushed down with `margin-top:auto`, so its used value IS the slack left in the region — and the doors have taken exactly 50px of it. It read 106.812px until #232 built the unsyncable panel above it, which is the 71px the frame draws and the app now does too",
+  },
+  {
     frame: "5a Plan",
     key: "div[3]/div[1]",
     props: ["overflow"],
@@ -714,14 +714,6 @@ export const KNOWN_DEVIATIONS = [
     detail: "visible vs auto",
     decision: true,
     why: "the arriving list scrolls too — the taller side is whichever way the plan happens to run, and a rule that bounded only the leaving one would be a fix for half the plans",
-  },
-  {
-    frame: "8a Skip rules",
-    key: "div[2]/div[2]/div[1]",
-    props: ["margin-top"],
-    detail: "12px vs 0px",
-    issue: "#232",
-    why: "the `.sync` note's 12px separates it from that panel, so with the panel gone the margin belongs to nothing — setting it anyway would be spacing a block against something that is not there",
   },
   {
     frame: "8a Save refused",

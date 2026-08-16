@@ -2975,7 +2975,7 @@ ring at .3 over a .04 fill would be invisible.
 | S6     | `8a Settings`         | `Takes about 4 minutes … Last one 2 days ago`                  | what is true every time                   | G24 #238 |
 | S6     | `8a Settings`         | `event_driven_reconcile`                                       | `events_driven`, the key that exists      | —        |
 | S6     | `8a Skip rules`       | `added 14 Jul` on a rule                                       | the folder clause alone                   | —        |
-| S6     | `8a Skip rules`       | the unsyncable panel and `See them`                            | omitted; the `.sync` note stays           | G19 #232 |
+| S6     | `8a Skip rules`       | the unsyncable panel and `See them`                            | ~~omitted~~ drawn from the standing list (§98) | G19 #232 ✔ |
 | S6     | `8a Schedule monthly` | the whole monthly variant                                      | the panel head alone                      | G4 #193  |
 | S6     | `8a Save refused`     | `That folder doesn't exist on Proton Drive`                    | a generic refusal title                   | G22 #236 |
 | S6     | `8a Save refused`     | `Create it on Proton Drive`                                    | omitted; `Go back and fix it` stays       | G22 #236 |
@@ -4868,3 +4868,23 @@ path and the reason; reading the target means resolving a link the engine has de
 which is a second question about the same entity. Invisible to the style gate — `.path-name` is
 `flex:1`, so its box matches whatever text is in it, and `assert.mjs` does not compare text — so it
 is recorded here rather than as a `known-deviations` row that would have nothing to measure.
+
+### 98a. The skip tab's panel, and the 50px that was hiding behind it
+
+`8a Skip rules`' unsyncable panel took the same list. It is a PANEL and not a rule row — `--panel`
+over `--border-subtle` at 11px, where a rule row has neither — because there is nothing in it to
+edit, which is what its own second sentence says. `See them` opens `7a Never synced`, and the three
+surfaces (this count, these kinds, that dialog's rows) read one function rather than three readings
+of one list.
+
+`SETTINGS.unsyncableNote` stopped being a constant and became a template, so it landed in the copy
+gate's `DRAWN` table in the same commit — the rule S1 wrote the first time a sentence left that gate
+by acquiring an argument, and the fourth time it has come up. `cardinal`, not `count`: the sentence
+opens with the number and the frame spells it.
+
+**Two `known-deviations` rows went, and one came back as a decision.** The `.sync` note's 12px
+margin was recorded as belonging to nothing; it belongs to the panel, and is set with it rather than
+by the stylesheet, so with no panel it is still spacing nothing. The tail's `margin-top:auto` was
+recorded at `106.812px vs 85.8125px` and blamed on the missing panel — the panel accounts for
+exactly 71px of it, and what is left is `35.8125px vs 85.8125px`: the 50px §94's doors take off every
+content region. So the row is re-recorded against that decision, which is what it always was.

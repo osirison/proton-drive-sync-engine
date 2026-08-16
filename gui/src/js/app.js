@@ -63,6 +63,7 @@ import {
   renderFilePendingBody,
   footerVariantOf,
   neverSyncedSubject,
+  cannotSyncFrom,
   normaliseQuery,
   passesSummaryOf,
   searchOutcome,
@@ -2597,6 +2598,10 @@ function settingsProps() {
     : settingsEdits;
   const config = { ...saved, ...edits };
   const skip = activeFixture()?.skipRules ?? skipRuleReport;
+  // THE SAME FILTER S5's DIALOG USES, not a second reading of the list. This tab's panel counts and
+  // names the group that dialog enumerates, and `See them` opens it — three surfaces that must
+  // agree by construction rather than by two functions staying in step (#232).
+  const cannot = cannotSyncFrom(store.select.response()?.unsyncable);
   // The staged policy counts as dirty like any other control, even though it is not part of the
   // config `write_config` sends — the footer promises "nothing is written until you save", and a
   // control that saved itself on click would be the one exception nobody was told about.
@@ -2607,7 +2612,9 @@ function settingsProps() {
     saved,
     config,
     skip,
+    cannot,
     dirty,
+    onSeeUnsyncable: () => navigate("neverSynced"),
     // The frame names it; otherwise the staged value, then what is on disk.
     notifyPolicy: ui?.notifyPolicy ?? notifyPolicyEdit ?? notifyPolicy,
     drafts: settingsDrafts,

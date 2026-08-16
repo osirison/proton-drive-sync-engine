@@ -388,6 +388,11 @@ const DRAWN = [
   ["SETTINGS.skippingSize", [2, 3_100_000_000], "8a Skip rules"],
   ["SETTINGS.ruleAdded", ["14 Jul"], "8a Skip rules"],
   ["SETTINGS.ruleRemovedCost", [2, 3_100_000_000], "8a Skip rules"],
+  // Was a constant until #232 gave it a count and a list of kinds. Both arguments are read off the
+  // frame: `Two more files … a socket and a shortcut`. A sentence that becomes a template leaves
+  // this gate silently unless it lands here in the same commit — S1 wrote that rule, and this is
+  // the fourth time it has come up.
+  ["SETTINGS.unsyncableNote", [2, "a socket and a shortcut"], "8a Skip rules"],
   // S9. The banner sentences. Five of the six are rendered by the app at live values and gated here
   // at the frame's; `deletionTitle` is the sixth and is the `pairLocalNote` shape — the noun is
   // passed to reproduce what the frame draws, and the app never passes one (G8 #208: nothing types

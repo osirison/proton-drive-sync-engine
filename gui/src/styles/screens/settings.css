@@ -323,6 +323,33 @@
   margin-top: auto;
   padding-top: 20px;
 }
+/* The `can't be synced no matter what` panel (#232). A PANEL and not a rule row: it takes
+   `--panel`/`--border-subtle` at 11px radius where a rule row takes neither, because there is
+   nothing here to edit — the sentence inside it says as much. */
+.settings-unsyncable {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+}
+.settings-unsyncable-glyph {
+  font-size: 13px;
+  color: var(--text-label);
+}
+.settings-unsyncable-note {
+  flex: 1;
+  font-size: 12.5px;
+  line-height: 19.375px;
+  color: var(--text-3);
+}
+/* The note beside it is `flex:1` and wraps, so the button is never the thing asked to give way —
+   a `See them` squeezed to `See` would be a control nobody recognises. */
+.settings-unsyncable .btn {
+  flex-shrink: 0;
+}
 .settings-dotsync {
   font-family: var(--font-mono);
   font-size: 11px;
