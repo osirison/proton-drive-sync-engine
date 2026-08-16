@@ -543,46 +543,72 @@ const PLAN_TOKEN_VERSION: &str = "1";
 /// One plan row as bytes. Raw path bytes (never `to_string_lossy`), because two paths differing
 /// only in invalid UTF-8 are two different plans and the wire rendering collapses them — the same
 /// reason `ipc` forbids matching a destructive selector by its wire form.
+/// **Every optional field carries a presence byte**, so `None` and `Some("")` are different bytes.
+/// Without it they collapse — and `Some("")` is reachable: `proton::WrappedString` decodes a JSON
+/// `""` to `Decoded("")`, and nothing rejects an empty remote id — which would let two distinct
+/// plans share a token and an apply run something other than what was reviewed. The rule this
+/// generalises is the one `size_bytes` already followed: unknown is not the empty value, here as
+/// everywhere else in this engine.
 fn plan_row_preimage(action: &PlannedAction) -> Vec<u8> {
     let mut row = Vec::new();
-    let mut field = |bytes: &[u8]| {
+    fn field(row: &mut Vec<u8>, bytes: &[u8]) {
         row.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         row.extend_from_slice(bytes);
-    };
-    field(action.action.as_str().as_bytes());
-    field(action.entity_kind.as_str().as_bytes());
-    field(action.path.as_os_str().as_encoded_bytes());
-    field(
+    }
+    fn optional(row: &mut Vec<u8>, bytes: Option<&[u8]>) {
+        match bytes {
+            None => field(row, &[ABSENT_FIELD]),
+            Some(bytes) => {
+                let mut tagged = Vec::with_capacity(bytes.len() + 1);
+                tagged.push(PRESENT_FIELD);
+                tagged.extend_from_slice(bytes);
+                field(row, &tagged);
+            }
+        }
+    }
+    let row = &mut row;
+    field(row, action.action.as_str().as_bytes());
+    field(row, action.entity_kind.as_str().as_bytes());
+    field(row, action.path.as_os_str().as_encoded_bytes());
+    optional(
+        row,
         action
             .destination_path
             .as_ref()
-            .map(|path| path.as_os_str().as_encoded_bytes())
-            .unwrap_or_default(),
+            .map(|path| path.as_os_str().as_encoded_bytes()),
     );
-    field(
+    optional(
+        row,
         action
             .conflict_path
             .as_ref()
-            .map(|path| path.as_os_str().as_encoded_bytes())
-            .unwrap_or_default(),
+            .map(|path| path.as_os_str().as_encoded_bytes()),
     );
-    field(action.remote_id.as_deref().unwrap_or_default().as_bytes());
-    field(&[u8::from(action.sidecar_from_local_copy)]);
-    field(
+    optional(row, action.remote_id.as_deref().map(str::as_bytes));
+    field(row, &[u8::from(action.sidecar_from_local_copy)]);
+    optional(
+        row,
         action
             .skip_reason
             .as_ref()
-            .map(|reason| reason.as_str())
-            .unwrap_or_default()
-            .as_bytes(),
+            .map(|reason| reason.as_str().as_bytes()),
     );
-    match action.size_bytes {
-        // Distinguished from `Some(0)`: unknown is not zero anywhere else in this engine either.
-        None => field(b"-"),
-        Some(size) => field(&size.to_le_bytes()),
-    }
-    row
+    optional(
+        row,
+        action
+            .size_bytes
+            .map(u64::to_le_bytes)
+            .as_ref()
+            .map(|bytes| &bytes[..]),
+    );
+    std::mem::take(row)
 }
+
+/// Presence tags for [`plan_row_preimage`]'s optional fields. Two bytes that cannot be the start of
+/// any value they precede — because they are never *compared* against one, only prepended — so all
+/// they have to be is different from each other.
+const ABSENT_FIELD: u8 = 0;
+const PRESENT_FIELD: u8 = 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanSummary {
@@ -5095,6 +5121,51 @@ mod tests {
         let mut deleted = upload;
         deleted.action = SyncAction::RemoteDelete;
         assert_ne!(token, plan_token(&[deleted, download]));
+    }
+
+    /// An **absent** optional field and an **empty** one are two different plans, and the token has
+    /// to say so — otherwise two distinct plans share a token and an apply runs something other than
+    /// what was reviewed. `Some("")` is reachable rather than theoretical: `proton::WrappedString`
+    /// decodes a JSON `""` to `Decoded("")`, and nothing rejects an empty remote id.
+    #[test]
+    fn a_plan_token_separates_an_absent_field_from_an_empty_one() {
+        let base = PlannedAction::new(
+            Path::new("a.txt"),
+            SyncAction::Download,
+            EntityKind::File,
+            None,
+        );
+        let token = |action: &PlannedAction| plan_token(std::slice::from_ref(action));
+
+        let mut empty_id = base.clone();
+        empty_id.remote_id = Some(String::new());
+        assert_ne!(
+            token(&base),
+            token(&empty_id),
+            "remote_id: None vs Some(\"\")"
+        );
+
+        let mut empty_destination = base.clone();
+        empty_destination.destination_path = Some(PathBuf::new());
+        assert_ne!(token(&base), token(&empty_destination), "destination_path");
+
+        let mut empty_conflict = base.clone();
+        empty_conflict.conflict_path = Some(PathBuf::new());
+        assert_ne!(token(&base), token(&empty_conflict), "conflict_path");
+
+        let mut empty_reason = base.clone();
+        empty_reason.skip_reason = Some(UnsyncableReason::from_token(""));
+        assert_ne!(token(&base), token(&empty_reason), "skip_reason");
+
+        // The rule `size_bytes` already followed, kept: unknown is not zero.
+        let mut zero_size = base.clone();
+        zero_size.size_bytes = Some(0);
+        assert_ne!(token(&base), token(&zero_size), "size_bytes");
+
+        // And the tags do not make two *different* present values collide either.
+        let mut other_id = base;
+        other_id.remote_id = Some("x".to_owned());
+        assert_ne!(token(&empty_id), token(&other_id));
     }
 
     /// Two paths differing only in invalid UTF-8 collapse to one string on the wire (#61/#300), so
