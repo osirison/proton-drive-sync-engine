@@ -82,8 +82,17 @@
   border: 1px solid var(--border);
   border-radius: var(--r-11);
   background: var(--panel-raised);
-  /* Both load-bearing: the progress bar is absolutely positioned against this row, and it is 2px
-     tall at the very bottom edge inside an 11px radius — without the clip its corners overhang. */
+}
+
+/* Both load-bearing on a row that CAN carry a track: the progress bar is absolutely positioned
+   against its row, and it is 2px tall at the very bottom edge inside an 11px radius — without the
+   clip its corners overhang.
+
+   NOT on `.transfer-row`, which is where they lived until the queue was drawable: a queued row has
+   no track — `transferRow` builds one only in the `active` arm — and `2a Syncing` records its queued
+   row as `position:static; overflow:visible`, both asserted. Scoping this to the rows that can hold
+   a track keeps the compact panel's rows (which do) and drops the two the frame says are neither. */
+.transfer-row:not(.transfer-queued) {
   position: relative;
   overflow: hidden;
 }

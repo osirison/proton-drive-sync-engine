@@ -58,6 +58,11 @@ export const MAIN = {
   settledSubTime: (ago) => `last synced ${ago}`,
   /** `03-main-screen.md`: rows "cap at ~6 visible with `+n more` in mono if exceeded". */
   andMore: (n) => `+${count(n)} more`,
+  /**
+   * The chip on a batched download: one row covers a whole chunk landing in one folder, so the row's
+   * subject is a folder and the chip says how many files are arriving in it.
+   */
+  batchFiles: (n) => `${count(n)} ${plural(n, "file", "files")}`,
   syncing: (n) => `Syncing ${count(n)} ${plural(n, "change", "changes")}`,
   /**
    * `leaving == null` DROPS THE DIRECTION CLAUSE, for the same reason `unreachableBody` drops its
@@ -162,6 +167,11 @@ export const MAIN = {
   syncNow: "Sync now",
   pause: "Pause",
   resume: "Resume syncing",
+  /**
+   * The chip on a transfer row that has not started (#211). `2a Syncing` draws the word in the same
+   * slot, and at the same 39.61px, as the size chip on the active row above it — measured. Declared
+   * here since F5 and read by nothing until the wire could say which rows were queued.
+   */
   queued: "queued",
 
   footerPair: (local, remote) => `${local} ⇄ ${remote}`,
@@ -1020,6 +1030,13 @@ export const ONBOARDING = {
   workedOutPlain: (ago) => `worked out ${ago}`,
   /** `progressSub` minus `about 17 minutes left` (#229). The fraction is `SyncActivity`'s own. */
   progressDone: (done, total) => `${count(done)} of ${count(total)} done`,
+  /**
+   * The two labels under the split bar (#243). COUNTS, not bytes: `44 sent` is forty-four files,
+   * and `MAIN.footerTotals` is the byte pair for a finished window (#191). Two questions that read
+   * almost the same, so they are two templates and neither derives the other.
+   */
+  sentCount: (n) => `${count(n)} sent`,
+  receivedCount: (n) => `${count(n)} received`,
   nothingDeletedShort: "nothing deleted",
   conflictsKept: (n) => `${count(n)} ${plural(n, "conflict", "conflicts")} kept as copies`,
   /** `doneSub` minus its totals (#207), with the conflict count taken from the plan rather than 2. */

@@ -6,7 +6,7 @@
 //
 // Phase 1 omissions, each in DEVIATIONS §79 with its issue: every per-side file count and byte total
 // (#240), the account line (#241), `Needs 38.4 GB free` (#206 — C4 answers the other half), the
-// already-matching count (#242), the ETA (#229), the split progress bar (#243), the merged totals
+// already-matching count (#242), the ETA (#229), the merged totals
 // (#207), the install command box (#218), and four buttons with no destination — three of them
 // #244 (`Add skip rules`, `See all N actions`, `Installation help`, the last also #218) and
 // `Browse Proton Drive…`, which is #99.
@@ -522,11 +522,62 @@ function back(handlers) {
 // ------------------------------------------------------------------------------- the dialogs ----
 
 /**
+ * The split progress bar and its two counts (#243).
+ *
+ * ONE TRACK, TWO FILLS, AND THE FILLS ARE COMPUTED. `activity.pass` carries `uploaded_files` and
+ * `downloaded_files` — transfers that landed and committed this pass, per direction — so each fill
+ * is that count over `action_total`, the same denominator as `159 of 471 done` one line above it.
+ * The bar's filled portion is therefore the transfers among the actions that line counts, and it can
+ * never claim more than that line does: `uploaded_files + downloaded_files <= action_index`.
+ *
+ * NOT DRAWN AT THE FRAME'S WIDTHS, and that is a recorded decision rather than a miss. `9a First
+ * sync` paints the fills 48px and 88px of a 400px track while labelling them `44 sent` and
+ * `115 received` — 48:88 is 0.55 and 44:115 is 0.38, and no denominator produces both, so the two
+ * halves of the drawing disagree with each other. The total is right (48+88 = 136 of 400 = 34%,
+ * against 159/471 = 33.8%), so it is the split that is hand-drawn. Reproducing it would mean
+ * ignoring the numbers the same block prints. DEVIATIONS §63b.
+ *
+ * `null` when nothing is known yet: no `pass` block (a daemon predating #213) or no `action_total`
+ * means the block is omitted rather than drawn empty, which is the same rule the sub-line above
+ * follows.
+ */
+function mergeProgress(activity) {
+  const pass = activity?.pass;
+  const total = activity?.action_total;
+  if (!pass || !total) return null;
+  const width = (files) => `${Math.min(100, (files / total) * 100)}%`;
+  const up = el("div", { class: "ob-merge-fill-up" });
+  const down = el("div", { class: "ob-merge-fill-down" });
+  up.style.width = width(pass.uploaded_files ?? 0);
+  down.style.width = width(pass.downloaded_files ?? 0);
+  const track = fid(el("div", { class: "ob-merge-track" }, [up, down]), "mergeTrack");
+  fid(up, "mergeFillUp");
+  fid(down, "mergeFillDown");
+  const counts = fid(
+    el("div", { class: "ob-merge-counts" }, [
+      fid(
+        el("span", { class: "ob-merge-count-up" }, ONBOARDING.sentCount(pass.uploaded_files ?? 0)),
+        "mergeCountUp",
+      ),
+      fid(
+        el("span", { class: "ob-merge-count-down" }, ONBOARDING.receivedCount(pass.downloaded_files ?? 0)),
+        "mergeCountDown",
+      ),
+    ]),
+    "mergeCounts",
+  );
+  // NO `seamMask`, unlike every other block in this dialog: the frame records this one with no
+  // background at all. The seam runs behind it and the design lets it — a 3px track and two short
+  // labels at the outer edges leave it visible down the middle, which is the point of drawing the
+  // merge over a seam in the first place.
+  return fid(el("div", { class: "ob-merge-progress" }, [track, counts]), "mergeProgress");
+}
+
+/**
  * `9a First sync` — the merge in flight, 602×542 with its own footer.
  *
- * The split progress bar and its two labels are omitted: `SyncActivity` counts actions, not
- * directions, so nothing reports a per-direction split within a pass (#243). `about 17 minutes left`
- * is #229.
+ * `about 17 minutes left` is still omitted (#229). The split progress bar is drawn — see
+ * `mergeProgress` for what it derives its two fills from and where it departs from the drawing.
  */
 export function renderFirstSync(props = {}) {
   const activity = props.activity ?? null;
@@ -569,6 +620,10 @@ export function renderFirstSync(props = {}) {
     seamMask(sub, { pad: 14, padY: 2 });
     body.append(sub);
   }
+  // FILTERED, never `append(null)` — `Element.append` stringifies its argument, so a null child
+  // lands as the literal text "null" (the same trap the footer below records).
+  const progress = mergeProgress(activity);
+  if (progress) body.append(progress);
   const close = fid(el("div", { class: "ob-merge-close" }, ONBOARDING.canClose), "mergeClose");
   seamMask(close, { pad: 14, padY: 2 });
   body.append(close);

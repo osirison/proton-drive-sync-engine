@@ -114,16 +114,59 @@ const PASS = {
       started_epoch_secs: ago(14),
       changes: summary.uploads + summary.downloads,
       kind: "incremental",
+      // Nothing has landed yet on this frame — the first upload is still in flight, and the
+      // per-direction counters only move when a transfer COMMITS (#243). S1 draws none of them;
+      // they are here so the shape is the daemon's rather than a subset of it.
+      uploaded_files: 0,
+      downloaded_files: 0,
+      uploaded_bytes: 0,
+      downloaded_bytes: 0,
     },
-    transfer: {
-      direction: "upload",
-      path: "docs/spec.md",
-      // 1.2 MB through `format.bytes` — the size chip the frame draws on this row.
-      bytes_total: 1200000,
-      bytes_done: null,
-      started_epoch_secs: ago(14),
-    },
+    /**
+     * THE TRANSFER WINDOW (#211), AND WHY EXACTLY ONE ROW IS ACTIVE.
+     *
+     * `2a Syncing` draws two transfers in flight — one leaving, one arriving — and this engine
+     * cannot report that: `execute_plan_and_commit` is a sequential loop, so at any instant one
+     * file is moving and the rest are queued behind it. The window is therefore the active upload
+     * plus the queue, which is what the daemon really publishes; the second column's row is the
+     * queue's next download rather than a second in-flight transfer. Inventing a second `active`
+     * row here would pin a reply the daemon cannot emit — the shape §61 records the `9a Review`
+     * fixture getting wrong — so the deviation is recorded instead.
+     *
+     * `transfers_remaining` counts the in-flight row too, so three rows and nothing past the
+     * window is `3`. It is NOT `transfers.length`: that would make `+n more` unreachable.
+     *
+     * The download rows carry no `bytes_total` — a remote listing has no file size, which is why
+     * the frame's `2.4 MB` chip is undrawable (§63) and the size chip is an uploads-only fact.
+     */
+    transfers: [
+      {
+        direction: "upload",
+        path: "docs/spec.md",
+        // 1.2 MB through `format.bytes` — the size chip the frame draws on this row.
+        bytes_total: 1200000,
+        bytes_done: null,
+        state: "active",
+        started_epoch_secs: ago(14),
+      },
+      { direction: "upload", path: "notes/scratch.md", bytes_total: 8400, state: "queued" },
+      { direction: "download", path: "reports/q3-summary.pdf", state: "queued" },
+    ],
+    transfers_remaining: 3,
   }),
+};
+
+/**
+ * `2a Needs you` draws ONE row per column and no queued row, so its window is the active upload and
+ * the next download — the same shape as `2a Syncing`'s, two rows shorter.
+ */
+const needsYouActivity = (summary) => {
+  const activity = PASS.activityFor(summary);
+  return {
+    ...activity,
+    transfers: [activity.transfers[0], activity.transfers[2]],
+    transfers_remaining: 2,
+  };
 };
 
 /** `2a Needs you`'s plan: the same three transfers, plus the two deletions its band is about. */
@@ -153,7 +196,14 @@ export const MAIN_FIXTURES = {
   "2a Syncing": {
     fids: {
       ...SHELL_FIDS["2a Syncing"],
-      ...mainFids({ state: "syncing", tail: "columns", column: "left", rowIndex: 0, rowsInColumn: 2 }),
+      ...mainFids({
+        state: "syncing",
+        tail: "columns",
+        // The frame's right-hand row is an active download; the app draws the queue's next download
+        // there instead (see `activityFor`), which is a differently-shaped row — left unmapped, and
+        // measured on the left column where `2a Syncing` draws a queued row too. §63c.
+        rows: { left: ["active", "queued"], right: [{ state: "queued", mapped: false }] },
+      }),
     },
     status: {
       state: "running",
@@ -177,9 +227,7 @@ export const MAIN_FIXTURES = {
       ...mainFids({
         state: "syncing",
         tail: "columns",
-        column: "left",
-        rowIndex: 0,
-        rowsInColumn: 1,
+        rows: { left: ["active"], right: [{ state: "queued", mapped: false }] },
         band: 2,
       }),
     },
@@ -227,7 +275,7 @@ export const MAIN_FIXTURES = {
           },
         ],
         config: ROOTS,
-        activity: PASS.activityFor(NEEDS_YOU_PLAN),
+        activity: needsYouActivity(NEEDS_YOU_PLAN),
       },
     },
     // `scan_conflicts` returns `{ original, sidecar }` pairs (gui-core/src/conflicts.rs) — NOT a

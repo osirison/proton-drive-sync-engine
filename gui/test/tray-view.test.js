@@ -207,7 +207,11 @@ test("only the syncing panel carries transfer rows", () => {
     daemonState: "running",
     response: reply({ syncing: true, pending_changes: 1, activity: { phase: "executing", transfer } }),
   });
-  assert.deepEqual(syncing.transfers, [{ direction: "up", name: "docs/spec.md", progress: 0.5 }]);
+  // No `detail`: the panel's rows are flat and neither drawn compact row carries a size chip, which
+  // is the one thing the shared mapper does differently for the tray (`compact: true`).
+  assert.deepEqual(syncing.transfers, [
+    { direction: "up", name: "docs/spec.md", detail: null, state: "active", progress: 0.5, files: null },
+  ]);
   // The same activity on a paused daemon draws no rows — the panel would otherwise show a file
   // moving under the sentence "nothing will move until you resume".
   const paused = trayView({
