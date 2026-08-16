@@ -261,9 +261,16 @@ impl LocalEntityState {
 /// filter, `.proton-sync.toml`, a conflict sidecar or the `.sync` state directory hides is
 /// *excluded*, not unsyncable — the user's own rules are the other group on the same dialog, and
 /// conflating the two would file a rule the user wrote under "cannot be synced at all".
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable because a one-shot report carries it too (#315: `sync::DryRunReport::cannot_sync`).
+/// It is the *observation*, so it has no first-seen stamp to serialize and deliberately no
+/// `entity_kind` either — the reason is what says what the entry really is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsyncableEntry {
-    /// Relative to the scan root.
+    /// Relative to the scan root. Lossy on the wire like every other path this engine publishes
+    /// (see [`crate::lossy_path`]) — and a dropped entry is disproportionately likely to be exactly
+    /// the kind of name that needs it.
+    #[serde(with = "crate::lossy_path")]
     pub relative_path: PathBuf,
     pub reason: UnsyncableReason,
 }

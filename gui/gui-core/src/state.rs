@@ -148,6 +148,8 @@ mod tests {
             file_history: None,
             index_totals: None,
             listing: None,
+            plan: None,
+            apply: None,
             auth: Default::default(),
         }
     }

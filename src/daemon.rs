@@ -9,16 +9,17 @@ use crate::index::{
     load_unsyncable_items, load_warm_start_count, load_withheld_deletions, local_directory_state,
     local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
     prune_history, purge_record, purge_subtree_records, recent_passes, replace_unsyncable_items,
-    replace_withheld_deletions, reset_index_state, scan_local_entities_reusing_hashes,
-    scan_local_tree, store_event_cursor, store_warm_start_count, upsert_delete_approval,
-    upsert_record,
+    replace_withheld_deletions, reset_index_state, scan_local_tree, store_event_cursor,
+    store_warm_start_count, upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
-    ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, AuthState, ControlCommand,
-    ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem, LIST_ENTRIES_DEFAULT_LIMIT,
-    LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PASS_HISTORY_REPORTED, PassHistory, PassProgress,
-    PendingDeletion, RemoteEntry, RunningConfigInfo, StatusHistoryEntry, SyncActivity,
-    TRANSFERS_REPORTED, TransferActivity, bind_listener, read_request, write_response,
+    ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ApplyOutcome, AuthState,
+    ControlCommand, ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem,
+    LIST_ENTRIES_DEFAULT_LIMIT, LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PASS_HISTORY_REPORTED,
+    PLAN_ACTIONS_DEFAULT_LIMIT, PLAN_ACTIONS_MAX_LIMIT, PLAN_PASS_KIND, PassHistory, PassProgress,
+    PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo, StatusHistoryEntry,
+    SyncActivity, TRANSFERS_REPORTED, TransferActivity, bind_listener, read_request,
+    write_response,
 };
 use crate::proton::{
     AuthFailure, CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient,
@@ -30,7 +31,7 @@ use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
     ConflictNaming, DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction,
     TransferDirection, UnsyncableItem, UnsyncableOrigin, directory_move_descendant_path_pairs,
-    is_strict_descendant, plan_sync_entities_with_stats, unsyncable_items,
+    is_strict_descendant, plan_sync_entities_with_stats, plan_token, unsyncable_items,
 };
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
@@ -309,6 +310,15 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// Pass-level history + today's byte totals, re-read from the index after each pass and
     /// published on every status reply. Cached here so a polling client never queries SQLite.
     pass_history: Option<PassHistory>,
+    /// What the pass currently in flight was asked to do (#100/#192). Taken from the shared plan
+    /// slot at the top of each pass and reset by `reconcile_blocking` as it seals the apply's
+    /// verdict, so it describes exactly one pass and never leaks into the next.
+    pass_intent: PassIntent,
+    /// The verdict [`Self::execute_plan_and_commit`] reached about this pass's apply, when it got
+    /// far enough to reach one. `None` means the pass ended before deciding, and
+    /// `reconcile_blocking` seals a `Failed` — which is what stops an apply whose remote listing
+    /// blew up from leaving its client polling for ever.
+    apply_report: Option<ApplyOutcome>,
     /// Per-root instance lock; released on drop. Held for the daemon's whole lifetime.
     _lock_guard: LockGuard,
     /// User-global single-instance lock; released on drop. Held for the daemon's whole lifetime so
@@ -386,6 +396,110 @@ struct ControlShared {
     /// motion while the main task is blocked. Separate from `snapshot` because it churns far
     /// more often than a `publish_status` and needs none of the snapshot's contents.
     activity: StdMutex<ActivityState>,
+    /// The reviewed plan and its request lifecycle (#100/#192/#209). Its own mutex, and **one**
+    /// mutex for the whole plane rather than an atomic per counter: booking a request, sealing it,
+    /// and replacing the stored plan are one transition each, and splitting them across atomics is
+    /// how a client comes to read a stale `Computed` as the answer to the request it just made.
+    plan: StdMutex<PlanSlot>,
+}
+
+/// Everything the plan verbs decide from, under one lock.
+///
+/// The two counter pairs are the whole synchronisation contract (see [`PlanOutcome`]): a request
+/// books `requested`, the pass that answers it sets `completed` to the value it started at, and a
+/// client waits until `completed >= the number its ack returned`. `requested > completed` therefore
+/// *is* "a pass is scheduled or running" — one fact derived from the counters rather than a third
+/// `pending` flag that could disagree with them.
+#[derive(Default)]
+struct PlanSlot {
+    /// Plan requests booked, and plan requests answered.
+    requested: u64,
+    completed: u64,
+    /// The latest computed plan; replaced wholesale (one stored plan at a time, latest wins).
+    stored: Option<StoredPlan>,
+    /// Why the plan pass that answered `completed` failed, when it did. Mutually exclusive with a
+    /// same-generation `stored`, because a pass either produced a plan or did not.
+    error: Option<String>,
+    /// Apply requests booked, apply requests answered, and the last verdict.
+    apply_requested: u64,
+    apply_completed: u64,
+    apply: Option<ApplyOutcome>,
+    /// The apply the next pass must carry out, booked by the IPC task and taken by the core at the
+    /// top of the pass. Held here rather than in a separate slot so booking the request and
+    /// queueing the work it describes are one transition under one lock — a queued apply whose
+    /// counter was not booked (or the reverse) is a client waiting on a verdict that never comes.
+    queued_apply: Option<PassIntent>,
+}
+
+/// One computed plan, held for exactly as long as it is the latest one.
+///
+/// Kept in memory only. A plan is a statement about *right now* — both trees as they were minutes
+/// ago — so it must not outlive the process that observed them: a token persisted across a restart
+/// would authorise an apply against a tree nobody looked at. A client holding a token from a
+/// previous run gets [`ApplyOutcome::Stale`], which is the correct answer.
+#[derive(Clone)]
+struct StoredPlan {
+    token: String,
+    computed_epoch_secs: u64,
+    summary: PlanSummary,
+    actions: Vec<PlannedAction>,
+    cannot_sync: Vec<UnsyncableEntry>,
+}
+
+impl StoredPlan {
+    /// This plan as a wire outcome, with its rows bounded.
+    ///
+    /// **Destructive rows come first and can never be truncated out.** The window is a rendering,
+    /// and the rendering a user decides from: `files_at_risk` is safety copy, so a plan whose
+    /// deletions fell off the end of the window would read as safe. Everything past the destructive
+    /// rows is plan order, truncated at the cap. Truncating at all is only defensible because
+    /// applying names the *token*, never the rows — the daemon executes the whole plan either way.
+    fn outcome(&self, plan_seq: u64, limit: Option<usize>) -> PlanOutcome {
+        let limit = limit
+            .unwrap_or(PLAN_ACTIONS_DEFAULT_LIMIT)
+            .clamp(1, PLAN_ACTIONS_MAX_LIMIT);
+        let total = self.actions.len();
+        let (destructive, rest): (Vec<&PlannedAction>, Vec<&PlannedAction>) = self
+            .actions
+            .iter()
+            .partition(|action| action.action.is_destructive());
+        let actions: Vec<PlannedAction> = destructive
+            .into_iter()
+            // `chain` after the partition, not `take(limit)` over the whole thing: the cap bounds
+            // the reply, and a plan with more destructive rows than the cap is a plan whose every
+            // dangerous row still has to be named.
+            .chain(rest.into_iter().take(limit))
+            .cloned()
+            .collect();
+        PlanOutcome::Computed(Box::new(ReviewedPlan {
+            plan_seq,
+            token: self.token.clone(),
+            computed_epoch_secs: self.computed_epoch_secs,
+            summary: self.summary.clone(),
+            truncated: total > actions.len(),
+            total,
+            actions,
+            cannot_sync: self.cannot_sync.clone(),
+        }))
+    }
+}
+
+/// What an in-flight pass has been asked to do with the plan it is about to compute.
+///
+/// A plan-only pass is deliberately **absent** from this enum: it does not run through
+/// `reconcile_blocking` at all (see [`Daemon::plan_only_blocking`]), which is what makes its
+/// inertness structural rather than a list of things each arm remembers not to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PassIntent {
+    /// An ordinary reconcile: plan and execute.
+    Sync,
+    /// Execute the plan the user reviewed, if this pass's own plan is still that plan (#100).
+    Apply {
+        apply_seq: u64,
+        token: String,
+        /// #192: drop the destructive rows, even the approved ones.
+        skip_destructive: bool,
+    },
 }
 
 /// [`ControlShared::activity`]'s contents: the wire-visible activity plus the internal staging
@@ -452,11 +566,141 @@ impl ControlShared {
             }),
             auth: AtomicU8::new(auth_discriminant(AuthState::Unknown)),
             activity: StdMutex::new(ActivityState::default()),
+            plan: StdMutex::new(PlanSlot::default()),
         }
     }
 
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    fn plan_slot(&self) -> std::sync::MutexGuard<'_, PlanSlot> {
+        self.plan.lock().expect("plan slot lock")
+    }
+
+    /// Books a plan request and returns its number. The IPC task calls this *before* replying, so a
+    /// client polling straight after its ack can never read the previous plan as its own answer.
+    fn book_plan_request(&self) -> u64 {
+        let mut slot = self.plan_slot();
+        slot.requested += 1;
+        slot.requested
+    }
+
+    /// Un-books the most recent plan request. For the one case where the ack was built and the pass
+    /// then could not be scheduled (the daemon is shutting down): without this the counter stays
+    /// ahead of `completed` for ever and every later poller reads `Computing` on a pass that will
+    /// never run.
+    fn unbook_plan_request(&self) {
+        let mut slot = self.plan_slot();
+        slot.requested = slot.requested.saturating_sub(1);
+    }
+
+    /// The generation a plan pass starting now will answer, or `None` when everything booked has
+    /// already been answered (a duplicate `PlanNow` for a request an earlier pass covered — two
+    /// clicks on `Check again` cost one remote walk, not two).
+    fn claim_plan_pass(&self) -> Option<u64> {
+        let slot = self.plan_slot();
+        (slot.requested > slot.completed).then_some(slot.requested)
+    }
+
+    /// Seals a plan pass: publishes its result and marks every request up to `generation` answered.
+    /// **Every** exit from a plan pass calls this, success or failure — a booked request that is
+    /// never sealed is a poller that never stops.
+    fn seal_plan_pass(&self, generation: u64, result: Result<StoredPlan, String>) {
+        let mut slot = self.plan_slot();
+        match result {
+            Ok(plan) => {
+                slot.stored = Some(plan);
+                slot.error = None;
+            }
+            Err(error) => slot.error = Some(error),
+        }
+        slot.completed = slot.completed.max(generation);
+    }
+
+    /// Replaces the stored plan without booking a generation — what a **diverged apply** does with
+    /// the plan it just computed (#100). The client asked to apply, not to plan, so nothing is
+    /// answered here; the new plan is simply what a re-review will find.
+    fn replace_stored_plan(&self, plan: StoredPlan) {
+        let mut slot = self.plan_slot();
+        slot.stored = Some(plan);
+        slot.error = None;
+    }
+
+    /// Books an apply against `token`, or refuses it as stale. One stored plan at a time and latest
+    /// wins, so a token that is not the current plan's authorises nothing — never a silent apply of
+    /// something the user never saw.
+    fn book_apply_request(&self, token: &str, skip_destructive: bool) -> Option<u64> {
+        let mut slot = self.plan_slot();
+        let current = slot.stored.as_ref()?;
+        if current.token != token {
+            return None;
+        }
+        slot.apply_requested += 1;
+        slot.apply = None;
+        slot.queued_apply = Some(PassIntent::Apply {
+            apply_seq: slot.apply_requested,
+            token: token.to_owned(),
+            skip_destructive,
+        });
+        Some(slot.apply_requested)
+    }
+
+    /// Un-books an apply whose ack was built but whose pass could not be scheduled (the daemon is
+    /// shutting down). Drops the queued work with the counter, so the two cannot disagree.
+    fn unbook_apply_request(&self) {
+        let mut slot = self.plan_slot();
+        slot.apply_requested = slot.apply_requested.saturating_sub(1);
+        slot.queued_apply = None;
+    }
+
+    /// What the pass starting now was asked to do. Consumed exactly once — a `take`, like every
+    /// other latch the core reads at the top of a pass — so an apply is attempted by one pass and
+    /// no later one inherits it.
+    fn take_apply_request(&self) -> PassIntent {
+        self.plan_slot()
+            .queued_apply
+            .take()
+            .unwrap_or(PassIntent::Sync)
+    }
+
+    /// Seals an apply pass with its verdict. Same rule as [`Self::seal_plan_pass`].
+    fn seal_apply_pass(&self, outcome: ApplyOutcome) {
+        let mut slot = self.plan_slot();
+        let generation = match &outcome {
+            ApplyOutcome::Applied { apply_seq, .. }
+            | ApplyOutcome::Diverged { apply_seq }
+            | ApplyOutcome::Failed { apply_seq, .. }
+            | ApplyOutcome::Scheduled { apply_seq } => *apply_seq,
+            ApplyOutcome::Stale | ApplyOutcome::Paused | ApplyOutcome::Unknown => return,
+        };
+        slot.apply_completed = slot.apply_completed.max(generation);
+        slot.apply = Some(outcome);
+    }
+
+    /// The current answer to [`ControlCommand::PlanResult`]: what the plan plane has for the newest
+    /// request it has been asked about.
+    fn plan_outcome(&self, limit: Option<usize>) -> PlanOutcome {
+        let slot = self.plan_slot();
+        if slot.requested > slot.completed {
+            return PlanOutcome::Computing {
+                plan_seq: slot.completed,
+            };
+        }
+        if let Some(error) = &slot.error {
+            return PlanOutcome::Failed {
+                plan_seq: slot.completed,
+                error: error.clone(),
+            };
+        }
+        match &slot.stored {
+            Some(plan) => plan.outcome(slot.completed, limit),
+            None => PlanOutcome::Absent,
+        }
+    }
+
+    fn apply_outcome(&self) -> Option<ApplyOutcome> {
+        self.plan_slot().apply.clone()
     }
 
     fn auth_state(&self) -> AuthState {
@@ -489,11 +733,25 @@ impl ControlShared {
 
     /// Opens the pass block every subsequent activity carries (#213).
     fn begin_pass_progress(&self, started_epoch_secs: u64, kind: PassKind) {
+        self.begin_pass_progress_named(started_epoch_secs, kind.as_str());
+    }
+
+    /// [`Self::begin_pass_progress`] for the one pass that has no [`PassKind`]: a plan-only pass
+    /// writes no `sync_passes` row, so it has no *stored* kind — but the live block must still say
+    /// what is running, or a Plan screen reading `files_scanned` cannot tell its own rehearsal from
+    /// a sync pass that happened to start at the same moment (#209). `PassProgress::kind` is a
+    /// documented open token, so [`PLAN_PASS_KIND`] degrades to "rendered verbatim" on any client
+    /// that does not know it.
+    fn begin_plan_progress(&self, started_epoch_secs: u64) {
+        self.begin_pass_progress_named(started_epoch_secs, PLAN_PASS_KIND);
+    }
+
+    fn begin_pass_progress_named(&self, started_epoch_secs: u64, kind: &str) {
         let mut state = self.activity.lock().expect("activity lock");
         state.pass = Some(PassProgress {
             started_epoch_secs,
             changes: None,
-            kind: kind.as_str().to_owned(),
+            kind: kind.to_owned(),
             uploaded_files: 0,
             downloaded_files: 0,
             uploaded_bytes: 0,
@@ -659,6 +917,11 @@ impl ControlShared {
             // Only a `list` reply carries a listing; every other one omits it rather than
             // implying an empty folder.
             listing: None,
+            // Only the plan-family replies carry these. A reviewed plan can be tens of thousands of
+            // rows and the GUI polls `status` every two seconds, so putting them on every reply
+            // would make the cheap verb the expensive one.
+            plan: None,
+            apply: None,
             auth: self.auth_state(),
         }
     }
@@ -893,6 +1156,9 @@ impl ProgressSink for SharedProgressSink {
 /// on the core (everything else is answered directly from [`ControlShared`]).
 enum LoopCommand {
     SyncNow,
+    /// Run a plan-only pass (#100/#192/#209). On the core for the same reason `SyncNow` is: it is a
+    /// full local walk plus an O(folders) remote walk, which must never run on the IPC task.
+    PlanNow,
     Shutdown,
 }
 
@@ -910,23 +1176,57 @@ pub fn preview_plan_with_client(
     config: &DaemonConfig,
     proton: &impl ProtonClient,
 ) -> AppResult<DryRunReport> {
+    let scan_options = scan_options_from_config(config)?;
+    let base_records = load_existing_index(&config.db_path)?;
+    build_plan_report(
+        config,
+        proton,
+        &scan_options,
+        base_records,
+        None,
+        |_phase| {},
+    )
+}
+
+/// Scan → list → plan, and **the one definition of what a rehearsal is**.
+///
+/// Both plan producers run it: the one-shot child (`preview_plan_with_client`, which has no daemon
+/// and reads the index off disk) and the daemon's own plan verb (#100/#209, which has an open
+/// connection and a live activity surface). They differ only in where the baseline comes from and
+/// in whether anything is watching, which is exactly what the two injected seams cover — a second
+/// copy of this body would be two answers to "what would change", and the plan token would then
+/// depend on which one you asked.
+///
+/// **A full-tree remote walk, always.** A rehearsal is reviewed and then authorised, so it is built
+/// against ground truth rather than against `reconstruct_remote(base ⊕ delta)`; that is also what
+/// keeps it structurally incapable of consuming the event delta, which is the one thing a plan pass
+/// must never do (advancing the cursor past changes nothing applied would orphan them).
+fn build_plan_report(
+    config: &DaemonConfig,
+    proton: &impl ProtonClient,
+    scan_options: &ScanOptions,
+    base_records: HashMap<PathBuf, FileRecord>,
+    observer: Option<crate::index::ScanObserver<'_>>,
+    mut phase: impl FnMut(&'static str),
+) -> AppResult<DryRunReport> {
     info!(
         local_root = %config.local_root.display(),
         remote_root = %config.remote_root.display(),
         "building dry-run sync plan"
     );
-    let scan_options = scan_options_from_config(config)?;
-    let base_records = load_existing_index(&config.db_path)?;
-    let local_entities =
-        scan_local_entities_reusing_hashes(&config.local_root, &scan_options, &base_records)?;
+    phase(PHASE_SCANNING_LOCAL);
+    // `scan_local_tree`, not one of the entity-only entry points: the walk's own drops are the
+    // half #315 needs, and taking both from one walk is what makes them describe one moment.
+    let local_scan = scan_local_tree(&config.local_root, scan_options, &base_records, observer)?;
+    phase(PHASE_LISTING_REMOTE);
     let (remote_entities, remote_root_missing) =
-        load_remote_entities(proton, &config.remote_root, &scan_options)?;
-    let mut base_index = filter_base_index(base_records, &scan_options);
+        load_remote_entities(proton, &config.remote_root, scan_options)?;
+    let mut base_index = filter_base_index(base_records, scan_options);
     if remote_root_missing {
         base_index.clear();
     }
     let mut outcome = plan_sync_entities_with_stats(
-        &local_entities,
+        &local_scan.entities,
         &remote_entities,
         &base_index,
         &config.conflict_naming,
@@ -935,9 +1235,10 @@ pub fn preview_plan_with_client(
     info!(
         planned_actions = outcome.actions.len(),
         matched_files = outcome.matched_files,
+        cannot_sync = local_scan.unsyncable.len(),
         "dry-run sync plan computed"
     );
-    Ok(DryRunReport::from_outcome(outcome))
+    Ok(DryRunReport::from_outcome(outcome, local_scan.unsyncable))
 }
 
 impl Daemon<ProtonDriveClient> {
@@ -1088,6 +1389,8 @@ impl<C: ProtonClient> Daemon<C> {
             reported_unsyncable: HashSet::new(),
             pass_log: PassLog::new(current_epoch_secs()),
             pass_history: None,
+            pass_intent: PassIntent::Sync,
+            apply_report: None,
             _lock_guard: lock_guard,
             _global_lock_guard: global_lock_guard,
         };
@@ -1248,6 +1551,7 @@ impl<C: ProtonClient> Daemon<C> {
                     Some(command) = loop_rx.recv() => {
                         match command {
                             LoopCommand::SyncNow => self.reconcile_if_needed().await?,
+                            LoopCommand::PlanNow => self.plan_now().await,
                             LoopCommand::Shutdown => {
                                 info!("shutting down on control request");
                                 break;
@@ -1460,6 +1764,100 @@ impl<C: ProtonClient> Daemon<C> {
         result
     }
 
+    /// One plan-only pass (#100/#192/#209): the rehearsal, run on the main loop so the existing
+    /// [`SyncActivity`] describes it and no second progress channel has to exist.
+    ///
+    /// **This pass observes and consumes NOTHING**, which is the single most dangerous thing about
+    /// it: it runs the same scan and the same walk as a real pass, so anything it consumed would be
+    /// consumed *without* the side effects that justify consuming it. The whole family, and the one
+    /// reason behind all of it — a rehearsal that spent evidence would leave the real pass unable to
+    /// re-derive what it was rehearsing:
+    ///
+    /// * **the event cursor** — never read and never written here; the pass does not even resolve an
+    ///   event scope, because it always full-walks the remote rather than replaying a delta
+    ///   (`build_plan_report`). An incremental plan *would* consume the delta to reconstruct its
+    ///   map, and advancing the cursor past changes nothing applied orphans them for ever;
+    /// * **`pending_changes` / `pending_deletions`** — not drained: only a pass that acted on them
+    ///   may clear them;
+    /// * **`is_first_reconcile` / `force_local_rescan`** — not cleared: the local scan a plan pass
+    ///   runs proves nothing was *synced*, which is the floor those flags hold;
+    /// * **the warm-start counter** — not touched: it counts full walks that produced a baseline;
+    /// * **`last_sync` / `last_successful_sync_summary` / `last_plan_summary`** — not set: nothing
+    ///   synced, and a rehearsal's plan is not the last pass's plan;
+    /// * **`sync_passes` / `sync_events`** — nothing written: history is written behind a side
+    ///   effect, and there was none;
+    /// * **delete approvals and `withheld_deletions`** — never consulted: the gate is
+    ///   execution-time, and nothing here executes;
+    /// * **the standing `unsyncable` list** — not merged into: this pass's drops ride on the plan
+    ///   itself as `cannot_sync` (#315), so nothing display-only is mutated either.
+    ///
+    /// It does not go through [`Self::reconcile_blocking`] at all, which is what makes that list
+    /// structural rather than nine things each branch has to remember not to do.
+    async fn plan_now(&mut self) {
+        // Coalesced: two clicks on `Check again` while one walk is running cost one walk, because
+        // the pass that is already booked answers both requests.
+        let Some(generation) = self.shared.claim_plan_pass() else {
+            return;
+        };
+        // `syncing` gates `activity` onto status replies, so a plan pass must claim it or #209's
+        // progress line has nothing to read. The pause check lives at the ack (as `syncnow`'s
+        // does); a pause landing after it lets this inert pass finish rather than orphan a booked
+        // request that nothing would ever seal.
+        self.shared.syncing.store(true, Ordering::SeqCst);
+        self.shared.begin_plan_progress(current_epoch_secs());
+        let result = tokio::task::block_in_place(|| self.plan_only_blocking());
+        self.shared.syncing.store(false, Ordering::SeqCst);
+        self.shared.clear_activity();
+        // #103's rule, unchanged: a pass that reached Proton is evidence of a session, a classified
+        // auth failure is evidence against one, and anything else moves nothing.
+        match &result {
+            Ok(_) => self.note_auth_evidence(AuthState::SignedIn),
+            Err(error) if is_auth_failure_error(error.as_ref()) => {
+                self.note_auth_evidence(AuthState::SignedOut)
+            }
+            Err(_) => {}
+        }
+        let sealed = result.map_err(|error| {
+            warn!(%error, "plan pass failed");
+            error.to_string()
+        });
+        self.shared.seal_plan_pass(generation, sealed);
+    }
+
+    /// The blocking half of [`Self::plan_now`] — see its docs for the inertness family.
+    fn plan_only_blocking(&mut self) -> AppResult<StoredPlan> {
+        info!("computing a plan-only pass");
+        let base_records = load_index(&self.connection)?;
+        let local_root = self.config.local_root.clone();
+        let shared = Arc::clone(&self.shared);
+        let observer = |files_seen: u64, path: &Path| {
+            let display = path
+                .strip_prefix(&local_root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            shared.update_activity(PHASE_SCANNING_LOCAL, |activity| {
+                activity.files_scanned = Some(files_seen);
+                activity.detail = Some(display);
+            });
+        };
+        let report = build_plan_report(
+            &self.config,
+            self.proton.as_ref(),
+            &self.scan_options,
+            base_records,
+            Some(&observer),
+            |phase| self.shared.begin_activity(new_activity(phase)),
+        )?;
+        Ok(StoredPlan {
+            token: report.token(),
+            computed_epoch_secs: current_epoch_secs(),
+            summary: report.summary,
+            actions: report.plan,
+            cannot_sync: report.cannot_sync,
+        })
+    }
+
     fn reconcile_blocking(&mut self) -> AppResult<PassOutcome> {
         // Open the pass as a unit (#213): one start time and one clock, both surviving every
         // phase change below. The kind is corrected by whichever branch `reconcile_blocking_inner`
@@ -1516,6 +1914,10 @@ impl<C: ProtonClient> Daemon<C> {
                 "sync failed".to_owned()
             }
         };
+        // Seal this pass's apply verdict (#100), before the reply that carries it is publishable.
+        // Every exit seals: a pass that never reached the comparison — a failed scan, a failed
+        // listing — would otherwise leave its client polling a request nothing will ever answer.
+        self.seal_apply_outcome(&result);
         // Before `record_status_history`, which snapshots into the metrics sidecar: refreshing
         // after it would publish this pass's history beside the previous pass's corpus size.
         // Runs on every outcome, not just `Ok` — see `index_totals_stale`.
@@ -1528,8 +1930,40 @@ impl<C: ProtonClient> Daemon<C> {
         result
     }
 
+    /// Publishes the verdict for this pass's apply request, and resets the intent so it can never
+    /// describe the next pass. A no-op for an ordinary sync.
+    ///
+    /// [`Self::execute_plan_and_commit`] reaches the real verdicts (applied with its counts,
+    /// diverged); this fills in the one it cannot — a pass that failed before deciding — from the
+    /// pass's own outcome. A pass that somehow ended `Ok` without reaching the comparison is
+    /// reported as failed too, deliberately: "the apply did not happen and I cannot say it applied"
+    /// is the honest answer, and an arm that fell through to `Applied` would be #246's shape on the
+    /// one surface where it authorises a deletion.
+    fn seal_apply_outcome(&mut self, result: &AppResult<PassOutcome>) {
+        let intent = std::mem::replace(&mut self.pass_intent, PassIntent::Sync);
+        let PassIntent::Apply { apply_seq, .. } = intent else {
+            return;
+        };
+        let outcome = self
+            .apply_report
+            .take()
+            .unwrap_or_else(|| ApplyOutcome::Failed {
+                apply_seq,
+                error: match result {
+                    Err(error) => truncate_error(&error.to_string()),
+                    Ok(_) => "the pass ended without applying the reviewed plan".to_owned(),
+                },
+            });
+        self.shared.seal_apply_pass(outcome);
+    }
+
     fn reconcile_blocking_inner(&mut self) -> AppResult<PassOutcome> {
         info!("starting reconciliation");
+        // What this pass was asked to do (#100). Taken once, here, so every downstream branch —
+        // warm start, incremental, bootstrap — reaches the same single check in
+        // `execute_plan_and_commit`, whichever remote map it ends up planning against.
+        self.pass_intent = self.shared.take_apply_request();
+        self.apply_report = None;
         // Recover event-driven detection if it was disabled at startup because the keyring was
         // still locked (the boot race). No-op once a source exists or when the feature is off.
         self.reacquire_event_source_if_needed();
@@ -1612,7 +2046,14 @@ impl<C: ProtonClient> Daemon<C> {
             self.set_pass_kind(PassKind::Incremental);
             // A watcher error dropped events (#51): this pass must stat-walk the local tree
             // instead of taking the idle fast-path, which only knows about `pending_changes`.
-            match self.try_incremental_reconcile(&base_records, self.force_local_rescan)? {
+            //
+            // An **apply** forces it for a different reason (#100): the idle fast-path returns
+            // before `execute_plan_and_commit`, so an apply landing on an idle cycle would never
+            // reach the token comparison — it would neither execute nor report, and its client
+            // would poll for ever. A pass that was asked to apply always plans.
+            let force_local_scan =
+                self.force_local_rescan || matches!(self.pass_intent, PassIntent::Apply { .. });
+            match self.try_incremental_reconcile(&base_records, force_local_scan)? {
                 IncrementalOutcome::Committed(outcome) => {
                     // Same rule as the first-pass floor above: only a clean pass discharges a
                     // pending rescan, because only a clean pass acted on everything it scanned.
@@ -2458,6 +2899,50 @@ impl<C: ProtonClient> Daemon<C> {
         let matched_files = outcome.matched_files;
         let mut plan = outcome.actions;
         prepend_remote_root_creation_if_missing(&mut plan, remote_root_missing);
+        // #100's comparison, and it happens BEFORE this method mutates anything about the pass —
+        // no published summary, no stale-totals flag, no unsyncable merge, no delete gate. A
+        // diverged apply must leave the daemon exactly as it found it, because the user's next act
+        // is to review the new plan, not to inherit half a pass.
+        let skip_destructive = match &self.pass_intent {
+            PassIntent::Sync => false,
+            PassIntent::Apply {
+                apply_seq,
+                token,
+                skip_destructive,
+            } => {
+                let apply_seq = *apply_seq;
+                let skip_destructive = *skip_destructive;
+                let fresh = plan_token(&plan);
+                if fresh != *token {
+                    let summary = PlanSummary::from_outcome(&plan, matched_files);
+                    info!(
+                        reviewed = %token,
+                        fresh = %fresh,
+                        "apply refused: the plan changed since it was reviewed"
+                    );
+                    // Publish what a re-review will find, then refuse. The client learns *which*
+                    // refusal this was from the typed `Diverged`, never from the message.
+                    self.shared.replace_stored_plan(StoredPlan {
+                        token: fresh,
+                        computed_epoch_secs: current_epoch_secs(),
+                        summary,
+                        actions: plan,
+                        cannot_sync: local_scan.unsyncable.clone(),
+                    });
+                    self.apply_report = Some(ApplyOutcome::Diverged { apply_seq });
+                    // An `Err`, not a clean pass that happened to do nothing: `PassOutcome::Clean`
+                    // sets `last_sync` and `last_successful_sync_summary`, which would draw
+                    // "everything is up to date" over a plan still waiting to be applied — #246's
+                    // shape. Failing also leaves `is_first_reconcile` and `force_local_rescan`
+                    // exactly where they were, which is right: this pass consumed nothing.
+                    return Err(boxed_error(
+                        "apply refused: the plan changed since it was reviewed, so nothing was \
+                         applied. Review the new plan and apply that.",
+                    ));
+                }
+                skip_destructive
+            }
+        };
         let plan_summary = PlanSummary::from_outcome(&plan, matched_files);
         // Only a planned action mutates the index, so an empty plan provably cannot move the
         // totals — that is what keeps an idle pass free of the aggregate query.
@@ -2546,6 +3031,10 @@ impl<C: ProtonClient> Daemon<C> {
         // Nodes skipped because the remote said they are gone (#31). Counted, never recorded:
         // see the cursor hold after the loop.
         let mut vanished_nodes = 0usize;
+        // Destructive rows dropped by a filtered apply (#192). Same shape as the two above, and
+        // for the same reason: an action the pass declined to perform holds the cursor.
+        let mut skipped_destructive = 0usize;
+        let mut executed_actions = 0usize;
         // Per-item failures this pass, and the paths to re-queue for the next one (#136).
         let mut failures = PassFailures::default();
 
@@ -2561,6 +3050,30 @@ impl<C: ProtonClient> Daemon<C> {
                 ));
             }
             let action = &plan[action_number];
+            // #192, and it is a skip at the executor rather than a filter over the plan.
+            //
+            // Filtering the plan would have taken three lifecycles with it: `decide_delete_gate`
+            // would see no destructive rows, so `replace_withheld_deletions` would wipe the
+            // first-seen ages every withheld deletion is dated from (#225) and re-stamp them as new
+            // next pass, `pending_deletions` would blank while the deletions are still real (the
+            // Deletions screen goes empty), and `record_unsyncable`'s superseded set would shift.
+            // Skipping here leaves every one of those computed from the full plan, exactly as an
+            // ordinary pass computes them.
+            //
+            // Dropped even when a standing approval exists: the user asked for THIS run without
+            // them, which is a different question from "may this deletion ever apply". The approval
+            // is consumed inside the delete arms, so skipping the arm leaves it standing and
+            // unspent — and the deletion simply re-plans next pass, exactly like a withheld one.
+            if skip_destructive && action.action.is_destructive() {
+                debug!(
+                    path = %action.path.display(),
+                    action = ?action.action,
+                    "skipping a destructive action: this apply was asked to run the plan without them"
+                );
+                skipped_destructive += 1;
+                action_number += 1;
+                continue;
+            }
             // A run of two-plus consecutive planned downloads executes as chunked multi-file
             // CLI invocations instead of one subprocess per file (grouped by destination
             // directory — see `execute_download_run`); a run of one takes the single-file arm
@@ -3204,6 +3717,7 @@ impl<C: ProtonClient> Daemon<C> {
                 }
             } else {
                 failures.note_success();
+                executed_actions += 1;
             }
             if checkpoint_after {
                 // Land this action's outcome durably before moving on: a later failure — or a
@@ -3221,12 +3735,21 @@ impl<C: ProtonClient> Daemon<C> {
             action_number += 1;
         }
 
-        // ONE cursor policy, three causes. A withheld delete (above), a node that vanished
-        // mid-pass, and an item whose action failed are all the same statement: this pass did not
-        // apply everything the remote delta describes. Advancing past it would drop the originating
-        // event from every future delta — `reconstruct_remote` overlays only the *new* delta onto
-        // the surviving baseline — so the unapplied change would never be re-derived. Held, the
-        // next pass re-derives it from ground truth, which also keeps that pass non-idle.
+        // ONE cursor policy, four causes. A withheld delete (above), a node that vanished mid-pass,
+        // an item whose action failed, and a destructive row a filtered apply dropped are all the
+        // same statement: this pass did not apply everything the remote delta describes. Advancing
+        // past it would drop the originating event from every future delta — `reconstruct_remote`
+        // overlays only the *new* delta onto the surviving baseline — so the unapplied change would
+        // never be re-derived. Held, the next pass re-derives it from ground truth, which also keeps
+        // that pass non-idle.
+        if skipped_destructive > 0 {
+            info!(
+                skipped = skipped_destructive,
+                "ran the reviewed plan without its destructive actions; holding the event cursor so \
+                 the next pass re-derives them from ground truth"
+            );
+            cursor_update = None;
+        }
         if vanished_nodes > 0 {
             warn!(
                 skipped = vanished_nodes,
@@ -3290,6 +3813,18 @@ impl<C: ProtonClient> Daemon<C> {
         let outcome = failures.outcome();
         self.last_failed_items = std::mem::take(&mut failures.items);
         self.last_failed_item_count = failures.count;
+        // #100: the apply reached a verdict. Recorded here rather than by `seal_apply_outcome`
+        // because only this frame knows what actually ran — and recorded on a partial pass too,
+        // since "some of what you authorised failed" is an applied plan with failures, not a
+        // different verdict (#136's third outcome, reported as itself).
+        if let PassIntent::Apply { apply_seq, .. } = self.pass_intent {
+            self.apply_report = Some(ApplyOutcome::Applied {
+                apply_seq,
+                executed: executed_actions,
+                skipped_destructive,
+                failed: failures.count,
+            });
+        }
         match outcome {
             PassOutcome::Clean => {
                 self.last_sync = Some(SystemTime::now());
@@ -4420,6 +4955,71 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             response.listing = Some(outcome);
             response
         }
+        ControlCommand::Plan => {
+            // `Syncnow`-shaped, and deliberately not `List`-shaped: the work is a full local
+            // stat-walk plus an O(folders) remote walk, which must never run on this task. Ack now,
+            // compute on the core. Pause semantics mirror `syncnow`'s exactly — a paused daemon
+            // runs no passes, and a plan is a pass.
+            if shared.is_paused() {
+                let mut response = shared.response("plan skipped because daemon is paused");
+                response.plan = Some(PlanOutcome::Paused);
+                response
+            } else {
+                // Booked BEFORE the reply is built, so a client polling straight after its ack
+                // reads `Computing` rather than the previous plan as its own answer.
+                let plan_seq = shared.book_plan_request();
+                if loop_tx.send(LoopCommand::PlanNow).is_ok() {
+                    let mut response = shared.response("plan scheduled");
+                    response.plan = Some(PlanOutcome::Scheduled { plan_seq });
+                    response
+                } else {
+                    // Un-book it: a request nothing will ever seal leaves every later poller
+                    // reading `Computing` for ever.
+                    shared.unbook_plan_request();
+                    let mut response =
+                        shared.response("daemon is shutting down; plan not scheduled");
+                    response.plan = Some(PlanOutcome::Failed {
+                        plan_seq,
+                        error: "the daemon is shutting down".to_owned(),
+                    });
+                    response
+                }
+            }
+        }
+        ControlCommand::PlanResult => {
+            // A query, answered straight from the published slot — no work on this task, exactly
+            // like `status`. Carries the last apply's verdict too: a client that asked to apply
+            // learns "applied" from here, and on a divergence finds the new plan in the same reply.
+            let mut response = shared.response("plan result");
+            response.plan = Some(shared.plan_outcome(request.limit));
+            response.apply = shared.apply_outcome();
+            response
+        }
+        ControlCommand::Apply => {
+            let outcome = schedule_apply(
+                shared,
+                loop_tx,
+                request.argument.as_deref(),
+                request.skip_destructive,
+            );
+            let message = match &outcome {
+                ApplyOutcome::Scheduled { .. } => "apply scheduled",
+                ApplyOutcome::Stale => {
+                    "that plan is no longer the current one; review the plan again and apply that"
+                }
+                ApplyOutcome::Paused => "apply skipped because daemon is paused",
+                ApplyOutcome::Failed { .. } => "daemon is shutting down; apply not scheduled",
+                // Unreachable from `schedule_apply`, which never returns a verdict — those are the
+                // pass's to write. Named rather than folded into an existing arm so a new verdict
+                // has to be given a sentence rather than inherit one.
+                ApplyOutcome::Applied { .. }
+                | ApplyOutcome::Diverged { .. }
+                | ApplyOutcome::Unknown => "apply",
+            };
+            let mut response = shared.response(message);
+            response.apply = Some(outcome);
+            response
+        }
         ControlCommand::Shutdown => {
             info!("shutdown requested over control socket");
             // Same teeth as a delivered signal: cancel any in-flight proton-drive command so
@@ -4440,6 +5040,42 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
         ),
     }
     Ok(())
+}
+
+/// Books a [`ControlCommand::Apply`] and schedules the pass that carries it out (#100/#192).
+///
+/// **Nothing is executed here, and nothing is even decided here.** This task only checks that the
+/// token names the plan the daemon currently holds — one stored plan at a time, latest wins — and
+/// hands the work to the core. The real comparison happens inside the pass, against the plan it
+/// freshly computes, because a token matching the *stored* plan says only that no newer plan has
+/// been computed, not that the tree still looks like it did.
+fn schedule_apply(
+    shared: &ControlShared,
+    loop_tx: &mpsc::UnboundedSender<LoopCommand>,
+    token: Option<&str>,
+    skip_destructive: bool,
+) -> ApplyOutcome {
+    // A missing token is a stale token: an apply must name what it authorises, and "whatever you
+    // have" is exactly the review/apply divergence window #100 closes.
+    let Some(token) = token else {
+        return ApplyOutcome::Stale;
+    };
+    if shared.is_paused() {
+        return ApplyOutcome::Paused;
+    }
+    let Some(apply_seq) = shared.book_apply_request(token, skip_destructive) else {
+        return ApplyOutcome::Stale;
+    };
+    if loop_tx.send(LoopCommand::SyncNow).is_ok() {
+        info!(skip_destructive, "apply scheduled for a reviewed plan");
+        ApplyOutcome::Scheduled { apply_seq }
+    } else {
+        shared.unbook_apply_request();
+        ApplyOutcome::Failed {
+            apply_seq,
+            error: "the daemon is shutting down".to_owned(),
+        }
+    }
 }
 
 /// Answers a [`ControlCommand::List`] request: one non-recursive remote directory listing (#99).
@@ -15955,7 +16591,576 @@ mod tests {
                     "day {day}: boundary did not advance ({previous} -> {start})"
                 );
             }
+
             previous = Some(start);
+        }
+    }
+
+    // ---- the plan verb, the token, and the filtered apply (#100 / #192 / #209) -----------------
+
+    /// Runs one plan-only pass exactly as `LoopCommand::PlanNow` does. Multi-thread, because
+    /// `plan_now` blocks the pass with `block_in_place`.
+    fn run_plan_pass<C: ProtonClient>(daemon: &mut Daemon<C>) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(daemon.plan_now());
+    }
+
+    fn computed_plan(shared: &ControlShared) -> ReviewedPlan {
+        match shared.plan_outcome(None) {
+            PlanOutcome::Computed(plan) => *plan,
+            other => panic!("expected a computed plan, got {other:?}"),
+        }
+    }
+
+    /// A daemon with a live event source, a stored cursor, and one file on each side that differ —
+    /// so a real pass would plan, execute, drain and advance. Everything a plan pass must leave
+    /// alone is set up here so the test can prove it did.
+    fn plan_verb_daemon(directory: &tempfile::TempDir) -> Daemon<EventFakeClient> {
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("local-only.txt"), b"local").expect("local file");
+        let remote_entities = HashMap::from([(
+            PathBuf::from("remote-only.txt"),
+            remote_file_entity("remote-only.txt", "vol~nr", sha1_bytes(b"remote").as_str()),
+        )]);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            EventFakeClient::new(remote_entities),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        // TEST LANDMINE: `with_client_and_event_source` installs the default factory, which reads
+        // the REAL OS keyring whenever `events_driven` is on. Pin it, or a machine with an
+        // unlocked keyring silently acquires a live source and the test passes for another reason.
+        daemon.event_source_factory = Box::new(|| None);
+        daemon
+    }
+
+    /// The whole inertness family of the plan verb, in one place because it is one rule: a
+    /// rehearsal that spent evidence would leave the real pass unable to re-derive what it
+    /// rehearsed. One assertion per bullet of `plan_now`'s doc.
+    #[test]
+    fn a_plan_pass_observes_and_consumes_nothing() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = plan_verb_daemon(&directory);
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon
+            .pending_changes
+            .insert(PathBuf::from("local-only.txt"));
+        daemon.pending_deletions.push(PendingDeletion {
+            path: PathBuf::from("gone.txt"),
+            direction: DeleteDirection::Local,
+            entity_kind: EntityKind::File,
+            fingerprint: "hash".to_owned(),
+            detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
+        });
+        daemon.warm_starts_since_full_walk = 3;
+        daemon.force_local_rescan = true;
+        let seq_before = daemon.shared.reconcile_seq.load(Ordering::SeqCst);
+        let plan_seq = daemon.shared.book_plan_request();
+
+        run_plan_pass(&mut daemon);
+
+        let plan = computed_plan(&daemon.shared);
+        assert_eq!(
+            plan.plan_seq, plan_seq,
+            "the pass answers the request booked"
+        );
+        assert_eq!(
+            plan.total, 2,
+            "one upload and one download: {:?}",
+            plan.actions
+        );
+        assert!(!plan.token.is_empty());
+
+        // The event cursor: never read, never written. A plan pass full-walks the remote precisely
+        // so it cannot consume a delta.
+        let cursor = load_event_cursor(&daemon.connection, "vol")
+            .expect("cursor read")
+            .expect("cursor row");
+        assert_eq!(
+            cursor.last_event_id, "cursor-0",
+            "a rehearsal must not advance the event cursor"
+        );
+        // Nothing drained, nothing cleared, no counter moved.
+        assert_eq!(daemon.pending_changes.len(), 1);
+        assert_eq!(daemon.pending_deletions.len(), 1);
+        assert!(daemon.is_first_reconcile, "a rehearsal is not a first pass");
+        assert!(daemon.force_local_rescan, "a rehearsal is not a rescan");
+        assert_eq!(daemon.warm_starts_since_full_walk, 3);
+        assert_eq!(
+            load_warm_start_count(&daemon.connection).expect("counter"),
+            0,
+            "the persisted counter is untouched too"
+        );
+        // Nothing synced, so nothing may say a sync happened.
+        assert!(daemon.last_sync.is_none());
+        assert!(daemon.last_successful_sync_summary.is_none());
+        assert!(daemon.last_plan_summary.is_none());
+        // No history: history is written behind a side effect, and there was none.
+        assert!(recorded_passes(&daemon).is_empty());
+        assert!(recorded_events(&daemon).is_empty());
+        // No index rows, either direction.
+        assert!(
+            get_record(&daemon.connection, Path::new("local-only.txt"))
+                .expect("lookup")
+                .is_none()
+        );
+        // And nothing was transferred: the local tree is exactly as it was.
+        assert!(!daemon.config.local_root.join("remote-only.txt").exists());
+        // `reconcile_seq` deliberately does not move: a `syncnow` watcher polling it must not be
+        // satisfied by a pass that synced nothing.
+        assert_eq!(
+            daemon.shared.reconcile_seq.load(Ordering::SeqCst),
+            seq_before
+        );
+    }
+
+    /// #209: the plan pass runs on the main loop, so the existing activity surface describes it —
+    /// and says which pass it is, so a Plan screen cannot read a coincidental sync's progress as
+    /// its own rehearsal's.
+    #[test]
+    fn a_plan_pass_is_visible_as_a_plan_on_the_activity_surface() {
+        let directory = tempdir().expect("tempdir");
+        let daemon = plan_verb_daemon(&directory);
+        daemon.shared.begin_plan_progress(42);
+        daemon.shared.syncing.store(true, Ordering::SeqCst);
+        daemon
+            .shared
+            .begin_activity(new_activity(PHASE_SCANNING_LOCAL));
+        daemon
+            .shared
+            .update_activity(PHASE_SCANNING_LOCAL, |activity| {
+                activity.files_scanned = Some(8_431);
+            });
+
+        let response = daemon.status_response("daemon status");
+        let activity = response
+            .activity
+            .expect("activity while a pass is in flight");
+        assert_eq!(activity.phase, PHASE_SCANNING_LOCAL);
+        assert_eq!(activity.files_scanned, Some(8_431));
+        let pass = activity.pass.expect("pass block");
+        assert_eq!(
+            pass.kind, PLAN_PASS_KIND,
+            "the live block must name the rehearsal, not a sync kind"
+        );
+        assert_eq!(pass.started_epoch_secs, 42);
+        // The denominator #209 wants is the corpus size, which already rides on every reply (#207).
+        assert!(response.index_totals.is_some());
+    }
+
+    /// Two `Check again` clicks while one walk is running cost one walk.
+    #[test]
+    fn a_second_plan_request_while_one_is_running_is_answered_by_that_pass() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = plan_verb_daemon(&directory);
+        let first = daemon.shared.book_plan_request();
+        let second = daemon.shared.book_plan_request();
+        assert_eq!((first, second), (1, 2));
+
+        run_plan_pass(&mut daemon);
+        assert_eq!(
+            computed_plan(&daemon.shared).plan_seq,
+            2,
+            "one pass answers every request booked before it started"
+        );
+        // The queued duplicate finds nothing left to do.
+        assert!(daemon.shared.claim_plan_pass().is_none());
+        let walks_before = daemon.proton.full_walks.load(Ordering::SeqCst);
+        run_plan_pass(&mut daemon);
+        assert_eq!(
+            daemon.proton.full_walks.load(Ordering::SeqCst),
+            walks_before,
+            "a duplicate PlanNow must not spend a second remote walk"
+        );
+    }
+
+    #[test]
+    fn a_plan_result_before_any_plan_is_absent_rather_than_an_empty_plan() {
+        let directory = tempdir().expect("tempdir");
+        let daemon = plan_verb_daemon(&directory);
+        assert_eq!(daemon.shared.plan_outcome(None), PlanOutcome::Absent);
+        assert!(daemon.shared.apply_outcome().is_none());
+    }
+
+    /// #100 happy path: the token names the plan, the pass re-plans, the plans agree, and the work
+    /// runs. Not a replay — the rows executed are the ones this pass computed.
+    #[test]
+    fn applying_a_reviewed_plan_executes_it() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = plan_verb_daemon(&directory);
+        daemon.shared.book_plan_request();
+        run_plan_pass(&mut daemon);
+        let token = computed_plan(&daemon.shared).token;
+
+        let apply_seq = daemon
+            .shared
+            .book_apply_request(&token, false)
+            .expect("the current plan's token must be accepted");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("an apply of an unchanged plan runs cleanly");
+
+        match daemon.shared.apply_outcome().expect("verdict") {
+            ApplyOutcome::Applied {
+                apply_seq: sealed,
+                executed,
+                skipped_destructive,
+                failed,
+            } => {
+                assert_eq!(sealed, apply_seq);
+                assert_eq!((skipped_destructive, failed), (0, 0));
+                assert_eq!(executed, 2, "one upload and one download");
+            }
+            other => panic!("expected an applied verdict, got {other:?}"),
+        }
+        assert!(
+            daemon.config.local_root.join("remote-only.txt").exists(),
+            "the reviewed download must have landed"
+        );
+    }
+
+    /// #100's whole point: the plan moved between review and apply, so **nothing runs**, and the
+    /// fresh plan is published for re-review rather than silently applied.
+    #[test]
+    fn an_apply_whose_plan_moved_executes_nothing_and_publishes_the_new_plan() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = plan_verb_daemon(&directory);
+        daemon.shared.book_plan_request();
+        run_plan_pass(&mut daemon);
+        let reviewed = computed_plan(&daemon.shared);
+
+        // The tree moves under the reviewed plan: a second local file appears.
+        fs::write(daemon.config.local_root.join("appeared.txt"), b"new").expect("new file");
+
+        let apply_seq = daemon
+            .shared
+            .book_apply_request(&reviewed.token, false)
+            .expect("the token is still the stored one");
+        let outcome = daemon.reconcile_blocking();
+        assert!(
+            outcome.is_err(),
+            "a diverged apply must not report a clean pass: `Clean` sets `last_sync`, which draws \
+             'everything is up to date' over a plan still waiting"
+        );
+
+        match daemon.shared.apply_outcome().expect("verdict") {
+            ApplyOutcome::Diverged { apply_seq: sealed } => assert_eq!(sealed, apply_seq),
+            other => panic!("expected a divergence, got {other:?}"),
+        }
+        // Nothing ran…
+        assert!(!daemon.config.local_root.join("remote-only.txt").exists());
+        assert!(
+            get_record(&daemon.connection, Path::new("local-only.txt"))
+                .expect("lookup")
+                .is_none()
+        );
+        // …and the pass consumed nothing it would need again.
+        assert!(daemon.is_first_reconcile);
+        assert!(daemon.last_sync.is_none());
+        // The new plan is what a re-review finds, under a new token.
+        let fresh = computed_plan(&daemon.shared);
+        assert_ne!(fresh.token, reviewed.token);
+        assert_eq!(fresh.total, 3, "the appeared file is in the new plan");
+        // And the stale token now authorises nothing.
+        assert!(
+            daemon
+                .shared
+                .book_apply_request(&reviewed.token, false)
+                .is_none(),
+            "one stored plan at a time, latest wins"
+        );
+    }
+
+    #[test]
+    fn an_apply_naming_no_plan_at_all_is_refused_without_scheduling_anything() {
+        let directory = tempdir().expect("tempdir");
+        let daemon = plan_verb_daemon(&directory);
+        let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
+
+        for token in [None, Some("1:never-computed")] {
+            let outcome = schedule_apply(&daemon.shared, &loop_tx, token, false);
+            assert_eq!(outcome, ApplyOutcome::Stale, "token: {token:?}");
+        }
+        assert!(
+            loop_rx.try_recv().is_err(),
+            "a refused apply must schedule no pass at all"
+        );
+    }
+
+    #[test]
+    fn a_paused_daemon_applies_nothing() {
+        let directory = tempdir().expect("tempdir");
+        let daemon = plan_verb_daemon(&directory);
+        daemon.shared.paused.store(true, Ordering::SeqCst);
+        let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
+        // Same pause semantics as `syncnow`, whose refusal this mirrors: a paused daemon runs no
+        // passes, and a plan is a pass.
+        assert_eq!(
+            schedule_apply(&daemon.shared, &loop_tx, Some("1:whatever"), false),
+            ApplyOutcome::Paused
+        );
+        assert!(loop_rx.try_recv().is_err());
+    }
+
+    /// #192, and the reason it is a skip at the executor rather than a filter over the plan: the
+    /// deletion is dropped for this run, but everything the gate computes from the full plan —
+    /// the pending list, and the first-seen ages behind it — is exactly what an ordinary pass
+    /// computes.
+    #[test]
+    fn a_filtered_apply_drops_the_deletion_and_leaves_the_approval_standing() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("doomed.txt"), b"doomed").expect("local file");
+        fs::write(local_root.join("fresh.txt"), b"fresh").expect("local file");
+        // `doomed.txt` is synced and gone from the remote → a LocalDelete; `fresh.txt` is new →
+        // an Upload. The guard is ON, and the deletion is pre-approved, so an ordinary apply would
+        // delete it.
+        let config = DaemonConfig {
+            delete_approval_local: true,
+            ..event_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            EventFakeClient::new(HashMap::new()),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        daemon.event_source_factory = Box::new(|| None);
+        let doomed = sha1_bytes(b"doomed");
+        upsert_record(
+            &daemon.connection,
+            &base_record("doomed.txt", Some("vol~nd"), doomed.as_str()),
+        )
+        .expect("seed record");
+        upsert_delete_approval(
+            &daemon.connection,
+            Path::new("doomed.txt"),
+            DeleteDirection::Local,
+            &doomed,
+            1,
+        )
+        .expect("seed approval");
+        store_event_cursor(&daemon.connection, "vol", "cursor-0", 1).expect("seed cursor");
+
+        daemon.shared.book_plan_request();
+        run_plan_pass(&mut daemon);
+        let reviewed = computed_plan(&daemon.shared);
+        assert_eq!(reviewed.summary.destructive_actions, 1);
+
+        daemon
+            .shared
+            .book_apply_request(&reviewed.token, true)
+            .expect("token accepted");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("a filtered apply runs its non-destructive rows cleanly");
+
+        match daemon.shared.apply_outcome().expect("verdict") {
+            ApplyOutcome::Applied {
+                skipped_destructive,
+                failed,
+                ..
+            } => {
+                assert_eq!(skipped_destructive, 1);
+                assert_eq!(failed, 0);
+            }
+            other => panic!("expected an applied verdict, got {other:?}"),
+        }
+        // The deletion did not happen even though an approval authorised it: the user asked for
+        // THIS run without it, which is a different question.
+        assert!(
+            local_root.join("doomed.txt").exists(),
+            "a filtered apply must drop the deletion even with a standing approval"
+        );
+        assert!(
+            get_record(&daemon.connection, Path::new("doomed.txt"))
+                .expect("lookup")
+                .is_some(),
+            "the skipped deletion's index row must survive, so it re-plans"
+        );
+        // The approval is left standing and unspent — it authorises a future pass, not this one.
+        assert_eq!(
+            crate::index::load_delete_approvals(&daemon.connection)
+                .expect("approvals")
+                .len(),
+            1
+        );
+        // …and the cursor is held, exactly as a withheld deletion holds it: the dropped action must
+        // keep re-deriving from ground truth.
+        assert_eq!(
+            load_event_cursor(&daemon.connection, "vol")
+                .expect("cursor read")
+                .expect("cursor row")
+                .last_event_id,
+            "cursor-0",
+            "a dropped destructive row holds the event cursor"
+        );
+    }
+
+    /// Filtering the plan *before* the gate would blank the pending list and wipe the #225
+    /// first-seen ages. Skipping at the executor leaves both exactly as an ordinary pass computes
+    /// them.
+    #[test]
+    fn a_filtered_apply_still_reports_the_deletions_it_skipped_as_pending() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("doomed.txt"), b"doomed").expect("local file");
+        let config = DaemonConfig {
+            delete_approval_local: true,
+            ..event_config(directory.path(), &local_root)
+        };
+        let mut daemon = Daemon::with_client_and_event_source(
+            config,
+            EventFakeClient::new(HashMap::new()),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        daemon.event_source_factory = Box::new(|| None);
+        upsert_record(
+            &daemon.connection,
+            &base_record("doomed.txt", Some("vol~nd"), sha1_bytes(b"doomed").as_str()),
+        )
+        .expect("seed record");
+
+        daemon.shared.book_plan_request();
+        run_plan_pass(&mut daemon);
+        let reviewed = computed_plan(&daemon.shared);
+        daemon
+            .shared
+            .book_apply_request(&reviewed.token, true)
+            .expect("token accepted");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("a filtered apply of a wholly destructive plan is still a clean pass");
+
+        assert_eq!(
+            daemon.pending_deletions.len(),
+            1,
+            "the gate still ran over the full plan, so the Deletions screen is unchanged"
+        );
+        let ages = load_withheld_deletions(&daemon.connection).expect("ages");
+        assert_eq!(ages.len(), 1, "the first-seen ages are not wiped");
+        assert_eq!(ages[0].path, PathBuf::from("doomed.txt"));
+    }
+
+    /// A destructive row must never fall off the reply window: `files_at_risk` is safety copy, and
+    /// a plan whose deletions were truncated away reads as safe.
+    #[test]
+    fn the_plan_window_never_truncates_a_destructive_row() {
+        let stored = StoredPlan {
+            token: "1:abc".to_owned(),
+            computed_epoch_secs: 1,
+            summary: PlanSummary::default(),
+            actions: (0..10)
+                .map(|index| {
+                    PlannedAction::new(
+                        Path::new(&format!("upload-{index}.txt")),
+                        SyncAction::Upload,
+                        EntityKind::File,
+                        None,
+                    )
+                })
+                .chain(std::iter::once(PlannedAction::new(
+                    Path::new("doomed.txt"),
+                    SyncAction::LocalDelete,
+                    EntityKind::File,
+                    None,
+                )))
+                .collect(),
+            cannot_sync: Vec::new(),
+        };
+
+        let PlanOutcome::Computed(window) = stored.outcome(1, Some(2)) else {
+            panic!("expected a computed plan");
+        };
+        assert_eq!(window.total, 11);
+        assert!(window.truncated);
+        assert!(
+            window
+                .actions
+                .iter()
+                .any(|action| action.action == SyncAction::LocalDelete),
+            "the deletion must survive a window that truncated nine uploads: {:?}",
+            window.actions
+        );
+        assert_eq!(window.actions.len(), 3, "one deletion plus the capped rest");
+    }
+
+    /// An apply that dies before the comparison must still seal a verdict, or its client polls a
+    /// request nothing will ever answer.
+    #[test]
+    fn an_apply_that_fails_before_deciding_still_seals_a_verdict() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = plan_verb_daemon(&directory);
+        daemon.shared.book_plan_request();
+        run_plan_pass(&mut daemon);
+        let token = computed_plan(&daemon.shared).token;
+        let apply_seq = daemon
+            .shared
+            .book_apply_request(&token, false)
+            .expect("token accepted");
+        // The local scan now fails, so the pass never reaches the token comparison.
+        fs::remove_dir_all(&daemon.config.local_root).expect("remove the local root");
+
+        assert!(daemon.reconcile_blocking().is_err());
+        match daemon.shared.apply_outcome().expect("verdict") {
+            ApplyOutcome::Failed {
+                apply_seq: sealed, ..
+            } => assert_eq!(sealed, apply_seq),
+            other => panic!("expected a failed verdict, got {other:?}"),
+        }
+        // And the intent is gone: the next pass is an ordinary sync, not a second attempt.
+        assert_eq!(daemon.pass_intent, PassIntent::Sync);
+    }
+
+    /// The events-mode idle fast-path returns before `execute_plan_and_commit`, so an apply that
+    /// landed on an idle cycle would neither execute nor report — and its client would poll for
+    /// ever. A pass asked to apply always plans.
+    #[test]
+    fn an_apply_landing_on_an_idle_cycle_still_reaches_the_comparison() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
+        daemon.event_source_factory = Box::new(|| None);
+        daemon.shared.book_plan_request();
+        run_plan_pass(&mut daemon);
+        let plan = computed_plan(&daemon.shared);
+        assert_eq!(plan.total, 0, "precondition: both sides already match");
+        let walks_after_planning = full_walks.load(Ordering::SeqCst);
+
+        let apply_seq = daemon
+            .shared
+            .book_apply_request(&plan.token, false)
+            .expect("token accepted");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("an apply of an empty plan is a clean pass");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            walks_after_planning,
+            "the apply still runs as an incremental pass; it is only the idle SKIP that is suppressed"
+        );
+        match daemon.shared.apply_outcome().expect("verdict") {
+            ApplyOutcome::Applied {
+                apply_seq: sealed,
+                executed,
+                ..
+            } => {
+                assert_eq!(sealed, apply_seq);
+                assert_eq!(executed, 0, "there was nothing to do, and it said so");
+            }
+            other => panic!("an idle apply must still report a verdict, got {other:?}"),
         }
     }
 }
