@@ -9,6 +9,58 @@
   start, both of which become per-pair; leaves ADR 0002's guard and ADR 0003's checkpoint commits
   untouched by construction.
 
+## In plain terms
+
+*Added after review: the maintainer's verdict on the first draft was "very long and convoluted", and
+a design document nobody can decide from is one that gets ignored. This section is the whole design
+for a reader deciding whether to build it. Everything below it is the audit trail.*
+
+**What we are building.** Today the app syncs one local folder to one Proton folder. This lets it
+sync several — `Documents → /Docs` and `Photos → /Pictures` — each independently.
+
+**The one constraint that shapes everything.** We cannot run one copy of the daemon per folder. The
+`proton-drive` command-line tool corrupts its own database if two copies run at once (#23). So:
+**one daemon, all folders, one at a time.** The practical consequence is that **folders take turns**
+— if two are due at the same moment, one waits. That is forced by the tool, not chosen.
+
+**How it works, in six pieces:**
+
+1. **Declaring folders.** The settings file gains a list; each entry is a local folder, a Proton
+   folder, and a name. A file with *no* list is treated as one folder called `default`, so every
+   existing config keeps working untouched.
+2. **Folders cannot nest inside each other.** Not tidiness: the "ignore my own bookkeeping folder"
+   check only looks at the top path component, so a folder inside another folder would have its
+   private `.sync` directory uploaded to Proton as if it were the user's files.
+3. **The database needs no conversion.** Each folder *already* keeps its own database in a hidden
+   `.sync` directory beside it, holding all eight tables. A second folder simply gets its own. This
+   was expected to be the hard part and is not.
+4. **Commands say which folder.** Every command — sync now, pause, approve a deletion, preview a
+   plan — gains a "which folder" field. Omitted means the default folder. There is deliberately **no
+   "all" keyword**; the client repeats the command per folder, because a magic word that means
+   something different in two places has bitten this project before (#140).
+5. **Taking turns has an order.** Folders due for a pass form a queue; anything the user asks for by
+   hand jumps ahead of anything on a timer.
+6. **Upgrading does nothing.** No conversion, no version bump, no user action. The file is only
+   rewritten into list form at one moment: when the user adds a second folder.
+
+**Three problems this design work uncovered, none of which the issue predicted:**
+
+- **The app window has no room for a folder switcher.** The old design had one in a sidebar;
+  design-v2 deleted it. Layouts are checked pixel-by-pixel, and the header's flexible spacer is
+  pinned to an exact width on 22 frames — so inserting anything there fails the gate on all of them.
+  **The GUI is the expensive part, not the cheap one.**
+- **An old daemon with a new client is dangerous.** The "which folder" field would be *silently
+  ignored* by a daemon that predates it, which would then act on its own folder. For `reset-index`,
+  `keep` or `approve` that is a destructive wrong target, so the client checks capability before
+  sending one.
+- **An existing cost gets multiplied.** Today a change *anywhere* in the user's Drive — even outside
+  the synced folder — forces a full-tree walk. With N folders that happens N times. Not a
+  correctness bug; worth knowing before multiplying it.
+
+**Build order** (engine first, per the maintainer's decision on 2026-08-17): phases 1–4 make
+multiple folders work fully from the command line; the GUI selector (phase 5c) waits for re-drawn
+frames; the multiplied-walk cost (phase 6) gets its own ADR.
+
 ## The shape, in six sentences
 
 For a reader who needs to agree the shape rather than audit it:
@@ -26,8 +78,9 @@ For a reader who needs to agree the shape rather than audit it:
 5. **Passes are serialized by a due queue** over pairs, with explicit requests jumping ahead of
    timer-due ones; a pair waits out another pair's pass, which is inherent to #23 and not a defect.
 6. **The GUI is the *expensive* part, not the cheap one** — the pair selector the issue remembers
-   does not exist in design-v2, and adding one to the header fails the fidelity box gate on all 51
-   frames until the prototype is re-drawn.
+   does not exist in design-v2, and adding one to the header fails the fidelity box gate on the 22
+   frames that pin the header's spacer (20 `window` + 2 `dialog`, measured) until the prototype is
+   re-drawn.
 
 ## Context
 
@@ -503,7 +556,9 @@ config — that file exists precisely because `deny_unknown_fields` bricks on GU
   (`shell-spacer`, mapped in every full-window fixture) and pinned to a hard width
   (`frames/2a-settled.json` records `header/span[1]` at `w: 731.08`, compared at a 0.5px tolerance).
   Inserting anything into the 52px header row shrinks the flex absorber and fails the box gate on
-  **every full-window frame**. Add the copy gate (every fixed string must appear verbatim in a drawn
+  **every frame that pins that spacer — 22 of the 51, measured: all 20 `window` frames and 2
+  `dialog` frames, at five distinct widths (563.88, 696.08, 709.28, 731.08, 763.88), each compared
+  exactly**. Add the copy gate (every fixed string must appear verbatim in a drawn
   frame; exemptions are treated as defects), the hue gate (five settled frames must contain no
   saturated colour anywhere — so a folder swatch or an accent on the selector fails them), and the
   stale gate (the prototype and the fixtures must draw the same frame set, both directions).
