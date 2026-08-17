@@ -197,8 +197,116 @@ pub struct DaemonConfig {
     pub log_filter: String,
 }
 
+impl DaemonConfig {
+    /// The **one** projection of the resolved config onto the two scopes ADR 0005 §2 classifies
+    /// every key into — the same split `crate::config::KeyScope` makes machine-checked at parse
+    /// time, now expressed in what the runtime holds.
+    ///
+    /// Consuming, not borrowing, and that is the point: after this call there is exactly one copy of
+    /// `local_root`, inside the [`PairConfig`] the pair's runtime owns. A second copy left on the
+    /// daemon is how "which root is this pass about" comes to have two answers.
+    ///
+    /// One projection, both callers: the daemon's constructor and the one-shot `--dry-run` preview
+    /// (which clones its borrowed config to reach it). A second projection would be a second
+    /// classification, free to drift from `KeyScope` and from this one.
+    ///
+    /// **Phase 3/4 changes the shape, not this rule:** `resolve_runtime_config` grows a
+    /// `Vec<PairConfig>` and this becomes `(ProcessConfig, Vec<PairConfig>)`. Until then
+    /// `config::refuse_unsupported_pair_count` is what makes the singular half correct.
+    ///
+    /// Four `KeyScope::Daemon` keys are deliberately **spent** here rather than carried: `proton_cli`,
+    /// `proton_timeout` and `proton_list_attempts` are consumed constructing the one shared client
+    /// (`command_policy_from_config`), and `log_filter` by the binary's tracing setup — all three
+    /// times before a daemon exists. Being daemon-wide is precisely *why* they can be spent at
+    /// construction: there is one client and one filter for the process, so nothing later needs to
+    /// ask which pair's they were.
+    fn into_parts(self) -> (ProcessConfig, PairConfig) {
+        let Self {
+            local_root,
+            remote_root,
+            db_path,
+            socket_path,
+            lockfile_path,
+            global_lock_path,
+            scan_interval,
+            proton_cli: _,
+            proton_timeout: _,
+            proton_list_attempts: _,
+            download_batch_size,
+            include_patterns,
+            exclude_patterns,
+            events_driven,
+            events_full_scan_every,
+            delete_approval_remote,
+            delete_approval_local,
+            warm_start,
+            conflict_naming,
+            log_filter: _,
+        } = self;
+        (
+            ProcessConfig {
+                socket_path,
+                global_lock_path,
+            },
+            PairConfig {
+                local_root,
+                remote_root,
+                db_path,
+                lockfile_path,
+                scan_interval,
+                download_batch_size,
+                include_patterns,
+                exclude_patterns,
+                events_driven,
+                events_full_scan_every,
+                delete_approval_remote,
+                delete_approval_local,
+                warm_start,
+                conflict_naming,
+            },
+        )
+    }
+}
+
+/// The `crate::config::KeyScope::Daemon` keys a **running** daemon still holds: the control socket
+/// it serves and the user-global lock it holds for its whole life. Both describe the process rather
+/// than a tree, and neither could be per-pair — one socket must be locatable without knowing a root
+/// (`paths.rs`), and the global lock is what makes "one `proton-syncd` per user" true (#23).
+///
+/// The other four daemon-wide keys are spent at construction — see [`DaemonConfig::into_parts`].
+#[derive(Debug, Clone)]
+struct ProcessConfig {
+    socket_path: PathBuf,
+    global_lock_path: PathBuf,
+}
+
+/// The keys that describe **one tree**: what to sync, what to skip, how often, how a pass behaves,
+/// what a deletion needs (`crate::config::KeyScope::Pair`). Field docs live on [`DaemonConfig`],
+/// which is still the shape a config file and the CLI flags resolve to.
+#[derive(Debug, Clone)]
+struct PairConfig {
+    local_root: PathBuf,
+    remote_root: PathBuf,
+    db_path: PathBuf,
+    lockfile_path: PathBuf,
+    scan_interval: Duration,
+    download_batch_size: usize,
+    include_patterns: Vec<String>,
+    exclude_patterns: Vec<String>,
+    events_driven: bool,
+    events_full_scan_every: u64,
+    delete_approval_remote: bool,
+    delete_approval_local: bool,
+    warm_start: WarmStartConfig,
+    conflict_naming: ConflictNaming,
+}
+
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
-    config: DaemonConfig,
+    /// What describes the process (see [`ProcessConfig`]).
+    process: ProcessConfig,
+    /// What describes the one tree this daemon syncs (see [`PairConfig`]). Phase 3/4 moves this
+    /// inside the pair's runtime and then makes it one per pair.
+    pair_config: PairConfig,
     connection: Connection,
     /// The `proton-drive` client. Behind an `Arc` because the control-socket task holds it too:
     /// the read-only `list` verb (#99) runs a CLI invocation from that task, and it must be the
@@ -1237,10 +1345,14 @@ pub fn preview_plan_with_client(
     config: &DaemonConfig,
     proton: &impl ProtonClient,
 ) -> AppResult<DryRunReport> {
-    let scan_options = scan_options_from_config(config)?;
-    let base_records = load_existing_index(&config.db_path)?;
+    // Through the *same* projection the daemon's constructor uses, so a preview and a real pass can
+    // never disagree about which keys describe the tree (ADR 0005 §2). A preview rehearses ONE pair
+    // — the default one, since this path predates the selector `--pair` will add.
+    let (_, pair_config) = config.clone().into_parts();
+    let scan_options = scan_options_from_config(&pair_config)?;
+    let base_records = load_existing_index(&pair_config.db_path)?;
     build_plan_report(
-        config,
+        &pair_config,
         proton,
         &scan_options,
         base_records,
@@ -1263,7 +1375,7 @@ pub fn preview_plan_with_client(
 /// keeps it structurally incapable of consuming the event delta, which is the one thing a plan pass
 /// must never do (advancing the cursor past changes nothing applied would orphan them).
 fn build_plan_report(
-    config: &DaemonConfig,
+    config: &PairConfig,
     proton: &impl ProtonClient,
     scan_options: &ScanOptions,
     base_records: HashMap<PathBuf, FileRecord>,
@@ -1323,40 +1435,43 @@ impl<C: ProtonClient> Daemon<C> {
         proton: C,
         event_source: Option<Box<dyn EventSource>>,
     ) -> AppResult<Self> {
-        fs::create_dir_all(&config.local_root)?;
-        if let Some(parent) = config.db_path.parent()
+        // The one split (see [`DaemonConfig::into_parts`]): from here on, "the local root" is the
+        // *pair's* local root and nothing on the daemon holds a second copy of it.
+        let (process, pair_config) = config.into_parts();
+        fs::create_dir_all(&pair_config.local_root)?;
+        if let Some(parent) = pair_config.db_path.parent()
             && !parent.as_os_str().is_empty()
         {
             fs::create_dir_all(parent)?;
         }
-        if let Some(parent) = config.socket_path.parent()
+        if let Some(parent) = process.socket_path.parent()
             && !parent.as_os_str().is_empty()
         {
             fs::create_dir_all(parent)?;
         }
         // Ensure the lockfile's directory (the `.sync` state dir by default) exists before
         // acquiring the lock, so a first-ever run on a fresh root does not fail here.
-        if let Some(parent) = config.lockfile_path.parent()
+        if let Some(parent) = pair_config.lockfile_path.parent()
             && !parent.as_os_str().is_empty()
         {
             fs::create_dir_all(parent)?;
         }
-        let lock_guard = LockGuard::acquire(&config.lockfile_path)?;
+        let lock_guard = LockGuard::acquire(&pair_config.lockfile_path)?;
         // Then the user-global lock, so a second daemon started for a *different* root (its per-root
         // lock above would succeed) still cannot run: every daemon shells the same `proton-drive`
         // CLI, whose shared SQLite cache/session store is not concurrency-safe (#23). A crashed
         // daemon leaves only an unlocked file behind, which `acquire` reuses — restart still works.
-        let global_lock_guard = LockGuard::acquire(&config.global_lock_path).map_err(|error| {
+        let global_lock_guard = LockGuard::acquire(&process.global_lock_path).map_err(|error| {
             boxed_error(format!(
                 "cannot start: {error}. Only one proton-syncd may run per user account — every \
                  daemon shells the same proton-drive CLI, whose SQLite cache and session store are \
                  not safe for concurrent use (#23). Stop the other daemon first."
             ))
         })?;
-        let connection = open_database(&config.db_path)?;
-        let scan_options = scan_options_from_config(&config)?;
-        let status_history_path = status_history_path(&config.db_path);
-        let metrics_path = metrics_path(&config.db_path);
+        let connection = open_database(&pair_config.db_path)?;
+        let scan_options = scan_options_from_config(&pair_config)?;
+        let status_history_path = status_history_path(&pair_config.db_path);
+        let metrics_path = metrics_path(&pair_config.db_path);
         let status_history = load_status_history(&status_history_path).unwrap_or_else(|error| {
             warn!(
                 path = %status_history_path.display(),
@@ -1392,7 +1507,7 @@ impl<C: ProtonClient> Daemon<C> {
         // config. Only the feature flag is needed — `CliKeyringSession::from_cli_keyring` sources
         // the session from the keyring itself. Quiet on failure (unlike the startup
         // `build_event_source`, which warns once): this runs every degraded pass.
-        let events_driven = config.events_driven;
+        let events_driven = pair_config.events_driven;
         let event_source_factory: Box<dyn FnMut() -> Option<Box<dyn EventSource>> + Send> =
             Box::new(move || {
                 if !events_driven {
@@ -1408,12 +1523,13 @@ impl<C: ProtonClient> Daemon<C> {
                 }
             });
         let shared = Arc::new(ControlShared::new(RunningConfigInfo {
-            local_root: config.local_root.clone(),
-            remote_root: config.remote_root.clone(),
-            db_path: config.db_path.clone(),
+            local_root: pair_config.local_root.clone(),
+            remote_root: pair_config.remote_root.clone(),
+            db_path: pair_config.db_path.clone(),
         }));
         let mut daemon = Self {
-            config,
+            process,
+            pair_config,
             connection,
             proton: Arc::new(proton),
             pending_changes: BTreeSet::new(),
@@ -1471,9 +1587,9 @@ impl<C: ProtonClient> Daemon<C> {
         C: 'static,
     {
         info!(
-            local_root = %self.config.local_root.display(),
-            remote_root = %self.config.remote_root.display(),
-            socket_path = %self.config.socket_path.display(),
+            local_root = %self.pair_config.local_root.display(),
+            remote_root = %self.pair_config.remote_root.display(),
+            socket_path = %self.process.socket_path.display(),
             "starting daemon"
         );
         let cancel_flag = Arc::clone(&self.cancel_flag);
@@ -1504,7 +1620,7 @@ impl<C: ProtonClient> Daemon<C> {
             signal_cancel_flag.store(true, Ordering::SeqCst);
         });
 
-        let listener = bind_listener(&self.config.socket_path).await?;
+        let listener = bind_listener(&self.process.socket_path).await?;
         // Serve the control socket on its own task so a status poll (or pause/approve/…) is
         // answered instantly even while this task is blocked inside a reconcile. The task gets
         // its own SQLite connection for approval writes (both connections set a busy timeout,
@@ -1515,7 +1631,7 @@ impl<C: ProtonClient> Daemon<C> {
         // interrupted pass keeps only the checkpoints of actions that fully completed and
         // replans the remainder from ground truth on next start).
         let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
-        let approvals_connection = open_database(&self.config.db_path)?;
+        let approvals_connection = open_database(&self.pair_config.db_path)?;
         let ipc_task = tokio::spawn(serve_control_socket(
             listener,
             Arc::new(ControlPlane {
@@ -1530,16 +1646,16 @@ impl<C: ProtonClient> Daemon<C> {
                     // config: one client is one `proton::CliGate`, and two gates serialize
                     // nothing.
                     proton: Arc::clone(&self.proton),
-                    remote_root: self.config.remote_root.clone(),
+                    remote_root: self.pair_config.remote_root.clone(),
                     gate_wait: self.browse_gate_wait,
                 },
             }),
         ));
         let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
-        watcher.watch(&self.config.local_root, RecursiveMode::Recursive)?;
+        watcher.watch(&self.pair_config.local_root, RecursiveMode::Recursive)?;
 
-        let mut interval = tokio::time::interval(self.config.scan_interval);
+        let mut interval = tokio::time::interval(self.pair_config.scan_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
 
@@ -1625,7 +1741,7 @@ impl<C: ProtonClient> Daemon<C> {
                     // #50: `events_driven` alone is not enough — without a source every pass is a
                     // full-tree walk, and this fast cadence would run one every 30s forever.
                     _ = events_poll.tick(),
-                        if self.config.events_driven && self.event_source.is_some() => {
+                        if self.pair_config.events_driven && self.event_source.is_some() => {
                         self.reconcile_if_needed().await?;
                     }
                     _ = &mut shutdown => {
@@ -1636,7 +1752,7 @@ impl<C: ProtonClient> Daemon<C> {
         }
 
         ipc_task.abort();
-        remove_control_socket(&self.config.socket_path);
+        remove_control_socket(&self.process.socket_path);
         info!("daemon stopped");
         Ok(())
     }
@@ -1665,8 +1781,8 @@ impl<C: ProtonClient> Daemon<C> {
                 // file-content record semantics. The empty relative path is the watched root
                 // itself, not a syncable entity.
                 if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
-                    && !self.config.conflict_naming.is_conflict_copy(&path)
-                    && let Ok(relative_path) = path.strip_prefix(&self.config.local_root)
+                    && !self.pair_config.conflict_naming.is_conflict_copy(&path)
+                    && let Ok(relative_path) = path.strip_prefix(&self.pair_config.local_root)
                     && !relative_path.as_os_str().is_empty()
                     && self.scan_options.allows_relative_directory(relative_path)
                 {
@@ -1674,13 +1790,13 @@ impl<C: ProtonClient> Daemon<C> {
                 }
                 continue;
             }
-            if self.config.conflict_naming.is_conflict_copy(&path) {
+            if self.pair_config.conflict_naming.is_conflict_copy(&path) {
                 if matches!(event.kind, EventKind::Remove(_))
                     && let Some(original) = self
-                        .config
+                        .pair_config
                         .conflict_naming
                         .original_from_conflict_copy(&path)
-                    && let Ok(relative_path) = original.strip_prefix(&self.config.local_root)
+                    && let Ok(relative_path) = original.strip_prefix(&self.pair_config.local_root)
                     && self.scan_options.allows_relative_file(relative_path)
                 {
                     mark_modified(&self.connection, relative_path)?;
@@ -1689,7 +1805,7 @@ impl<C: ProtonClient> Daemon<C> {
                 continue;
             }
 
-            let relative_path = match path.strip_prefix(&self.config.local_root) {
+            let relative_path = match path.strip_prefix(&self.pair_config.local_root) {
                 Ok(relative_path) => relative_path.to_path_buf(),
                 Err(_) => continue,
             };
@@ -1750,9 +1866,9 @@ impl<C: ProtonClient> Daemon<C> {
             history: self.pass_history.clone(),
             index_totals: self.index_totals,
             config: RunningConfigInfo {
-                local_root: self.config.local_root.clone(),
-                remote_root: self.config.remote_root.clone(),
-                db_path: self.config.db_path.clone(),
+                local_root: self.pair_config.local_root.clone(),
+                remote_root: self.pair_config.remote_root.clone(),
+                db_path: self.pair_config.db_path.clone(),
             },
         };
         *self
@@ -1926,7 +2042,7 @@ impl<C: ProtonClient> Daemon<C> {
     fn plan_only_blocking(&mut self) -> AppResult<StoredPlan> {
         info!("computing a plan-only pass");
         let base_records = load_index(&self.connection)?;
-        let local_root = self.config.local_root.clone();
+        let local_root = self.pair_config.local_root.clone();
         let shared = Arc::clone(&self.shared);
         let observer = |files_seen: u64, path: &Path| {
             let display = path
@@ -1940,7 +2056,7 @@ impl<C: ProtonClient> Daemon<C> {
             });
         };
         let report = build_plan_report(
-            &self.config,
+            &self.pair_config,
             self.proton.as_ref(),
             &self.scan_options,
             base_records,
@@ -2128,7 +2244,7 @@ impl<C: ProtonClient> Daemon<C> {
         if self.is_first_reconcile {
             // `--full-walk` (a process-lifetime config flag, not the consumed atomic) stays in
             // force across a failed first pass, so the requested full walk still happens on retry.
-            let force_bootstrap = resync_requested || self.config.warm_start.force_full_walk;
+            let force_bootstrap = resync_requested || self.pair_config.warm_start.force_full_walk;
             let result = self.first_reconcile(base_records, force_bootstrap);
             // CLEAN only — a partial pass is not a success (#136). The re-queued failed paths
             // would keep the next pass non-idle anyway, but the "startup snapshots first" floor is
@@ -2228,8 +2344,8 @@ impl<C: ProtonClient> Daemon<C> {
     /// the cursor-age gate — it may be replaying a cursor persisted by a previous process across an
     /// unknown amount of downtime).
     fn warm_start_eligible(&mut self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
-        let warm = &self.config.warm_start;
-        if !warm.enabled || !self.config.events_driven || self.event_source.is_none() {
+        let warm = &self.pair_config.warm_start;
+        if !warm.enabled || !self.pair_config.events_driven || self.event_source.is_none() {
             return false;
         }
         // Self-healing full walk every N warm starts (across restarts). `0` maps to `u64::MAX`.
@@ -2247,7 +2363,7 @@ impl<C: ProtonClient> Daemon<C> {
     /// for a cursor past its event-retention window. A `Duration::ZERO` max age disables the gate; a
     /// future `updated_at` (clock skew) reads as stale so we take the safe full walk.
     fn cursor_is_fresh(&self, cursor: &EventCursor) -> bool {
-        let max_age = self.config.warm_start.max_cursor_age;
+        let max_age = self.pair_config.warm_start.max_cursor_age;
         if max_age.is_zero() {
             return true;
         }
@@ -2264,7 +2380,7 @@ impl<C: ProtonClient> Daemon<C> {
         // it — so there is no reason to climb past it. This keeps the value small (the in-memory and
         // persisted counts always agree, and never approach the signed-column range) except in the
         // "floor disabled" case, where the cap is `u64::MAX` and `store_warm_start_count` saturates.
-        let floor = effective_full_scan_every(self.config.warm_start.full_walk_every);
+        let floor = effective_full_scan_every(self.pair_config.warm_start.full_walk_every);
         self.warm_starts_since_full_walk = self
             .warm_starts_since_full_walk
             .saturating_add(1)
@@ -2283,7 +2399,7 @@ impl<C: ProtonClient> Daemon<C> {
     /// keyring is unlocked. No-op when the feature is off or a source already exists (so a working
     /// source is never rebuilt, and the keyring is only re-read while actually degraded).
     fn reacquire_event_source_if_needed(&mut self) {
-        if !self.config.events_driven || self.event_source.is_some() {
+        if !self.pair_config.events_driven || self.event_source.is_some() {
             return;
         }
         if let Some(source) = (self.event_source_factory)() {
@@ -2299,7 +2415,7 @@ impl<C: ProtonClient> Daemon<C> {
             // the counter when a warm start increments it past the `u64::MAX` sentinel.
             if !self.is_first_reconcile {
                 self.incremental_passes_since_full_scan =
-                    effective_full_scan_every(self.config.events_full_scan_every);
+                    effective_full_scan_every(self.pair_config.events_full_scan_every);
             }
         }
     }
@@ -2312,7 +2428,7 @@ impl<C: ProtonClient> Daemon<C> {
     /// **one** message family with one reason per cause, and a later scope decline — or a recovery,
     /// which clears the latch — re-reports correctly.
     fn note_degraded_session_if_needed(&mut self) {
-        if !self.config.events_driven || self.event_source.is_some() {
+        if !self.pair_config.events_driven || self.event_source.is_some() {
             return;
         }
         self.note_event_scope_declined(format!(
@@ -2320,7 +2436,7 @@ impl<C: ProtonClient> Daemon<C> {
              logged in); the {}s event poll is off, so full-tree snapshots and the session retry \
              both run on the {}s scan interval",
             self.events_poll_interval.as_secs(),
-            self.config.scan_interval.as_secs(),
+            self.pair_config.scan_interval.as_secs(),
         ));
     }
 
@@ -2329,7 +2445,7 @@ impl<C: ProtonClient> Daemon<C> {
     /// stored cursor to replay from — see [`Self::resolve_event_scope`]), and that the opt-in
     /// periodic safety resync (disabled by default) is not currently due.
     fn should_try_incremental(&mut self, base_records: &HashMap<PathBuf, FileRecord>) -> bool {
-        if !self.config.events_driven || self.event_source.is_none() {
+        if !self.pair_config.events_driven || self.event_source.is_none() {
             return false;
         }
         // Periodic safety resync (opt-in). `events_full_scan_every == 0` maps to `u64::MAX` here,
@@ -2337,7 +2453,7 @@ impl<C: ProtonClient> Daemon<C> {
         // resets it to 0 (that would take 2^64 passes) — so a disabled resync leaves the daemon
         // event-driven until restart or an event-stream fallback.
         if self.incremental_passes_since_full_scan
-            >= effective_full_scan_every(self.config.events_full_scan_every)
+            >= effective_full_scan_every(self.pair_config.events_full_scan_every)
         {
             return false;
         }
@@ -2528,7 +2644,7 @@ impl<C: ProtonClient> Daemon<C> {
             let resolver = TargetedResolver {
                 proton: self.proton.as_ref(),
                 connection: &self.connection,
-                remote_root: &self.config.remote_root,
+                remote_root: &self.pair_config.remote_root,
                 volume_id: &volume,
                 listings: RefCell::new(HashMap::new()),
             };
@@ -2615,7 +2731,7 @@ impl<C: ProtonClient> Daemon<C> {
             .begin_activity(new_activity(PHASE_SCANNING_LOCAL));
         let observer = |files_seen: u64, path: &Path| {
             let display = path
-                .strip_prefix(&self.config.local_root)
+                .strip_prefix(&self.pair_config.local_root)
                 .unwrap_or(path)
                 .display()
                 .to_string();
@@ -2626,7 +2742,7 @@ impl<C: ProtonClient> Daemon<C> {
                 });
         };
         scan_local_tree(
-            &self.config.local_root,
+            &self.pair_config.local_root,
             &self.scan_options,
             base_records,
             Some(&observer),
@@ -2660,7 +2776,7 @@ impl<C: ProtonClient> Daemon<C> {
             .begin_activity(new_activity(PHASE_LISTING_REMOTE));
         let (remote_entities, remote_root_missing) = load_remote_entities(
             self.proton.as_ref(),
-            &self.config.remote_root,
+            &self.pair_config.remote_root,
             &self.scan_options,
         )?;
         let mut base_index = filter_base_index(base_records, &self.scan_options);
@@ -2706,7 +2822,7 @@ impl<C: ProtonClient> Daemon<C> {
         &self,
         base_records: &HashMap<PathBuf, FileRecord>,
     ) -> PreSnapshotCursor {
-        if !self.config.events_driven {
+        if !self.pair_config.events_driven {
             return PreSnapshotCursor::Unavailable;
         }
         // Every remaining arm needs an event source, and the one below also spends a CLI
@@ -2770,7 +2886,7 @@ impl<C: ProtonClient> Daemon<C> {
     fn volume_id_from_remote_root(&self) -> Option<String> {
         match self
             .proton
-            .list_directory(&self.config.remote_root, Path::new(""))
+            .list_directory(&self.pair_config.remote_root, Path::new(""))
         {
             Ok(entities) => {
                 let volume = derive_volume_id_from_entities(&entities);
@@ -2810,7 +2926,7 @@ impl<C: ProtonClient> Daemon<C> {
         remote_entities: &HashMap<PathBuf, RemoteEntity>,
         remote_root_missing: bool,
     ) -> Option<CursorUpdate> {
-        if !self.config.events_driven || remote_root_missing {
+        if !self.pair_config.events_driven || remote_root_missing {
             return None;
         }
         match pre_snapshot_cursor {
@@ -2999,7 +3115,7 @@ impl<C: ProtonClient> Daemon<C> {
             local_entities,
             remote_entities,
             base_index,
-            &self.config.conflict_naming,
+            &self.pair_config.conflict_naming,
         );
         let matched_files = outcome.matched_files;
         let mut plan = outcome.actions;
@@ -3182,7 +3298,7 @@ impl<C: ProtonClient> Daemon<C> {
             // CLI invocations instead of one subprocess per file (grouped by destination
             // directory — see `execute_download_run`); a run of one takes the single-file arm
             // below. `download_batch_size = 1` disables batching entirely.
-            if self.config.download_batch_size > 1 && action.action == SyncAction::Download {
+            if self.pair_config.download_batch_size > 1 && action.action == SyncAction::Download {
                 let run_length = plan[action_number..]
                     .iter()
                     .take_while(|action| action.action == SyncAction::Download)
@@ -3245,7 +3361,7 @@ impl<C: ProtonClient> Daemon<C> {
                                 && !planned_remote_directories.contains(parent)
                             {
                                 self.proton
-                                    .ensure_directory(&self.config.remote_root, parent)?;
+                                    .ensure_directory(&self.pair_config.remote_root, parent)?;
                             }
                             transfer_index += 1;
                             let (transfers, remaining) = transfer_queue.window(
@@ -3279,7 +3395,7 @@ impl<C: ProtonClient> Daemon<C> {
                             }
                             let result = self.proton.upload(
                                 &local.absolute_path,
-                                &self.config.remote_root,
+                                &self.pair_config.remote_root,
                                 &action.path,
                             );
                             finish_transfer_spinner(spinner);
@@ -3309,15 +3425,16 @@ impl<C: ProtonClient> Daemon<C> {
                                 action.path.display()
                             ))
                         })?;
-                        let remote_path = safe_remote_path(&self.config.remote_root, &action.path)
-                            .ok_or_else(|| {
-                                boxed_error(format!(
-                                    "planned download for {} has an unsafe remote path",
-                                    action.path.display()
-                                ))
-                            })?;
+                        let remote_path =
+                            safe_remote_path(&self.pair_config.remote_root, &action.path)
+                                .ok_or_else(|| {
+                                    boxed_error(format!(
+                                        "planned download for {} has an unsafe remote path",
+                                        action.path.display()
+                                    ))
+                                })?;
                         let Some(destination) =
-                            safe_local_path(&self.config.local_root, &action.path)
+                            safe_local_path(&self.pair_config.local_root, &action.path)
                         else {
                             warn!(
                                 path = %action.path.display(),
@@ -3370,7 +3487,8 @@ impl<C: ProtonClient> Daemon<C> {
                         // `handle_fs_event` does not flip this fresh `Synced` record to `Modified`
                         // (issue #49). Downloads always target a regular file.
                         self.authored_writes.insert(action.path.clone());
-                        let local_state = local_file_state(&self.config.local_root, &destination)?;
+                        let local_state =
+                            local_file_state(&self.pair_config.local_root, &destination)?;
                         let record = FileRecord::from_local(
                             action.path.clone(),
                             &local_state,
@@ -3387,14 +3505,14 @@ impl<C: ProtonClient> Daemon<C> {
                     SyncAction::CreateRemoteDirectory => {
                         if action.path.as_os_str().is_empty() {
                             self.proton
-                                .ensure_root_directory(&self.config.remote_root)?;
+                                .ensure_root_directory(&self.pair_config.remote_root)?;
                             return Ok(());
                         }
                         if let Some(LocalEntityState::Directory(local)) =
                             local_entities.get(&action.path)
                         {
                             self.proton
-                                .ensure_directory(&self.config.remote_root, &action.path)?;
+                                .ensure_directory(&self.pair_config.remote_root, &action.path)?;
                             let record = FileRecord::from_local_directory(
                                 action.path.clone(),
                                 local,
@@ -3415,11 +3533,11 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                     SyncAction::CreateLocalDirectory => {
                         if let Some(destination) =
-                            safe_local_path(&self.config.local_root, &action.path)
+                            safe_local_path(&self.pair_config.local_root, &action.path)
                         {
                             fs::create_dir_all(&destination)?;
                             let local_state =
-                                local_directory_state(&self.config.local_root, &destination)?;
+                                local_directory_state(&self.pair_config.local_root, &destination)?;
                             let record = FileRecord::from_local_directory(
                                 action.path.clone(),
                                 &local_state,
@@ -3437,9 +3555,9 @@ impl<C: ProtonClient> Daemon<C> {
                     SyncAction::MoveLocal => {
                         if let Some(destination_path) = action.destination_path.as_ref()
                             && let Some(source) =
-                                safe_local_path(&self.config.local_root, &action.path)
+                                safe_local_path(&self.pair_config.local_root, &action.path)
                             && let Some(destination) =
-                                safe_local_path(&self.config.local_root, destination_path)
+                                safe_local_path(&self.pair_config.local_root, destination_path)
                         {
                             ensure_parent_directory(&destination)?;
                             fs::rename(&source, &destination)?;
@@ -3455,8 +3573,10 @@ impl<C: ProtonClient> Daemon<C> {
                                 // without this hint an event-driven pass with an empty delta would
                                 // idle-skip the local scan and never discover them.
                                 failures.rescan_next_pass.insert(destination_path.clone());
-                                let local_state =
-                                    local_directory_state(&self.config.local_root, &destination)?;
+                                let local_state = local_directory_state(
+                                    &self.pair_config.local_root,
+                                    &destination,
+                                )?;
                                 let record = FileRecord::from_local_directory(
                                     destination_path.clone(),
                                     &local_state,
@@ -3490,7 +3610,7 @@ impl<C: ProtonClient> Daemon<C> {
                                 // `handle_fs_event`, so only the file branch records.
                                 self.authored_writes.insert(destination_path.clone());
                                 let local_state =
-                                    local_file_state(&self.config.local_root, &destination)?;
+                                    local_file_state(&self.pair_config.local_root, &destination)?;
                                 let record = FileRecord::from_local(
                                     destination_path.clone(),
                                     &local_state,
@@ -3519,10 +3639,10 @@ impl<C: ProtonClient> Daemon<C> {
                                 && !parent.as_os_str().is_empty()
                             {
                                 self.proton
-                                    .ensure_directory(&self.config.remote_root, parent)?;
+                                    .ensure_directory(&self.pair_config.remote_root, parent)?;
                             }
                             self.proton.rename_or_move(
-                                &self.config.remote_root,
+                                &self.pair_config.remote_root,
                                 &action.path,
                                 destination_path,
                             )?;
@@ -3577,7 +3697,7 @@ impl<C: ProtonClient> Daemon<C> {
                                 return Ok(());
                             };
                             let Some(destination) =
-                                safe_local_path(&self.config.local_root, conflict_path)
+                                safe_local_path(&self.pair_config.local_root, conflict_path)
                             else {
                                 warn!(
                                     path = %action.path.display(),
@@ -3620,10 +3740,10 @@ impl<C: ProtonClient> Daemon<C> {
                             }
                         } else if action.remote_id.is_some()
                             && let Some(remote_path) =
-                                safe_remote_path(&self.config.remote_root, &action.path)
+                                safe_remote_path(&self.pair_config.remote_root, &action.path)
                             && let Some(conflict_path) = action.conflict_path.as_ref()
                             && let Some(destination) =
-                                safe_local_path(&self.config.local_root, conflict_path)
+                                safe_local_path(&self.pair_config.local_root, conflict_path)
                         {
                             ensure_parent_directory(&destination)?;
                             let result = self.proton.download(&remote_path, &destination);
@@ -3669,9 +3789,9 @@ impl<C: ProtonClient> Daemon<C> {
                         {
                             if action.remote_id.is_some()
                                 && let Some(remote_path) =
-                                    safe_remote_path(&self.config.remote_root, &action.path)
+                                    safe_remote_path(&self.pair_config.remote_root, &action.path)
                                 && let Some(destination) =
-                                    safe_local_path(&self.config.local_root, conflict_path)
+                                    safe_local_path(&self.pair_config.local_root, conflict_path)
                             {
                                 ensure_parent_directory(&destination)?;
                                 let result = self.proton.download(&remote_path, &destination);
@@ -3683,7 +3803,7 @@ impl<C: ProtonClient> Daemon<C> {
                                     return Ok(());
                                 }
                                 let local_state =
-                                    local_file_state(&self.config.local_root, &destination)?;
+                                    local_file_state(&self.pair_config.local_root, &destination)?;
                                 let sidecar_record = FileRecord::from_local(
                                     conflict_path.clone(),
                                     &local_state,
@@ -3724,13 +3844,14 @@ impl<C: ProtonClient> Daemon<C> {
                                 action.path.display()
                             ))
                         })?;
-                        let remote_path = safe_remote_path(&self.config.remote_root, &action.path)
-                            .ok_or_else(|| {
-                                boxed_error(format!(
-                                    "planned remote delete for {} has an unsafe remote path",
-                                    action.path.display()
-                                ))
-                            })?;
+                        let remote_path =
+                            safe_remote_path(&self.pair_config.remote_root, &action.path)
+                                .ok_or_else(|| {
+                                    boxed_error(format!(
+                                        "planned remote delete for {} has an unsafe remote path",
+                                        action.path.display()
+                                    ))
+                                })?;
                         self.proton.delete(&remote_path)?;
                         self.pass_log
                             .note(SyncAction::RemoteDelete, &action.path, None);
@@ -3754,7 +3875,7 @@ impl<C: ProtonClient> Daemon<C> {
                             return Ok(());
                         }
                         let Some(destination) =
-                            safe_local_path(&self.config.local_root, &action.path)
+                            safe_local_path(&self.pair_config.local_root, &action.path)
                         else {
                             warn!(
                                 path = %action.path.display(),
@@ -3994,7 +4115,8 @@ impl<C: ProtonClient> Daemon<C> {
                 );
                 continue;
             };
-            let Some(remote_path) = safe_remote_path(&self.config.remote_root, &action.path) else {
+            let Some(remote_path) = safe_remote_path(&self.pair_config.remote_root, &action.path)
+            else {
                 failures.record(
                     action,
                     boxed_error(format!(
@@ -4005,7 +4127,8 @@ impl<C: ProtonClient> Daemon<C> {
                 );
                 continue;
             };
-            let Some(destination) = safe_local_path(&self.config.local_root, &action.path) else {
+            let Some(destination) = safe_local_path(&self.pair_config.local_root, &action.path)
+            else {
                 warn!(
                     path = %action.path.display(),
                     "skipping download: local destination escapes the sync root \
@@ -4044,7 +4167,7 @@ impl<C: ProtonClient> Daemon<C> {
                 _ => groups.push((parent, vec![prepared])),
             }
         }
-        let batch_size = self.config.download_batch_size.max(1);
+        let batch_size = self.pair_config.download_batch_size.max(1);
         let mut vanished_nodes = 0usize;
         for (parent, members) in &groups {
             if let Some(first) = members.first()
@@ -4173,7 +4296,10 @@ impl<C: ProtonClient> Daemon<C> {
                 // instant after promotion) is that ITEM's failure, never a `?` out of the
                 // loop — the chunk's other survivors must still reach the checkpoint below.
                 Ok(()) => {
-                    match local_file_state(&self.config.local_root, &prepared.request.destination) {
+                    match local_file_state(
+                        &self.pair_config.local_root,
+                        &prepared.request.destination,
+                    ) {
                         Ok(local_state) => {
                             // Suppress this landed download's watcher echo so it cannot flip the
                             // fresh `Synced` record to `Modified` (issue #49); same rationale as
@@ -4257,10 +4383,10 @@ impl<C: ProtonClient> Daemon<C> {
         base_index: &HashMap<PathBuf, FileRecord>,
     ) -> AppResult<DeleteGate> {
         let mut resolver = DirectoryConfigResolver::new(
-            &self.config.local_root,
+            &self.pair_config.local_root,
             EffectiveSettings {
-                require_remote_delete_approval: self.config.delete_approval_remote,
-                require_local_delete_approval: self.config.delete_approval_local,
+                require_remote_delete_approval: self.pair_config.delete_approval_remote,
+                require_local_delete_approval: self.pair_config.delete_approval_local,
             },
         );
         let mut gate = DeleteGate::default();
@@ -5705,7 +5831,7 @@ fn record_approval_consumption(
     }
 }
 
-fn scan_options_from_config(config: &DaemonConfig) -> AppResult<ScanOptions> {
+fn scan_options_from_config(config: &PairConfig) -> AppResult<ScanOptions> {
     // The default state paths all live under `<local_root>/.sync`, which `ScanOptions` ignores as a
     // subtree. These explicit entries additionally cover a state path relocated *out* of `.sync`
     // via `--db-path`/`--lockfile-path` but still inside the sync root, so it is never planned for
@@ -6788,7 +6914,7 @@ mod tests {
     fn browse_context<C: ProtonClient>(daemon: &Daemon<C>) -> BrowseContext<C> {
         BrowseContext {
             proton: Arc::clone(&daemon.proton),
-            remote_root: daemon.config.remote_root.clone(),
+            remote_root: daemon.pair_config.remote_root.clone(),
             gate_wait: daemon.browse_gate_wait,
         }
     }
@@ -7095,7 +7221,7 @@ mod tests {
     ) -> ListingOutcome {
         let context = BrowseContext {
             proton: Arc::clone(&daemon.proton),
-            remote_root: daemon.config.remote_root.clone(),
+            remote_root: daemon.pair_config.remote_root.clone(),
             gate_wait: daemon.browse_gate_wait,
         };
         tokio::runtime::Builder::new_current_thread()
@@ -7120,7 +7246,7 @@ mod tests {
         fs::create_dir(&local_root).expect("local root");
         let (daemon, seen) = absolute_browsing_daemon(directory.path(), &local_root);
         assert_eq!(
-            daemon.config.remote_root,
+            daemon.pair_config.remote_root,
             PathBuf::from("/Drive/RemoteFolder"),
             "the candidate below is deliberately not under this"
         );
@@ -12359,13 +12485,13 @@ mod tests {
         // is only in the GUI's conflicts list if both hold for what the daemon actually wrote.
         assert!(
             daemon
-                .config
+                .pair_config
                 .conflict_naming
                 .is_conflict_copy(&sidecar_path)
         );
         assert_eq!(
             daemon
-                .config
+                .pair_config
                 .conflict_naming
                 .original_from_conflict_copy(&sidecar_path),
             Some(local_path.clone())
@@ -13199,7 +13325,7 @@ mod tests {
         let plane = ControlPlane {
             shared: Arc::clone(&daemon.shared),
             approvals: tokio::sync::Mutex::new(
-                open_database(&daemon.config.db_path).expect("second connection"),
+                open_database(&daemon.pair_config.db_path).expect("second connection"),
             ),
             loop_tx,
             io_timeout: Duration::from_millis(50),
@@ -14630,7 +14756,7 @@ mod tests {
         // applies its own cursor-age gate there instead.)
         assert_eq!(
             daemon.incremental_passes_since_full_scan,
-            effective_full_scan_every(daemon.config.events_full_scan_every),
+            effective_full_scan_every(daemon.pair_config.events_full_scan_every),
             "mid-life reacquisition must force a snapshot floor"
         );
 
@@ -15494,7 +15620,7 @@ mod tests {
         )
         .expect("daemon");
         // Rebuild scan options so the exclude pattern actually applies (the daemon caches them).
-        daemon.scan_options = scan_options_from_config(&daemon.config).expect("scan options");
+        daemon.scan_options = scan_options_from_config(&daemon.pair_config).expect("scan options");
 
         upsert_record(
             &daemon.connection,
@@ -15837,7 +15963,7 @@ mod tests {
         // rather than bootstrapping (PR #160).
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
-        let created = daemon.config.local_root.join("photos");
+        let created = daemon.pair_config.local_root.join("photos");
         fs::create_dir(&created).expect("empty local directory");
 
         daemon
@@ -15878,7 +16004,7 @@ mod tests {
         // periodic resync off by default there is no later full walk to re-derive it from.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
-        let edited = daemon.config.local_root.join("a.txt");
+        let edited = daemon.pair_config.local_root.join("a.txt");
         let contents = b"edited while the watcher was deaf";
         fs::write(&edited, contents).expect("local edit");
         // Deliberately no `handle_fs_event`: this is the event the overflow dropped.
@@ -16425,7 +16551,7 @@ mod tests {
         // persisted counter so the cadence restarts.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks, _lists, _old, _edited) = warm_start_fixture(&directory);
-        daemon.config.warm_start.full_walk_every = 3;
+        daemon.pair_config.warm_start.full_walk_every = 3;
         store_event_cursor(
             &daemon.connection,
             "vol",
@@ -16461,7 +16587,7 @@ mod tests {
         // eligible.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks, _lists, _old, _edited) = warm_start_fixture(&directory);
-        daemon.config.warm_start.force_full_walk = true;
+        daemon.pair_config.warm_start.force_full_walk = true;
         store_event_cursor(
             &daemon.connection,
             "vol",
@@ -16991,7 +17117,7 @@ mod tests {
         let (mut daemon, _walks) = steady_state_event_daemon(&directory);
         // The shipped default: no periodic safety resync, so nothing after the startup snapshot
         // full-sweeps and every pass below is a genuinely idle incremental one.
-        daemon.config.events_full_scan_every = 0;
+        daemon.pair_config.events_full_scan_every = 0;
         let after_bootstrap = recorded_passes(&daemon).len();
 
         for _ in 0..50 {
@@ -17464,7 +17590,13 @@ mod tests {
                 .is_none()
         );
         // And nothing was transferred: the local tree is exactly as it was.
-        assert!(!daemon.config.local_root.join("remote-only.txt").exists());
+        assert!(
+            !daemon
+                .pair_config
+                .local_root
+                .join("remote-only.txt")
+                .exists()
+        );
         // `reconcile_seq` deliberately does not move: a `syncnow` watcher polling it must not be
         // satisfied by a pass that synced nothing.
         assert_eq!(
@@ -17573,7 +17705,11 @@ mod tests {
             other => panic!("expected an applied verdict, got {other:?}"),
         }
         assert!(
-            daemon.config.local_root.join("remote-only.txt").exists(),
+            daemon
+                .pair_config
+                .local_root
+                .join("remote-only.txt")
+                .exists(),
             "the reviewed download must have landed"
         );
     }
@@ -17589,7 +17725,7 @@ mod tests {
         let reviewed = computed_plan(&daemon.shared);
 
         // The tree moves under the reviewed plan: a second local file appears.
-        fs::write(daemon.config.local_root.join("appeared.txt"), b"new").expect("new file");
+        fs::write(daemon.pair_config.local_root.join("appeared.txt"), b"new").expect("new file");
 
         let apply_seq = daemon
             .shared
@@ -17607,7 +17743,13 @@ mod tests {
             other => panic!("expected a divergence, got {other:?}"),
         }
         // Nothing ran…
-        assert!(!daemon.config.local_root.join("remote-only.txt").exists());
+        assert!(
+            !daemon
+                .pair_config
+                .local_root
+                .join("remote-only.txt")
+                .exists()
+        );
         assert!(
             get_record(&daemon.connection, Path::new("local-only.txt"))
                 .expect("lookup")
@@ -17916,7 +18058,7 @@ mod tests {
             .book_apply_request(&token, false)
             .expect("token accepted");
         // The local scan now fails, so the pass never reaches the token comparison.
-        fs::remove_dir_all(&daemon.config.local_root).expect("remove the local root");
+        fs::remove_dir_all(&daemon.pair_config.local_root).expect("remove the local root");
 
         assert!(daemon.reconcile_blocking().is_err());
         match daemon.shared.apply_outcome().expect("verdict") {
@@ -17993,7 +18135,13 @@ mod tests {
             } => assert_eq!(sealed, apply_seq),
             other => panic!("expected a cancelled apply, got {other:?}"),
         }
-        assert!(!daemon.config.local_root.join("remote-only.txt").exists());
+        assert!(
+            !daemon
+                .pair_config
+                .local_root
+                .join("remote-only.txt")
+                .exists()
+        );
 
         // …and resuming does NOT fire it: the intent is gone, so the next pass is an ordinary sync.
         daemon.shared.pair.paused.store(false, Ordering::SeqCst);
@@ -18044,7 +18192,13 @@ mod tests {
             plan.total > 0,
             "precondition: the fixture's two sides differ, so there is something to plan"
         );
-        assert!(!daemon.config.local_root.join("remote-only.txt").exists());
+        assert!(
+            !daemon
+                .pair_config
+                .local_root
+                .join("remote-only.txt")
+                .exists()
+        );
     }
 
     /// The events-mode idle fast-path returns before `execute_plan_and_commit`, so an apply that
