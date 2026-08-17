@@ -189,11 +189,16 @@ mod tests {
         }
     }
 
+    /// EVERY variant of [`IpcError`], including #335's new `NotListening`. The finer split exists so
+    /// the restart can *decide* on the daemon's presence; what this screen *draws* must not move
+    /// with it, because a reply that could not be trusted is still no numbers to show.
     #[test]
     fn unreachable_wins_over_everything() {
-        let err = IpcError::Unreachable("no socket".into());
+        let err = IpcError::Unreachable("timed out".into());
         assert_eq!(derive_state(Err(&err)), DaemonState::Unreachable);
         let err = IpcError::Protocol("bad json".into());
+        assert_eq!(derive_state(Err(&err)), DaemonState::Unreachable);
+        let err = IpcError::NotListening("no socket".into());
         assert_eq!(derive_state(Err(&err)), DaemonState::Unreachable);
     }
 

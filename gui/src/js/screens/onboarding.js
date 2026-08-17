@@ -606,6 +606,11 @@ let view = null;
  * The two typed roots are absent on purpose: step 1 holds a live `<input>`, and rebuilding it on the
  * ~2s poll would move the caret to the end of whatever someone was typing. Step 2 has no field, so
  * its relative time is free to be in here.
+ *
+ * EVERY DRAWN NUMBER, not the fields they are derived from. Since #324 the counts come off
+ * `report.summary` — which describes the whole plan — while `report.plan` is a bounded window of
+ * it, so a signature naming rows and one summary field could compare two different plans equal
+ * (#335). Each arm below asks the model its body builds.
  */
 function signatureOf(props) {
   const body = bodyOf(props);
@@ -617,12 +622,17 @@ function signatureOf(props) {
   // list, and a keystroke in the add field must not — this body is rebuilt on the ~2s poll and a
   // rebuilt `<input>` loses the caret and everything typed since the last one.
   if (body === "skip") return JSON.stringify(["skip", props.skipRules ?? []]);
-  // The plan's rows, by the same rule the Plan screen's own signature uses.
+  // The plan's rows AND the numbers drawn beside them, by the same rule the Plan screen's own
+  // signature uses. `summary.total` alone was not that rule: the head draws
+  // `actionsThatHappen(summary)` — total MINUS `skipped_unsupported` — and the conflict count off
+  // the summary, so a reply whose window had not moved could leave both stale. Asked of the model
+  // the body actually builds, rather than of the three fields it happens to be built from today.
   if (body === "actions") {
+    const model = actionsModel(props.dryRun);
     return JSON.stringify([
       "actions",
-      (props.dryRun?.report?.plan ?? []).map((row) => [row.path, row.destination_path, row.action]),
-      props.dryRun?.report?.summary?.total ?? null,
+      model.rows.map((row) => [row.path, row.destination_path, row.action]),
+      [model.total, model.conflicts, model.gated, model.hidden],
     ]);
   }
   if (body === "checking") return "checking";
@@ -630,7 +640,11 @@ function signatureOf(props) {
   const s = props.dryRun?.report?.summary ?? null;
   return JSON.stringify([
     "review",
-    s && [s.uploads, s.downloads, s.conflicts, s.skipped_unsupported, s.destructive_actions],
+    // `total` is in here for `See all N actions` (#244/#335): the label is
+    // `actionsThatHappen(summary)`, which is `total` minus `skipped_unsupported`, and a signature
+    // carrying only the second half would leave a stale N on a button that then opens a different
+    // list. Every other entry is a number the facts block draws.
+    s && [s.total, s.uploads, s.downloads, s.conflicts, s.skipped_unsupported, s.destructive_actions],
     // The `can't be synced` row's own source (#315), and it must be in here or the row goes stale:
     // `skipped_unsupported` above no longer draws anything, so a rehearsal that gained or lost a
     // socket would leave the previous sentence on screen. The KINDS and not just the count — one

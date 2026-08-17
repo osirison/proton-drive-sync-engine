@@ -3,9 +3,9 @@
 //! The daemon processes IPC on a single-threaded `select!` loop and deliberately does **not**
 //! time-bound request *processing*, so a `status` poll issued while a reconcile is in flight can
 //! block for the full duration of that reconcile. The daemon's own client library has no
-//! client-side timeout either. This client therefore sets read/write timeouts itself and maps a
-//! missing socket, a refused connection, or a timeout to [`IpcError::Unreachable`] — which the UI
-//! must render as its own state, **never as zeroes**.
+//! client-side timeout either. This client therefore sets read/write timeouts itself and maps
+//! every transport failure to [`IpcError::NotListening`] or [`IpcError::Unreachable`] — both of
+//! which the UI must render as its own state, **never as zeroes**.
 
 use crate::wire::{ControlCommand, ControlRequest, ControlResponse, DeleteDirection};
 use std::path::Path;
@@ -17,20 +17,38 @@ use std::time::Duration;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Why a control-socket exchange failed.
+///
+/// **Three variants, and the split between the first two is evidence rather than wording** (#335).
+/// A caller that has to *act* on the daemon's presence — the restart, which stops a process and
+/// starts it again — needs to tell "nothing is listening on that socket" from "something is bound
+/// to it and the exchange did not finish", and those two are only distinguishable at the moment
+/// [`send_request`] makes them. Reading them back out of the message string is the bug #103 exists
+/// to remove, one layer down.
+///
+/// Every variant still renders as the UI's own "daemon unreachable" state
+/// ([`crate::state::derive_state`] maps them all alike, deliberately): this classification is for
+/// deciding, not for drawing.
 #[derive(Debug)]
 pub enum IpcError {
-    /// The daemon could not be reached: the socket file is missing, the connection was refused,
-    /// the peer closed early, or the request timed out. The UI must surface this as the
-    /// "daemon unreachable" state (em-dash counters, empty ledger), not as zeroes.
+    /// **Nothing is listening**: the socket file does not exist, or the connection was refused
+    /// (a stale socket file with no daemon behind it). Authoritative absence — the connect never
+    /// completed, so nothing was bound.
+    NotListening(String),
+    /// The daemon could not be reached and **it is not known whether it is there**: the connect
+    /// succeeded and then the request timed out, or the peer closed early, or the socket options
+    /// could not be set. A successful connect means something *was* bound to that path, so this is
+    /// not evidence of absence.
     Unreachable(String),
     /// The daemon replied but the exchange could not be encoded/decoded — a protocol mismatch.
-    /// Treated by [`crate::state::derive_state`] as unreachable, since the reply can't be trusted.
+    /// Treated by [`crate::state::derive_state`] as unreachable, since the reply can't be trusted;
+    /// as *evidence*, though, it is a daemon answering.
     Protocol(String),
 }
 
 impl std::fmt::Display for IpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            IpcError::NotListening(m) => write!(f, "nothing is listening: {m}"),
             IpcError::Unreachable(m) => write!(f, "daemon unreachable: {m}"),
             IpcError::Protocol(m) => write!(f, "protocol error: {m}"),
         }
@@ -50,8 +68,20 @@ pub fn send_request(
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
-    let stream = UnixStream::connect(socket_path)
-        .map_err(|e| IpcError::Unreachable(format!("connect {}: {e}", socket_path.display())))?;
+    // THE ONE PLACE THAT KNOWS. A failed `connect` is the only transport failure that proves
+    // nothing was bound, and only `ErrorKind` says which failure it was — a caller reading the
+    // message string back out could not tell `NotFound` from a permissions refusal (#335).
+    let stream = UnixStream::connect(socket_path).map_err(|e| {
+        let message = format!("connect {}: {e}", socket_path.display());
+        match e.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+                IpcError::NotListening(message)
+            }
+            // Anything else (a permissions denial, a path too long, an interrupted call) says
+            // something about *us*, not about whether a daemon is there.
+            _ => IpcError::Unreachable(message),
+        }
+    })?;
     stream
         .set_read_timeout(Some(timeout))
         .map_err(|e| IpcError::Unreachable(e.to_string()))?;
@@ -227,12 +257,39 @@ mod tests {
         );
     }
 
+    /// #335: a missing socket is the ONE transport failure that proves nothing is there, and it has
+    /// its own variant so a caller that stops and starts a process can act on it. Still an error
+    /// value and still drawn as the unreachable state — see `derive_state`, which maps every
+    /// variant alike.
     #[test]
-    fn a_missing_socket_is_unreachable_not_an_error_value() {
+    fn a_missing_socket_says_nothing_is_listening_rather_than_merely_unreachable() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("nope.sock");
         let err = command(&missing, ControlCommand::Status, DEFAULT_TIMEOUT).unwrap_err();
-        assert!(matches!(err, IpcError::Unreachable(_)), "got {err:?}");
+        assert!(matches!(err, IpcError::NotListening(_)), "got {err:?}");
+    }
+
+    /// The other half of the split, and the one that must NOT read as absence: a socket file with
+    /// nothing accepting on it. `connect` on a plain file gives `ConnectionRefused` on Linux, which
+    /// is still authoritative absence; the case this pins is a real listener that never answers,
+    /// which reaches the read timeout with the connect already done.
+    #[test]
+    fn a_listener_that_never_answers_is_unreachable_not_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silent.sock");
+        // Bound, accepting connections, and replying to nothing.
+        let listener = UnixListener::bind(&path).unwrap();
+        thread::spawn(move || {
+            let held = listener.accept();
+            // Hold the connection open past the client's timeout without writing a byte.
+            thread::sleep(Duration::from_millis(600));
+            drop(held);
+        });
+        let err = command(&path, ControlCommand::Status, Duration::from_millis(150)).unwrap_err();
+        assert!(
+            matches!(err, IpcError::Unreachable(_)),
+            "a bound socket that did not answer is not evidence of absence: got {err:?}"
+        );
     }
 
     #[test]

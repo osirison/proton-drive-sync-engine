@@ -26,7 +26,7 @@ effect, silently.
 beside it, and the poison check targets the predicate:
 
 ```rust
-fn restart_is_wanted(only_if_running: bool, was_running: bool) -> bool { … }
+fn restart_plan(only_if_running: bool, probe: DaemonProbe) -> RestartPlan { … }
 ```
 
 `a_save_never_starts_a_service_that_was_not_running` asserts the truth table with no I/O at
@@ -35,6 +35,19 @@ The test that drives `restart_service_impl` itself stays — it is the wiring �
 ever green-path: with `only_if_running: true` and a socket nothing is listening on, the early
 return happens before any spawn.
 
+**Run the pure test ALONE while the poison is in, and name it in full.** A poisoned
+`restart_plan` is exactly the build in which the green-path wiring test stops being green-path:
+with the decision broken, `restart_service_impl` walks past its early return and reaches the
+spawn. So filter to the one test, and the filter needs the module path — the tests live in
+`commands::socket_tests`, not `commands::tests`, and a bare name with `--exact` silently
+matches nothing (`0 passed; 73 filtered out`, which reads like a pass):
+
+```bash
+cargo test -p proton-sync-gui --lib \
+  commands::socket_tests::a_save_never_starts_a_service_that_was_not_running -- --exact
+# `cargo test -p gui-core` does not exist either — the package is `proton-sync-gui-core`.
+```
+
 **Check afterwards anyway:** `systemctl --user status proton-syncd` reports `Active: … since`,
 so an untouched daemon's start time is older than the test run. That is how this one was
-confirmed harmless.
+confirmed harmless — twice now (#320 and #335).

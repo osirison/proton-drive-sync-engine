@@ -103,7 +103,7 @@ parser would reject (so a save can't brick startup). The file is written atomica
 `0600`. Sections:
 
 - **Folders** — `local_root`, `remote_root`. Editing a root warns that it re-bootstraps the
-  index; preview the plan first before restarting.
+  index; preview the plan first, because saving restarts the service straight away.
 - **Schedule** — `scan_interval_secs`, and the `events_driven` toggle (Proton volume-events
   stream for fast incremental reconcile).
 - **Selective sync** — the raw `include` / `exclude` glob lists. Copy states exclude beats
@@ -111,22 +111,30 @@ parser would reject (so a save can't brick startup). The file is written atomica
 - **CLI** — `proton_cli` path, `proton_timeout_secs`, `proton_list_attempts`.
 - **Delete approval** — the `remote` and `local` toggles, both shown **on (protected)** by
   default so a `null` in the file never misrepresents a security guard as off.
-- **Service** — the config file path and a **Restart daemon now** button (the equivalent
-  manual command is shown alongside).
+- **Service** — the config file path. There is no standing restart button: the save does the
+  restart itself, and one appears only when a restart left something to fix (below).
 
 The daemon only reads its config at startup, so **a successful save restarts it for you**.
 The restart asks the running daemon to exit gracefully over IPC (this works however it was
 launched), waits for the control socket to go quiet, then starts it again — via the systemd
 unit when installed, else by spawning `proton-syncd` directly against the saved config.
 
-Three things follow, and the screen says which one happened:
+A restart has five endings, and the screen says which one happened rather than one sentence
+covering all of them:
 
-- If a sync is in progress when you have a change staged, the footer warns you before you
-  press **Save** — the restart stops that pass, and it starts again on the new settings.
-- If the service was **not running**, nothing is started: it picks the new settings up
-  whenever you next start it. A save is not a request to begin syncing.
-- If the restart **fails**, the screen says so and keeps a **Restart it now** button, because
-  the file is written and the daemon is still on the old settings until it is restarted.
+- **It restarted.** The service is running your new settings.
+- **It was not running**, so nothing was started: it picks the new settings up whenever you
+  next start it. A save is not a request to begin syncing.
+- **It stopped and would not start again.** Nothing is syncing — the commonest cause is no
+  systemd unit and no `proton-syncd` on `PATH`. The screen says so and keeps a **Restart it
+  now** button.
+- **It never stopped** (an eight-second wait). The old process is still running, still on the
+  old settings, with the new ones written to disk in front of it. **Restart it now** stays.
+- **It could not be told apart** — the control socket neither answered nor proved it was
+  absent. Nothing was restarted, and the screen says only that.
+
+If a sync is in progress when you have a change staged, the footer warns you before you press
+**Save** — the restart stops that pass, and it starts again on the new settings.
 
 ## Onboarding
 

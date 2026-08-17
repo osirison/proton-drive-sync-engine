@@ -76,6 +76,10 @@ import {
   configUpdate,
   isDirty,
   removalCost,
+  restartEndingOf,
+  restartUnresolved,
+  clearsRestartFailure,
+  saveNoteFor,
 } from "./screens/settings.js";
 import {
   renderOnboarding,
@@ -762,6 +766,19 @@ function render() {
   // message just as much as the button does, and none of those three passes through `startService`.
   // Without it the next outage would be diagnosed with a superseded reason. Found by review.
   if (serviceStartError && clearsStartError(st)) serviceStartError = null;
+  // AND THE SAME RULE FOR THE SAVE'S RESTART (#335), which is a fact about a DAEMON and so has to be
+  // re-validated against one: systemd ships `Restart=on-failure`, so after a start that failed the
+  // service can come up on the new settings by itself while the bar still offers to restart it.
+  //
+  // Only `not_started` is retired by a socket that answers, and that asymmetry is why this could not
+  // be written before the endings were typed: that ending was reached at a moment of confirmed
+  // absence, so anything answering now started afterwards and read the new file — while after
+  // `never_stopped` the daemon answering IS the old one, on the old settings, which is the problem
+  // rather than the end of it. `clearsStartError` supplies "the socket answers", so there is one
+  // definition of that and not two.
+  if (settingsSaveOutcome && clearsRestartFailure(settingsSaveOutcome.ending, clearsStartError(st))) {
+    settingsSaveOutcome = null;
+  }
   onboardingLatch =
     onboardingStage !== null
       ? false
@@ -2580,24 +2597,23 @@ let settingsSweeping = false;
 /** The daemon's refusal, verbatim. Non-null is what opens `8a Save refused`. */
 let settingsError = null;
 /**
- * What the save that just landed left behind — one of `SETTINGS.savedRestarted`,
- * `SETTINGS.savedNotRunning` or `SETTINGS.savedNotRestarted`, or null for no save.
+ * What the restart the last save asked for did — `{ ending, reason }`, or null for no save.
+ *
+ * ONE VARIABLE, BECAUSE IT IS ONE FACT (#335). It was two — a note and a failure reason — and they
+ * were set, cleared and re-validated in different places, which is how a `Restart it now` outlived
+ * the state it was for and how navigating away lost one. The ending is `RestartOutcome`'s own tag
+ * (`restarted` · `not_running` · `not_started` · `never_stopped` · `undetermined`, or `unknown` for
+ * a backend this build cannot name); the sentence comes from `saveNoteFor` and the retry slot from
+ * `restartUnresolved`, so neither can describe a different ending than the other.
  *
  * SET FOR A CONFIG WRITE ONLY. A policy-only save writes `gui.toml`, which the daemon never reads,
  * so a sentence about the sync service would be about a file nothing is waiting on — and the
  * restart itself is skipped for the same reason, rather than bouncing the daemon for a setting it
  * has never heard of. What a policy-only save leaves behind is what any form leaves behind: a
- * `Save` that has gone quiet because there is nothing left to save.
+ * `Save` that has gone quiet because there is nothing left to save. It leaves an EARLIER save's
+ * unresolved ending exactly where it was, which is the state that save did nothing about.
  */
-let settingsSavedNote = null;
-/**
- * The restart's reason for failing, or null — the state that keeps `Restart it now` on the bar.
- *
- * ITS OWN VARIABLE AND NOT A FLAVOUR OF THE NOTE ABOVE, because it is the one post-save state with
- * an action attached: the file is written, the daemon is still on the old settings, and `Save` is
- * disabled because nothing is staged (#320).
- */
-let settingsRestartFailed = null;
+let settingsSaveOutcome = null;
 /** A restart asked for and not yet answered. `restart_service` can take ten seconds. */
 let settingsRestarting = false;
 /**
@@ -2625,21 +2641,30 @@ function resetSettingsScreen() {
   settingsRestarting = false;
   settingsNotice = null;
   settingsError = null;
-  settingsSavedNote = null;
-  settingsRestartFailed = null;
+  clearSaveOutcome();
   skipRuleReport = null;
   skipRuleAsked = false;
 }
 
 /**
- * Forget what the last save left behind. BOTH halves, always: the note and the failed restart are
- * two facts about one save, and an edit invalidates the pair — the next `Save` writes again and
- * restarts again, so a `Restart it now` left standing beside a staged change would be offering to
- * bounce the daemon onto a file that is about to be rewritten.
+ * Forget what the last save left behind — **the settled endings only** (#335).
+ *
+ * A SETTLED ENDING IS TRANSIENT AND AN UNRESOLVED ONE IS A STATE. `Saved. The sync service
+ * restarted` is an acknowledgement of something finished, and it stops being interesting the moment
+ * anything else happens. An unresolved ending is not: the file on disk is running ahead of the
+ * service, that is still true after walking to Activity and back, and in the two endings where the
+ * daemon is UP on the old settings this screen's bar is the only restart control left in the app —
+ * so forgetting it here left no way out from inside the app at all.
+ *
+ * That is why an EDIT calls this too rather than clearing outright. The old rule ("an edit
+ * invalidates the pair, because the next `Save` restarts again") was true of the note and false of
+ * the failure: staging a change and discarding it lost the retry for good, and a staged
+ * notification policy saves without restarting anything. What keeps a retry from being offered
+ * beside a config write that is about to happen anyway is `barActionOf`, which yields the slot
+ * while a daemon-config change is staged and takes it back when there is none.
  */
 function clearSaveOutcome() {
-  settingsSavedNote = null;
-  settingsRestartFailed = null;
+  if (!restartUnresolved(settingsSaveOutcome?.ending)) settingsSaveOutcome = null;
 }
 
 /** Stage one field. Any edit clears the saved notice: it is no longer describing what is on disk. */
@@ -2682,7 +2707,16 @@ function settingsProps() {
   // config `write_config` sends — the footer promises "nothing is written until you save", and a
   // control that saved itself on click would be the one exception nobody was told about.
   const policyStaged = notifyPolicyEdit != null && notifyPolicyEdit !== notifyPolicy;
-  const dirty = ui?.dirty ?? (isDirty(saved, edits) || policyStaged);
+  // THE ONE PREDICATE FOR "a change the daemon reads is staged" (#335). `isDirty` IS
+  // `configUpdate(...)` non-empty, which is the exact gate `saveSettings` puts its restart behind —
+  // so the warning that a save will interrupt a pass, the bar's retry slot and the restart itself
+  // are three readers of one answer rather than three definitions of one question. A fixture's
+  // `dirty` names it too: a frame that says the screen is dirty has staged a config field, and the
+  // two frames that do have no notification policy in them.
+  const configStaged = ui?.dirty ?? isDirty(saved, edits);
+  const dirty = ui?.dirty ?? (configStaged || policyStaged);
+  // Normalised once, where the reply lands — this is only reading it back.
+  const ending = settingsSaveOutcome?.ending ?? null;
   return {
     tab,
     saved,
@@ -2690,14 +2724,18 @@ function settingsProps() {
     skip,
     cannot,
     dirty,
+    configStaged,
     onSeeUnsyncable: () => navigate("neverSynced"),
     // The frame names it; otherwise the staged value, then what is on disk.
     notifyPolicy: ui?.notifyPolicy ?? notifyPolicyEdit ?? notifyPolicy,
     drafts: settingsDrafts,
     saving: settingsSaving,
-    // The restart the last save asked for did not happen (#320) — the one post-save state with an
-    // action attached, which is why the bar reads it rather than reading the note it also sets.
-    restartFailed: settingsRestartFailed,
+    // The ending the last save's restart left UNRESOLVED, or null (#320/#335) — the one post-save
+    // state with an action attached, which is why the bar reads it rather than reading the sentence
+    // it also decides. The token and not a reason string: `never_stopped` (the daemon is up on the
+    // old settings) and `not_started` (nothing is running) want the same button and opposite
+    // re-validation, and a string cannot say which is which.
+    restartEnding: restartUnresolved(ending) ? ending : null,
     // The amber line, when a single removal is staged. Any other staged change leaves the neutral
     // note: the deck has one cost sentence and it says `One rule removed`, so a second removal has
     // no wording and inventing a plural would be inventing the number in it too.
@@ -2711,8 +2749,10 @@ function settingsProps() {
     // the wrong step and look stuck on it.
     notice:
       settingsNotice ?? (settingsRestarting ? SETTINGS.restarting : settingsSaving ? SETTINGS.saving : null),
-    // What the save left behind: which of the three endings it had (#320).
-    note: settingsSavedNote,
+    // What the save left behind: the sentence for the ending it had (#320/#335). Built from the
+    // ending rather than stored beside it, so the sentence and the button can never describe two
+    // different endings.
+    note: ending == null ? null : saveNoteFor(ending, settingsSaveOutcome?.reason ?? ""),
     // WHETHER THE CONFIG IS KNOWN AT ALL. `read_config` rejects an unparseable file and
     // `refreshConfig` swallows it, so `configInfo` stays null — and `?? {}` would draw that as an
     // empty, valid config: both folder fields blank, live updates on, and a deletion policy card
@@ -2725,8 +2765,20 @@ function settingsProps() {
     loaded: Boolean(activeFixture()) || (configLoaded && !configError),
     configError: activeFixture() ? null : configError,
     // The daemon is mid-pass, or one has just been asked for: `Sweep now` would queue behind it
-    // with nothing to show for the click.
+    // with nothing to show for the click. A plan rehearsal counts here on purpose — it holds the
+    // same main loop, so a sweep asked for during one queues behind it just the same.
     syncing: settingsSweeping || Boolean(store.select.response()?.syncing),
+    // A DIFFERENT QUESTION, AND THE INTERRUPT WARNING'S (#335): is a pass that moves files running?
+    // `syncing` is claimed by a plan-only rehearsal too — it must be, or `activity` is gated off
+    // every status reply (`CLAUDE.md`) — so the warning `Saving … stops the sync that is running
+    // now` named a sync that was not running whenever the Plan screen was mid-rehearsal. The pass
+    // block's `kind` is the wire-visible half of `daemon.rs`'s `a_counted_pass_is_running`, and
+    // `planProgress` already reads it for the same reason. `!== "plan"` and not `=== <something>`:
+    // an activity block that is briefly absent counts as a sync, which is the safe direction for a
+    // warning about interrupting one. A sweep this screen just asked for is a counted pass too.
+    countedSync:
+      settingsSweeping ||
+      (Boolean(store.select.response()?.syncing) && store.select.response()?.activity?.pass?.kind !== "plan"),
     handlers: {
       onTab: (id) => {
         settingsTab = id;
@@ -2855,9 +2907,11 @@ async function sweepNow() {
  * the mismatch unreachable rather than reporting it. The interruption is the accepted cost, and
  * `SETTINGS.saveInterrupts` is what makes it something the person saw coming.
  *
- * Three endings, all of them said out loud: restarted, not running (so nothing to restart — see
- * `restart_service`'s `only_if_running`), or a restart that failed, which leaves the file written
- * over a daemon on the old settings and keeps `Restart it now` on the bar until it is fixed.
+ * FIVE endings, all of them said out loud and each with its own sentence (#335): restarted; not
+ * running, so nothing was started (see `restart_service`'s `only_if_running`); the start failed, so
+ * nothing is running at all; it never stopped, so the OLD daemon is still up on the OLD settings;
+ * or it could not be told apart, so nothing was done. The last three keep `Restart it now` on the
+ * bar until the state they name is over — see `restartUnresolved` and `clearsRestartFailure`.
  */
 async function saveSettings() {
   const saved = activeFixture()?.config ?? configInfo ?? {};
@@ -2903,25 +2957,54 @@ async function saveSettings() {
 }
 
 /**
- * The restart a save owns. Sets the note whichever way it ends, and never throws: its caller's
+ * The restart a save owns. Records the ending whichever way it ends, and never throws: its caller's
  * `catch` opens `8a Save refused`, whose sentence is `Nothing was saved` — false here, because the
  * file is written and only the restart failed.
+ *
+ * THE ENDING COMES OFF THE PAYLOAD, NOT OFF `catch` (#335). `restart_service` answers a typed
+ * `RestartOutcome` on the Ok side precisely so this cannot go back to reading a rejection's string:
+ * `not_started` and `never_stopped` are opposite states of someone's files and used to arrive as the
+ * same `Err`. A rejection now means the request itself never got as far as an ending, which is
+ * `undetermined` — the one answer that claims nothing.
  */
 async function restartForSave() {
   settingsRestarting = true;
+  // WITH ITS SIBLING'S CLEAR, which it was missing (#335). `barNoteOf` puts `notice` first, so a
+  // stale `The full sweep didn't start …` from a `Sweep now` minutes ago masked ALL of the endings
+  // below — `Restart it now` appearing on the bar with no sentence explaining why.
+  settingsNotice = null;
   render();
   try {
     // `onlyIfRunning`: a save is not a request to start syncing. See `restart_service`.
     const outcome = await api.restartService(true);
-    settingsSavedNote = outcome?.restarted ? SETTINGS.savedRestarted : SETTINGS.savedNotRunning;
-    settingsRestartFailed = null;
+    noteRestartOutcome(outcome);
   } catch (error) {
-    settingsRestartFailed = String(error?.message ?? error);
-    settingsSavedNote = SETTINGS.savedNotRestarted(settingsRestartFailed);
+    noteRestartFailure(error);
   }
   settingsRestarting = false;
   clearTimeout(pollTimer);
   poll();
+}
+
+/** The typed ending, normalised once, where the reply lands. */
+function noteRestartOutcome(outcome) {
+  settingsSaveOutcome = {
+    ending: restartEndingOf(outcome),
+    // Display only, and the daemon's own words unrewritten (voice rule 4). `detail` on the endings
+    // that worked, `reason` on the ones that did not — no sentence is built from it.
+    reason: String(outcome?.reason ?? outcome?.detail ?? ""),
+  };
+}
+
+/**
+ * A rejection is not an ending: the command failed before it could report one.
+ *
+ * `undetermined` and not a failure ending, because the two failure endings are claims about what is
+ * running — one says nothing is, the other says the old process still is — and a request that never
+ * reached the daemon has observed neither.
+ */
+function noteRestartFailure(error) {
+  settingsSaveOutcome = { ending: "undetermined", reason: String(error?.message ?? error) };
 }
 
 /**
@@ -2931,6 +3014,11 @@ async function restartForSave() {
  * NOT `onlyIfRunning`. The failure this answers may have stopped the daemon and failed to start it
  * again, which is the state where "it was not running, so do nothing" would be exactly wrong: the
  * screen would report success and leave nothing running.
+ *
+ * IT WRITES THE SAME LATCH ITS CALLER DOES, and it has to (#335): a retry that failed again leaves
+ * an ending of its own, and one recorded as a bare notice would sit outside the re-validation on
+ * the poll — so a daemon that came back up would not retire it, and one that did not come back
+ * would lose it on the next navigation.
  */
 async function restartAfterSave() {
   if (settingsRestarting) return;
@@ -2938,17 +3026,16 @@ async function restartAfterSave() {
   settingsNotice = null;
   render();
   try {
-    await api.restartService();
-    clearSaveOutcome();
-    settingsSavedNote = SETTINGS.savedRestarted;
-    settingsNotice = null;
+    // `restart_service` answers the ending on the Ok payload, so this reads the reply rather than
+    // treating "it resolved" as "it worked" — the trap #140 recorded on the approve/deny buttons
+    // and #320's own review recorded again on `resync`.
+    noteRestartOutcome(await api.restartService());
   } catch (error) {
-    // `restart_service` DOES reject, unlike the status commands — and it waits up to eight seconds
-    // for the daemon to stop, so this is both a real failure path and a slow one. Its reason went
-    // into `settingsError` before the review, which only the refusal dialog reads and only
-    // `saveSettings` opens.
-    settingsRestartFailed = String(error?.message ?? error);
-    settingsNotice = SETTINGS.restartFailed(settingsRestartFailed);
+    // `restart_service` DOES reject on an infrastructure failure, unlike the status commands — and
+    // it waits up to eight seconds for the daemon to stop, so this is both a real failure path and
+    // a slow one. Its reason went into `settingsError` before the S6 review, which only the refusal
+    // dialog reads and only `saveSettings` opens.
+    noteRestartFailure(error);
   }
   settingsRestarting = false;
   clearTimeout(pollTimer);

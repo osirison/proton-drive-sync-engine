@@ -24,6 +24,7 @@ import {
   isGated,
   markOf,
   pathOf,
+  sideCounts,
   sideOf,
   sortedForDisplay,
   summarise,
@@ -468,6 +469,50 @@ test("every count in the head comes off the daemon's summary, not off the window
   assert.equal(model.rows.length, 5000);
   assert.equal(model.leaving.length, 4999);
   assert.equal(hiddenActions(model), 7480);
+});
+
+test("a type conflict is not a conflict kept as both copies", () => {
+  // #324's headline decision, and NOTHING PINNED IT (#335): adding `type_conflicts` back into
+  // `conflicts` left all 360 tests green, and the sentence it breaks is the head's own —
+  // `kept as both copies`, which is what a `Conflict` sidecar is. A `TypeConflict` is a folder
+  // against a file: it takes the list body's row and has no copy to keep.
+  const summary = { total: 9, conflicts: 2, type_conflicts: 5 };
+  assert.equal(summarise([], summary).conflicts, 2);
+  assert.equal(
+    PLAN.actionSummary(9, summarise([], summary).conflicts),
+    "9 actions · 2 conflicts kept as both copies",
+    "seven would be a promise about five files that have no second copy",
+  );
+  // And from the rows, on the fallback path, for the same reason.
+  const rows = [row("a.md", "conflict"), row("docs", "type_conflict", { entity_kind: "directory" })];
+  assert.equal(summarise(rows).conflicts, 1);
+});
+
+test("each side's counts come from its own side of the seam", () => {
+  // #335: NOTHING PINNED THIS EITHER. Swapping `remoteFolders`↔`localFolders` and
+  // `remoteMoves`↔`localMoves` left all 360 tests green — every column still drawn, every number
+  // still present, and the four `sideNote` sentences naming the wrong side. No gate compares
+  // sentence text, so this is the only place it can be caught.
+  //
+  // FOUR DISTINCT VALUES ACROSS FOUR FIELDS, so a swap cannot cancel itself out.
+  const model = summarise([], {
+    total: 100,
+    uploads: 11,
+    downloads: 22,
+    remote_directories_created: 33,
+    local_directories_created: 44,
+    remote_moves: 55,
+    local_moves: 66,
+  });
+  // `leaving` is what goes to Proton: its folders are created THERE and its renames applied there.
+  assert.deepEqual(
+    { ...sideCounts(model, "leaving"), rows: undefined },
+    { rows: undefined, files: 11, folders: 33, renames: 55 },
+  );
+  assert.deepEqual(
+    { ...sideCounts(model, "arriving"), rows: undefined },
+    { rows: undefined, files: 22, folders: 44, renames: 66 },
+  );
 });
 
 test("a reply with no summary at all still counts, from the rows it has", () => {

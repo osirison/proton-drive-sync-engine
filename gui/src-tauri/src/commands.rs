@@ -818,8 +818,18 @@ fn daemon_presence(socket: &std::path::Path) -> DaemonPresence {
 
 /// The one question [`classify_unreachable_plan`] asks of a failed `status`, split out so it can be
 /// tested without a socket: **is this evidence there is no daemon?** Only an unreachable socket is.
+///
+/// **`Unreachable` keeps its pre-#335 reading here, deliberately.** That variant no longer folds in
+/// a missing socket (#335 split [`ipc::IpcError::NotListening`] off for the restart probe, which
+/// stops a process and may not guess), so a finer answer is now *available* — but this predicate
+/// asks a different question: may we spawn a `proton-drive` child of our own? A timed-out `status`
+/// has always fallen back to the child here, and changing that changes which sentence a timed-out
+/// `plan` shows and when a second CLI client appears beside a possibly-live daemon. That is #317's
+/// decision, not this one. Exhaustive by variant, no `_`, so a future variant must be given its own
+/// answer rather than inherit an arm's guess.
 fn status_error_proves_no_daemon(error: &ipc::IpcError) -> bool {
     match error {
+        ipc::IpcError::NotListening(_) => true,
         ipc::IpcError::Unreachable(_) => true,
         // It answered. Undecodably, but it answered.
         ipc::IpcError::Protocol(_) => false,
@@ -1238,28 +1248,135 @@ pub async fn start_service(state: Paths<'_>) -> Result<String, String> {
         .map_err(|error| format!("start-service task failed: {error}"))?
 }
 
-/// What a restart did — **`restarted` is the fact, `detail` is the sentence** (#320).
+/// What a restart request did — **the ending, typed, on the `Ok` payload** (#320/#335).
 ///
-/// A typed answer rather than prose the caller matches on: the Settings screen says something
-/// different for "the service restarted with your new settings" and "the service was not running,
-/// so it will pick them up when it starts", and telling those apart by reading `detail` is the bug
-/// #103 removes everywhere else on this wire.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct RestartOutcome {
-    pub restarted: bool,
-    pub detail: String,
+/// `restart_service_impl` has five distinguishable endings and this used to type two of them
+/// (`{ restarted, detail }`), so three collapsed into one `Err(String)` and the screen drew the
+/// same sentence over all of them: *"It is still running the old settings."* That is true of
+/// exactly one — [`Self::NeverStopped`] — and the **opposite** of the truth for
+/// [`Self::NotStarted`], where the stop succeeded and nothing is running at all. For a sync tool
+/// that is false in the dangerous direction.
+///
+/// **On the `Ok` payload rather than the `Err`, deliberately.** A Tauri command's `Err` crosses the
+/// bridge as a bare string, so an ending carried there is prose the webview would have to match on
+/// — the bug #103 removes everywhere on the daemon's own wire. This repo already settled that
+/// direction once: the delete-approval work found that Tauri commands resolve rather than reject
+/// against a dead socket, so a caller must *validate the response* rather than catch the rejection.
+/// The residual `Err` is now infrastructure only (an unresolvable socket path, a join failure) —
+/// never an ending.
+///
+/// Internally tagged with `ending` and terminated by [`Self::Unknown`], the pattern
+/// `ipc::ListingOutcome`/`PlanOutcome`/`ApplyOutcome` follow, so a client one version behind
+/// degrades to "something happened that this build cannot name" instead of failing the parse. The
+/// webview is the only consumer, so its fall-through arm is where that degradation actually
+/// happens; `Deserialize` is derived so the rule is testable here too.
+///
+/// The variants are named for **what is running now**, not for the sequence that got there: two
+/// sequences reach [`Self::NotStarted`] (a stop that worked followed by a start that did not, and a
+/// start that failed against a daemon that was already down) and they are one ending, because the
+/// fact they leave behind — nothing is running, and the config on disk is ahead of it — is one fact
+/// with one sentence and one way out.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "ending", rename_all = "snake_case")]
+pub enum RestartOutcome {
+    /// The service is running the settings that are on disk: it was stopped (or already was) and
+    /// started again. The only ending that may report a success.
+    Restarted { detail: String },
+    /// It was not running and **nothing was started** — the #320 decision: a save is not a request
+    /// to begin syncing. Reachable only with `only_if_running`.
+    NotRunning,
+    /// **Nothing is running**: the start failed. The config on disk is ahead of a service that is
+    /// not up, and the way out is to fix the reason and start it.
+    NotStarted { reason: String },
+    /// It never stopped (the shutdown was asked for and the socket kept answering past
+    /// [`STOP_TIMEOUT`]), so the **old** process is still up on the **old** settings. The one ending
+    /// the pre-#335 sentence was true of.
+    NeverStopped { reason: String },
+    /// Whether it was running could not be determined, so **nothing was done**. Not folded into
+    /// [`Self::NotRunning`]: that one asserts an absence, and asserting one we did not observe is
+    /// how a live daemon on stale settings gets drawn as "it will use these when it starts".
+    Undetermined { reason: String },
+    /// An ending added by a newer build. Never constructed here; it exists so a parse degrades.
+    #[serde(other)]
+    Unknown,
 }
 
-/// Does this request want a service running when it is finished?
+/// Whether the daemon was there when we asked — three states, and **`Unknown` is evidence of
+/// neither** (#335).
 ///
-/// The whole of `only_if_running`, as one expression with no I/O in it — the branch decides whether
-/// a `systemctl` runs, so a test of it may not be a test that runs one. `false` here is the save
-/// path declining to start a daemon nobody asked for; every other combination restarts, including
-/// the explicit retry against a daemon a failed restart left stopped, which is the case that must
-/// not be folded into "it was not running, so do nothing".
-fn restart_is_wanted(only_if_running: bool, was_running: bool) -> bool {
-    was_running || !only_if_running
+/// The probe used to be `ipc::command(…Status…).is_ok()`, which reads two different things as
+/// absence: [`ipc::IpcError::Protocol`] means the daemon *replied* and the reply would not decode,
+/// which is positive evidence of life, and `Unreachable` folded a timeout in with a missing socket.
+/// Either one drew "the sync service is not running" over a live daemon left on the old settings,
+/// with no latch and no retry.
+///
+/// The shape is the engine's own: `daemon::probe_daemon_lock` answers a three-state `GlobalLockProbe`
+/// whose `Unknown` is evidence of neither, for the same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonProbe {
+    /// It answered — decodably or not. Something is bound to that socket and talking.
+    Running,
+    /// Nothing is listening on the socket. Authoritative absence.
+    NotRunning,
+    /// The connect succeeded and the exchange did not finish, so nothing here is known.
+    Unknown,
 }
+
+/// The classification, split from the round trip so it is testable with no socket at all.
+fn probe_from(reply: &Result<ControlResponse, ipc::IpcError>) -> DaemonProbe {
+    match reply {
+        Ok(_) => DaemonProbe::Running,
+        // It answered. Undecodably, but it answered — and `Shutdown` is a request we send, not a
+        // reply we read, so a daemon whose *replies* this build cannot parse still stops on ask.
+        Err(ipc::IpcError::Protocol(_)) => DaemonProbe::Running,
+        Err(ipc::IpcError::NotListening(_)) => DaemonProbe::NotRunning,
+        Err(ipc::IpcError::Unreachable(_)) => DaemonProbe::Unknown,
+    }
+}
+
+/// What a restart request does about the probe it got — **the whole decision, with no I/O in it**.
+///
+/// A pure predicate beside the branch, because the branch decides whether a subprocess runs and a
+/// test of it may not be a test that runs one: on any machine this project is developed on
+/// `systemctl --user start proton-syncd` is a live unit, so a poison check that reached
+/// [`start_service_impl`] would start the developer's daemon as a side effect. See
+/// `docs/agent-notes/gui-tests-that-shell-systemctl.md`.
+///
+/// The asymmetry between the two callers is the whole of `only_if_running`:
+///
+/// * A **save** (`only_if_running`) declines both "it was not running" and "we could not tell".
+///   Starting a daemon nobody asked for would make a save mean "and begin syncing", and *asserting*
+///   an absence we did not observe is the misreport #335 was filed for.
+/// * The **retry** (`Restart it now`) is an explicit request, so an unknown probe is attempted:
+///   [`RestartPlan::StopThenStart`] starts only after the stop has been *confirmed* by an
+///   authoritatively absent socket, so an attempt against a daemon that was not there cannot report
+///   a success that did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartPlan {
+    /// Ask it to exit, wait for the socket to go quiet, then start it.
+    StopThenStart,
+    /// Nothing is there: start it without a shutdown.
+    StartOnly,
+    /// Leave it alone and answer [`RestartOutcome::NotRunning`].
+    LeaveStopped,
+    /// Leave it alone and answer [`RestartOutcome::Undetermined`].
+    LeaveUndetermined,
+}
+
+fn restart_plan(only_if_running: bool, probe: DaemonProbe) -> RestartPlan {
+    match (probe, only_if_running) {
+        (DaemonProbe::Running, _) => RestartPlan::StopThenStart,
+        (DaemonProbe::NotRunning, true) => RestartPlan::LeaveStopped,
+        (DaemonProbe::NotRunning, false) => RestartPlan::StartOnly,
+        (DaemonProbe::Unknown, true) => RestartPlan::LeaveUndetermined,
+        // An explicit retry against a socket that answers ambiguously: treat it as running, because
+        // the start below happens only after a confirmed absence either way.
+        (DaemonProbe::Unknown, false) => RestartPlan::StopThenStart,
+    }
+}
+
+/// How long a confirmed shutdown may take before the daemon is reported as never having stopped.
+const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Restart the sync daemon so a saved config change takes effect. Works no matter how the daemon
 /// was launched: ask it to exit gracefully over IPC (its `shutdown` control command), wait for
@@ -1275,6 +1392,11 @@ fn restart_is_wanted(only_if_running: bool, was_running: bool) -> bool {
 /// here rather than in the webview because it has to be the same instant as the shutdown: the GUI's
 /// own status is up to a poll old, and a daemon that came up in that window would be left running
 /// the old settings — exactly the state this change exists to remove.
+///
+/// **Every ending is an `Ok`** ([`RestartOutcome`], #335). The two failures that used to be one
+/// `Err(String)` are opposites — after [`RestartOutcome::NotStarted`] nothing is running, after
+/// [`RestartOutcome::NeverStopped`] the old process still is — and a screen cannot tell them apart
+/// from a sentence.
 pub(crate) fn restart_service_impl(
     config_path: &std::path::Path,
     socket_path: &std::path::Path,
@@ -1282,40 +1404,66 @@ pub(crate) fn restart_service_impl(
 ) -> Result<RestartOutcome, String> {
     use std::time::{Duration, Instant};
 
-    let was_running =
-        ipc::command(socket_path, ControlCommand::Status, ipc::DEFAULT_TIMEOUT).is_ok();
-    if !restart_is_wanted(only_if_running, was_running) {
-        return Ok(RestartOutcome {
-            restarted: false,
-            detail: "the sync service is not running".to_string(),
-        });
-    }
-    if was_running {
-        // Best-effort: if the shutdown call itself errors the daemon may already be exiting;
-        // the socket probe below is the authoritative "has it stopped" signal.
-        let _ = ipc::command(socket_path, ControlCommand::Shutdown, ipc::DEFAULT_TIMEOUT);
-        let deadline = Instant::now() + Duration::from_secs(8);
-        loop {
-            if ipc::command(socket_path, ControlCommand::Status, Duration::from_secs(1)).is_err() {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(
-                    "the daemon did not stop within 8s — restart it manually with: \
-                     systemctl --user restart proton-syncd"
-                        .to_string(),
-                );
-            }
-            std::thread::sleep(Duration::from_millis(200));
+    let probe = probe_from(&ipc::command(
+        socket_path,
+        ControlCommand::Status,
+        ipc::DEFAULT_TIMEOUT,
+    ));
+    let started = |detail: String| RestartOutcome::Restarted { detail };
+    match restart_plan(only_if_running, probe) {
+        RestartPlan::LeaveStopped => return Ok(RestartOutcome::NotRunning),
+        RestartPlan::LeaveUndetermined => {
+            return Ok(RestartOutcome::Undetermined {
+                reason: "the sync service did not answer, so the app could not tell whether it \
+                         is running"
+                    .to_string(),
+            });
         }
+        // Nothing to stop. Reported by the fact it leaves behind, not by the sequence: what the
+        // screen has to say is whether the service is running the file on disk.
+        RestartPlan::StartOnly => {
+            return Ok(match start_service_impl(config_path) {
+                Ok(detail) => started(format!(
+                    "the service was not running; started it ({detail})"
+                )),
+                Err(reason) => RestartOutcome::NotStarted { reason },
+            });
+        }
+        RestartPlan::StopThenStart => {}
     }
-    start_service_impl(config_path).map(|detail| RestartOutcome {
-        restarted: true,
-        detail: if was_running {
-            format!("daemon restarted ({detail})")
-        } else {
-            format!("daemon was not running; started it ({detail})")
-        },
+
+    // Best-effort: if the shutdown call itself errors the daemon may already be exiting;
+    // the socket probe below is the authoritative "has it stopped" signal.
+    let _ = ipc::command(socket_path, ControlCommand::Shutdown, ipc::DEFAULT_TIMEOUT);
+    let deadline = Instant::now() + STOP_TIMEOUT;
+    loop {
+        // BY THE PROBE, NOT `is_err()` (#335). An undecodable reply mid-drain is a daemon that is
+        // still up, and a timeout says nothing either way — breaking on those would start a second
+        // process beside a live one and then report a restart that did not happen.
+        if probe_from(&ipc::command(
+            socket_path,
+            ControlCommand::Status,
+            Duration::from_secs(1),
+        )) == DaemonProbe::NotRunning
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Ok(RestartOutcome::NeverStopped {
+                reason: format!(
+                    "the sync service did not stop within {}s — restart it manually with: \
+                     systemctl --user restart proton-syncd",
+                    STOP_TIMEOUT.as_secs()
+                ),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // The stop is CONFIRMED here — the socket is authoritatively absent — so a failed start leaves
+    // nothing running, which is the ending the old code discarded along with the successful stop.
+    Ok(match start_service_impl(config_path) {
+        Ok(detail) => started(format!("the service restarted ({detail})")),
+        Err(reason) => RestartOutcome::NotStarted { reason },
     })
 }
 
@@ -2303,10 +2451,17 @@ mod tests {
     /// a version skew — and spawning a child there puts a second `proton-drive` client beside a
     /// live daemon (#23/#317), the hazard the whole verb exists to retire. Only `Unreachable` (no
     /// socket, refused, closed early, timed out) says nothing is there.
+    ///
+    /// #335 split `NotListening` off `Unreachable`; **both** still answer `true` here, and that is a
+    /// preserved reading rather than an oversight — see the predicate's own note. What this test
+    /// pins is the arm that must never move: `Protocol` is a daemon.
     #[test]
     fn an_undecodable_status_reply_is_a_live_daemon_not_an_absent_one() {
-        assert!(status_error_proves_no_daemon(&IpcError::Unreachable(
+        assert!(status_error_proves_no_daemon(&IpcError::NotListening(
             "no such file".to_owned()
+        )));
+        assert!(status_error_proves_no_daemon(&IpcError::Unreachable(
+            "read: timed out".to_owned()
         )));
         assert!(!status_error_proves_no_daemon(&IpcError::Protocol(
             "expected value at line 1".to_owned()
@@ -2846,8 +3001,10 @@ mod socket_tests {
         let reply = tauri::async_runtime::block_on(spawn_blocking_ipc(move || {
             ipc::command(&missing, ControlCommand::Status, ipc::DEFAULT_TIMEOUT)
         }));
+        // `NotListening` since #335 — a missing socket is the one transport failure that proves
+        // nothing is there, and it is drawn as the unreachable state all the same (`derive_state`).
         assert!(
-            matches!(reply, Err(ipc::IpcError::Unreachable(_))),
+            matches!(reply, Err(ipc::IpcError::NotListening(_))),
             "got {reply:?}"
         );
     }
@@ -2904,22 +3061,79 @@ mod socket_tests {
     /// would make a save mean "and begin syncing", which is not what the button says. The truth
     /// table is pinned here rather than through `restart_service_impl`, because the branch decides
     /// whether `systemctl --user start proton-syncd` runs and a test of it may not be a test that
-    /// runs one.
+    /// runs one. (`docs/agent-notes/gui-tests-that-shell-systemctl.md`.)
     #[test]
     fn a_save_never_starts_a_service_that_was_not_running() {
         // The save path, against a daemon that is not there: the one combination that does nothing.
-        assert!(!restart_is_wanted(true, false));
+        assert_eq!(
+            restart_plan(true, DaemonProbe::NotRunning),
+            RestartPlan::LeaveStopped
+        );
         // The save path against a live daemon: the whole point — its roots are about to be stale.
-        assert!(restart_is_wanted(true, true));
+        assert_eq!(
+            restart_plan(true, DaemonProbe::Running),
+            RestartPlan::StopThenStart
+        );
         // The explicit retry, which must start a daemon a failed restart left stopped. Folding this
         // into the arm above would leave the one state #320 exists to remove with no way out of it.
-        assert!(restart_is_wanted(false, false));
-        assert!(restart_is_wanted(false, true));
+        assert_eq!(
+            restart_plan(false, DaemonProbe::NotRunning),
+            RestartPlan::StartOnly
+        );
+        assert_eq!(
+            restart_plan(false, DaemonProbe::Running),
+            RestartPlan::StopThenStart
+        );
     }
 
-    /// The wiring: a socket nothing is listening on, asked the save path's way, answers "not
-    /// running" rather than starting anything. `restarted` is the field the UI branches on — the
-    /// detail is a sentence, and no caller matches on it.
+    /// #335. An unknown probe is not an absence, and on the SAVE path it may not be treated as one:
+    /// "it was not running, so it will use these settings when it starts" is an assertion about a
+    /// daemon that may be live on the old settings this second. Doing nothing and saying so is the
+    /// only honest answer there.
+    ///
+    /// The retry is the other way round, and for a reason that is not symmetry: the user asked for a
+    /// restart, and `StopThenStart` cannot report a success that did not happen — it starts only
+    /// after the socket has gone *authoritatively* absent.
+    #[test]
+    fn an_undetermined_probe_stops_a_save_and_is_attempted_by_an_explicit_retry() {
+        assert_eq!(
+            restart_plan(true, DaemonProbe::Unknown),
+            RestartPlan::LeaveUndetermined
+        );
+        assert_eq!(
+            restart_plan(false, DaemonProbe::Unknown),
+            RestartPlan::StopThenStart
+        );
+    }
+
+    /// #335's other half: which reply is evidence of what. A reply that would not decode is a daemon
+    /// ANSWERING — the pre-#335 `is_ok()` read it as absence, skipped the shutdown, started a unit
+    /// that was already active (`systemctl start` succeeds for one), and reported "restarted, and is
+    /// running your new settings" about the old process. No ending may report a success that did not
+    /// happen, so this classification is the thing that has to be right.
+    #[test]
+    fn the_probe_reads_an_undecodable_reply_as_life_and_a_timeout_as_neither() {
+        assert_eq!(
+            probe_from(&Err(ipc::IpcError::Protocol("expected value".into()))),
+            DaemonProbe::Running,
+            "it replied — undecodably, but it replied"
+        );
+        assert_eq!(
+            probe_from(&Err(ipc::IpcError::NotListening("no such file".into()))),
+            DaemonProbe::NotRunning,
+            "nothing was bound: the only authoritative absence"
+        );
+        assert_eq!(
+            probe_from(&Err(ipc::IpcError::Unreachable("read: timed out".into()))),
+            DaemonProbe::Unknown,
+            "the connect succeeded, so this is evidence of neither"
+        );
+    }
+
+    /// The wiring: a socket nothing is listening on, asked the save path's way, answers the typed
+    /// `NotRunning` ending rather than starting anything. Green-path only — with `only_if_running`
+    /// and an absent socket the decision returns before any spawn, so this test can never reach
+    /// `start_service_impl` and start the developer's real daemon.
     #[test]
     fn a_save_restart_against_a_dead_socket_reports_that_nothing_was_restarted() {
         let dir = tempfile::tempdir().unwrap();
@@ -2929,7 +3143,36 @@ mod socket_tests {
             true,
         )
         .expect("a service that is not running is not a failed restart");
-        assert!(!outcome.restarted);
+        assert_eq!(outcome, RestartOutcome::NotRunning);
+    }
+
+    /// The endings cross the bridge as data, not prose (#335/#103): each is tagged, and a tag this
+    /// build does not know degrades to `Unknown` instead of failing the parse. The webview is the
+    /// real consumer and has its own fall-through arm; this pins the wire shape it reads.
+    #[test]
+    fn every_restart_ending_is_tagged_and_an_unknown_tag_degrades() {
+        let json = |outcome: &RestartOutcome| serde_json::to_string(outcome).expect("serialize");
+        assert!(json(&RestartOutcome::NotRunning).contains(r#""ending":"not_running""#));
+        assert!(json(&RestartOutcome::NotStarted {
+            reason: "ENOENT".into()
+        })
+        .contains(r#""ending":"not_started""#));
+        assert!(json(&RestartOutcome::NeverStopped {
+            reason: "8s".into()
+        })
+        .contains(r#""ending":"never_stopped""#));
+        assert!(json(&RestartOutcome::Undetermined {
+            reason: "no answer".into()
+        })
+        .contains(r#""ending":"undetermined""#));
+        assert!(json(&RestartOutcome::Restarted {
+            detail: "systemd".into()
+        })
+        .contains(r#""ending":"restarted""#));
+        let newer: RestartOutcome =
+            serde_json::from_str(r#"{"ending":"reloaded_in_place","detail":"x"}"#)
+                .expect("an unknown ending must parse, not fail the whole reply");
+        assert_eq!(newer, RestartOutcome::Unknown);
     }
 
     /// A mock app whose managed paths name `root` as the sync folder. The socket is deliberately a

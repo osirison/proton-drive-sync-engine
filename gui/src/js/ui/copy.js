@@ -944,10 +944,16 @@ export const SETTINGS = {
   refusedTitleUnknown: "That change wasn't saved",
   refusedBodyUnknown: "Nothing was saved — your old settings are still running.",
 
-  // WHAT A SAVE LEAVES BEHIND, and there are three of them now (#320). There is no config-reload
-  // path in the engine — no SIGHUP handler, no watcher (DEVIATIONS §68) — so a save restarts the
-  // service itself rather than leaving a notice saying somebody should. Undrawn: no frame draws a
-  // settled save.
+  // WHAT A SAVE LEAVES BEHIND — **one sentence per ending of the restart** (#320/#335). There is no
+  // config-reload path in the engine — no SIGHUP handler, no watcher (DEVIATIONS §68) — so a save
+  // restarts the service itself rather than leaving a notice saying somebody should. Undrawn: no
+  // frame draws a settled save.
+  //
+  // THE FIVE ARE `RestartOutcome`'s, NOT A LIST KEPT IN STEP WITH IT. #328 shipped two typed endings
+  // and three collapsed into one `Err`, so the app drew `It is still running the old settings` over
+  // all three — true of one of them and the exact opposite of the truth for the failure where the
+  // stop SUCCEEDED and the start did not. For a sync tool that is false in the dangerous direction,
+  // which is why the ending is now data on the Ok payload and each of these answers exactly one.
   //
   // `savedNote` — "still running the old settings until it restarts" — is GONE with the state it
   // described. It was true only while the restart was a separate button, and leaving it would be a
@@ -961,13 +967,32 @@ export const SETTINGS = {
   // Templates, so the daemon's own words go in unrewritten (voice rule 4). Every one of these is a
   // state the bar reports and no frame draws — a control that answered with silence is the failure
   // #140 already recorded once.
-  restartFailed: (reason) => `The sync service did not restart — ${reason}`,
-  // THE LOUD FAILURE (#320). The file is written and the service is still on the old settings —
-  // precisely the state the automatic restart exists to remove — so it says both halves, and the
-  // second slot of the bar keeps `Restart it now` for as long as it is true. Failing quietly here
-  // would put the app back to the behaviour this change replaced, without saying so.
-  savedNotRestarted: (reason) =>
+  //
+  // `restartFailed` — "The sync service did not restart — <reason>" — is GONE (#335). It was the
+  // retry's own notice, written beside the save's note as a second account of one fact; both paths
+  // now record the same typed ending, so the sentence comes from the list below whoever asked. A
+  // string with no caller is a sentence nobody can be shown.
+  //
+  // THE ENDING THE OLD SENTENCE LIED ABOUT (#335). The stop was CONFIRMED and the start failed, so
+  // nothing is running at all — reachable on any install that is not the systemd one, which is
+  // `start_service_impl`'s own "common first-run failure". Telling someone their files are still
+  // syncing under the old settings while nothing is syncing is the one thing this must not do.
+  savedNothingRunning: (reason) =>
+    `Saved, but the sync service could not be started — ${reason}. Nothing is syncing right now.`,
+  // THE ENDING THAT SENTENCE WAS ALWAYS TRUE OF (#320/#335): the daemon was asked to stop, kept
+  // answering past the timeout, and is still up on the settings it started with. The file is
+  // written and running ahead of it, so the bar keeps `Restart it now` for as long as it is true.
+  savedOldSettings: (reason) =>
     `Saved, but the sync service did not restart — ${reason}. It is still running the old settings.`,
+  // WE COULD NOT TELL, AND SO NOTHING WAS DONE (#335). Not folded into `savedNotRunning`: that one
+  // asserts an absence, and asserting one nobody observed is how a live daemon on stale settings
+  // gets described as "it will use these when it starts". Says only what is known.
+  savedUnknownState: (reason) =>
+    `Saved, but the app couldn't tell whether the sync service is running — ${reason}. Nothing was restarted.`,
+  // An ending this build has no sentence for — a backend newer than the window. Claims nothing
+  // about what is running, and keeps the way out on screen.
+  savedUnknownEnding:
+    "Saved, but the app couldn't tell what happened to the sync service. Restart it to be sure.",
   saving: "Saving…",
   sweeping: "Starting a full sweep…",
   sweepFailed: (reason) => `The full sweep didn't start — ${reason}`,
