@@ -645,11 +645,12 @@ fn resolve_pairs(config: &FileConfig) -> AppResult<Vec<PairFileConfig>> {
         .map(ConfigKey::spelling)
         .collect();
     if !top_level_per_pair_keys.is_empty() {
+        // Named once, not twice: repeating the list read as "move `a`, `b` and `c` into the table
+        // *it* belongs to", whose grammar drifts the moment there is more than one key.
         return Err(boxed_error(format!(
             "config sets per-pair {} at the top level and also declares `[[pair]]` tables: they \
-             are two spellings of one setting; move {} into the `[[pair]]` table it belongs to, or \
-             delete the `[[pair]]` tables",
-            describe_keys(&top_level_per_pair_keys),
+             are two spellings of one setting; move each per-pair key into the `[[pair]]` table it \
+             belongs to, or delete the `[[pair]]` tables",
             describe_keys(&top_level_per_pair_keys),
         )));
     }
