@@ -2922,16 +2922,26 @@ rather than reporting it.
 
 Three consequences, all of them drawn nowhere:
 
-- **The interruption is announced before the click.** While something is staged and a pass is
-  running, the bar reads `Saving restarts the sync service, which stops the sync that is running
-  now.` — above the cost line, which is the only ordering this decision settles.
+- **The interruption is announced before the click.** While a **daemon-config** change is staged and
+  a **counted** pass is running, the bar reads `Saving restarts the sync service, which stops the
+  sync that is running now.` — above the cost line, which is the only ordering this decision
+  settles. Both adjectives are load-bearing and neither was there at first
+  ([#335](https://github.com/osirison/proton-drive-sync-engine/issues/335)): a staged notification
+  policy writes `gui.toml` and restarts nothing, and a plan-only rehearsal claims `syncing` without
+  moving a file, so the sentence twice named an interruption that would not happen.
 - **A save never STARTS a service that was not running.** `restart_service` takes `only_if_running`
   for the save path: a stopped daemon has nothing to interrupt and nothing stale to correct, it
-  reads the file when it next starts, and a save is not a request to begin syncing.
-- **A failed restart is loud.** The file is written and the daemon is on the old settings — exactly
-  the state this removes — so the bar says both halves and the second slot keeps `Restart it now`
-  until it is fixed. That slot holds `Discard changes` in every other state, including a settled
-  save, which no longer has an action of its own.
+  reads the file when it next starts, and a save is not a request to begin syncing. Only an
+  *observed* absence counts — a probe that could not tell does nothing and says so, rather than
+  asserting the daemon is down (#335).
+- **Every ending is loud, and there are five of them** (#335). `RestartOutcome` is a typed,
+  internally-tagged answer on the command's Ok payload, one sentence each: it restarted; it was not
+  running so nothing was started; the start failed so **nothing is running**; it never stopped so the
+  **old** process is still up on the old settings; or it could not be told apart so nothing was done.
+  The last three keep `Restart it now` in the second slot until the state they name is over — the
+  slot holds `Discard changes` otherwise, including after a settled save, which has no action of its
+  own. #320 typed two of the five and let three collapse into one `Err(String)`, which is how a save
+  that stopped the daemon and failed to start it drew `It is still running the old settings`.
 
 ### 78i. The one node this screen adds, and why it is not on a mapped one
 

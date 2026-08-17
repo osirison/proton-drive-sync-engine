@@ -1198,10 +1198,11 @@ export function renderSettings(props = {}) {
  * nothing; the same trap S4 records.
  */
 export function renderSettingsBar(props = {}) {
-  const { cost, dirty, saving, restartFailed, handlers } = props;
+  const { cost, dirty, saving, restartEnding, handlers } = props;
   // AMBER FOR EITHER WARNING. The cost line is one; so is "saving stops the sync that is running",
-  // and so is a restart that did not happen — all three are a consequence rather than a promise.
-  const warned = Boolean(cost) || Boolean(restartFailed) || interrupts(props);
+  // and so is a restart that left something unresolved — all three are a consequence rather than a
+  // promise.
+  const warned = Boolean(cost) || Boolean(restartEnding) || interrupts(props);
   const note = fid(
     el("span", { class: `bar-consequence settings-bar-note${warned ? " tone-cost" : ""}` }, barNoteOf(props)),
     "barNote",
@@ -1244,30 +1245,145 @@ export function renderSettingsBar(props = {}) {
 }
 
 /**
- * Which action the bar's second slot carries: `discard`, or the retry after a failed restart.
+ * Which action the bar's second slot carries: `discard`, or the retry after a restart that left
+ * something wrong.
  *
- * THE SLOT IS `Discard changes` UNTIL A RESTART FAILS. A save restarts the service itself now
- * (#320), so the settled-save state no longer needs an action of its own — but a restart that
- * FAILED leaves the file written and the daemon on the old settings, and `Save` is disabled by then
- * (nothing is staged), so without this there is no way to try again from inside the app at all. The
- * slot the drawn bar gives to discarding is free exactly then; a staged change takes it back,
- * because saving again restarts again. Undrawn: no frame draws either state.
+ * THE SLOT IS `Discard changes` UNTIL A RESTART LEAVES SOMETHING WRONG. A save restarts the service
+ * itself now (#320), so the settled-save state no longer needs an action of its own — but an ending
+ * that leaves the file running ahead of the service ([`restartUnresolved`]) leaves the person with
+ * nothing to press: `Save` is disabled by then, because nothing is staged. In two of those endings
+ * the daemon is UP on the old settings, and this bar is then the only restart control left anywhere
+ * in the app — the main screen and the tray offer a *start*, which a running daemon does not need.
+ *
+ * `configStaged`, NOT `dirty` (#335). The slot is only free while saving again would restart again,
+ * and a staged **notification policy** is a `gui.toml` key the daemon has never heard of: that save
+ * writes a file and restarts nothing, so yielding the retry to it would take the only way out away
+ * and give nothing back. One predicate for "a daemon-config change is staged", read here, by
+ * [`interrupts`] and by the save's own restart gate.
  *
  * Its own predicate rather than a line inside the builder: the tests here are pure (no DOM), so a
  * decision that only exists inside a `render` is a decision no test can reach.
  */
-export function barActionOf({ restartFailed = null, dirty = false } = {}) {
-  return restartFailed && !dirty ? "restart" : "discard";
+export function barActionOf({ restartEnding = null, configStaged = false } = {}) {
+  return restartEnding && !configStaged ? "restart" : "discard";
 }
 
 /**
- * Is a save about to interrupt a pass? (#320)
+ * Is a save about to interrupt a pass? (#320/#335)
  *
- * Both halves, and neither alone: with nothing staged `Save` is disabled and cannot interrupt
- * anything, and with no pass running there is nothing to interrupt. `syncing` is the daemon's own
- * flag — the same one that disables `Sweep now` — plus a sweep this screen has just asked for.
+ * Both halves, and neither alone: with nothing staged that the daemon reads there is nothing to
+ * restart, and with no pass running there is nothing to interrupt.
+ *
+ * BOTH HALVES ARE NARROWER THAN THEY LOOK, and each was wrong in the same way — a predicate that
+ * answered a neighbouring question:
+ *
+ * * `configStaged`, not `dirty`: `dirty` includes a staged notification policy, whose save writes
+ *   `gui.toml` and restarts nothing. It drew this warning and then interrupted nothing.
+ * * `countedSync`, not `syncing`: a plan-only rehearsal claims `syncing` — it must, or `activity`
+ *   is gated off every status reply (`CLAUDE.md`) — so the Plan screen's own rehearsal made this
+ *   name a sync that was not running. `app.js` tells them apart by the pass block's `kind`, which
+ *   is the wire-visible half of `daemon.rs`'s `a_counted_pass_is_running`.
  */
-const interrupts = ({ dirty = false, syncing = false } = {}) => Boolean(dirty) && Boolean(syncing);
+const interrupts = ({ configStaged = false, countedSync = false } = {}) =>
+  Boolean(configStaged) && Boolean(countedSync);
+
+/** The endings `commands.rs`'s `RestartOutcome` names. Anything else is `unknown`. */
+const RESTART_ENDINGS = new Set(["restarted", "not_running", "not_started", "never_stopped", "undetermined"]);
+
+/**
+ * The typed ending of a restart, from the command's Ok payload (#335).
+ *
+ * `unknown` for a tag this build has no sentence for — a backend newer than the window, or an
+ * older one whose payload has no `ending` at all. Degrading here is the client half of the rule
+ * `ListingOutcome`/`PlanOutcome` follow on the daemon's own wire: a client that told two endings
+ * apart by matching a sentence is the bug #103 removes, and one that failed the whole reply over an
+ * unrecognised tag would be no better.
+ */
+export function restartEndingOf(outcome) {
+  const ending = outcome?.ending;
+  return RESTART_ENDINGS.has(ending) ? ending : "unknown";
+}
+
+/**
+ * Does this ending leave the file on disk running ahead of the service?
+ *
+ * THE ONE DEFINITION OF "there is still something to fix", read by every rule about how long the
+ * state lives: the bar's retry slot, what survives navigating away, and what an edit forgets. Two
+ * endings are settled — the service is running the new file, or it is deliberately not running —
+ * and everything else has a way out that only a restart provides.
+ */
+export function restartUnresolved(ending) {
+  return ending != null && ending !== "restarted" && ending !== "not_running";
+}
+
+/**
+ * Does this daemon observation retire this ending? (#335)
+ *
+ * A latch describing a daemon state has to be re-validated against daemon state, or systemd's
+ * `Restart=on-failure` brings the service up on the NEW settings while the bar still offers to
+ * restart it. `app.js` already carries this exact rule one screen up, for `serviceStartError`.
+ *
+ * **The two failure endings invert, which is why this could not be written before they were typed.**
+ * `not_started` was reached at a moment of *confirmed* absence — the socket was authoritatively
+ * empty and the start then failed — so a daemon answering **later** is a process that began after
+ * that moment and read the file this save wrote: the state is over, clear it. `never_stopped` is
+ * the opposite: the daemon that is answering is the one that would not stop, still on the settings
+ * it started with, so a reachable socket is the *problem* rather than the end of it. `undetermined`
+ * observed nothing at all and may not conclude anything from a later poll either.
+ *
+ * **AND "LATER" IS THE WHOLE OF IT — evidence older than the outcome may never retire it.** The
+ * review of #338 found this: the re-validation runs in `render()`, which reads the last *completed*
+ * status poll, and `restartForSave` renders again the instant it records its answer. In the
+ * `not_started` case that cached answer is *necessarily* a reachable daemon — the restart only took
+ * the stop-then-start path **because** the probe said the daemon was running — so the latch was
+ * nulled before it was ever drawn, and nothing re-latches it. The one sentence this whole issue
+ * exists to show, and `Restart it now` with it, were unreachable in their own headline scenario.
+ *
+ * So the comparison is against the status **request** clock, not the reply's content: an answer may
+ * speak only if its request was issued after the outcome was recorded (`store.beginStatus`). That
+ * rules out the stale render *and* a poll that was already in flight when the restart finished —
+ * which counting completed polls would not. It is a property of the data rather than of where
+ * `render` is called from, so a future caller that renders cannot reintroduce it.
+ *
+ * `socketAnswers` is passed in rather than derived: `main.js`'s `clearsStartError` is already the
+ * one definition of "the socket answers, by any route", and a second reading of the daemon state
+ * here is how the two would drift.
+ *
+ * @param outcome  the latch — `{ ending, evidenceFloor }`
+ * @param evidence what is known now — `{ socketAnswers, statusIssue }`
+ */
+export function clearsRestartFailure(outcome, evidence) {
+  if (outcome?.ending !== "not_started" || !evidence?.socketAnswers) return false;
+  return (evidence.statusIssue ?? 0) > (outcome.evidenceFloor ?? 0);
+}
+
+/**
+ * The bar's sentence for one ending — **one per ending, and the ending is data** (#335).
+ *
+ * #328 had two typed endings and three collapsed into one `Err(String)`, so all three drew
+ * `It is still running the old settings`: true of `never_stopped`, and the exact opposite of the
+ * truth for `not_started`, where the stop succeeded and nothing is running at all. The sentence is
+ * redistributed here rather than deleted.
+ *
+ * Exhaustive by ending with a `default` that claims nothing — a fall-through arm that reads as
+ * "fine" is #246's shape, and this one is reachable by any backend this build does not know.
+ */
+export function saveNoteFor(ending, reason = "") {
+  switch (ending) {
+    case "restarted":
+      return SETTINGS.savedRestarted;
+    case "not_running":
+      return SETTINGS.savedNotRunning;
+    case "not_started":
+      return SETTINGS.savedNothingRunning(reason);
+    case "never_stopped":
+      return SETTINGS.savedOldSettings(reason);
+    case "undetermined":
+      return SETTINGS.savedUnknownState(reason);
+    default:
+      return SETTINGS.savedUnknownEnding;
+  }
+}
 
 /**
  * The bar's left-hand sentence: what just happened, what saving now would cost, the cost of a
@@ -1299,8 +1415,10 @@ export const settingsBarShape = (props = {}) =>
     props.dirty ? "dirty" : "clean",
     props.saving ? "saving" : "idle",
     // The second slot's LABEL and handler, which is what this decides — `Discard changes` or the
-    // retry a failed restart leaves behind (#320).
-    props.restartFailed ? "restart-failed" : "restart-fine",
+    // retry an unresolved restart leaves behind (#320/#335). `barActionOf` and not `restartEnding`
+    // alone: what decides the slot is the pair, and a shape that read one half would leave the bar
+    // on screen with the wrong label when only the other moved.
+    barActionOf(props),
     barNoteOf(props),
   ].join("|");
 

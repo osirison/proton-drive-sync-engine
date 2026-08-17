@@ -27,10 +27,16 @@ import {
   barActionOf,
   barNoteOf,
   settingsBarShape,
+  restartEndingOf,
+  restartUnresolved,
+  clearsRestartFailure,
+  saveNoteFor,
   MIN_INTERVAL_SECS,
   MAX_INTERVAL_SECS,
 } from "../src/js/screens/settings.js";
 import { SETTINGS } from "../src/js/ui/copy.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // ---- the rule row's five second lines --------------------------------------------------------
 
@@ -338,17 +344,38 @@ test("a save that would interrupt a running sync says so before the click", () =
   // #320. Saving restarts the sync service now, so the bar has to warn while there is something
   // staged AND a pass in flight — the decision accepts a brief interruption and refuses one nobody
   // saw coming.
-  assert.equal(barNoteOf({ dirty: true, syncing: true }), SETTINGS.saveInterrupts);
+  assert.equal(barNoteOf({ configStaged: true, countedSync: true }), SETTINGS.saveInterrupts);
   // NOT HIDDEN BY THE COST LINE, which is the one ordering this decides: the cost describes what a
   // staged change lets through once saved, this describes what the click does to a transfer that is
   // happening now.
-  assert.equal(barNoteOf({ dirty: true, syncing: true, cost: "c" }), SETTINGS.saveInterrupts);
+  assert.equal(barNoteOf({ configStaged: true, countedSync: true, cost: "c" }), SETTINGS.saveInterrupts);
   // Something that just happened still outranks it — a failed sweep is news, this is standing.
-  assert.equal(barNoteOf({ dirty: true, syncing: true, notice: "x" }), "x");
-  // Neither half alone: with nothing staged `Save` is disabled, and with nothing running there is
-  // nothing to interrupt.
-  assert.equal(barNoteOf({ dirty: true, syncing: false }), SETTINGS.saveNote);
-  assert.equal(barNoteOf({ dirty: false, syncing: true }), SETTINGS.saveNote);
+  assert.equal(barNoteOf({ configStaged: true, countedSync: true, notice: "x" }), "x");
+  // Neither half alone: with nothing staged there is nothing to restart, and with nothing running
+  // there is nothing to interrupt.
+  assert.equal(barNoteOf({ configStaged: true, countedSync: false }), SETTINGS.saveNote);
+  assert.equal(barNoteOf({ configStaged: false, countedSync: true }), SETTINGS.saveNote);
+});
+
+test("the interrupt warning is about a config change and a counted pass, not about `dirty`", () => {
+  // #335. BOTH halves used to be a neighbouring question, and each drew this sentence over a save
+  // that would interrupt nothing.
+  //
+  // `dirty` includes a staged notification POLICY — a `gui.toml` key the daemon has never heard of
+  // — while the save gates its restart on daemon-config keys. Two definitions of one question, and
+  // the screen believed the wrong one.
+  assert.equal(
+    barNoteOf({ dirty: true, configStaged: false, countedSync: true }),
+    SETTINGS.saveNote,
+    "a staged notification policy restarts nothing, so it interrupts nothing",
+  );
+  // And the other half: a plan-only rehearsal claims `syncing` (it must, or `activity` is gated off
+  // every status reply), so the raw flag named a sync that was not running.
+  assert.equal(
+    barNoteOf({ configStaged: true, syncing: true, countedSync: false }),
+    SETTINGS.saveNote,
+    "a plan rehearsal is not the sync this sentence promises to stop",
+  );
 });
 
 test("the bar's shape carries the sentence, so a moving number rebuilds it", () => {
@@ -357,19 +384,213 @@ test("the bar's shape carries the sentence, so a moving number rebuilds it", () 
   assert.notEqual(one, two);
   assert.notEqual(settingsBarShape({ dirty: false }), settingsBarShape({ dirty: true }));
   assert.notEqual(settingsBarShape({ saving: true }), settingsBarShape({ saving: false }));
-  // The second slot's label and handler change with it (#320): `Discard changes`, or the retry a
-  // failed restart leaves behind.
-  assert.notEqual(settingsBarShape({ restartFailed: "boom" }), settingsBarShape({ restartFailed: null }));
+  // The second slot's label and handler change with it (#320): `Discard changes`, or the retry an
+  // unresolved restart leaves behind.
+  assert.notEqual(
+    settingsBarShape({ restartEnding: "never_stopped" }),
+    settingsBarShape({ restartEnding: null }),
+  );
+  // …and it moves with the OTHER half of that decision too (#335): the same ending yields the slot
+  // once a daemon-config change is staged, so a shape reading only the ending would leave the bar
+  // on screen with the wrong label.
+  assert.notEqual(
+    settingsBarShape({ restartEnding: "never_stopped", configStaged: true }),
+    settingsBarShape({ restartEnding: "never_stopped", configStaged: false }),
+  );
 });
 
-test("a restart that failed keeps a way to try again, and nothing else does", () => {
+test("a restart that left something wrong keeps a way to try again, and nothing else does", () => {
   // #320. The save wrote the file and the daemon is still on the old settings — `Save` is disabled
   // by then (nothing staged), so this button is the only way out of the state from inside the app.
-  assert.equal(barActionOf({ restartFailed: "the daemon did not stop within 8s" }), "restart");
+  assert.equal(barActionOf({ restartEnding: "never_stopped" }), "restart");
+  assert.equal(barActionOf({ restartEnding: "not_started" }), "restart");
   // A save that went through leaves no action: the restart already happened.
-  assert.equal(barActionOf({ note: SETTINGS.savedRestarted }), "discard");
-  assert.equal(barActionOf({ note: SETTINGS.savedNotRunning }), "discard");
-  // …and a staged change is a change to discard, whatever the last save did.
-  assert.equal(barActionOf({ restartFailed: "boom", dirty: true }), "discard");
+  assert.equal(barActionOf({ restartEnding: null }), "discard");
   assert.equal(barActionOf({}), "discard");
+  // …and a staged DAEMON-CONFIG change is a change to discard, because saving again restarts again.
+  assert.equal(barActionOf({ restartEnding: "never_stopped", configStaged: true }), "discard");
+});
+
+// ---- the restart's five endings (#335) ---------------------------------------------------------
+
+test("each ending gets its own sentence, and two of them are opposites", () => {
+  // THE BUG THIS FIXES. #328 typed two endings and let three collapse into one `Err(String)`, so
+  // the screen said `It is still running the old settings` about all three. That is true of
+  // `never_stopped` — and the exact opposite of the truth for `not_started`, where the stop
+  // SUCCEEDED and nothing is running at all. Reachable on any install that is not the systemd one.
+  assert.equal(saveNoteFor("restarted"), SETTINGS.savedRestarted);
+  assert.equal(saveNoteFor("not_running"), SETTINGS.savedNotRunning);
+  assert.equal(saveNoteFor("not_started", "ENOENT"), SETTINGS.savedNothingRunning("ENOENT"));
+  assert.equal(saveNoteFor("never_stopped", "8s"), SETTINGS.savedOldSettings("8s"));
+  assert.equal(saveNoteFor("undetermined", "no answer"), SETTINGS.savedUnknownState("no answer"));
+
+  // The two sentences that must not be each other's.
+  assert.match(saveNoteFor("never_stopped", "8s"), /still running the old settings/);
+  assert.doesNotMatch(
+    saveNoteFor("not_started", "ENOENT"),
+    /still running the old settings/,
+    "the stop succeeded — saying anything is still running is false in the dangerous direction",
+  );
+  assert.match(saveNoteFor("not_started", "ENOENT"), /Nothing is syncing/);
+});
+
+test("an ending this build cannot name claims nothing rather than falling through to `fine`", () => {
+  // A fall-through arm that reads as success is #246's shape. `restartEndingOf` degrades an
+  // unrecognised tag — a backend newer than the window, or an older one with no `ending` at all —
+  // and the sentence for it asserts nothing about what is running.
+  assert.equal(restartEndingOf({ ending: "reloaded_in_place" }), "unknown");
+  assert.equal(restartEndingOf({ restarted: true }), "unknown", "#328's old shape is not an ending");
+  assert.equal(restartEndingOf(null), "unknown");
+  assert.equal(restartEndingOf({ ending: "restarted", detail: "x" }), "restarted");
+  assert.equal(saveNoteFor("unknown"), SETTINGS.savedUnknownEnding);
+  assert.doesNotMatch(saveNoteFor("unknown"), /running your new settings|isn't running/);
+  // And it keeps the way out on screen, because nothing here proves the state is fine.
+  assert.ok(restartUnresolved("unknown"));
+});
+
+test("only the two settled endings let the state be forgotten", () => {
+  // The one definition of "there is still something to fix", read by the bar's retry slot, by what
+  // survives navigating away, and by what an edit forgets. `restarted` and `not_running` are
+  // acknowledgements of something finished; every other ending is a file on disk running ahead of
+  // the service, which is still true two screens later.
+  assert.equal(restartUnresolved("restarted"), false);
+  assert.equal(restartUnresolved("not_running"), false);
+  assert.equal(restartUnresolved(null), false, "no save at all is not an unresolved one");
+  for (const ending of ["not_started", "never_stopped", "undetermined", "unknown"]) {
+    assert.equal(restartUnresolved(ending), true, `${ending} still needs a restart`);
+  }
+});
+
+/** A latch as `app.js` writes it: an ending, and the request clock it was written at. */
+const latch = (ending, evidenceFloor = 7) => ({ ending, reason: "boom", evidenceFloor });
+/** What a render knows: whether the socket answers, and which request said so. */
+const seen = (socketAnswers, statusIssue = 8) => ({ socketAnswers, statusIssue });
+
+test("the latch is re-validated against the daemon, and the two failures invert", () => {
+  // #335. Nothing re-validated it, so systemd's `Restart=on-failure` brought the service up on the
+  // NEW settings while the bar still offered to restart it.
+  //
+  // `not_started` was reached at a moment of CONFIRMED absence — the socket was authoritatively
+  // empty and the start then failed — so a daemon answering LATER began after that moment and read
+  // the file this save wrote. The state is over.
+  assert.equal(clearsRestartFailure(latch("not_started"), seen(true)), true);
+  assert.equal(clearsRestartFailure(latch("not_started"), seen(false)), false, "nothing listening");
+  // `never_stopped` is the opposite: the daemon that is answering is the one that would NOT stop,
+  // still on the settings it started with. A reachable socket is the problem, not the end of it.
+  assert.equal(clearsRestartFailure(latch("never_stopped"), seen(true)), false);
+  // And `undetermined` observed nothing, so it may not conclude anything from a later poll either.
+  assert.equal(clearsRestartFailure(latch("undetermined"), seen(true)), false);
+  assert.equal(clearsRestartFailure(latch("unknown"), seen(true)), false);
+});
+
+test("evidence older than the outcome may never retire it", () => {
+  // THE BUG THIS PR'S OWN FIRST ATTEMPT SHIPPED WITH, found by the review of #338 — and it defeated
+  // the deliverable in its own headline scenario, which is why it is worth this much test.
+  //
+  // The re-validation runs in `render()`, and `saveSettings` renders synchronously the instant
+  // `restartForSave` records its answer — `poll()` having been fired and NOT awaited. So that render
+  // sees the last COMPLETED poll. In the `not_started` case that answer is *necessarily* a
+  // reachable daemon: the restart only stopped anything because the probe said it was running. The
+  // latch was therefore nulled before it was ever drawn, nothing re-latches it, and
+  // `Nothing is syncing right now.` plus `Restart it now` never appeared.
+  //
+  // A pure predicate over (ending, reachable) could not see this, and neither could a source-text
+  // pin. The rule is about ORDER, so the test has to be about order.
+  const outcome = latch("not_started", 7);
+  assert.equal(
+    clearsRestartFailure(outcome, seen(true, 7)),
+    false,
+    "the poll already in hand was issued before the restart finished — it cannot speak for it",
+  );
+  assert.equal(
+    clearsRestartFailure(outcome, seen(true, 6)),
+    false,
+    "nor may an even older one, which is what an in-flight poll landing late carries",
+  );
+  // The poll the restart itself kicked off is the first that may.
+  assert.equal(clearsRestartFailure(outcome, seen(true, 8)), true);
+  // An answer carrying no request id is not newer than anything, so it speaks for nothing.
+  assert.equal(clearsRestartFailure(outcome, { socketAnswers: true }), false);
+  // A latch with NO floor is the old behaviour restored — cleared by the very first answer. It
+  // cannot happen while there is one construction site (pinned below), and this is what that pin
+  // is protecting rather than a shape the app can produce.
+  assert.equal(clearsRestartFailure({ ending: "not_started" }, seen(true, 1)), true);
+});
+
+test("a staged notification policy does not take the retry slot away", () => {
+  // #335. `dirty` was the predicate here, and a staged policy made it true — so the retry vanished
+  // in favour of `Discard changes`, and the save it made room for writes `gui.toml` and restarts
+  // nothing. In the two endings where the daemon is UP on the old settings this bar is the only
+  // restart control left in the app, so that took the only way out and gave nothing back.
+  assert.equal(barActionOf({ restartEnding: "never_stopped", dirty: true, configStaged: false }), "restart");
+});
+
+// ---- the two callers, pinned in app.js's source ------------------------------------------------
+
+/** `app.js`'s body between `function <name>(` (async or not) and the next top-level `}`. */
+function functionBody(source, name) {
+  const start = source.search(new RegExp(`^(async )?function ${name}\\(`, "m"));
+  assert.notEqual(start, -1, `app.js no longer has ${name} — if it moved, move this test with it`);
+  const end = source.indexOf("\n}", start);
+  assert.notEqual(end, -1, `${name} has no end`);
+  return source.slice(start, end);
+}
+
+test("the save's restart is `onlyIfRunning` and the retry's is not", () => {
+  // #335: NOTHING PINNED THIS. `api.restartService`'s parameter defaults to `false`, so dropping the
+  // argument — `api.restartService(true)` → `api.restartService()` — silently reverts the save to
+  // starting a daemon nobody asked to start, which is the #320 decision, and every JS and Rust test
+  // stayed green. Reading the source is the only check available for a caller this suite cannot
+  // execute (no DOM); `onboarding-latch.test.js` uses the same construction for the same reason.
+  //
+  // ANCHORED INSIDE EACH FUNCTION, not asked of the file: `restartService(true)` appearing anywhere
+  // would pass with the two calls swapped, which is the mistake worth catching.
+  const app = readFileSync(fileURLToPath(new URL("../src/js/app.js", import.meta.url)), "utf8");
+
+  const save = functionBody(app, "restartForSave");
+  assert.match(
+    save,
+    /api\.restartService\(true\)/,
+    "a save must not start a service that was not running (#320)",
+  );
+
+  const retry = functionBody(app, "restartAfterSave");
+  assert.match(retry, /api\.restartService\(\)/, "the retry has a stopped daemon to fix");
+  assert.doesNotMatch(
+    retry,
+    /api\.restartService\(true\)/,
+    "`Restart it now` after a start that failed must not decline because nothing is running",
+  );
+
+  // And #335's own omission: `barNoteOf` puts `notice` first, so a stale `Sweep now` failure masked
+  // every one of the endings below it. The retry's sibling always cleared it; the save's did not.
+  assert.match(save, /settingsNotice = null/, "a stale notice would mask the ending this save had");
+});
+
+test("the latch is only ever forgotten through the predicate that knows whether it is resolved", () => {
+  // #335. `resetSettingsScreen` runs on every entry to the settings route and nulled the latch
+  // outright, so walking Activity → Settings lost the amber line and `Restart it now` while the
+  // state they describe — a file on disk running ahead of the service — was still true. Every
+  // forgetting path now goes through `clearSaveOutcome`, which keeps an unresolved ending.
+  const app = readFileSync(fileURLToPath(new URL("../src/js/app.js", import.meta.url)), "utf8");
+  const lines = app.split("\n");
+  const assignments = lines.filter((l) => /^\s*settingsSaveOutcome = null;/.test(l));
+  assert.equal(
+    assignments.length,
+    1,
+    "exactly one place may null it — `render`'s re-validation, which asks `clearsRestartFailure` first",
+  );
+  // AND ONE PLACE MAY WRITE IT, which is what keeps the evidence floor from being forgotten on one
+  // of the two paths: a latch with no floor is cleared by the first poll that arrives, which is the
+  // pre-review behaviour exactly.
+  const writes = lines.filter((l) => /^\s*settingsSaveOutcome = \{/.test(l));
+  assert.equal(writes.length, 1, "`latchRestart` is the only builder — see its own comment");
+  assert.match(
+    functionBody(app, "latchRestart"),
+    /evidenceFloor: store\.select\.statusesIssued\(\)/,
+    "the floor must be the request clock at the moment the outcome was recorded",
+  );
+  const reset = functionBody(app, "resetSettingsScreen");
+  assert.match(reset, /clearSaveOutcome\(\)/, "navigation must ask, not null");
+  assert.doesNotMatch(reset, /settingsSaveOutcome/, "…and it must not reach the state directly");
 });

@@ -206,8 +206,15 @@ export function summarise(plan = [], summary = null) {
  * filter the side's rows a second time — which was the same window-vs-summary mixture one level
  * down, and would have said `Plus one new folder` about a plan with four hundred of them.
  */
-function sideCounts(model, side) {
+export function sideCounts(model, side) {
   const leaving = side === "leaving";
+  // THE SIDE→FIELD MAPPING, AND IT IS THE WHOLE OF THIS FUNCTION. `leaving` is what goes to Proton,
+  // so its folders are the ones created THERE (`remote_directories_created`) and its renames are
+  // the ones applied there; `arriving` is the mirror. Swapping either pair leaves every count
+  // present and every column drawn, and the four `sideNote` sentences then name the wrong side —
+  // which no gate compares, because nothing renders sentence text. Exported so a test can reach the
+  // mapping itself: a decision that only exists inside a `render` is a decision no test can reach
+  // (`settings.js`'s `barActionOf` writes the same rule).
   return {
     rows: leaving ? model.leaving : model.arriving,
     files: leaving ? model.uploads : model.downloads,
@@ -960,14 +967,36 @@ export function checkingProgressText(progress) {
 /**
  * Everything the current body draws, as one comparable string, and nothing else. The checking body
  * depends on nothing, or folding anything in would restart its animation on the next poll; the plan
- * bodies key on the rows themselves, so a re-check returning the same plan does not rebuild.
+ * bodies key on the rows AND on the counts, so a re-check returning the same plan does not rebuild.
+ *
+ * THE COUNTS ARE IN HERE BECAUSE #324 MOVED THEM OFF THE ROWS. Every number the head and both tiles
+ * draw now comes off `report.summary` — the whole plan — while `rows` is a bounded window of it, so
+ * a signature over rows alone claimed to be "everything the body draws" and was not: two replies
+ * with the same window and different totals compared equal and the older numbers stayed on screen.
+ * Unreachable today, since `onCheck` bumps the seq and renders `checking` first, which always
+ * changes the signature — but the next body that does not route through `checking` would inherit a
+ * stale-number bug, and this is cheaper than a comment saying so. `summarise` produces rows plus
+ * exactly these eight numbers plus three row-derived lists, so the pair is complete by construction.
+ * A summary field cannot move without the payload moving, so nothing here can cause a spurious
+ * rebuild either.
  */
 function signatureOf(v) {
   if (v.body === "checking") return "checking";
   if (v.body === "failed") return JSON.stringify(["failed", v.error]);
+  const m = v.model;
   return JSON.stringify([
     v.body,
-    v.model.rows.map((row) => [row.path, row.destination_path, row.action, row.entity_kind]),
+    m.rows.map((row) => [row.path, row.destination_path, row.action, row.entity_kind]),
+    [
+      m.total,
+      m.uploads,
+      m.downloads,
+      m.remoteFolders,
+      m.localFolders,
+      m.remoteMoves,
+      m.localMoves,
+      m.conflicts,
+    ],
   ]);
 }
 

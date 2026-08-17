@@ -60,11 +60,14 @@ export const api = {
   // the backend is what expands `~` and strips the sync root, so the screen must not re-derive it.
   searchFiles: (query, limit) => invoke("search_files", { query, limit: limit ?? null }),
   startService: () => invoke("start_service"),
-  // `{ restarted, detail }`, and REJECTS on failure — the save path reads the flag to tell "your new
-  // settings are running" from "the service was not running, so it will pick them up when it
-  // starts". `onlyIfRunning` is the save's own question (#320): a save must not start a daemon
-  // nobody asked to start, and the probe belongs on the Rust side because the GUI's status is up to
-  // one poll old. The retry after a failed restart passes `false` — it has a stopped daemon to fix.
+  // Resolves with the typed `RestartOutcome` — `{ ending, detail|reason }` — because the five
+  // endings are five different things to say about someone's files and two of them are opposites:
+  // after `not_started` nothing is running, after `never_stopped` the OLD daemon still is (#335).
+  // A Tauri `Err` crosses this bridge as a bare string, so an ending carried there would be prose
+  // the screen matched on, which is #103's bug; the rejection is now infrastructure only.
+  // `onlyIfRunning` is the save's own question (#320): a save must not start a daemon nobody asked
+  // to start, and the probe belongs on the Rust side because the GUI's status is up to one poll
+  // old. The retry after an unresolved restart passes `false` — it may have a stopped daemon to fix.
   restartService: (onlyIfRunning = false) => invoke("restart_service", { onlyIfRunning }),
   // The four openers (#220/#231). ALL OF THEM REJECT on failure — unlike the status commands, whose
   // error travels inside a resolved payload — so a caller that does not catch loses the only account
@@ -435,10 +438,13 @@ function mockInvoke(cmd, args) {
     case "restart_service":
       // Simulate the real stop→start latency so the Settings screen's "Restarting…" state is
       // visible in browser preview. THE SHAPE IS THE COMMAND'S, not a string: the save path branches
-      // on `restarted`, and a mock that resolved with prose would exercise a path the app does not
-      // have (#320).
+      // on the typed `ending`, and a mock resolving with prose — or with #328's `{ restarted }`,
+      // which nothing reads any more — would exercise a path the app does not have (#320/#335).
       return new Promise((resolve) => {
-        setTimeout(() => resolve({ restarted: true, detail: "daemon restarted (preview mock)" }), 1200);
+        setTimeout(
+          () => resolve({ ending: "restarted", detail: "the service restarted (preview mock)" }),
+          1200,
+        );
       });
     case "pause":
       return Promise.resolve({
