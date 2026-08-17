@@ -138,6 +138,14 @@ because it is what a later phase cannot renegotiate cheaply:
 (guard `changing_the_suffix_orphans_sidecars_written_under_the_old_one`). Per-pair does not make
 that safer, it only makes it per-pair.
 
+`dry_run` is per-pair as a *config value*, but the one-shot `proton-syncd --dry-run` preview needs
+an answer of its own: it returns before `Daemon::new`, takes neither lock, and builds its own client
+(#317), and `preview_plan(config)` takes today's fused single-pair `DaemonConfig`. Phase 1 changes
+what that function is handed, so it must say which pair it previews: **the default pair unless
+`--pair` names another**, one pair per invocation, for the same reason the wire addresses one pair
+per request. Previewing every pair in one report would need the report to grow a pair dimension, and
+a preview is a rehearsal of one tree.
+
 **Rules, each with the precedent it copies:**
 
 1. **A file that uses both spellings is a startup error naming both keys.** Top-level `local_root` /
@@ -318,6 +326,13 @@ client **refuses** with "this daemon does not support multiple folder pairs; upg
 `proton-syncd`". No `--pair`, no gate — the omitted case means the default pair, and an old
 daemon's only pair *is* the default pair, so it is correct without asking.
 
+**The gate leaves a residual race, and it is accepted rather than solved.** Between the client's
+`status` and the destructive request the daemon can be restarted at an older version — and an
+upgrade in progress is precisely when version skew exists. There is no fix available at this layer:
+the wire cannot express "I mean pair X" to a daemon that does not know pairs, which is the whole
+premise. The window is seconds, during a deliberate administrative action, and the alternative
+(a protocol version handshake) is a second problem — see the alternatives table.
+
 The rejected alternative was a new *verb* (which an old daemon rejects hard). It rejects too hard
 and in the wrong shape: `ControlCommand` has no `#[serde(other)]`, so an unknown verb fails the line
 parse, the daemon drops the connection without replying, and every client renders that as "cannot
@@ -497,12 +512,13 @@ config — that file exists precisely because `deny_unknown_fields` bricks on GU
   strings. The frames are the spec; the selector must be drawn before it can be built.
 - **Tray and notifications name no folder at all today** — a grep for `local_root|remote_root|folder`
   across `tray.rs`, `tray_menu.rs`, `sni.rs`, `notify.rs` returns nothing. So the cost there is not
-  code but *semantics*, and it is two decisions this ADR deliberately leaves to the GUI phase:
-  which state wins when pair A is syncing and pair B is in outage (one glyph, N pairs), and what
-  `Pause syncing` means as a fixed menu row (all of them? the selected one?) — bearing in mind
-  `tray_menu.rs`'s own warning that "a stale menu dispatches the action its label promised, or
-  none". Notification bodies already carry a root-*relative* path, which is ambiguous the moment
-  there are two roots, so every such body needs the pair named.
+  code but *semantics*, and it is two questions this ADR leaves to the GUI phase: which state wins
+  when pair A is syncing and pair B is in outage (one glyph, N pairs), and how the fixed
+  `Pause syncing` row spends the per-pair `paused` that §4 already decides on (fan out as `--all`,
+  or add a daemon-wide flag beside it — §8b) — bearing in mind `tray_menu.rs`'s own warning that "a
+  stale menu dispatches the action its label promised, or none". Notification bodies already carry a
+  root-*relative* path, which is ambiguous the moment there are two roots, so every such body needs
+  the pair named.
 - **The in-app emblem path disagrees with the packaged one.** `path_sync_status` opens
   `effective_db_path()` — one index — and takes a relative path with no discriminator, while the
   file-manager extensions resolve per file. Until it takes a root, the overlay and the in-app
@@ -606,12 +622,14 @@ without it and it is not usable without multi-pair to motivate it.
 
 ### 8b. Smaller open questions
 
-- **Per-pair vs daemon-wide pause.** This ADR chooses per-pair, with `--all` as the client loop. The
-  counter-argument is that "pause syncing" is what a user means about the *daemon* (metered
-  network, a laptop on battery), and a tray toggle that pauses one of three folders is a surprise.
-  What decides it: whether the tray's pause control is drawn per-pair in design-v2. If it is not,
-  a daemon-wide `paused` in addition to the per-pair one is the honest shape, and both must then
-  be published (a pair is running only if neither is set).
+- **What the tray's single pause toggle means.** The *wire and daemon state* are decided, not open:
+  `paused` is per-pair (§1, §4), because everything else about a pair is. What is open is one layer
+  up — the tray has one `Pause syncing` row, and pausing one of three folders from it would be a
+  surprise. Two candidates: the row fans out as the client's `--all` loop (no new daemon state, but
+  N requests and no atomic "everything is paused" reading), or a daemon-wide `paused` is added
+  *beside* the per-pair one and a pair runs only when neither is set (one more flag, one more thing
+  to publish, but an honest global). What decides it: whether design-v2 draws pause per-pair
+  anywhere. Nothing below the tray depends on the answer, which is why it can be left to phase 5.
 - **An explicit `default = true` key** instead of file order (§7). Cheap, removes the reordering
   footgun, costs a validation rule and a round-trip key. Deferred, not rejected.
 - **A bound on the number of pairs.** Each pair costs two SQLite handles, a recursive inotify
@@ -649,10 +667,12 @@ off `Daemon` into a `PairRuntime`, thread `&mut PairRuntime` through the reconci
 (`reconcile_blocking`, `first_reconcile`, `bootstrap_reconcile`, `try_incremental_reconcile`,
 `execute_plan_and_commit`, the plan/apply family), split `ControlShared` into a per-pair block plus
 the per-user `auth`, and split the decline latch. The daemon holds `Vec<PairRuntime>` of length 1.
-No behaviour change; the test suite is the specification and should need only mechanical edits.
-This is the phase where a rushed job costs the most, because every invariant guard in `daemon.rs`
-runs through these signatures. Closes: the "one connection, one index" assumption. Leaves broken:
-nothing.
+**Wire-identical rather than "no change by construction"** — `ControlShared`'s *internal* structure
+does move, so what pins the output is the existing guards: the three legacy-JSON floor tests in
+`src/ipc.rs` and `tests/ipc_cli.rs`, which drives the real binaries and asserts on JSON keys. If
+those pass unchanged with one pair configured, the reply did not move. This is the phase where a
+rushed job costs the most, because every invariant guard in `daemon.rs` runs through these
+signatures. Closes: the "one connection, one index" assumption. Leaves broken: nothing.
 
 **Phase 3 — Protocol selector (medium).** Add `ControlRequest.pair`, `ControlResponse.pair` and
 `pairs`, make `reconcile_seq`/`plan_seq`/`apply_seq` per-pair, add `--pair`/`--all` to
