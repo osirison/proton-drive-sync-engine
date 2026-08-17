@@ -2667,7 +2667,10 @@ function clearSaveOutcome() {
   if (!restartUnresolved(settingsSaveOutcome?.ending)) settingsSaveOutcome = null;
 }
 
-/** Stage one field. Any edit clears the saved notice: it is no longer describing what is on disk. */
+/**
+ * Stage one field. An edit forgets a SETTLED save's sentence — it is no longer describing what is on
+ * disk — and keeps an unresolved restart, which still is. See `clearSaveOutcome`.
+ */
 function stageSetting(key, value) {
   settingsEdits = { ...settingsEdits, [key]: value };
   clearSaveOutcome();
@@ -2711,8 +2714,9 @@ function settingsProps() {
   // `configUpdate(...)` non-empty, which is the exact gate `saveSettings` puts its restart behind —
   // so the warning that a save will interrupt a pass, the bar's retry slot and the restart itself
   // are three readers of one answer rather than three definitions of one question. A fixture's
-  // `dirty` names it too: a frame that says the screen is dirty has staged a config field, and the
-  // two frames that do have no notification policy in them.
+  // `dirty` names it too, and it is one frame: `8a Skip rules` is the only one that sets it, and
+  // what it stages is `removing: "video-raw/**"` — an `exclude` entry, which is a config field. No
+  // frame stages a notification policy, so the two readings cannot disagree on a drawn state.
   const configStaged = ui?.dirty ?? isDirty(saved, edits);
   const dirty = ui?.dirty ?? (configStaged || policyStaged);
   // Normalised once, where the reply lands — this is only reading it back.
