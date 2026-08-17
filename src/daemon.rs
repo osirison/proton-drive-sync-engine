@@ -422,11 +422,49 @@ struct PairRuntime {
     _lock_guard: LockGuard,
 }
 
+/// **One pass, one pair** — the receiver the whole reconcile family runs on.
+///
+/// A pass needs two things: the pair it is about, and the process-wide pieces every pair shares
+/// (the one client, the control plane, the cancel flag, the one event-stream session). This borrows
+/// exactly those from the daemon, which is what makes "a pass cannot touch another pair" structural
+/// rather than a rule each of forty methods has to remember: [`Self::pair`] is the *only* pair in
+/// scope here, because `pairs` itself is not.
+///
+/// Built by [`Daemon::pass`], which is where phase 4's scheduler will *choose* the pair. Nothing in
+/// the pass family chooses one, so lifting `N > 1` changes that one function, not these bodies.
+///
+/// A borrowed view rather than a `&mut PairRuntime` parameter threaded through every signature
+/// because `self.method(&mut self.pairs[0])` is rejected by the borrow checker — `&mut self` and
+/// `&mut self.pairs[0]` overlap. Destructuring the daemon's fields once, in `pass()`, is the split
+/// the compiler proves disjoint.
+struct PairPass<'a, C: ProtonClient> {
+    /// The pair this pass is about.
+    pair: &'a mut PairRuntime,
+    /// The one `proton-drive` client, hence the one [`crate::proton::CliGate`] (#23).
+    proton: &'a Arc<C>,
+    shared: &'a Arc<ControlShared>,
+    cancel_flag: &'a Arc<AtomicBool>,
+    /// The volume-event session. One per process: it is a *session*, and the volume is a per-call
+    /// argument (ADR 0005 §5), which is why the cursor is per-pair but this is not.
+    event_source: &'a mut Option<Box<dyn EventSource>>,
+    event_source_factory: &'a mut Box<dyn FnMut() -> Option<Box<dyn EventSource>> + Send>,
+    /// See [`Daemon::event_scope_declined`].
+    event_scope_declined: &'a mut Option<String>,
+    /// Copied rather than borrowed: a pass only ever *reports* this cadence (in the degraded-session
+    /// message), never changes it.
+    events_poll_interval: Duration,
+}
+
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// What describes the process (see [`ProcessConfig`]).
     process: ProcessConfig,
-    /// The one folder pair this daemon syncs (see [`PairRuntime`]).
-    pair: PairRuntime,
+    /// The folder pairs this daemon syncs, in config order (see [`PairRuntime`]).
+    ///
+    /// **Length 1 today**, because `config::refuse_unsupported_pair_count` refuses more until the
+    /// runtime can serialize their passes. It is a `Vec` rather than one pair so that lifting the
+    /// refusal is a change to *who picks* — [`Self::pass`] and the run loop's cadence — rather than
+    /// a change to what a pass is.
+    pairs: Vec<PairRuntime>,
     /// The `proton-drive` client. Behind an `Arc` because the control-socket task holds it too:
     /// the read-only `list` verb (#99) runs a CLI invocation from that task, and it must be the
     /// *same* client instance as the main loop's — one client is one `proton::CliGate`, and a
@@ -1562,7 +1600,7 @@ impl<C: ProtonClient> Daemon<C> {
         }));
         let mut daemon = Self {
             process,
-            pair: PairRuntime {
+            pairs: vec![PairRuntime {
                 config: pair_config,
                 connection,
                 scan_options,
@@ -1594,7 +1632,7 @@ impl<C: ProtonClient> Daemon<C> {
                 pass_intent: PassIntent::Sync,
                 apply_report: None,
                 _lock_guard: lock_guard,
-            },
+            }],
             proton: Arc::new(proton),
             shared,
             ipc_io_timeout: IPC_IO_TIMEOUT,
@@ -1608,10 +1646,10 @@ impl<C: ProtonClient> Daemon<C> {
         };
         // Populate the published history before the first pass, so a client polling a
         // just-started daemon already sees the last full sweep from a previous run.
-        daemon.refresh_pass_history();
-        daemon.refresh_index_totals();
-        daemon.publish_status();
-        daemon.write_metrics_snapshot()?;
+        daemon.pass().refresh_pass_history();
+        daemon.pass().refresh_index_totals();
+        daemon.pass().publish_status();
+        daemon.pass().write_metrics_snapshot()?;
         Ok(daemon)
     }
 
@@ -1622,8 +1660,8 @@ impl<C: ProtonClient> Daemon<C> {
         C: 'static,
     {
         info!(
-            local_root = %self.pair.config.local_root.display(),
-            remote_root = %self.pair.config.remote_root.display(),
+            local_root = %self.pair().config.local_root.display(),
+            remote_root = %self.pair().config.remote_root.display(),
             socket_path = %self.process.socket_path.display(),
             "starting daemon"
         );
@@ -1666,7 +1704,11 @@ impl<C: ProtonClient> Daemon<C> {
         // interrupted pass keeps only the checkpoints of actions that fully completed and
         // replans the remainder from ground truth on next start).
         let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
-        let approvals_connection = open_database(&self.pair.config.db_path)?;
+        // THREE per-pair values reach the control plane, and each becomes a lookup in phase 3 rather
+        // than a second copy: the approvals connection (one per pair — 2N handles, no schema change,
+        // ADR 0005 §3), the metrics sidecar path, and the `list` verb's relative frame. They are
+        // pair 0's here because there is one pair; the plane itself is per-process and stays so.
+        let approvals_connection = open_database(&self.pair().config.db_path)?;
         let ipc_task = tokio::spawn(serve_control_socket(
             listener,
             Arc::new(ControlPlane {
@@ -1674,23 +1716,27 @@ impl<C: ProtonClient> Daemon<C> {
                 approvals: tokio::sync::Mutex::new(approvals_connection),
                 loop_tx,
                 io_timeout: self.ipc_io_timeout,
-                metrics_path: self.pair.metrics_path.clone(),
+                metrics_path: self.pair().metrics_path.clone(),
                 cancel_flag: Arc::clone(&cancel_flag),
                 browse: BrowseContext {
                     // The SAME client the main loop uses, not a second one built from the same
                     // config: one client is one `proton::CliGate`, and two gates serialize
                     // nothing.
                     proton: Arc::clone(&self.proton),
-                    remote_root: self.pair.config.remote_root.clone(),
+                    remote_root: self.pair().config.remote_root.clone(),
                     gate_wait: self.browse_gate_wait,
                 },
             }),
         ));
         let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
-        watcher.watch(&self.pair.config.local_root, RecursiveMode::Recursive)?;
+        // One watcher, N watched roots once phase 4 lands (`watch` is called per root) — and
+        // `handle_fs_event` is where an event is routed back to its owning pair.
+        watcher.watch(&self.pair().config.local_root, RecursiveMode::Recursive)?;
 
-        let mut interval = tokio::time::interval(self.pair.config.scan_interval);
+        // Per-pair cadence: phase 4 replaces this single interval with the due queue, since two
+        // pairs may want different `scan_interval`s and their passes must still be serialized.
+        let mut interval = tokio::time::interval(self.pair().config.scan_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
 
@@ -1744,13 +1790,13 @@ impl<C: ProtonClient> Daemon<C> {
                     maybe_event = watch_rx.recv() => {
                         match maybe_event {
                             Some(Ok(event)) => {
-                                let pending_before = self.pair.pending_changes.len();
+                                let pending_before = self.pair().pending_changes.len();
                                 let outcome =
                                     tokio::task::block_in_place(|| self.handle_fs_event(event));
                                 if let Err(error) = outcome {
                                     warn!(%error, "failed to process filesystem event");
                                 }
-                                if self.pair.pending_changes.len() != pending_before {
+                                if self.pair().pending_changes.len() != pending_before {
                                     self.publish_status();
                                 }
                             }
@@ -1776,7 +1822,7 @@ impl<C: ProtonClient> Daemon<C> {
                     // #50: `events_driven` alone is not enough — without a source every pass is a
                     // full-tree walk, and this fast cadence would run one every 30s forever.
                     _ = events_poll.tick(),
-                        if self.pair.config.events_driven && self.event_source.is_some() => {
+                        if self.pair().config.events_driven && self.event_source.is_some() => {
                         self.reconcile_if_needed().await?;
                     }
                     _ = &mut shutdown => {
@@ -1803,9 +1849,228 @@ impl<C: ProtonClient> Daemon<C> {
             "filesystem watcher reported an error; forcing a local rescan on the next pass \
              because events may have been dropped"
         );
-        self.pair.force_local_rescan = true;
+        // The error carries no path, so with N pairs this must set the flag on *every* one of them:
+        // an inotify overflow means events were lost somewhere, and that is the only fail-safe
+        // reading available (ADR 0005 §5).
+        self.pair_mut().force_local_rescan = true;
     }
 
+    /// Test-only convenience wrapper over the free [`apply_approval_command`], which production
+    /// code runs on the IPC task with its own connection and the published pending list.
+    #[cfg(test)]
+    fn apply_approval_command(&self, selector: Option<&str>, approve: bool) -> AppResult<String> {
+        apply_approval_command(
+            &self.pair().connection,
+            &self.pair().pending_deletions,
+            selector,
+            false,
+            approve,
+            None,
+        )
+    }
+
+    /// Test-only convenience wrapper over the free [`apply_keep_command`].
+    #[cfg(test)]
+    fn apply_keep_command(&self, selector: Option<&str>) -> AppResult<(String, bool)> {
+        apply_keep_command(
+            &self.pair().connection,
+            &self.pair().pending_deletions,
+            selector,
+            true,
+        )
+    }
+
+    /// The pair a pass is about, and the **one** place that choice is made.
+    ///
+    /// Phase 2 has exactly one pair, so this is `pairs[0]`. Phase 4 replaces the choice with the due
+    /// queue (explicit requests ahead of timer-due pairs, earliest `next_due` among the rest) and
+    /// nothing else about a pass changes — which is the whole point of the borrowed view.
+    fn pass(&mut self) -> PairPass<'_, C> {
+        // Destructured rather than `&mut self.pairs[0]` beside `self.shared`: field-by-field is what
+        // the borrow checker proves disjoint.
+        let Self {
+            pairs,
+            proton,
+            shared,
+            cancel_flag,
+            event_source,
+            event_source_factory,
+            event_scope_declined,
+            events_poll_interval,
+            ..
+        } = self;
+        PairPass {
+            pair: &mut pairs[0],
+            proton,
+            shared,
+            cancel_flag,
+            event_source,
+            event_source_factory,
+            event_scope_declined,
+            events_poll_interval: *events_poll_interval,
+        }
+    }
+
+    /// The pair itself, for the loop-level reads that are not a pass (the watched root, the
+    /// cadence, the sidecar paths). Same singular assumption as [`Self::pass`].
+    fn pair(&self) -> &PairRuntime {
+        &self.pairs[0]
+    }
+
+    fn pair_mut(&mut self) -> &mut PairRuntime {
+        &mut self.pairs[0]
+    }
+
+    /// One reconcile pass. Phase 4 changes which pair `pass()` hands over, not this call.
+    fn reconcile_blocking(&mut self) -> AppResult<PassOutcome> {
+        self.pass().reconcile_blocking()
+    }
+
+    /// Routes a filesystem event to the pair that owns it.
+    ///
+    /// One watcher with N watched roots once phase 4 lands, so this is where an absolute path is
+    /// matched to its pair by longest prefix — unambiguous because ADR 0005 §2 rule 4 forbids
+    /// nesting. Routing must happen *before* the pair's filters run, or an event under pair A's root
+    /// would be tested against pair B's globs.
+    fn handle_fs_event(&mut self, event: Event) -> AppResult<()> {
+        self.pass().handle_fs_event(event)
+    }
+
+    fn publish_status(&mut self) {
+        self.pass().publish_status();
+    }
+
+    /// Test-only convenience: publish and build a status reply exactly as the IPC task would.
+    /// Production replies are built by the IPC task itself from [`ControlShared`].
+    #[cfg(test)]
+    fn status_response(&mut self, message: &str) -> ControlResponse {
+        self.publish_status();
+        self.shared.response(message)
+    }
+
+    fn is_paused(&self) -> bool {
+        self.shared.is_paused()
+    }
+
+    async fn reconcile_if_needed(&mut self) -> AppResult<()> {
+        if self.is_paused() {
+            self.discard_queued_apply_for_pause();
+            return Ok(());
+        }
+        match self.reconcile().await {
+            // Not silence: `execute_plan_and_commit` already warned per item and once with the
+            // total, and the outcome is on every status reply. Logging it again here would be a
+            // second, differently-worded report of the same pass.
+            Ok(PassOutcome::Clean | PassOutcome::Partial { .. }) => {}
+            Err(error) => error!(%error, "scheduled reconciliation failed"),
+        }
+        Ok(())
+    }
+
+    async fn reconcile(&mut self) -> AppResult<PassOutcome> {
+        // Flag the pass for status replies before blocking this task; the IPC task keeps
+        // serving (and reporting `syncing`) for the whole duration.
+        self.shared.pair.syncing.store(true, Ordering::SeqCst);
+        let result = tokio::task::block_in_place(|| self.reconcile_blocking());
+        self.shared.pair.syncing.store(false, Ordering::SeqCst);
+        // The pass is over either way; never let a stale "downloading X" outlive it.
+        self.shared.clear_activity();
+        result
+    }
+
+    /// Drops an apply that was booked and then overtaken by a pause, and seals it as failed.
+    ///
+    /// **A latch is the wrong shape for a destructive request.** `resync` and `reset_index` survive
+    /// a pause because they are latches for what the *next* pass should do, and the next pass is
+    /// the user's own resume. An apply is different in two ways: it performs deletions, and it
+    /// authorises a plan the user reviewed minutes ago. Letting it sit through a pause would fire a
+    /// destructive side effect on some later interval tick, hours after the user paused precisely
+    /// to stop things happening — and `reconcile_if_needed`'s early return means nothing would seal
+    /// it in the meantime either.
+    ///
+    /// Sealed as `Failed` rather than silently dropped: a booked request that nothing answers is a
+    /// client polling for ever, and "the apply did not happen" is exactly what `Failed` says. The
+    /// plan itself is untouched, so resuming and applying the same token again just works.
+    fn discard_queued_apply_for_pause(&mut self) {
+        let PassIntent::Apply { apply_seq, .. } = self.shared.take_apply_request() else {
+            return;
+        };
+        info!("syncing was paused before the scheduled apply ran; it was not applied");
+        self.shared.seal_apply_pass(ApplyOutcome::Failed {
+            apply_seq,
+            error: "syncing was paused before the apply ran; nothing was applied".to_owned(),
+        });
+    }
+
+    /// One plan-only pass (#100/#192/#209): the rehearsal, run on the main loop so the existing
+    /// [`SyncActivity`] describes it and no second progress channel has to exist.
+    ///
+    /// **This pass observes and consumes NOTHING**, which is the single most dangerous thing about
+    /// it: it runs the same scan and the same walk as a real pass, so anything it consumed would be
+    /// consumed *without* the side effects that justify consuming it. The whole family, and the one
+    /// reason behind all of it — a rehearsal that spent evidence would leave the real pass unable to
+    /// re-derive what it was rehearsing:
+    ///
+    /// * **the event cursor** — never read and never written here; the pass does not even resolve an
+    ///   event scope, because it always full-walks the remote rather than replaying a delta
+    ///   (`build_plan_report`). An incremental plan *would* consume the delta to reconstruct its
+    ///   map, and advancing the cursor past changes nothing applied orphans them for ever;
+    /// * **`pending_changes` / `pending_deletions`** — not drained: only a pass that acted on them
+    ///   may clear them;
+    /// * **`is_first_reconcile` / `force_local_rescan`** — not cleared: the local scan a plan pass
+    ///   runs proves nothing was *synced*, which is the floor those flags hold;
+    /// * **the warm-start counter** — not touched: it counts full walks that produced a baseline;
+    /// * **`last_sync` / `last_successful_sync_summary` / `last_plan_summary`** — not set: nothing
+    ///   synced, and a rehearsal's plan is not the last pass's plan;
+    /// * **`sync_passes` / `sync_events`** — nothing written: history is written behind a side
+    ///   effect, and there was none;
+    /// * **delete approvals and `withheld_deletions`** — never consulted: the gate is
+    ///   execution-time, and nothing here executes;
+    /// * **the standing `unsyncable` list** — not merged into: this pass's drops ride on the plan
+    ///   itself as `cannot_sync` (#315), so nothing display-only is mutated either.
+    ///
+    /// It does not go through [`Self::reconcile_blocking`] at all, which is what makes that list
+    /// structural rather than nine things each branch has to remember not to do.
+    async fn plan_now(&mut self) {
+        // Coalesced: two clicks on `Check again` while one walk is running cost one walk, because
+        // the pass that is already booked answers both requests.
+        let Some(generation) = self.shared.claim_plan_pass() else {
+            return;
+        };
+        // `syncing` gates `activity` onto status replies, so a plan pass must claim it or #209's
+        // progress line has nothing to read. The pause check lives at the ack (as `syncnow`'s
+        // does); a pause landing after it lets this inert pass finish rather than orphan a booked
+        // request that nothing would ever seal. **Do not add one here to match
+        // `discard_queued_apply_for_pause`**: cancelling an apply IS a seal, returning from here is
+        // not, and the GUI's plan poller has no bail-out to rescue it. Guard:
+        // `a_plan_pass_booked_before_a_pause_still_runs_and_seals`.
+        // `plan_pass` BEFORE `syncing`, and cleared after it, so no reply can ever observe
+        // `syncing` without the flag that says which kind of pass it is.
+        self.shared.pair.plan_pass.store(true, Ordering::SeqCst);
+        self.shared.pair.syncing.store(true, Ordering::SeqCst);
+        self.shared.begin_plan_progress(current_epoch_secs());
+        let result = tokio::task::block_in_place(|| self.pass().plan_only_blocking());
+        self.shared.pair.syncing.store(false, Ordering::SeqCst);
+        self.shared.pair.plan_pass.store(false, Ordering::SeqCst);
+        self.shared.clear_activity();
+        // #103's rule, unchanged: a pass that reached Proton is evidence of a session, a classified
+        // auth failure is evidence against one, and anything else moves nothing.
+        match &result {
+            Ok(_) => self.pass().note_auth_evidence(AuthState::SignedIn),
+            Err(error) if is_auth_failure_error(error.as_ref()) => {
+                self.pass().note_auth_evidence(AuthState::SignedOut)
+            }
+            Err(_) => {}
+        }
+        let sealed = result.map_err(|error| {
+            warn!(%error, "plan pass failed");
+            error.to_string()
+        });
+        self.shared.seal_plan_pass(generation, sealed);
+    }
+}
+
+impl<C: ProtonClient> PairPass<'_, C> {
     fn handle_fs_event(&mut self, event: Event) -> AppResult<()> {
         for path in event.paths {
             if path.is_dir() {
@@ -1940,18 +2205,6 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
-    /// Test-only convenience: publish and build a status reply exactly as the IPC task would.
-    /// Production replies are built by the IPC task itself from [`ControlShared`].
-    #[cfg(test)]
-    fn status_response(&self, message: &str) -> ControlResponse {
-        self.publish_status();
-        self.shared.response(message)
-    }
-
-    fn is_paused(&self) -> bool {
-        self.shared.is_paused()
-    }
-
     /// One-line `last_error` for a partial pass (#136): terse on purpose — it rides on every
     /// status reply, and the per-item detail is in `failed_items`.
     fn failure_summary(&self, failed: usize) -> String {
@@ -1964,129 +2217,12 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
-    async fn reconcile_if_needed(&mut self) -> AppResult<()> {
-        if self.is_paused() {
-            self.discard_queued_apply_for_pause();
-            return Ok(());
-        }
-        match self.reconcile().await {
-            // Not silence: `execute_plan_and_commit` already warned per item and once with the
-            // total, and the outcome is on every status reply. Logging it again here would be a
-            // second, differently-worded report of the same pass.
-            Ok(PassOutcome::Clean | PassOutcome::Partial { .. }) => {}
-            Err(error) => error!(%error, "scheduled reconciliation failed"),
-        }
-        Ok(())
-    }
-
-    async fn reconcile(&mut self) -> AppResult<PassOutcome> {
-        // Flag the pass for status replies before blocking this task; the IPC task keeps
-        // serving (and reporting `syncing`) for the whole duration.
-        self.shared.pair.syncing.store(true, Ordering::SeqCst);
-        let result = tokio::task::block_in_place(|| self.reconcile_blocking());
-        self.shared.pair.syncing.store(false, Ordering::SeqCst);
-        // The pass is over either way; never let a stale "downloading X" outlive it.
-        self.shared.clear_activity();
-        result
-    }
-
-    /// Drops an apply that was booked and then overtaken by a pause, and seals it as failed.
-    ///
-    /// **A latch is the wrong shape for a destructive request.** `resync` and `reset_index` survive
-    /// a pause because they are latches for what the *next* pass should do, and the next pass is
-    /// the user's own resume. An apply is different in two ways: it performs deletions, and it
-    /// authorises a plan the user reviewed minutes ago. Letting it sit through a pause would fire a
-    /// destructive side effect on some later interval tick, hours after the user paused precisely
-    /// to stop things happening — and `reconcile_if_needed`'s early return means nothing would seal
-    /// it in the meantime either.
-    ///
-    /// Sealed as `Failed` rather than silently dropped: a booked request that nothing answers is a
-    /// client polling for ever, and "the apply did not happen" is exactly what `Failed` says. The
-    /// plan itself is untouched, so resuming and applying the same token again just works.
-    fn discard_queued_apply_for_pause(&mut self) {
-        let PassIntent::Apply { apply_seq, .. } = self.shared.take_apply_request() else {
-            return;
-        };
-        info!("syncing was paused before the scheduled apply ran; it was not applied");
-        self.shared.seal_apply_pass(ApplyOutcome::Failed {
-            apply_seq,
-            error: "syncing was paused before the apply ran; nothing was applied".to_owned(),
-        });
-    }
-
-    /// One plan-only pass (#100/#192/#209): the rehearsal, run on the main loop so the existing
-    /// [`SyncActivity`] describes it and no second progress channel has to exist.
-    ///
-    /// **This pass observes and consumes NOTHING**, which is the single most dangerous thing about
-    /// it: it runs the same scan and the same walk as a real pass, so anything it consumed would be
-    /// consumed *without* the side effects that justify consuming it. The whole family, and the one
-    /// reason behind all of it — a rehearsal that spent evidence would leave the real pass unable to
-    /// re-derive what it was rehearsing:
-    ///
-    /// * **the event cursor** — never read and never written here; the pass does not even resolve an
-    ///   event scope, because it always full-walks the remote rather than replaying a delta
-    ///   (`build_plan_report`). An incremental plan *would* consume the delta to reconstruct its
-    ///   map, and advancing the cursor past changes nothing applied orphans them for ever;
-    /// * **`pending_changes` / `pending_deletions`** — not drained: only a pass that acted on them
-    ///   may clear them;
-    /// * **`is_first_reconcile` / `force_local_rescan`** — not cleared: the local scan a plan pass
-    ///   runs proves nothing was *synced*, which is the floor those flags hold;
-    /// * **the warm-start counter** — not touched: it counts full walks that produced a baseline;
-    /// * **`last_sync` / `last_successful_sync_summary` / `last_plan_summary`** — not set: nothing
-    ///   synced, and a rehearsal's plan is not the last pass's plan;
-    /// * **`sync_passes` / `sync_events`** — nothing written: history is written behind a side
-    ///   effect, and there was none;
-    /// * **delete approvals and `withheld_deletions`** — never consulted: the gate is
-    ///   execution-time, and nothing here executes;
-    /// * **the standing `unsyncable` list** — not merged into: this pass's drops ride on the plan
-    ///   itself as `cannot_sync` (#315), so nothing display-only is mutated either.
-    ///
-    /// It does not go through [`Self::reconcile_blocking`] at all, which is what makes that list
-    /// structural rather than nine things each branch has to remember not to do.
-    async fn plan_now(&mut self) {
-        // Coalesced: two clicks on `Check again` while one walk is running cost one walk, because
-        // the pass that is already booked answers both requests.
-        let Some(generation) = self.shared.claim_plan_pass() else {
-            return;
-        };
-        // `syncing` gates `activity` onto status replies, so a plan pass must claim it or #209's
-        // progress line has nothing to read. The pause check lives at the ack (as `syncnow`'s
-        // does); a pause landing after it lets this inert pass finish rather than orphan a booked
-        // request that nothing would ever seal. **Do not add one here to match
-        // `discard_queued_apply_for_pause`**: cancelling an apply IS a seal, returning from here is
-        // not, and the GUI's plan poller has no bail-out to rescue it. Guard:
-        // `a_plan_pass_booked_before_a_pause_still_runs_and_seals`.
-        // `plan_pass` BEFORE `syncing`, and cleared after it, so no reply can ever observe
-        // `syncing` without the flag that says which kind of pass it is.
-        self.shared.pair.plan_pass.store(true, Ordering::SeqCst);
-        self.shared.pair.syncing.store(true, Ordering::SeqCst);
-        self.shared.begin_plan_progress(current_epoch_secs());
-        let result = tokio::task::block_in_place(|| self.plan_only_blocking());
-        self.shared.pair.syncing.store(false, Ordering::SeqCst);
-        self.shared.pair.plan_pass.store(false, Ordering::SeqCst);
-        self.shared.clear_activity();
-        // #103's rule, unchanged: a pass that reached Proton is evidence of a session, a classified
-        // auth failure is evidence against one, and anything else moves nothing.
-        match &result {
-            Ok(_) => self.note_auth_evidence(AuthState::SignedIn),
-            Err(error) if is_auth_failure_error(error.as_ref()) => {
-                self.note_auth_evidence(AuthState::SignedOut)
-            }
-            Err(_) => {}
-        }
-        let sealed = result.map_err(|error| {
-            warn!(%error, "plan pass failed");
-            error.to_string()
-        });
-        self.shared.seal_plan_pass(generation, sealed);
-    }
-
     /// The blocking half of [`Self::plan_now`] — see its docs for the inertness family.
     fn plan_only_blocking(&mut self) -> AppResult<StoredPlan> {
         info!("computing a plan-only pass");
         let base_records = load_index(&self.pair.connection)?;
         let local_root = self.pair.config.local_root.clone();
-        let shared = Arc::clone(&self.shared);
+        let shared = Arc::clone(self.shared);
         let observer = |files_seen: u64, path: &Path| {
             let display = path
                 .strip_prefix(&local_root)
@@ -2452,7 +2588,7 @@ impl<C: ProtonClient> Daemon<C> {
         }
         if let Some(source) = (self.event_source_factory)() {
             info!("reused CLI session became readable; resuming event-driven change detection");
-            self.event_source = Some(source);
+            *self.event_source = Some(source);
             // On a *mid-life* reacquisition (not the first pass), force this pass to full-walk by
             // reseeding the resync floor. Steady-state incremental has no cursor-age gate, so
             // without this it would replay the cursor persisted by a previous process — which the
@@ -2528,7 +2664,7 @@ impl<C: ProtonClient> Daemon<C> {
         };
         match load_event_cursor(&self.pair.connection, &volume) {
             Ok(Some(cursor)) => {
-                self.event_scope_declined = None;
+                *self.event_scope_declined = None;
                 Some((volume, cursor))
             }
             Ok(None) => {
@@ -2585,12 +2721,12 @@ impl<C: ProtonClient> Daemon<C> {
     /// about a missing volume or an unreadable cursor, and erasing their line would re-report it
     /// next pass as if it were new.
     fn note_auth_evidence(&mut self, state: AuthState) {
-        publish_auth_evidence(&self.shared, state);
+        publish_auth_evidence(self.shared, state);
         match state {
             AuthState::SignedOut => self.note_event_scope_declined(AUTH_DECLINE_REASON.to_owned()),
             AuthState::SignedIn => {
                 if self.event_scope_declined.as_deref() == Some(AUTH_DECLINE_REASON) {
-                    self.event_scope_declined = None;
+                    *self.event_scope_declined = None;
                 }
             }
             // Unreachable by contract — `record_auth_state` asserts it — and deliberately inert
@@ -2610,7 +2746,7 @@ impl<C: ProtonClient> Daemon<C> {
     fn note_event_scope_declined(&mut self, reason: String) {
         if self.event_scope_declined.as_deref() != Some(reason.as_str()) {
             info!(%reason, "event-driven detection unavailable; using full-tree walks");
-            self.event_scope_declined = Some(reason);
+            *self.event_scope_declined = Some(reason);
         }
     }
 
@@ -4012,7 +4148,7 @@ impl<C: ProtonClient> Daemon<C> {
                     &mut index_mutations,
                     &mut pending_approval_consumptions,
                     &mut self.pair.pass_log,
-                    &self.shared,
+                    self.shared,
                 )?;
             }
             action_number += 1;
@@ -4076,7 +4212,7 @@ impl<C: ProtonClient> Daemon<C> {
         // action that needs no checkpoint of its own).
         let pass_id = self.pair.pass_log.write_pending(&transaction)?;
         transaction.commit()?;
-        self.pair.pass_log.note_committed(pass_id, &self.shared);
+        self.pair.pass_log.note_committed(pass_id, self.shared);
         // `pending_changes` is a wake-up/status hint, not a plan input, and every pass that
         // reaches this commit ran the local stat-walk (the events-mode idle fast-path returns
         // before `execute_plan_and_commit`), so clearing the whole set here cannot lose work: the
@@ -4421,7 +4557,7 @@ impl<C: ProtonClient> Daemon<C> {
             index_mutations,
             pending_approval_consumptions,
             &mut self.pair.pass_log,
-            &self.shared,
+            self.shared,
         )?;
         // A chunk is many actions; one landed file in it clears the breaker's consecutive run
         // exactly as a successful single action would. A vanished node landed nothing.
@@ -4546,20 +4682,6 @@ impl<C: ProtonClient> Daemon<C> {
     /// authorizes only that deletion); denying revokes any such approval. Only paths that are
     /// *currently pending* are acted on, so a bogus argument is a harmless no-op and no unvalidated
     /// path is ever stored.
-    /// Test-only convenience wrapper over the free [`apply_approval_command`], which production
-    /// code runs on the IPC task with its own connection and the published pending list.
-    #[cfg(test)]
-    fn apply_approval_command(&self, selector: Option<&str>, approve: bool) -> AppResult<String> {
-        apply_approval_command(
-            &self.pair.connection,
-            &self.pair.pending_deletions,
-            selector,
-            false,
-            approve,
-            None,
-        )
-    }
-
     /// Seals this pass's history row and re-reads the published summary.
     ///
     /// Called from `reconcile_blocking`'s three-arm outcome match — after every side effect, and
@@ -4642,17 +4764,6 @@ impl<C: ProtonClient> Daemon<C> {
         self.pair.pass_log.kind = kind;
         self.shared
             .update_pass_progress(|pass| pass.kind = kind.as_str().to_owned());
-    }
-
-    /// Test-only convenience wrapper over the free [`apply_keep_command`].
-    #[cfg(test)]
-    fn apply_keep_command(&self, selector: Option<&str>) -> AppResult<(String, bool)> {
-        apply_keep_command(
-            &self.pair.connection,
-            &self.pair.pending_deletions,
-            selector,
-            true,
-        )
     }
 
     fn record_status_history(&mut self, message: &str) {
@@ -6990,7 +7101,7 @@ mod tests {
     fn browse_context<C: ProtonClient>(daemon: &Daemon<C>) -> BrowseContext<C> {
         BrowseContext {
             proton: Arc::clone(&daemon.proton),
-            remote_root: daemon.pair.config.remote_root.clone(),
+            remote_root: daemon.pair().config.remote_root.clone(),
             gate_wait: daemon.browse_gate_wait,
         }
     }
@@ -7297,7 +7408,7 @@ mod tests {
     ) -> ListingOutcome {
         let context = BrowseContext {
             proton: Arc::clone(&daemon.proton),
-            remote_root: daemon.pair.config.remote_root.clone(),
+            remote_root: daemon.pair().config.remote_root.clone(),
             gate_wait: daemon.browse_gate_wait,
         };
         tokio::runtime::Builder::new_current_thread()
@@ -7322,7 +7433,7 @@ mod tests {
         fs::create_dir(&local_root).expect("local root");
         let (daemon, seen) = absolute_browsing_daemon(directory.path(), &local_root);
         assert_eq!(
-            daemon.pair.config.remote_root,
+            daemon.pair().config.remote_root,
             PathBuf::from("/Drive/RemoteFolder"),
             "the candidate below is deliberately not under this"
         );
@@ -7710,7 +7821,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.note_auth_evidence(AuthState::SignedOut);
+        daemon.pass().note_auth_evidence(AuthState::SignedOut);
         assert_eq!(daemon.shared.auth_state(), AuthState::SignedOut);
         assert_eq!(
             daemon.event_scope_declined.as_deref(),
@@ -7728,13 +7839,15 @@ mod tests {
         );
 
         // Recovery clears it, because it is OUR reason…
-        daemon.note_auth_evidence(AuthState::SignedIn);
+        daemon.pass().note_auth_evidence(AuthState::SignedIn);
         assert_eq!(daemon.event_scope_declined, None);
 
         // …and only ours: a working session says nothing about a missing volume, so a sign-in
         // must not erase that line and let it re-report as new next pass.
-        daemon.note_event_scope_declined("no event volume: nothing carries a proton_id".to_owned());
-        daemon.note_auth_evidence(AuthState::SignedIn);
+        daemon
+            .pass()
+            .note_event_scope_declined("no event volume: nothing carries a proton_id".to_owned());
+        daemon.pass().note_auth_evidence(AuthState::SignedIn);
         assert_eq!(
             daemon.event_scope_declined.as_deref(),
             Some("no event volume: nothing carries a proton_id")
@@ -8439,10 +8552,10 @@ mod tests {
             }),
             "local files should still upload after creating the missing remote root"
         );
-        assert_eq!(daemon.pair.last_error, None);
+        assert_eq!(daemon.pair().last_error, None);
         assert_eq!(
             daemon
-                .pair
+                .pair()
                 .last_successful_sync_summary
                 .as_ref()
                 .map(|summary| summary.remote_directories_created),
@@ -8465,7 +8578,7 @@ mod tests {
             .expect("daemon");
         let hash = sha1_bytes(b"stable");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("stable.txt", Some("stale-remote-id"), hash.as_str()),
         )
         .expect("base index record");
@@ -8487,7 +8600,7 @@ mod tests {
         );
         assert_eq!(
             daemon
-                .pair
+                .pair()
                 .last_successful_sync_summary
                 .as_ref()
                 .map(|summary| summary.local_deletes),
@@ -8518,7 +8631,7 @@ mod tests {
                     relative_path: PathBuf::from("local-only.txt"),
                 })
         );
-        let record = get_record(&daemon.pair.connection, Path::new("local-only.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("local-only.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Synced);
@@ -8554,14 +8667,14 @@ mod tests {
             ]
         );
         let record = get_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             Path::new("local-sub-directory/subdirectory-file.txt"),
         )
         .expect("index lookup")
         .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Synced);
         let directory_record =
-            get_record(&daemon.pair.connection, Path::new("local-sub-directory"))
+            get_record(&daemon.pair().connection, Path::new("local-sub-directory"))
                 .expect("directory index lookup")
                 .expect("directory index record");
         assert_eq!(directory_record.entity_kind, EntityKind::Directory);
@@ -8587,7 +8700,7 @@ mod tests {
                 relative_path: PathBuf::from("empty-local-dir"),
             }]
         );
-        let record = get_record(&daemon.pair.connection, Path::new("empty-local-dir"))
+        let record = get_record(&daemon.pair().connection, Path::new("empty-local-dir"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.entity_kind, EntityKind::Directory);
@@ -8623,7 +8736,7 @@ mod tests {
             local_root.join("empty-remote-dir").is_dir(),
             "remote-only directory should be created locally"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("empty-remote-dir"))
+        let record = get_record(&daemon.pair().connection, Path::new("empty-remote-dir"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.entity_kind, EntityKind::Directory);
@@ -8657,16 +8770,18 @@ mod tests {
             local_root.join("same-name").is_dir(),
             "the local directory must win the clash and stay in place"
         );
-        let directory_record = get_record(&daemon.pair.connection, Path::new("same-name"))
+        let directory_record = get_record(&daemon.pair().connection, Path::new("same-name"))
             .expect("directory index lookup")
             .expect("directory index record");
         assert_eq!(directory_record.entity_kind, EntityKind::Directory);
         assert_eq!(directory_record.sync_status, SyncStatus::Synced);
         assert_eq!(directory_record.proton_id, None);
-        let sidecar_record =
-            get_record(&daemon.pair.connection, Path::new("same-name.proton-cloud"))
-                .expect("sidecar index lookup")
-                .expect("sidecar index record");
+        let sidecar_record = get_record(
+            &daemon.pair().connection,
+            Path::new("same-name.proton-cloud"),
+        )
+        .expect("sidecar index lookup")
+        .expect("sidecar index record");
         assert_eq!(sidecar_record.entity_kind, EntityKind::File);
         assert_eq!(sidecar_record.sync_status, SyncStatus::Conflict);
         assert_eq!(sidecar_record.proton_id.as_deref(), Some("remote-file-id"));
@@ -8698,7 +8813,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("old-name.txt", Some("stable-id"), hash.as_str()),
         )
         .expect("base record");
@@ -8712,12 +8827,12 @@ mod tests {
         assert!(!old_path.exists(), "old local path should be moved away");
         assert!(local_root.join("new-name.txt").is_file());
         assert!(
-            get_record(&daemon.pair.connection, Path::new("old-name.txt"))
+            get_record(&daemon.pair().connection, Path::new("old-name.txt"))
                 .expect("old index lookup")
                 .is_none(),
             "old path should be purged from the index"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("new-name.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("new-name.txt"))
             .expect("new index lookup")
             .expect("new index record");
         assert_eq!(record.proton_id.as_deref(), Some("stable-id"));
@@ -8742,7 +8857,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("old-name.txt", Some("stable-id"), hash.as_str()),
         )
         .expect("base record");
@@ -8760,12 +8875,12 @@ mod tests {
         );
         assert!(new_path.is_file());
         assert!(
-            get_record(&daemon.pair.connection, Path::new("old-name.txt"))
+            get_record(&daemon.pair().connection, Path::new("old-name.txt"))
                 .expect("old index lookup")
                 .is_none(),
             "old path should be purged from the index"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("new-name.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("new-name.txt"))
             .expect("new index lookup")
             .expect("new index record");
         assert_eq!(record.proton_id.as_deref(), Some("stable-id"));
@@ -8803,7 +8918,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("claude_export.zip", Some("stable-id"), hash.as_str()),
         )
         .expect("base record");
@@ -8861,7 +8976,7 @@ mod tests {
             operations.lock().expect("operations lock").is_empty(),
             "auto-link must not upload, download, or delete content"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("shared.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("shared.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
@@ -8886,7 +9001,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -8903,7 +9018,7 @@ mod tests {
                     relative_path: PathBuf::from("notes.txt"),
                 })
         );
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
@@ -8938,7 +9053,7 @@ mod tests {
                 destination,
             }
         ));
-        let record = get_record(&daemon.pair.connection, Path::new("remote-only.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("remote-only.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
@@ -8982,7 +9097,7 @@ mod tests {
             "remote content must not be written outside the sync root through the symlink"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("sub/secret.txt"))
+            get_record(&daemon.pair().connection, Path::new("sub/secret.txt"))
                 .expect("index lookup")
                 .is_none(),
             "a refused download must not be recorded as synced"
@@ -9034,11 +9149,11 @@ mod tests {
         );
 
         assert!(
-            daemon.pair.last_failed_items[0]
+            daemon.pair().last_failed_items[0]
                 .error
                 .contains("unsafe remote path"),
             "unexpected failure: {:?}",
-            daemon.pair.last_failed_items
+            daemon.pair().last_failed_items
         );
         assert!(
             !operations
@@ -9083,7 +9198,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
@@ -9100,7 +9215,7 @@ mod tests {
                 destination: local_path,
             }
         ));
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
@@ -9129,9 +9244,12 @@ mod tests {
             fs::read_to_string(&destination).expect("downloaded file"),
             "downloaded:/Drive/RemoteFolder/nested/remote-only.txt"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("nested/remote-only.txt"))
-            .expect("index lookup")
-            .expect("index record");
+        let record = get_record(
+            &daemon.pair().connection,
+            Path::new("nested/remote-only.txt"),
+        )
+        .expect("index lookup")
+        .expect("index record");
         assert_eq!(record.proton_id.as_deref(), Some("remote-id"));
         assert_eq!(record.sync_status, SyncStatus::Synced);
     }
@@ -9148,7 +9266,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record(
                 "removed-remotely.txt",
                 Some("remote-id"),
@@ -9168,7 +9286,7 @@ mod tests {
             "remote deletion reconciliation must not call Proton mutations"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("removed-remotely.txt"))
+            get_record(&daemon.pair().connection, Path::new("removed-remotely.txt"))
                 .expect("index lookup")
                 .is_none(),
             "local delete should purge the index record"
@@ -9189,7 +9307,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("removed.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -9205,7 +9323,7 @@ mod tests {
                 })
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("removed.txt"))
+            get_record(&daemon.pair().connection, Path::new("removed.txt"))
                 .expect("index lookup")
                 .is_none(),
             "remote delete should purge the index record"
@@ -9235,7 +9353,7 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
@@ -9247,19 +9365,19 @@ mod tests {
             "the guard must not delete the local file without approval"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("keep.txt"))
+            get_record(&daemon.pair().connection, Path::new("keep.txt"))
                 .expect("lookup")
                 .is_some(),
             "the base record must survive so the delete re-plans next pass"
         );
         assert!(operations.lock().expect("ops").is_empty());
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
         assert_eq!(
-            daemon.pair.pending_deletions[0].direction,
+            daemon.pair().pending_deletions[0].direction,
             DeleteDirection::Local
         );
         assert_eq!(
-            daemon.pair.pending_deletions[0].path,
+            daemon.pair().pending_deletions[0].path,
             PathBuf::from("keep.txt")
         );
     }
@@ -9300,7 +9418,7 @@ mod tests {
         ];
 
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending,
             Some("All"),
             true,
@@ -9313,14 +9431,14 @@ mod tests {
             "a literal-path selector must approve only the file named \"All\": {message}"
         );
         assert_eq!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .len(),
             1,
         );
 
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending,
             Some("All"),
             false,
@@ -9333,7 +9451,7 @@ mod tests {
             "without the literal flag the same selector keeps the every-item meaning: {message}"
         );
         assert_eq!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .len(),
             2,
@@ -9375,7 +9493,7 @@ mod tests {
         );
 
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending,
             Some(&selector),
             true,
@@ -9389,7 +9507,7 @@ mod tests {
             "the lossy selector a client can send must match: {message}"
         );
         let approvals =
-            crate::index::load_delete_approvals(&daemon.pair.connection).expect("approvals");
+            crate::index::load_delete_approvals(&daemon.pair().connection).expect("approvals");
         assert_eq!(approvals.len(), 1);
         assert_eq!(
             approvals[0].path, real_path,
@@ -9430,7 +9548,7 @@ mod tests {
         assert_eq!(selector, crate::ipc::wire_path(&pending[1].path));
 
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending,
             Some(&selector),
             true,
@@ -9451,7 +9569,7 @@ mod tests {
              use: {message}"
         );
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("approvals")
                 .is_empty(),
             "an ambiguous approve must authorize nothing"
@@ -9459,7 +9577,7 @@ mod tests {
 
         // "all" is the deliberate every-item form and still works, as does a deny.
         apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending,
             Some("all"),
             false,
@@ -9468,13 +9586,13 @@ mod tests {
         )
         .expect("approve all");
         assert_eq!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("approvals")
                 .len(),
             2
         );
         apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending,
             Some(&selector),
             true,
@@ -9483,7 +9601,7 @@ mod tests {
         )
         .expect("ambiguous deny");
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("approvals")
                 .is_empty(),
             "a deny is not gated: revoking more than asked is the safe direction"
@@ -9518,22 +9636,36 @@ mod tests {
         };
 
         bounded(
-            &apply_approval_command(&daemon.pair.connection, &[], Some(&huge), true, false, None)
-                .expect("deny with no match"),
+            &apply_approval_command(
+                &daemon.pair().connection,
+                &[],
+                Some(&huge),
+                true,
+                false,
+                None,
+            )
+            .expect("deny with no match"),
         );
         bounded(
-            &apply_keep_command(&daemon.pair.connection, &[], Some(&huge), true)
+            &apply_keep_command(&daemon.pair().connection, &[], Some(&huge), true)
                 .expect("keep with no match")
                 .0,
         );
         // The pre-approval arm (#227), reached by an `approve` nothing pending matches.
         bounded(
-            &apply_approval_command(&daemon.pair.connection, &[], Some(&huge), true, true, None)
-                .expect("pre-approve without a direction"),
+            &apply_approval_command(
+                &daemon.pair().connection,
+                &[],
+                Some(&huge),
+                true,
+                true,
+                None,
+            )
+            .expect("pre-approve without a direction"),
         );
         bounded(
             &apply_approval_command(
-                &daemon.pair.connection,
+                &daemon.pair().connection,
                 &[],
                 Some(&huge),
                 true,
@@ -9568,7 +9700,7 @@ mod tests {
         let lossy = crate::ipc::wire_path(&ambiguous[0].path).into_owned();
         assert_eq!(lossy, crate::ipc::wire_path(&ambiguous[1].path));
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &ambiguous,
             Some(&lossy),
             true,
@@ -9601,7 +9733,7 @@ mod tests {
             .collect();
         let selector = crate::ipc::wire_path(&pending[1].path).into_owned();
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending,
             Some(&selector),
             true,
@@ -9614,7 +9746,7 @@ mod tests {
             "a path longer than the display cap must still be approvable, and unambiguously: \
              {message}"
         );
-        let approved: Vec<PathBuf> = crate::index::load_delete_approvals(&daemon.pair.connection)
+        let approved: Vec<PathBuf> = crate::index::load_delete_approvals(&daemon.pair().connection)
             .expect("approvals")
             .into_iter()
             .map(|approval| approval.path)
@@ -9649,7 +9781,7 @@ mod tests {
         }];
 
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending,
             Some("nested/folder/"),
             true,
@@ -9678,13 +9810,13 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
         daemon.reconcile_blocking().expect_clean("reconcile");
         assert_eq!(
-            daemon.pair.pending_deletions.len(),
+            daemon.pair().pending_deletions.len(),
             1,
             "a deletion is pending"
         );
@@ -9698,7 +9830,7 @@ mod tests {
             "unexpected message: {message}"
         );
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
             "a missing selector must not approve any deletion"
@@ -9709,7 +9841,7 @@ mod tests {
             .apply_approval_command(Some("all"), true)
             .expect("approve all");
         assert_eq!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .len(),
             1,
@@ -9732,7 +9864,7 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("removed.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -9742,13 +9874,13 @@ mod tests {
             operations.lock().expect("ops").is_empty(),
             "the remote delete must be withheld pending approval"
         );
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
-        let pending = daemon.pair.pending_deletions[0].clone();
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
+        let pending = daemon.pair().pending_deletions[0].clone();
         assert_eq!(pending.direction, DeleteDirection::Remote);
 
         // Approve exactly this deletion (path + direction + fingerprint), then reconcile again.
         upsert_delete_approval(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending.path,
             pending.direction,
             &pending.fingerprint,
@@ -9767,18 +9899,18 @@ mod tests {
             "an approved remote delete must apply on the next reconcile"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("removed.txt"))
+            get_record(&daemon.pair().connection, Path::new("removed.txt"))
                 .expect("lookup")
                 .is_none(),
             "the applied delete purges the index record"
         );
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
             "the approval is consumed once the delete has applied"
         );
-        assert!(daemon.pair.pending_deletions.is_empty());
+        assert!(daemon.pair().pending_deletions.is_empty());
     }
 
     #[test]
@@ -9801,7 +9933,7 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
@@ -9812,7 +9944,7 @@ mod tests {
             !local_path.exists(),
             "a subtree opted out of the guard must delete without approval"
         );
-        assert!(daemon.pair.pending_deletions.is_empty());
+        assert!(daemon.pair().pending_deletions.is_empty());
     }
 
     #[test]
@@ -9830,7 +9962,7 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
@@ -9838,7 +9970,7 @@ mod tests {
         daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
-            local_path.exists() && daemon.pair.pending_deletions.len() == 1,
+            local_path.exists() && daemon.pair().pending_deletions.len() == 1,
             "a malformed directory config must fail safe and keep the delete withheld"
         );
     }
@@ -9873,15 +10005,15 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("a.txt", Some("vol~na"), base.as_str()),
         )
         .expect("seed base record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -9892,8 +10024,8 @@ mod tests {
             local_root.join("a.txt").exists(),
             "the withheld local delete must not touch the file"
         );
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("cursor present");
         assert_eq!(
@@ -9918,7 +10050,7 @@ mod tests {
         let daemon =
             Daemon::with_client(guarded_config(directory, local_root), client).expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
@@ -9936,14 +10068,14 @@ mod tests {
         let (mut daemon, _) = daemon_withholding_a_local_delete(directory.path(), &local_root);
 
         daemon.reconcile_blocking().expect_clean("first reconcile");
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
-        let fingerprint = daemon.pair.pending_deletions[0].fingerprint.clone();
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
+        let fingerprint = daemon.pair().pending_deletions[0].fingerprint.clone();
 
         // Age the stored row to three days ago and start a FRESH daemon over the same database:
         // the queue survives a restart, so its age has to as well.
         const THREE_DAYS_AGO: u64 = 1_700_000_000;
         replace_withheld_deletions(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &[WithheldDeletion {
                 path: PathBuf::from("keep.txt"),
                 direction: DeleteDirection::Local,
@@ -9959,7 +10091,7 @@ mod tests {
             .expect("restarted daemon");
         daemon.reconcile_blocking().expect_clean("second reconcile");
 
-        let pending = &daemon.pair.pending_deletions[0];
+        let pending = &daemon.pair().pending_deletions[0];
         assert_eq!(
             pending.first_seen_epoch_secs, THREE_DAYS_AGO,
             "the first-seen time must be carried forward, not re-stamped"
@@ -9980,7 +10112,7 @@ mod tests {
         fs::create_dir(&local_root).expect("local root");
         let (mut daemon, _) = daemon_withholding_a_local_delete(directory.path(), &local_root);
         replace_withheld_deletions(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &[WithheldDeletion {
                 path: PathBuf::from("keep.txt"),
                 direction: DeleteDirection::Local,
@@ -9992,7 +10124,7 @@ mod tests {
 
         daemon.reconcile_blocking().expect_clean("reconcile");
 
-        let pending = &daemon.pair.pending_deletions[0];
+        let pending = &daemon.pair().pending_deletions[0];
         assert_eq!(
             pending.first_seen_epoch_secs, pending.detected_epoch_secs,
             "a fingerprint that does not match the stored row starts the clock again"
@@ -10015,7 +10147,7 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &directory_record("photos", Some("dir-id")),
         )
         .expect("directory record");
@@ -10028,13 +10160,13 @@ mod tests {
             let hash = crate::index::compute_sha1(&local_root.join(path)).expect("hash");
             let mut record = base_record(path, Some(path), hash.as_str());
             record.file_size = bytes;
-            upsert_record(&daemon.pair.connection, &record).expect("record");
+            upsert_record(&daemon.pair().connection, &record).expect("record");
         }
 
         daemon.reconcile_blocking().expect_clean("reconcile");
 
         let folder = daemon
-            .pair
+            .pair()
             .pending_deletions
             .iter()
             .find(|pending| pending.path == Path::new("photos"))
@@ -10044,7 +10176,7 @@ mod tests {
         // A file's own size is a lookup the client already has, so it reports no subtree at all
         // rather than a total of one.
         let file = daemon
-            .pair
+            .pair()
             .pending_deletions
             .iter()
             .find(|pending| pending.path == Path::new("outside.txt"))
@@ -10067,13 +10199,13 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
 
         daemon.reconcile_blocking().expect_clean("first reconcile");
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
 
         let (message, changed) = daemon
             .apply_keep_command(Some("keep.txt"))
@@ -10081,7 +10213,7 @@ mod tests {
         assert!(changed, "the refusal purged something: {message}");
         assert!(message.contains("kept 1"), "{message}");
         assert!(
-            get_record(&daemon.pair.connection, Path::new("keep.txt"))
+            get_record(&daemon.pair().connection, Path::new("keep.txt"))
                 .expect("lookup")
                 .is_none(),
             "the baseline record is what made this a deletion; keeping it removes that"
@@ -10102,7 +10234,7 @@ mod tests {
             operations.lock().expect("ops")
         );
         assert!(
-            daemon.pair.pending_deletions.is_empty(),
+            daemon.pair().pending_deletions.is_empty(),
             "the queue empties because the planner stops deriving the deletion"
         );
     }
@@ -10124,14 +10256,14 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &directory_record("photos", Some("dir-id")),
         )
         .expect("directory record");
         for path in ["photos/a.jpg", "photosx"] {
             let hash = crate::index::compute_sha1(&local_root.join(path)).expect("hash");
             upsert_record(
-                &daemon.pair.connection,
+                &daemon.pair().connection,
                 &base_record(path, Some(path), hash.as_str()),
             )
             .expect("record");
@@ -10145,14 +10277,14 @@ mod tests {
         assert!(changed);
         for path in ["photos", "photos/a.jpg"] {
             assert!(
-                get_record(&daemon.pair.connection, Path::new(path))
+                get_record(&daemon.pair().connection, Path::new(path))
                     .expect("lookup")
                     .is_none(),
                 "{path} must be purged with the subtree"
             );
         }
         assert!(
-            get_record(&daemon.pair.connection, Path::new("photosx"))
+            get_record(&daemon.pair().connection, Path::new("photosx"))
                 .expect("lookup")
                 .is_some(),
             "containment is component-wise: photosx is not under photos"
@@ -10177,19 +10309,19 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &directory_record("photos", Some("dir-id")),
         )
         .expect("directory record");
         let child_hash =
             crate::index::compute_sha1(&local_root.join("photos/a.jpg")).expect("hash");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("photos/a.jpg", Some("child-id"), child_hash.as_str()),
         )
         .expect("child record");
         upsert_delete_approval(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             Path::new("photos/a.jpg"),
             DeleteDirection::Local,
             child_hash.as_str(),
@@ -10204,7 +10336,7 @@ mod tests {
 
         assert!(changed);
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
             "an approval under a kept folder must go with the record it was pinned to"
@@ -10222,7 +10354,7 @@ mod tests {
         daemon.reconcile_blocking().expect_clean("reconcile");
 
         // The user saw one thing; the index now says another.
-        daemon.pair.pending_deletions[0].fingerprint = "what-the-user-saw".to_owned();
+        daemon.pair_mut().pending_deletions[0].fingerprint = "what-the-user-saw".to_owned();
         let (message, changed) = daemon
             .apply_keep_command(Some("keep.txt"))
             .expect("keep the deletion");
@@ -10230,7 +10362,7 @@ mod tests {
         assert!(!changed, "{message}");
         assert!(message.contains("nothing was kept"), "{message}");
         assert!(
-            get_record(&daemon.pair.connection, Path::new("keep.txt"))
+            get_record(&daemon.pair().connection, Path::new("keep.txt"))
                 .expect("lookup")
                 .is_some(),
             "a stale refusal must not purge anything"
@@ -10267,7 +10399,7 @@ mod tests {
         assert_eq!(selector, crate::ipc::wire_path(&pending[1].path));
 
         let (message, changed) =
-            apply_keep_command(&daemon.pair.connection, &pending, Some(&selector), true)
+            apply_keep_command(&daemon.pair().connection, &pending, Some(&selector), true)
                 .expect("ambiguous keep");
 
         assert!(!changed);
@@ -10292,14 +10424,14 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
 
         // Nothing pending yet — no pass has run at all.
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &[],
             Some("keep.txt"),
             true,
@@ -10316,11 +10448,11 @@ mod tests {
             "the pre-approved local delete must apply on the pass that plans it"
         );
         assert!(
-            daemon.pair.pending_deletions.is_empty(),
+            daemon.pair().pending_deletions.is_empty(),
             "nothing was withheld, so nothing is pending"
         );
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
             "the approval is consumed in the same checkpoint as the delete's purge"
@@ -10337,7 +10469,7 @@ mod tests {
         let (daemon, _) = daemon_withholding_a_local_delete(directory.path(), &local_root);
 
         let message = apply_approval_command(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &[],
             Some("keep.txt"),
             true,
@@ -10348,7 +10480,7 @@ mod tests {
 
         assert!(message.contains("name its direction"), "{message}");
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
             "nothing may be recorded from a selector that does not name a deletion"
@@ -10372,7 +10504,7 @@ mod tests {
             (".", "not a valid relative path"),
         ] {
             let message = apply_approval_command(
-                &daemon.pair.connection,
+                &daemon.pair().connection,
                 &[],
                 Some(selector),
                 true,
@@ -10386,7 +10518,7 @@ mod tests {
             );
         }
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
         );
@@ -10425,21 +10557,21 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("a.txt", Some("vol~na"), base.as_str()),
         )
         .expect("seed base record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        daemon.pair.incremental_passes_since_full_scan = 0;
-        daemon.pair.is_first_reconcile = false;
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().is_first_reconcile = false;
         // The local deletion is what this pass has to notice, and no remote event announces it —
         // the same clause a dropped watcher event takes (#51).
-        daemon.pair.force_local_rescan = true;
+        daemon.pair_mut().force_local_rescan = true;
 
         daemon.reconcile_blocking().expect_clean("first reconcile");
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
         assert_eq!(
-            daemon.pair.pending_deletions[0].direction,
+            daemon.pair().pending_deletions[0].direction,
             DeleteDirection::Remote
         );
 
@@ -10533,15 +10665,15 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("a.txt", Some("vol~nx"), base_hash.as_str()),
         )
         .expect("seed base record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         // Pass 1 — the id takeover. Incremental: Download(b.txt) commits a row with proton_id
         // vol~nx; LocalDelete(a.txt) is withheld, so a.txt keeps its vol~nx row → duplicate id.
@@ -10559,18 +10691,18 @@ mod tests {
             "the withheld local delete leaves a.txt in place"
         );
         assert_eq!(
-            daemon.pair.pending_deletions.len(),
+            daemon.pair().pending_deletions.len(),
             1,
             "LocalDelete(a.txt) held"
         );
         assert_eq!(
-            daemon.pair.pending_deletions[0].direction,
+            daemon.pair().pending_deletions[0].direction,
             DeleteDirection::Local
         );
         // Both rows now hold the same composed id — the transient duplicate. (A naive #71(c) would
         // already have cleared a.txt's id here, failing this assertion.)
         assert_eq!(
-            get_record(&daemon.pair.connection, Path::new("a.txt"))
+            get_record(&daemon.pair().connection, Path::new("a.txt"))
                 .expect("lookup a.txt")
                 .expect("a.txt row")
                 .proton_id
@@ -10579,7 +10711,7 @@ mod tests {
             "the withheld local delete keeps a.txt pinned to vol~nx"
         );
         assert_eq!(
-            get_record(&daemon.pair.connection, Path::new("b.txt"))
+            get_record(&daemon.pair().connection, Path::new("b.txt"))
                 .expect("lookup b.txt")
                 .expect("b.txt row")
                 .proton_id
@@ -10605,15 +10737,15 @@ mod tests {
              drop the delete"
         );
         assert_eq!(
-            daemon.pair.pending_deletions.len(),
+            daemon.pair().pending_deletions.len(),
             1,
             "the LocalDelete must still be withheld, not silently dropped"
         );
         assert_eq!(
-            daemon.pair.pending_deletions[0].direction,
+            daemon.pair().pending_deletions[0].direction,
             DeleteDirection::Local
         );
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("cursor present");
         assert_eq!(
@@ -10652,18 +10784,18 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed base record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
         // The watcher would have observed the local deletion, so the first pass is not idle.
         daemon
-            .pair
+            .pair_mut()
             .pending_changes
             .insert(PathBuf::from("keep.txt"));
 
@@ -10672,8 +10804,8 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("first incremental reconcile");
         assert_eq!(full_walks.load(Ordering::SeqCst), 0, "stayed incremental");
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
-        let pending = daemon.pair.pending_deletions[0].clone();
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
+        let pending = daemon.pair().pending_deletions[0].clone();
         assert_eq!(pending.direction, DeleteDirection::Remote);
 
         // Pass 2: empty delta and `pending_changes` now cleared, but still pending → must re-derive
@@ -10682,12 +10814,12 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("second incremental reconcile");
         assert_eq!(
-            daemon.pair.pending_deletions.len(),
+            daemon.pair().pending_deletions.len(),
             1,
             "an empty-delta pass must re-derive the still-pending remote delete"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("keep.txt"))
+            get_record(&daemon.pair().connection, Path::new("keep.txt"))
                 .expect("lookup")
                 .is_some(),
             "nothing is deleted while unapproved"
@@ -10695,7 +10827,7 @@ mod tests {
 
         // Approve, then reconcile once more with the same empty delta: it must apply now.
         upsert_delete_approval(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending.path,
             pending.direction,
             &pending.fingerprint,
@@ -10707,15 +10839,15 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("third incremental reconcile");
         assert!(
-            get_record(&daemon.pair.connection, Path::new("keep.txt"))
+            get_record(&daemon.pair().connection, Path::new("keep.txt"))
                 .expect("lookup")
                 .is_none(),
             "an approved remote delete must apply on the next incremental pass, not wait for a \
              periodic bootstrap"
         );
-        assert!(daemon.pair.pending_deletions.is_empty());
+        assert!(daemon.pair().pending_deletions.is_empty());
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
             "the approval is consumed once applied"
@@ -10736,7 +10868,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("gone.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -10748,7 +10880,7 @@ mod tests {
             "both-side deletion should not mutate local or remote files"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("gone.txt"))
+            get_record(&daemon.pair().connection, Path::new("gone.txt"))
                 .expect("index lookup")
                 .is_none(),
             "ghost state resolution should purge the index record"
@@ -10777,7 +10909,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &FileRecord {
                 file_path: PathBuf::from("docs"),
                 entity_kind: EntityKind::Directory,
@@ -10790,7 +10922,7 @@ mod tests {
         )
         .expect("directory base record");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("docs/report.txt", Some("report-id"), "same-hash"),
         )
         .expect("file base record");
@@ -10805,13 +10937,13 @@ mod tests {
             "the whole subtree should be removed with a single recursive delete call"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs"))
+            get_record(&daemon.pair().connection, Path::new("docs"))
                 .expect("index lookup")
                 .is_none(),
             "recursive remote delete should purge the directory's own index record"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs/report.txt"))
+            get_record(&daemon.pair().connection, Path::new("docs/report.txt"))
                 .expect("index lookup")
                 .is_none(),
             "recursive remote delete should purge descendant index records too"
@@ -10830,7 +10962,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &FileRecord {
                 file_path: PathBuf::from("docs"),
                 entity_kind: EntityKind::Directory,
@@ -10843,7 +10975,7 @@ mod tests {
         )
         .expect("directory base record");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("docs/report.txt", Some("report-id"), base_hash.as_str()),
         )
         .expect("file base record");
@@ -10859,13 +10991,13 @@ mod tests {
             "the whole local directory subtree should be removed"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs"))
+            get_record(&daemon.pair().connection, Path::new("docs"))
                 .expect("index lookup")
                 .is_none(),
             "recursive local delete should purge the directory's own index record"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs/report.txt"))
+            get_record(&daemon.pair().connection, Path::new("docs/report.txt"))
                 .expect("index lookup")
                 .is_none(),
             "recursive local delete should purge descendant index records too"
@@ -10886,12 +11018,12 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &directory_record("docs", Some("docs-id")),
         )
         .expect("directory base record");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &directory_record("docs/sub", Some("sub-id")),
         )
         .expect("stale directory base record over a live file");
@@ -10917,7 +11049,7 @@ mod tests {
             }),
             "the never-uploaded file must be uploaded instead: {recorded:?}"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("docs/sub"))
+        let record = get_record(&daemon.pair().connection, Path::new("docs/sub"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(
@@ -10948,7 +11080,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &FileRecord {
                 file_path: PathBuf::from("old-docs"),
                 entity_kind: EntityKind::Directory,
@@ -10961,7 +11093,7 @@ mod tests {
         )
         .expect("directory base record");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("old-docs/report.txt", Some("report-id"), file_hash.as_str()),
         )
         .expect("nested file base record");
@@ -10979,24 +11111,24 @@ mod tests {
         assert!(local_root.join("new-docs").is_dir());
         assert!(local_root.join("new-docs").join("report.txt").is_file());
         assert!(
-            get_record(&daemon.pair.connection, Path::new("old-docs"))
+            get_record(&daemon.pair().connection, Path::new("old-docs"))
                 .expect("old directory index lookup")
                 .is_none(),
             "old directory path should be purged from the index"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("old-docs/report.txt"))
+            get_record(&daemon.pair().connection, Path::new("old-docs/report.txt"))
                 .expect("old descendant index lookup")
                 .is_none(),
             "old descendant path should be purged from the index"
         );
-        let directory_record = get_record(&daemon.pair.connection, Path::new("new-docs"))
+        let directory_record = get_record(&daemon.pair().connection, Path::new("new-docs"))
             .expect("new directory index lookup")
             .expect("new directory index record");
         assert_eq!(directory_record.entity_kind, EntityKind::Directory);
         assert_eq!(directory_record.proton_id.as_deref(), Some("docs-id"));
         let descendant_record =
-            get_record(&daemon.pair.connection, Path::new("new-docs/report.txt"))
+            get_record(&daemon.pair().connection, Path::new("new-docs/report.txt"))
                 .expect("new descendant index lookup")
                 .expect("new descendant index record");
         assert_eq!(descendant_record.proton_id.as_deref(), Some("report-id"));
@@ -11039,7 +11171,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &FileRecord {
                 file_path: PathBuf::from("old-docs"),
                 entity_kind: EntityKind::Directory,
@@ -11052,7 +11184,7 @@ mod tests {
         )
         .expect("directory base record");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("old-docs/report.txt", Some("report-id"), file_hash.as_str()),
         )
         .expect("nested file base record");
@@ -11128,7 +11260,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &FileRecord {
                 file_path: PathBuf::from("old-docs"),
                 entity_kind: EntityKind::Directory,
@@ -11141,7 +11273,7 @@ mod tests {
         )
         .expect("directory base record");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("old-docs/report.txt", Some("report-id"), file_hash.as_str()),
         )
         .expect("nested file base record");
@@ -11151,15 +11283,15 @@ mod tests {
             .expect_partial(1, "the later upload fails as an item, not as the pass");
 
         assert_eq!(
-            daemon.pair.last_failed_items[0].path,
+            daemon.pair().last_failed_items[0].path,
             PathBuf::from("will-fail.txt")
         );
         assert!(
-            daemon.pair.last_failed_items[0]
+            daemon.pair().last_failed_items[0]
                 .error
                 .contains("upload failed for will-fail.txt"),
             "unexpected failure: {:?}",
-            daemon.pair.last_failed_items
+            daemon.pair().last_failed_items
         );
         assert!(
             operations
@@ -11178,37 +11310,37 @@ mod tests {
         // must have recorded it — the index reflects what actually happened, and the completed
         // move is never re-derived (or worse, re-executed) on the retry pass.
         assert!(
-            get_record(&daemon.pair.connection, Path::new("old-docs"))
+            get_record(&daemon.pair().connection, Path::new("old-docs"))
                 .expect("old directory index lookup")
                 .is_none(),
             "a completed directory move must be checkpoint-committed despite the later failure"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("old-docs/report.txt"))
+            get_record(&daemon.pair().connection, Path::new("old-docs/report.txt"))
                 .expect("old descendant index lookup")
                 .is_none(),
             "descendant rewrites commit in the same checkpoint as their directory move"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("new-docs"))
+            get_record(&daemon.pair().connection, Path::new("new-docs"))
                 .expect("new directory index lookup")
                 .is_some(),
             "the moved directory's new index row lands with the move's own checkpoint"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("new-docs/report.txt"))
+            get_record(&daemon.pair().connection, Path::new("new-docs/report.txt"))
                 .expect("new descendant index lookup")
                 .is_some(),
             "the moved descendant's new index row lands with the move's own checkpoint"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("will-fail.txt"))
+            get_record(&daemon.pair().connection, Path::new("will-fail.txt"))
                 .expect("failed upload index lookup")
                 .is_none(),
             "the failed action itself must never be recorded"
         );
         assert!(
-            daemon.pair.last_sync.is_none(),
+            daemon.pair().last_sync.is_none(),
             "a partial pass must not count as a successful sync even with checkpoints committed"
         );
     }
@@ -11249,36 +11381,36 @@ mod tests {
             ]
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("first.txt"))
+            get_record(&daemon.pair().connection, Path::new("first.txt"))
                 .expect("first index lookup")
                 .is_some(),
             "a completed upload must be checkpoint-committed even when a later action fails"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("second.txt"))
+            get_record(&daemon.pair().connection, Path::new("second.txt"))
                 .expect("second index lookup")
                 .is_none(),
             "failed action must not be committed"
         );
         assert!(
-            daemon.pair.last_sync.is_none(),
+            daemon.pair().last_sync.is_none(),
             "a partial pass must not advance last_sync"
         );
         assert_eq!(
-            daemon.pair.last_error.as_deref(),
+            daemon.pair().last_error.as_deref(),
             Some("1 item(s) failed to sync (first: second.txt)"),
             "a partial pass still sets last_error, so every surface that reads it reports the \
              pass as a problem instead of drawing 'up to date' over it (#246)"
         );
         assert_eq!(
             daemon
-                .pair
+                .pair()
                 .last_plan_summary
                 .as_ref()
                 .map(|summary| summary.total),
             Some(2)
         );
-        assert!(daemon.pair.last_successful_sync_summary.is_none());
+        assert!(daemon.pair().last_successful_sync_summary.is_none());
         let status = daemon.status_response("daemon status");
         assert_eq!(
             status.last_error.as_deref(),
@@ -11353,26 +11485,26 @@ mod tests {
         );
         for name in ["b.txt", "c.txt"] {
             assert!(
-                get_record(&daemon.pair.connection, Path::new(name))
+                get_record(&daemon.pair().connection, Path::new(name))
                     .expect("index lookup")
                     .is_some(),
                 "{name} must be checkpoint-committed despite the earlier failure"
             );
         }
         assert!(
-            get_record(&daemon.pair.connection, Path::new("a-poisoned.txt"))
+            get_record(&daemon.pair().connection, Path::new("a-poisoned.txt"))
                 .expect("index lookup")
                 .is_none(),
             "the failed action itself is never recorded (it re-plans next pass)"
         );
-        assert_eq!(daemon.pair.last_failed_item_count, 1);
+        assert_eq!(daemon.pair().last_failed_item_count, 1);
         assert_eq!(
-            daemon.pair.last_failed_items[0].path,
+            daemon.pair().last_failed_items[0].path,
             PathBuf::from("a-poisoned.txt")
         );
         assert!(
             daemon
-                .pair
+                .pair()
                 .pending_changes
                 .contains(Path::new("a-poisoned.txt")),
             "the failed path is re-queued for the next pass"
@@ -11480,7 +11612,8 @@ mod tests {
             "the pass must stop dead on the cancellation, not attempt the remaining actions"
         );
         assert_eq!(
-            daemon.pair.last_failed_item_count, 0,
+            daemon.pair().last_failed_item_count,
+            0,
             "a cancellation is not the item's failure and is not reported as one"
         );
     }
@@ -11602,13 +11735,13 @@ mod tests {
                 "batched download must land {path} at its destination"
             );
             assert!(
-                get_record(&daemon.pair.connection, Path::new(path))
+                get_record(&daemon.pair().connection, Path::new(path))
                     .expect("index lookup")
                     .is_some(),
                 "batched download must record {path} in the index"
             );
         }
-        assert!(daemon.pair.last_sync.is_some(), "the pass succeeded");
+        assert!(daemon.pair().last_sync.is_some(), "the pass succeeded");
     }
 
     #[test]
@@ -11653,7 +11786,7 @@ mod tests {
         let mut daemon = Daemon::with_client(config, client).expect("daemon");
         for (path, id) in [("docs", "dir-docs"), ("docs/sub", "dir-sub")] {
             upsert_record(
-                &daemon.pair.connection,
+                &daemon.pair().connection,
                 &FileRecord {
                     file_path: PathBuf::from(path),
                     entity_kind: EntityKind::Directory,
@@ -11743,14 +11876,14 @@ mod tests {
             "a later group's download must still land"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("media/d.txt"))
+            get_record(&daemon.pair().connection, Path::new("media/d.txt"))
                 .expect("index lookup")
                 .is_some(),
             "and must be recorded"
         );
         for path in ["docs/a.txt", "docs/b.txt"] {
             assert!(
-                get_record(&daemon.pair.connection, Path::new(path))
+                get_record(&daemon.pair().connection, Path::new(path))
                     .expect("index lookup")
                     .is_none(),
                 "{path} never landed, so it must not be recorded"
@@ -11800,7 +11933,7 @@ mod tests {
             .reconcile_blocking()
             .expect_partial(1, "a failed file in the batch costs only itself");
         assert_eq!(
-            daemon.pair.last_failed_items[0].path,
+            daemon.pair().last_failed_items[0].path,
             PathBuf::from("docs/b.txt")
         );
 
@@ -11810,19 +11943,19 @@ mod tests {
             "the successfully downloaded file stays on disk"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs/a.txt"))
+            get_record(&daemon.pair().connection, Path::new("docs/a.txt"))
                 .expect("survivor index lookup")
                 .is_some(),
             "a completed download in a failing chunk must be checkpoint-committed"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs"))
+            get_record(&daemon.pair().connection, Path::new("docs"))
                 .expect("directory index lookup")
                 .is_some(),
             "the earlier CreateLocalDirectory checkpoint must also survive"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs/b.txt"))
+            get_record(&daemon.pair().connection, Path::new("docs/b.txt"))
                 .expect("failed index lookup")
                 .is_none(),
             "the failed file must never be recorded"
@@ -11830,12 +11963,12 @@ mod tests {
         // ...but the pass-level outcomes are those of a pass that did not land everything: no
         // cursor, no last_sync.
         assert!(
-            load_event_cursor(&daemon.pair.connection, "vol")
+            load_event_cursor(&daemon.pair().connection, "vol")
                 .expect("load cursor")
                 .is_none(),
             "a partial pass must never advance the event cursor, checkpoints notwithstanding"
         );
-        assert!(daemon.pair.last_sync.is_none());
+        assert!(daemon.pair().last_sync.is_none());
     }
 
     #[test]
@@ -11894,20 +12027,20 @@ mod tests {
             "nothing may be written for the vanished node"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("a.txt"))
+            get_record(&daemon.pair().connection, Path::new("a.txt"))
                 .expect("vanished index lookup")
                 .is_none(),
             "a skipped node must never be recorded as if it had synced"
         );
         assert!(
             local_root.join("b.txt").is_file()
-                && get_record(&daemon.pair.connection, Path::new("b.txt"))
+                && get_record(&daemon.pair().connection, Path::new("b.txt"))
                     .expect("survivor index lookup")
                     .is_some(),
             "the download ordered after the vanished node still ran and committed"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("z.txt"))
+            get_record(&daemon.pair().connection, Path::new("z.txt"))
                 .expect("upload index lookup")
                 .is_some(),
             "the upload ordered after the vanished node still ran and committed"
@@ -11916,13 +12049,13 @@ mod tests {
         // cursor is held exactly as it is for a withheld delete: next pass re-derives from
         // ground truth.
         assert!(
-            load_event_cursor(&daemon.pair.connection, "vol")
+            load_event_cursor(&daemon.pair().connection, "vol")
                 .expect("load cursor")
                 .is_none(),
             "a pass that skipped a vanished node must not advance the event cursor"
         );
         assert!(
-            daemon.pair.last_sync.is_some(),
+            daemon.pair().last_sync.is_some(),
             "everything executable executed, so the pass succeeded"
         );
     }
@@ -11989,7 +12122,7 @@ mod tests {
                 "the chunk's survivor {path} must still land"
             );
             assert!(
-                get_record(&daemon.pair.connection, Path::new(path))
+                get_record(&daemon.pair().connection, Path::new(path))
                     .expect("survivor index lookup")
                     .is_some(),
                 "the chunk's survivor {path} must be checkpoint-committed"
@@ -12000,18 +12133,18 @@ mod tests {
             "nothing may be written for the vanished node"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs/b.txt"))
+            get_record(&daemon.pair().connection, Path::new("docs/b.txt"))
                 .expect("vanished index lookup")
                 .is_none(),
             "a skipped node must never be recorded as if it had synced"
         );
         assert!(
-            load_event_cursor(&daemon.pair.connection, "vol")
+            load_event_cursor(&daemon.pair().connection, "vol")
                 .expect("load cursor")
                 .is_none(),
             "a pass that skipped a vanished node must not advance the event cursor"
         );
-        assert!(daemon.pair.last_sync.is_some(), "the pass succeeded");
+        assert!(daemon.pair().last_sync.is_some(), "the pass succeeded");
     }
 
     #[test]
@@ -12044,7 +12177,7 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("vol~n1"), "base-hash"),
         )
         .expect("base record");
@@ -12057,7 +12190,7 @@ mod tests {
             !local_root.join("notes.proton-cloud.txt").exists(),
             "no sidecar may be written for the vanished revision"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("the base record is untouched, not removed");
         assert_eq!(
@@ -12066,18 +12199,18 @@ mod tests {
             "a conflict with no sidecar has no exit, so the record is not written either"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("z.txt"))
+            get_record(&daemon.pair().connection, Path::new("z.txt"))
                 .expect("upload index lookup")
                 .is_some(),
             "the upload ordered after the skipped conflict still ran and committed"
         );
         assert!(
-            load_event_cursor(&daemon.pair.connection, "vol")
+            load_event_cursor(&daemon.pair().connection, "vol")
                 .expect("load cursor")
                 .is_none(),
             "a pass that skipped a vanished node must not advance the event cursor"
         );
-        assert!(daemon.pair.last_sync.is_some(), "the pass succeeded");
+        assert!(daemon.pair().last_sync.is_some(), "the pass succeeded");
     }
 
     #[test]
@@ -12120,25 +12253,25 @@ mod tests {
             .reconcile_blocking()
             .expect_partial(1, "an unrecordable batch item fails alone");
         assert!(
-            daemon.pair.last_failed_items[0]
+            daemon.pair().last_failed_items[0]
                 .error
                 .contains("could not be recorded"),
             "unexpected failure: {:?}",
-            daemon.pair.last_failed_items
+            daemon.pair().last_failed_items
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs/a.txt"))
+            get_record(&daemon.pair().connection, Path::new("docs/a.txt"))
                 .expect("survivor index lookup")
                 .is_some(),
             "the chunk's other survivor must still be checkpoint-committed"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("docs/b.txt"))
+            get_record(&daemon.pair().connection, Path::new("docs/b.txt"))
                 .expect("failed index lookup")
                 .is_none(),
             "the unrecordable item must not be recorded"
         );
-        assert!(daemon.pair.last_sync.is_none());
+        assert!(daemon.pair().last_sync.is_none());
     }
 
     #[test]
@@ -12160,7 +12293,7 @@ mod tests {
         let mut daemon = Daemon::with_client(guarded_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("removed.txt", Some("removed-id"), "same-hash"),
         )
         .expect("base record");
@@ -12170,10 +12303,10 @@ mod tests {
         daemon
             .reconcile_blocking()
             .expect_partial(1, "the failing upload is this pass's one failed item");
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
-        let pending = daemon.pair.pending_deletions[0].clone();
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
+        let pending = daemon.pair().pending_deletions[0].clone();
         upsert_delete_approval(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &pending.path,
             pending.direction,
             &pending.fingerprint,
@@ -12196,13 +12329,13 @@ mod tests {
             "the approved delete must have executed"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("removed.txt"))
+            get_record(&daemon.pair().connection, Path::new("removed.txt"))
                 .expect("record lookup")
                 .is_none(),
             "the executed delete's index purge must be checkpoint-committed despite the failure"
         );
         assert!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
             "the consumed approval must not survive the partial pass"
@@ -12225,10 +12358,10 @@ mod tests {
             .await
             .expect("scheduled failure should not stop daemon");
 
-        assert_eq!(daemon.pair.last_error.as_deref(), Some("list failed"));
-        assert!(daemon.pair.last_sync.is_none());
-        assert!(daemon.pair.last_plan_summary.is_none());
-        assert!(daemon.pair.last_successful_sync_summary.is_none());
+        assert_eq!(daemon.pair().last_error.as_deref(), Some("list failed"));
+        assert!(daemon.pair().last_sync.is_none());
+        assert!(daemon.pair().last_plan_summary.is_none());
+        assert!(daemon.pair().last_successful_sync_summary.is_none());
         let status = daemon.status_response("daemon status");
         assert_eq!(status.status, "running");
         assert_eq!(status.last_error.as_deref(), Some("list failed"));
@@ -12311,7 +12444,7 @@ mod tests {
         let expected_remote = config.remote_root.clone();
         let expected_db = config.db_path.clone();
         let (client, _) = RecordingProtonClient::new(HashMap::new());
-        let daemon = Daemon::with_client(config, client).expect("daemon");
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
 
         let status = daemon.status_response("daemon status");
         let info = status
@@ -12354,7 +12487,7 @@ mod tests {
         assert_eq!(totals.bytes, 18);
 
         daemon
-            .pair
+            .pair()
             .connection
             .execute("DELETE FROM file_index", [])
             .expect("empty the index");
@@ -12396,7 +12529,7 @@ mod tests {
         let mut daemon = Daemon::with_client(config, client).expect("daemon");
         let _ = daemon.reconcile_blocking().expect("first pass");
         assert_eq!(
-            daemon.pair.index_totals,
+            daemon.pair().index_totals,
             Some(IndexTotals { files: 1, bytes: 5 })
         );
 
@@ -12404,10 +12537,10 @@ mod tests {
             files: 42,
             bytes: 42,
         };
-        daemon.pair.index_totals = Some(sentinel);
+        daemon.pair_mut().index_totals = Some(sentinel);
         let _ = daemon.reconcile_blocking().expect("idle pass");
         assert_eq!(
-            daemon.pair.index_totals,
+            daemon.pair().index_totals,
             Some(sentinel),
             "an idle pass plans nothing, so it must not spend the aggregate query"
         );
@@ -12438,7 +12571,7 @@ mod tests {
         }
 
         let (client, _) = RecordingProtonClient::new(HashMap::new());
-        let daemon = Daemon::with_client(config, client).expect("restarted daemon");
+        let mut daemon = Daemon::with_client(config, client).expect("restarted daemon");
 
         let status = daemon.status_response("daemon status");
         assert_eq!(status.status_history.len(), 1);
@@ -12542,7 +12675,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -12560,7 +12693,7 @@ mod tests {
                 destination: conflict_path,
             }
         ));
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Conflict);
@@ -12580,7 +12713,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -12613,20 +12746,20 @@ mod tests {
         // is only in the GUI's conflicts list if both hold for what the daemon actually wrote.
         assert!(
             daemon
-                .pair
+                .pair()
                 .config
                 .conflict_naming
                 .is_conflict_copy(&sidecar_path)
         );
         assert_eq!(
             daemon
-                .pair
+                .pair()
                 .config
                 .conflict_naming
                 .original_from_conflict_copy(&sidecar_path),
             Some(local_path.clone())
         );
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Conflict);
@@ -12654,7 +12787,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -12686,7 +12819,7 @@ mod tests {
             !sidecar_path.exists(),
             "the resolved sidecar must not be resurrected"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Synced);
@@ -12707,7 +12840,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -12729,7 +12862,7 @@ mod tests {
             b"local edit",
             "the existing sidecar must survive a re-planned conflict untouched"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(
@@ -12766,7 +12899,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -12795,7 +12928,7 @@ mod tests {
         );
         // Converges rather than wedging: the conflict is recorded, so the record parks instead of
         // re-planning this action with a warning on every pass.
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Conflict);
@@ -12821,7 +12954,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "base-hash"),
         )
         .expect("base record");
@@ -12833,7 +12966,7 @@ mod tests {
             b"the user's own copy",
             "an existing sidecar file must never be overwritten"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Conflict);
@@ -12864,7 +12997,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &directory_record("docs", Some("dir-id")),
         )
         .expect("stale directory record");
@@ -12876,7 +13009,7 @@ mod tests {
             content,
             "the surviving remote file must be downloaded over the stale directory record"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("docs"))
+        let record = get_record(&daemon.pair().connection, Path::new("docs"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(
@@ -12918,7 +13051,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "stale-base-hash"),
         )
         .expect("base record");
@@ -12934,7 +13067,7 @@ mod tests {
             !local_root.join("notes.proton-cloud.txt").exists(),
             "no spurious conflict sidecar must be created when both sides already agree"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sha1_hash, Some(local_hash));
@@ -12979,7 +13112,7 @@ mod tests {
         // Baseline records notes.txt as previously synced at a stale hash; the file is
         // absent on disk (deleted locally).
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), "base-hash-a"),
         )
         .expect("base record");
@@ -12996,7 +13129,7 @@ mod tests {
             !local_root.join("notes.proton-cloud.txt").exists(),
             "restoring must not create a conflict sidecar"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Synced);
@@ -13041,13 +13174,16 @@ mod tests {
             .expect("handle sidecar create event");
 
         assert!(
-            daemon.pair.pending_changes.is_empty(),
+            daemon.pair().pending_changes.is_empty(),
             "downloaded conflict sidecars must not be queued as local creations"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("notes.proton-cloud.txt"))
-                .expect("sidecar index lookup")
-                .is_none(),
+            get_record(
+                &daemon.pair().connection,
+                Path::new("notes.proton-cloud.txt")
+            )
+            .expect("sidecar index lookup")
+            .is_none(),
             "downloaded conflict sidecars must not be indexed as sync data"
         );
     }
@@ -13455,11 +13591,11 @@ mod tests {
         let plane = ControlPlane {
             shared: Arc::clone(&daemon.shared),
             approvals: tokio::sync::Mutex::new(
-                open_database(&daemon.pair.config.db_path).expect("second connection"),
+                open_database(&daemon.pair().config.db_path).expect("second connection"),
             ),
             loop_tx,
             io_timeout: Duration::from_millis(50),
-            metrics_path: daemon.pair.metrics_path.clone(),
+            metrics_path: daemon.pair().metrics_path.clone(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             browse: browse_context(&daemon),
         };
@@ -13545,7 +13681,7 @@ mod tests {
                 })
         );
         let record = get_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             Path::new("created-while-running.txt"),
         )
         .expect("index lookup")
@@ -13575,7 +13711,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record(
                 "edited-while-running.txt",
                 Some("remote-id"),
@@ -13594,7 +13730,7 @@ mod tests {
             .expect("handle modify event");
 
         let queued_record = get_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             Path::new("edited-while-running.txt"),
         )
         .expect("queued index lookup")
@@ -13615,7 +13751,7 @@ mod tests {
                 })
         );
         let record = get_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             Path::new("edited-while-running.txt"),
         )
         .expect("index lookup")
@@ -13642,7 +13778,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("stable.txt", Some("id-1"), hash.as_str()),
         )
         .expect("base record");
@@ -13655,16 +13791,16 @@ mod tests {
         // clear after a successful commit reliably drops it instead of leaking it
         // forever.
         daemon
-            .pair
+            .pair_mut()
             .pending_changes
             .insert(PathBuf::from("stable.txt"));
 
         daemon.reconcile_blocking().expect_clean("reconcile");
 
         assert!(
-            daemon.pair.pending_changes.is_empty(),
+            daemon.pair().pending_changes.is_empty(),
             "pending_changes must not leak entries for paths that plan to no action: {:?}",
-            daemon.pair.pending_changes
+            daemon.pair().pending_changes
         );
     }
 
@@ -13696,14 +13832,14 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("notes.txt", Some("remote-id"), base_hash.as_str()),
         )
         .expect("base record");
 
         // Pass: local Unchanged vs base, remote Changed → the daemon downloads and commits Synced.
         daemon.reconcile_blocking().expect_clean("reconcile");
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(
@@ -13721,7 +13857,7 @@ mod tests {
             )
             .expect("handle echo event");
 
-        let after = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let after = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(
@@ -13730,7 +13866,10 @@ mod tests {
             "the daemon's own download echo must not flip the record to Modified (issue #49)"
         );
         assert!(
-            daemon.pair.pending_changes.contains(Path::new("notes.txt")),
+            daemon
+                .pair()
+                .pending_changes
+                .contains(Path::new("notes.txt")),
             "the echo must still register a pending change so the path is re-examined next pass"
         );
     }
@@ -13769,18 +13908,18 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("b.txt", Some("id-b"), b_hash.as_str()),
         )
         .expect("b base record");
 
         daemon.reconcile_blocking().expect_clean("reconcile");
         assert!(
-            daemon.pair.authored_writes.contains(Path::new("a.txt")),
+            daemon.pair().authored_writes.contains(Path::new("a.txt")),
             "the downloaded file must be recorded as an authored write, so the guard is exercised"
         );
         assert!(
-            !daemon.pair.authored_writes.contains(Path::new("b.txt")),
+            !daemon.pair().authored_writes.contains(Path::new("b.txt")),
             "the daemon never wrote B, so it must not be an authored write"
         );
 
@@ -13793,7 +13932,7 @@ mod tests {
             )
             .expect("handle modify event");
 
-        let b_record = get_record(&daemon.pair.connection, Path::new("b.txt"))
+        let b_record = get_record(&daemon.pair().connection, Path::new("b.txt"))
             .expect("index lookup")
             .expect("b record");
         assert_eq!(
@@ -13836,7 +13975,7 @@ mod tests {
         let mut daemon1 = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon1");
         upsert_record(
-            &daemon1.pair.connection,
+            &daemon1.pair().connection,
             &base_record("doc.txt", Some("id-doc"), base_hash.as_str()),
         )
         .expect("base record");
@@ -13856,7 +13995,7 @@ mod tests {
                     .add_path(local_path.clone()),
             )
             .expect("handle echo event");
-        let record_after_echo = get_record(&daemon1.pair.connection, Path::new("doc.txt"))
+        let record_after_echo = get_record(&daemon1.pair().connection, Path::new("doc.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(
@@ -13917,18 +14056,21 @@ mod tests {
             .expect("daemon");
         let mut record = base_record("notes.txt", Some("remote-id"), local_hash.as_str());
         record.sync_status = SyncStatus::Conflict;
-        upsert_record(&daemon.pair.connection, &record).expect("conflict record");
+        upsert_record(&daemon.pair().connection, &record).expect("conflict record");
 
         daemon
             .handle_fs_event(Event::new(EventKind::Remove(RemoveKind::File)).add_path(sidecar_path))
             .expect("handle sidecar remove event");
 
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sync_status, SyncStatus::Modified);
         assert!(
-            daemon.pair.pending_changes.contains(Path::new("notes.txt")),
+            daemon
+                .pair()
+                .pending_changes
+                .contains(Path::new("notes.txt")),
             "deleting a conflict sidecar should queue the original for resolution"
         );
     }
@@ -13952,7 +14094,7 @@ mod tests {
             .expect("daemon");
         let mut record = base_record("notes.txt", Some("remote-id"), local_hash.as_str());
         record.sync_status = SyncStatus::Conflict;
-        upsert_record(&daemon.pair.connection, &record).expect("conflict record");
+        upsert_record(&daemon.pair().connection, &record).expect("conflict record");
 
         daemon
             .handle_fs_event(Event::new(EventKind::Remove(RemoveKind::File)).add_path(sidecar_path))
@@ -13972,7 +14114,7 @@ mod tests {
             "local conflict resolution must not download over the user's chosen local copy"
         );
         drop(operations);
-        let record = get_record(&daemon.pair.connection, Path::new("notes.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("notes.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sha1_hash, Some(local_hash));
@@ -14479,46 +14621,49 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("bootstrap reconcile");
 
-        assert_eq!(daemon.pair.unsyncable.len(), 1, "the skip must be named");
+        assert_eq!(daemon.pair().unsyncable.len(), 1, "the skip must be named");
         assert_eq!(
-            daemon.pair.unsyncable[0].path,
+            daemon.pair().unsyncable[0].path,
             PathBuf::from("Unsorted/Networth")
         );
         assert_eq!(
-            daemon.pair.unsyncable[0].reason,
+            daemon.pair().unsyncable[0].reason,
             UnsyncableReason::RemoteNotDownloadable,
             "a node the CLI cannot fetch as bytes — NOT the missing claimed digest #295 blamed"
         );
         assert_eq!(
             daemon.status_response("status").unsyncable,
-            daemon.pair.unsyncable,
+            daemon.pair().unsyncable,
             "and it rides the status payload a client reads"
         );
-        let first_seen = daemon.pair.unsyncable[0].first_seen_epoch_secs;
+        let first_seen = daemon.pair().unsyncable[0].first_seen_epoch_secs;
         assert_eq!(
-            load_unsyncable_items(&daemon.pair.connection).expect("reload"),
-            daemon.pair.unsyncable,
+            load_unsyncable_items(&daemon.pair().connection).expect("reload"),
+            daemon.pair().unsyncable,
             "persisted, so a restart that warm-starts does not re-hide it"
         );
 
         // An incremental pass cannot re-derive the node at all: an empty plan must not drop it,
         // and the first-seen epoch must not restart.
-        daemon.record_unsyncable(&[], &[], false);
+        daemon.pass().record_unsyncable(&[], &[], false);
         assert_eq!(
-            daemon.pair.unsyncable.len(),
+            daemon.pair().unsyncable.len(),
             1,
             "an incremental pass only adds"
         );
-        assert_eq!(daemon.pair.unsyncable[0].first_seen_epoch_secs, first_seen);
+        assert_eq!(
+            daemon.pair().unsyncable[0].first_seen_epoch_secs,
+            first_seen
+        );
 
         // A full-tree walk is the only pass whose silence is evidence.
-        daemon.record_unsyncable(&[], &[], true);
+        daemon.pass().record_unsyncable(&[], &[], true);
         assert!(
-            daemon.pair.unsyncable.is_empty(),
+            daemon.pair().unsyncable.is_empty(),
             "a full snapshot that no longer plans the skip clears it"
         );
         assert!(
-            load_unsyncable_items(&daemon.pair.connection)
+            load_unsyncable_items(&daemon.pair().connection)
                 .expect("reload")
                 .is_empty(),
             "and the cleared list is persisted too"
@@ -14537,7 +14682,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
 
-        daemon.record_unsyncable(
+        daemon.pass().record_unsyncable(
             &[PlannedAction::skip_unsupported(
                 Path::new("doc"),
                 EntityKind::File,
@@ -14547,9 +14692,9 @@ mod tests {
             &[],
             true,
         );
-        assert_eq!(daemon.pair.unsyncable.len(), 1);
+        assert_eq!(daemon.pair().unsyncable.len(), 1);
 
-        daemon.record_unsyncable(
+        daemon.pass().record_unsyncable(
             &[PlannedAction::new(
                 Path::new("doc"),
                 SyncAction::Download,
@@ -14559,11 +14704,11 @@ mod tests {
             &[],
             false,
         );
-        assert!(daemon.pair.unsyncable.is_empty());
+        assert!(daemon.pair().unsyncable.is_empty());
 
         // A move's DESTINATION is proof of the same kind: the pass planned a real action onto that
         // path, so an entry sitting there is already contradicted.
-        daemon.record_unsyncable(
+        daemon.pass().record_unsyncable(
             &[PlannedAction::skip_unsupported(
                 Path::new("doc"),
                 EntityKind::File,
@@ -14573,8 +14718,8 @@ mod tests {
             &[],
             true,
         );
-        assert_eq!(daemon.pair.unsyncable.len(), 1);
-        daemon.record_unsyncable(
+        assert_eq!(daemon.pair().unsyncable.len(), 1);
+        daemon.pass().record_unsyncable(
             &[PlannedAction {
                 destination_path: Some(PathBuf::from("doc")),
                 ..PlannedAction::new(
@@ -14587,7 +14732,7 @@ mod tests {
             &[],
             false,
         );
-        assert!(daemon.pair.unsyncable.is_empty());
+        assert!(daemon.pair().unsyncable.is_empty());
     }
 
     #[test]
@@ -14610,21 +14755,21 @@ mod tests {
             )]
         };
 
-        daemon.record_unsyncable(&skip(), &[], true);
-        daemon.record_unsyncable(&skip(), &[], true);
+        daemon.pass().record_unsyncable(&skip(), &[], true);
+        daemon.pass().record_unsyncable(&skip(), &[], true);
         assert_eq!(
-            daemon.pair.reported_unsyncable.len(),
+            daemon.pair().reported_unsyncable.len(),
             1,
             "the second pass must not re-report the same standing path"
         );
 
-        daemon.record_unsyncable(&[], &[], true);
+        daemon.pass().record_unsyncable(&[], &[], true);
         assert!(
-            daemon.pair.reported_unsyncable.is_empty(),
+            daemon.pair().reported_unsyncable.is_empty(),
             "a path that leaves the list is un-reported, so a recurrence is announced again"
         );
-        daemon.record_unsyncable(&skip(), &[], true);
-        assert_eq!(daemon.pair.reported_unsyncable.len(), 1);
+        daemon.pass().record_unsyncable(&skip(), &[], true);
+        assert_eq!(daemon.pair().reported_unsyncable.len(), 1);
     }
 
     /// A daemon over an empty local root, for the `record_unsyncable` merge tests.
@@ -14663,32 +14808,32 @@ mod tests {
         daemon.reconcile_blocking().expect_clean("bootstrap");
 
         assert_eq!(
-            daemon.pair.unsyncable.len(),
+            daemon.pair().unsyncable.len(),
             1,
             "{:?}",
-            daemon.pair.unsyncable
+            daemon.pair().unsyncable
         );
         assert_eq!(
-            daemon.pair.unsyncable[0].path,
+            daemon.pair().unsyncable[0].path,
             PathBuf::from("session.sock")
         );
         assert_eq!(
-            daemon.pair.unsyncable[0].reason,
+            daemon.pair().unsyncable[0].reason,
             UnsyncableReason::LocalSocket
         );
         assert_eq!(
-            daemon.pair.unsyncable[0].entity_kind,
+            daemon.pair().unsyncable[0].entity_kind,
             EntityKind::File,
             "the engine knows two kinds and this is not a directory it would descend into"
         );
         assert_eq!(
             daemon.status_response("status").unsyncable,
-            daemon.pair.unsyncable,
+            daemon.pair().unsyncable,
             "and it rides the status payload a client reads"
         );
         assert_eq!(
-            load_unsyncable_items(&daemon.pair.connection).expect("reload"),
-            daemon.pair.unsyncable,
+            load_unsyncable_items(&daemon.pair().connection).expect("reload"),
+            daemon.pair().unsyncable,
             "persisted, so a restart that warm-starts does not re-hide it"
         );
     }
@@ -14710,29 +14855,31 @@ mod tests {
             UnsyncableReason::RemoteNotDownloadable,
         )];
 
-        daemon.record_unsyncable(&remote_skip, &[socket_entry("session.sock")], true);
-        assert_eq!(daemon.pair.unsyncable.len(), 2);
+        daemon
+            .pass()
+            .record_unsyncable(&remote_skip, &[socket_entry("session.sock")], true);
+        assert_eq!(daemon.pair().unsyncable.len(), 2);
 
         // An incremental pass that re-derives neither: it walked the local tree and did not find
         // the socket, but its remote map cannot speak about the Docs node at all.
-        daemon.record_unsyncable(&[], &[], false);
+        daemon.pass().record_unsyncable(&[], &[], false);
         assert_eq!(
             daemon
-                .pair
+                .pair()
                 .unsyncable
                 .iter()
                 .map(|item| item.path.display().to_string())
                 .collect::<Vec<_>>(),
             vec!["Networth".to_owned()],
             "the socket goes, the remote skip stays: {:?}",
-            daemon.pair.unsyncable
+            daemon.pair().unsyncable
         );
 
-        daemon.record_unsyncable(&[], &[], true);
+        daemon.pass().record_unsyncable(&[], &[], true);
         assert!(
-            daemon.pair.unsyncable.is_empty(),
+            daemon.pair().unsyncable.is_empty(),
             "{:?}",
-            daemon.pair.unsyncable
+            daemon.pair().unsyncable
         );
     }
 
@@ -14743,22 +14890,22 @@ mod tests {
         // pass would blank a newer daemon's report every 30 seconds after a downgrade.
         let directory = tempdir().expect("tempdir");
         let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
-        daemon.pair.unsyncable = vec![UnsyncableItem {
+        daemon.pair_mut().unsyncable = vec![UnsyncableItem {
             path: PathBuf::from("mystery"),
             entity_kind: EntityKind::File,
             reason: UnsyncableReason::Other("local_wormhole".to_owned()),
             first_seen_epoch_secs: 1,
         }];
 
-        daemon.record_unsyncable(&[], &[], false);
+        daemon.pass().record_unsyncable(&[], &[], false);
         assert_eq!(
-            daemon.pair.unsyncable.len(),
+            daemon.pair().unsyncable.len(),
             1,
             "an incremental pass keeps it"
         );
 
-        daemon.record_unsyncable(&[], &[], true);
-        assert!(daemon.pair.unsyncable.is_empty(), "a full sweep drops it");
+        daemon.pass().record_unsyncable(&[], &[], true);
+        assert!(daemon.pair().unsyncable.is_empty(), "a full sweep drops it");
     }
 
     #[test]
@@ -14770,11 +14917,13 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
 
-        daemon.record_unsyncable(&[], &[socket_entry("thing")], false);
-        daemon.pair.unsyncable[0].first_seen_epoch_secs -= 600;
-        let first_seen = daemon.pair.unsyncable[0].first_seen_epoch_secs;
+        daemon
+            .pass()
+            .record_unsyncable(&[], &[socket_entry("thing")], false);
+        daemon.pair_mut().unsyncable[0].first_seen_epoch_secs -= 600;
+        let first_seen = daemon.pair().unsyncable[0].first_seen_epoch_secs;
 
-        daemon.record_unsyncable(
+        daemon.pass().record_unsyncable(
             &[],
             &[UnsyncableEntry {
                 relative_path: PathBuf::from("thing"),
@@ -14784,18 +14933,19 @@ mod tests {
         );
 
         assert_eq!(
-            daemon.pair.unsyncable.len(),
+            daemon.pair().unsyncable.len(),
             1,
             "{:?}",
-            daemon.pair.unsyncable
+            daemon.pair().unsyncable
         );
         assert_eq!(
-            daemon.pair.unsyncable[0].reason,
+            daemon.pair().unsyncable[0].reason,
             UnsyncableReason::LocalSymlink,
             "the reason must be this pass's observation, not the one it replaced"
         );
         assert_eq!(
-            daemon.pair.unsyncable[0].first_seen_epoch_secs, first_seen,
+            daemon.pair().unsyncable[0].first_seen_epoch_secs,
+            first_seen,
             "the age is about the PATH being unsyncable, and it has been since then"
         );
     }
@@ -14805,14 +14955,19 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
 
-        daemon.record_unsyncable(&[], &[socket_entry("session.sock")], false);
-        let first_seen = daemon.pair.unsyncable[0].first_seen_epoch_secs;
-        daemon.pair.unsyncable[0].first_seen_epoch_secs = first_seen.saturating_sub(600);
-        let expected = daemon.pair.unsyncable[0].first_seen_epoch_secs;
+        daemon
+            .pass()
+            .record_unsyncable(&[], &[socket_entry("session.sock")], false);
+        let first_seen = daemon.pair().unsyncable[0].first_seen_epoch_secs;
+        daemon.pair_mut().unsyncable[0].first_seen_epoch_secs = first_seen.saturating_sub(600);
+        let expected = daemon.pair().unsyncable[0].first_seen_epoch_secs;
 
-        daemon.record_unsyncable(&[], &[socket_entry("session.sock")], true);
+        daemon
+            .pass()
+            .record_unsyncable(&[], &[socket_entry("session.sock")], true);
         assert_eq!(
-            daemon.pair.unsyncable[0].first_seen_epoch_secs, expected,
+            daemon.pair().unsyncable[0].first_seen_epoch_secs,
+            expected,
             "'how long has this been stuck' must not restart every pass"
         );
     }
@@ -14829,11 +14984,13 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let (_local_root, mut daemon, _ops) = unsyncable_test_daemon(&directory);
 
-        daemon.record_unsyncable(&[], &[socket_entry("session.sock")], true);
-        daemon.pair.unsyncable[0].first_seen_epoch_secs -= 600;
-        let first_seen = daemon.pair.unsyncable[0].first_seen_epoch_secs;
+        daemon
+            .pass()
+            .record_unsyncable(&[], &[socket_entry("session.sock")], true);
+        daemon.pair_mut().unsyncable[0].first_seen_epoch_secs -= 600;
+        let first_seen = daemon.pair().unsyncable[0].first_seen_epoch_secs;
 
-        daemon.record_unsyncable(
+        daemon.pass().record_unsyncable(
             &[PlannedAction::new(
                 Path::new("session.sock"),
                 SyncAction::RemoteDelete,
@@ -14845,17 +15002,18 @@ mod tests {
         );
 
         assert_eq!(
-            daemon.pair.unsyncable.len(),
+            daemon.pair().unsyncable.len(),
             1,
             "{:?}",
-            daemon.pair.unsyncable
+            daemon.pair().unsyncable
         );
         assert_eq!(
-            daemon.pair.unsyncable[0].reason,
+            daemon.pair().unsyncable[0].reason,
             UnsyncableReason::LocalSocket
         );
         assert_eq!(
-            daemon.pair.unsyncable[0].first_seen_epoch_secs, first_seen,
+            daemon.pair().unsyncable[0].first_seen_epoch_secs,
+            first_seen,
             "the entry was carried, not re-created"
         );
     }
@@ -14871,19 +15029,19 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("socket");
 
         daemon.reconcile_blocking().expect_clean("bootstrap");
-        assert_eq!(daemon.pair.unsyncable.len(), 1);
+        assert_eq!(daemon.pair().unsyncable.len(), 1);
 
         drop(listener);
         fs::remove_file(&socket_path).expect("remove socket");
         daemon.reconcile_blocking().expect_clean("second pass");
 
         assert!(
-            daemon.pair.unsyncable.is_empty(),
+            daemon.pair().unsyncable.is_empty(),
             "the walk no longer finds it: {:?}",
-            daemon.pair.unsyncable
+            daemon.pair().unsyncable
         );
         assert!(
-            load_unsyncable_items(&daemon.pair.connection)
+            load_unsyncable_items(&daemon.pair().connection)
                 .expect("reload")
                 .is_empty(),
             "and the shorter list is persisted"
@@ -14916,14 +15074,14 @@ mod tests {
         );
         // Simulate the degraded window: the snapshot passes that ran while degraded reset the
         // startup-snapshot floor to 0, so without a reseed the next pass would go incremental.
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         // Keyring now readable: the factory yields a source.
         daemon.event_source_factory = Box::new(|| Some(Box::new(FakeEventSource::new("cursor-0"))));
-        daemon.reacquire_event_source_if_needed();
+        daemon.pass().reacquire_event_source_if_needed();
         assert!(
             daemon.event_source.is_some(),
             "event-driven detection should resume once the session is readable"
@@ -14934,14 +15092,14 @@ mod tests {
         // reseed is what protects it. (On the *first* pass the reseed is skipped; `first_reconcile`
         // applies its own cursor-age gate there instead.)
         assert_eq!(
-            daemon.pair.incremental_passes_since_full_scan,
-            effective_full_scan_every(daemon.pair.config.events_full_scan_every),
+            daemon.pair().incremental_passes_since_full_scan,
+            effective_full_scan_every(daemon.pair().config.events_full_scan_every),
             "mid-life reacquisition must force a snapshot floor"
         );
 
         // Idempotent: a working source is never rebuilt (the factory must not be called again).
         daemon.event_source_factory = Box::new(|| panic!("must not rebuild an existing source"));
-        daemon.reacquire_event_source_if_needed();
+        daemon.pass().reacquire_event_source_if_needed();
     }
 
     #[test]
@@ -14955,7 +15113,7 @@ mod tests {
             .expect("daemon");
         daemon.event_source_factory =
             Box::new(|| panic!("must not build a source when the feature is off"));
-        daemon.reacquire_event_source_if_needed();
+        daemon.pass().reacquire_event_source_if_needed();
         assert!(daemon.event_source.is_none());
     }
 
@@ -15027,11 +15185,11 @@ mod tests {
             1,
             "bootstrap performs one full walk"
         );
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("cursor persisted by bootstrap");
         assert_eq!(cursor.last_event_id, "cursor-0");
-        assert_eq!(daemon.pair.incremental_passes_since_full_scan, 0);
+        assert_eq!(daemon.pair().incremental_passes_since_full_scan, 0);
 
         // Second pass: stored cursor + derivable volume + no changes → idle incremental, no walk.
         daemon
@@ -15042,7 +15200,7 @@ mod tests {
             1,
             "an idle incremental pass must not re-walk the whole tree"
         );
-        assert_eq!(daemon.pair.incremental_passes_since_full_scan, 1);
+        assert_eq!(daemon.pair().incremental_passes_since_full_scan, 1);
     }
 
     /// #294: the pre-snapshot cursor read fails (unhealthy events endpoint — the same condition
@@ -15076,7 +15234,7 @@ mod tests {
         // A baseline names the volume, so the cursor *is* readable before the walk — this is the
         // "prior state exists" case, not a first-ever bootstrap. No cursor stored yet.
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed record");
@@ -15090,7 +15248,7 @@ mod tests {
             "the first pass bootstraps"
         );
         assert!(
-            load_event_cursor(&daemon.pair.connection, "vol")
+            load_event_cursor(&daemon.pair().connection, "vol")
                 .expect("load cursor")
                 .is_none(),
             "a cursor read after the walk asserts mid-walk changes were applied; persist none"
@@ -15104,7 +15262,7 @@ mod tests {
             2,
             "without a cursor the next pass must full-walk"
         );
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("cursor persisted once the endpoint answered");
         assert_eq!(cursor.last_event_id, "cursor-live");
@@ -15116,7 +15274,7 @@ mod tests {
             2,
             "a recovered cursor ends the bootstrap-every-pass loop"
         );
-        assert_eq!(daemon.pair.incremental_passes_since_full_scan, 1);
+        assert_eq!(daemon.pair().incremental_passes_since_full_scan, 1);
     }
 
     /// #294, the sub-case with a cursor already stored: persisting nothing must also not *clear*
@@ -15145,18 +15303,18 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-old", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-old", 1).expect("seed cursor");
         // Warm start is off in this fixture, so the first pass bootstraps with a cursor already
         // stored — exactly the shape of an events-fetch fallback on a long-running daemon.
         daemon
             .reconcile_blocking()
             .expect_clean("bootstrap reconcile");
 
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("the stored cursor must survive");
         assert_eq!(
@@ -15201,12 +15359,12 @@ mod tests {
         // come from the cursor row — whose `updated_at` is text, making the row unreadable while
         // leaving it fully writable.
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", None, keep.as_str()),
         )
         .expect("seed record");
         daemon
-            .pair
+            .pair()
             .connection
             .execute(
                 "INSERT INTO remote_event_cursor (scope_id, last_event_id, updated_at)
@@ -15215,7 +15373,7 @@ mod tests {
             )
             .expect("seed corrupt cursor");
         assert!(
-            load_sole_event_cursor(&daemon.pair.connection).is_err(),
+            load_sole_event_cursor(&daemon.pair().connection).is_err(),
             "precondition: the cursor row is unreadable"
         );
 
@@ -15224,7 +15382,7 @@ mod tests {
             .expect_clean("bootstrap reconcile");
 
         let stored: String = daemon
-            .pair
+            .pair()
             .connection
             .query_row(
                 "SELECT last_event_id FROM remote_event_cursor WHERE scope_id = 'vol'",
@@ -15277,13 +15435,13 @@ mod tests {
         )
         .expect("daemon");
         assert!(
-            load_index(&daemon.pair.connection)
+            load_index(&daemon.pair().connection)
                 .expect("load index")
                 .is_empty(),
             "precondition: nothing indexed, so no baseline composed id names the volume"
         );
         assert!(
-            load_sole_event_cursor(&daemon.pair.connection)
+            load_sole_event_cursor(&daemon.pair().connection)
                 .expect("load sole cursor")
                 .is_none(),
             "precondition: no stored cursor names the volume either"
@@ -15293,7 +15451,7 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("first-ever bootstrap");
 
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("the first-ever bootstrap must anchor a cursor");
         assert_eq!(
@@ -15329,7 +15487,7 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("first-ever bootstrap with an unlistable root");
 
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("a failed listing must not cost the anchor entirely");
         assert_eq!(
@@ -15374,7 +15532,7 @@ mod tests {
             "precondition: the volume was named, so the failure is the cursor read"
         );
         assert!(
-            load_sole_event_cursor(&daemon.pair.connection)
+            load_sole_event_cursor(&daemon.pair().connection)
                 .expect("load sole cursor")
                 .is_none(),
             "a named volume whose cursor read failed must persist nothing, not anchor after the walk"
@@ -15442,7 +15600,7 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), sha1_bytes(b"keep").as_str()),
         )
         .expect("seed record");
@@ -15455,7 +15613,7 @@ mod tests {
             "a baseline composed id already names the volume; the listing must not become a \
              per-bootstrap cost"
         );
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("cursor anchored");
         assert_eq!(cursor.last_event_id, "cursor-before-walk");
@@ -15496,21 +15654,21 @@ mod tests {
 
         // Seed a synced baseline + stored cursor so the very first pass is incremental.
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &directory_record("dir", Some("vol~ndir")),
         )
         .expect("seed dir record");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("dir/a.txt", Some("vol~na"), old.as_str()),
         )
         .expect("seed file record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Simulate the mandatory startup bootstrap having already run, so this pass streams.
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -15530,7 +15688,7 @@ mod tests {
             fs::read(local_root.join("dir/a.txt")).expect("read local"),
             b"downloaded"
         );
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("cursor present");
         assert_eq!(
@@ -15569,18 +15727,21 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Simulate the mandatory startup bootstrap having already run, so this pass streams.
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
         // Make the pass non-idle so it scans + plans the failing upload.
-        daemon.pair.pending_changes.insert(PathBuf::from("new.txt"));
+        daemon
+            .pair_mut()
+            .pending_changes
+            .insert(PathBuf::from("new.txt"));
 
         daemon.reconcile_blocking().expect_partial(
             1,
@@ -15589,12 +15750,12 @@ mod tests {
 
         // Neither the index nor the cursor advanced; the events replay next pass.
         assert!(
-            get_record(&daemon.pair.connection, Path::new("new.txt"))
+            get_record(&daemon.pair().connection, Path::new("new.txt"))
                 .expect("get record")
                 .is_none(),
             "the failed file must not be recorded (no partial commit)"
         );
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("cursor present");
         assert_eq!(
@@ -15602,12 +15763,13 @@ mod tests {
             "cursor must NOT advance while an item failed"
         );
         assert!(
-            daemon.pair.pending_changes.contains(Path::new("new.txt")),
+            daemon.pair().pending_changes.contains(Path::new("new.txt")),
             "the failed path is re-queued: no remote event describes a failed upload, so the \
              held cursor alone would let the next pass idle-skip it"
         );
         assert_eq!(
-            daemon.pair.incremental_passes_since_full_scan, 1,
+            daemon.pair().incremental_passes_since_full_scan,
+            1,
             "a partial pass is still an incremental pass for the periodic-resync counter"
         );
         assert_eq!(
@@ -15646,14 +15808,17 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        daemon.pair.incremental_passes_since_full_scan = 0;
-        daemon.pair.is_first_reconcile = false;
-        daemon.pair.pending_changes.insert(PathBuf::from("new.txt"));
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().is_first_reconcile = false;
+        daemon
+            .pair_mut()
+            .pending_changes
+            .insert(PathBuf::from("new.txt"));
 
         fail_next_upload.store(true, Ordering::SeqCst);
         daemon
@@ -15667,7 +15832,7 @@ mod tests {
             .expect_clean("pass 2 retries the failed upload from ground truth");
 
         assert!(
-            get_record(&daemon.pair.connection, Path::new("new.txt"))
+            get_record(&daemon.pair().connection, Path::new("new.txt"))
                 .expect("get record")
                 .is_some(),
             "the re-queued path must be re-planned and uploaded by the next event-driven pass"
@@ -15678,7 +15843,7 @@ mod tests {
             "and it must do so incrementally — no full walk rescued it"
         );
         assert!(
-            daemon.pair.pending_changes.is_empty(),
+            daemon.pair().pending_changes.is_empty(),
             "a clean pass clears the queue again"
         );
     }
@@ -15713,7 +15878,7 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &FileRecord {
                 file_path: PathBuf::from("old-docs"),
                 entity_kind: EntityKind::Directory,
@@ -15726,7 +15891,7 @@ mod tests {
         )
         .expect("directory base record");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("old-docs/report.txt", Some("vol~nr"), report_hash.as_str()),
         )
         .expect("nested file base record");
@@ -15736,7 +15901,7 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("the move pass plans nothing for the untracked descendant");
         assert!(
-            get_record(&daemon.pair.connection, Path::new("new-docs/fresh.txt"))
+            get_record(&daemon.pair().connection, Path::new("new-docs/fresh.txt"))
                 .expect("get record")
                 .is_none(),
             "the untracked descendant is deliberately left for the next pass"
@@ -15747,12 +15912,12 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("the next pass uploads it from its post-move path");
 
-        let record = get_record(&daemon.pair.connection, Path::new("new-docs/fresh.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("new-docs/fresh.txt"))
             .expect("get record")
             .expect("the untracked descendant is finally recorded");
         assert_eq!(record.entity_kind, EntityKind::File);
         assert!(
-            get_record(&daemon.pair.connection, Path::new("old-docs/fresh.txt"))
+            get_record(&daemon.pair().connection, Path::new("old-docs/fresh.txt"))
                 .expect("get record")
                 .is_none(),
             "nothing may ever be recorded at the pre-move path"
@@ -15801,21 +15966,21 @@ mod tests {
         )
         .expect("daemon");
         // Rebuild scan options so the exclude pattern actually applies (the daemon caches them).
-        daemon.pair.scan_options =
-            scan_options_from_config(&daemon.pair.config).expect("scan options");
+        daemon.pair_mut().scan_options =
+            scan_options_from_config(&daemon.pair().config).expect("scan options");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
         // The excluded parent is not indexed, forcing resolution via the root listing.
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Simulate the mandatory startup bootstrap having already run, so this pass streams.
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -15826,7 +15991,7 @@ mod tests {
             "an excluded remote file must never be downloaded"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("secret/x.txt"))
+            get_record(&daemon.pair().connection, Path::new("secret/x.txt"))
                 .expect("get record")
                 .is_none(),
             "an excluded path must never be recorded"
@@ -15864,17 +16029,17 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Simulate the mandatory startup bootstrap having already run, so this pass streams
         // (and then falls back to a snapshot for the reason under test, not the startup floor).
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -15909,17 +16074,17 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Simulate the mandatory startup bootstrap having already run, so this pass streams
         // (and then falls back to a snapshot for the reason under test, not the startup floor).
-        daemon.pair.incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
         // Steady state, not the first pass after boot: bypass the `first_reconcile` warm-start /
         // bootstrap branch so this test drives the ongoing incremental path directly.
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -15969,13 +16134,13 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        daemon.pair.incremental_passes_since_full_scan = 0;
-        daemon.pair.is_first_reconcile = false;
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -15996,7 +16161,7 @@ mod tests {
             "an incomplete listing must never delete local content"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("keep.txt"))
+            get_record(&daemon.pair().connection, Path::new("keep.txt"))
                 .expect("index lookup")
                 .is_some(),
             "an incomplete listing must not purge the index record either"
@@ -16027,15 +16192,15 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
         // Steady state (not the first pass), already at the resync threshold → this pass must
         // snapshot via the periodic-resync counter, not go incremental.
-        daemon.pair.is_first_reconcile = false;
-        daemon.pair.incremental_passes_since_full_scan = 1;
+        daemon.pair_mut().is_first_reconcile = false;
+        daemon.pair_mut().incremental_passes_since_full_scan = 1;
 
         daemon
             .reconcile_blocking()
@@ -16047,7 +16212,8 @@ mod tests {
             "reaching events_full_scan_every must force a full-tree snapshot"
         );
         assert_eq!(
-            daemon.pair.incremental_passes_since_full_scan, 0,
+            daemon.pair().incremental_passes_since_full_scan,
+            0,
             "the resync counter resets after a full snapshot"
         );
     }
@@ -16086,7 +16252,7 @@ mod tests {
             1,
             "the first reconcile after startup must still full-scan"
         );
-        assert_eq!(daemon.pair.incremental_passes_since_full_scan, 0);
+        assert_eq!(daemon.pair().incremental_passes_since_full_scan, 0);
 
         // Far more idle passes than the *old* default (20) would have resynced at — none may walk.
         for _ in 0..50 {
@@ -16100,7 +16266,8 @@ mod tests {
             "with the periodic resync disabled, only the startup snapshot ever walks the whole tree"
         );
         assert_eq!(
-            daemon.pair.incremental_passes_since_full_scan, 50,
+            daemon.pair().incremental_passes_since_full_scan,
+            50,
             "the pass counter keeps climbing without ever tripping a resync"
         );
     }
@@ -16145,14 +16312,14 @@ mod tests {
         // rather than bootstrapping (PR #160).
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
-        let created = daemon.pair.config.local_root.join("photos");
+        let created = daemon.pair().config.local_root.join("photos");
         fs::create_dir(&created).expect("empty local directory");
 
         daemon
             .handle_fs_event(Event::new(EventKind::Create(CreateKind::Folder)).add_path(created))
             .expect("handle directory create event");
         assert!(
-            daemon.pair.pending_changes.contains(Path::new("photos")),
+            daemon.pair().pending_changes.contains(Path::new("photos")),
             "a directory create must queue the path so the pass is not idle"
         );
 
@@ -16166,7 +16333,7 @@ mod tests {
             "the directory must be mirrored by the incremental pass, not by a full-tree walk"
         );
         let summary = daemon
-            .pair
+            .pair()
             .last_successful_sync_summary
             .as_ref()
             .expect("successful pass summary");
@@ -16174,7 +16341,7 @@ mod tests {
             summary.remote_directories_created, 1,
             "the empty directory must be created remotely"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("photos"))
+        let record = get_record(&daemon.pair().connection, Path::new("photos"))
             .expect("index lookup")
             .expect("the created directory must be recorded");
         assert_eq!(record.entity_kind, EntityKind::Directory);
@@ -16187,11 +16354,11 @@ mod tests {
         // periodic resync off by default there is no later full walk to re-derive it from.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
-        let edited = daemon.pair.config.local_root.join("a.txt");
+        let edited = daemon.pair().config.local_root.join("a.txt");
         let contents = b"edited while the watcher was deaf";
         fs::write(&edited, contents).expect("local edit");
         // Deliberately no `handle_fs_event`: this is the event the overflow dropped.
-        assert!(daemon.pair.pending_changes.is_empty());
+        assert!(daemon.pair().pending_changes.is_empty());
 
         daemon.note_watch_error(&notify::Error::generic("inotify queue overflow"));
         daemon
@@ -16204,7 +16371,7 @@ mod tests {
             "the forced rescan is local-only; the remote stays on the event stream"
         );
         let summary = daemon
-            .pair
+            .pair()
             .last_successful_sync_summary
             .as_ref()
             .expect("successful pass summary");
@@ -16212,12 +16379,12 @@ mod tests {
             summary.uploads, 1,
             "the edit whose watcher event was lost must still upload"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("a.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("a.txt"))
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sha1_hash, Some(sha1_bytes(contents)));
         assert!(
-            !daemon.pair.force_local_rescan,
+            !daemon.pair().force_local_rescan,
             "a successful pass clears the pending rescan"
         );
     }
@@ -16415,13 +16582,13 @@ mod tests {
         .expect("daemon");
 
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &directory_record("dir", Some("vol~ndir")),
         )
         .expect("seed dir record");
         for (name, digest) in ["a", "b", "c"].iter().zip(&digests) {
             upsert_record(
-                &daemon.pair.connection,
+                &daemon.pair().connection,
                 &base_record(
                     &format!("dir/{name}.txt"),
                     Some(&format!("vol~n{name}")),
@@ -16430,9 +16597,9 @@ mod tests {
             )
             .expect("seed file record");
         }
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        daemon.pair.incremental_passes_since_full_scan = 0;
-        daemon.pair.is_first_reconcile = false;
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().is_first_reconcile = false;
 
         daemon
             .reconcile_blocking()
@@ -16487,13 +16654,13 @@ mod tests {
         .expect("daemon");
 
         // No base records at all — only the cursor the bootstrap stored.
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
-        daemon.pair.incremental_passes_since_full_scan = 0;
-        daemon.pair.is_first_reconcile = false;
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().is_first_reconcile = false;
 
+        let base_records = load_index(&daemon.pair().connection).expect("load index");
         assert!(
-            daemon
-                .should_try_incremental(&load_index(&daemon.pair.connection).expect("load index")),
+            daemon.pass().should_try_incremental(&base_records),
             "a stored cursor alone must be enough to engage the event-driven gate"
         );
         daemon
@@ -16528,10 +16695,10 @@ mod tests {
             Some(Box::new(FakeEventSource::new("cursor-0"))),
         )
         .expect("daemon");
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         let base = HashMap::new();
-        assert!(!daemon.should_try_incremental(&base));
+        assert!(!daemon.pass().should_try_incremental(&base));
         let reported = daemon.event_scope_declined.clone();
         assert!(
             reported
@@ -16540,7 +16707,7 @@ mod tests {
             "the decline must name the volume as the missing input: {reported:?}"
         );
         // Same cause next pass → recorded reason is unchanged, so it is logged once.
-        assert!(!daemon.should_try_incremental(&base));
+        assert!(!daemon.pass().should_try_incremental(&base));
         assert_eq!(daemon.event_scope_declined, reported);
     }
 
@@ -16582,7 +16749,7 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), old.as_str()),
         )
         .expect("seed keep record");
@@ -16598,7 +16765,7 @@ mod tests {
         let (mut daemon, full_walks, directory_lists, _old, edited) =
             warm_start_fixture(&directory);
         store_event_cursor(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             "vol",
             "cursor-0",
             current_epoch_secs() as i64,
@@ -16619,7 +16786,7 @@ mod tests {
             0,
             "an empty delta resolves no directories either"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("keep.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("keep.txt"))
             .expect("get record")
             .expect("keep.txt still recorded");
         assert_eq!(
@@ -16628,11 +16795,12 @@ mod tests {
             "the forced local scan still catches and uploads the offline edit"
         );
         assert_eq!(
-            daemon.pair.warm_starts_since_full_walk, 1,
+            daemon.pair().warm_starts_since_full_walk,
+            1,
             "a completed warm start advances the across-restart counter"
         );
         assert_eq!(
-            load_warm_start_count(&daemon.pair.connection).expect("load count"),
+            load_warm_start_count(&daemon.pair().connection).expect("load count"),
             1,
             "and persists it so the floor survives a restart"
         );
@@ -16647,7 +16815,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks, _lists, _old, edited) = warm_start_fixture(&directory);
         // updated_at = 1 (1970): far past the 7-day default age gate.
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1)
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1)
             .expect("seed stale cursor");
 
         daemon
@@ -16659,7 +16827,7 @@ mod tests {
             1,
             "a stale cursor must force a full walk, not a warm start"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("keep.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("keep.txt"))
             .expect("get record")
             .expect("keep.txt still recorded");
         assert_eq!(
@@ -16668,7 +16836,8 @@ mod tests {
             "the offline edit still syncs on the bootstrap's local scan"
         );
         assert_eq!(
-            daemon.pair.warm_starts_since_full_walk, 0,
+            daemon.pair().warm_starts_since_full_walk,
+            0,
             "no warm start happened, so the counter stays at zero"
         );
     }
@@ -16683,7 +16852,7 @@ mod tests {
         let (mut daemon, full_walks, _lists, old, edited) = warm_start_fixture(&directory);
         let fail_next_upload = Arc::clone(&daemon.proton.fail_next_upload);
         store_event_cursor(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             "vol",
             "cursor-0",
             current_epoch_secs() as i64,
@@ -16696,10 +16865,10 @@ mod tests {
             .reconcile_blocking()
             .expect_partial(1, "the first pass's upload fails");
         assert!(
-            daemon.pair.is_first_reconcile,
+            daemon.pair().is_first_reconcile,
             "a first pass that did not land everything must stay a first pass"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("keep.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("keep.txt"))
             .expect("get record")
             .expect("keep.txt still recorded");
         assert_eq!(
@@ -16712,7 +16881,7 @@ mod tests {
         // succeeds and the edit lands. It never bootstrapped and never idle-skipped.
         daemon.reconcile_blocking().expect_clean("retry reconcile");
         assert!(
-            !daemon.pair.is_first_reconcile,
+            !daemon.pair().is_first_reconcile,
             "a successful pass finally clears the first-pass flag"
         );
         assert_eq!(
@@ -16720,7 +16889,7 @@ mod tests {
             0,
             "neither pass walked the whole remote tree"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("keep.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("keep.txt"))
             .expect("get record")
             .expect("keep.txt still recorded");
         assert_eq!(
@@ -16737,17 +16906,17 @@ mod tests {
         // persisted counter so the cadence restarts.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks, _lists, _old, _edited) = warm_start_fixture(&directory);
-        daemon.pair.config.warm_start.full_walk_every = 3;
+        daemon.pair_mut().config.warm_start.full_walk_every = 3;
         store_event_cursor(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             "vol",
             "cursor-0",
             current_epoch_secs() as i64,
         )
         .expect("seed fresh cursor");
         // The machine has already warm-started up to the floor across prior boots.
-        daemon.pair.warm_starts_since_full_walk = 3;
-        store_warm_start_count(&daemon.pair.connection, 3).expect("seed count");
+        daemon.pair_mut().warm_starts_since_full_walk = 3;
+        store_warm_start_count(&daemon.pair().connection, 3).expect("seed count");
 
         daemon.reconcile_blocking().expect_clean("reconcile");
 
@@ -16757,11 +16926,12 @@ mod tests {
             "reaching the warm-start floor forces a full walk"
         );
         assert_eq!(
-            daemon.pair.warm_starts_since_full_walk, 0,
+            daemon.pair().warm_starts_since_full_walk,
+            0,
             "a full walk resets the warm-start floor"
         );
         assert_eq!(
-            load_warm_start_count(&daemon.pair.connection).expect("load"),
+            load_warm_start_count(&daemon.pair().connection).expect("load"),
             0,
             "and persists the reset"
         );
@@ -16773,9 +16943,9 @@ mod tests {
         // eligible.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks, _lists, _old, _edited) = warm_start_fixture(&directory);
-        daemon.pair.config.warm_start.force_full_walk = true;
+        daemon.pair_mut().config.warm_start.force_full_walk = true;
         store_event_cursor(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             "vol",
             "cursor-0",
             current_epoch_secs() as i64,
@@ -16817,12 +16987,12 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
         store_event_cursor(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             "vol",
             "cursor-0",
             current_epoch_secs() as i64,
@@ -16891,19 +17061,19 @@ mod tests {
         )
         .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), keep.as_str()),
         )
         .expect("seed keep record");
         store_event_cursor(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             "vol",
             "cursor-0",
             current_epoch_secs() as i64,
         )
         .expect("seed fresh cursor");
         upsert_delete_approval(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             Path::new("keep.txt"),
             DeleteDirection::Local,
             "fingerprint",
@@ -16915,7 +17085,7 @@ mod tests {
             .reconcile_blocking()
             .expect_clean("warm-start first pass");
         assert_eq!(full_walks.load(Ordering::SeqCst), 0);
-        daemon.pair.is_first_reconcile = false;
+        daemon.pair_mut().is_first_reconcile = false;
 
         // Only the reset latch — NOT `force_full_walk`, which the IPC handler also sets. The full
         // walk below therefore proves the reset's own doing: a cleared cursor leaves nothing to
@@ -16933,14 +17103,14 @@ mod tests {
         // happens is pinned at the layer that does it —
         // `index::reset_index_state_clears_every_table_the_daemon_decides_from`.
         assert!(
-            load_event_cursor(&daemon.pair.connection, "vol")
+            load_event_cursor(&daemon.pair().connection, "vol")
                 .expect("cursor query")
                 .is_some(),
             "a successful reset pass re-seeds the cursor from the walk it just did"
         );
         assert!(
             !matching_delete_approval(
-                &daemon.pair.connection,
+                &daemon.pair().connection,
                 Path::new("keep.txt"),
                 DeleteDirection::Local,
                 "fingerprint",
@@ -16952,7 +17122,7 @@ mod tests {
             local_root.join("keep.txt").exists(),
             "resetting the index must not touch the user's files"
         );
-        let record = get_record(&daemon.pair.connection, Path::new("keep.txt"))
+        let record = get_record(&daemon.pair().connection, Path::new("keep.txt"))
             .expect("record query")
             .expect("the rebuilt baseline re-adopts the already-agreeing pair");
         assert_eq!(record.sha1_hash.as_deref(), Some(keep.as_str()));
@@ -17147,15 +17317,16 @@ mod tests {
             "bootstrap performs exactly one full-tree walk"
         );
         assert_eq!(
-            daemon.pair.incremental_passes_since_full_scan, 0,
+            daemon.pair().incremental_passes_since_full_scan,
+            0,
             "bootstrap resets the resync counter"
         );
         assert_eq!(
-            derive_volume_id(&load_index(&daemon.pair.connection).expect("load index")),
+            derive_volume_id(&load_index(&daemon.pair().connection).expect("load index")),
             Some(volume.as_str()),
             "the seed gave the base index a composed proton_id so the incremental gate can engage"
         );
-        let bootstrap_cursor = load_event_cursor(&daemon.pair.connection, &volume)
+        let bootstrap_cursor = load_event_cursor(&daemon.pair().connection, &volume)
             .expect("load cursor")
             .expect("bootstrap captured a cursor")
             .last_event_id;
@@ -17196,8 +17367,8 @@ mod tests {
         // leaves the account dirty.
         let walks = full_walks.load(Ordering::SeqCst);
         let dir_lists_during = directory_lists.load(Ordering::SeqCst) - dir_lists_before;
-        let final_counter = daemon.pair.incremental_passes_since_full_scan;
-        let final_cursor = load_event_cursor(&daemon.pair.connection, &volume)
+        let final_counter = daemon.pair().incremental_passes_since_full_scan;
+        let final_cursor = load_event_cursor(&daemon.pair().connection, &volume)
             .ok()
             .flatten()
             .map(|cursor| cursor.last_event_id);
@@ -17254,11 +17425,11 @@ mod tests {
     // ---- pass and path history (#213 / #229 / #238 / #230 / #190 / #191) ---------------------
 
     fn recorded_passes(daemon: &Daemon<impl ProtonClient>) -> Vec<crate::index::PassRecord> {
-        recent_passes(&daemon.pair.connection, 100).expect("recent passes")
+        recent_passes(&daemon.pair().connection, 100).expect("recent passes")
     }
 
     fn recorded_events(daemon: &Daemon<impl ProtonClient>) -> Vec<FileEvent> {
-        file_events(&daemon.pair.connection, None, 0, 100)
+        file_events(&daemon.pair().connection, None, 0, 100)
             .expect("file events")
             .events
     }
@@ -17286,7 +17457,7 @@ mod tests {
         assert!(recorded_events(&daemon).is_empty(), "nothing moved");
         // And it is reachable as the answer to "when was the last full sweep".
         assert_eq!(
-            last_full_sweep(&daemon.pair.connection)
+            last_full_sweep(&daemon.pair().connection)
                 .expect("sweep")
                 .map(|pass| pass.id),
             Some(passes[0].id)
@@ -17303,7 +17474,7 @@ mod tests {
         let (mut daemon, _walks) = steady_state_event_daemon(&directory);
         // The shipped default: no periodic safety resync, so nothing after the startup snapshot
         // full-sweeps and every pass below is a genuinely idle incremental one.
-        daemon.pair.config.events_full_scan_every = 0;
+        daemon.pair_mut().config.events_full_scan_every = 0;
         let after_bootstrap = recorded_passes(&daemon).len();
 
         for _ in 0..50 {
@@ -17350,7 +17521,7 @@ mod tests {
         assert_eq!(events[0].pass_id, passes[0].id, "the event names its pass");
 
         // #191 reads the rollup, over the window the pass started in.
-        let totals = byte_totals_since(&daemon.pair.connection, 0).expect("totals");
+        let totals = byte_totals_since(&daemon.pair().connection, 0).expect("totals");
         assert_eq!(totals.uploaded_bytes, 10);
         // …and it is what the status reply publishes.
         let status = daemon.status_response("daemon status");
@@ -17449,7 +17620,7 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("old-name.txt", Some("stable-id"), hash.as_str()),
         )
         .expect("base record");
@@ -17457,7 +17628,7 @@ mod tests {
         daemon.reconcile_blocking().expect_clean("rename pass");
 
         let at_destination = file_events(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             Some(Path::new("new-name.txt")),
             0,
             10,
@@ -17477,7 +17648,7 @@ mod tests {
         // Looking it up at the path it LEFT finds nothing, which is the point.
         assert_eq!(
             file_events(
-                &daemon.pair.connection,
+                &daemon.pair().connection,
                 Some(Path::new("old-name.txt")),
                 0,
                 10
@@ -17528,9 +17699,9 @@ mod tests {
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
         daemon.shared.begin_pass_progress(1, PassKind::Incremental);
-        daemon.set_pass_kind(PassKind::FullSweep);
+        daemon.pass().set_pass_kind(PassKind::FullSweep);
 
-        assert_eq!(daemon.pair.pass_log.kind, PassKind::FullSweep);
+        assert_eq!(daemon.pair().pass_log.kind, PassKind::FullSweep);
         daemon.shared.begin_activity(new_activity(PHASE_EXECUTING));
         assert_eq!(
             daemon
@@ -17718,12 +17889,12 @@ mod tests {
     fn a_plan_pass_observes_and_consumes_nothing() {
         let directory = tempdir().expect("tempdir");
         let mut daemon = plan_verb_daemon(&directory);
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
         daemon
-            .pair
+            .pair_mut()
             .pending_changes
             .insert(PathBuf::from("local-only.txt"));
-        daemon.pair.pending_deletions.push(PendingDeletion {
+        daemon.pair_mut().pending_deletions.push(PendingDeletion {
             path: PathBuf::from("gone.txt"),
             direction: DeleteDirection::Local,
             entity_kind: EntityKind::File,
@@ -17733,8 +17904,8 @@ mod tests {
             subtree_files: None,
             subtree_bytes: None,
         });
-        daemon.pair.warm_starts_since_full_walk = 3;
-        daemon.pair.force_local_rescan = true;
+        daemon.pair_mut().warm_starts_since_full_walk = 3;
+        daemon.pair_mut().force_local_rescan = true;
         let seq_before = daemon.shared.pair.reconcile_seq.load(Ordering::SeqCst);
         let plan_seq = daemon.shared.book_plan_request();
 
@@ -17754,7 +17925,7 @@ mod tests {
 
         // The event cursor: never read, never written. A plan pass full-walks the remote precisely
         // so it cannot consume a delta.
-        let cursor = load_event_cursor(&daemon.pair.connection, "vol")
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("cursor read")
             .expect("cursor row");
         assert_eq!(
@@ -17762,39 +17933,39 @@ mod tests {
             "a rehearsal must not advance the event cursor"
         );
         // Nothing drained, nothing cleared, no counter moved.
-        assert_eq!(daemon.pair.pending_changes.len(), 1);
-        assert_eq!(daemon.pair.pending_deletions.len(), 1);
+        assert_eq!(daemon.pair().pending_changes.len(), 1);
+        assert_eq!(daemon.pair().pending_deletions.len(), 1);
         assert!(
-            daemon.pair.is_first_reconcile,
+            daemon.pair().is_first_reconcile,
             "a rehearsal is not a first pass"
         );
         assert!(
-            daemon.pair.force_local_rescan,
+            daemon.pair().force_local_rescan,
             "a rehearsal is not a rescan"
         );
-        assert_eq!(daemon.pair.warm_starts_since_full_walk, 3);
+        assert_eq!(daemon.pair().warm_starts_since_full_walk, 3);
         assert_eq!(
-            load_warm_start_count(&daemon.pair.connection).expect("counter"),
+            load_warm_start_count(&daemon.pair().connection).expect("counter"),
             0,
             "the persisted counter is untouched too"
         );
         // Nothing synced, so nothing may say a sync happened.
-        assert!(daemon.pair.last_sync.is_none());
-        assert!(daemon.pair.last_successful_sync_summary.is_none());
-        assert!(daemon.pair.last_plan_summary.is_none());
+        assert!(daemon.pair().last_sync.is_none());
+        assert!(daemon.pair().last_successful_sync_summary.is_none());
+        assert!(daemon.pair().last_plan_summary.is_none());
         // No history: history is written behind a side effect, and there was none.
         assert!(recorded_passes(&daemon).is_empty());
         assert!(recorded_events(&daemon).is_empty());
         // No index rows, either direction.
         assert!(
-            get_record(&daemon.pair.connection, Path::new("local-only.txt"))
+            get_record(&daemon.pair().connection, Path::new("local-only.txt"))
                 .expect("lookup")
                 .is_none()
         );
         // And nothing was transferred: the local tree is exactly as it was.
         assert!(
             !daemon
-                .pair
+                .pair()
                 .config
                 .local_root
                 .join("remote-only.txt")
@@ -17814,7 +17985,7 @@ mod tests {
     #[test]
     fn a_plan_pass_is_visible_as_a_plan_on_the_activity_surface() {
         let directory = tempdir().expect("tempdir");
-        let daemon = plan_verb_daemon(&directory);
+        let mut daemon = plan_verb_daemon(&directory);
         daemon.shared.begin_plan_progress(42);
         daemon.shared.pair.syncing.store(true, Ordering::SeqCst);
         daemon
@@ -17909,7 +18080,7 @@ mod tests {
         }
         assert!(
             daemon
-                .pair
+                .pair()
                 .config
                 .local_root
                 .join("remote-only.txt")
@@ -17929,7 +18100,7 @@ mod tests {
         let reviewed = computed_plan(&daemon.shared);
 
         // The tree moves under the reviewed plan: a second local file appears.
-        fs::write(daemon.pair.config.local_root.join("appeared.txt"), b"new").expect("new file");
+        fs::write(daemon.pair().config.local_root.join("appeared.txt"), b"new").expect("new file");
 
         let apply_seq = daemon
             .shared
@@ -17949,20 +18120,20 @@ mod tests {
         // Nothing ran…
         assert!(
             !daemon
-                .pair
+                .pair()
                 .config
                 .local_root
                 .join("remote-only.txt")
                 .exists()
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("local-only.txt"))
+            get_record(&daemon.pair().connection, Path::new("local-only.txt"))
                 .expect("lookup")
                 .is_none()
         );
         // …and the pass consumed nothing it would need again.
-        assert!(daemon.pair.is_first_reconcile);
-        assert!(daemon.pair.last_sync.is_none());
+        assert!(daemon.pair().is_first_reconcile);
+        assert!(daemon.pair().last_sync.is_none());
         // The new plan is what a re-review finds, under a new token.
         let fresh = computed_plan(&daemon.shared);
         assert_ne!(fresh.token, reviewed.token);
@@ -18035,19 +18206,19 @@ mod tests {
         daemon.event_source_factory = Box::new(|| None);
         let doomed = sha1_bytes(b"doomed");
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("doomed.txt", Some("vol~nd"), doomed.as_str()),
         )
         .expect("seed record");
         upsert_delete_approval(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             Path::new("doomed.txt"),
             DeleteDirection::Local,
             &doomed,
             1,
         )
         .expect("seed approval");
-        store_event_cursor(&daemon.pair.connection, "vol", "cursor-0", 1).expect("seed cursor");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
 
         daemon.shared.book_plan_request();
         run_plan_pass(&mut daemon);
@@ -18080,14 +18251,14 @@ mod tests {
             "a filtered apply must drop the deletion even with a standing approval"
         );
         assert!(
-            get_record(&daemon.pair.connection, Path::new("doomed.txt"))
+            get_record(&daemon.pair().connection, Path::new("doomed.txt"))
                 .expect("lookup")
                 .is_some(),
             "the skipped deletion's index row must survive, so it re-plans"
         );
         // The approval is left standing and unspent — it authorises a future pass, not this one.
         assert_eq!(
-            crate::index::load_delete_approvals(&daemon.pair.connection)
+            crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("approvals")
                 .len(),
             1
@@ -18095,7 +18266,7 @@ mod tests {
         // …and the cursor is held, exactly as a withheld deletion holds it: the dropped action must
         // keep re-deriving from ground truth.
         assert_eq!(
-            load_event_cursor(&daemon.pair.connection, "vol")
+            load_event_cursor(&daemon.pair().connection, "vol")
                 .expect("cursor read")
                 .expect("cursor row")
                 .last_event_id,
@@ -18125,7 +18296,7 @@ mod tests {
         .expect("daemon");
         daemon.event_source_factory = Box::new(|| None);
         upsert_record(
-            &daemon.pair.connection,
+            &daemon.pair().connection,
             &base_record("doomed.txt", Some("vol~nd"), sha1_bytes(b"doomed").as_str()),
         )
         .expect("seed record");
@@ -18142,11 +18313,11 @@ mod tests {
             .expect_clean("a filtered apply of a wholly destructive plan is still a clean pass");
 
         assert_eq!(
-            daemon.pair.pending_deletions.len(),
+            daemon.pair().pending_deletions.len(),
             1,
             "the gate still ran over the full plan, so the Deletions screen is unchanged"
         );
-        let ages = load_withheld_deletions(&daemon.pair.connection).expect("ages");
+        let ages = load_withheld_deletions(&daemon.pair().connection).expect("ages");
         assert_eq!(ages.len(), 1, "the first-seen ages are not wiped");
         assert_eq!(ages[0].path, PathBuf::from("doomed.txt"));
     }
@@ -18263,7 +18434,7 @@ mod tests {
             .book_apply_request(&token, false)
             .expect("token accepted");
         // The local scan now fails, so the pass never reaches the token comparison.
-        fs::remove_dir_all(&daemon.pair.config.local_root).expect("remove the local root");
+        fs::remove_dir_all(&daemon.pair().config.local_root).expect("remove the local root");
 
         assert!(daemon.reconcile_blocking().is_err());
         match daemon.shared.apply_outcome().expect("verdict") {
@@ -18273,7 +18444,7 @@ mod tests {
             other => panic!("expected a failed verdict, got {other:?}"),
         }
         // And the intent is gone: the next pass is an ordinary sync, not a second attempt.
-        assert_eq!(daemon.pair.pass_intent, PassIntent::Sync);
+        assert_eq!(daemon.pair().pass_intent, PassIntent::Sync);
     }
 
     /// A rehearsal claims `syncing` but bumps no `reconcile_seq`, so a `syncnow` issued during one
@@ -18342,7 +18513,7 @@ mod tests {
         }
         assert!(
             !daemon
-                .pair
+                .pair()
                 .config
                 .local_root
                 .join("remote-only.txt")
@@ -18400,7 +18571,7 @@ mod tests {
         );
         assert!(
             !daemon
-                .pair
+                .pair()
                 .config
                 .local_root
                 .join("remote-only.txt")
