@@ -461,21 +461,60 @@ test("only the two settled endings let the state be forgotten", () => {
   }
 });
 
+/** A latch as `app.js` writes it: an ending, and the request clock it was written at. */
+const latch = (ending, evidenceFloor = 7) => ({ ending, reason: "boom", evidenceFloor });
+/** What a render knows: whether the socket answers, and which request said so. */
+const seen = (socketAnswers, statusIssue = 8) => ({ socketAnswers, statusIssue });
+
 test("the latch is re-validated against the daemon, and the two failures invert", () => {
   // #335. Nothing re-validated it, so systemd's `Restart=on-failure` brought the service up on the
   // NEW settings while the bar still offered to restart it.
   //
   // `not_started` was reached at a moment of CONFIRMED absence — the socket was authoritatively
-  // empty and the start then failed — so a daemon answering now began after that moment and read
+  // empty and the start then failed — so a daemon answering LATER began after that moment and read
   // the file this save wrote. The state is over.
-  assert.equal(clearsRestartFailure("not_started", true), true);
-  assert.equal(clearsRestartFailure("not_started", false), false, "still nothing listening");
+  assert.equal(clearsRestartFailure(latch("not_started"), seen(true)), true);
+  assert.equal(clearsRestartFailure(latch("not_started"), seen(false)), false, "nothing listening");
   // `never_stopped` is the opposite: the daemon that is answering is the one that would NOT stop,
   // still on the settings it started with. A reachable socket is the problem, not the end of it.
-  assert.equal(clearsRestartFailure("never_stopped", true), false);
+  assert.equal(clearsRestartFailure(latch("never_stopped"), seen(true)), false);
   // And `undetermined` observed nothing, so it may not conclude anything from a later poll either.
-  assert.equal(clearsRestartFailure("undetermined", true), false);
-  assert.equal(clearsRestartFailure("unknown", true), false);
+  assert.equal(clearsRestartFailure(latch("undetermined"), seen(true)), false);
+  assert.equal(clearsRestartFailure(latch("unknown"), seen(true)), false);
+});
+
+test("evidence older than the outcome may never retire it", () => {
+  // THE BUG THIS PR'S OWN FIRST ATTEMPT SHIPPED WITH, found by the review of #338 — and it defeated
+  // the deliverable in its own headline scenario, which is why it is worth this much test.
+  //
+  // The re-validation runs in `render()`, and `saveSettings` renders synchronously the instant
+  // `restartForSave` records its answer — `poll()` having been fired and NOT awaited. So that render
+  // sees the last COMPLETED poll. In the `not_started` case that answer is *necessarily* a
+  // reachable daemon: the restart only stopped anything because the probe said it was running. The
+  // latch was therefore nulled before it was ever drawn, nothing re-latches it, and
+  // `Nothing is syncing right now.` plus `Restart it now` never appeared.
+  //
+  // A pure predicate over (ending, reachable) could not see this, and neither could a source-text
+  // pin. The rule is about ORDER, so the test has to be about order.
+  const outcome = latch("not_started", 7);
+  assert.equal(
+    clearsRestartFailure(outcome, seen(true, 7)),
+    false,
+    "the poll already in hand was issued before the restart finished — it cannot speak for it",
+  );
+  assert.equal(
+    clearsRestartFailure(outcome, seen(true, 6)),
+    false,
+    "nor may an even older one, which is what an in-flight poll landing late carries",
+  );
+  // The poll the restart itself kicked off is the first that may.
+  assert.equal(clearsRestartFailure(outcome, seen(true, 8)), true);
+  // An answer carrying no request id is not newer than anything, so it speaks for nothing.
+  assert.equal(clearsRestartFailure(outcome, { socketAnswers: true }), false);
+  // A latch with NO floor is the old behaviour restored — cleared by the very first answer. It
+  // cannot happen while there is one construction site (pinned below), and this is what that pin
+  // is protecting rather than a shape the app can produce.
+  assert.equal(clearsRestartFailure({ ending: "not_started" }, seen(true, 1)), true);
 });
 
 test("a staged notification policy does not take the retry slot away", () => {
@@ -539,7 +578,17 @@ test("the latch is only ever forgotten through the predicate that knows whether 
   assert.equal(
     assignments.length,
     1,
-    "exactly one place may null it — the poll's re-validation, which asks `clearsRestartFailure` first",
+    "exactly one place may null it — `render`'s re-validation, which asks `clearsRestartFailure` first",
+  );
+  // AND ONE PLACE MAY WRITE IT, which is what keeps the evidence floor from being forgotten on one
+  // of the two paths: a latch with no floor is cleared by the first poll that arrives, which is the
+  // pre-review behaviour exactly.
+  const writes = lines.filter((l) => /^\s*settingsSaveOutcome = \{/.test(l));
+  assert.equal(writes.length, 1, "`latchRestart` is the only builder — see its own comment");
+  assert.match(
+    functionBody(app, "latchRestart"),
+    /evidenceFloor: store\.select\.statusesIssued\(\)/,
+    "the floor must be the request clock at the moment the outcome was recorded",
   );
   const reset = functionBody(app, "resetSettingsScreen");
   assert.match(reset, /clearSaveOutcome\(\)/, "navigation must ask, not null");

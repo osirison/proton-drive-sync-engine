@@ -669,9 +669,7 @@ function mountTrayPanel(root) {
     reportTrayHeight();
     return true;
   }
-  dom.trayPanel = renderTrayPanel(view, (id) => {
-    api.trayAction(id).then((payload) => store.setStatus(payload));
-  });
+  dom.trayPanel = renderTrayPanel(view, (id) => trayActionStatus(id));
   root.replaceChildren(dom.trayPanel);
   reportTrayHeight();
   return true;
@@ -770,13 +768,20 @@ function render() {
   // re-validated against one: systemd ships `Restart=on-failure`, so after a start that failed the
   // service can come up on the new settings by itself while the bar still offers to restart it.
   //
-  // Only `not_started` is retired by a socket that answers, and that asymmetry is why this could not
-  // be written before the endings were typed: that ending was reached at a moment of confirmed
-  // absence, so anything answering now started afterwards and read the new file — while after
-  // `never_stopped` the daemon answering IS the old one, on the old settings, which is the problem
-  // rather than the end of it. `clearsStartError` supplies "the socket answers", so there is one
-  // definition of that and not two.
-  if (settingsSaveOutcome && clearsRestartFailure(settingsSaveOutcome.ending, clearsStartError(st))) {
+  // NOT AGAINST `st` ALONE. This render can be the one `saveSettings` fires the instant the outcome
+  // was recorded, and `st` is then the last COMPLETED poll — which in the `not_started` case is
+  // necessarily a reachable daemon, because the restart only stopped anything after the probe said
+  // it was running. So the latch carries the request clock it was written at and only a strictly
+  // newer answer may retire it; `clearsRestartFailure` holds the rest of the rule, including why
+  // only `not_started` is retired at all. `clearsStartError` supplies "the socket answers", so
+  // there is one definition of that and not two.
+  if (
+    settingsSaveOutcome &&
+    clearsRestartFailure(settingsSaveOutcome, {
+      socketAnswers: clearsStartError(st),
+      statusIssue: store.select.statusIssue(),
+    })
+  ) {
     settingsSaveOutcome = null;
   }
   onboardingLatch =
@@ -2779,7 +2784,13 @@ function settingsProps() {
     // block's `kind` is the wire-visible half of `daemon.rs`'s `a_counted_pass_is_running`, and
     // `planProgress` already reads it for the same reason. `!== "plan"` and not `=== <something>`:
     // an activity block that is briefly absent counts as a sync, which is the safe direction for a
-    // warning about interrupting one. A sweep this screen just asked for is a counted pass too.
+    // warning about interrupting one.
+    //
+    // `settingsSweeping` covers ONE ROUND TRIP and no more — the click until `resync` acks — which
+    // is a real window in which a restart destroys a `force_full_walk` latch nothing has consumed,
+    // and it is the same half-second of optimism the `Sweep now` button itself is disabled for.
+    // Once the sweep is actually running it is a counted pass like any other and the clause above
+    // is what reports it; this does not stand in for that.
     countedSync:
       settingsSweeping ||
       (Boolean(store.select.response()?.syncing) && store.select.response()?.activity?.pass?.kind !== "plan"),
@@ -2992,12 +3003,9 @@ async function restartForSave() {
 
 /** The typed ending, normalised once, where the reply lands. */
 function noteRestartOutcome(outcome) {
-  settingsSaveOutcome = {
-    ending: restartEndingOf(outcome),
-    // Display only, and the daemon's own words unrewritten (voice rule 4). `detail` on the endings
-    // that worked, `reason` on the ones that did not — no sentence is built from it.
-    reason: String(outcome?.reason ?? outcome?.detail ?? ""),
-  };
+  // Display only, and the daemon's own words unrewritten (voice rule 4). `detail` on the endings
+  // that worked, `reason` on the ones that did not — no sentence is built from it.
+  latchRestart(restartEndingOf(outcome), String(outcome?.reason ?? outcome?.detail ?? ""));
 }
 
 /**
@@ -3008,7 +3016,20 @@ function noteRestartOutcome(outcome) {
  * reached the daemon has observed neither.
  */
 function noteRestartFailure(error) {
-  settingsSaveOutcome = { ending: "undetermined", reason: String(error?.message ?? error) };
+  latchRestart("undetermined", String(error?.message ?? error));
+}
+
+/**
+ * THE ONE PLACE THE LATCH IS BUILT, and therefore the one place its evidence floor is stamped.
+ *
+ * `evidenceFloor` is the newest status request issued *before* this outcome existed, so every
+ * answer already in hand — and every poll still in flight — is older than the thing it would be
+ * judging. Only a request issued after this line may retire the latch (`clearsRestartFailure`).
+ * Two construction sites would mean one of them forgetting the stamp, and a latch with no floor
+ * defaults to 0 and is cleared by the very first poll: the bug this replaces, silently restored.
+ */
+function latchRestart(ending, reason) {
+  settingsSaveOutcome = { ending, reason, evidenceFloor: store.select.statusesIssued() };
 }
 
 /**
@@ -3733,33 +3754,48 @@ function onNotificationAction({ kind, action } = {}) {
       // Dismiss. The thing is still in the window, which is the whole design of this action.
       return;
     case "retry":
-      api.trayAction("tryAgain").then((payload) => store.setStatus(payload));
+      trayActionStatus("tryAgain");
       return;
     case "compare":
     case "review":
-      api.trayAction("open").then((payload) => store.setStatus(payload));
+      trayActionStatus("open");
       navigate(kind === "deletion" ? "deletions" : "conflicts");
       return;
     case "open":
-      api.trayAction("open").then((payload) => store.setStatus(payload));
+      trayActionStatus("open");
       return;
     default:
       console.warn(`notification-action: no handler for "${action}"`);
   }
 }
 
+/**
+ * A tray action, whose reply is a status payload like the poll's — and is published like one.
+ *
+ * ONE HELPER RATHER THAN FOUR CALL SITES, because the id has to be allocated **before** the request
+ * is issued (`store.beginStatus`) and a `.then` chain written inline is exactly where that ordering
+ * gets lost. The reply is a real observation and may retire a latch; a stale one may not.
+ */
+function trayActionStatus(id) {
+  const issue = store.beginStatus();
+  return api.trayAction(id).then((payload) => store.setStatus(payload, issue));
+}
+
 async function poll() {
   let payload = null;
+  // ALLOCATED BEFORE THE REQUEST GOES OUT, so the answer can be compared against things that
+  // happened while it was in flight (#335). See `store.beginStatus`.
+  const issue = store.beginStatus();
   try {
     payload = await api.getStatus();
     // Set before setStatus (which synchronously re-renders) so the onboarding-routing gate sees that
     // a real poll has now completed — only then may an `unreachable` reply mean a genuinely fresh
     // machine rather than the pre-poll default.
     statusPolled = true;
-    store.setStatus(payload);
+    store.setStatus(payload, issue);
   } catch (e) {
     statusPolled = true;
-    store.setStatus({ state: "unreachable", error: String(e) });
+    store.setStatus({ state: "unreachable", error: String(e) }, issue);
   }
   const now = Date.now();
   if (now - lastConflictScan > 15000) {

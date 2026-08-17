@@ -1317,7 +1317,7 @@ export function restartUnresolved(ending) {
 }
 
 /**
- * Does the daemon state the poll just read retire this ending? (#335)
+ * Does this daemon observation retire this ending? (#335)
  *
  * A latch describing a daemon state has to be re-validated against daemon state, or systemd's
  * `Restart=on-failure` brings the service up on the NEW settings while the bar still offers to
@@ -1325,18 +1325,36 @@ export function restartUnresolved(ending) {
  *
  * **The two failure endings invert, which is why this could not be written before they were typed.**
  * `not_started` was reached at a moment of *confirmed* absence — the socket was authoritatively
- * empty and the start then failed — so any daemon answering afterwards is a process that began
- * after that moment and read the file this save wrote: the state is over, clear it. `never_stopped`
- * is the opposite: the daemon that is answering is the one that would not stop, still on the
- * settings it started with, so a reachable socket is the *problem* rather than the end of it.
- * `undetermined` observed nothing at all and may not conclude anything from a later poll either.
+ * empty and the start then failed — so a daemon answering **later** is a process that began after
+ * that moment and read the file this save wrote: the state is over, clear it. `never_stopped` is
+ * the opposite: the daemon that is answering is the one that would not stop, still on the settings
+ * it started with, so a reachable socket is the *problem* rather than the end of it. `undetermined`
+ * observed nothing at all and may not conclude anything from a later poll either.
+ *
+ * **AND "LATER" IS THE WHOLE OF IT — evidence older than the outcome may never retire it.** The
+ * review of #338 found this: the re-validation runs in `render()`, which reads the last *completed*
+ * status poll, and `restartForSave` renders again the instant it records its answer. In the
+ * `not_started` case that cached answer is *necessarily* a reachable daemon — the restart only took
+ * the stop-then-start path **because** the probe said the daemon was running — so the latch was
+ * nulled before it was ever drawn, and nothing re-latches it. The one sentence this whole issue
+ * exists to show, and `Restart it now` with it, were unreachable in their own headline scenario.
+ *
+ * So the comparison is against the status **request** clock, not the reply's content: an answer may
+ * speak only if its request was issued after the outcome was recorded (`store.beginStatus`). That
+ * rules out the stale render *and* a poll that was already in flight when the restart finished —
+ * which counting completed polls would not. It is a property of the data rather than of where
+ * `render` is called from, so a future caller that renders cannot reintroduce it.
  *
  * `socketAnswers` is passed in rather than derived: `main.js`'s `clearsStartError` is already the
  * one definition of "the socket answers, by any route", and a second reading of the daemon state
  * here is how the two would drift.
+ *
+ * @param outcome  the latch — `{ ending, evidenceFloor }`
+ * @param evidence what is known now — `{ socketAnswers, statusIssue }`
  */
-export function clearsRestartFailure(ending, socketAnswers) {
-  return ending === "not_started" && Boolean(socketAnswers);
+export function clearsRestartFailure(outcome, evidence) {
+  if (outcome?.ending !== "not_started" || !evidence?.socketAnswers) return false;
+  return (evidence.statusIssue ?? 0) > (outcome.evidenceFloor ?? 0);
 }
 
 /**

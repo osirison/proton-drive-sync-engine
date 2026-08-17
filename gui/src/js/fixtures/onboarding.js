@@ -83,12 +83,14 @@ const REVIEW_CANNOT_SYNC = [
 /**
  * A fresh machine: no daemon, so no `response` at all. `StatusPayload` omits `response` on failure
  * (`skip_serializing_if`) and carries `error` instead — the shape the UI must render as em-dashes
- * and never as zeroes. The message is `IpcError::Unreachable`'s own text for a missing socket.
+ * and never as zeroes. The message is `IpcError::NotListening`'s own text for a missing socket —
+ * `Unreachable`'s until #335 split the two, which is a change no gate could see because nothing
+ * draws this string.
  */
 const NO_DAEMON = {
   state: "unreachable",
   error:
-    "daemon unreachable: connect /run/user/1000/proton-sync.sock: No such file or directory (os error 2)",
+    "nothing is listening: connect /run/user/1000/proton-sync.sock: No such file or directory (os error 2)",
 };
 
 /**

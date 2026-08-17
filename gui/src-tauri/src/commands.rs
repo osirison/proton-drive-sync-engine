@@ -817,22 +817,27 @@ fn daemon_presence(socket: &std::path::Path) -> DaemonPresence {
 }
 
 /// The one question [`classify_unreachable_plan`] asks of a failed `status`, split out so it can be
-/// tested without a socket: **is this evidence there is no daemon?** Only an unreachable socket is.
+/// tested without a socket: **is this evidence there is no daemon?** — asked in order to decide
+/// whether it is safe to spawn a `proton-drive` child of our own (#23/#317).
 ///
-/// **`Unreachable` keeps its pre-#335 reading here, deliberately.** That variant no longer folds in
-/// a missing socket (#335 split [`ipc::IpcError::NotListening`] off for the restart probe, which
-/// stops a process and may not guess), so a finer answer is now *available* — but this predicate
-/// asks a different question: may we spawn a `proton-drive` child of our own? A timed-out `status`
-/// has always fallen back to the child here, and changing that changes which sentence a timed-out
-/// `plan` shows and when a second CLI client appears beside a possibly-live daemon. That is #317's
-/// decision, not this one. Exhaustive by variant, no `_`, so a future variant must be given its own
-/// answer rather than inherit an arm's guess.
+/// A **policy over [`probe_from_error`]**, not a second reading of `IpcError`. Two exhaustive
+/// matches on one enum agreeing on two variants and differing on the third is drift waiting to
+/// happen; this way the classification has one definition and only the *answer for `Unknown`*
+/// differs, which is the whole of the disagreement and is visible at the arm that makes it.
+///
+/// **The `Unknown` arm is a known-wrong answer, deliberately deferred — not a defensible one.**
+/// Since #335 that state means "the exchange did not finish and this says nothing about whether a
+/// daemon exists", so answering "yes, there is no daemon" is asserting exactly what was not
+/// observed, and the cost of being wrong is a second CLI client beside a live one — the hazard the
+/// plan verb exists to retire. It is left as it was because changing it changes which sentence a
+/// timed-out `plan` shows and when the child `--dry-run` is taken, which is #317's decision to
+/// make with its own copy and its own tests. It is not this issue's to slip in.
 fn status_error_proves_no_daemon(error: &ipc::IpcError) -> bool {
-    match error {
-        ipc::IpcError::NotListening(_) => true,
-        ipc::IpcError::Unreachable(_) => true,
+    match probe_from_error(error) {
+        DaemonProbe::NotRunning => true,
         // It answered. Undecodably, but it answered.
-        ipc::IpcError::Protocol(_) => false,
+        DaemonProbe::Running => false,
+        DaemonProbe::Unknown => true,
     }
 }
 
@@ -1279,8 +1284,18 @@ pub async fn start_service(state: Paths<'_>) -> Result<String, String> {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "ending", rename_all = "snake_case")]
 pub enum RestartOutcome {
-    /// The service is running the settings that are on disk: it was stopped (or already was) and
-    /// started again. The only ending that may report a success.
+    /// A start was requested for the settings that are on disk, and it **succeeded**: the service
+    /// was stopped (or already was) and started again. The only ending that may report a success.
+    ///
+    /// **What that proves, exactly**, because the sentence the screen draws is the strongest one
+    /// here: `systemctl --user start` returns once the unit reports started, and the direct-spawn
+    /// fallback returns once `proton-syncd` was spawned. Neither re-probes, so a process that dies
+    /// a moment later — a bad config the daemon's own parser refuses at startup, a missing
+    /// dependency — is inside this ending. Not re-probed on purpose: a fresh daemon has not bound
+    /// its socket yet, so an immediate probe would report absence for a healthy start and turn the
+    /// one reliable ending into a race. The screen is not the only account either — the main screen
+    /// and the tray poll the socket every two seconds and draw a dead daemon as unreachable within
+    /// one tick.
     Restarted { detail: String },
     /// It was not running and **nothing was started** — the #320 decision: a save is not a request
     /// to begin syncing. Reachable only with `only_if_running`.
@@ -1288,9 +1303,14 @@ pub enum RestartOutcome {
     /// **Nothing is running**: the start failed. The config on disk is ahead of a service that is
     /// not up, and the way out is to fix the reason and start it.
     NotStarted { reason: String },
-    /// It never stopped (the shutdown was asked for and the socket kept answering past
-    /// [`STOP_TIMEOUT`]), so the **old** process is still up on the **old** settings. The one ending
+    /// It never stopped: the shutdown was asked for and the socket **kept answering** past
+    /// [`STOP_TIMEOUT`], so the **old** process is still up on the **old** settings. The one ending
     /// the pre-#335 sentence was true of.
+    ///
+    /// **Only reachable from an observation of life.** A drain that timed out having never seen the
+    /// socket answer is [`Self::Undetermined`], not this: "it is still running the old settings" is
+    /// a positive claim about a live process, and making it from evidence of nothing is the shape
+    /// #335 exists to remove. See [`stop_timeout_outcome`].
     NeverStopped { reason: String },
     /// Whether it was running could not be determined, so **nothing was done**. Not folded into
     /// [`Self::NotRunning`]: that one asserts an absence, and asserting one we did not observe is
@@ -1318,19 +1338,34 @@ enum DaemonProbe {
     Running,
     /// Nothing is listening on the socket. Authoritative absence.
     NotRunning,
-    /// The connect succeeded and the exchange did not finish, so nothing here is known.
+    /// **Evidence of neither.** The exchange did not finish and the failure says nothing about
+    /// whether a daemon exists: a connect that succeeded and then timed out or closed early, and
+    /// also a connect that failed for a reason about the *path* rather than about a listener —
+    /// `NotADirectory` (a socket path under a regular file), `InvalidInput` (longer than `sun_len`),
+    /// `PermissionDenied`. None of those is absence: the daemon may be up and listening on the
+    /// socket it was actually given, which is #336's whole subject.
     Unknown,
 }
 
 /// The classification, split from the round trip so it is testable with no socket at all.
+///
+/// **The one classifier of a `Status` error in this file.** [`status_error_proves_no_daemon`] is a
+/// *policy* over this answer rather than a second reading of the same three variants — two
+/// exhaustive matches on one enum are how they drift apart.
 fn probe_from(reply: &Result<ControlResponse, ipc::IpcError>) -> DaemonProbe {
     match reply {
         Ok(_) => DaemonProbe::Running,
+        Err(error) => probe_from_error(error),
+    }
+}
+
+fn probe_from_error(error: &ipc::IpcError) -> DaemonProbe {
+    match error {
         // It answered. Undecodably, but it answered — and `Shutdown` is a request we send, not a
         // reply we read, so a daemon whose *replies* this build cannot parse still stops on ask.
-        Err(ipc::IpcError::Protocol(_)) => DaemonProbe::Running,
-        Err(ipc::IpcError::NotListening(_)) => DaemonProbe::NotRunning,
-        Err(ipc::IpcError::Unreachable(_)) => DaemonProbe::Unknown,
+        ipc::IpcError::Protocol(_) => DaemonProbe::Running,
+        ipc::IpcError::NotListening(_) => DaemonProbe::NotRunning,
+        ipc::IpcError::Unreachable(_) => DaemonProbe::Unknown,
     }
 }
 
@@ -1377,6 +1412,46 @@ fn restart_plan(only_if_running: bool, probe: DaemonProbe) -> RestartPlan {
 
 /// How long a confirmed shutdown may take before the daemon is reported as never having stopped.
 const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// What a drain that ran out of time may claim, from the last thing it actually observed.
+///
+/// **A timeout is not by itself evidence that anything is running.** The drain breaks only on
+/// [`DaemonProbe::NotRunning`], so every other answer runs it to [`STOP_TIMEOUT`] — including
+/// [`DaemonProbe::Unknown`], which is what a socket path under a regular file (`NotADirectory`),
+/// one longer than `sun_len` (`InvalidInput`) or an unreadable one (`PermissionDenied`) produces
+/// on **every** iteration. Reporting [`RestartOutcome::NeverStopped`] there would tell the user
+/// *"It is still running the old settings"* — a positive claim about a live process, made from an
+/// observation of nothing, which is the exact shape #335 §2 exists to remove. It is reachable from
+/// the shipped app, because `socket_path` is a config key.
+///
+/// So the ending is the last observation, not the timeout: only a socket that was still **answering**
+/// earns the claim that the old process is still up.
+///
+/// Pure, and separate from the loop, for the [`restart_plan`] reason — the loop's next statement is
+/// a `systemctl` spawn, so a poison check of this decision may not be a test that runs one.
+fn stop_timeout_outcome(last: DaemonProbe) -> RestartOutcome {
+    match last {
+        DaemonProbe::Running => RestartOutcome::NeverStopped {
+            reason: format!(
+                "the sync service was asked to stop and was still answering {}s later — restart it \
+                 manually with: systemctl --user restart proton-syncd",
+                STOP_TIMEOUT.as_secs()
+            ),
+        },
+        // Never observed at all. Says nothing about what is running, and must not.
+        DaemonProbe::Unknown => RestartOutcome::Undetermined {
+            reason: format!(
+                "the control socket could not be reached for {}s, so the app could not tell \
+                 whether the sync service stopped or was ever running",
+                STOP_TIMEOUT.as_secs()
+            ),
+        },
+        // Unreachable in practice: the drain breaks on this rather than timing out. Answered anyway,
+        // and answered as the *fact* — a socket that is authoritatively absent is a service that is
+        // not running, whatever brought us here.
+        DaemonProbe::NotRunning => RestartOutcome::NotRunning,
+    }
+}
 
 /// Restart the sync daemon so a saved config change takes effect. Works no matter how the daemon
 /// was launched: ask it to exit gracefully over IPC (its `shutdown` control command), wait for
@@ -1438,24 +1513,19 @@ pub(crate) fn restart_service_impl(
     let deadline = Instant::now() + STOP_TIMEOUT;
     loop {
         // BY THE PROBE, NOT `is_err()` (#335). An undecodable reply mid-drain is a daemon that is
-        // still up, and a timeout says nothing either way — breaking on those would start a second
-        // process beside a live one and then report a restart that did not happen.
-        if probe_from(&ipc::command(
+        // still up, and an unreachable socket says nothing either way — breaking on those would
+        // start a second process beside a live one and then report a restart that did not happen.
+        let last = probe_from(&ipc::command(
             socket_path,
             ControlCommand::Status,
             Duration::from_secs(1),
-        )) == DaemonProbe::NotRunning
-        {
+        ));
+        if last == DaemonProbe::NotRunning {
             break;
         }
+        // The ending is what was last OBSERVED, not the fact of having timed out.
         if Instant::now() >= deadline {
-            return Ok(RestartOutcome::NeverStopped {
-                reason: format!(
-                    "the sync service did not stop within {}s — restart it manually with: \
-                     systemctl --user restart proton-syncd",
-                    STOP_TIMEOUT.as_secs()
-                ),
-            });
+            return Ok(stop_timeout_outcome(last));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -3103,6 +3173,65 @@ mod socket_tests {
         assert_eq!(
             restart_plan(false, DaemonProbe::Unknown),
             RestartPlan::StopThenStart
+        );
+    }
+
+    /// A drain that timed out having never seen the socket answer may not claim a live process.
+    ///
+    /// The review of #338 found this: the loop breaks only on `NotRunning`, so a `DaemonProbe`
+    /// stuck on `Unknown` — which is what `NotADirectory` (a socket path under a regular file),
+    /// `InvalidInput` (longer than `sun_len`) and `PermissionDenied` all produce, on every
+    /// iteration — ran the full 8s and answered `NeverStopped`, whose sentence is *"It is still
+    /// running the old settings."* A positive claim about a live process from an observation of
+    /// nothing, on the one arm #335 §2 reasoned about explicitly.
+    #[test]
+    fn a_drain_that_observed_nothing_may_not_claim_the_old_process_is_still_up() {
+        assert!(matches!(
+            stop_timeout_outcome(DaemonProbe::Unknown),
+            RestartOutcome::Undetermined { .. }
+        ));
+        // The claim is earned only by a socket that was still ANSWERING at the deadline.
+        assert!(matches!(
+            stop_timeout_outcome(DaemonProbe::Running),
+            RestartOutcome::NeverStopped { .. }
+        ));
+        // And the sentence each carries, since that is what the whole split is for.
+        let RestartOutcome::Undetermined { reason } = stop_timeout_outcome(DaemonProbe::Unknown)
+        else {
+            panic!("checked above");
+        };
+        assert!(
+            !reason.contains("still answering"),
+            "an undetermined drain must claim nothing about a live process: {reason}"
+        );
+    }
+
+    /// The wiring for the arm above, end to end and with no spawn in it: a socket path whose parent
+    /// is a regular file cannot name a listener, and `connect` fails `NotADirectory` — which is
+    /// evidence of neither, so the SAVE path leaves everything alone and says so.
+    ///
+    /// Green-path by construction: `only_if_running` + a probe that is not `Running` returns before
+    /// any `Command`, so this can never start the developer's daemon.
+    #[test]
+    fn a_socket_path_that_cannot_name_a_listener_is_undetermined_not_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_directory = dir.path().join("notes.txt");
+        std::fs::write(&not_a_directory, b"a regular file").unwrap();
+        let socket = not_a_directory.join("proton-sync.sock");
+
+        let reply = ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT);
+        assert_eq!(
+            probe_from(&reply),
+            DaemonProbe::Unknown,
+            "a path that cannot name a socket says nothing about whether a daemon is running \
+             somewhere else — which is #336's subject, not an absence"
+        );
+
+        let outcome =
+            restart_service_impl(&dir.path().join("nothing-here.toml"), &socket, true).unwrap();
+        assert!(
+            matches!(outcome, RestartOutcome::Undetermined { .. }),
+            "got {outcome:?}"
         );
     }
 
