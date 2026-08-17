@@ -717,7 +717,7 @@ impl StoredPlan {
 /// What an in-flight pass has been asked to do with the plan it is about to compute.
 ///
 /// A plan-only pass is deliberately **absent** from this enum: it does not run through
-/// `reconcile_blocking` at all (see [`Daemon::plan_only_blocking`]), which is what makes its
+/// `reconcile_blocking` at all (see [`PairPass::plan_only_blocking`]), which is what makes its
 /// inertness structural rather than a list of things each arm remembers not to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PassIntent {
@@ -747,7 +747,7 @@ struct ActivityState {
 }
 
 /// Everything a status reply needs beyond the atomics above. Published by the daemon core via
-/// [`Daemon::publish_status`] whenever its state changes.
+/// [`PairPass::publish_status`] whenever its state changes.
 #[derive(Clone)]
 struct StatusSnapshot {
     pending_changes: usize,
@@ -2182,8 +2182,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
         Ok(())
     }
 
-    /// Publishes the daemon core's current state to [`ControlShared`], from which the IPC task
-    /// answers every control request. Called whenever the state it copies changes.
+    /// Publishes this pair's current state to [`ControlShared`], from which the IPC task answers
+    /// every control request. Called whenever the state it copies changes.
+    ///
+    /// Everything below the `auth` line of that struct is per-pair, so with N pairs this publishes
+    /// into *this* pair's block and the reply's flattened top-level fields describe whichever pair
+    /// the request selected (ADR 0005 §4). Phase 2 has one pair, so it publishes as it always did.
     fn publish_status(&self) {
         let snapshot = StatusSnapshot {
             pending_changes: self.pair.pending_changes.len(),
@@ -2953,7 +2957,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         ))
     }
 
-    /// The daemon's local scan, surfacing per-file progress into [`ControlShared`] so a slow
+    /// This pair's local scan, surfacing per-file progress into [`ControlShared`] so a slow
     /// pass over large files (SHA-1 hashing is the cost) reads as alive in status replies.
     ///
     /// Returns the whole [`LocalScan`], entries dropped as unsyncable included (#232). Every caller
@@ -5764,9 +5768,9 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
 ///
 /// Only ever called with real evidence — something reached Proton, or a failure the engine
 /// *classified* as an auth failure (see [`AuthState`]). Both writers go through here: the control
-/// task calls it directly, and the daemon core wraps it in [`Daemon::note_auth_evidence`] to route
-/// a sign-out through the once-per-cause latch as well, which needs a `&mut Daemon` the IPC task
-/// does not have.
+/// task calls it directly, and the daemon core wraps it in [`PairPass::note_auth_evidence`] to route
+/// a sign-out through the once-per-cause latch as well, which needs a `&mut` the IPC task does not
+/// have.
 fn publish_auth_evidence(shared: &ControlShared, state: AuthState) -> bool {
     let changed = shared.record_auth_state(state);
     if changed {
@@ -5920,7 +5924,7 @@ fn persist_metrics_best_effort(shared: &ControlShared, metrics_path: &Path) {
 }
 
 /// The outcome of applying the delete-approval guard to a plan (see
-/// [`Daemon::decide_delete_gate`]). `withheld_paths` are the destructive actions the execution loop
+/// [`PairPass::decide_delete_gate`]). `withheld_paths` are the destructive actions the execution loop
 /// must skip; `pending` is the user-facing view of those; `consumed_approvals` are the approvals to
 /// delete once the deletions they authorized have actually run.
 #[derive(Default)]
@@ -5993,7 +5997,7 @@ struct RemoteMapShape {
 impl RemoteMapShape {
     /// Whether a path's **absence** from this map is evidence. Only a full-tree walk that actually
     /// found the root proves it; a reconstruction can only ever prove presence, since a node with
-    /// no index record is not in the baseline it overlays (see [`Daemon::record_unsyncable`]).
+    /// no index record is not in the baseline it overlays (see [`PairPass::record_unsyncable`]).
     fn proves_absence(self) -> bool {
         self.full_snapshot && !self.remote_root_missing
     }
@@ -6005,7 +6009,7 @@ impl RemoteMapShape {
 /// `full_snapshot` here is [`RemoteMapShape::proves_absence`]: a full-tree walk that found its
 /// root. It deliberately does not gate the local arm. A missing remote root voids the *remote*
 /// evidence and nothing else — the local stat-walk still ran, and it is the whole tree either way,
-/// because every caller of [`Daemon::record_unsyncable`] scans locally before it plans.
+/// because every caller of [`PairPass::record_unsyncable`] scans locally before it plans.
 ///
 /// Exhaustive by variant, no `_`: a new origin has to answer this question rather than inherit an
 /// arm's guess.
@@ -6696,7 +6700,7 @@ struct CursorUpdate {
     last_event_id: String,
 }
 
-/// Why [`Daemon::volume_id_for_scope`] could not name the event volume. Callers that only log
+/// Why [`PairPass::volume_id_for_scope`] could not name the event volume. Callers that only log
 /// take [`Self::into_reason`]; the bootstrap cursor is the one caller the distinction matters to.
 enum VolumeScopeError {
     /// Nothing names a volume: no baseline composed `proton_id` and no sole stored cursor row.

@@ -1114,7 +1114,7 @@ fn unique_remote_directory_move_destination(
 /// should move to once `old_path` itself moves to `new_path`, preserving the relative
 /// suffix under the directory. Used both to suppress ordinary per-path planning for a
 /// moved directory's descendants (`plan_file_path_transitions`) and to rewrite their
-/// index rows at execution time (`Daemon::reconcile_blocking_inner`), so the two stay
+/// index rows at execution time (`PairPass::reconcile_blocking_inner`), so the two stay
 /// perfectly consistent with each other.
 pub(crate) fn directory_move_descendant_path_pairs(
     old_path: &Path,
