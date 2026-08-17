@@ -185,7 +185,7 @@ pub async fn sync_now(app: tauri::AppHandle) -> StatusPayload {
 /// `Resync` and `Syncnow` both schedule a reconcile; the difference is what that reconcile IS. A
 /// `Syncnow` under the default config is an incremental, event-driven pass, which is precisely the
 /// thing `Compare everything, top to bottom` is offering an alternative to. `Resync` latches the
-/// next pass to a full-tree walk (`ControlShared.force_full_walk`, consumed once), so this is the
+/// next pass to a full-tree walk (`ControlShared.pair.force_full_walk`, consumed once), so this is the
 /// only command in the surface that answers the button.
 ///
 /// An older daemon that predates the variant rejects it as an unknown command — the reply carries

@@ -83,7 +83,7 @@ pub struct PlannedAction {
 /// never holds a skipped node — so only a full-tree walk's silence is evidence. A local skip is
 /// derived from the local stat-walk, which is *always* a walk of the whole tree (there is no
 /// partial local scan: [`crate::index::scan_local_tree`] visits from the root, and the daemon's
-/// only entry point to it — `Daemon::scan_local_entities_reporting_progress` — adds progress
+/// only entry point to it — `PairPass::scan_local_entities_reporting_progress` — adds progress
 /// reporting and nothing else), so any pass that ran it can prove absence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsyncableOrigin {

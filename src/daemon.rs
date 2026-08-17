@@ -1913,6 +1913,12 @@ impl<C: ProtonClient> Daemon<C> {
     fn pass(&mut self) -> PairPass<'_, C> {
         // Destructured rather than `&mut self.pairs[0]` beside `self.shared`: field-by-field is what
         // the borrow checker proves disjoint.
+        //
+        // **Exhaustive, with no `..`**, for the same reason [`DaemonConfig::into_parts`] is: adding a
+        // field to `Daemon` should make the compiler ask "does a pass need this?" rather than
+        // silently answer no. The `_` bindings are the recorded answers — the socket and the global
+        // lock describe the process's own lifetime, and the three cadences belong to the run loop
+        // that schedules passes rather than to a pass.
         let Self {
             pairs,
             proton,
@@ -1922,7 +1928,10 @@ impl<C: ProtonClient> Daemon<C> {
             event_source_factory,
             session_declined,
             events_poll_interval,
-            ..
+            process: _,
+            ipc_io_timeout: _,
+            browse_gate_wait: _,
+            _global_lock_guard: _,
         } = self;
         PairPass {
             pair: &mut pairs[0],
@@ -2643,13 +2652,29 @@ impl<C: ProtonClient> PairPass<'_, C> {
     /// session for the user. It stays one message family with one reason per cause — see
     /// [`Daemon::session_declined`] for why the two latches cannot both speak in one pass.
     ///
-    /// The `else` branch is not cosmetic: with two latches nothing else clears this one, and a
-    /// session that recovers and then degrades again must say so rather than be swallowed by a stale
-    /// reason. It clears only [`SessionDeclineCause::NoSession`] — a readable keyring says nothing
-    /// about a signed-out account, which is `note_auth_evidence`'s own rule from the other side.
+    /// **Two `KeyScope::Pair` values are visible from here and neither may reach the latch**, or the
+    /// split this cause belongs to is undone for it (guard:
+    /// `the_process_session_cause_is_neither_cleared_nor_worded_by_one_pairs_config`):
+    ///
+    /// * **`events_driven` may not gate the clear.** A live [`Self::event_source`] is the process
+    ///   fact that ends this cause, and it is the only thing that clears it. A pair that has merely
+    ///   opted out of event-driven detection knows nothing about the keyring, so clearing on its
+    ///   behalf would wipe a cause that is still true for every other pair — which would then
+    ///   re-log it on its next pass, for ever, which is precisely what the latch exists to stop.
+    /// * **`scan_interval` may not be in the reason.** [`note_session_declined`] decides log-or-stay
+    ///   -silent by comparing the *reason string*, so a per-pair number in a process-wide reason
+    ///   makes two pairs overwrite each other and both log every pass. The typed
+    ///   [`SessionDeclineCause`] does not save this: it governs clearing, never the log decision.
+    ///   Only the process-wide poll cadence is named; each pair's own interval is its config's.
+    ///
+    /// Clearing is per-cause for the same reason it is in `note_auth_evidence`, from the other
+    /// side: a readable keyring says nothing about a signed-out account.
     fn note_degraded_session_if_needed(&mut self) {
-        if !self.pair.config.events_driven || self.event_source.is_some() {
+        if self.event_source.is_some() {
             clear_session_decline(self.session_declined, SessionDeclineCause::NoSession);
+            return;
+        }
+        if !self.pair.config.events_driven {
             return;
         }
         note_session_declined(
@@ -2658,9 +2683,8 @@ impl<C: ProtonClient> PairPass<'_, C> {
             format!(
                 "no usable proton-drive CLI session (locked keyring, headless host, or the CLI is \
                  not logged in); the {}s event poll is off, so full-tree snapshots and the session \
-                 retry both run on the {}s scan interval",
+                 retry ride each pair's own scan interval instead",
                 self.events_poll_interval.as_secs(),
-                self.pair.config.scan_interval.as_secs(),
             ),
         );
     }
@@ -16664,6 +16688,70 @@ mod tests {
     }
 
     #[test]
+    fn the_process_session_cause_is_neither_cleared_nor_worded_by_one_pairs_config() {
+        // #102 phase 2. `note_degraded_session_if_needed` writes the PROCESS latch while reading two
+        // `KeyScope::Pair` values, so both have to be kept away from what that latch does — or the
+        // split is undone for this cause the moment there is a second pair:
+        //
+        // * `events_driven` gating the *clear* means a pair that opted out of event-driven detection
+        //   wipes a keyring cause that is still true, and the degraded pair re-logs it next pass, for
+        //   ever — the exact failure the split exists to prevent.
+        // * `scan_interval` inside the *reason* means two pairs with different intervals produce two
+        //   different strings, and `note_session_declined` decides log-or-silent by comparing the
+        //   reason — so both log every pass. The typed cause does not save this: it governs
+        //   clearing, never the log decision.
+        //
+        // Driven by mutating the pair's config between calls, which is exactly what a second pair's
+        // pass would present to this method: it reads nothing else about the pair.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let mut daemon = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                scan_interval: Duration::from_secs(300),
+                ..event_config(directory.path(), &local_root)
+            },
+            EventFakeClient::new(HashMap::new()),
+            None,
+        )
+        .expect("daemon");
+        daemon.event_source_factory = Box::new(|| None);
+
+        daemon.pass().note_degraded_session_if_needed();
+        let latched = daemon.session_declined.clone();
+        let reason = latched
+            .as_ref()
+            .map(|declined| declined.reason.as_str())
+            .expect("a degraded session latches its cause");
+        assert!(
+            !reason.contains("300"),
+            "a process-wide reason must not carry one pair's scan interval: {reason}"
+        );
+
+        // A pair that does not want event-driven detection says nothing about the keyring.
+        daemon.pair_mut().config.events_driven = false;
+        daemon.pass().note_degraded_session_if_needed();
+        assert_eq!(
+            daemon.session_declined, latched,
+            "a per-pair opt-out must not clear a process-wide cause"
+        );
+
+        // A different pair's cadence must not re-word the reason, because re-wording is re-logging.
+        daemon.pair_mut().config.events_driven = true;
+        daemon.pair_mut().config.scan_interval = Duration::from_secs(4321);
+        daemon.pass().note_degraded_session_if_needed();
+        assert_eq!(
+            daemon.session_declined, latched,
+            "the reason is a process fact, so two pairs' cadences cannot make it differ"
+        );
+
+        // And the process fact that ends the cause — a live session — does clear it.
+        daemon.event_source = Some(Box::new(FakeEventSource::new("cursor-0")));
+        daemon.pass().note_degraded_session_if_needed();
+        assert_eq!(daemon.session_declined, None);
+    }
+
+    #[test]
     fn changes_sharing_a_parent_take_one_targeted_listing_per_pass() {
         // #70: N events in one folder must collapse to ONE `list_directory` subprocess, and the
         // memo must die with the pass (resolution reads *current* remote state, so reusing a
@@ -17565,6 +17653,95 @@ mod tests {
         file_events(&daemon.pair().connection, None, 0, 100)
             .expect("file events")
             .events
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_action_records_no_history_row_even_when_its_first_step_landed() {
+        // `PassLog::truncate` on the failure path, which nothing else pins — deleting the call
+        // leaves the rest of the suite green, because every *other* arm queues its row after the
+        // last thing that can fail. `MoveLocal` does not: it renames, THEN notes the move, THEN
+        // stats/hashes the destination to build the record, and that last step can fail. The
+        // action is reported failed and its index mutation rolled back, so it replans from ground
+        // truth next pass — and the history must not claim a move the index does not show.
+        //
+        // The failure is engineered without a seam, from the one asymmetry between the scan and the
+        // executor: the scan reuses a base record's SHA-1 when size and mtime match (so it never
+        // opens the file), while `local_file_state` in the executor passes an EMPTY known map and
+        // therefore always re-hashes. An unreadable file is invisible to the first and fatal to the
+        // second. `fs::rename` needs no permission on the file itself, so the move still lands.
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let old_path = local_root.join("old-name.txt");
+        fs::write(&old_path, b"same content").expect("old local file");
+        let hash = crate::index::compute_sha1(&old_path).expect("old hash");
+        // Built from the file's real size + mtime so the scan's quick-check hits and the walk never
+        // opens it; a mismatch here would fail the pass in the scan instead, proving nothing.
+        let state = crate::index::local_file_state(&local_root, &old_path).expect("local state");
+        let base = FileRecord::from_local(
+            PathBuf::from("old-name.txt"),
+            &state,
+            Some("stable-id".to_owned()),
+            SyncStatus::Synced,
+        );
+
+        let mut permissions = fs::metadata(&old_path).expect("metadata").permissions();
+        permissions.set_mode(0o000);
+        fs::set_permissions(&old_path, permissions).expect("make the file unreadable");
+        if fs::read(&old_path).is_ok() {
+            // Running as root (or on a filesystem that ignores the mode): the engineered failure is
+            // unavailable, and a test that silently proves nothing is worse than one that says so.
+            eprintln!(
+                "skipping: this user can read a 0o000 file, so the post-rename hash cannot be \
+                 made to fail"
+            );
+            return;
+        }
+
+        let mut remote_entities = HashMap::new();
+        remote_entities.insert(
+            PathBuf::from("new-name.txt"),
+            RemoteEntity::File(remote("new-name.txt", "stable-id", Some(hash.as_str()))),
+        );
+        let (client, _operations) = RecordingProtonClient::with_remote_entities(remote_entities);
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        upsert_record(&daemon.pair().connection, &base).expect("base record");
+
+        daemon
+            .reconcile_blocking()
+            .expect_partial(1, "the move's record cannot be built");
+
+        // The rename itself landed — this is the case the truncate exists for.
+        assert!(
+            local_root.join("new-name.txt").is_file(),
+            "precondition: the rename ran before the step that failed"
+        );
+        // …and the index still shows the old path, because the action's mutations were rolled back.
+        assert!(
+            get_record(&daemon.pair().connection, Path::new("new-name.txt"))
+                .expect("new index lookup")
+                .is_none(),
+            "a failed action records nothing"
+        );
+
+        let events = recorded_events(&daemon);
+        assert!(
+            events.is_empty(),
+            "the failed action's queued history row must be discarded with its index mutation: \
+             {events:?}"
+        );
+        let passes = recorded_passes(&daemon);
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].outcome, "partial");
+        assert_eq!(passes[0].failed, 1);
+        assert_eq!(
+            passes[0].changed, 0,
+            "the rollup counts committed side effects, and none committed"
+        );
     }
 
     #[test]
