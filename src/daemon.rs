@@ -362,7 +362,34 @@ pub struct MetricsSnapshot {
 /// State shared between the daemon core and the control-socket server task so control requests
 /// are answered instantly from the latest published snapshot — even while a reconcile is
 /// blocking the main loop. This is what keeps the CLI and GUI responsive during a long sync.
+///
+/// **Split along the one line that is not a judgement call** (#102 phase 2, ADR 0005 §1): what
+/// describes *a tree* is a [`PairShared`] block, and what describes *this user's Proton session* is
+/// [`Self::auth`]. The block is singular here because the daemon runs exactly one pair; phase 3
+/// replaces it with `pairs: Vec<PairShared>` plus the wire's `pair` selector, at which point every
+/// `self.pair` below becomes a lookup and [`Self::response`] answers for the *selected* pair. The
+/// wire is unchanged by that: [`crate::ipc::ControlResponse`]'s per-pair fields stay flattened at
+/// the top level (three legacy-JSON floor tests pin it), so what phase 3 adds is a second way to
+/// address them, never a second shape.
 struct ControlShared {
+    /// What the daemon believes about the Proton session (#103), as an [`AuthState`] discriminant.
+    ///
+    /// **Per-user, not per-pair, and the only field here that is.** Every pair reaches Proton
+    /// through one CLI session, so a sign-out is a fact about the process (ADR 0005 §1). An atomic
+    /// slot of its own, deliberately **not** a `snapshot` field: the snapshot is published wholesale
+    /// by the daemon core and only ever read by the IPC task, whereas this has two writers. The core
+    /// writes it from each pass's outcome, and the IPC task writes it from the `list` verb — a browse
+    /// refused for an expired session is the fastest auth evidence the daemon can get, and making it
+    /// wait for the next pass would be the whole point of designing #99 and #103 together thrown
+    /// away.
+    auth: AtomicU8,
+    /// Everything the control plane publishes about one folder pair.
+    pair: PairShared,
+}
+
+/// The per-pair half of [`ControlShared`]: one folder pair's latches, counters and published
+/// snapshot. One block per pair once phase 3 lands; exactly one today.
+struct PairShared {
     /// Whether syncing is paused. Written by the IPC task (`pause`/`resume`) and read by the
     /// daemon core before each reconcile, so a pause takes effect from the next pass.
     paused: AtomicBool,
@@ -390,15 +417,6 @@ struct ControlShared {
     reset_index: AtomicBool,
     /// The daemon core's most recently published status. The IPC task only ever reads it.
     snapshot: StdMutex<StatusSnapshot>,
-    /// What the daemon believes about the Proton session (#103), as an [`AuthState`] discriminant.
-    ///
-    /// An atomic slot of its own, deliberately **not** a `snapshot` field: the snapshot is
-    /// published wholesale by the daemon core and only ever read by the IPC task, whereas this has
-    /// two writers. The core writes it from each pass's outcome, and the IPC task writes it from
-    /// the `list` verb — a browse refused for an expired session is the fastest auth evidence the
-    /// daemon can get, and making it wait for the next pass would be the whole point of designing
-    /// #99 and #103 together thrown away.
-    auth: AtomicU8,
     /// Live activity for the in-flight pass (see [`SyncActivity`]). Written from inside the
     /// blocking reconcile (phase changes, per-folder walk progress, per-file scan progress,
     /// per-action execution) and read by the IPC task on every status reply, so clients see
@@ -553,6 +571,15 @@ struct StatusSnapshot {
 impl ControlShared {
     fn new(config: RunningConfigInfo) -> Self {
         Self {
+            auth: AtomicU8::new(auth_discriminant(AuthState::Unknown)),
+            pair: PairShared::new(config),
+        }
+    }
+}
+
+impl PairShared {
+    fn new(config: RunningConfigInfo) -> Self {
+        Self {
             paused: AtomicBool::new(false),
             syncing: AtomicBool::new(false),
             plan_pass: AtomicBool::new(false),
@@ -574,18 +601,19 @@ impl ControlShared {
                 config,
                 history: None,
             }),
-            auth: AtomicU8::new(auth_discriminant(AuthState::Unknown)),
             activity: StdMutex::new(ActivityState::default()),
             plan: StdMutex::new(PlanSlot::default()),
         }
     }
+}
 
+impl ControlShared {
     fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::SeqCst)
+        self.pair.paused.load(Ordering::SeqCst)
     }
 
     fn plan_slot(&self) -> std::sync::MutexGuard<'_, PlanSlot> {
-        self.plan.lock().expect("plan slot lock")
+        self.pair.plan.lock().expect("plan slot lock")
     }
 
     /// Books a plan request and returns its number. The IPC task calls this *before* replying, so a
@@ -735,7 +763,7 @@ impl ControlShared {
     /// Starts a new activity phase, replacing whatever was current (and dropping any stale
     /// download staging location from the previous action).
     fn begin_activity(&self, mut activity: SyncActivity) {
-        let mut state = self.activity.lock().expect("activity lock");
+        let mut state = self.pair.activity.lock().expect("activity lock");
         activity.pass = state.pass.clone();
         state.current = Some(activity);
         state.download_scratch = None;
@@ -757,7 +785,7 @@ impl ControlShared {
     }
 
     fn begin_pass_progress_named(&self, started_epoch_secs: u64, kind: &str) {
-        let mut state = self.activity.lock().expect("activity lock");
+        let mut state = self.pair.activity.lock().expect("activity lock");
         state.pass = Some(PassProgress {
             started_epoch_secs,
             changes: None,
@@ -773,7 +801,7 @@ impl ControlShared {
     /// Corrects the pass block once the daemon knows which strategy it is running, or how many
     /// changes the plan holds. No-op before `begin_pass_progress`.
     fn update_pass_progress(&self, update: impl FnOnce(&mut PassProgress)) {
-        let mut state = self.activity.lock().expect("activity lock");
+        let mut state = self.pair.activity.lock().expect("activity lock");
         if let Some(pass) = state.pass.as_mut() {
             update(pass);
         }
@@ -793,7 +821,7 @@ impl ControlShared {
     /// current or the phase changed (which also resets `since_epoch_secs` to now, so elapsed
     /// times are per-phase). Used by the high-frequency walk/scan callbacks.
     fn update_activity(&self, phase: &str, update: impl FnOnce(&mut SyncActivity)) {
-        let mut state = self.activity.lock().expect("activity lock");
+        let mut state = self.pair.activity.lock().expect("activity lock");
         let same_phase = matches!(&state.current, Some(current) if current.phase == phase);
         if !same_phase {
             let pass = state.pass.clone();
@@ -812,13 +840,13 @@ impl ControlShared {
     /// Records the staging directory of the in-flight download so status replies can sample
     /// bytes-so-far while the CLI child is still running.
     fn note_download_scratch(&self, scratch_dir: &Path) {
-        let mut state = self.activity.lock().expect("activity lock");
+        let mut state = self.pair.activity.lock().expect("activity lock");
         state.download_scratch = Some(scratch_dir.to_path_buf());
     }
 
     /// Clears all live activity (the pass is over; `syncing` is about to read false).
     fn clear_activity(&self) {
-        let mut state = self.activity.lock().expect("activity lock");
+        let mut state = self.pair.activity.lock().expect("activity lock");
         *state = ActivityState::default();
     }
 
@@ -829,7 +857,13 @@ impl ControlShared {
     /// The legacy `transfer` mirror is derived here rather than stored, so it cannot disagree with
     /// the list it mirrors (#211).
     fn activity_for_response(&self) -> Option<SyncActivity> {
-        let mut activity = self.activity.lock().expect("activity lock").current.clone();
+        let mut activity = self
+            .pair
+            .activity
+            .lock()
+            .expect("activity lock")
+            .current
+            .clone();
         if let Some(activity) = activity.as_mut() {
             activity.derive_legacy_transfer();
         }
@@ -852,7 +886,7 @@ impl ControlShared {
         // acquisition) could pair action X's transfer with action Y's staging directory when
         // a poll lands exactly on an action boundary.
         let (current, scratch) = {
-            let state = self.activity.lock().expect("activity lock");
+            let state = self.pair.activity.lock().expect("activity lock");
             (state.current.clone(), state.download_scratch.clone())
         };
         response.activity = current;
@@ -874,20 +908,25 @@ impl ControlShared {
     }
 
     fn is_syncing(&self) -> bool {
-        self.syncing.load(Ordering::SeqCst)
+        self.pair.syncing.load(Ordering::SeqCst)
     }
 
     /// Whether a pass that will bump [`Self::reconcile_seq`] is in flight — i.e. a real reconcile,
     /// not a rehearsal. The one question the `syncnow`/`resync` acks must ask, because their
     /// clients count passes by that sequence.
     fn a_counted_pass_is_running(&self) -> bool {
-        self.is_syncing() && !self.plan_pass.load(Ordering::SeqCst)
+        self.is_syncing() && !self.pair.plan_pass.load(Ordering::SeqCst)
     }
 
     fn response(&self, message: &str) -> ControlResponse {
         let paused = self.is_paused();
         let syncing = self.is_syncing();
-        let snapshot = self.snapshot.lock().expect("control snapshot lock").clone();
+        let snapshot = self
+            .pair
+            .snapshot
+            .lock()
+            .expect("control snapshot lock")
+            .clone();
         ControlResponse {
             // The string reports live *activity*, so an in-flight pass stays "syncing" even
             // when a pause was just accepted mid-pass (the pass still runs to completion);
@@ -902,7 +941,7 @@ impl ControlShared {
             .to_owned(),
             paused,
             syncing,
-            reconcile_seq: self.reconcile_seq.load(Ordering::SeqCst),
+            reconcile_seq: self.pair.reconcile_seq.load(Ordering::SeqCst),
             pending_changes: snapshot.pending_changes,
             message: message.to_owned(),
             last_sync_epoch_secs: snapshot.last_sync_epoch_secs,
@@ -945,7 +984,12 @@ impl ControlShared {
 
     fn metrics(&self) -> MetricsSnapshot {
         let paused = self.is_paused();
-        let snapshot = self.snapshot.lock().expect("control snapshot lock").clone();
+        let snapshot = self
+            .pair
+            .snapshot
+            .lock()
+            .expect("control snapshot lock")
+            .clone();
         MetricsSnapshot {
             generated_epoch_secs: current_epoch_secs(),
             status: if paused { "paused" } else { "running" }.to_owned(),
@@ -1711,7 +1755,12 @@ impl<C: ProtonClient> Daemon<C> {
                 db_path: self.config.db_path.clone(),
             },
         };
-        *self.shared.snapshot.lock().expect("control snapshot lock") = snapshot;
+        *self
+            .shared
+            .pair
+            .snapshot
+            .lock()
+            .expect("control snapshot lock") = snapshot;
     }
 
     /// Recomputes the cached corpus size (#207) if a pass may have changed it, then clears the
@@ -1774,9 +1823,9 @@ impl<C: ProtonClient> Daemon<C> {
     async fn reconcile(&mut self) -> AppResult<PassOutcome> {
         // Flag the pass for status replies before blocking this task; the IPC task keeps
         // serving (and reporting `syncing`) for the whole duration.
-        self.shared.syncing.store(true, Ordering::SeqCst);
+        self.shared.pair.syncing.store(true, Ordering::SeqCst);
         let result = tokio::task::block_in_place(|| self.reconcile_blocking());
-        self.shared.syncing.store(false, Ordering::SeqCst);
+        self.shared.pair.syncing.store(false, Ordering::SeqCst);
         // The pass is over either way; never let a stale "downloading X" outlive it.
         self.shared.clear_activity();
         result
@@ -1850,12 +1899,12 @@ impl<C: ProtonClient> Daemon<C> {
         // `a_plan_pass_booked_before_a_pause_still_runs_and_seals`.
         // `plan_pass` BEFORE `syncing`, and cleared after it, so no reply can ever observe
         // `syncing` without the flag that says which kind of pass it is.
-        self.shared.plan_pass.store(true, Ordering::SeqCst);
-        self.shared.syncing.store(true, Ordering::SeqCst);
+        self.shared.pair.plan_pass.store(true, Ordering::SeqCst);
+        self.shared.pair.syncing.store(true, Ordering::SeqCst);
         self.shared.begin_plan_progress(current_epoch_secs());
         let result = tokio::task::block_in_place(|| self.plan_only_blocking());
-        self.shared.syncing.store(false, Ordering::SeqCst);
-        self.shared.plan_pass.store(false, Ordering::SeqCst);
+        self.shared.pair.syncing.store(false, Ordering::SeqCst);
+        self.shared.pair.plan_pass.store(false, Ordering::SeqCst);
         self.shared.clear_activity();
         // #103's rule, unchanged: a pass that reached Proton is evidence of a session, a classified
         // auth failure is evidence against one, and anything else moves nothing.
@@ -1974,7 +2023,10 @@ impl<C: ProtonClient> Daemon<C> {
         self.record_status_history(&message);
         // The attempt is complete (recorded either way): bump the sequence a waiting client
         // watches, then publish the final state of this pass.
-        self.shared.reconcile_seq.fetch_add(1, Ordering::SeqCst);
+        self.shared
+            .pair
+            .reconcile_seq
+            .fetch_add(1, Ordering::SeqCst);
         self.publish_status();
         result
     }
@@ -2034,19 +2086,23 @@ impl<C: ProtonClient> Daemon<C> {
         // A runtime `resync` forces this pass to a full-tree walk, overriding both the warm start
         // and the steady-state incremental path. Consume it exactly once (a `swap`), so a later
         // pass is not also forced. (The startup `--full-walk` flag is separate — see below.)
-        let resync_requested = self.shared.force_full_walk.swap(false, Ordering::SeqCst);
+        let resync_requested = self
+            .shared
+            .pair
+            .force_full_walk
+            .swap(false, Ordering::SeqCst);
 
         // `reset_index` is applied BEFORE the baseline is loaded, or this pass would plan against
         // the very rows it just erased. Consumed with the same `swap`-once discipline as the
         // resync latch, and on the main loop — never from the IPC task, which holds its own
         // connection to this database.
-        if self.shared.reset_index.swap(false, Ordering::SeqCst) {
+        if self.shared.pair.reset_index.swap(false, Ordering::SeqCst) {
             // RE-LATCH ON FAILURE. `reset-index` is a typed confirmation the user already gave and
             // the IPC reply already promised; a truncation that fails (a locked database, a disk
             // error) must not consume it, or the request evaporates and the daemon carries on with
             // the state the user asked to discard.
             if let Err(error) = reset_index_state(&self.connection) {
-                self.shared.reset_index.store(true, Ordering::SeqCst);
+                self.shared.pair.reset_index.store(true, Ordering::SeqCst);
                 return Err(error);
             }
             // A reset makes this a first pass in every sense that matters: an empty baseline is
@@ -4839,13 +4895,13 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
     let response = match request.command {
         ControlCommand::Status => shared.response_with_sampled_activity("daemon status").await,
         ControlCommand::Pause => {
-            shared.paused.store(true, Ordering::SeqCst);
+            shared.pair.paused.store(true, Ordering::SeqCst);
             info!("sync paused");
             persist_metrics_best_effort(shared, metrics_path);
             shared.response("sync paused")
         }
         ControlCommand::Resume => {
-            shared.paused.store(false, Ordering::SeqCst);
+            shared.pair.paused.store(false, Ordering::SeqCst);
             info!("sync resumed");
             persist_metrics_best_effort(shared, metrics_path);
             shared.response("sync resumed")
@@ -4873,7 +4929,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // Latch the full-walk request first so it survives even if the daemon is paused (it
             // will apply on the next pass after resume), then schedule a pass via the same path as
             // `syncnow`. The core consumes the latch with a `swap` at the top of that pass.
-            shared.force_full_walk.store(true, Ordering::SeqCst);
+            shared.pair.force_full_walk.store(true, Ordering::SeqCst);
             if shared.is_paused() {
                 shared.response("full resync queued; it will run when syncing resumes")
             } else {
@@ -4894,8 +4950,8 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // database and a reconcile may be mid-checkpoint on the first one. Order matters —
             // latch the reset before scheduling the pass that consumes it, and latch the full walk
             // with it so a cleared cursor cannot be mistaken for a warm-start opportunity.
-            shared.reset_index.store(true, Ordering::SeqCst);
-            shared.force_full_walk.store(true, Ordering::SeqCst);
+            shared.pair.reset_index.store(true, Ordering::SeqCst);
+            shared.pair.force_full_walk.store(true, Ordering::SeqCst);
             if shared.is_paused() {
                 shared.response("index reset queued; it will run when syncing resumes")
             } else if loop_tx.send(LoopCommand::SyncNow).is_ok() {
@@ -4907,6 +4963,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
         ControlCommand::Approve | ControlCommand::Deny => {
             let approve = request.command == ControlCommand::Approve;
             let pending = shared
+                .pair
                 .snapshot
                 .lock()
                 .expect("control snapshot lock")
@@ -4953,6 +5010,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
         }
         ControlCommand::Keep => {
             let pending = shared
+                .pair
                 .snapshot
                 .lock()
                 .expect("control snapshot lock")
@@ -4981,7 +5039,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 // downloads nothing, ever, until something else forces a full walk — and the
                 // periodic resync is off by default. Latched for both directions: one rule, and it
                 // costs one full walk on a rare user click.
-                shared.force_full_walk.store(true, Ordering::SeqCst);
+                shared.pair.force_full_walk.store(true, Ordering::SeqCst);
                 if shared.is_paused() {
                     format!("{message} (queued: syncing is paused)")
                 } else if loop_tx.send(LoopCommand::SyncNow).is_ok() {
@@ -10157,7 +10215,11 @@ mod tests {
         );
 
         // The latch the `keep` control command sets alongside the purge.
-        daemon.shared.force_full_walk.store(true, Ordering::SeqCst);
+        daemon
+            .shared
+            .pair
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
         daemon.reconcile_blocking().expect_clean("full-walk pass");
 
         assert_eq!(full_walks.load(Ordering::SeqCst), 1);
@@ -12744,17 +12806,17 @@ mod tests {
             remote_root: PathBuf::from("/remote"),
             db_path: PathBuf::from("/db"),
         });
-        shared.syncing.store(true, Ordering::SeqCst);
-        shared.paused.store(true, Ordering::SeqCst);
+        shared.pair.syncing.store(true, Ordering::SeqCst);
+        shared.pair.paused.store(true, Ordering::SeqCst);
         let mid_pass = shared.response("m");
         assert_eq!(mid_pass.status, "syncing");
         assert!(mid_pass.paused);
         assert!(mid_pass.syncing);
 
-        shared.syncing.store(false, Ordering::SeqCst);
+        shared.pair.syncing.store(false, Ordering::SeqCst);
         assert_eq!(shared.response("m").status, "paused");
 
-        shared.paused.store(false, Ordering::SeqCst);
+        shared.pair.paused.store(false, Ordering::SeqCst);
         assert_eq!(shared.response("m").status, "running");
     }
 
@@ -12887,7 +12949,7 @@ mod tests {
         };
 
         let shared = activity_test_shared();
-        shared.syncing.store(true, Ordering::SeqCst);
+        shared.pair.syncing.store(true, Ordering::SeqCst);
         for (index, window) in [
             (0, queue.window(0, Vec::new())),
             (
@@ -12971,7 +13033,7 @@ mod tests {
         // mirror one sample stale; sampling the mirror instead would starve the list every #211
         // client reads.
         let shared = activity_test_shared();
-        shared.syncing.store(true, Ordering::SeqCst);
+        shared.pair.syncing.store(true, Ordering::SeqCst);
         let scratch = tempdir().expect("scratch dir");
         fs::write(scratch.path().join("part.bin"), vec![0u8; 4096]).expect("staged bytes");
 
@@ -13008,7 +13070,7 @@ mod tests {
         let shared = Arc::new(activity_test_shared());
         // Replies only carry activity while a pass is in flight (`syncing`), matching how the
         // daemon core brackets every reconcile.
-        shared.syncing.store(true, Ordering::SeqCst);
+        shared.pair.syncing.store(true, Ordering::SeqCst);
         let sink = SharedProgressSink {
             shared: Arc::clone(&shared),
         };
@@ -13042,14 +13104,14 @@ mod tests {
         // updated independently at pass end, and a reply between the two stores must never
         // pair `syncing: false` with a stale "downloading X".
         sink.remote_folder_listed(9, Path::new("stale"));
-        shared.syncing.store(false, Ordering::SeqCst);
+        shared.pair.syncing.store(false, Ordering::SeqCst);
         assert!(shared.response("m").activity.is_none());
     }
 
     #[tokio::test]
     async fn download_bytes_are_sampled_live_from_the_staging_directory() {
         let shared = activity_test_shared();
-        shared.syncing.store(true, Ordering::SeqCst);
+        shared.pair.syncing.store(true, Ordering::SeqCst);
         let scratch = tempdir().expect("scratch dir");
         fs::write(scratch.path().join("partial.bin"), vec![0u8; 2048]).expect("partial file");
 
@@ -16466,7 +16528,11 @@ mod tests {
         );
 
         // A resync request → the next pass full-walks.
-        daemon.shared.force_full_walk.store(true, Ordering::SeqCst);
+        daemon
+            .shared
+            .pair
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
         daemon
             .reconcile_blocking()
             .expect_clean("forced resync pass");
@@ -16542,7 +16608,7 @@ mod tests {
         // Only the reset latch — NOT `force_full_walk`, which the IPC handler also sets. The full
         // walk below therefore proves the reset's own doing: a cleared cursor leaves nothing to
         // warm-start from, so the pass has to walk.
-        daemon.shared.reset_index.store(true, Ordering::SeqCst);
+        daemon.shared.pair.reset_index.store(true, Ordering::SeqCst);
         daemon.reconcile_blocking().expect_clean("reset pass");
 
         assert_eq!(
@@ -16579,7 +16645,7 @@ mod tests {
             .expect("the rebuilt baseline re-adopts the already-agreeing pair");
         assert_eq!(record.sha1_hash.as_deref(), Some(keep.as_str()));
         assert!(
-            !daemon.shared.reset_index.load(Ordering::SeqCst),
+            !daemon.shared.pair.reset_index.load(Ordering::SeqCst),
             "the reset latch is consumed exactly once"
         );
     }
@@ -16943,7 +17009,7 @@ mod tests {
             "only the startup sweep is recorded: {passes:?}"
         );
         // The daemon still reports that it is passing — that is a different surface.
-        assert!(daemon.shared.reconcile_seq.load(Ordering::SeqCst) >= 50);
+        assert!(daemon.shared.pair.reconcile_seq.load(Ordering::SeqCst) >= 50);
     }
 
     #[test]
@@ -17347,7 +17413,7 @@ mod tests {
         });
         daemon.warm_starts_since_full_walk = 3;
         daemon.force_local_rescan = true;
-        let seq_before = daemon.shared.reconcile_seq.load(Ordering::SeqCst);
+        let seq_before = daemon.shared.pair.reconcile_seq.load(Ordering::SeqCst);
         let plan_seq = daemon.shared.book_plan_request();
 
         run_plan_pass(&mut daemon);
@@ -17402,7 +17468,7 @@ mod tests {
         // `reconcile_seq` deliberately does not move: a `syncnow` watcher polling it must not be
         // satisfied by a pass that synced nothing.
         assert_eq!(
-            daemon.shared.reconcile_seq.load(Ordering::SeqCst),
+            daemon.shared.pair.reconcile_seq.load(Ordering::SeqCst),
             seq_before
         );
     }
@@ -17415,7 +17481,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let daemon = plan_verb_daemon(&directory);
         daemon.shared.begin_plan_progress(42);
-        daemon.shared.syncing.store(true, Ordering::SeqCst);
+        daemon.shared.pair.syncing.store(true, Ordering::SeqCst);
         daemon
             .shared
             .begin_activity(new_activity(PHASE_SCANNING_LOCAL));
@@ -17584,7 +17650,7 @@ mod tests {
     fn a_paused_daemon_applies_nothing() {
         let directory = tempdir().expect("tempdir");
         let daemon = plan_verb_daemon(&directory);
-        daemon.shared.paused.store(true, Ordering::SeqCst);
+        daemon.shared.pair.paused.store(true, Ordering::SeqCst);
         let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
         // Same pause semantics as `syncnow`, whose refusal this mirrors: a paused daemon runs no
         // passes, and a plan is a pass.
@@ -17876,8 +17942,8 @@ mod tests {
 
         // A rehearsal in flight. It MUST claim `syncing` (or `activity` is gated off every status
         // reply and #209's progress line has nothing to read) …
-        daemon.shared.plan_pass.store(true, Ordering::SeqCst);
-        daemon.shared.syncing.store(true, Ordering::SeqCst);
+        daemon.shared.pair.plan_pass.store(true, Ordering::SeqCst);
+        daemon.shared.pair.syncing.store(true, Ordering::SeqCst);
         assert!(
             daemon.shared.is_syncing(),
             "a rehearsal must still publish its activity"
@@ -17887,12 +17953,12 @@ mod tests {
         assert_eq!(daemon.shared.response("x").status, "syncing");
 
         // A real pass is both.
-        daemon.shared.plan_pass.store(false, Ordering::SeqCst);
+        daemon.shared.pair.plan_pass.store(false, Ordering::SeqCst);
         assert!(daemon.shared.a_counted_pass_is_running());
 
         // And the flag is cleared inside `syncing`'s window, so no reply can see `syncing` without
         // knowing which kind of pass it is.
-        daemon.shared.syncing.store(false, Ordering::SeqCst);
+        daemon.shared.pair.syncing.store(false, Ordering::SeqCst);
         assert!(!daemon.shared.a_counted_pass_is_running());
     }
 
@@ -17910,7 +17976,7 @@ mod tests {
             .book_apply_request(&plan.token, false)
             .expect("token accepted");
         // The pause lands after the ack, so the loop reaches its paused early-return.
-        daemon.shared.paused.store(true, Ordering::SeqCst);
+        daemon.shared.pair.paused.store(true, Ordering::SeqCst);
 
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -17930,7 +17996,7 @@ mod tests {
         assert!(!daemon.config.local_root.join("remote-only.txt").exists());
 
         // …and resuming does NOT fire it: the intent is gone, so the next pass is an ordinary sync.
-        daemon.shared.paused.store(false, Ordering::SeqCst);
+        daemon.shared.pair.paused.store(false, Ordering::SeqCst);
         assert_eq!(daemon.shared.take_apply_request(), PassIntent::Sync);
         // The plan itself survives, so the same token applies again once syncing resumes.
         assert!(
@@ -17961,7 +18027,7 @@ mod tests {
         let mut daemon = plan_verb_daemon(&directory);
         let plan_seq = daemon.shared.book_plan_request();
         // The pause lands after the ack booked the request — the one window the ack cannot cover.
-        daemon.shared.paused.store(true, Ordering::SeqCst);
+        daemon.shared.pair.paused.store(true, Ordering::SeqCst);
 
         run_plan_pass(&mut daemon);
 
