@@ -908,9 +908,15 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
     // always has. More than one pair is refused until the runtime can serialize their passes.
     let pairs = resolve_pairs(&file_config)?;
     refuse_unsupported_pair_count(&pairs)?;
-    // Phase 1 runs exactly one pair, so the fused single-pair `DaemonConfig` below is unchanged;
-    // splitting it into a process-wide config plus `Vec<PairConfig>` is phase 2's refactor. What
-    // matters here is that every per-pair value now comes from ONE projection
+    // `DaemonConfig` below stays the **fused resolved input**: one flat struct a config file and the
+    // CLI flags merge into, which is also what the one-shot `--dry-run` preview and every test
+    // fixture builds. Phase 2 splits it at the *runtime* boundary instead
+    // (`daemon::DaemonConfig::into_parts` → a process-wide half and the pair's own), so the daemon
+    // holds exactly one copy of `local_root` without this type — and its 27 construction sites —
+    // growing a pair dimension it cannot yet express. Making the *input* a `Vec<PairConfig>` is the
+    // same change as lifting `refuse_unsupported_pair_count`, so it belongs to the phase that lifts
+    // it (4), not to the one that moves the fields (2). What matters here is that every per-pair
+    // value now comes from ONE projection
     // (`PairFileConfig`) rather than from the top-level keys directly — a `[[pair]]` file and the
     // equivalent top-level file therefore cannot diverge. CLI flags still outrank the file and mean
     // "the single pair", so `--local-root ~/x` keeps working over either spelling.

@@ -83,7 +83,7 @@ pub struct PlannedAction {
 /// never holds a skipped node — so only a full-tree walk's silence is evidence. A local skip is
 /// derived from the local stat-walk, which is *always* a walk of the whole tree (there is no
 /// partial local scan: [`crate::index::scan_local_tree`] visits from the root, and the daemon's
-/// only entry point to it — `Daemon::scan_local_entities_reporting_progress` — adds progress
+/// only entry point to it — `PairPass::scan_local_entities_reporting_progress` — adds progress
 /// reporting and nothing else), so any pass that ran it can prove absence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsyncableOrigin {
@@ -1114,7 +1114,7 @@ fn unique_remote_directory_move_destination(
 /// should move to once `old_path` itself moves to `new_path`, preserving the relative
 /// suffix under the directory. Used both to suppress ordinary per-path planning for a
 /// moved directory's descendants (`plan_file_path_transitions`) and to rewrite their
-/// index rows at execution time (`Daemon::reconcile_blocking_inner`), so the two stay
+/// index rows at execution time (`PairPass::reconcile_blocking_inner`), so the two stay
 /// perfectly consistent with each other.
 pub(crate) fn directory_move_descendant_path_pairs(
     old_path: &Path,

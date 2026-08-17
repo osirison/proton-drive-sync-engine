@@ -729,6 +729,20 @@ those pass unchanged with one pair configured, the reply did not move. This is t
 rushed job costs the most, because every invariant guard in `daemon.rs` runs through these
 signatures. Closes: the "one connection, one index" assumption. Leaves broken: nothing.
 
+> **Shipped, with two departures from the paragraph above — recorded here because both change what
+> phase 3/4 will find.** (1) The pair is threaded as the *receiver* of a borrowed view,
+> `PairPass<'a, C>` = `&mut PairRuntime` + the shared process pieces, rather than as a `&mut
+> PairRuntime` parameter on each signature: the literal form does not compile, because
+> `self.method(&mut self.pairs[0])` borrows `self` twice, and a `&self` receiver overlaps
+> `self.pairs` just as badly. Destructuring the daemon's fields once, in `Daemon::pass()`, is the
+> split the borrow checker proves disjoint — and it makes "a pass cannot see another pair" a property
+> of scope rather than a rule forty methods remember. `pass()` is the single seat of the choice
+> phase 4's due queue replaces. (2) The *runtime* holds `ProcessConfig` + `PairConfig`
+> (`DaemonConfig::into_parts`, consuming, so no second copy of `local_root` exists), but the resolved
+> **input** `DaemonConfig` stays fused and flat. Making the input a `Vec<PairConfig>` is the same
+> change as lifting `refuse_unsupported_pair_count` — one flag cannot say which pair it amends —
+> so it belongs to phase 4, and phase 1's comment promising it here has been corrected.
+
 **Phase 3 — Protocol selector (medium).** Add `ControlRequest.pair`, `ControlResponse.pair` and
 `pairs`, make `reconcile_seq`/`plan_seq`/`apply_seq` per-pair, add `--pair`/`--all` to
 `proton-sync` **and its client-side capability gate**, and make the unknown-pair refusal typed. With
