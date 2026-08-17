@@ -370,6 +370,14 @@ struct PairRuntime {
     /// full walk (`warm_start.full_walk_every`). Distinct from the in-run
     /// `incremental_passes_since_full_scan`.
     warm_starts_since_full_walk: u64,
+    /// The last reported reason **this pair** could not resolve a volume + cursor, so a standing
+    /// decline is logged once instead of every pass (and re-logged if the cause changes). `None`
+    /// while the scope resolves. Diagnostic only — see `PairPass::resolve_event_scope`.
+    ///
+    /// Per-pair because the causes are: the volume comes from this pair's baseline, the cursor from
+    /// this pair's database. The process-wide causes latch on [`Daemon::session_declined`], which
+    /// documents why one shared latch cannot serve both.
+    event_scope_declined: Option<String>,
     /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
     /// plan; surfaced over IPC (`proton-sync pending`) and in the metrics sidecar.
@@ -448,8 +456,9 @@ struct PairPass<'a, C: ProtonClient> {
     /// argument (ADR 0005 §5), which is why the cursor is per-pair but this is not.
     event_source: &'a mut Option<Box<dyn EventSource>>,
     event_source_factory: &'a mut Box<dyn FnMut() -> Option<Box<dyn EventSource>> + Send>,
-    /// See [`Daemon::event_scope_declined`].
-    event_scope_declined: &'a mut Option<String>,
+    /// See [`Daemon::session_declined`]. The pair's own half of the same message family is
+    /// `PairRuntime::event_scope_declined`.
+    session_declined: &'a mut Option<SessionDecline>,
     /// Copied rather than borrowed: a pass only ever *reports* this cadence (in the degraded-session
     /// message), never changes it.
     events_poll_interval: Duration,
@@ -491,10 +500,25 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// event-driven detection without a manual restart once the keyring becomes readable. Boxed so
     /// tests can inject a fake that flips from `None` to `Some`.
     event_source_factory: Box<dyn FnMut() -> Option<Box<dyn EventSource>> + Send>,
-    /// The last reported reason the event-driven path could not resolve a volume + cursor, so a
-    /// standing decline is logged once instead of every pass (and re-logged if the cause changes).
-    /// `None` while the scope resolves. Diagnostic only — see `resolve_event_scope`.
-    event_scope_declined: Option<String>,
+    /// The **process-wide** half of the "event-driven detection unavailable" message family: why this
+    /// daemon cannot stream events *at all*, latched so a standing cause is logged once instead of
+    /// every pass (and re-logged when it changes). `None` while nothing is wrong with the session.
+    /// Diagnostic only.
+    ///
+    /// It is one latch per *scope*, not one latch overall (#102 phase 2, ADR 0005 §1). The two causes
+    /// here — no CLI session, and a signed-out account — are facts about the user; a missing volume
+    /// or an unreadable cursor is a fact about one tree and latches on that pair
+    /// (`PairRuntime::event_scope_declined`). Sharing one latch across pairs would make two pairs
+    /// declining for two volumes overwrite each other's reason and log again every pass, for ever.
+    ///
+    /// **At most one of the two latches speaks per pass, and that is structural rather than
+    /// arranged**: `note_degraded_session_if_needed` reports only when there is *no* event source,
+    /// and every path that resolves a scope (`warm_start_eligible`, `should_try_incremental`,
+    /// `try_incremental_reconcile`) requires one — so a pass either has no session, or has one and
+    /// may then decline on the volume/cursor. The auth cause is the exception by design: it is
+    /// evidence from the pass's *outcome*, so it can follow a scope decline in the same pass, which is
+    /// exactly the case a shared latch used to mask by overwriting.
+    session_declined: Option<SessionDecline>,
     /// Shared with the `proton-drive` client and flipped by a shutdown signal or the IPC
     /// `shutdown` command. The executor polls it: a pass that keeps going past item failures must
     /// still stop dead on shutdown, or it would spawn (and immediately kill) one CLI child per
@@ -1617,6 +1641,7 @@ impl<C: ProtonClient> Daemon<C> {
                 incremental_passes_since_full_scan,
                 is_first_reconcile: true,
                 warm_starts_since_full_walk,
+                event_scope_declined: None,
                 pending_deletions: Vec::new(),
                 last_failed_items: Vec::new(),
                 last_failed_item_count: 0,
@@ -1640,7 +1665,7 @@ impl<C: ProtonClient> Daemon<C> {
             events_poll_interval: EVENTS_POLL_INTERVAL,
             event_source,
             event_source_factory,
-            event_scope_declined: None,
+            session_declined: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             _global_lock_guard: global_lock_guard,
         };
@@ -1895,7 +1920,7 @@ impl<C: ProtonClient> Daemon<C> {
             cancel_flag,
             event_source,
             event_source_factory,
-            event_scope_declined,
+            session_declined,
             events_poll_interval,
             ..
         } = self;
@@ -1906,7 +1931,7 @@ impl<C: ProtonClient> Daemon<C> {
             cancel_flag,
             event_source,
             event_source_factory,
-            event_scope_declined,
+            session_declined,
             events_poll_interval: *events_poll_interval,
         }
     }
@@ -2608,20 +2633,32 @@ impl<C: ProtonClient> PairPass<'_, C> {
     /// there is no event source (locked keyring, headless host, CLI not logged in), so the scope is
     /// never even consulted. Every pass is then a full-tree snapshot and the fast events-poll arm
     /// is gated off, so both those snapshots and the per-pass session retry ride `scan_interval`
-    /// (#50). Routed through the scope latch on purpose: "event-driven detection unavailable" stays
-    /// **one** message family with one reason per cause, and a later scope decline — or a recovery,
-    /// which clears the latch — re-reports correctly.
+    /// (#50).
+    ///
+    /// The **process** latch, not the pair's, because the cause is the process's: there is one CLI
+    /// session for the user. It stays one message family with one reason per cause — see
+    /// [`Daemon::session_declined`] for why the two latches cannot both speak in one pass.
+    ///
+    /// The `else` branch is not cosmetic: with two latches nothing else clears this one, and a
+    /// session that recovers and then degrades again must say so rather than be swallowed by a stale
+    /// reason. It clears only [`SessionDeclineCause::NoSession`] — a readable keyring says nothing
+    /// about a signed-out account, which is `note_auth_evidence`'s own rule from the other side.
     fn note_degraded_session_if_needed(&mut self) {
         if !self.pair.config.events_driven || self.event_source.is_some() {
+            clear_session_decline(self.session_declined, SessionDeclineCause::NoSession);
             return;
         }
-        self.note_event_scope_declined(format!(
-            "no usable proton-drive CLI session (locked keyring, headless host, or the CLI is not \
-             logged in); the {}s event poll is off, so full-tree snapshots and the session retry \
-             both run on the {}s scan interval",
-            self.events_poll_interval.as_secs(),
-            self.pair.config.scan_interval.as_secs(),
-        ));
+        note_session_declined(
+            self.session_declined,
+            SessionDeclineCause::NoSession,
+            format!(
+                "no usable proton-drive CLI session (locked keyring, headless host, or the CLI is \
+                 not logged in); the {}s event poll is off, so full-tree snapshots and the session \
+                 retry both run on the {}s scan interval",
+                self.events_poll_interval.as_secs(),
+                self.pair.config.scan_interval.as_secs(),
+            ),
+        );
     }
 
     /// Whether an incremental (event-stream) pass may be attempted this cycle. Requires the
@@ -2664,7 +2701,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         };
         match load_event_cursor(&self.pair.connection, &volume) {
             Ok(Some(cursor)) => {
-                *self.event_scope_declined = None;
+                self.pair.event_scope_declined = None;
                 Some((volume, cursor))
             }
             Ok(None) => {
@@ -2709,25 +2746,31 @@ impl<C: ProtonClient> PairPass<'_, C> {
     }
 
     /// Records what this pass proved about the Proton session (#103), and reports a sign-out
-    /// through the **existing** one-reason-per-cause latch rather than opening a second channel.
+    /// through the **same** one-reason-per-cause message family rather than opening a second
+    /// channel.
     ///
-    /// "Why is this daemon not doing what I expect" already has one message family
-    /// ([`Self::note_event_scope_declined`]): one line per cause, said once, re-said when the cause
-    /// changes. An expired session is another cause in it — and a real one, since the events fetch
-    /// and the CLI share that session, so a sign-out degrades detection exactly as a locked keyring
-    /// does. Two surfaces independently deciding why the daemon is degraded would disagree.
+    /// "Why is this daemon not doing what I expect" has one message family: one line per cause, said
+    /// once, re-said when the cause changes. An expired session is a cause in it — and a real one,
+    /// since the events fetch and the CLI share that session, so a sign-out degrades detection
+    /// exactly as a locked keyring does. Two surfaces independently deciding why the daemon is
+    /// degraded would disagree.
     ///
-    /// Recovery clears the latch **only when it holds this reason**: a working session says nothing
-    /// about a missing volume or an unreadable cursor, and erasing their line would re-report it
-    /// next pass as if it were new.
+    /// The **process** latch, because a session is per-user: one sign-out is not N sign-outs, and
+    /// with N pairs reporting it per pair would say the same thing N times.
+    ///
+    /// Recovery clears the latch **only for this cause**: a working session says nothing about a
+    /// missing volume or an unreadable cursor, and erasing their line would re-report it next pass as
+    /// if it were new.
     fn note_auth_evidence(&mut self, state: AuthState) {
         publish_auth_evidence(self.shared, state);
         match state {
-            AuthState::SignedOut => self.note_event_scope_declined(AUTH_DECLINE_REASON.to_owned()),
+            AuthState::SignedOut => note_session_declined(
+                self.session_declined,
+                SessionDeclineCause::SignedOut,
+                AUTH_DECLINE_REASON.to_owned(),
+            ),
             AuthState::SignedIn => {
-                if self.event_scope_declined.as_deref() == Some(AUTH_DECLINE_REASON) {
-                    *self.event_scope_declined = None;
-                }
+                clear_session_decline(self.session_declined, SessionDeclineCause::SignedOut);
             }
             // Unreachable by contract — `record_auth_state` asserts it — and deliberately inert
             // rather than "reset to unknown": absence of evidence is not evidence.
@@ -2735,18 +2778,23 @@ impl<C: ProtonClient> PairPass<'_, C> {
         }
     }
 
-    /// Reports why the event-driven path is unavailable, once per distinct cause. Info level: this
-    /// is the only signal distinguishing "still full-walking because it cannot stream" from the
-    /// other causes of repeated full syncs.
+    /// Reports why **this pair** cannot replay from the event stream, once per distinct cause. Info
+    /// level: this is the only signal distinguishing "still full-walking because it cannot stream"
+    /// from the other causes of repeated full syncs.
     ///
-    /// The reasons that reach here are the *standing* ones — no session
-    /// ([`Self::note_degraded_session_if_needed`]), no volume, no/unreadable cursor. A pass that
-    /// started streaming and then gave up logs the separate per-pass line ("event-driven pass fell
-    /// back to a full-tree snapshot"), which is deliberately a different message.
+    /// The reasons that reach here are this pair's *standing* ones — no volume, no/unreadable cursor
+    /// — and they are latched per pair for a concrete reason: with one shared latch, two pairs
+    /// declining for two volumes would each see the other's string, log again, and never settle. The
+    /// process-wide causes (no session, signed out) latch on the daemon instead
+    /// ([`Daemon::session_declined`]).
+    ///
+    /// A pass that started streaming and then gave up logs the separate per-pass line
+    /// ("event-driven pass fell back to a full-tree snapshot"), which is deliberately a different
+    /// message.
     fn note_event_scope_declined(&mut self, reason: String) {
-        if self.event_scope_declined.as_deref() != Some(reason.as_str()) {
+        if self.pair.event_scope_declined.as_deref() != Some(reason.as_str()) {
             info!(%reason, "event-driven detection unavailable; using full-tree walks");
-            *self.event_scope_declined = Some(reason);
+            self.pair.event_scope_declined = Some(reason);
         }
     }
 
@@ -5728,11 +5776,55 @@ fn publish_auth_evidence(shared: &ControlShared, state: AuthState) -> bool {
 }
 
 /// The standing reason reported when the Proton session is the thing that is wrong.
-///
-/// A `const` because [`Daemon::note_auth_evidence`] both sets it and — on recovery — clears it,
-/// and clearing by comparison only works if there is exactly one spelling to compare against.
 const AUTH_DECLINE_REASON: &str = "the proton-drive CLI session is signed out or expired; run `proton-drive login` \
      (the daemon reuses that CLI's session)";
+
+/// A latched process-wide decline: which cause, and the line it was reported with.
+///
+/// The cause is carried beside the reason so a recovery can clear **its own** cause without a string
+/// comparison. There are two of them and they recover independently — a keyring that becomes readable
+/// says nothing about a signed-out account — so "clear if the stored reason equals mine" would either
+/// need one canonical spelling per cause (which the degraded-session line, formatted with two
+/// intervals, cannot have) or would erase the other cause's line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionDecline {
+    cause: SessionDeclineCause,
+    reason: String,
+}
+
+/// The two ways the *process* can fail to stream events. Both are facts about this user's Proton
+/// session, which is why they latch on the daemon and not on a pair (see
+/// [`Daemon::session_declined`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionDeclineCause {
+    /// `events_driven` is on but no event source could be built: a locked keyring, a headless host,
+    /// or a `proton-drive` CLI that is not logged in.
+    NoSession,
+    /// A pass or a `list` failed on a *classified* auth failure (#103).
+    SignedOut,
+}
+
+/// Latches a process-wide decline and logs it once, re-logging only when the line changes. Same
+/// contract as `PairPass::note_event_scope_declined`, at the other scope.
+fn note_session_declined(
+    latch: &mut Option<SessionDecline>,
+    cause: SessionDeclineCause,
+    reason: String,
+) {
+    if latch.as_ref().map(|held| held.reason.as_str()) != Some(reason.as_str()) {
+        info!(%reason, "event-driven detection unavailable; using full-tree walks");
+        *latch = Some(SessionDecline { cause, reason });
+    }
+}
+
+/// Clears the latch **only if it is holding `cause`**. The whole point of the typed cause: a
+/// recovery must not erase a line that describes something else, or that something else re-reports
+/// next pass as if it were new.
+fn clear_session_decline(latch: &mut Option<SessionDecline>, cause: SessionDeclineCause) {
+    if latch.as_ref().is_some_and(|held| held.cause == cause) {
+        *latch = None;
+    }
+}
 
 /// Answers a [`ControlCommand::Activity`] request. The selector is a **relative path** and is
 /// validated like every other externally-sourced path before it reaches a query — it is only ever
@@ -7812,8 +7904,9 @@ mod tests {
     #[test]
     fn a_pass_that_failed_on_the_session_reports_it_once_through_the_existing_latch() {
         // #103's reporting rule: an expired session is another cause in the ONE
-        // "why is this daemon degraded" family (`note_event_scope_declined`), said once and
-        // re-said only when the cause changes — not a second channel that can disagree with it.
+        // "why is this daemon degraded" family, said once and re-said only when the cause changes —
+        // not a second channel that can disagree with it. It latches on the PROCESS (#102 phase 2),
+        // because a session is per-user, while a missing volume is a fact about one tree.
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
         fs::create_dir(&local_root).expect("local root");
@@ -7824,9 +7917,12 @@ mod tests {
         daemon.pass().note_auth_evidence(AuthState::SignedOut);
         assert_eq!(daemon.shared.auth_state(), AuthState::SignedOut);
         assert_eq!(
-            daemon.event_scope_declined.as_deref(),
+            daemon
+                .session_declined
+                .as_ref()
+                .map(|declined| declined.reason.as_str()),
             Some(AUTH_DECLINE_REASON),
-            "the sign-out is reported through the scope latch, not beside it"
+            "the sign-out is reported through the session latch, not beside it"
         );
         // The reason is a log line and a status string, so it must read as one sentence. The
         // source spells it across two lines with a `\` continuation, which strips the newline AND
@@ -7838,19 +7934,39 @@ mod tests {
             "the reason must render as one line with no whitespace run: {AUTH_DECLINE_REASON:?}"
         );
 
-        // Recovery clears it, because it is OUR reason…
+        // Recovery clears it, because it is OUR cause…
         daemon.pass().note_auth_evidence(AuthState::SignedIn);
-        assert_eq!(daemon.event_scope_declined, None);
+        assert_eq!(daemon.session_declined, None);
 
-        // …and only ours: a working session says nothing about a missing volume, so a sign-in
-        // must not erase that line and let it re-report as new next pass.
+        // …and only ours, in BOTH directions of the split. A working session says nothing about a
+        // missing volume (the pair's latch) …
         daemon
             .pass()
             .note_event_scope_declined("no event volume: nothing carries a proton_id".to_owned());
         daemon.pass().note_auth_evidence(AuthState::SignedIn);
         assert_eq!(
-            daemon.event_scope_declined.as_deref(),
+            daemon.pair().event_scope_declined.as_deref(),
             Some("no event volume: nothing carries a proton_id")
+        );
+
+        // … nor about a locked keyring, which shares the *same* latch as the sign-out and is the
+        // case a string comparison could not tell apart: the degraded-session line is formatted
+        // with two intervals, so it has no canonical spelling to compare against. A sign-in must
+        // leave it standing.
+        daemon.pair_mut().config.events_driven = true;
+        daemon.event_source = None;
+        daemon.pass().note_degraded_session_if_needed();
+        let degraded = daemon.session_declined.clone();
+        assert!(
+            degraded
+                .as_ref()
+                .is_some_and(|declined| declined.reason.contains("no usable proton-drive CLI")),
+            "a degraded session must latch its own cause: {degraded:?}"
+        );
+        daemon.pass().note_auth_evidence(AuthState::SignedIn);
+        assert_eq!(
+            daemon.session_declined, degraded,
+            "a sign-in must not erase the keyring's line and let it re-report as new next pass"
         );
     }
 
@@ -16496,38 +16612,51 @@ mod tests {
         daemon
             .reconcile_blocking()
             .expect_clean("degraded first pass");
-        let session_cause = daemon.event_scope_declined.clone();
+        let session_cause = daemon.session_declined.clone();
         let reported = session_cause
-            .as_deref()
+            .as_ref()
+            .map(|declined| declined.reason.as_str())
             .expect("a degraded pass must report why it is full-walking");
         assert!(
             reported.contains("no usable proton-drive CLI session")
                 && reported.contains("scan interval"),
             "the session cause must name itself and the cadence it implies: {reported}"
         );
+        assert_eq!(
+            daemon.pair().event_scope_declined,
+            None,
+            "a pass with no event source never consults the scope, so the pair's latch must stay \
+             empty rather than double-report the session's condition"
+        );
 
         // Same cause next pass → the recorded reason is unchanged, so it is logged once.
         daemon
             .reconcile_blocking()
             .expect_clean("degraded second pass");
-        assert_eq!(daemon.event_scope_declined, session_cause);
+        assert_eq!(daemon.session_declined, session_cause);
 
-        // Session recovers: the session reporter goes quiet and the *next* cause — the scope, which
-        // no degraded pass could anchor a cursor for — is reported in its own words, not masked.
+        // Session recovers: the session cause is cleared (so a later regression re-reports rather
+        // than being swallowed by a stale latch) and the *next* cause — the scope, which no degraded
+        // pass could anchor a cursor for — is reported in its own words on the pair's latch.
         daemon.event_source = Some(Box::new(FakeEventSource::new("cursor-0")));
         daemon.reconcile_blocking().expect_clean("recovered pass");
-        let scope_cause = daemon.event_scope_declined.clone();
+        assert_eq!(
+            daemon.session_declined, None,
+            "the session cause is gone, and only its own recovery may clear it"
+        );
+        let scope_cause = daemon.pair().event_scope_declined.clone();
         assert!(
             scope_cause
                 .as_deref()
                 .is_some_and(|reason| reason.contains("no stored event cursor")),
-            "a scope decline must replace the session cause, not compete with it: {scope_cause:?}"
+            "a scope decline must follow the session cause, not compete with it: {scope_cause:?}"
         );
 
         // That pass anchored a cursor, so the scope now resolves: the record clears, and a later
         // regression of either cause reports again instead of being swallowed by a stale latch.
         daemon.reconcile_blocking().expect_clean("incremental pass");
-        assert_eq!(daemon.event_scope_declined, None);
+        assert_eq!(daemon.pair().event_scope_declined, None);
+        assert_eq!(daemon.session_declined, None);
     }
 
     #[test]
@@ -16677,7 +16806,7 @@ mod tests {
             "the created remote file must be downloaded by the incremental pass"
         );
         assert!(
-            daemon.event_scope_declined.is_none(),
+            daemon.pair().event_scope_declined.is_none(),
             "nothing was declined, so nothing should be reported"
         );
     }
@@ -16699,7 +16828,7 @@ mod tests {
 
         let base = HashMap::new();
         assert!(!daemon.pass().should_try_incremental(&base));
-        let reported = daemon.event_scope_declined.clone();
+        let reported = daemon.pair().event_scope_declined.clone();
         assert!(
             reported
                 .as_deref()
@@ -16708,7 +16837,7 @@ mod tests {
         );
         // Same cause next pass → recorded reason is unchanged, so it is logged once.
         assert!(!daemon.pass().should_try_incremental(&base));
-        assert_eq!(daemon.event_scope_declined, reported);
+        assert_eq!(daemon.pair().event_scope_declined, reported);
     }
 
     /// Seeds `local/keep.txt` edited to `edited`, a baseline record + remote entity at `old`, and a
