@@ -290,10 +290,20 @@ impl ConfigDoc {
         // `proton_cli`, so an empty value starts a daemon that then fails every single pass with
         // `os error 2` — the ENOENT loop #158 traced, arriving from a settings field someone
         // cleared rather than from a PATH race. There is no config in which an empty CLI works.
-        for key in ["local_root", "remote_root", "proton_cli"] {
-            if self.get_str(key).is_some_and(|v| v.trim().is_empty()) {
-                return Err(ConfigError::Invalid(format!("{key} must not be empty")));
-            }
+        //
+        // `local_root` / `remote_root` used to be checked here too and no longer are: the engine's
+        // `validate_pair_file_values` now refuses an empty root, **per pair**. That matters rather
+        // than being tidy-up — this loop reads TOP-LEVEL keys, and a `[[pair]]` file (#102) keeps
+        // its roots inside the table, so the check went blind exactly where a second copy is worst.
+        // `proton_cli` stays because it is daemon-wide: it is a top-level key by classification
+        // (`ConfigKey::scope`), so reading it at the top level is correct for every config shape.
+        if self
+            .get_str("proton_cli")
+            .is_some_and(|v| v.trim().is_empty())
+        {
+            return Err(ConfigError::Invalid(
+                "proton_cli must not be empty".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -899,6 +909,86 @@ local = true
             (
                 "deletion_policy = \"never\"\n[delete_approval]\nremote = true\n",
                 "two spellings of one setting",
+            ),
+        ] {
+            let error = ConfigDoc::from_toml_str(toml)
+                .unwrap()
+                .validate()
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(needle), "expected {needle:?} in: {error}");
+        }
+    }
+
+    #[test]
+    fn a_pair_table_no_longer_fails_every_save() {
+        // THE PHASE-1 UNLOCK (#102). `save` validates the WHOLE document through the engine, so
+        // before `FileConfig` learned the `pair` key a config containing `[[pair]]` did not merely
+        // stop the daemon — it made every GUI save fail, including saves of entirely unrelated keys.
+        // There was no "hand-write a multi-pair file and try it" path at all.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("proton-sync.toml");
+        let mut doc = ConfigDoc::from_toml_str(
+            "# hand-written\nlog_level = \"info\"\n\n\
+             [[pair]]\nname = \"documents\"\nlocal_root = \"/home/me/Documents\"\n\
+             remote_root = \"/Drive/Docs\"\n",
+        )
+        .unwrap();
+        doc.validate().expect("a one-pair document is valid");
+
+        // An edit to a key that has nothing to do with pairs saves, and leaves the table alone.
+        doc.set_str("log_level", "debug");
+        doc.save(&path).expect("save");
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("[[pair]]"), "got {written}");
+        assert!(written.contains("name = \"documents\""), "got {written}");
+        assert!(written.contains("log_level = \"debug\""), "got {written}");
+        assert!(written.contains("# hand-written"), "comments preserved");
+    }
+
+    #[test]
+    fn editing_a_per_pair_key_of_a_pair_file_is_refused_legibly_rather_than_split_in_two() {
+        // THE PHASE-1 BOUNDARY, pinned rather than discovered later. This writer only knows
+        // top-level keys, so asking it to change a per-pair setting of a `[[pair]]` document would
+        // produce a file that states one setting twice — which the engine refuses, so the save fails
+        // with an error naming both spellings instead of writing a config with two `local_root`s.
+        //
+        // That is the correct phase-1 answer, not a bug: the GUI has no array-of-tables API yet
+        // (ADR 0005 phase 5b), and nothing in the GUI *writes* `[[pair]]`, so only a hand-edited
+        // file reaches this. Daemon-wide keys are unaffected — see
+        // `a_pair_table_no_longer_fails_every_save`.
+        let mut doc = ConfigDoc::from_toml_str(
+            "[[pair]]\nname = \"documents\"\nlocal_root = \"/home/me/Documents\"\n\
+             remote_root = \"/Drive/Docs\"\n",
+        )
+        .unwrap();
+        doc.set_str("local_root", "/home/me/Elsewhere");
+        let error = doc.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("two spellings of one setting"),
+            "got {error}"
+        );
+        assert!(error.contains("`local_root`"), "got {error}");
+    }
+
+    #[test]
+    fn a_document_the_daemon_would_refuse_to_start_on_is_still_refused() {
+        // The never-brick contract has to hold for the new shape too, or the GUI becomes the way to
+        // write a config that stops the daemon. Two pairs are refused because the capability does
+        // not exist yet; the other two are the shape rules that will still be rules after it does.
+        for (toml, needle) in [
+            (
+                "[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\n\
+                 [[pair]]\nname = \"b\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n",
+                "not yet supported",
+            ),
+            (
+                "local_root = \"/x\"\n\n[[pair]]\nname = \"a\"\nremote_root = \"/Drive/a\"\n",
+                "two spellings of one setting",
+            ),
+            (
+                "[[pair]]\nname = \"a\"\nlocal_root = \"\"\nremote_root = \"/Drive/a\"\n",
+                "local_root must not be empty",
             ),
         ] {
             let error = ConfigDoc::from_toml_str(toml)
