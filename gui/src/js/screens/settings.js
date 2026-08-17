@@ -1250,11 +1250,10 @@ export function renderSettingsBar(props = {}) {
  *
  * THE SLOT IS `Discard changes` UNTIL A RESTART LEAVES SOMETHING WRONG. A save restarts the service
  * itself now (#320), so the settled-save state no longer needs an action of its own — but an ending
- * that leaves the file running ahead of the service ([`restartUnresolved`]) leaves `Save` disabled
- * (nothing is staged), so without this there is no way to try again from inside the app at all. In
- * two of those endings the daemon is UP on the old settings, and this bar is then the only restart
- * control left anywhere in the app — the main screen and the tray offer a *start*, which a running
- * daemon does not need.
+ * that leaves the file running ahead of the service ([`restartUnresolved`]) leaves the person with
+ * nothing to press: `Save` is disabled by then, because nothing is staged. In two of those endings
+ * the daemon is UP on the old settings, and this bar is then the only restart control left anywhere
+ * in the app — the main screen and the tray offer a *start*, which a running daemon does not need.
  *
  * `configStaged`, NOT `dirty` (#335). The slot is only free while saving again would restart again,
  * and a staged **notification policy** is a `gui.toml` key the daemon has never heard of: that save
