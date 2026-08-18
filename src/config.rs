@@ -606,7 +606,8 @@ impl PairFileConfig {
 /// daemon's [`resolve_runtime_config`] and, through [`validate_file_config_text`], the GUI's config
 /// writer. A second copy is how the daemon and the GUI ended up disagreeing about `~` (#135).
 ///
-/// Enforces the rules that are **structural**, i.e. the ones no CLI flag can change the answer to:
+/// Enforces the rules that are **structural**, i.e. the ones about the pair *set*, which no CLI
+/// flag can change the answer to (a flag cannot say which pair it amends):
 ///
 /// 1. **Both spellings is an error.** A per-pair key at the top level *and* a `[[pair]]` table is
 ///    refused, naming both — exactly as `deletion_policy` + `[delete_approval]` is refused. One
@@ -616,52 +617,65 @@ impl PairFileConfig {
 /// 2. **No `[[pair]]` at all is one implicit pair called [`DEFAULT_PAIR_NAME`]** — permanent, not a
 ///    migration step. An *explicitly empty* `pair = []` is refused instead: it is a statement, and
 ///    reading it as "one implicit pair" would make it silently mean the opposite of what it says.
-/// 3. **`name` is required, charset-bounded, and unique case-insensitively** — see
-///    [`validate_pair_name`].
-/// 4. **Roots may not collide or nest**, nor may `db_path`/`lockfile_path` overrides collide — see
-///    [`validate_pair_roots`].
+/// 3. **`name` is required, charset-bounded, unique case-insensitively, and `default` is reserved
+///    for the first pair** — see [`validate_pair_names`] and [`validate_pair_name`].
+/// 4. **No two pairs' roots may collide or nest**, nor may one pair's `db_path`/`lockfile_path`
+///    land inside or on another pair's — see [`validate_pair_roots`].
 ///
-/// Value-level checks a flag can mask (an empty root, a bad glob, a zero `download_batch_size`)
-/// deliberately live in [`validate_file_config_text`] instead: on the daemon's path the *merged*
-/// value is what matters, and `--local-root /x` over a file's `local_root = ""` starts fine today.
+/// **Both spellings go through the same checks** (#339). The implicit-pair arm used to return
+/// before rules 3 and 4, so a `[[pair]]` file was refused over `~user`, a `db_path` a flag replaces
+/// or a same-pair state collision while the byte-identical top-level file started. The arms differ
+/// now only in *where the values come from*, which is the single [`PairFileConfig`] projection.
+///
+/// Value-level checks a flag can mask (an empty root, a `~user` path, a bad glob, a zero
+/// `download_batch_size`, one file used as both index and lockfile) deliberately live in
+/// [`validate_pair_file_values`] and [`validate_runtime_config`] instead: on the daemon's path the
+/// *merged* value is what matters, and `--local-root /x` over a file's `local_root = ""` starts fine
+/// today. Nothing here may refuse a value a flag replaces — that is the rule the layer exists under.
 ///
 /// The **order is meaningful**: the first pair is the default pair (the one a client predating
-/// `ControlRequest.pair` addresses). Nothing in phase 1 reads that, but reordering the tables is
-/// what would change it, which is why the order is preserved rather than sorted.
+/// `ControlRequest.pair` addresses). Reordering the tables is what would change it, which is why the
+/// order is preserved rather than sorted, and why rule 3 reserves `default` for the first table.
 fn resolve_pairs(config: &FileConfig) -> AppResult<Vec<PairFileConfig>> {
-    let Some(tables) = &config.pair else {
-        return Ok(vec![PairFileConfig::from_top_level(config)]);
+    let pairs = match &config.pair {
+        None => vec![PairFileConfig::from_top_level(config)],
+        Some(tables) if tables.is_empty() => {
+            return Err(boxed_error(
+                "config declares `pair = []`: an empty pair list syncs nothing. Declare at least \
+                 one `[[pair]]` table, or remove the key and use top-level \
+                 `local_root`/`remote_root` (a file with no `[[pair]]` is one pair named `default`)",
+            ));
+        }
+        Some(tables) => {
+            let top_level_per_pair_keys: Vec<&str> = ConfigKey::ALL
+                .into_iter()
+                .filter(|key| key.scope() == KeyScope::Pair && config.key_present(*key))
+                .map(ConfigKey::spelling)
+                .collect();
+            if !top_level_per_pair_keys.is_empty() {
+                // Named once, not twice: repeating the list read as "move `a`, `b` and `c` into the
+                // table *it* belongs to", whose grammar drifts the moment there is more than one key.
+                return Err(boxed_error(format!(
+                    "config sets per-pair {} at the top level and also declares `[[pair]]` tables: \
+                     they are two spellings of one setting; move each per-pair key into the \
+                     `[[pair]]` table it belongs to, or delete the `[[pair]]` tables",
+                    describe_quoted(&top_level_per_pair_keys),
+                )));
+            }
+            tables.iter().map(PairFileConfig::from_table).collect()
+        }
     };
-    if tables.is_empty() {
-        return Err(boxed_error(
-            "config declares `pair = []`: an empty pair list syncs nothing. Declare at least one \
-             `[[pair]]` table, or remove the key and use top-level `local_root`/`remote_root` (a \
-             file with no `[[pair]]` is one pair named `default`)",
-        ));
-    }
-    let top_level_per_pair_keys: Vec<&str> = ConfigKey::ALL
-        .into_iter()
-        .filter(|key| key.scope() == KeyScope::Pair && config.key_present(*key))
-        .map(ConfigKey::spelling)
-        .collect();
-    if !top_level_per_pair_keys.is_empty() {
-        // Named once, not twice: repeating the list read as "move `a`, `b` and `c` into the table
-        // *it* belongs to", whose grammar drifts the moment there is more than one key.
-        return Err(boxed_error(format!(
-            "config sets per-pair {} at the top level and also declares `[[pair]]` tables: they \
-             are two spellings of one setting; move each per-pair key into the `[[pair]]` table it \
-             belongs to, or delete the `[[pair]]` tables",
-            describe_keys(&top_level_per_pair_keys),
-        )));
-    }
-    let pairs: Vec<PairFileConfig> = tables.iter().map(PairFileConfig::from_table).collect();
     validate_pair_names(&pairs)?;
     validate_pair_roots(&pairs)?;
     Ok(pairs)
 }
 
-/// `` `a` `` / `` `a`, `b` and `c` `` — so an error naming several keys reads as a sentence.
-fn describe_keys(keys: &[&str]) -> String {
+/// `` `a` `` / `` `a`, `b` and `c` `` — so an error naming several things reads as a sentence.
+///
+/// Deliberately not named for keys: it renders pair *names* too
+/// ([`refuse_unsupported_pair_count`]), and a helper whose name says "keys" while it quotes names is
+/// a comment that lies (#339).
+fn describe_quoted(keys: &[&str]) -> String {
     let quoted: Vec<String> = keys.iter().map(|key| format!("`{key}`")).collect();
     match quoted.split_last() {
         None => String::new(),
@@ -673,28 +687,57 @@ fn describe_keys(keys: &[&str]) -> String {
 /// Characters a pair `name` may use. Narrow on purpose (ADR 0005 §2 rule 3): a name is a CLI
 /// argument (`proton-sync --pair NAME`) and a wire selector, so it must never need quoting and must
 /// never look like a path.
+///
+/// The charset alone does not deliver that, which is why [`validate_pair_name`] adds two refusals
+/// on top of it (#339): `.` and `..` are spelled entirely within it and *are* path components, and
+/// a leading `-` is spelled within it and *is* option syntax.
 const PAIR_NAME_CHARS: &str = "letters, digits, `.`, `_` and `-`";
+
+/// The two names that are path components whatever the charset says.
+const PAIR_NAME_RESERVED_PATHS: [&str; 2] = [".", ".."];
 
 /// The longest a pair `name` may be. Bounds an error message and a future wire selector; nothing
 /// about a folder needs more.
 const PAIR_NAME_MAX_LEN: usize = 64;
 
-/// `name` is required, `[A-Za-z0-9._-]{1,64}`, and unique **case-insensitively**.
+/// `name` is required, `[A-Za-z0-9._-]{1,64}`, unique **case-insensitively**, and
+/// [`DEFAULT_PAIR_NAME`] belongs to the first pair.
 ///
 /// Case-insensitive uniqueness is #298's rule applied one layer up: names are matched byte-exactly
 /// on the wire, so `Photos` and `photos` would be two pairs a person cannot tell apart while a
 /// selector resolves to exactly one of them. Refusing at startup is the only place that ambiguity
 /// can be removed rather than resolved arbitrarily.
+///
+/// **`default` is a sentinel with two surfaces** (#339), and reserving it is the `all` decision (ADR
+/// 0005 §4, the #140 lesson) applied to the other one. A request that names no pair addresses the
+/// *first* table (§2 rule 6 / §7), which is what `default` means — so a later table called `default`
+/// gives one selector two answers: an omitted selector reaches the first pair and `--pair default`
+/// reaches this one. It is **not** refused outright, because the first pair may legitimately be
+/// called that: it is what the implicit pair is already named, and it is what §7's
+/// promote-to-`[[pair]]` rewrite would write for a pre-existing single-pair file. Folded like the
+/// uniqueness rule above, for the same reason — a person cannot tell `Default` from `default`.
 fn validate_pair_names(pairs: &[PairFileConfig]) -> AppResult<()> {
     let mut seen: Vec<String> = Vec::with_capacity(pairs.len());
-    for pair in pairs {
+    for (position, pair) in pairs.iter().enumerate() {
         validate_pair_name(&pair.name)?;
         let folded = pair.name.to_ascii_lowercase();
+        // The duplicate check runs FIRST. Two tables both named `default` are two names that are
+        // the same, not one name in the wrong position, and the reservation's advice ("move its
+        // table first") would produce two `default`s if it spoke about them.
         if seen.contains(&folded) {
             return Err(boxed_error(format!(
                 "two `[[pair]]` tables are named `{}` (names are compared without regard to \
                  case, because a selector that matches two pairs can only pick one of them): give \
                  each pair a distinct name",
+                pair.name
+            )));
+        }
+        if position > 0 && folded == DEFAULT_PAIR_NAME {
+            return Err(boxed_error(format!(
+                "pair `{}` is named `{DEFAULT_PAIR_NAME}` but is not the first `[[pair]]` table: \
+                 that name already means the pair a command addresses when it names none, which is \
+                 the first table, so one selector would have two answers. Rename this pair, or \
+                 move its table first",
                 pair.name
             )));
         }
@@ -710,11 +753,9 @@ fn validate_pair_name(name: &str) -> AppResult<()> {
              command says which folder it means",
         ));
     }
-    if name.len() > PAIR_NAME_MAX_LEN {
-        return Err(boxed_error(format!(
-            "pair name `{name}` is longer than {PAIR_NAME_MAX_LEN} characters"
-        )));
-    }
+    // The charset runs BEFORE the length (#339): `name.len()` is bytes, so a 40-character accented
+    // name is 80 of them and used to be reported as "longer than 64 characters", which names the
+    // wrong problem. Once the charset holds every character is one byte, and the two agree.
     if let Some(bad) = name
         .chars()
         .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
@@ -724,11 +765,44 @@ fn validate_pair_name(name: &str) -> AppResult<()> {
              it is always a safe command argument and never looks like a path"
         )));
     }
+    if name.len() > PAIR_NAME_MAX_LEN {
+        return Err(boxed_error(format!(
+            "pair name `{name}` is longer than {PAIR_NAME_MAX_LEN} characters"
+        )));
+    }
+    // The two refusals the charset cannot express, and without which its own justification is a
+    // claim the code does not honour (#339).
+    if PAIR_NAME_RESERVED_PATHS.contains(&name) {
+        return Err(boxed_error(format!(
+            "pair name `{name}` is a path component: the charset exists so that a name never looks \
+             like a path, and `.` and `..` are the two names that do while using only \
+             {PAIR_NAME_CHARS}"
+        )));
+    }
+    if name.starts_with('-') {
+        return Err(boxed_error(format!(
+            "pair name `{name}` starts with `-`: a name is a command argument (`proton-sync --pair \
+             {name}`), and an argument starting with `-` is read as an option rather than as the \
+             name of a folder pair"
+        )));
+    }
     Ok(())
 }
 
+/// One pair's path as this layer compares it: which pair it belongs to (by position, since that is
+/// the only identity a comparison may not get wrong), the key it was written under, the value the
+/// user wrote, and the value to compare.
+struct ComparablePath<'a> {
+    pair: usize,
+    name: &'a str,
+    field: &'a str,
+    written: PathBuf,
+    key: PathBuf,
+}
+
 /// No two pairs may share a `local_root` or a `remote_root`, and neither may **nest** inside
-/// another pair's; the same for explicit `db_path` / `lockfile_path` overrides (ADR 0005 §2 rule 4).
+/// another pair's; nor may one pair's `db_path` / `lockfile_path` be another pair's, or sit inside
+/// another pair's `local_root` (ADR 0005 §2 rule 4).
 ///
 /// Nesting has a concrete consequence, not a tidiness argument: [`crate::index`]'s
 /// `is_sync_state_path` matches only the **first** component of a relative path, because a `.sync`
@@ -737,108 +811,191 @@ fn validate_pair_name(name: &str) -> AppResult<()> {
 /// uploaded to Proton Drive as the outer pair's ordinary files. The remote half is the mirror: two
 /// pairs over one remote subtree plan opposing actions for it.
 ///
+/// **The state-path half is that same consequence reached around the rule** (#339): the rule was
+/// written root-vs-root, so a `db_path` explicitly placed inside *another* pair's `local_root` — no
+/// nesting of roots anywhere — produced exactly the upload the doc comment names.
+/// `scan_options_from_config` is handed only this pair's own `db_path`, so the outer pair has no
+/// way to know the file it is uploading is a live SQLite index.
+///
 /// A duplicated `lockfile_path` is worth its own check because of how it fails otherwise:
 /// `LockGuard::acquire` uses `try_lock_exclusive`, and `flock` treats two descriptors on one inode
 /// as independent *even in one process*, so the second pair would report "another daemon is already
 /// running" — true, and incomprehensible. This check runs before any lock is taken.
 ///
+/// **Every rule here is about two pairs**, which is what makes it structural: a CLI flag cannot say
+/// which pair it amends, so no flag can change any of these answers. The same-pair question — one
+/// file used as both a pair's index and its lockfile — a flag *can* change, and it lives with the
+/// other flag-maskable rules ([`require_distinct_state_paths`], called from
+/// [`validate_pair_file_values`] and [`validate_runtime_config`]).
+///
 /// The comparison is **lexical**, because a config file must be checkable without touching the
 /// filesystem (the GUI validates documents for paths that may not exist yet). It therefore does not
 /// see two roots that reach one directory through a symlink, a `..`, or a relative path resolved
 /// against the daemon's working directory; catching those would need `canonicalize` on live paths,
-/// which belongs to the daemon's own startup rather than to a file check.
+/// which belongs to the daemon's own startup rather than to a file check. `~` is expanded
+/// **best-effort** ([`expand_tilde_for_comparison`]) — reading `$HOME` is not touching the
+/// filesystem, and it is what keeps `~/Sync` and `/home/me/Sync` from reading as two roots — but a
+/// value it cannot expand is compared verbatim rather than refused, because refusing here would
+/// refuse a value a flag replaces.
 fn validate_pair_roots(pairs: &[PairFileConfig]) -> AppResult<()> {
-    let mut local_roots: Vec<(&str, PathBuf)> = Vec::new();
-    let mut remote_roots: Vec<(&str, PathBuf)> = Vec::new();
-    let mut state_paths: Vec<(&str, &str, PathBuf)> = Vec::new();
-    for pair in pairs {
-        if let Some(local_root) = &pair.local_root {
-            let local_root = expand_tilde(local_root.clone(), "local_root")?;
-            check_no_overlap(
-                &local_roots,
-                &pair.name,
-                &local_root,
-                "local_root",
-                "the inner pair's `.sync` state directory — its SQLite index, lockfile and \
-                 sidecars — would be scanned and uploaded to Proton Drive as the outer pair's \
-                 ordinary files",
-            )?;
-            state_paths.push((
-                &pair.name,
+    let mut local_roots: Vec<ComparablePath<'_>> = Vec::new();
+    let mut remote_roots: Vec<ComparablePath<'_>> = Vec::new();
+    let mut state_paths: Vec<ComparablePath<'_>> = Vec::new();
+    for (position, pair) in pairs.iter().enumerate() {
+        let local_root = pair
+            .local_root
+            .as_deref()
+            .map(expand_tilde_for_comparison)
+            .map(|root| local_comparison_key(&root));
+        for (field, override_value, default_for) in [
+            (
                 "db_path",
-                effective_state_path(
-                    &local_root,
-                    pair.db_path.clone(),
-                    "db_path",
-                    default_state_db_path,
-                )?,
-            ));
-            state_paths.push((
-                &pair.name,
+                pair.db_path.as_deref(),
+                default_state_db_path as fn(&Path) -> PathBuf,
+            ),
+            (
                 "lockfile_path",
-                effective_state_path(
-                    &local_root,
-                    pair.lockfile_path.clone(),
-                    "lockfile_path",
-                    default_lockfile_path,
-                )?,
-            ));
-            local_roots.push((&pair.name, local_root));
+                pair.lockfile_path.as_deref(),
+                default_lockfile_path as fn(&Path) -> PathBuf,
+            ),
+        ] {
+            if let Some(key) =
+                comparison_state_path(local_root.as_deref(), override_value, default_for)
+            {
+                state_paths.push(ComparablePath {
+                    pair: position,
+                    name: &pair.name,
+                    field,
+                    written: override_value.map_or_else(|| key.clone(), Path::to_path_buf),
+                    key,
+                });
+            }
+        }
+        if let (Some(written), Some(key)) = (pair.local_root.clone(), local_root) {
+            local_roots.push(ComparablePath {
+                pair: position,
+                name: &pair.name,
+                field: "local_root",
+                written,
+                key,
+            });
         }
         if let Some(remote_root) = &pair.remote_root {
-            let key = remote_root_comparison_key(remote_root);
-            check_no_overlap(
-                &remote_roots,
-                &pair.name,
-                &key,
-                "remote_root",
-                "both pairs would plan actions for one remote subtree, each undoing the other's",
-            )?;
-            remote_roots.push((&pair.name, key));
+            remote_roots.push(ComparablePath {
+                pair: position,
+                name: &pair.name,
+                field: "remote_root",
+                written: remote_root.clone(),
+                key: remote_root_comparison_key(remote_root),
+            });
         }
     }
-    for (index, (name, field, path)) in state_paths.iter().enumerate() {
-        if let Some((other_name, other_field, _)) = state_paths[..index]
+    check_no_overlap(
+        &local_roots,
+        "the inner pair's `.sync` state directory — its SQLite index, lockfile and sidecars — \
+         would be scanned and uploaded to Proton Drive as the outer pair's ordinary files",
+    )?;
+    check_no_overlap(
+        &remote_roots,
+        "both pairs would plan actions for one remote subtree, each undoing the other's",
+    )?;
+    for (position, path) in state_paths.iter().enumerate() {
+        if let Some(other) = state_paths[..position]
             .iter()
-            .find(|(_, _, other)| other == path)
+            .find(|other| other.pair != path.pair && other.key == path.key)
         {
             return Err(boxed_error(format!(
-                "pair `{name}`'s {field} and pair `{other_name}`'s {other_field} both resolve to \
-                 `{}`: no two of these may be the same file — `flock` treats two descriptors on \
-                 one inode as independent, so a shared lockfile surfaces as a spurious \"already \
-                 running\", and a shared index has two writers of one baseline",
-                path.display()
+                "pair `{}`'s {} and pair `{}`'s {} both resolve to `{}`: no two of these may be \
+                 the same file — `flock` treats two descriptors on one inode as independent, so a \
+                 shared lockfile surfaces as a spurious \"already running\", and a shared index has \
+                 two writers of one baseline",
+                path.name,
+                path.field,
+                other.name,
+                other.field,
+                path.key.display()
+            )));
+        }
+    }
+    for path in &state_paths {
+        if let Some(root) = local_roots
+            .iter()
+            .find(|root| root.pair != path.pair && path.key.starts_with(&root.key))
+        {
+            return Err(boxed_error(format!(
+                "pair `{}`'s {} `{}` is inside pair `{}`'s local_root `{}`: pair `{}` would scan \
+                 that file and upload pair `{}`'s live SQLite index and lockfile to Proton Drive \
+                 as its own, because `is_sync_state_path` ignores only a top-level `.sync`",
+                path.name,
+                path.field,
+                path.written.display(),
+                root.name,
+                root.written.display(),
+                root.name,
+                path.name
             )));
         }
     }
     Ok(())
 }
 
-/// Refuses `candidate` if it equals, contains, or is contained by any root already seen.
-/// Component-wise (`Path::starts_with`), so `/a/b` bounds `/a/b/c` but not `/a/bc`.
-fn check_no_overlap(
-    seen: &[(&str, PathBuf)],
-    name: &str,
-    candidate: &Path,
-    field: &str,
-    consequence: &str,
-) -> AppResult<()> {
-    for (other_name, other) in seen {
-        let relation = if candidate == other {
-            "the same path as"
-        } else if candidate.starts_with(other) {
-            "inside"
-        } else if other.starts_with(candidate) {
-            "a parent of"
-        } else {
-            continue;
-        };
-        return Err(boxed_error(format!(
-            "pair `{name}`'s {field} `{}` is {relation} pair `{other_name}`'s: {consequence}",
-            candidate.display()
-        )));
+/// Refuses any path that equals, contains, or is contained by an earlier one belonging to a
+/// *different* pair. Component-wise (`Path::starts_with`), so `/a/b` bounds `/a/b/c` but not
+/// `/a/bc`.
+///
+/// The message renders the value the user **wrote**, not the comparison key: a file saying
+/// `remote_root = "/Drive/X"` was told about `` `Drive/X` ``, which is a path it does not contain
+/// (#339).
+fn check_no_overlap(paths: &[ComparablePath<'_>], consequence: &str) -> AppResult<()> {
+    for (position, path) in paths.iter().enumerate() {
+        for other in &paths[..position] {
+            if other.pair == path.pair {
+                continue;
+            }
+            let relation = if path.key == other.key {
+                "the same path as"
+            } else if path.key.starts_with(&other.key) {
+                "inside"
+            } else if other.key.starts_with(&path.key) {
+                "a parent of"
+            } else {
+                continue;
+            };
+            return Err(boxed_error(format!(
+                "pair `{}`'s {} `{}` is {relation} pair `{}`'s `{}`: {consequence}",
+                path.name,
+                path.field,
+                path.written.display(),
+                other.name,
+                other.written.display()
+            )));
+        }
     }
     Ok(())
+}
+
+/// A **local** path reduced to what it *addresses*, for comparison only: a leading `./` is
+/// dropped, so `local_root = "A"` and `local_root = "./A"` are one directory rather than two that
+/// can never overlap (#339 round 2). Only the *leading* one matters — `Path::components` already
+/// drops a non-leading `.`, and `Path`'s own equality and `starts_with` compare component-wise.
+///
+/// The leading `/` is deliberately **not** dropped, which is where this differs from
+/// [`remote_root_comparison_key`]: for a local path absolute and relative are two different
+/// locations, while `/Drive/X` and `Drive/X` are one Drive location.
+///
+/// A path that is *nothing but* `.` keeps its literal form. Reducing it to the empty path would
+/// make it a prefix of every path there is, and an absolute root would then be refused as "inside"
+/// a relative one.
+fn local_comparison_key(path: &Path) -> PathBuf {
+    let stripped: PathBuf = path
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect();
+    if stripped.as_os_str().is_empty() {
+        path.to_path_buf()
+    } else {
+        stripped
+    }
 }
 
 /// A `remote_root` reduced to what it *addresses*, for comparison only.
@@ -854,19 +1011,113 @@ fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
         .collect()
 }
 
-/// The `db_path` / `lockfile_path` a pair will really use: an absolute override verbatim, a
-/// relative one under `local_root`, and otherwise the per-root `.sync` default. Shared with
-/// [`resolve_runtime_config`] so the collision check and the daemon agree on which file is which.
+/// Which file a `db_path` / `lockfile_path` names, once `~` is out of the way: an absolute override
+/// verbatim, a relative one under `local_root`, and otherwise the per-root `.sync` default.
+///
+/// The **one** definition of "which file is this pair's index", shared by the daemon's merge path
+/// ([`effective_state_path`]) and the comparison layer ([`comparison_state_path`]) so the two cannot
+/// answer it differently. The `~` expansion is what the two differ on, and only that.
+fn state_path_from(
+    local_root: &Path,
+    override_value: Option<PathBuf>,
+    default_for: impl Fn(&Path) -> PathBuf,
+) -> PathBuf {
+    match override_value {
+        Some(path) => resolve_path(local_root, path),
+        None => default_for(local_root),
+    }
+}
+
+/// The `db_path` / `lockfile_path` a pair will really use, from values that are already the merged
+/// ones. Refuses a `~` it cannot expand, because this *is* the value the daemon will open.
 fn effective_state_path(
     local_root: &Path,
     override_value: Option<PathBuf>,
     field_name: &str,
     default_for: impl Fn(&Path) -> PathBuf,
 ) -> AppResult<PathBuf> {
+    let override_value = override_value
+        .map(|path| expand_tilde(path, field_name))
+        .transpose()?;
+    Ok(state_path_from(local_root, override_value, default_for))
+}
+
+/// The same file, for **comparison between pairs** — and `None` when the file does not place it.
+///
+/// Never fails, by construction: this runs before any flag is merged, so every value it sees may
+/// still be replaced (#339). Two things it therefore does differently from [`effective_state_path`]:
+/// `~` is expanded best-effort, and a *relative* override with no `local_root` yet has no answer
+/// rather than a wrong one. An **absolute** override is placed either way, which is what lets two
+/// rootless pairs sharing one `db_path` still be caught — roots are optional in a `[[pair]]`,
+/// supplied later by a flag, and collecting state paths only inside `if let Some(local_root)` meant
+/// those two were never compared with each other.
+fn comparison_state_path(
+    local_root: Option<&Path>,
+    override_value: Option<&Path>,
+    default_for: impl Fn(&Path) -> PathBuf,
+) -> Option<PathBuf> {
     match override_value {
-        Some(path) => Ok(resolve_path(local_root, expand_tilde(path, field_name)?)),
-        None => Ok(default_for(local_root)),
+        Some(value) => {
+            let value = expand_tilde_for_comparison(value);
+            if value.is_absolute() {
+                Some(value)
+            } else {
+                local_root.map(|root| state_path_from(root, Some(value), default_for))
+            }
+        }
+        None => local_root.map(default_for),
     }
+}
+
+/// `~` expanded when it can be, kept **verbatim** when it cannot — for comparison only.
+///
+/// The structural layer may not refuse a value a CLI flag replaces (#339), and `expand_tilde` is
+/// fallible (`~user`, or `~` with no `HOME`). Those values *are* refused — on the merge path, where
+/// the value is the one the daemon will really use, and in [`validate_pair_file_values`] for a
+/// reader that has no flags. Here they are only compared, and comparing the literal is exactly what
+/// the top-level spelling has always done. Expanding what it can is not optional either: `~/Sync`
+/// and `/home/me/Sync` are one directory, and a comparison that read them as two would miss the
+/// nesting it exists to refuse. Same best-effort shape, for the same reason, as `gui-core`'s
+/// `expand_config_path`.
+fn expand_tilde_for_comparison(path: &Path) -> PathBuf {
+    let literal = path.to_path_buf();
+    // The error text is discarded: nothing here can fail its way into a message, so the field name
+    // is never read.
+    expand_tilde(literal.clone(), "a pair path").unwrap_or(literal)
+}
+
+/// One file cannot be both a pair's SQLite index and its lockfile.
+///
+/// A **same-pair** rule, and one a flag can change the answer to (`--db-path` / `--lockfile-path`
+/// replace both values), so it runs where the values that will really be used are: on the file's own
+/// values for a reader with no flags ([`validate_pair_file_values`]) and on the merged values for
+/// the daemon ([`validate_runtime_config`]). It used to run in the structural layer, on written
+/// values, on the `[[pair]]` arm only — so a `[[pair]]` file was refused over two values its flags
+/// replaced while the top-level spelling was never checked at all (#339).
+fn require_distinct_state_paths(
+    pair: Option<&str>,
+    db_path: &Path,
+    lockfile_path: &Path,
+) -> AppResult<()> {
+    if db_path == lockfile_path {
+        // Named when the reader knows which table it is reading (the file half is per pair), and
+        // nameless on the merge path, where `DaemonConfig` is one pair and has no name to give.
+        // The base rule this replaced named its pair, so dropping it would be a downgrade the
+        // moment there is more than one table (#339 round 2).
+        let subject = match pair {
+            Some(name) => format!("pair `{name}`'s db_path and lockfile_path"),
+            None => "db_path and lockfile_path".to_owned(),
+        };
+        return Err(boxed_error(format!(
+            "{subject} both resolve to `{}`: one file cannot be both this pair's \
+             SQLite index and its lockfile — the lockfile is `flock`ed for the whole life of the \
+             daemon and the index is a database SQLite opens and writes, so naming one file for \
+             both makes the single-instance check depend on the database and gives the database a \
+             whole-file advisory lock",
+            db_path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Refuses more than one folder pair, which is what makes phase 1 of #102 shippable on its own: the
@@ -888,7 +1139,7 @@ fn refuse_unsupported_pair_count(pairs: &[PairFileConfig]) -> AppResult<()> {
             "config declares {} folder pairs ({}), and syncing more than one pair is not yet \
              supported: keep one `[[pair]]` table and remove the rest",
             pairs.len(),
-            describe_keys(&names),
+            describe_quoted(&names),
         )));
     }
     Ok(())
@@ -1246,6 +1497,23 @@ pub fn validate_file_config_text(text: &str) -> AppResult<()> {
         // the literal would reject it as relative.
         require_absolute_socket_path(&expand_tilde(socket_path, "socket_path")?)?;
     }
+    // The last local-filesystem path a config file can set, and the one this function did not
+    // expand while `resolve_runtime_config` did (#339 round 2): the GUI writes this key from the
+    // Settings Advanced tab, `ConfigDoc::save` validates only through here, and every packaged
+    // unit launches the daemon flagless — so an unexpandable value written here is a daemon that
+    // will not start, which is exactly the contract the per-pair `~` checks above exist for. A
+    // bare command name (`proton-drive`, resolved through `PATH`) has no `~` component and passes
+    // through untouched.
+    // The last local-filesystem path a config file can set, and the one this function did not
+    // expand while `resolve_runtime_config` did (#339 round 2): the GUI writes this key from the
+    // Settings Advanced tab, `ConfigDoc::save` validates only through here, and every packaged
+    // unit launches the daemon flagless — so an unexpandable value written here is a daemon that
+    // will not start, which is exactly the contract the per-pair `~` checks above exist for. A
+    // bare command name (`proton-drive`, resolved through `PATH`) has no `~` component and passes
+    // through untouched.
+    if let Some(proton_cli) = config.proton_cli {
+        expand_tilde(proton_cli, "proton_cli")?;
+    }
     resolve_positive_duration_secs(None, config.proton_timeout_secs, 1, "proton_timeout_secs")?;
     resolve_positive_usize(None, config.proton_list_attempts, 1, "proton_list_attempts")?;
     Ok(())
@@ -1270,6 +1538,37 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
     }
     require_non_blank_root(pair.local_root.as_deref(), "local_root")?;
     require_non_blank_root(pair.remote_root.as_deref(), "remote_root")?;
+    // `~` is refused HERE rather than in the structural layer (#339). The daemon refuses it on the
+    // merged value — the one it will really open — and a flag can replace this one; but a file
+    // reader has no flags, so `ConfigDoc::save` must still refuse a `~user` path the flagless daemon
+    // would not start on. Per-pair by nature, so one place covers both spellings.
+    for (field, value) in [
+        ("local_root", pair.local_root.as_ref()),
+        ("db_path", pair.db_path.as_ref()),
+        ("lockfile_path", pair.lockfile_path.as_ref()),
+    ] {
+        if let Some(value) = value {
+            expand_tilde(value.clone(), field)?;
+        }
+    }
+    // The same-pair state collision, on the file's own values. `comparison_state_path` answers
+    // `None` for a value this file does not place (a relative override with no `local_root` yet),
+    // which is the case a flag still decides.
+    let local_root = pair.local_root.as_deref().map(expand_tilde_for_comparison);
+    if let (Some(db_path), Some(lockfile_path)) = (
+        comparison_state_path(
+            local_root.as_deref(),
+            pair.db_path.as_deref(),
+            default_state_db_path,
+        ),
+        comparison_state_path(
+            local_root.as_deref(),
+            pair.lockfile_path.as_deref(),
+            default_lockfile_path,
+        ),
+    ) {
+        require_distinct_state_paths(Some(&pair.name), &db_path, &lockfile_path)?;
+    }
     resolve_positive_usize(None, pair.download_batch_size, 1, "download_batch_size")?;
     // Compiled against a throwaway root: the root only decides which paths are ignored, and this
     // call passes none. Same check `validate_runtime_config` makes.
@@ -1296,6 +1595,12 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
 /// the value the daemon will actually use). The message is load-bearing: `gui-core`'s
 /// `an_empty_root_is_refused_before_it_reaches_the_daemon` matches on it, and the same rule used to
 /// live over there reading top-level keys — which a `[[pair]]` file does not have.
+///
+/// **Sharing it changed the daemon's answer in one case, and that is deliberate** (#339 §6): the
+/// pre-#332 `validate_runtime_config` tested `as_os_str().is_empty()`, so a daemon whose merged
+/// `local_root` was `"   "` started, and now does not. A directory named `"   "` is legal on Unix,
+/// so this is a real behaviour change — a negligible one, since the value it refuses is what a
+/// cleared settings field produces and not what anyone types on purpose.
 fn require_non_blank_root(value: Option<&Path>, field_name: &str) -> AppResult<()> {
     if value.is_some_and(|path| path.to_str().is_some_and(|text| text.trim().is_empty())) {
         return Err(boxed_error(format!("{field_name} must not be empty")));
@@ -1438,6 +1743,9 @@ fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
     require_non_blank_root(Some(&config.local_root), "local_root")?;
     require_non_blank_root(Some(&config.remote_root), "remote_root")?;
     require_absolute_socket_path(&config.socket_path)?;
+    // On the values the daemon will really open, so a flag that creates the collision is caught and
+    // a flag that fixes one written in the file is honoured (#339).
+    require_distinct_state_paths(None, &config.db_path, &config.lockfile_path)?;
     ScanOptions::new(
         &config.local_root,
         std::slice::from_ref(&config.db_path),
@@ -2770,11 +3078,21 @@ download_batch_size = 5
         }
     }
 
+    /// The keys a struct *has*, read from the struct itself so a hand-written list cannot drift.
+    ///
+    /// **Through JSON, not TOML** (#339). TOML has no null, so a field left `None` was omitted from
+    /// the serialized table — and therefore from both sides of every comparison built on this. The
+    /// compiler forces a new field to be mentioned in the exhaustive fixtures below, and `None` —
+    /// the natural value for a fresh `Option` — made it invisible again: a real, parseable,
+    /// unclassified key passed `every_file_config_key_is_classified_exactly_once`,
+    /// `a_pair_table_hosts_exactly_the_per_pair_keys` and rule 1 alike. JSON has null, so the key
+    /// survives whatever the value is, which is the property the guards need. Nothing else about
+    /// these types is JSON — the file is TOML and stays TOML.
     fn top_level_keys<T: Serialize>(value: &T) -> Vec<String> {
-        let table = toml::Value::try_from(value).expect("serialize");
-        let mut keys: Vec<String> = table
-            .as_table()
-            .expect("a table")
+        let object = serde_json::to_value(value).expect("serialize");
+        let mut keys: Vec<String> = object
+            .as_object()
+            .expect("an object")
             .keys()
             .map(String::from)
             .collect();
@@ -2866,44 +3184,113 @@ download_batch_size = 5
         assert_eq!(pairs[0].name, DEFAULT_PAIR_NAME);
     }
 
+    /// What `resolve_runtime_config` answers for one config file and one set of flags, as a string
+    /// — `Ok` **or** `Err`, because "the two spellings agree" has to cover the refusals too.
+    ///
+    /// Debug-string equality because `DaemonConfig` has no `PartialEq` and this must compare EVERY
+    /// field, including ones a later phase adds.
+    fn resolve_spelling(text: &str, input: &DaemonConfigInput) -> String {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("proton-sync.toml");
+        fs::write(&path, text).expect("write config");
+        let input = DaemonConfigInput {
+            config: Some(path),
+            ..input.clone()
+        };
+        match resolve_runtime_config(input) {
+            Ok((config, dry_run)) => format!("Ok({config:?}, dry_run = {dry_run})"),
+            Err(error) => format!("Err({error})"),
+        }
+    }
+
+    /// The same config written the two supposedly equivalent ways, resolved with the same flags.
+    fn assert_spellings_agree(daemon_wide: &str, per_pair_body: &str, input: &DaemonConfigInput) {
+        let flat = format!("{daemon_wide}{per_pair_body}");
+        let tabled = format!("{daemon_wide}\n[[pair]]\nname = \"docs\"\n{per_pair_body}");
+        assert_eq!(
+            resolve_spelling(&flat, input),
+            resolve_spelling(&tabled, input),
+            "a `[[pair]]` file and the equivalent top-level file must resolve to the same answer, \
+             for {per_pair_body:?} with {input:?}"
+        );
+    }
+
     #[test]
     fn a_top_level_file_and_the_equivalent_pair_table_resolve_identically() {
         // The whole point of routing every per-pair value through ONE projection: the implicit pair
-        // is not a second code path. Debug-string equality because `DaemonConfig` has no
-        // `PartialEq` and this must compare EVERY field, including ones a later phase adds.
-        let per_pair_body = "local_root = \"/local/docs\"\nremote_root = \"/Drive/Docs\"\n\
+        // is not a second code path.
+        //
+        // The fixture is deliberately hostile (#339). It used to be absolute, distinct, non-`~`
+        // paths, which is exactly the shape that cannot see the divergence it was written to pin:
+        // the structural layer (`resolve_pairs` -> `validate_pair_roots`) ran `expand_tilde` and
+        // `effective_state_path` — both fallible — *before* any flag was merged and on the
+        // `[[pair]]` arm only, so a `[[pair]]` file was refused over values the daemon would never
+        // use while the byte-identical top-level file started. Every case below therefore carries a
+        // `~`, a relative path, or colliding state paths, in both spellings.
+        // An explicit socket keeps the comparison off the XDG default, which is env-dependent.
+        let daemon_wide = "socket_path = \"/tmp/pair-equivalence.sock\"\nlog_level = \"debug\"\n\
+             proton_cli = \"/usr/bin/proton-drive\"\nproton_timeout_secs = 17\n\
+             proton_list_attempts = 4\n";
+        let rich_body = "local_root = \"/local/docs\"\nremote_root = \"/Drive/Docs\"\n\
              db_path = \"state/index.db\"\nlockfile_path = \"state/lock\"\n\
              scan_interval_secs = 42\ndownload_batch_size = 7\ninclude = [\"Documents/**\"]\n\
              exclude = [\"**/*.tmp\"]\ndry_run = true\nevents_driven = false\n\
              events_full_scan_every = 9\nwarm_start = false\nwarm_start_full_walk_every = 11\n\
              warm_start_max_cursor_age_secs = 13\ndeletion_policy = \"only_permanent\"\n\
              conflict_suffix = \"cloud-copy\"\n";
-        // An explicit socket keeps the comparison off the XDG default, which is env-dependent.
-        let daemon_wide = "socket_path = \"/tmp/pair-equivalence.sock\"\nlog_level = \"debug\"\n\
-             proton_cli = \"/usr/bin/proton-drive\"\nproton_timeout_secs = 17\n\
-             proton_list_attempts = 4\n";
 
-        let flat = format!("{daemon_wide}{per_pair_body}");
-        let tabled = format!("{daemon_wide}\n[[pair]]\nname = \"docs\"\n{per_pair_body}");
-
-        let resolve = |text: &str| {
-            let directory = tempdir().expect("tempdir");
-            let path = directory.path().join("proton-sync.toml");
-            fs::write(&path, text).expect("write config");
-            let (config, dry_run) = resolve_runtime_config(DaemonConfigInput {
-                config: Some(path),
-                ..DaemonConfigInput::default()
-            })
-            .expect("runtime config");
-            (format!("{config:?}"), dry_run)
-        };
-
-        assert_eq!(
-            resolve(&flat),
-            resolve(&tabled),
-            "a `[[pair]]` file and the equivalent top-level file must resolve to the same daemon \
-             config"
-        );
+        for (body, input) in [
+            // The original fixture, unchanged: absolute, distinct, no `~`.
+            (rich_body, DaemonConfigInput::default()),
+            // A `~user` root a flag replaces. `~user` rather than `~/` because it does not depend
+            // on `HOME` being set, and it is the value the reproduction in #339 used.
+            (
+                "local_root = \"~bob/x\"\nremote_root = \"/Drive/Docs\"\n",
+                DaemonConfigInput {
+                    local_root: Some(PathBuf::from("/tmp/real")),
+                    ..DaemonConfigInput::default()
+                },
+            ),
+            // The same value with NO flag to rescue it: both spellings must refuse it, and with the
+            // same words.
+            (
+                "local_root = \"~bob/x\"\nremote_root = \"/Drive/Docs\"\n",
+                DaemonConfigInput::default(),
+            ),
+            // State paths that collide, both replaced by flags: the cleanest proof that the layer
+            // was refusing over values it would never use.
+            (
+                "local_root = \"/local/docs\"\nremote_root = \"/Drive/Docs\"\n\
+                 db_path = \"/tmp/same\"\nlockfile_path = \"/tmp/same\"\n",
+                DaemonConfigInput {
+                    db_path: Some(PathBuf::from("/tmp/a")),
+                    lockfile_path: Some(PathBuf::from("/tmp/b")),
+                    ..DaemonConfigInput::default()
+                },
+            ),
+            // And the same collision with no flags: one file cannot be both this pair's index and
+            // its lockfile, in EITHER spelling (the top-level one never had that check).
+            (
+                "local_root = \"/local/docs\"\nremote_root = \"/Drive/Docs\"\n\
+                 db_path = \"/tmp/same\"\nlockfile_path = \"/tmp/same\"\n",
+                DaemonConfigInput::default(),
+            ),
+            // A relative root, with relative state paths under it.
+            (
+                "local_root = \"relative-root\"\nremote_root = \"/Drive/Docs\"\n\
+                 db_path = \"state/index.db\"\nlockfile_path = \"state/lock\"\n",
+                DaemonConfigInput::default(),
+            ),
+            // A `~/` root, which both spellings must expand the same way (or refuse the same way
+            // when `HOME` is unset — the comparison is on the answer, not on success).
+            (
+                "local_root = \"~/docs\"\nremote_root = \"/Drive/Docs\"\n\
+                 db_path = \"~/docs/state/index.db\"\n",
+                DaemonConfigInput::default(),
+            ),
+        ] {
+            assert_spellings_agree(daemon_wide, body, &input);
+        }
     }
 
     #[test]
@@ -3060,9 +3447,14 @@ download_batch_size = 5
             );
             let error = validate_file_config_text(&text)
                 .expect_err("colliding remote roots must be refused");
+            let message = error.to_string();
+            assert!(message.contains("remote_root"), "{a} vs {b}: got {message}");
+            // The message must name the paths the user WROTE, not the comparison keys they were
+            // reduced to: a file saying `/Drive/X` was told about `Drive/X`, which is a path it
+            // does not contain (#339).
             assert!(
-                error.to_string().contains("remote_root"),
-                "{a} vs {b}: got {error}"
+                message.contains(&format!("`{a}`")) && message.contains(&format!("`{b}`")),
+                "the refusal must quote what the file says, {a} vs {b}: got {message}"
             );
         }
     }
@@ -3106,12 +3498,29 @@ download_batch_size = 5
             error.to_string().contains("without regard to"),
             "got {error}"
         );
+
+        // Including when the duplicated name is `default`, which is also reserved for the first
+        // table: two tables both called it are two names that are the same, and the reservation's
+        // advice ("move its table first") would produce two `default`s (#339 round 2).
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"default\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+             \n[[pair]]\nname = \"Default\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n",
+        )
+        .expect_err("two `default`s are refused");
+        assert!(
+            error.to_string().contains("without regard to"),
+            "a duplicate is a duplicate before it is a position error, got {error}"
+        );
     }
 
     #[test]
     fn a_pair_name_must_be_a_safe_command_argument() {
         // A name is a CLI argument and a wire selector, so it must never need quoting and never
         // look like a path.
+        //
+        // The bare forms are the ones the charset admitted while the doc comment claimed it
+        // prevented them (#339): `.` and `..` ARE path components, and `-h` / `--pair` are option
+        // syntax, all spelled entirely in `[A-Za-z0-9._-]`.
         for name in [
             "",
             "my docs",
@@ -3119,6 +3528,11 @@ download_batch_size = 5
             "docs/reports",
             "caf\u{e9}",
             "a*b",
+            ".",
+            "..",
+            "-h",
+            "--pair",
+            "-",
         ] {
             let text = format!(
                 "[[pair]]\nname = \"{name}\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n"
@@ -3140,6 +3554,19 @@ download_batch_size = 5
             "[[pair]]\nname = \"{long}\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n"
         ))
         .expect_err("an over-long name is refused");
+
+        // The charset is checked BEFORE the length, because `name.len()` is bytes: a 40-character
+        // accented name is 80 of them and used to be refused for being "longer than 64 characters"
+        // (#339). Once the charset holds, every character is one byte and the two agree.
+        let accented = "\u{e9}".repeat(40);
+        let error = validate_file_config_text(&format!(
+            "[[pair]]\nname = \"{accented}\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n"
+        ))
+        .expect_err("an accented name is refused");
+        assert!(
+            !error.to_string().contains("longer than"),
+            "a 40-character name must not be reported as too long, got {error}"
+        );
     }
 
     #[test]
@@ -3225,6 +3652,17 @@ download_batch_size = 5
              lockfile_path = \"/tmp/one.lock\"\n",
             "[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
              \n[[pair]]\nname = \"b\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n",
+            // #339's refusals, each of which is also a sentence.
+            "[[pair]]\nname = \".\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n",
+            "[[pair]]\nname = \"-h\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n",
+            "[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+             \n[[pair]]\nname = \"default\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n",
+            "[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+             \n[[pair]]\nname = \"b\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n\
+             db_path = \"/a/index.db\"\n",
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \"/tmp/one\"\n\
+             lockfile_path = \"/tmp/one\"\n",
+            "local_root = \"~bob/x\"\nremote_root = \"/Drive/a\"\n",
         ];
         for text in refusals {
             let message = validate_file_config_text(text)
@@ -3305,27 +3743,257 @@ download_batch_size = 5
     }
 
     #[test]
-    fn an_empty_root_in_the_file_is_still_overridable_by_a_flag() {
-        // Byte-identical behaviour: the file-shaped refusal deliberately does NOT run on the
+    fn a_file_value_a_flag_replaces_is_never_refused_in_either_spelling() {
+        // Byte-identical behaviour: the file-shaped refusals deliberately do NOT run on the
         // daemon's merge path, because `--local-root /x` over a file's `local_root = ""` starts
         // today and phase 1 must not change that. The merged value is still checked
         // (`validate_runtime_config`), which is what catches the case no flag rescues.
-        let directory = tempdir().expect("tempdir");
-        let path = directory.path().join("proton-sync.toml");
-        fs::write(&path, "local_root = \"\"\nremote_root = \"/Drive/x\"\n").expect("write config");
-        let (config, _) = resolve_runtime_config(DaemonConfigInput {
-            config: Some(path.clone()),
-            local_root: Some(PathBuf::from("/from-flag")),
-            ..DaemonConfigInput::default()
-        })
-        .expect("a flag still rescues an empty file value");
-        assert_eq!(config.local_root, PathBuf::from("/from-flag"));
+        //
+        // Run in BOTH spellings (#339). This test states the flag-maskability principle in its own
+        // comment and used to exercise the top-level arm only — which is precisely the arm where
+        // the principle was not violated. `~bob/x` is the second case because it is the one the
+        // structural layer refused before any flag was merged.
+        for (body, expected_error) in [
+            (
+                "local_root = \"\"\nremote_root = \"/Drive/x\"\n",
+                "local_root must not be empty",
+            ),
+            (
+                "local_root = \"~bob/x\"\nremote_root = \"/Drive/x\"\n",
+                "cannot expand local_root `~bob/x`: `~user` paths are not supported; use an \
+                 absolute path instead",
+            ),
+        ] {
+            for text in [
+                body.to_owned(),
+                format!("[[pair]]\nname = \"docs\"\n{body}"),
+            ] {
+                let flagged = DaemonConfigInput {
+                    local_root: Some(PathBuf::from("/from-flag")),
+                    ..DaemonConfigInput::default()
+                };
+                assert!(
+                    resolve_spelling(&text, &flagged).starts_with("Ok("),
+                    "a flag still rescues a file value the daemon will never use, in {text:?}"
+                );
+                assert_eq!(
+                    resolve_spelling(&text, &DaemonConfigInput::default()),
+                    format!("Err({expected_error})"),
+                    "with no flag the merged value is refused, in {text:?}"
+                );
+            }
+        }
+    }
 
-        let error = resolve_runtime_config(DaemonConfigInput {
-            config: Some(path),
-            ..DaemonConfigInput::default()
-        })
-        .expect_err("with no flag the merged value is refused");
-        assert_eq!(error.to_string(), "local_root must not be empty");
+    #[test]
+    fn the_key_set_a_classification_guard_reads_keeps_a_field_left_unset() {
+        // The hole #339 found in `every_file_config_key_is_classified_exactly_once` and
+        // `a_pair_table_hosts_exactly_the_per_pair_keys`: `top_level_keys` serialized the fixture
+        // through `toml::Value`, and TOML has no null — so a field left `None` was omitted from
+        // BOTH sides of the comparison. The compiler forces a new field to be MENTIONED in the
+        // exhaustive fixture, and `None`, the natural value for a fresh `Option`, made it invisible
+        // again: a real, parseable, unclassified key passed every guard.
+        //
+        // No test can name a field that does not exist yet, so what is pinned here is the property
+        // that made it invisible — the key set must not depend on the values.
+        assert_eq!(
+            top_level_keys(&FileConfig::default()),
+            top_level_keys(&file_config_with_every_key_set()),
+            "a FileConfig field must appear in the key set whatever its value"
+        );
+        assert_eq!(
+            top_level_keys(&FilePair::default()),
+            top_level_keys(&file_pair_with_every_key_set()),
+            "a FilePair field must appear in the key set whatever its value"
+        );
+    }
+
+    #[test]
+    fn every_local_path_a_file_can_set_is_refused_by_both_readers_or_neither() {
+        // The never-brick contract, as a sweep rather than a list (#339 round 2). `ConfigDoc::save`
+        // validates ONLY through `validate_file_config_text`, and every packaged unit launches the
+        // daemon flagless (`ExecStart=/usr/bin/proton-syncd --config …`), so a key the file reader
+        // waves through and the daemon refuses is a config the GUI can write and the daemon will
+        // not start on. `proton_cli` was that key: expanded by `resolve_runtime_config` and by
+        // nothing on the file's path.
+        //
+        // `~user` because it is the value `expand_tilde` refuses without depending on the
+        // environment. Each case is written in BOTH spellings — a per-pair key inside the table, a
+        // daemon-wide key at the top level beside it, which is where each belongs.
+        let roots = "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n";
+        for (key, flat, tabled) in [
+            (
+                "local_root",
+                "local_root = \"~bob/x\"\nremote_root = \"/Drive/a\"\n".to_owned(),
+                "[[pair]]\nname = \"a\"\nlocal_root = \"~bob/x\"\nremote_root = \"/Drive/a\"\n"
+                    .to_owned(),
+            ),
+            (
+                "db_path",
+                format!("{roots}db_path = \"~bob/x\"\n"),
+                format!("[[pair]]\nname = \"a\"\n{roots}db_path = \"~bob/x\"\n"),
+            ),
+            (
+                "lockfile_path",
+                format!("{roots}lockfile_path = \"~bob/x\"\n"),
+                format!("[[pair]]\nname = \"a\"\n{roots}lockfile_path = \"~bob/x\"\n"),
+            ),
+            (
+                "socket_path",
+                format!("{roots}socket_path = \"~bob/x.sock\"\n"),
+                format!("socket_path = \"~bob/x.sock\"\n\n[[pair]]\nname = \"a\"\n{roots}"),
+            ),
+            (
+                "proton_cli",
+                format!("{roots}proton_cli = \"~bob/pd\"\n"),
+                format!("proton_cli = \"~bob/pd\"\n\n[[pair]]\nname = \"a\"\n{roots}"),
+            ),
+        ] {
+            for text in [flat, tabled] {
+                assert!(
+                    validate_file_config_text(&text).is_err(),
+                    "the file reader must refuse an unexpandable {key}, in {text:?}"
+                );
+                assert!(
+                    resolve_spelling(&text, &DaemonConfigInput::default()).starts_with("Err("),
+                    "the daemon must refuse an unexpandable {key}, in {text:?}"
+                );
+            }
+        }
+
+        // A bare command name is not a path and must pass both readers untouched, or a
+        // `PATH`-resolved `proton-drive` would stop working.
+        let bare = format!("{roots}proton_cli = \"proton-drive\"\n");
+        validate_file_config_text(&bare).expect("a PATH-resolved command name is not a `~` path");
+        assert!(resolve_spelling(&bare, &DaemonConfigInput::default()).starts_with("Ok("));
+    }
+
+    #[test]
+    fn a_local_root_written_with_a_leading_dot_slash_is_the_same_root() {
+        // `A` and `./A` are one directory. `remote_root_comparison_key` dropped `Component::CurDir`
+        // and the local side did not, so the same normalization existed in one of the two places
+        // that needed it — the repo's dominant bug shape, sitting inside the function this fix
+        // declares safe (#339 round 2). Only a LEADING `./` can do this: `Path::components` drops a
+        // non-leading `.`, and `Path` compares component-wise.
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"a\"\nlocal_root = \"sync\"\nremote_root = \"/Drive/a\"\n\
+             \n[[pair]]\nname = \"b\"\nlocal_root = \"./sync\"\nremote_root = \"/Drive/b\"\n",
+        )
+        .expect_err("`sync` and `./sync` are one root");
+        let message = error.to_string();
+        assert!(message.contains("the same path as"), "got {message}");
+        assert!(
+            !message.contains("not yet supported"),
+            "the collision must be named rather than masked by the count gate, got {message}"
+        );
+
+        // A root that is nothing but `.` keeps its literal form: reduced to the empty path it would
+        // be a prefix of everything, and an absolute root would be refused as "inside" it.
+        validate_file_config_text(
+            "[[pair]]\nname = \"a\"\nlocal_root = \".\"\nremote_root = \"/Drive/a\"\n\
+             db_path = \"/tmp/a.db\"\nlockfile_path = \"/tmp/a.lock\"\n",
+        )
+        .expect("an absolute state path is not inside a relative root");
+    }
+
+    #[test]
+    fn a_file_shaped_refusal_says_which_pair_it_is_reading() {
+        // The same-pair state collision is the one refusal that moved from a layer that had the
+        // pair name to one that did not. The file reader is per pair and still has it; the merge
+        // path is one pair and has none to give (#339 round 2).
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"photos\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+             db_path = \"/tmp/one\"\nlockfile_path = \"/tmp/one\"\n",
+        )
+        .expect_err("one file cannot be both the index and the lockfile");
+        assert!(error.to_string().contains("`photos`"), "got {error}");
+    }
+
+    #[test]
+    fn a_pairs_state_paths_may_not_sit_inside_another_pairs_local_root() {
+        // #339. The nesting rule was written root-vs-root, and its own stated consequence was
+        // reachable around it: `ScanOptions::new` is handed only THIS pair's `db_path`, and
+        // `index::is_sync_state_path` ignores only a TOP-LEVEL `.sync`, so pair `a` would scan and
+        // upload pair `b`'s live SQLite index and lockfile — verbatim the failure the rule cites as
+        // its reason. Nothing compared a state path against another pair's `local_root`.
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"a\"\nlocal_root = \"/home/me/A\"\nremote_root = \"/Drive/a\"\n\
+             \n[[pair]]\nname = \"b\"\nlocal_root = \"/home/me/B\"\nremote_root = \"/Drive/b\"\n\
+             db_path = \"/home/me/A/index.db\"\n",
+        )
+        .expect_err("a state path inside another pair's root is refused");
+        let message = error.to_string();
+        assert!(message.contains("db_path"), "got {message}");
+        assert!(message.contains("local_root"), "got {message}");
+        assert!(
+            !message.contains("not yet supported"),
+            "a genuinely broken multi-pair file must say what is wrong with it rather than be \
+             masked by the count gate, got {message}"
+        );
+
+        // Same shape, one layer down: `validate_pair_roots` used to collect state paths only inside
+        // `if let Some(local_root)`, so two pairs with no root at all (legal — a flag may supply it)
+        // and one shared absolute `db_path` were never compared with each other.
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"a\"\nremote_root = \"/Drive/a\"\ndb_path = \"/tmp/shared.db\"\n\
+             \n[[pair]]\nname = \"b\"\nremote_root = \"/Drive/b\"\ndb_path = \"/tmp/shared.db\"\n",
+        )
+        .expect_err("two rootless pairs sharing an index are refused");
+        assert!(error.to_string().contains("db_path"), "got {error}");
+        assert!(
+            !error.to_string().contains("not yet supported"),
+            "got {error}"
+        );
+    }
+
+    #[test]
+    fn one_file_cannot_be_both_a_pairs_index_and_its_lockfile() {
+        // The same-pair half of the state-path rule, and the one a FLAG can change the answer to
+        // (`--db-path` / `--lockfile-path` replace both values), so it lives where the values that
+        // will really be used are: the file-shaped check for a reader with no flags, and
+        // `validate_runtime_config` for the merged value. The `[[pair]]` spelling had it and the
+        // top-level spelling never did (#339).
+        for body in [
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \"/tmp/one\"\n\
+             lockfile_path = \"/tmp/one\"\n",
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \"state/x\"\n\
+             lockfile_path = \"state/x\"\n",
+        ] {
+            for text in [body.to_owned(), format!("[[pair]]\nname = \"a\"\n{body}")] {
+                let error = validate_file_config_text(&text)
+                    .expect_err("one file cannot be both the index and the lockfile");
+                assert!(
+                    error.to_string().contains("lockfile_path"),
+                    "in {text:?}: got {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_explicit_pair_named_default_must_be_the_pair_an_unqualified_client_addresses() {
+        // #339, and the `all` decision (ADR 0005 §4) applied to the other sentinel: `default` is
+        // the name of the pair a request that names none addresses (§2 rule 6 / §7 — the first
+        // table), so a LATER table called `default` gives one selector two answers. The name is not
+        // refused outright: the GUI's promote-to-`[[pair]]` rewrite (§7) names the pre-existing pair
+        // exactly that.
+        validate_file_config_text(
+            "[[pair]]\nname = \"default\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n",
+        )
+        .expect("the first pair may be called `default`, which is what it already is");
+
+        for name in ["default", "Default"] {
+            let error = validate_file_config_text(&format!(
+                "[[pair]]\nname = \"photos\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+                 \n[[pair]]\nname = \"{name}\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n"
+            ))
+            .expect_err("a later pair may not be called `default`");
+            let message = error.to_string();
+            assert!(message.contains("default"), "got {message}");
+            assert!(
+                !message.contains("not yet supported"),
+                "the collision must be named rather than masked by the count gate, got {message}"
+            );
+        }
     }
 }

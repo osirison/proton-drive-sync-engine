@@ -212,7 +212,19 @@ a preview is a rehearsal of one tree.
 3. **`name` is required inside `[[pair]]`, and unique.** Matched byte-exactly on the wire; two names
    differing only in ASCII case are refused at startup, so a selector can never be ambiguous by
    accident (#298's rule applied one layer up). Charset `[A-Za-z0-9._-]{1,64}` so a name is always a
-   safe CLI argument and never looks like a path.
+   safe CLI argument and never looks like a path — **plus the two refusals that charset cannot
+   express**, without which the justification is a guarantee the code does not give (#339, found in
+   phase 1's implementation): `.` and `..` are spelled entirely within it and *are* path components,
+   and `-h` / `--pair` are spelled entirely within it and *are* option syntax. So a name may not be
+   `.` or `..`, and may not start with `-`. The length bound is checked *after* the charset, because
+   `str::len` is bytes and a 40-character accented name is 80 of them — reported as "longer than 64
+   characters", which names the wrong problem. Once the charset holds, bytes and characters agree.
+   **`default` is reserved for the first table.** It is the name of the pair a request that names no
+   pair addresses (rule 6 / §7), so a *later* table called `default` gives one selector two answers
+   — the same sentinel collision §4 refuses for `all`, reintroduced for `default` and caught in the
+   phase-1 review. It is not refused outright: the first pair may legitimately be called that (it is
+   what the implicit pair is already named, and what §7's rewrite would write for a pre-existing
+   single-pair file).
 4. **Roots may not collide or nest.** No two pairs may share a `local_root` or a `remote_root`, and
    neither may be an ancestor of another pair's. The local half has a concrete proof, not a
    principle: `index::is_sync_state_path` matches only the **first** component of a relative path,
@@ -222,7 +234,23 @@ a preview is a rehearsal of one tree.
    `lockfile_path` overrides must also be unique: `LockGuard::acquire` uses `try_lock_exclusive`,
    and `flock` treats two descriptors on one inode as independent even within one process, so a
    duplicated lockfile path fails at startup with "daemon already running" — true but incompre-
-   hensible. The config check must therefore run *before* the locks are taken.
+   hensible. The config check must therefore run *before* the locks are taken. **The local half's
+   proof reaches state paths too**, which phase 1 missed by writing the rule root-vs-root (#339): a
+   `db_path` explicitly placed inside *another* pair's `local_root` produces the same upload with no
+   root nested anywhere, because `scan_options_from_config` is handed only that pair's own
+   `db_path`. So a pair's state paths may not be another pair's, nor sit inside another pair's
+   `local_root`.
+
+   **Which of these are structural, and which a flag can mask.** Every rule above is about *two*
+   pairs, and a flag can name no pair — that is what makes them structural and what lets them run
+   before the merge. The same-pair question they were originally written with (one file named as
+   both a pair's index and its lockfile) is **not**: `--db-path` and `--lockfile-path` replace both
+   values, so it belongs with the other flag-maskable rules — checked on the file's own values for a
+   reader that has no flags, and on the merged values for the daemon. Phase 1 had it in the
+   structural layer, where it refused a `[[pair]]` file over two values its flags replaced while the
+   top-level spelling was never checked at all. The corollary is the layer's rule: **nothing here
+   may refuse a value a flag replaces**, which is also why the comparison expands `~` best-effort
+   and compares an unexpandable one verbatim instead of erroring.
 5. **Every one of these rules lives in `validate_file_config_text`.** That function is already the
    one place a file's post-parse rules live, and `gui-core`'s config writer calls it rather than
    re-deriving them (#135). A rule added anywhere else is a rule the GUI will write configs that
@@ -258,13 +286,38 @@ now rather than after #193 lands:
   *classified* per-pair from its first commit.
 - **The classification is exhaustive and machine-checked, so a new key cannot be forgotten.** Phase
   1 adds a `KeyScope` classification covering every `FileConfig` field, with a test asserting each
-  field appears in it exactly once — so adding a field without classifying it is a build failure,
-  not a discovery in phase 4. That same classification is the *only* input to the GUI's
-  "promote this file to `[[pair]]` form" rewrite (§7), so a later key is hosted by classifying it
-  and nothing else.
+  field appears in it exactly once, rather than leaving it a discovery in phase 4. That same
+  classification is the *only* input to the GUI's "promote this file to `[[pair]]` form" rewrite
+  (§7), so a later key is hosted by classifying it and nothing else.
 
-**Flags.** `--local-root` / `--remote-root` and the other per-pair flags keep working and continue
-to mean "the single pair", so `proton-syncd --local-root ~/x --remote-root /Drive/x` is unchanged.
+  **Correction (#339): it is not a "build failure", and the two halves fail differently.** The
+  compiler's half is the exhaustive struct literal in the fixture — it forces a new field to be
+  *mentioned*, nothing more. The test's half is what refuses a field with no variant, and in phase 1
+  as merged it did not: the key set was read through `toml::Value`, TOML has no null, so a field
+  left `None` was omitted from **both** sides of the comparison. `None` — the natural value for a
+  fresh `Option` — therefore satisfied the compiler and disappeared from the test, and a real,
+  parseable, unclassified key passed every guard, including rule 1's top-level check. The key set is
+  read through JSON now, and a test pins the property itself: an all-`None` struct must have the
+  same keys as a fully populated one. Worth stating exactly, because #193's `full_scan_schedule` is
+  the next key in the queue and this is the guard it lands on.
+
+  That property is **narrowed, not closed**, and overstating it in the new direction would be the
+  same defect with the opposite sign: `#[serde(default, skip_serializing_if = "Option::is_none")]`
+  on a new field reopens the hole exactly as `None` did (measured — the whole suite is green under
+  that poison). The guard covers the value a field is *left at*; it cannot cover a serde attribute
+  that removes the field from the serialization on purpose.
+
+**Flags, and the constraint the structural layer rests on.** `--local-root` / `--remote-root` and
+the other per-pair flags keep working and continue to mean "the single pair", so
+`proton-syncd --local-root ~/x --remote-root /Drive/x` is unchanged.
+
+**The pair-set rules are unmaskable only while a flag cannot name a pair.** That is what lets
+`resolve_pairs` run before the merge and still never refuse a value the daemon will not use: a flag
+amends *the* pair, so it can change no answer about how two pairs relate. A phase that adds
+`--pair NAME --local-root X` breaks that premise and reinstates #339 one layer up, inside the very
+function this rule declares safe — every cross-pair comparison would then be running on values a
+flag replaces. Whichever phase wants per-pair flag scoping owns moving those comparisons after the
+merge, or proving they cannot be flag-addressed; it is not a free addition.
 Combining them with a multi-pair config file is refused by rule 1 — a flag cannot say *which* pair
 it is amending, and inventing `--pair NAME --exclude ...` flag scoping is machinery this feature
 does not need (the config file is the multi-pair interface, and the GUI writes it).
@@ -611,6 +664,13 @@ talking to" — and after migration that pair is the first one. The footgun is r
 here: reordering the tables changes which pair an old client and an unqualified `proton-sync`
 address. A `default = true` key would remove it at the cost of another key to validate and
 round-trip; it is deliberately not in phase 1 and is listed as open (§8).
+
+The *second* footgun in the same sentence was not named here and was found in phase 1's review
+(#339): the word `default` is simultaneously this pair's **name** and the wire's **omitted
+selector**, so `[[pair]] name = "photos"` followed by `[[pair]] name = "default"` makes an omitted
+selector address `photos` while `--pair default` addresses the other one. §2 rule 3 now reserves the
+name for the first table, which is the only reading under which the two surfaces agree — and which
+keeps this rewrite free to name the pre-existing pair `default`, since it is the first one.
 
 **Downgrade** (rolling the daemon back with a `[[pair]]` config) refuses to start with `unknown
 field 'pair'`. Non-destructive, comprehensible, accepted.
