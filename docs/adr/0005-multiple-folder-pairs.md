@@ -301,8 +301,23 @@ now rather than after #193 lands:
   same keys as a fully populated one. Worth stating exactly, because #193's `full_scan_schedule` is
   the next key in the queue and this is the guard it lands on.
 
-**Flags.** `--local-root` / `--remote-root` and the other per-pair flags keep working and continue
-to mean "the single pair", so `proton-syncd --local-root ~/x --remote-root /Drive/x` is unchanged.
+  That property is **narrowed, not closed**, and overstating it in the new direction would be the
+  same defect with the opposite sign: `#[serde(default, skip_serializing_if = "Option::is_none")]`
+  on a new field reopens the hole exactly as `None` did (measured — the whole suite is green under
+  that poison). The guard covers the value a field is *left at*; it cannot cover a serde attribute
+  that removes the field from the serialization on purpose.
+
+**Flags, and the constraint the structural layer rests on.** `--local-root` / `--remote-root` and
+the other per-pair flags keep working and continue to mean "the single pair", so
+`proton-syncd --local-root ~/x --remote-root /Drive/x` is unchanged.
+
+**The pair-set rules are unmaskable only while a flag cannot name a pair.** That is what lets
+`resolve_pairs` run before the merge and still never refuse a value the daemon will not use: a flag
+amends *the* pair, so it can change no answer about how two pairs relate. A phase that adds
+`--pair NAME --local-root X` breaks that premise and reinstates #339 one layer up, inside the very
+function this rule declares safe — every cross-pair comparison would then be running on values a
+flag replaces. Whichever phase wants per-pair flag scoping owns moving those comparisons after the
+merge, or proving they cannot be flag-addressed; it is not a free addition.
 Combining them with a multi-pair config file is refused by rule 1 — a flag cannot say *which* pair
 it is amending, and inventing `--pair NAME --exclude ...` flag scoping is machinery this feature
 does not need (the config file is the multi-pair interface, and the GUI writes it).

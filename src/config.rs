@@ -721,20 +721,23 @@ fn validate_pair_names(pairs: &[PairFileConfig]) -> AppResult<()> {
     for (position, pair) in pairs.iter().enumerate() {
         validate_pair_name(&pair.name)?;
         let folded = pair.name.to_ascii_lowercase();
+        // The duplicate check runs FIRST. Two tables both named `default` are two names that are
+        // the same, not one name in the wrong position, and the reservation's advice ("move its
+        // table first") would produce two `default`s if it spoke about them.
+        if seen.contains(&folded) {
+            return Err(boxed_error(format!(
+                "two `[[pair]]` tables are named `{}` (names are compared without regard to \
+                 case, because a selector that matches two pairs can only pick one of them): give \
+                 each pair a distinct name",
+                pair.name
+            )));
+        }
         if position > 0 && folded == DEFAULT_PAIR_NAME {
             return Err(boxed_error(format!(
                 "pair `{}` is named `{DEFAULT_PAIR_NAME}` but is not the first `[[pair]]` table: \
                  that name already means the pair a command addresses when it names none, which is \
                  the first table, so one selector would have two answers. Rename this pair, or \
                  move its table first",
-                pair.name
-            )));
-        }
-        if seen.contains(&folded) {
-            return Err(boxed_error(format!(
-                "two `[[pair]]` tables are named `{}` (names are compared without regard to \
-                 case, because a selector that matches two pairs can only pick one of them): give \
-                 each pair a distinct name",
                 pair.name
             )));
         }
@@ -839,7 +842,11 @@ fn validate_pair_roots(pairs: &[PairFileConfig]) -> AppResult<()> {
     let mut remote_roots: Vec<ComparablePath<'_>> = Vec::new();
     let mut state_paths: Vec<ComparablePath<'_>> = Vec::new();
     for (position, pair) in pairs.iter().enumerate() {
-        let local_root = pair.local_root.as_deref().map(expand_tilde_for_comparison);
+        let local_root = pair
+            .local_root
+            .as_deref()
+            .map(expand_tilde_for_comparison)
+            .map(|root| local_comparison_key(&root));
         for (field, override_value, default_for) in [
             (
                 "db_path",
@@ -967,6 +974,30 @@ fn check_no_overlap(paths: &[ComparablePath<'_>], consequence: &str) -> AppResul
     Ok(())
 }
 
+/// A **local** path reduced to what it *addresses*, for comparison only: a leading `./` is
+/// dropped, so `local_root = "A"` and `local_root = "./A"` are one directory rather than two that
+/// can never overlap (#339 round 2). Only the *leading* one matters — `Path::components` already
+/// drops a non-leading `.`, and `Path`'s own equality and `starts_with` compare component-wise.
+///
+/// The leading `/` is deliberately **not** dropped, which is where this differs from
+/// [`remote_root_comparison_key`]: for a local path absolute and relative are two different
+/// locations, while `/Drive/X` and `Drive/X` are one Drive location.
+///
+/// A path that is *nothing but* `.` keeps its literal form. Reducing it to the empty path would
+/// make it a prefix of every path there is, and an absolute root would then be refused as "inside"
+/// a relative one.
+fn local_comparison_key(path: &Path) -> PathBuf {
+    let stripped: PathBuf = path
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect();
+    if stripped.as_os_str().is_empty() {
+        path.to_path_buf()
+    } else {
+        stripped
+    }
+}
+
 /// A `remote_root` reduced to what it *addresses*, for comparison only.
 ///
 /// `/Drive/Photos` and `Drive/Photos` name one Drive location — `proton.rs`'s
@@ -1063,10 +1094,22 @@ fn expand_tilde_for_comparison(path: &Path) -> PathBuf {
 /// the daemon ([`validate_runtime_config`]). It used to run in the structural layer, on written
 /// values, on the `[[pair]]` arm only — so a `[[pair]]` file was refused over two values its flags
 /// replaced while the top-level spelling was never checked at all (#339).
-fn require_distinct_state_paths(db_path: &Path, lockfile_path: &Path) -> AppResult<()> {
+fn require_distinct_state_paths(
+    pair: Option<&str>,
+    db_path: &Path,
+    lockfile_path: &Path,
+) -> AppResult<()> {
     if db_path == lockfile_path {
+        // Named when the reader knows which table it is reading (the file half is per pair), and
+        // nameless on the merge path, where `DaemonConfig` is one pair and has no name to give.
+        // The base rule this replaced named its pair, so dropping it would be a downgrade the
+        // moment there is more than one table (#339 round 2).
+        let subject = match pair {
+            Some(name) => format!("pair `{name}`'s db_path and lockfile_path"),
+            None => "db_path and lockfile_path".to_owned(),
+        };
         return Err(boxed_error(format!(
-            "db_path and lockfile_path both resolve to `{}`: one file cannot be both this pair's \
+            "{subject} both resolve to `{}`: one file cannot be both this pair's \
              SQLite index and its lockfile — the lockfile is `flock`ed for the whole life of the \
              daemon and the index is a database SQLite opens and writes, so naming one file for \
              both makes the single-instance check depend on the database and gives the database a \
@@ -1454,6 +1497,23 @@ pub fn validate_file_config_text(text: &str) -> AppResult<()> {
         // the literal would reject it as relative.
         require_absolute_socket_path(&expand_tilde(socket_path, "socket_path")?)?;
     }
+    // The last local-filesystem path a config file can set, and the one this function did not
+    // expand while `resolve_runtime_config` did (#339 round 2): the GUI writes this key from the
+    // Settings Advanced tab, `ConfigDoc::save` validates only through here, and every packaged
+    // unit launches the daemon flagless — so an unexpandable value written here is a daemon that
+    // will not start, which is exactly the contract the per-pair `~` checks above exist for. A
+    // bare command name (`proton-drive`, resolved through `PATH`) has no `~` component and passes
+    // through untouched.
+    // The last local-filesystem path a config file can set, and the one this function did not
+    // expand while `resolve_runtime_config` did (#339 round 2): the GUI writes this key from the
+    // Settings Advanced tab, `ConfigDoc::save` validates only through here, and every packaged
+    // unit launches the daemon flagless — so an unexpandable value written here is a daemon that
+    // will not start, which is exactly the contract the per-pair `~` checks above exist for. A
+    // bare command name (`proton-drive`, resolved through `PATH`) has no `~` component and passes
+    // through untouched.
+    if let Some(proton_cli) = config.proton_cli {
+        expand_tilde(proton_cli, "proton_cli")?;
+    }
     resolve_positive_duration_secs(None, config.proton_timeout_secs, 1, "proton_timeout_secs")?;
     resolve_positive_usize(None, config.proton_list_attempts, 1, "proton_list_attempts")?;
     Ok(())
@@ -1507,7 +1567,7 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
             default_lockfile_path,
         ),
     ) {
-        require_distinct_state_paths(&db_path, &lockfile_path)?;
+        require_distinct_state_paths(Some(&pair.name), &db_path, &lockfile_path)?;
     }
     resolve_positive_usize(None, pair.download_batch_size, 1, "download_batch_size")?;
     // Compiled against a throwaway root: the root only decides which paths are ignored, and this
@@ -1685,7 +1745,7 @@ fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
     require_absolute_socket_path(&config.socket_path)?;
     // On the values the daemon will really open, so a flag that creates the collision is caught and
     // a flag that fixes one written in the file is honoured (#339).
-    require_distinct_state_paths(&config.db_path, &config.lockfile_path)?;
+    require_distinct_state_paths(None, &config.db_path, &config.lockfile_path)?;
     ScanOptions::new(
         &config.local_root,
         std::slice::from_ref(&config.db_path),
@@ -3438,6 +3498,19 @@ download_batch_size = 5
             error.to_string().contains("without regard to"),
             "got {error}"
         );
+
+        // Including when the duplicated name is `default`, which is also reserved for the first
+        // table: two tables both called it are two names that are the same, and the reservation's
+        // advice ("move its table first") would produce two `default`s (#339 round 2).
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"default\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+             \n[[pair]]\nname = \"Default\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n",
+        )
+        .expect_err("two `default`s are refused");
+        assert!(
+            error.to_string().contains("without regard to"),
+            "a duplicate is a duplicate before it is a position error, got {error}"
+        );
     }
 
     #[test]
@@ -3733,6 +3806,107 @@ download_batch_size = 5
             top_level_keys(&file_pair_with_every_key_set()),
             "a FilePair field must appear in the key set whatever its value"
         );
+    }
+
+    #[test]
+    fn every_local_path_a_file_can_set_is_refused_by_both_readers_or_neither() {
+        // The never-brick contract, as a sweep rather than a list (#339 round 2). `ConfigDoc::save`
+        // validates ONLY through `validate_file_config_text`, and every packaged unit launches the
+        // daemon flagless (`ExecStart=/usr/bin/proton-syncd --config …`), so a key the file reader
+        // waves through and the daemon refuses is a config the GUI can write and the daemon will
+        // not start on. `proton_cli` was that key: expanded by `resolve_runtime_config` and by
+        // nothing on the file's path.
+        //
+        // `~user` because it is the value `expand_tilde` refuses without depending on the
+        // environment. Each case is written in BOTH spellings — a per-pair key inside the table, a
+        // daemon-wide key at the top level beside it, which is where each belongs.
+        let roots = "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n";
+        for (key, flat, tabled) in [
+            (
+                "local_root",
+                "local_root = \"~bob/x\"\nremote_root = \"/Drive/a\"\n".to_owned(),
+                "[[pair]]\nname = \"a\"\nlocal_root = \"~bob/x\"\nremote_root = \"/Drive/a\"\n"
+                    .to_owned(),
+            ),
+            (
+                "db_path",
+                format!("{roots}db_path = \"~bob/x\"\n"),
+                format!("[[pair]]\nname = \"a\"\n{roots}db_path = \"~bob/x\"\n"),
+            ),
+            (
+                "lockfile_path",
+                format!("{roots}lockfile_path = \"~bob/x\"\n"),
+                format!("[[pair]]\nname = \"a\"\n{roots}lockfile_path = \"~bob/x\"\n"),
+            ),
+            (
+                "socket_path",
+                format!("{roots}socket_path = \"~bob/x.sock\"\n"),
+                format!("socket_path = \"~bob/x.sock\"\n\n[[pair]]\nname = \"a\"\n{roots}"),
+            ),
+            (
+                "proton_cli",
+                format!("{roots}proton_cli = \"~bob/pd\"\n"),
+                format!("proton_cli = \"~bob/pd\"\n\n[[pair]]\nname = \"a\"\n{roots}"),
+            ),
+        ] {
+            for text in [flat, tabled] {
+                assert!(
+                    validate_file_config_text(&text).is_err(),
+                    "the file reader must refuse an unexpandable {key}, in {text:?}"
+                );
+                assert!(
+                    resolve_spelling(&text, &DaemonConfigInput::default()).starts_with("Err("),
+                    "the daemon must refuse an unexpandable {key}, in {text:?}"
+                );
+            }
+        }
+
+        // A bare command name is not a path and must pass both readers untouched, or a
+        // `PATH`-resolved `proton-drive` would stop working.
+        let bare = format!("{roots}proton_cli = \"proton-drive\"\n");
+        validate_file_config_text(&bare).expect("a PATH-resolved command name is not a `~` path");
+        assert!(resolve_spelling(&bare, &DaemonConfigInput::default()).starts_with("Ok("));
+    }
+
+    #[test]
+    fn a_local_root_written_with_a_leading_dot_slash_is_the_same_root() {
+        // `A` and `./A` are one directory. `remote_root_comparison_key` dropped `Component::CurDir`
+        // and the local side did not, so the same normalization existed in one of the two places
+        // that needed it — the repo's dominant bug shape, sitting inside the function this fix
+        // declares safe (#339 round 2). Only a LEADING `./` can do this: `Path::components` drops a
+        // non-leading `.`, and `Path` compares component-wise.
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"a\"\nlocal_root = \"sync\"\nremote_root = \"/Drive/a\"\n\
+             \n[[pair]]\nname = \"b\"\nlocal_root = \"./sync\"\nremote_root = \"/Drive/b\"\n",
+        )
+        .expect_err("`sync` and `./sync` are one root");
+        let message = error.to_string();
+        assert!(message.contains("the same path as"), "got {message}");
+        assert!(
+            !message.contains("not yet supported"),
+            "the collision must be named rather than masked by the count gate, got {message}"
+        );
+
+        // A root that is nothing but `.` keeps its literal form: reduced to the empty path it would
+        // be a prefix of everything, and an absolute root would be refused as "inside" it.
+        validate_file_config_text(
+            "[[pair]]\nname = \"a\"\nlocal_root = \".\"\nremote_root = \"/Drive/a\"\n\
+             db_path = \"/tmp/a.db\"\nlockfile_path = \"/tmp/a.lock\"\n",
+        )
+        .expect("an absolute state path is not inside a relative root");
+    }
+
+    #[test]
+    fn a_file_shaped_refusal_says_which_pair_it_is_reading() {
+        // The same-pair state collision is the one refusal that moved from a layer that had the
+        // pair name to one that did not. The file reader is per pair and still has it; the merge
+        // path is one pair and has none to give (#339 round 2).
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"photos\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+             db_path = \"/tmp/one\"\nlockfile_path = \"/tmp/one\"\n",
+        )
+        .expect_err("one file cannot be both the index and the lockfile");
+        assert!(error.to_string().contains("`photos`"), "got {error}");
     }
 
     #[test]
