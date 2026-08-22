@@ -10,6 +10,11 @@ It gives the daemon a face: live status, an activity ledger, side-by-side confli
 resolution, a dry-run review before destructive passes, settings, an onboarding wizard, and
 a system-tray indicator.
 
+![The desktop app at rest: a hexagon with a check mark, the headline "Everything is up to date", the sub-line "last synced 2 minutes ago", Sync now and Pause buttons, and a footer naming the folder pair.](../../../assets/screenshots/main-settled.png)
+
+*The app at rest. The design carries no colour at all when there is nothing to report, so
+anything coloured on screen is something that wants you.*
+
 ## It's a thin client
 
 The app owns **no sync logic and no index of its own**. Everything it shows comes from the

@@ -1,155 +1,210 @@
 ---
 title: Screens
-description: A tour of every screen in the desktop app — Overview, Activity, Conflicts, Deletions, Plan preview, History, Settings, and Onboarding.
+description: A tour of every screen in the desktop app, with pictures — Home, Activity, Conflicts, Deletions, Plan a sync, Settings, Details, and the first-run takeover.
 sidebar:
   order: 2
 ---
 
-The window has a left sidebar with one row per screen (some carry a live count or badge), a
-title bar showing the `local ⇄ remote` folder pair and a light/dark toggle, a state pill, a
-safety banner on destructive screens, and a status footer. Here's what each screen does.
+The window is a fixed 1040×764 and does not resize, so every picture below is the whole app.
 
-## Overview
+There is no sidebar. A 52px header carries the app mark, the name, a **status chip** and a `⋯`
+menu whose single item switches the theme. A footer carries five **doors** — **Home**,
+**Activity**, **Plan a sync**, **Settings**, **Details** — and, on Home, a mono line naming the
+folder pair. Conflicts and Deletions have no door: they open over whatever you were looking at,
+from the attention band, the status chip, or a notification.
 
-The home dashboard — *is it working, does it need me, what did it just do.*
+The status chip is the one place the [daemon state](/desktop/overview/#the-six-daemon-states)
+is always visible. It reads `idle`, `syncing`, `paused`, `unreachable`, `sign-in expired`,
+`sync failed`, `first run`, `{n} waiting`, `rehearsal · nothing has changed` while a plan is
+open, or `step 1 of 2` during first-run setup. When it reads `idle` the header mark and name
+dim — the design's rule is that nothing carries colour unless it wants you.
 
-- A **hexagon status widget** whose center shows the pending-change count; it spins while
-  syncing, dims when paused, and drops its arcs when idle or unreachable.
-- A **headline and sub-line** from the current [daemon state](/desktop/overview/#the-six-daemon-states)
-  (e.g. "Everything is up to date", "last synced 5 min ago").
-- **Transfer rows** while syncing — "Uploading N files" / "Downloading N files" from the
-  last plan summary. Downloads show an indeterminate bar (a remote listing carries no file
-  size, so the total is unknown); uploads, whose size is known, show a percentage.
-- **Four stat tiles**: pending changes, conflicts, destructive actions, skipped-unsupported
-  — each showing an em-dash when the daemon is unreachable.
-- A **"Needs you" card** that appears only when there are unresolved conflicts, with a
-  "Resolve now" button.
-- An **activity ledger** of recent history, with filter chips.
-- **State-aware action buttons** (Sync now / Pause / Resume / Re-authenticate / …), each
-  with a small hint naming the underlying command.
+## Home
+
+*Is it working, does it need me, and is anything waiting.* One hexagon, one headline, one
+sub-line.
+
+![The app at rest: a hexagon with a check mark, the headline "Everything is up to date", the sub-line "last synced 2 minutes ago", and Sync now and Pause buttons.](../../../assets/screenshots/main-settled.png)
+
+At rest there is no colour anywhere on the screen. The hexagon draws no number, and the
+buttons are **Sync now** and **Pause**.
+
+![The same screen mid-sync: the hexagon shows 3, the headline reads "Syncing 3 changes", eyebrows name this computer and Proton Drive on either side of a seam, and two columns list the files moving in each direction.](../../../assets/screenshots/main-syncing.png)
+
+While a pass runs, the hexagon carries the transfer count, a **seam** joins two labelled
+columns — *This computer* on the left with its local root, *Proton Drive* on the right with its
+remote root — and up to six **transfer rows** name the files moving, each with an arrow for its
+direction. A row's chip is `queued`, a byte size, or `{n} files` for a batched download, and a
+`+n more` line closes the right column when there are more than fit.
+
+There is deliberately **no progress bar and no percentage**, in either direction. A remote
+listing carries no usable file size, so a download knows its bytes-so-far but not its total,
+and an upload knows its total but reports no progress — neither side has both numbers, so the
+app shows neither rather than drawing a bar that means nothing.
+
+**Sync now** disappears while a pass is running. There is no *Re-authenticate* button: nothing
+in the app can sign you in, so an expired session offers **Try again now** and the sign-in
+stays `proton-drive login` in a terminal.
+
+![The main screen with three changes syncing and an attention band below: one row saying one file changed on both sides with a Compare button, another saying two deletions are waiting with a Review button.](../../../assets/screenshots/main-needs-you.png)
+
+When something needs a decision, an **attention band** appears above the footer with one row
+**per category** — not per item. Conflicts read *"One file changed on both sides · both copies
+kept, nothing lost"* with a **Compare** button; deletions read *"Two deletions are waiting on
+you · 1 removes from this computer permanently · 1 goes to Proton's Trash"* with a **Review**
+button. Both buttons only navigate; neither acts.
+
+## Details
+
+The four counters live in a dialog behind the **Details** door, not on Home: pending changes,
+conflicts, destructive actions and skipped-unsupported, alongside `scan_interval`,
+`event_stream`, the change-detection source, and the socket path. When the daemon is
+unreachable each one renders an em-dash — unknown is not zero.
 
 ## Activity
 
-The full-height activity ledger. Rows come from the daemon's status history (newest first);
-an entry with an error renders as an `error` row, otherwise as a neutral row with its
-message. Filter chips — `all / uploads / downloads / moves / conflicts / skipped / errors` —
-narrow the view, and their counts derive from the visible rows. Colour never carries meaning
-alone; the action name is always present. Read-only.
+![The Activity screen with Files and Sync passes tabs, the Sync passes tab showing six recent passes: five finished cleanly with per-pass counts, one failed with the error "proton-drive: connection timed out after 60s" and a note that it retried and worked.](../../../assets/screenshots/activity.png)
+
+Two tabs. **Sync passes** lists recent passes newest-first — a clean one reads
+`Finished cleanly` with counts composed from what actually landed (`2 sent, 1 brought here ·
+1 conflict kept`), a failed one shows the daemon's own error string and, if a later pass
+recovered, that it retried and worked. The foot states the limit honestly — the daemon keeps
+the last 20 passes in the status history — and an **Open the system log** button writes a
+`journalctl` snapshot and opens it rather than printing a command for you to copy.
+
+**Files** is a per-path lookup: type a path and the screen answers what the engine knows about
+it, including *never synced* and *waiting* as explicit answers. Read-only.
 
 ## Conflicts
 
-Review and resolve [conflicts](/safety/conflicts/) side by side. A left rail lists each
-conflicted file; the compare panel shows **your version** (local) against **Proton's
-version** (the sidecar), with a line-level diff for text files and size/timestamp metadata
-for binary or large files — never a fabricated preview.
+![The conflicts screen: "You both changed this file", a 1 of 3 pager, the path notes/todo.txt, your version on the left and Proton's version on the right, and four choices below — Keep mine, Keep both, Use Proton's, Decide later.](../../../assets/screenshots/conflicts.png)
 
-Four staged choices per file — **nothing is written until you press Apply**:
+One file at a time, with a `1 of 3` pager rather than a list; the rest of the queue appears as
+a *"Still waiting after this one"* list inside the comparison. Each side shows size, line count
+and edit time; **See the exact differences** opens a line-level diff for text files. Nothing is
+fabricated — a binary or oversized file shows metadata only.
+
+Four choices, and **each one writes immediately** — there is no staging and no Apply button:
 
 | Choice | Effect |
 | --- | --- |
-| **Keep mine** | Delete the sidecar; your local file uploads next pass. |
-| **Use Proton's** | Replace your file with Proton's copy. |
-| **Keep both** | Rename yours to `name.local.ext` and keep Proton's too. |
-| **Decide later** | Nothing written; still counts as outstanding. |
+| **Keep mine** | Deletes the sidecar; your local file uploads next pass. |
+| **Keep both** | Renames yours to `name.local.ext` and keeps Proton's too. |
+| **Use Proton's** | Replaces your file with Proton's copy. |
+| **Decide later** | Writes nothing; the file stays outstanding. |
 
-Choosing auto-advances to the next unresolved file, and the footer counts staged operations.
-The outstanding-conflict count is computed once and shown identically in the sidebar badge,
-the tab header, the Overview card, the stat tile, and the ledger.
+Choosing auto-advances to the next unresolved file. The outstanding count is computed once and
+shown identically in the status chip, the attention band, and notifications.
+
+See [Conflicts](/safety/conflicts/) for what the engine does before you get here.
 
 ## Deletions
 
-The [delete-approval](/safety/delete-approval/) queue. When the guard withholds a deletion,
-it lands here instead of running. Each item shows its path, whether it's a file or directory,
-its direction, and when it was detected — with plain-language copy about exactly what
-approving will do:
+![The deletions screen: "Two files are waiting to be deleted", a permanent column on the left for a folder removed from this computer with a DELETE box and a Keep it button, and a recoverable column on the right for a file moved to Proton's Trash.](../../../assets/screenshots/deletions.png)
 
-- **Local** — already deleted on Proton Drive; approving **permanently deletes the local
-  file, straight from disk, no trash** (directories: "and everything inside it").
-- **Remote** — already deleted locally; approving **moves the Proton Drive copy to Proton's
-  Trash**, recoverable there until emptied.
+The [delete-approval](/safety/delete-approval/) queue. A withheld deletion lands here instead
+of running, and the two directions are drawn as **two columns that never look alike**, because
+they are not the same action:
 
-Per-item **Approve** / **Deny**, plus **Approve all** / **Deny all**. While any approve/deny
-is in flight, all the buttons disable to prevent overlapping destructive operations.
+- **Permanent · this computer** — already deleted on Proton Drive. Approving removes the local
+  file straight from disk, with no trash and no undo; for a folder the card names how many
+  files and how many bytes go with it. This is the only card that makes you **type `DELETE`**.
+- **Recoverable · Proton Drive** — already deleted locally. Approving moves the Proton Drive
+  copy to Proton's **Trash**, where it stays until the trash is emptied. One button:
+  **Move to Proton's Trash**.
 
-## Plan preview
+Refusing is **Keep it** — *put it back on Proton Drive* / *bring it back to this computer* —
+which is not the same as revoking an approval: it purges the baseline record and its subtree so
+the surviving side is adopted back. The only bulk action is **Keep both files**, and it is the
+safe one; there is no *Approve all*. Each card is busy independently, so one decision in flight
+never freezes the other column. Nothing expires — items stay until you decide.
 
-Run a [dry-run](/safety/dry-run/) and see exactly what the next sync would do. The screen
-shows a **summary grid** of every counter and one **row per action** (action, path, entity
-kind, remote id), with destructive rows tinted red and sorted first.
+## Plan a sync
+
+![The plan screen: "The next sync moves 9 things", 3 files leaving this computer and 2 arriving from Proton, a red band saying one file gets deleted for good, every action listed in order with its outcome, and a DELETE box beside "Run it without the deletion" and "Run this sync".](../../../assets/screenshots/plan.png)
+
+A rehearsal of the next sync. The status chip reads `rehearsal · nothing has changed` for as
+long as the screen is open, and nothing on it has happened yet.
+
+The head counts each direction, then **every action in order** — a glyph, the path, and what
+becomes of it in plain English (`sent to Proton`, `brought to this computer`,
+`deleted for good on Proton`, `folder created on Proton`, `record cleared, no file touched`).
+Destructive rows are tinted and sorted first, so a deletion can never be scrolled past.
 
 Applying is gated:
 
-- If the plan contains a real delete (`remote_delete` / `local_delete`), **Apply is inert
-  until you type `DELETE`** to arm it; the red banner names the files at risk.
-- A **purge-only** plan is **not** gated — purge is index-only cleanup — and the screen says
-  so.
+- A plan containing a real delete (`remote_delete` / `local_delete`) leaves **Run this sync**
+  inert until you type `DELETE` — case-sensitively — into the box beside it. **Run it without
+  the deletion** is always available and runs everything else.
+- The red band names the file when there is exactly one deletion, and collapses to a count
+  when there is more than one.
+- A **purge-only** plan is not gated at all: a purge clears an index record and touches no
+  file.
 
-Because the real reconcile is a separate pass, the outcome card reminds you it may differ
-from the reviewed plan; re-run the preview for a fresh check.
-
-## History
-
-A reverse-chronological list of sync history: a coloured dot (red on error), the local time,
-a label, and a one-line summary like `7↑ 2↓ · 2 conflicts · 1 move · 3 deletes · 1 skipped`.
-The screen states the limit honestly — the daemon keeps only the **last 20 entries**,
-persisted across restarts — and points you to `journalctl --user -u proton-syncd` for older
-history. Read-only.
+Applying names the plan's **token**, not its rows. The daemon re-plans and compares; if the
+world moved under the review it executes nothing, publishes the fresh plan, and keeps you on
+this screen. See [Dry-run preview](/safety/dry-run/) for the same computation as JSON.
 
 ## Settings
 
-Edit the daemon's TOML config directly. Saving writes **only the fields you changed**,
-preserves comments and daemon-only keys, and refuses to write anything the daemon's own
-parser would reject (so a save can't brick startup). The file is written atomically at mode
-`0600`. Sections:
+![The Settings screen with tabs Folders, What to skip, Deletions, Notifications and Advanced; the Folders tab shows the local and Proton Drive roots, a toggle for noticing changes the moment they happen, a timer interval, and a Sweep now button.](../../../assets/screenshots/settings.png)
 
-- **Folders** — `local_root`, `remote_root`. Editing a root warns that it re-bootstraps the
-  index; preview the plan first, because saving restarts the service straight away.
-- **Schedule** — `scan_interval_secs`, and the `events_driven` toggle (Proton volume-events
-  stream for fast incremental reconcile).
-- **Selective sync** — the raw `include` / `exclude` glob lists. Copy states exclude beats
-  include and `.sync/` is always ignored. (The checkbox folder-tree view is deferred.)
-- **CLI** — `proton_cli` path, `proton_timeout_secs`, `proton_list_attempts`.
-- **Delete approval** — the `remote` and `local` toggles, both shown **on (protected)** by
-  default so a `null` in the file never misrepresents a security guard as off.
-- **Service** — the config file path. There is no standing restart button: the save does the
-  restart itself, and one appears only when a restart left something to fix (below).
+Edits the daemon's TOML config directly, in five tabs:
 
-The daemon only reads its config at startup, so **a successful save restarts it for you**.
-The restart asks the running daemon to exit gracefully over IPC (this works however it was
-launched), waits for the control socket to go quiet, then starts it again — via the systemd
-unit when installed, else by spawning `proton-syncd` directly against the saved config.
+| Tab | Holds |
+| --- | --- |
+| **Folders** | The pair (`local_root`, `remote_root`), the `events_driven` toggle, `scan_interval_secs`, and **Sweep now** (a full-tree resync). |
+| **What to skip** | The `exclude` rules, one per row with a live count of what each currently hides. |
+| **Deletions** | Three radio cards writing `deletion_policy` — ask every time, only permanent, never — applying to **both** directions. |
+| **Notifications** | The notify policy. This one is GUI-local: it is written to the app's own `gui.toml` and the daemon never sees it. |
+| **Advanced** | `include` ("only sync these"), the `proton_cli` path, `conflict_suffix`, `log_level`, and the config file path. |
+
+Saving writes **only the fields you changed**, preserves your comments and any daemon-only
+keys, and refuses anything the daemon's own parser would reject — so a save cannot leave you
+with a config the daemon will not start on. The file is written atomically at mode `0600`.
+
+The daemon only reads its config at startup, so **a successful save restarts it for you**: it
+asks the running daemon to exit gracefully over IPC (which works however it was launched),
+waits for the socket to go quiet, then starts it again — via the systemd unit when installed,
+else by spawning `proton-syncd` directly against the saved config.
 
 A restart has five endings, and the screen says which one happened rather than one sentence
 covering all of them:
 
 - **It restarted.** The service is running your new settings.
-- **It was not running**, so nothing was started: it picks the new settings up whenever you
+- **It was not running**, so nothing was started; it picks the new settings up whenever you
   next start it. A save is not a request to begin syncing.
-- **It stopped and would not start again.** Nothing is syncing — the commonest cause is no
-  systemd unit and no `proton-syncd` on `PATH`. The screen says so and keeps a **Restart it
-  now** button.
-- **It never stopped** (an eight-second wait). The old process is still running, still on the
-  old settings, with the new ones written to disk in front of it. **Restart it now** stays.
-- **It could not be told apart** — the control socket neither answered nor proved it was
-  absent. Nothing was restarted, and the screen says only that.
+- **It stopped and would not start again.** Nothing is syncing — commonly no systemd unit and
+  no `proton-syncd` on `PATH`. A **Restart it now** button stays.
+- **It never stopped** (an eight-second wait). The old process is still running on the old
+  settings, with the new ones on disk in front of it. **Restart it now** stays.
+- **It could not be told apart** — the socket neither answered nor proved it was absent.
+  Nothing was restarted, and the screen says only that.
 
-If a sync is in progress when you have a change staged, the footer warns you before you press
-**Save** — the restart stops that pass, and it starts again on the new settings.
+If a sync is in progress while you have a change staged, the footer warns you before **Save** —
+the restart stops that pass, and it starts again on the new settings.
 
-## Onboarding
+## First run
 
-A first-run wizard that takes over the whole window when nothing has synced yet. Four steps:
+![The first-run takeover: "Which two folders should match?", a step 1 of 2 chip, a field for the folder on this computer and one for the folder on Proton Drive, a note about skip rules, and a "See what will happen" button.](../../../assets/screenshots/onboarding.png)
 
-1. **Check the CLI** — probe the daemon; if it's unreachable, independently try listing the
-   remote (which shells `proton-drive`) to distinguish "not started" from "not logged in"
-   (`proton-drive login`).
-2. **Choose folders** — set and save `local_root` and `remote_root` (both required).
-3. **Review the plan** — run a dry-run, show the summary and rows, warn if the *first* pass
-   unexpectedly contains deletions, and require an explicit checkbox acknowledging that
-   **deletions propagate in both directions** before continuing.
-4. **Start the service** — show `systemctl --user start proton-syncd`, then re-poll; once the
-   daemon is up, the app hands off automatically out of onboarding.
+When nothing has synced yet, a takeover covers the window — no doors, no `⋯` menu, and a
+`step 1 of 2` chip in place of the status chip. **Step 1** picks the two folders. **Step 2**
+runs a dry-run and shows the merge it produces; a **consent** dialog then gates *Start syncing*
+on an explicit acknowledgement that deletions propagate in both directions.
 
-The copy is explicit that the **first sync is a non-destructive merge** — local-only files
-upload, remote-only files download, matching files link, differing files are kept as both —
-and that **nothing is deleted on the first pass**.
+The copy is explicit that a **first sync is a non-destructive merge** — local-only files
+upload, remote-only files download, matching files link, differing files are kept as both — and
+that **nothing is deleted on the first pass**.
+
+Detours from inside the takeover let you set skip rules or read every action before agreeing.
+If the `proton-drive` binary will not run, a dialog says so rather than the flow guessing why.
+Once the daemon is up, the app hands off out of the takeover on its own — including when the
+first pass *fails*, which releases you onto Home's **Try again now** rather than trapping you.
+
+## Light theme
+
+![The main screen in the light theme: the same hexagon and "Everything is up to date" headline on a warm off-white background.](../../../assets/screenshots/main-settled-light.png)
+
+Every screen has a light form. It follows the desktop by default and is switched explicitly
+from the single item in the `⋯` menu.

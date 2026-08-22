@@ -21,7 +21,8 @@
     "fidelity:determinism": "node tools/fidelity/check-determinism.mjs",
     "fonts:sync": "node tools/sync-fonts.mjs",
     "glyphs": "node tools/render-tray-glyphs.mjs",
-    "glyphs:check": "node tools/render-tray-glyphs.mjs --check"
+    "glyphs:check": "node tools/render-tray-glyphs.mjs --check",
+    "screenshots": "node tools/render-screenshots.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
