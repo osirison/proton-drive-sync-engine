@@ -61,8 +61,9 @@ staging step and no Apply button:
 | **Decide later** | Nothing is written; the file stays outstanding. |
 
 Choosing auto-advances to the next unresolved file and re-scans. The outstanding-conflict
-count is computed once and shown identically wherever it appears — the status chip, the
-attention band on the main screen, and notifications.
+count is computed once, so the surfaces that report it never disagree: the attention band on
+the main screen and the notification that raises it. (The header chip is a different number —
+it adds conflicts and waiting deletions together into one `{n} waiting`.)
 
 See [Screens](/desktop/screens/) for the rest of the app.
 

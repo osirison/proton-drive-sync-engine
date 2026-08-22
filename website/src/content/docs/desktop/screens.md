@@ -57,9 +57,10 @@ button. Both buttons only navigate; neither acts.
 ## Details
 
 The four counters live in a dialog behind the **Details** door, not on Home: pending changes,
-conflicts, destructive actions and skipped-unsupported, alongside `scan_interval`,
-`event_stream`, the change-detection source, and the socket path. When the daemon is
-unreachable each one renders an em-dash — unknown is not zero.
+conflicts, destructive actions and skipped-unsupported. Four more rows sit under them — the
+scan interval, whether the event stream is on, where the pass list came from, and whether the
+control socket is connected. When the daemon is unreachable each one renders an em-dash —
+unknown is not zero.
 
 ## Activity
 
