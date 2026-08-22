@@ -12,8 +12,8 @@ a system-tray indicator.
 
 ![The desktop app at rest: a hexagon with a check mark, the headline "Everything is up to date", the sub-line "last synced 2 minutes ago", Sync now and Pause buttons, and a footer naming the folder pair.](../../../assets/screenshots/main-settled.png)
 
-*The app at rest. The design carries no colour at all when there is nothing to report, so
-anything coloured on screen is something that wants you.*
+*The app at rest. Nothing here is coloured to get your attention — the design keeps that for
+the things that want a decision, so a tint anywhere on screen means something is waiting.*
 
 ## It's a thin client
 

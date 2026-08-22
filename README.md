@@ -238,7 +238,7 @@ socket and files as the CLI, so the two never disagree. It gives you:
 - A **system-tray indicator** with five states; closing the window hides it to the tray
   and syncing keeps running.
 
-<img src="website/src/assets/screenshots/plan.png" alt="The plan screen: the heading &quot;The next sync moves 9 things&quot;, counts for what leaves this computer and what arrives from Proton, a red band warning that one file gets deleted for good, a numbered list of every action, and a DELETE box that must be typed into before the plan can run." width="860">
+<img src="website/src/assets/screenshots/plan.png" alt="The plan screen: the heading &quot;The next sync moves 9 things&quot;, counts for what leaves this computer and what arrives from Proton, a red band warning that one file gets deleted for good, a list of every action with an arrow for its direction and what becomes of it, and a DELETE box that must be typed into before the plan can run." width="860">
 
 <sub>The plan screen — a rehearsal of the next sync. Nothing has changed yet, and the
 destructive row has to be armed by typing `DELETE` before it can run.</sub>

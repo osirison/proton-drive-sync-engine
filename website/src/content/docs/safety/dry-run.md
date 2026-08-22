@@ -25,8 +25,9 @@ The desktop app runs the same computation and renders it instead of printing it:
 
 ![The plan screen: "The next sync moves 9 things", three files leaving this computer and two arriving from Proton, a red band saying one file gets deleted for good, then every action in order with its destination, and a DELETE box that arms the run.](../../../assets/screenshots/plan.png)
 
-*Same plan, same numbers — `destructive_actions` is the red band, and the typed `DELETE`
-is what the JSON leaves to your own judgement.*
+*The same computation, rendered instead of printed. The red band and the typed `DELETE` come
+from the real deletions alone — `destructive_actions` in the JSON is a wider count that also
+includes index-only purges, which touch no file and gate nothing.*
 
 ## The output shape
 

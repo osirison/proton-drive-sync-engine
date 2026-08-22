@@ -11,7 +11,7 @@ There is no sidebar. A 52px header carries the app mark, the name, a **status ch
 menu whose single item switches the theme. A footer carries five **doors** — **Home**,
 **Activity**, **Plan a sync**, **Settings**, **Details** — and, on Home, a mono line naming the
 folder pair. Conflicts and Deletions have no door: they open over whatever you were looking at,
-from the attention band, the status chip, or a notification.
+from the attention band on Home, or from a notification.
 
 The status chip is the one place the [daemon state](/desktop/overview/#the-six-daemon-states)
 is always visible. It reads `idle`, `syncing`, `paused`, `unreachable`, `sign-in expired`,
@@ -49,17 +49,22 @@ stays `proton-drive login` in a terminal.
 ![The main screen with three changes syncing and an attention band below: one row saying one file changed on both sides with a Compare button, another saying two deletions are waiting with a Review button.](../../../assets/screenshots/main-needs-you.png)
 
 When something needs a decision, an **attention band** appears above the footer with one row
-**per category** — not per item. Conflicts read *"One file changed on both sides · both copies
-kept, nothing lost"* with a **Compare** button; deletions read *"Two deletions are waiting on
-you · 1 removes from this computer permanently · 1 goes to Proton's Trash"* with a **Review**
-button. Both buttons only navigate; neither acts.
+**per category** — not per item. Conflicts read *"One file changed on both sides"* over
+*"notes/todo.txt · both copies kept, nothing lost"* — the note always names the file — with a
+**Compare** button; deletions read *"Two deletions are waiting on you"* over *"1 removes from
+this computer permanently · 1 goes to Proton's Trash"* with a **Review** button. Both buttons only navigate; neither acts.
 
 ## Details
 
 The four counters live in a dialog behind the **Details** door, not on Home: pending changes,
-conflicts, destructive actions and skipped-unsupported, alongside `scan_interval`,
-`event_stream`, the change-detection source, and the socket path. When the daemon is
-unreachable each one renders an em-dash — unknown is not zero.
+conflicts, destructive actions and skipped-unsupported. Four more rows sit under them — the
+scan interval, whether the event stream is on, where the pass list came from, and whether the
+control socket is connected.
+
+When the daemon is unreachable the four counters and the pass-list source render an em-dash
+rather than a zero — unknown is not zero. The socket row reads `disconnected`, and the scan
+interval and event-stream rows go on showing what the config file says, because they are read
+from disk rather than from the daemon.
 
 ## Activity
 
@@ -72,8 +77,10 @@ recovered, that it retried and worked. The foot states the limit honestly — th
 the last 20 passes in the status history — and an **Open the system log** button writes a
 `journalctl` snapshot and opens it rather than printing a command for you to copy.
 
-**Files** is a per-path lookup: type a path and the screen answers what the engine knows about
-it, including *never synced* and *waiting* as explicit answers. Read-only.
+**Files** is a per-path lookup: type a path and the screen says whether it is synced, modified,
+in conflict, or not in the index at all — the lookup reads the index, so a file that has never
+synced is not there to find, and it answers *"No file by that name in your sync folder."* Files
+that have never synced are listed separately, in a band on the quiet view. Read-only.
 
 ## Conflicts
 
@@ -81,8 +88,14 @@ it, including *never synced* and *waiting* as explicit answers. Read-only.
 
 One file at a time, with a `1 of 3` pager rather than a list; the rest of the queue appears as
 a *"Still waiting after this one"* list inside the comparison. Each side shows size, line count
-and edit time; **See the exact differences** opens a line-level diff for text files. Nothing is
-fabricated — a binary or oversized file shows metadata only.
+and edit time; **See the exact differences** opens a line-level diff for text files. A binary or
+oversized file shows metadata only — no file content is ever invented.
+
+The sentence at the top of each card is the exception, and it is a **placeholder**. "What you
+changed" is a claim against the last agreed version, whose bytes exist nowhere on the machine —
+the index keeps that version's SHA-1 and not its content — so nothing in the app can compute it.
+Until something records a common ancestor, both cards draw a fixed sentence regardless of the
+file. Read the diff and the metadata under it, not that line.
 
 Four choices, and **each one writes immediately** — there is no staging and no Apply button:
 
@@ -135,15 +148,18 @@ Applying is gated:
 
 - A plan containing a real delete (`remote_delete` / `local_delete`) leaves **Run this sync**
   inert until you type `DELETE` — case-sensitively — into the box beside it. **Run it without
-  the deletion** is always available and runs everything else.
+  the deletion** sits beside it and runs everything else — but only when the daemon is holding
+  the plan. A plan computed by the `proton-syncd --dry-run` child, which is what happens during
+  first-run setup before a daemon exists, carries no token and offers no filtered run.
 - The red band names the file when there is exactly one deletion, and collapses to a count
   when there is more than one.
 - A **purge-only** plan is not gated at all: a purge clears an index record and touches no
   file.
 
-Applying names the plan's **token**, not its rows. The daemon re-plans and compares; if the
-world moved under the review it executes nothing, publishes the fresh plan, and keeps you on
-this screen. See [Dry-run preview](/safety/dry-run/) for the same computation as JSON.
+When the daemon holds the plan, applying names its **token**, not its rows: the daemon re-plans
+and compares, and if the world moved under your review it executes nothing, publishes the fresh
+plan, and keeps you on this screen. A tokenless plan has nothing to name, so applying it is an
+ordinary `syncnow` and you land back on Home. See [Dry-run preview](/safety/dry-run/) for the same computation as JSON.
 
 ## Settings
 
@@ -181,8 +197,10 @@ covering all of them:
 - **It could not be told apart** — the socket neither answered nor proved it was absent.
   Nothing was restarted, and the screen says only that.
 
-If a sync is in progress while you have a change staged, the footer warns you before **Save** —
-the restart stops that pass, and it starts again on the new settings.
+If a counted sync is running while you have a **daemon-config** change staged, the footer warns
+you before **Save**: that save restarts the daemon, which stops the pass, and it starts again on
+the new settings. A staged Notifications change draws no warning, because it writes the app's
+own file and restarts nothing.
 
 ## First run
 
