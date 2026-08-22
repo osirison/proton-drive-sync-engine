@@ -44,13 +44,14 @@ Conflict resolution is just file operations on the sidecar — there's no specia
 
 ## Resolving in the desktop app
 
-The app's **Conflicts** screen makes this visual and safe. It shows a rail of conflicted
-files and a **side-by-side compare** — your version (local) on one side, Proton's version
-(the sidecar) on the other, with a line-level diff for text files and size/timestamp
-metadata for binary or large files (it never fabricates a preview).
+The app's **Conflicts** screen makes this visual and safe. It shows the conflicts
+one file at a time, behind a `1 of N` pager, with a **side-by-side compare** — your version
+(local) on one side, Proton's version (the sidecar) on the other. Each side shows size, line
+count and edit time; **See the exact differences** opens a line-level diff for text files.
+A binary or oversized file shows metadata only — no preview is invented for it.
 
-You pick one of **four choices** per file. Everything is **staged** — nothing is written to
-disk until you press **Apply**:
+You pick one of **four choices** per file, and **each one writes immediately**. There is no
+staging step and no Apply button:
 
 | Choice | What it does on disk |
 | --- | --- |
@@ -59,10 +60,9 @@ disk until you press **Apply**:
 | **Keep both** | Rename your file to `name.local.ext` and keep Proton's copy too. |
 | **Decide later** | Nothing is written; the file stays outstanding. |
 
-Choosing auto-advances to the next unresolved file, and the footer counts how many file
-operations are staged. Applying runs them and re-scans. The outstanding-conflict count is
-computed once and shown consistently everywhere it appears — the sidebar badge, the tab
-header, the Overview "needs you" card, the stat tile, and the activity ledger.
+Choosing auto-advances to the next unresolved file and re-scans. The outstanding-conflict
+count is computed once and shown identically wherever it appears — the status chip, the
+attention band on the main screen, and notifications.
 
 See [Screens](/desktop/screens/) for the rest of the app.
 
