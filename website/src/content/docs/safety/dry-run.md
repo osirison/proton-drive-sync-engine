@@ -21,6 +21,13 @@ Dry-run still contacts Proton Drive through the `proton-drive` CLI (to list the 
 authentication and remote permissions must already work. It does **not** bind the IPC
 socket, take the daemon lock, or run any side effect.
 
+The desktop app runs the same computation and renders it instead of printing it:
+
+![The plan screen: "The next sync moves 9 things", three files leaving this computer and two arriving from Proton, a red band saying one file gets deleted for good, then every action in order with its destination, and a DELETE box that arms the run.](../../../assets/screenshots/plan.png)
+
+*Same plan, same numbers — `destructive_actions` is the red band, and the typed `DELETE`
+is what the JSON leaves to your own judgement.*
+
 ## The output shape
 
 ```json

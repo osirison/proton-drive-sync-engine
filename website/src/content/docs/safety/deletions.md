@@ -20,6 +20,11 @@ is a real action the engine will carry out for you, in both directions:
   disk **permanently**. This is a direct filesystem delete, **not** a move to your OS
   trash. Folder deletions are **recursive** and remove the entire subtree.
 
+![The deletions screen showing two withheld deletions side by side: a folder removed straight from disk on this computer, labelled permanent and requiring the word DELETE to be typed, and a file moved to Proton's Trash, labelled recoverable with a Move to Proton's Trash button.](../../../assets/screenshots/deletions.png)
+
+*The two directions are never presented as the same action. The permanent one is the only
+one that asks you to type the word.*
+
 :::danger[A remote delete is a permanent local delete]
 Deleting a folder on Proton Drive deletes the matching local folder and everything inside
 it, straight from disk, with no undo. There is no OS-trash safety net on the local side.

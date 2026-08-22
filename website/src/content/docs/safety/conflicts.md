@@ -12,6 +12,11 @@ winner, it keeps both versions and asks you to choose.
 (If both sides changed to the *same* content, there's no conflict — the engine just links
 them with no sidecar.)
 
+![The conflicts screen showing one file, notes/todo.txt, with your version on the left and Proton's version on the right, each summarised in plain language, and four choices below: Keep mine, Keep both, Use Proton's, Decide later.](../../../assets/screenshots/conflicts.png)
+
+*The desktop app's view of the same thing: both versions side by side, and no choice made
+until you make it.*
+
 ## The `.proton-cloud` sidecar
 
 When it detects a conflict, the daemon keeps your local file as-is and downloads the remote

@@ -11,6 +11,11 @@ every plan before it runs.
 
 📖 **[Read the full documentation →](https://osirison.github.io/proton-drive-sync-engine/)**
 
+<img src="website/src/assets/screenshots/main-syncing.png" alt="The Proton Drive Sync desktop app mid-sync: a hexagon showing three pending changes, the headline &quot;Syncing 3 changes&quot;, and a live transfer queue naming each file and its direction." width="860">
+
+<sub>The desktop app during a sync pass.
+<a href="https://osirison.github.io/proton-drive-sync-engine/desktop/screens/">See every screen →</a></sub>
+
 </div>
 
 ---
@@ -233,7 +238,13 @@ socket and files as the CLI, so the two never disagree. It gives you:
 - A **system-tray indicator** with five states; closing the window hides it to the tray
   and syncing keeps running.
 
+<img src="website/src/assets/screenshots/plan.png" alt="The plan screen: the heading &quot;The next sync moves 9 things&quot;, counts for what leaves this computer and what arrives from Proton, a red band warning that one file gets deleted for good, a numbered list of every action, and a DELETE box that must be typed into before the plan can run." width="860">
+
+<sub>The plan screen — a rehearsal of the next sync. Nothing has changed yet, and the
+destructive row has to be armed by typing `DELETE` before it can run.</sub>
+
 → [Desktop app docs](https://osirison.github.io/proton-drive-sync-engine/desktop/overview/) ·
+[Every screen, with pictures](https://osirison.github.io/proton-drive-sync-engine/desktop/screens/) ·
 [Native packages (RPM / deb / AUR)](https://osirison.github.io/proton-drive-sync-engine/distribution/packages/)
 
 ## Safety (read this)
