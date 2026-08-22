@@ -48,7 +48,9 @@ The app's **Conflicts** screen makes this visual and safe. It shows the conflict
 one file at a time, behind a `1 of N` pager, with a **side-by-side compare** — your version
 (local) on one side, Proton's version (the sidecar) on the other. Each side shows size, line
 count and edit time; **See the exact differences** opens a line-level diff for text files.
-A binary or oversized file shows metadata only — no preview is invented for it.
+A binary or oversized file shows metadata only — no file content is invented for it. The
+one-line summary at the top of each card is a placeholder rather than a reading of your file;
+[Screens](/desktop/screens/#conflicts) explains why nothing can compute it yet.
 
 You pick one of **four choices** per file, and **each one writes immediately**. There is no
 staging step and no Apply button:

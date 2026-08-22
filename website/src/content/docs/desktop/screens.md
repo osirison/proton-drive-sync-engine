@@ -11,7 +11,7 @@ There is no sidebar. A 52px header carries the app mark, the name, a **status ch
 menu whose single item switches the theme. A footer carries five **doors** — **Home**,
 **Activity**, **Plan a sync**, **Settings**, **Details** — and, on Home, a mono line naming the
 folder pair. Conflicts and Deletions have no door: they open over whatever you were looking at,
-from the attention band, the status chip, or a notification.
+from the attention band on Home, or from a notification.
 
 The status chip is the one place the [daemon state](/desktop/overview/#the-six-daemon-states)
 is always visible. It reads `idle`, `syncing`, `paused`, `unreachable`, `sign-in expired`,
@@ -59,8 +59,12 @@ button. Both buttons only navigate; neither acts.
 The four counters live in a dialog behind the **Details** door, not on Home: pending changes,
 conflicts, destructive actions and skipped-unsupported. Four more rows sit under them — the
 scan interval, whether the event stream is on, where the pass list came from, and whether the
-control socket is connected. When the daemon is unreachable each one renders an em-dash —
-unknown is not zero.
+control socket is connected.
+
+When the daemon is unreachable the four counters and the pass-list source render an em-dash
+rather than a zero — unknown is not zero. The socket row reads `disconnected`, and the scan
+interval and event-stream rows go on showing what the config file says, because they are read
+from disk rather than from the daemon.
 
 ## Activity
 
@@ -82,8 +86,14 @@ it, including *never synced* and *waiting* as explicit answers. Read-only.
 
 One file at a time, with a `1 of 3` pager rather than a list; the rest of the queue appears as
 a *"Still waiting after this one"* list inside the comparison. Each side shows size, line count
-and edit time; **See the exact differences** opens a line-level diff for text files. Nothing is
-fabricated — a binary or oversized file shows metadata only.
+and edit time; **See the exact differences** opens a line-level diff for text files. A binary or
+oversized file shows metadata only — no file content is ever invented.
+
+The sentence at the top of each card is the exception, and it is a **placeholder**. "What you
+changed" is a claim against the last agreed version, whose bytes exist nowhere on the machine —
+the index keeps that version's SHA-1 and not its content — so nothing in the app can compute it.
+Until something records a common ancestor, both cards draw a fixed sentence regardless of the
+file. Read the diff and the metadata under it, not that line.
 
 Four choices, and **each one writes immediately** — there is no staging and no Apply button:
 
@@ -182,8 +192,10 @@ covering all of them:
 - **It could not be told apart** — the socket neither answered nor proved it was absent.
   Nothing was restarted, and the screen says only that.
 
-If a sync is in progress while you have a change staged, the footer warns you before **Save** —
-the restart stops that pass, and it starts again on the new settings.
+If a counted sync is running while you have a **daemon-config** change staged, the footer warns
+you before **Save**: that save restarts the daemon, which stops the pass, and it starts again on
+the new settings. A staged Notifications change draws no warning, because it writes the app's
+own file and restarts nothing.
 
 ## First run
 
