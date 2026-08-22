@@ -49,10 +49,10 @@ stays `proton-drive login` in a terminal.
 ![The main screen with three changes syncing and an attention band below: one row saying one file changed on both sides with a Compare button, another saying two deletions are waiting with a Review button.](../../../assets/screenshots/main-needs-you.png)
 
 When something needs a decision, an **attention band** appears above the footer with one row
-**per category** — not per item. Conflicts read *"One file changed on both sides · both copies
-kept, nothing lost"* with a **Compare** button; deletions read *"Two deletions are waiting on
-you · 1 removes from this computer permanently · 1 goes to Proton's Trash"* with a **Review**
-button. Both buttons only navigate; neither acts.
+**per category** — not per item. Conflicts read *"One file changed on both sides"* over
+*"notes/todo.txt · both copies kept, nothing lost"* — the note always names the file — with a
+**Compare** button; deletions read *"Two deletions are waiting on you"* over *"1 removes from
+this computer permanently · 1 goes to Proton's Trash"* with a **Review** button. Both buttons only navigate; neither acts.
 
 ## Details
 
@@ -77,8 +77,10 @@ recovered, that it retried and worked. The foot states the limit honestly — th
 the last 20 passes in the status history — and an **Open the system log** button writes a
 `journalctl` snapshot and opens it rather than printing a command for you to copy.
 
-**Files** is a per-path lookup: type a path and the screen answers what the engine knows about
-it, including *never synced* and *waiting* as explicit answers. Read-only.
+**Files** is a per-path lookup: type a path and the screen says whether it is synced, modified,
+in conflict, or not in the index at all — the lookup reads the index, so a file that has never
+synced is not there to find, and it answers *"No file by that name in your sync folder."* Files
+that have never synced are listed separately, in a band on the quiet view. Read-only.
 
 ## Conflicts
 
@@ -146,15 +148,18 @@ Applying is gated:
 
 - A plan containing a real delete (`remote_delete` / `local_delete`) leaves **Run this sync**
   inert until you type `DELETE` — case-sensitively — into the box beside it. **Run it without
-  the deletion** is always available and runs everything else.
+  the deletion** sits beside it and runs everything else — but only when the daemon is holding
+  the plan. A plan computed by the `proton-syncd --dry-run` child, which is what happens during
+  first-run setup before a daemon exists, carries no token and offers no filtered run.
 - The red band names the file when there is exactly one deletion, and collapses to a count
   when there is more than one.
 - A **purge-only** plan is not gated at all: a purge clears an index record and touches no
   file.
 
-Applying names the plan's **token**, not its rows. The daemon re-plans and compares; if the
-world moved under the review it executes nothing, publishes the fresh plan, and keeps you on
-this screen. See [Dry-run preview](/safety/dry-run/) for the same computation as JSON.
+When the daemon holds the plan, applying names its **token**, not its rows: the daemon re-plans
+and compares, and if the world moved under your review it executes nothing, publishes the fresh
+plan, and keeps you on this screen. A tokenless plan has nothing to name, so applying it is an
+ordinary `syncnow` and you land back on Home. See [Dry-run preview](/safety/dry-run/) for the same computation as JSON.
 
 ## Settings
 
