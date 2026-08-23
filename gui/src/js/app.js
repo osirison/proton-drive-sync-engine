@@ -94,7 +94,7 @@ import {
   renderConsent,
   renderCliMissing,
 } from "./screens/onboarding.js";
-import { severityOf } from "./ui/rows.js";
+import { severityOfItem } from "./ui/rows.js";
 import { activeFixture, fid } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
 
@@ -1722,7 +1722,7 @@ function deletionsProps() {
         // Guarded on severity as well as on the gate, because arming is the step that leads to the
         // only irreversible action in the app and `severityOf` is the one place that decides which
         // direction that is.
-        if (severityOf(item.direction) !== "permanent") return;
+        if (severityOfItem(item) !== "permanent") return;
         deletionArmed = { path: item.path, fingerprint: item.fingerprint };
         render();
         // The body swap leaves focus on a button that no longer exists, i.e. on `<body>` — so the
@@ -3719,7 +3719,7 @@ function evaluateNotifications() {
  * direction, but doing more than the button says is not the same as safe.
  */
 async function keepPermanentDeletions() {
-  const items = visibleDeletions().filter((item) => severityOf(item.direction) === "permanent");
+  const items = visibleDeletions().filter((item) => severityOfItem(item) === "permanent");
   if (!items.length) return;
   for (const item of items) {
     const key = itemKey(item);

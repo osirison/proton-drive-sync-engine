@@ -352,34 +352,55 @@ export function planSideRow({ glyph, tone = "quiet", path, note = null, noteIsSi
 // -------------------------------------------------------------------------- deletion cards ----
 
 /**
- * Which column a pending deletion belongs in — THE one place the wire's `direction` becomes a
- * severity, because more than one surface asks and they must not answer differently.
+ * Which column a pending deletion belongs in — THE one place the wire becomes a severity, because
+ * more than one surface asks and they must not answer differently.
  *
- * `direction` names the side the delete is APPLIED to, not the side it came from, and reading it
- * the other way produces a complete, plausible screen that offers `Move to Proton's Trash` for a
- * file about to leave the disk for good. `Local` = remove it from this computer, because it went
- * first on Proton → permanent. `Remote` = move Proton's copy to the Trash, because it went here
- * first → recoverable.
+ * TWO INPUTS, BECAUSE `direction` STOPPED ANSWERING THE QUESTION. It names the side the delete is
+ * applied to, and that used to settle the consequence: `Remote` moved Proton's copy to the Trash,
+ * `Local` unlinked the file. Since `local_delete_mode`, a local deletion is recoverable whenever
+ * the pair trashes rather than unlinks — so the daemon sends `disposal` alongside, saying what it
+ * will actually do, and that is what this reads. Recoverable if EITHER says so; `direction` alone
+ * still carries the remote case, which is what keeps an older daemon's replies right.
+ *
+ * ASK THE DAEMON, NEVER THE CONFIG FILE. Saving settings needs a daemon restart, so the file leads
+ * the running daemon by however long the app is left open. A screen deriving severity from the file
+ * would drop the typed gate the moment the user picked trash mode — while the daemon was still
+ * unlinking.
  *
  * Here rather than in `screens/deletions.js` because the main screen's attention band needs it too:
  * it counted `d.direction === "local"` inline, a second derivation of the rule the Deletions screen
  * sorts its two columns by, and two copies of one rule agree only by hand.
  *
- * IT FAILS CLOSED, and the first version failed open. Written as `=== "local" ? permanent :
- * recoverable`, anything the wire sends that is not exactly `local` lands in the RECOVERABLE column
- * — which has no typed gate and whose one button approves the deletion in a single click. A missing
- * field, a typo, or a third `DeleteDirection` added upstream would therefore turn a permanent
- * removal from this computer into a one-click action, which is the precise failure this screen
- * exists to prevent. Asking for `remote` instead means an unrecognised direction is treated as the
- * more dangerous one: you get the gate, and you have to type the word.
+ * IT FAILS CLOSED ON BOTH ARGUMENTS, and the first version failed open on the one it had. Written
+ * as `=== "local" ? permanent : recoverable`, anything the wire sent that was not exactly `local`
+ * landed in the RECOVERABLE column — which has no typed gate and whose one button approves the
+ * deletion in a single click. The second argument is written the same way round for the same
+ * reason: it asks for the literal `"recoverable"` rather than excluding `"permanent"`, so an absent
+ * field (an older daemon, which really did unlink), a typo, or a disposal a newer daemon invents all
+ * land on the gate rather than on the one-click button. `"trash"` is the CONFIG spelling and is
+ * deliberately not accepted here — it never crosses the wire, and accepting it would mean this
+ * function had two ideas about where its input comes from.
  *
  * It does NOT throw, where `transferSlotOrder` two hundred lines up does, and the difference is what
  * the two guard. An unknown transfer direction is a bug in the app and the throw is how it gets
  * fixed; an unknown delete direction would come off the WIRE, mid-render, on the screen you least
  * want to blank — so it degrades to the safe reading rather than taking the queue down with it.
+ * Both arguments are optional for the same reason: a null item must not throw here.
  */
-export function severityOf(direction) {
-  return direction === "remote" ? "recoverable" : "permanent";
+export function severityOf(direction, disposal) {
+  if (direction === "remote" || disposal === "recoverable") return "recoverable";
+  return "permanent";
+}
+
+/**
+ * The severity of a whole pending-deletion item, which is what every caller actually has.
+ *
+ * `severityOf` takes the two fields because `rows.js` must stay usable from a place that holds only
+ * them; this is the form the nine call sites use, so none of them can pass one field and forget the
+ * other — the failure that would silently reinstate the old behaviour with every gate green.
+ */
+export function severityOfItem(item) {
+  return severityOf(item?.direction, item?.disposal);
 }
 
 /**

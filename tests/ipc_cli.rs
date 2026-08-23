@@ -540,6 +540,130 @@ mod unix_tests {
         );
     }
 
+    /// Drives one local deletion end to end through a real daemon in `mode`, and hands back
+    /// `(the withheld item's JSON, what `proton-sync pending` printed, the local root, the trash)`.
+    ///
+    /// A REAL DAEMON AND A REAL TRASH. Everything below the socket is the shipping code path: the
+    /// `trash` crate, the FreeDesktop layout, the executor. Only `XDG_DATA_HOME` is redirected, and
+    /// that is done for every spawn in `DaemonProcess` rather than here — the hazard belongs to the
+    /// default, not to this test.
+    fn drive_one_local_deletion(mode: Option<&str>) -> (Value, String, PathBuf, PathBuf) {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_local_delete_proton_drive(directory.path());
+        let extra: Vec<&str> = match mode {
+            Some(mode) => vec!["--local-delete-mode", mode],
+            None => Vec::new(),
+        };
+        let mut daemon = DaemonProcess::spawn_with_args(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+            &extra,
+        );
+        wait_for_socket(&socket_path, &mut daemon);
+
+        // The startup pass downloads keep.txt and records a baseline; without the record there is
+        // nothing to derive a LocalDelete from.
+        let settled =
+            wait_for_synced_baseline(&socket_path, &mut daemon, &db_path, &local_root, "keep.txt");
+        let seq_before = settled["reconcile_seq"].as_u64().expect("reconcile_seq");
+
+        // The remote copy disappears → the next pass plans a LocalDelete. The local guard is on by
+        // default, so it is withheld and we can read the disposal off the reply before it applies.
+        fs::write(format!("{}.gone", fake_proton_drive.display()), b"").expect("gone marker");
+        run_control_args(&socket_path, &["--json", "syncnow", "--no-wait"]);
+        let withheld = wait_for_reconcile_seq(&socket_path, &mut daemon, seq_before + 1);
+        let pending = withheld["pending_deletions"]
+            .as_array()
+            .expect("pending_deletions array");
+        assert_eq!(pending.len(), 1, "the local delete must be withheld: {withheld}");
+        assert_eq!(pending[0]["direction"], "local");
+        assert_eq!(pending[0]["path"], "keep.txt");
+        let listed = run_control_raw(&socket_path, &["pending"]);
+
+        let approved = run_control_raw(&socket_path, &["approve", "keep.txt"]);
+        assert!(approved.contains("approved 1"), "approve: {approved}");
+        let applied = run_control(&socket_path, "syncnow");
+        assert!(applied["last_error"].is_null(), "pass should succeed: {applied}");
+        assert!(
+            !local_root.join("keep.txt").exists(),
+            "the approved local delete must remove the file from the sync root: {applied}"
+        );
+
+        // `XDG_DATA_HOME` is the lockfile's parent (see `DaemonProcess::spawn_with_args`).
+        let trash = lockfile_path
+            .parent()
+            .expect("lockfile parent")
+            .join("Trash/files");
+        // The tempdir is dropped with `directory`, so read what the assertions need first.
+        let item = pending[0].clone();
+        let trashed: Vec<String> = fs::read_dir(&trash)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        (
+            item,
+            listed,
+            local_root.clone(),
+            PathBuf::from(trashed.join(",")),
+        )
+    }
+
+    #[test]
+    fn a_local_deletion_reports_recoverable_and_lands_in_the_real_trash_over_ipc() {
+        // THE WHOLE CHANGE, end to end and through the shipping code: a default daemon reports the
+        // deletion as recoverable, says so in words, and the bytes really are in the trash
+        // afterwards. Nothing here is a fake but the `proton-drive` CLI itself.
+        let (item, listed, _root, trashed) = drive_one_local_deletion(None);
+        assert_eq!(
+            item["disposal"], "recoverable",
+            "a default daemon trashes, so the wire must say so: {item}"
+        );
+        assert!(
+            listed.contains("keep.txt") && listed.contains("LOCAL DELETE"),
+            "`pending` must show the withheld local delete: {listed}"
+        );
+        assert!(
+            listed.contains("moves your copy to this computer's trash"),
+            "and must say what approving would actually do: {listed}"
+        );
+        assert!(
+            trashed.to_string_lossy().contains("keep.txt"),
+            "the approved deletion must be recoverable from the trash, found: {trashed:?}"
+        );
+    }
+
+    #[test]
+    fn a_permanent_mode_local_deletion_reports_permanent_and_trashes_nothing_over_ipc() {
+        // The opt-out, asserted rather than assumed. `!exists()` cannot tell the modes apart — a
+        // trashed file also stops existing — so the discriminating facts are the wire's `permanent`
+        // and an empty trash.
+        let (item, listed, _root, trashed) = drive_one_local_deletion(Some("permanent"));
+        assert_eq!(
+            item["disposal"], "permanent",
+            "a permanent-mode daemon must not report recoverable: {item}"
+        );
+        assert!(
+            listed.contains("removes your local copy for good"),
+            "the warning must come back with the mode: {listed}"
+        );
+        assert!(
+            !trashed.to_string_lossy().contains("keep.txt"),
+            "permanent mode must leave nothing in the trash, found: {trashed:?}"
+        );
+    }
+
     #[test]
     fn keeping_a_withheld_deletion_restores_the_other_side_over_ipc() {
         // #224. `deny` only revokes an approval, so refusing a deletion used to be nothing at all:
@@ -1127,6 +1251,16 @@ exit 64
                     "XDG_STATE_HOME",
                     lockfile_path.parent().expect("lockfile has a parent dir"),
                 )
+                // AND ISOLATE THE TRASH. Local deletions default to `local_delete_mode = "trash"`,
+                // and these tests spawn REAL daemons — so without this any test whose plan holds a
+                // LocalDelete moves its temp files into the developer's own
+                // `~/.local/share/Trash`, on every `cargo test`. Set for every spawn rather than
+                // for the tests that need it: the hazard belongs to the default, so a test that
+                // acquires a local delete later must not have to remember this.
+                .env(
+                    "XDG_DATA_HOME",
+                    lockfile_path.parent().expect("lockfile has a parent dir"),
+                )
                 .env("RUST_LOG", "warn")
                 .stdout(Stdio::null())
                 .stderr(Stdio::from(stderr_file))
@@ -1397,6 +1531,41 @@ exit 64
     /// file `keep.txt` (with the SHA-1 of the bytes `download` writes, so the baseline matches the
     /// remote and a removed local copy plans a *RemoteDelete*), `download` writes those bytes, and
     /// `trash` appends the trashed path to `<script>.trash` for the test to observe.
+    /// `write_delete_approval_proton_drive`'s mirror: the remote file **disappears** once the test
+    /// drops a `.gone` marker beside the script, so the next pass plans a `LocalDelete` instead of a
+    /// `RemoteDelete`. That is the only direction whose disposal `local_delete_mode` moves.
+    fn write_local_delete_proton_drive(directory: &Path) -> PathBuf {
+        let path = directory.join("fake-local-delete-proton-drive");
+        // SHA-1 of the literal bytes "hello" (what `download` writes below).
+        let hello_sha1 = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d";
+        fs::write(
+            &path,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  if [ -f "$0.gone" ]; then
+    printf '{{"entries":[]}}\n'
+  else
+    printf '{{"entries":[{{"id":"remote-keep","name":"keep.txt","activeRevision":{{"claimedDigests":{{"sha1":"{hello_sha1}"}}}}}}]}}\n'
+  fi
+  exit 0
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "download" ]; then
+  printf 'hello' > "$4/$(basename "$3")"
+  exit 0
+fi
+echo "unexpected proton-drive args: $*" >&2
+exit 64
+"#
+            ),
+        )
+        .expect("fake proton-drive script");
+        let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).expect("script permissions");
+        path
+    }
+
     fn write_delete_approval_proton_drive(directory: &Path) -> PathBuf {
         let path = directory.join("fake-delete-approval-proton-drive");
         // SHA-1 of the literal bytes "hello" (what `download` writes below).

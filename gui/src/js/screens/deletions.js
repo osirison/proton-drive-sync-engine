@@ -48,7 +48,7 @@ import {
   deletionGate,
   deleteHint,
   keepButton,
-  severityOf,
+  severityOfItem,
   trashButton,
 } from "../ui/rows.js";
 import { fid } from "../fixtures/frames.js";
@@ -90,7 +90,7 @@ const COLUMNS = ["permanent", "recoverable"];
  * second one keyed off a config value the screen would then have to keep in step.
  */
 export function splitQueue(items = []) {
-  return COLUMNS.map((severity) => items.filter((item) => severityOf(item.direction) === severity));
+  return COLUMNS.map((severity) => items.filter((item) => severityOfItem(item) === severity));
 }
 
 /**
@@ -125,7 +125,7 @@ export function armedItem(items = [], armed = null) {
       (item) =>
         item.path === armed.path &&
         item.fingerprint === armed.fingerprint &&
-        severityOf(item.direction) === "permanent",
+        severityOfItem(item) === "permanent",
     ) ?? null
   );
 }
@@ -155,7 +155,7 @@ export function itemKey(item) {
  * a hole in it, because "Deleting this removes from this computer" is not English.
  */
 export function consequenceOf(item) {
-  if (severityOf(item.direction) === "recoverable") {
+  if (severityOfItem(item) === "recoverable") {
     return { sentence: DELETIONS.travelExplainer, emphasis: "Proton Drive's Trash" };
   }
   if (item.entity_kind === "directory") {
@@ -222,7 +222,7 @@ export function factsOf(item, status) {
     // The column and the direction name the same side from opposite ends: `local` means the delete
     // would apply HERE, because it went first on Proton.
     const text =
-      severityOf(item.direction) === "permanent"
+      severityOfItem(item) === "permanent"
         ? DELETIONS.deletedOnProton(ago)
         : DELETIONS.deletedHere(ago);
     facts.push({ at: 0, text });
@@ -304,7 +304,7 @@ function queueBody({ columns, statuses, busy, handlers, actions, gates, ages }) 
  * `Move to Proton's Trash` on one card must not empty the gate on another.
  */
 function itemCard({ item, status, c, i, busy, handlers, actions, gates, ages }) {
-  const permanent = severityOf(item.direction) === "permanent";
+  const permanent = severityOfItem(item) === "permanent";
   const { sentence, emphasis } = consequenceOf(item);
   const facts = factsOf(item, status);
   const key = itemKey(item);

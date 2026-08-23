@@ -37,19 +37,19 @@
 
 ## 3. The executor
 
-- [ ] 3.1 Replace the `remove_dir_all`/`remove_file` block in the `SyncAction::LocalDelete` arm
+- [x] 3.1 Replace the `remove_dir_all`/`remove_file` block in the `SyncAction::LocalDelete` arm
       (`src/daemon.rs:4155-4162`) with a `trash::dispose` call reading the pair's mode. Leave the
       `destination.exists()` early-out, the `safe_local_path` guard, the pass-log note, the baseline
       purge and the approval consumption exactly as they are
-- [ ] 3.2 Daemon test: a remote deletion in the default (trash) mode leaves the file out of the sync
+- [x] 3.2 Daemon test: a remote deletion in the default (trash) mode leaves the file out of the sync
       root, present in a redirected `XDG_DATA_HOME` trash, and its baseline row purged
-- [ ] 3.3 Daemon test: the same deletion in `permanent` mode removes the file and puts nothing in
+- [x] 3.3 Daemon test: the same deletion in `permanent` mode removes the file and puts nothing in
       the trash — the pre-change behaviour, asserted rather than assumed
-- [ ] 3.4 Daemon test: a failing trash move leaves the file on disk, reports it in `failed_items`,
+- [x] 3.4 Daemon test: a failing trash move leaves the file on disk, reports it in `failed_items`,
       leaves the baseline row **unpurged**, holds the event cursor, lets the following actions in
       the plan run, and ends the pass `Partial` (design D4 — this is the invariant the whole
       warning removal rests on)
-- [ ] 3.5 Daemon test: a directory deletion in trash mode moves the whole tree as one entity and
+- [x] 3.5 Daemon test: a directory deletion in trash mode moves the whole tree as one entity and
       purges the descendant baseline rows
 
 ## 4. The trash directory is never synced
@@ -65,14 +65,14 @@
 
 ## 5. The wire
 
-- [ ] 5.1 Add `#[serde(default)] pub disposal: LocalDisposal` to `ipc::PendingDeletion`, with
+- [x] 5.1 Add `#[serde(default)] pub disposal: LocalDisposal` to `ipc::PendingDeletion`, with
       `Recoverable`/`Permanent` variants and `Default = Permanent` (design D5 — the default must
       agree with `severityOf`'s fail-closed rule)
-- [ ] 5.2 Populate it in `decide_delete_gate`: a `RemoteDelete` is always `Recoverable`; a
+- [x] 5.2 Populate it in `decide_delete_gate`: a `RemoteDelete` is always `Recoverable`; a
       `LocalDelete` is `Recoverable` iff the pair's mode is `Trash`
-- [ ] 5.3 Test: a reply serialized without the field parses back as `Permanent`, and a full round
+- [x] 5.3 Test: a reply serialized without the field parses back as `Permanent`, and a full round
       trip preserves both values
-- [ ] 5.4 Render the disposal in `proton-sync status`'s deletions section so the CLI says which
+- [x] 5.4 Render the disposal in `proton-sync status`'s deletions section so the CLI says which
       deletions are recoverable, and add the assertion to `tests/ipc_cli.rs`
 
 ## 6. GUI severity and screens

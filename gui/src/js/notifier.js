@@ -11,7 +11,7 @@
 // reply and produces `null` by falling off the end. `11a Rules` is the sheet that says so, and it is
 // rendered from the same `NOTIFY.rules` a person reads in Settings.
 
-import { severityOf } from "./ui/rows.js";
+import { severityOfItem } from "./ui/rows.js";
 
 /** Highest first. A more serious event may interrupt a quieter one inside the coalescing window. */
 const SEVERITY = { deletion: 3, outage: 2, conflict: 1, firstSync: 0 };
@@ -79,7 +79,7 @@ export const emptyState = () => ({
  * in the one trigger where being wrong costs files. S3 made this call for the screen (DEVIATIONS
  * §76); one implementation, not two that can drift.
  */
-const isPermanent = (deletion) => severityOf(deletion?.direction) === "permanent";
+const isPermanent = (deletion) => severityOfItem(deletion) === "permanent";
 
 // NUL, WRITTEN AS AN ESCAPE. A separator has to be something a path cannot contain, or two queues
 // with different members could sign the same — and a literal control character in the source makes

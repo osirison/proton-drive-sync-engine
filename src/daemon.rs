@@ -17,7 +17,7 @@ use crate::ipc::{
     ControlCommand, ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem,
     LIST_ENTRIES_DEFAULT_LIMIT, LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PASS_HISTORY_REPORTED,
     PLAN_ACTIONS_DEFAULT_LIMIT, PLAN_ACTIONS_MAX_LIMIT, PLAN_PASS_KIND, PassHistory, PassProgress,
-    PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo,
+    LocalDisposal, PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo,
     SELECTOR_DISPLAY_LIMIT, StatusHistoryEntry, SyncActivity, TRANSFERS_REPORTED, TransferActivity,
     bind_listener, read_request, write_response,
 };
@@ -4165,11 +4165,15 @@ impl<C: ProtonClient> PairPass<'_, C> {
                             return Ok(());
                         };
                         if destination.exists() {
-                            if action.entity_kind == EntityKind::Directory {
-                                fs::remove_dir_all(&destination)?;
-                            } else {
-                                fs::remove_file(&destination)?;
-                            }
+                            // The ONE disposal (`crate::trash`). A failed trash move propagates as
+                            // this action's `Err` and is caught by the #136 path below: the entity
+                            // stays on disk, nothing is purged, the cursor is held and the deletion
+                            // re-plans. It must never fall back to unlinking — see `trash::dispose`.
+                            dispose(
+                                self.pair.config.local_delete_mode,
+                                &destination,
+                                action.entity_kind,
+                            )?;
                         }
                         self.pair
                             .pass_log
@@ -4732,6 +4736,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
                     first_seen_epoch_secs: first_seen,
                     subtree_files,
                     subtree_bytes,
+                    // What this daemon will really do, not what the config file currently says: a
+                    // save needs a restart, so the file leads the running daemon and a client
+                    // reading it would drop the warnings early (see `LocalDisposal`).
+                    disposal: LocalDisposal::of(direction, self.pair.config.local_delete_mode),
                 });
                 gate.withheld.push(WithheldDeletion {
                     path: action.path.clone(),
@@ -9559,6 +9567,7 @@ mod tests {
                 first_seen_epoch_secs: 1,
                 subtree_files: None,
                 subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
             },
             PendingDeletion {
                 path: PathBuf::from("other.txt"),
@@ -9569,6 +9578,7 @@ mod tests {
                 first_seen_epoch_secs: 1,
                 subtree_files: None,
                 subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
             },
         ];
 
@@ -9639,6 +9649,7 @@ mod tests {
             first_seen_epoch_secs: 1,
             subtree_files: None,
             subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
         }];
         let selector = crate::ipc::wire_path(&real_path);
         assert_ne!(
@@ -9697,6 +9708,7 @@ mod tests {
                 first_seen_epoch_secs: 1,
                 subtree_files: None,
                 subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
             })
             .collect();
         let selector = crate::ipc::wire_path(&pending[0].path);
@@ -9849,6 +9861,7 @@ mod tests {
                     first_seen_epoch_secs: 1,
                     subtree_files: None,
                     subtree_bytes: None,
+                    disposal: LocalDisposal::Permanent,
                 }
             })
             .collect();
@@ -9884,6 +9897,7 @@ mod tests {
                 first_seen_epoch_secs: 1,
                 subtree_files: None,
                 subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
             })
             .collect();
         let selector = crate::ipc::wire_path(&pending[1].path).into_owned();
@@ -9933,6 +9947,7 @@ mod tests {
             first_seen_epoch_secs: 1,
             subtree_files: None,
             subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
         }];
 
         let message = apply_approval_command(
@@ -10548,6 +10563,7 @@ mod tests {
                 first_seen_epoch_secs: 1,
                 subtree_files: None,
                 subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
             })
             .collect();
         let selector = crate::ipc::wire_path(&pending[0].path).into_owned();
@@ -11596,6 +11612,285 @@ mod tests {
                 .map(|entry| (entry.message.as_str(), entry.failed_item_count)),
             Some(("sync completed with 1 failed item(s)", 1)),
             "the history entry names the third state rather than either of the other two"
+        );
+    }
+
+    #[test]
+    fn a_local_deletion_goes_to_the_trash_by_default_and_still_purges_its_record() {
+        // The default path. The file must leave the sync root (so the mirror is correct), be
+        // findable afterwards (so the removed warnings are honest), and the baseline row must go
+        // (so the deletion is not re-planned for ever).
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let trash = directory.path().join("trash");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("removed-remotely.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(
+            DaemonConfig {
+                local_delete_mode: LocalDeleteMode::Trash,
+                ..test_config(directory.path(), &local_root)
+            },
+            client,
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.pair().connection,
+            &base_record("removed-remotely.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        let _hook = crate::trash::test_hook::install_fake_trash(trash.clone());
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        assert!(!local_path.exists(), "the file must leave the sync root");
+        assert_eq!(
+            fs::read(trash.join("removed-remotely.txt")).expect("read the trashed copy"),
+            b"base content",
+            "and must be recoverable, with its bytes intact"
+        );
+        assert!(
+            get_record(&daemon.pair().connection, Path::new("removed-remotely.txt"))
+                .expect("index lookup")
+                .is_none(),
+            "a trashed deletion purges its baseline row exactly as an unlinked one does"
+        );
+        assert!(
+            operations.lock().expect("operations lock").is_empty(),
+            "mirroring a remote deletion must not call Proton mutations"
+        );
+    }
+
+    #[test]
+    fn permanent_mode_unlinks_and_leaves_nothing_in_the_trash() {
+        // The pre-change behaviour, asserted rather than assumed. `!path.exists()` alone cannot
+        // tell the two modes apart — a trashed file also stops existing at its path — so the
+        // discriminating assertion is that the trash was never asked.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let trash = directory.path().join("trash");
+        fs::create_dir(&local_root).expect("local root");
+        let local_path = local_root.join("gone-for-good.txt");
+        fs::write(&local_path, b"base content").expect("local file");
+        let base_hash = crate::index::compute_sha1(&local_path).expect("base hash");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(
+            DaemonConfig {
+                local_delete_mode: LocalDeleteMode::Permanent,
+                ..test_config(directory.path(), &local_root)
+            },
+            client,
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.pair().connection,
+            &base_record("gone-for-good.txt", Some("remote-id"), base_hash.as_str()),
+        )
+        .expect("base record");
+
+        let _hook = crate::trash::test_hook::install_fake_trash(trash.clone());
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        assert!(!local_path.exists());
+        assert!(
+            !trash.join("gone-for-good.txt").exists(),
+            "permanent mode must not quietly become recoverable"
+        );
+        assert_eq!(
+            crate::trash::test_hook::calls(),
+            vec![(
+                LocalDeleteMode::Permanent,
+                local_path,
+                crate::index::EntityKind::File
+            )],
+            "the disposal is reached, and reached with the mode the pair configured"
+        );
+    }
+
+    #[test]
+    fn a_trashed_directory_deletion_moves_the_tree_and_purges_its_descendants() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        let trash = directory.path().join("trash");
+        fs::create_dir(&local_root).expect("local root");
+        fs::create_dir_all(local_root.join("photos/2019")).expect("subtree");
+        let inner = local_root.join("photos/2019/one.jpg");
+        fs::write(&inner, b"one").expect("nested file");
+        let inner_hash = crate::index::compute_sha1(&inner).expect("hash");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(
+            DaemonConfig {
+                local_delete_mode: LocalDeleteMode::Trash,
+                ..test_config(directory.path(), &local_root)
+            },
+            client,
+        )
+        .expect("daemon");
+        for record in [
+            FileRecord {
+                entity_kind: crate::index::EntityKind::Directory,
+                ..base_record("photos", Some("remote-photos"), "")
+            },
+            FileRecord {
+                entity_kind: crate::index::EntityKind::Directory,
+                ..base_record("photos/2019", Some("remote-2019"), "")
+            },
+            base_record("photos/2019/one.jpg", Some("remote-one"), inner_hash.as_str()),
+        ] {
+            upsert_record(&daemon.pair().connection, &record).expect("base record");
+        }
+
+        let _hook = crate::trash::test_hook::install_fake_trash(trash.clone());
+        daemon.reconcile_blocking().expect_clean("reconcile");
+
+        assert!(!local_root.join("photos").exists(), "the tree leaves the root");
+        assert_eq!(
+            fs::read(trash.join("photos/2019/one.jpg")).expect("read the nested trashed file"),
+            b"one",
+            "the subtree travels INSIDE the folder — one move, not a flattened per-file sweep"
+        );
+        for path in ["photos", "photos/2019", "photos/2019/one.jpg"] {
+            assert!(
+                get_record(&daemon.pair().connection, Path::new(path))
+                    .expect("index lookup")
+                    .is_none(),
+                "{path} must be purged with the directory that held it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failing_trash_move_keeps_the_file_and_does_not_unlink_it_instead() {
+        // DESIGN D4, AND THE LOAD-BEARING ONE. Every warning this change removes rests on the
+        // failure mode being "the file is still there". A fallback to `remove_file` would make the
+        // trash a courtesy and the permanent removal the real behaviour — with a one-click
+        // approval in front of it, because the card would be drawn as recoverable.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let doomed = local_root.join("doomed.txt");
+        fs::write(&doomed, b"must survive").expect("local file");
+        let doomed_hash = crate::index::compute_sha1(&doomed).expect("hash");
+        // A successor in the same plan, so "the rest of the pass still runs" is observable.
+        fs::write(local_root.join("fresh.txt"), b"fresh").expect("local file");
+        let (client, operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(
+            DaemonConfig {
+                local_delete_mode: LocalDeleteMode::Trash,
+                ..test_config(directory.path(), &local_root)
+            },
+            client,
+        )
+        .expect("daemon");
+        upsert_record(
+            &daemon.pair().connection,
+            &base_record("doomed.txt", Some("remote-id"), doomed_hash.as_str()),
+        )
+        .expect("base record");
+
+        let _hook = crate::trash::test_hook::install_failing_trash();
+        daemon
+            .reconcile_blocking()
+            .expect_partial(1, "a trash that refuses is one failed item, not a failed pass");
+
+        assert!(doomed.exists(), "the entity must survive a failed trash move");
+        assert_eq!(fs::read(&doomed).expect("read"), b"must survive");
+        assert!(
+            get_record(&daemon.pair().connection, Path::new("doomed.txt"))
+                .expect("index lookup")
+                .is_some(),
+            "the baseline row must survive too, or the deletion is never re-planned"
+        );
+        assert_eq!(daemon.pair().last_failed_item_count, 1);
+        assert_eq!(
+            daemon.pair().last_failed_items[0].path,
+            PathBuf::from("doomed.txt")
+        );
+        assert!(
+            daemon
+                .pair()
+                .pending_changes
+                .contains(Path::new("doomed.txt")),
+            "the failed path is re-queued so an events-driven pass cannot idle-skip it"
+        );
+        let uploaded: Vec<PathBuf> = operations
+            .lock()
+            .expect("operations lock")
+            .iter()
+            .filter_map(|operation| match operation {
+                RecordedOperation::Upload { relative_path, .. } => Some(relative_path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            uploaded,
+            vec![PathBuf::from("fresh.txt")],
+            "the actions ordered after the failed deletion must still run"
+        );
+    }
+
+    #[test]
+    fn a_failing_trash_move_holds_the_event_cursor() {
+        // The other half of D4: the deletion has to come back. An advanced cursor would drop its
+        // event out of the next delta, and an incremental pass's remote map IS
+        // `reconstruct_remote(base ⊕ delta)` — so nothing would ever re-derive it. The file would
+        // sit on disk, un-mirrored, with the deletion neither done nor pending.
+        //
+        // The same rule a WITHHELD deletion gets (`a_withheld_local_delete_holds_the_event_cursor`)
+        // and a vanished node gets: one policy, now three causes.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let base = sha1_bytes(b"base");
+        let doomed = local_root.join("a.txt");
+        fs::write(&doomed, b"base").expect("local file");
+
+        // A remote delete event for the baseline node → the planner derives a LocalDelete. The
+        // guard is OFF here, unlike the withheld-deletion test: this one is about a deletion that
+        // was allowed to go ahead and could not.
+        let client = EventFakeClient::new(HashMap::new());
+        let full_walks = Arc::clone(&client.full_walks);
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Deleted, "na", None, false)],
+        );
+        let mut daemon = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                local_delete_mode: LocalDeleteMode::Trash,
+                ..event_config(directory.path(), &local_root)
+            },
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![page],
+            ))),
+        )
+        .expect("daemon");
+
+        upsert_record(
+            &daemon.pair().connection,
+            &base_record("a.txt", Some("vol~na"), base.as_str()),
+        )
+        .expect("seed base record");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().is_first_reconcile = false;
+
+        let _hook = crate::trash::test_hook::install_failing_trash();
+        daemon
+            .reconcile_blocking()
+            .expect_partial(1, "the refused trash move is one failed item");
+
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0, "stayed incremental");
+        assert!(doomed.exists(), "the entity survives a trash that refused it");
+        let cursor = load_event_cursor(&daemon.pair().connection, "vol")
+            .expect("load cursor")
+            .expect("cursor present");
+        assert_eq!(
+            cursor.last_event_id, "cursor-0",
+            "the cursor must NOT advance past a deletion that did not land"
         );
     }
 
@@ -18231,6 +18526,7 @@ mod tests {
             first_seen_epoch_secs: 1,
             subtree_files: None,
             subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
         });
         daemon.pair_mut().warm_starts_since_full_walk = 3;
         daemon.pair_mut().force_local_rescan = true;

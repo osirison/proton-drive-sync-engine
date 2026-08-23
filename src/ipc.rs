@@ -458,6 +458,83 @@ impl<'de> Deserialize<'de> for AuthState {
     }
 }
 
+/// What a deletion waiting for review will actually do to the entity — **the consequence**, which
+/// is a different question from which side it applies to.
+///
+/// A CLIENT MUST NOT DERIVE THIS FROM `direction`. Before `local_delete_mode` existed the two were
+/// the same fact: a `RemoteDelete` moved the file to Proton's Trash and a `LocalDelete` unlinked it,
+/// so "local" *was* "permanent". Now a local deletion is recoverable whenever the pair trashes
+/// rather than unlinks, and only the daemon knows which — the config file can be saved while the
+/// running daemon still holds the old value, so a client reading the file would drop the friction
+/// for deletions the daemon is still about to make permanent.
+///
+/// NOT [`crate::trash::LocalDeleteMode`], which is the config spelling (`trash` / `permanent`) and
+/// names the mechanism a user picks. This names the consequence a client draws, and a `RemoteDelete`
+/// has one of these and no mode. `"trash"` never crosses this wire.
+///
+/// HAND-SERIALIZED, and [`Self::Permanent`] is both the default and the fall-through, which is one
+/// decision and not two. `#[serde(default)]` on the field covers a daemon that predates the field;
+/// this covers a *newer* daemon that invents a third disposal. Both mean "this reply cannot tell
+/// me", and the cautious reading of that is the one that keeps the warnings up. The same reasoning
+/// as [`crate::sync::UnsyncableReason`]'s token and [`AuthState`]'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LocalDisposal {
+    /// The entity can be brought back: Proton Drive's Trash for a `RemoteDelete`, this computer's
+    /// trash for a `LocalDelete` under [`crate::trash::LocalDeleteMode::Trash`].
+    Recoverable,
+    /// The entity is gone for good. The default, so an absent or unrecognized token is read as the
+    /// dangerous one rather than the safe one.
+    #[default]
+    Permanent,
+}
+
+impl LocalDisposal {
+    /// What this pair's mode means for a deletion in `direction`.
+    ///
+    /// The ONE mapping, so the wire cannot say "recoverable" about a mode that unlinks. A remote
+    /// deletion is recoverable whatever the local mode says — it lands in Proton's Trash, which
+    /// `local_delete_mode` has no bearing on.
+    pub fn of(direction: DeleteDirection, mode: crate::trash::LocalDeleteMode) -> Self {
+        match direction {
+            DeleteDirection::Remote => Self::Recoverable,
+            DeleteDirection::Local if mode.is_recoverable() => Self::Recoverable,
+            DeleteDirection::Local => Self::Permanent,
+        }
+    }
+
+    /// The wire token.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Recoverable => "recoverable",
+            Self::Permanent => "permanent",
+        }
+    }
+
+    /// Whether the user can get the entity back after this deletion applies. What the removed
+    /// warnings hang on.
+    pub fn is_recoverable(self) -> bool {
+        matches!(self, Self::Recoverable)
+    }
+}
+
+impl Serialize for LocalDisposal {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for LocalDisposal {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let token = String::deserialize(deserializer)?;
+        Ok(match token.as_str() {
+            "recoverable" => Self::Recoverable,
+            // Including the literal `"permanent"`, and any disposal a newer daemon invents: if this
+            // reply cannot tell us the entity comes back, we say it does not.
+            _ => Self::Permanent,
+        })
+    }
+}
+
 /// One withheld deletion surfaced to the user for review. `path` + `direction` identify it for an
 /// `approve`; `fingerprint` (a file's baseline SHA-1 or a directory's `proton_id`) is what the
 /// approval is pinned to, so it cannot later authorize a different deletion at the same path.
@@ -494,6 +571,12 @@ pub struct PendingDeletion {
     pub subtree_files: Option<u64>,
     #[serde(default)]
     pub subtree_bytes: Option<u64>,
+    /// What approving this deletion actually does to the entity — see [`LocalDisposal`]. Read this
+    /// rather than deriving a consequence from `direction`, which stopped answering it when
+    /// `local_delete_mode` arrived. `#[serde(default)]` for a daemon that predates the field, and
+    /// the default is [`LocalDisposal::Permanent`]: an answer we do not have is not a reassurance.
+    #[serde(default)]
+    pub disposal: LocalDisposal,
 }
 
 /// One action whose side effect failed during the last pass (#136). The executor keeps going past
@@ -1259,6 +1342,48 @@ mod tests {
     }
 
     #[test]
+    fn a_disposal_round_trips_and_an_unrecognised_one_reads_as_permanent() {
+        for disposal in [LocalDisposal::Recoverable, LocalDisposal::Permanent] {
+            let json = serde_json::to_string(&disposal).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", disposal.as_str()));
+            assert_eq!(
+                serde_json::from_str::<LocalDisposal>(&json).expect("deserialize"),
+                disposal
+            );
+        }
+        // A disposal a NEWER daemon invents. `#[serde(default)]` covers the field being absent;
+        // this covers it being present and unreadable, and both must land on the same answer or
+        // the fail-closed rule has a hole in the middle of it.
+        assert_eq!(
+            serde_json::from_str::<LocalDisposal>("\"shredded\"").expect("degrade"),
+            LocalDisposal::Permanent
+        );
+        assert!(LocalDisposal::Recoverable.is_recoverable());
+        assert!(!LocalDisposal::Permanent.is_recoverable());
+    }
+
+    #[test]
+    fn a_remote_deletion_is_recoverable_whatever_the_local_mode_says() {
+        use crate::trash::LocalDeleteMode;
+        // Proton's Trash is not something `local_delete_mode` has any bearing on. One mapping, so
+        // the wire can never call a mode that unlinks "recoverable".
+        for mode in LocalDeleteMode::ALL {
+            assert_eq!(
+                LocalDisposal::of(DeleteDirection::Remote, mode),
+                LocalDisposal::Recoverable
+            );
+        }
+        assert_eq!(
+            LocalDisposal::of(DeleteDirection::Local, LocalDeleteMode::Trash),
+            LocalDisposal::Recoverable
+        );
+        assert_eq!(
+            LocalDisposal::of(DeleteDirection::Local, LocalDeleteMode::Permanent),
+            LocalDisposal::Permanent
+        );
+    }
+
+    #[test]
     fn a_pending_deletion_from_an_older_daemon_still_parses() {
         // The lifecycle fields (#225 first-seen, #208 subtree totals) are additions to a shape an
         // older daemon already emits, so they default rather than fail the whole reply. `0` and
@@ -1276,6 +1401,10 @@ mod tests {
         assert_eq!(pending.detected_epoch_secs, 42);
         assert_eq!(pending.first_seen_epoch_secs, 0);
         assert_eq!((pending.subtree_files, pending.subtree_bytes), (None, None));
+        // A daemon that predates `local_delete_mode` DID unlink, so `permanent` is not merely the
+        // cautious reading here — it is the true one. Fail-closed and factual at once, which is
+        // why the field's default and `LocalDisposal`'s fall-through are the same variant.
+        assert_eq!(pending.disposal, LocalDisposal::Permanent);
     }
 
     #[test]
@@ -1707,6 +1836,7 @@ mod tests {
                 first_seen_epoch_secs: 1,
                 subtree_files: None,
                 subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
             }],
             failed_items: vec![FailedItem {
                 path: non_utf8_path(b"-failed.txt"),

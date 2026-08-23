@@ -36,7 +36,7 @@ import { bytes, clock, since } from "../ui/format.js";
 import { renderHexagon, updateHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button } from "../ui/controls.js";
-import { transferRow, eyebrow, severityOf } from "../ui/rows.js";
+import { transferRow, eyebrow, severityOfItem } from "../ui/rows.js";
 import { attentionBand, bandButton } from "../ui/bands.js";
 import { fid } from "../fixtures/frames.js";
 
@@ -507,7 +507,7 @@ function bandItems(v, handlers) {
     // This line used to test `d.direction === "local"` itself, which is a second copy of the rule
     // the Deletions screen sorts its two columns by: the band's `N remove permanently` and the
     // screen's left column would then be free to disagree about the same list.
-    const permanent = v.deletions.filter((d) => severityOf(d.direction) === "permanent").length;
+    const permanent = v.deletions.filter((d) => severityOfItem(d) === "permanent").length;
     items.push({
       tone: "destructive",
       title: MAIN.band.deletionTitle(v.deletions.length),
