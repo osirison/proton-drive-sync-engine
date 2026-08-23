@@ -159,6 +159,10 @@ export const EMPTY_CONFIG = {
   // (`unwrap_or(true)` in config.rs), which is exactly what `get_deletion_policy` reports. A `null`
   // here would make the empty-config case the one shape the real command never sends.
   deletion_policy: "ask_every_time",
+  // Not null, for the same reason: an absent `local_delete_mode` means the daemon trashes, which is
+  // what `get_local_delete_mode` reports. A `null` here would make the empty-config case — the one
+  // every existing install is in — the one shape the real command never sends.
+  local_delete_mode: "trash",
 };
 
 // ---- browser-preview mock (never runs inside Tauri) ----

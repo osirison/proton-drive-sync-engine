@@ -101,20 +101,20 @@
       counterpart to `travelExplainer`, and a `toTrashLocal` button label
 - [x] 7.2 Leave `permanent`, `permanentSub`, `fileConsequence`, `folderConsequence*` and
       `typeToDelete` in place — permanent mode still draws every one of them (design D7)
-- [ ] 7.3 Add the two settings cards' copy: titles, bodies, and the disk-space trade named plainly in
+- [x] 7.3 Add the two settings cards' copy: titles, bodies, and the disk-space trade named plainly in
       the trash card's body (see Risks)
 - [ ] 7.4 Update `docs/design-v2/13-copy-deck.md` with every string added or repurposed
 
 ## 8. Settings round trip
 
-- [ ] 8.1 `gui/gui-core/src/config_io.rs`: `get_local_delete_mode` / `set_local_delete_mode`, plain
+- [x] 8.1 `gui/gui-core/src/config_io.rs`: `get_local_delete_mode` / `set_local_delete_mode`, plain
       single-spelling key, re-exporting the engine's enum rather than copying it
-- [ ] 8.2 `gui/src-tauri/src/commands.rs`: field on `ConfigPayload` (populated in `read_config`) and
+- [x] 8.2 `gui/src-tauri/src/commands.rs`: field on `ConfigPayload` (populated in `read_config`) and
       on `ConfigUpdate` (applied in `write_config`)
-- [ ] 8.3 `gui/src/js/screens/settings.js`: a second section on the Deletions tab — two `radioCard`s
+- [x] 8.3 `gui/src/js/screens/settings.js`: a second section on the Deletions tab — two `radioCard`s
       under a section title, with `keyLine("local_delete_mode")`, and the same
       "no card until the file has been read" rule the policy cards use
-- [ ] 8.4 Wire the handler through `app.js` to `api.js`'s config write, and confirm the
+- [x] 8.4 Wire the handler through `app.js` to `api.js`'s config write, and confirm the
       restart-required prompt fires as it does for the other keys
 - [ ] 8.5 Extend `gui/src/js/fixtures/settings.js` and `fixtures/deletions.js` with both modes, and
       add a fixture whose queue mixes a trashed local deletion with a remote one

@@ -2814,6 +2814,15 @@ function settingsProps() {
         clearSaveOutcome();
         render();
       },
+      // ITS OWN KEY, staged independently of the policy above. The two are adjacent on the tab and
+      // are two settings: one decides whether a deletion waits for you, this one what happens when
+      // it goes ahead. Staging them together would make choosing one write the other.
+      onDisposal: (disposal) => {
+        settingsNotice = null;
+        settingsEdits = { ...settingsEdits, local_delete_mode: disposal.id };
+        clearSaveOutcome();
+        render();
+      },
       // Staged, not written. `null` once it matches what is saved, so choosing the card that is
       // already selected does not mark the screen dirty — the same rule `configUpdate` applies to
       // every other control.

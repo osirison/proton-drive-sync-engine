@@ -437,8 +437,7 @@ export const DELETIONS = {
    * two cards under it have different ones — and the cards say which.
    */
   recoverableLocal: "Recoverable · this computer",
-  recoverableLocalSub:
-    "Moved to this computer's Trash. You can restore it from your file manager.",
+  recoverableLocalSub: "Moved to this computer's Trash. You can restore it from your file manager.",
   recoverableMixed: "Recoverable",
   recoverableMixedSub:
     "Each of these can be brought back — from Proton Drive's Trash, or from this computer's.",
@@ -944,6 +943,27 @@ export const SETTINGS = {
   askNever: "Never ask",
   askNeverSub:
     "Deleting a file on either side deletes it on the other immediately, including permanently from this computer.",
+
+  /**
+   * The tab's SECOND section, and a second setting rather than a fourth card.
+   *
+   * The cards above decide whether a deletion waits for you. These decide what happens once one
+   * goes ahead, which is a different question — and folding them together would give four
+   * combinations with no spelling anybody could read.
+   *
+   * THE TRADE IS NAMED IN THE CARD, not left for the user to discover from a full disk. A trashed
+   * file still occupies its bytes; that is the honest cost of being able to get it back, and this
+   * screen is the one place a person is weighing exactly that.
+   */
+  disposalTitle: "What deleting does to your copy",
+  disposalSub:
+    "This is about files on this computer. Anything deleted on Proton Drive always goes to Proton's Trash.",
+  disposalTrash: "Move them to the trash",
+  disposalTrashSub:
+    "Deleted files go to this computer's Trash, where you can restore them from your file manager. They keep taking up space until you empty it.",
+  disposalPermanent: "Delete them permanently",
+  disposalPermanentSub:
+    "Deleted files are removed from the disk straight away, freeing the space. There is no trash to get them back from.",
 
   saveNote:
     "Saving writes only what you changed. Your comments and anything the app doesn't understand are left alone.",

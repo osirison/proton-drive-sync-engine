@@ -98,7 +98,13 @@ test("a local deletion the daemon will trash does not interrupt either", () => {
     response: {
       pending_deletions: [
         deletion({ disposal: "recoverable", entity_kind: "file", subtree_files: null }),
-        deletion({ path: "b.txt", fingerprint: "b", disposal: "permanent", entity_kind: "file", subtree_files: null }),
+        deletion({
+          path: "b.txt",
+          fingerprint: "b",
+          disposal: "permanent",
+          entity_kind: "file",
+          subtree_files: null,
+        }),
       ],
     },
   });

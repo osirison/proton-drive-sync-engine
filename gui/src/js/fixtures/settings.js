@@ -154,6 +154,12 @@ local = true
   // The same pair, as the radio group binds to it (C1). `true, true` is the card the Deletions tab
   // draws selected.
   deletion_policy: "ask_every_time",
+  // The tab's SECOND section. `trash` is the daemon's default, so it is what an untouched install
+  // draws — and this fixture stands in for one. The permanent card has no frame of its own and so
+  // no fixture: `check-fixtures.mjs` compares this registry against `frames/index.json` in BOTH
+  // directions, so a label the prototype does not draw is a build failure. It is covered by
+  // `disposalOf` in test/settings.test.js instead.
+  local_delete_mode: "trash",
 };
 
 /**

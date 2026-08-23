@@ -299,6 +299,10 @@ pub struct ConfigPayload {
     /// that defaulting is precisely what stops an empty config drawing as `Never ask` on a machine
     /// that is in fact asking about everything.
     deletion_policy: config_io::DeletionPolicy,
+    /// What a local deletion does to the entity. A DIFFERENT setting from `deletion_policy`, which
+    /// decides only whether a deletion waits for a person — this one decides what happens once one
+    /// goes ahead, and is what the Deletions tab's second section is bound to.
+    local_delete_mode: config_io::LocalDeleteMode,
 }
 
 #[tauri::command]
@@ -325,6 +329,7 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
         delete_approval_remote: doc.get_delete_approval("remote"),
         delete_approval_local: doc.get_delete_approval("local"),
         deletion_policy: doc.get_deletion_policy(),
+        local_delete_mode: doc.get_local_delete_mode(),
     })
 }
 
@@ -350,6 +355,9 @@ pub struct ConfigUpdate {
     /// the policy always sets both directions, which is what makes a radio selection unambiguous.
     /// `set_deletion_policy` writes it back in whichever spelling the file already uses.
     deletion_policy: Option<config_io::DeletionPolicy>,
+    /// Independent of `deletion_policy` above, and applied independently: a screen may send either
+    /// without disturbing the other, which is what makes the tab's two sections two settings.
+    local_delete_mode: Option<config_io::LocalDeleteMode>,
 }
 
 #[tauri::command]
@@ -405,6 +413,9 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     }
     if let Some(v) = update.deletion_policy {
         doc.set_deletion_policy(v);
+    }
+    if let Some(v) = update.local_delete_mode {
+        doc.set_local_delete_mode(v);
     }
     doc.save(&path).map_err(|e| e.to_string())?;
     // Re-resolve in case local_root / socket / db changed, but keep the daemon-reported live

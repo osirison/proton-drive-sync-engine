@@ -280,6 +280,10 @@ export const ABSENT_DEFAULTS = {
   delete_approval_remote: true,
   delete_approval_local: true,
   deletion_policy: "ask_every_time",
+  // The daemon's default, and the whole point of the change: a config that says nothing trashes.
+  // Listed here for the same reason as the rest — clicking the card that is already selected on a
+  // fresh config must not mark the screen dirty and materialise a key the file never had.
+  local_delete_mode: "trash",
 };
 
 export function configUpdate(config, edits) {
@@ -778,6 +782,33 @@ function skipTab(props) {
 
 // ------------------------------------------------------------------------ tab 3 · deletions ----
 
+/**
+ * The disposal cards, in drawn order — recommended first, as the policy cards are.
+ *
+ * `trash` is the daemon's default and carries the badge. `permanent` gets NO `tone: "destructive"`,
+ * where `never` above does, and the difference is what each one costs: `never` removes a person
+ * from the loop for every future deletion, while this one is a considered choice about disk space
+ * whose consequence is stated in its own body. A red card for it would be the same overstatement
+ * this whole change is removing from the Deletions screen.
+ */
+const DISPOSALS = [
+  { id: "trash", title: SETTINGS.disposalTrash, body: SETTINGS.disposalTrashSub, note: SETTINGS.recommended },
+  { id: "permanent", title: SETTINGS.disposalPermanent, body: SETTINGS.disposalPermanentSub },
+];
+
+/**
+ * Which disposal card is selected, or `null` until the file has been read.
+ *
+ * TOTAL, like `policyOf`: a hand-edited config holding a value this build has never heard of draws
+ * NO selection rather than the nearest one, so the next save cannot silently rewrite it. (The
+ * daemon refuses to start on such a file; the screen still has to render one.)
+ */
+export function disposalOf(config) {
+  if (!config) return null;
+  const resolved = config.local_delete_mode ?? "trash";
+  return DISPOSALS.some((d) => d.id === resolved) ? resolved : null;
+}
+
 const POLICY_COPY = {
   ask_every_time: { title: SETTINGS.askEvery, body: SETTINGS.askEverySub, note: SETTINGS.recommended },
   only_permanent: { title: SETTINGS.askPermanent, body: SETTINGS.askPermanentSub },
@@ -791,6 +822,7 @@ function deletionsTab(props) {
   // not be parsed, or one that simply has not come back yet. This is the screen's most consequential
   // control; it does not guess.
   const selected = loaded ? policyOf(config) : null;
+  const selectedDisposal = loaded ? disposalOf(config) : null;
   return [
     fid(el("div", { class: "settings-section-title" }, SETTINGS.deletionsTitle), "deletionsTitle"),
     fid(el("div", { class: "settings-section-sub" }, SETTINGS.deletionsSub), "deletionsSub"),
@@ -829,6 +861,43 @@ function deletionsTab(props) {
     // wrong: there the frame names a key that does not exist where one does, here it names the
     // policy the pair expresses, which is what a person choosing between three cards is setting.
     keyLine("deletion_policy · applies to both directions"),
+
+    // THE SECOND SETTING. Drawn under the first because it only matters once a deletion goes
+    // ahead, and drawn on this tab rather than under Advanced because it is the question a person
+    // came here to answer: can I get the file back.
+    fid(el("div", { class: "settings-section-title" }, SETTINGS.disposalTitle), "disposalTitle"),
+    fid(el("div", { class: "settings-section-sub" }, SETTINGS.disposalSub), "disposalSub"),
+    fid(
+      el(
+        "div",
+        { class: "settings-cards", role: "radiogroup", "aria-label": SETTINGS.disposalTitle },
+        DISPOSALS.map((disposal, i) => {
+          const card = fid(
+            radioCard({
+              // Same rule as the policy cards above: no selection until the file has been read.
+              // `disposalOf({})` answers `trash`, which is true of an EMPTY config and a lie about
+              // one that could not be parsed or has not arrived.
+              selected: selectedDisposal === disposal.id,
+              title: disposal.title,
+              note: disposal.note ?? null,
+              body: disposal.body,
+              onSelect: () => handlers.onDisposal?.(disposal),
+            }),
+            "disposalCard",
+            i,
+          );
+          focusable(card, `disposal:${disposal.id}`);
+          fid(card.querySelector(".radio-head"), "disposalCardHead", i);
+          fid(card.querySelector(".radio-ring"), "disposalCardRing", i);
+          fid(card.querySelector(".radio-title"), "disposalCardTitle", i);
+          fid(card.querySelector(".radio-text"), "disposalCardBody", i);
+          if (disposal.note) fid(card.querySelector(".radio-note"), "disposalCardBadge");
+          return card;
+        }),
+      ),
+      "disposalCards",
+    ),
+    keyLine("local_delete_mode · applies to this computer only"),
   ];
 }
 

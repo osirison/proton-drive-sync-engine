@@ -227,9 +227,7 @@ export function factsOf(item, status) {
     // The column and the direction name the same side from opposite ends: `local` means the delete
     // would apply HERE, because it went first on Proton.
     const text =
-      severityOfItem(item) === "permanent"
-        ? DELETIONS.deletedOnProton(ago)
-        : DELETIONS.deletedHere(ago);
+      severityOfItem(item) === "permanent" ? DELETIONS.deletedOnProton(ago) : DELETIONS.deletedHere(ago);
     facts.push({ at: 0, text });
   }
   if (item.entity_kind !== "directory" && status?.mtime != null) {

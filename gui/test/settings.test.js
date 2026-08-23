@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 
 import {
   POLICIES,
+  disposalOf,
   policyOf,
   ruleEffect,
   totalLine,
@@ -255,6 +256,29 @@ test("the three cards are the three drawn pairs, in the drawn order", () => {
   assert.equal(policyOf({ delete_approval_remote: true, delete_approval_local: true }), "ask_every_time");
   assert.equal(policyOf({ delete_approval_remote: false, delete_approval_local: true }), "only_permanent");
   assert.equal(policyOf({ delete_approval_remote: false, delete_approval_local: false }), "never");
+});
+
+test("the disposal cards are their own setting, defaulting to the recoverable one", () => {
+  // TWO SETTINGS ON ONE TAB, and this is the half that decides what a deletion DOES. An untouched
+  // config says nothing about it and must draw `trash` — every install that existed before this key
+  // is in exactly that state, and drawing `permanent` there would tell them their files are being
+  // unlinked when the daemon has started trashing them.
+  assert.equal(disposalOf({}), "trash");
+  assert.equal(disposalOf({ local_delete_mode: "trash" }), "trash");
+  assert.equal(disposalOf({ local_delete_mode: "permanent" }), "permanent");
+
+  // No config read yet is not the same as a config that says nothing — the screen draws no
+  // selection at all rather than guessing, exactly as `policyOf` does.
+  assert.equal(disposalOf(null), null);
+
+  // A value this build has never heard of draws NO card rather than the nearest one, so the next
+  // save cannot silently rewrite a setting nobody touched. (The daemon refuses to start on such a
+  // file; the screen still has to render one.)
+  assert.equal(disposalOf({ local_delete_mode: "shredded" }), null);
+
+  // And the two settings are independent: choosing a guard says nothing about the disposal.
+  assert.equal(disposalOf({ deletion_policy: "never" }), "trash");
+  assert.equal(policyOf({ local_delete_mode: "permanent" }), "ask_every_time");
 });
 
 test("a config written with the deletion_policy key selects its card, not the default", () => {

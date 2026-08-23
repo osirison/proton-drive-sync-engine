@@ -121,19 +121,13 @@ test("a recoverable deletion names the trash it is actually going to", () => {
   const local = consequenceOf(trashedFile);
   assert.equal(local.sentence, DELETIONS.travelExplainerLocal);
   assert.equal(local.emphasis, "this computer's Trash");
-  assert.ok(
-    local.sentence.includes(local.emphasis),
-    "the emphasis must be a slice of its own sentence",
-  );
+  assert.ok(local.sentence.includes(local.emphasis), "the emphasis must be a slice of its own sentence");
 });
 
 test("a permanent deletion keeps every word it had", () => {
   // The opt-out draws exactly what it drew before. Nothing about the warnings was deleted — they
   // are conditional now, and this is the condition.
-  assert.equal(
-    consequenceOf(folder).sentence,
-    DELETIONS.folderConsequence("1,204 files, 8.4 GB"),
-  );
+  assert.equal(consequenceOf(folder).sentence, DELETIONS.folderConsequence("1,204 files, 8.4 GB"));
   assert.equal(consequenceOf({ ...file, direction: "local" }).sentence, DELETIONS.fileConsequence);
   assert.equal(severityOfItem({ ...folder, disposal: "permanent" }), "permanent");
 });
