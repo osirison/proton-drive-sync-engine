@@ -26,8 +26,33 @@ mod sni;
 use std::sync::Mutex;
 use tauri::Manager;
 
+/// Make the window's identity the launcher's, so the desktop can find its icon.
+///
+/// GTK3 takes the Wayland `app_id` from `g_get_prgname()` (argv[0] — `proton-sync-gui`) and the X11
+/// `WM_CLASS` from `(prgname, program class)`. Neither matched
+/// `app.protondrivesync.engine.desktop`, so KWin drew `QIcon::fromTheme("wayland")` instead.
+///
+/// Must precede `Builder::run`: `gtk_init` fills an unset prgname from argv[0], the app_id is
+/// stamped at toplevel creation, and the config's windows are built before the `setup` hook.
+///
+/// `gtk::init` only satisfies gdk-rs's initialized-GDK assert (the C call needs none). It is tao's
+/// own first act and idempotent; no display leaves the X11 half unset and tao reports as before.
+#[cfg(target_os = "linux")]
+fn adopt_launcher_identity(identifier: &str) {
+    gtk::glib::set_prgname(Some(identifier));
+    if gtk::init().is_ok() {
+        gtk::gdk::set_program_class(identifier);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Not a literal: this is `tauri.conf.json`'s `identifier`, and a second spelling here is a
+    // second thing to keep in step with the launcher.
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "linux")]
+    adopt_launcher_identity(&context.config().identifier);
+
     tauri::Builder::default()
         // Settings › Folders' `Choose…`. Registered for the Rust side only: `commands::choose_folder`
         // calls it, and an app-defined command needs no capability grant — so the webview never gets
@@ -140,6 +165,93 @@ pub fn run() {
                 _ => {}
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running proton-sync-gui");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    fn repo_path(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative)
+    }
+
+    fn identifier() -> String {
+        let config = std::fs::read_to_string(repo_path("gui/src-tauri/tauri.conf.json"))
+            .expect("tauri.conf.json");
+        let config: serde_json::Value = serde_json::from_str(&config).expect("valid JSON");
+        config["identifier"]
+            .as_str()
+            .expect("identifier is a string")
+            .to_owned()
+    }
+
+    /// `adopt_launcher_identity` makes the runtime app_id the config's `identifier`, which only
+    /// resolves to an icon while a launcher of that exact name declares it. Nothing at build time
+    /// links the two, so the drift is silent: the window falls back to breeze's `wayland` glyph and
+    /// every gate stays green.
+    #[test]
+    fn the_launcher_is_named_for_the_identifier_the_window_announces() {
+        let identifier = identifier();
+
+        for launcher in [
+            repo_path(&format!("packaging/freedesktop/{identifier}.desktop")),
+            // setup.sh writes its own copy, with an absolute `Exec`; the identity lines must match.
+            repo_path("setup.sh"),
+        ] {
+            let text = std::fs::read_to_string(&launcher)
+                .unwrap_or_else(|e| panic!("{}: {e}", launcher.display()));
+            for line in [
+                format!("Icon={identifier}"),
+                format!("StartupWMClass={identifier}"),
+            ] {
+                // Whole line, not a substring: `#Icon=…` is a comment and `Icon=…-v2` is another
+                // icon, and both contain the needle. `trim` because a heredoc may be indented.
+                assert!(
+                    text.lines().any(|l| l.trim() == line),
+                    "{} does not carry `{line}`",
+                    launcher.display()
+                );
+            }
+        }
+
+        // setup.sh's install path, and uninstall.sh's removal path, name the file itself.
+        for script in ["setup.sh", "upgrade.sh", "uninstall.sh"] {
+            let text = std::fs::read_to_string(repo_path(script)).expect(script);
+            assert!(
+                text.contains(&format!("{identifier}.desktop")),
+                "{script} does not name `{identifier}.desktop`"
+            );
+        }
+    }
+
+    /// The `desktop-entry` hint is the same fact as the app_id: it tells the notification server
+    /// which launcher the banner belongs to.
+    #[test]
+    fn the_notification_desktop_entry_hint_is_that_same_identifier() {
+        let source =
+            std::fs::read_to_string(repo_path("gui/src-tauri/src/notify.rs")).expect("notify.rs");
+        assert!(
+            source.contains(&format!("\"{}\"", identifier())),
+            "notify.rs's `desktop-entry` hint has drifted from tauri.conf.json's identifier"
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod identity_tests {
+    /// Gutting `adopt_launcher_identity` left the whole suite green: the guards above check what the
+    /// launcher declares, and nothing checked that the process ever announces it. prgname IS the
+    /// Wayland app_id, so this is that half. The X11 half needs a display and is skipped headlessly.
+    #[test]
+    fn adopting_the_identity_sets_the_name_the_compositor_reads() {
+        let restore = gtk::glib::prgname();
+        super::adopt_launcher_identity("app.test.launcher-identity");
+        let announced = gtk::glib::prgname();
+        gtk::glib::set_prgname(restore.as_deref());
+        assert_eq!(announced.as_deref(), Some("app.test.launcher-identity"));
+    }
 }
