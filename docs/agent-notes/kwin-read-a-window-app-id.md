@@ -1,8 +1,15 @@
+---
+trigger: qdbus org.kde.KWin, loadScript, kwin script, app_id, resourceClass, WM_CLASS, StartupWMClass, kiconfinder6, taskbar icon
+depends_on: gui/src-tauri/src/lib.rs, gui/src-tauri/tauri.conf.json, packaging/freedesktop/app.protondrivesync.engine.desktop
+recorded: 2026-08-23
+---
+
 # Reading a GUI window's Wayland `app_id` on KDE — the KWin script's `print` goes nowhere
 
 Applies to any check on how the desktop matches `proton-sync-gui`'s windows to its `.desktop` file
-(the taskbar icon, Alt-Tab, `StartupWMClass`). On a Wayland session there is no `xprop`, and
-`xdotool`/`wmctrl` see nothing.
+(the taskbar icon, Alt-Tab, `StartupWMClass`). A native Wayland toplevel has no X11 properties, so
+`xprop`/`xdotool`/`wmctrl` cannot see it — they are installed and do still work against an XWayland
+client or anything forced to `GDK_BACKEND=x11`, which this app is not.
 
 ## The precondition nothing states
 

@@ -208,8 +208,10 @@ mod tests {
                 format!("Icon={identifier}"),
                 format!("StartupWMClass={identifier}"),
             ] {
+                // Whole line, not a substring: `#Icon=…` is a comment and `Icon=…-v2` is another
+                // icon, and both contain the needle. `trim` because a heredoc may be indented.
                 assert!(
-                    text.contains(&line),
+                    text.lines().any(|l| l.trim() == line),
                     "{} does not carry `{line}`",
                     launcher.display()
                 );
@@ -236,5 +238,20 @@ mod tests {
             source.contains(&format!("\"{}\"", identifier())),
             "notify.rs's `desktop-entry` hint has drifted from tauri.conf.json's identifier"
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod identity_tests {
+    /// Gutting `adopt_launcher_identity` left the whole suite green: the guards above check what the
+    /// launcher declares, and nothing checked that the process ever announces it. prgname IS the
+    /// Wayland app_id, so this is that half. The X11 half needs a display and is skipped headlessly.
+    #[test]
+    fn adopting_the_identity_sets_the_name_the_compositor_reads() {
+        let restore = gtk::glib::prgname();
+        super::adopt_launcher_identity("app.test.launcher-identity");
+        let announced = gtk::glib::prgname();
+        gtk::glib::set_prgname(restore.as_deref());
+        assert_eq!(announced.as_deref(), Some("app.test.launcher-identity"));
     }
 }
