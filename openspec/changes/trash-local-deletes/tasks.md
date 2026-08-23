@@ -20,18 +20,18 @@
 
 ## 2. The config key
 
-- [ ] 2.1 Add `local_delete_mode: Option<LocalDeleteMode>` to `FileConfig` and the matching field to
+- [x] 2.1 Add `local_delete_mode: Option<LocalDeleteMode>` to `FileConfig` and the matching field to
       `DaemonConfigInput`, plus `--local-delete-mode <MODE>` on `proton-syncd`
-- [ ] 2.2 Add `ConfigKey::LocalDeleteMode`, extend `ALL` to 23, add its `spelling()` arm, and
+- [x] 2.2 Add `ConfigKey::LocalDeleteMode`, extend `ALL` to 23, add its `spelling()` arm, and
       classify it `KeyScope::Pair` in the exhaustive `scope()` match (design D1)
-- [ ] 2.3 Carry it onto `PairConfig` through `DaemonConfigInput`/`FileConfig` merge and
+- [x] 2.3 Carry it onto `PairConfig` through `DaemonConfigInput`/`FileConfig` merge and
       `DaemonConfig::into_parts`, defaulting to `Trash` when nothing sets it
-- [ ] 2.4 Validate an unrecognised value in `validate_file_config_text`, with an error naming the key
+- [x] 2.4 Validate an unrecognised value in `validate_file_config_text`, with an error naming the key
       and listing both accepted spellings — match the shape `deletion_policy`'s error already uses
-- [ ] 2.5 Confirm `every_file_config_key_is_classified_exactly_once` and
+- [x] 2.5 Confirm `every_file_config_key_is_classified_exactly_once` and
       `the_key_set_a_classification_guard_reads_keeps_a_field_left_unset` still pass, and add a test
       that a config saying nothing resolves to `Trash`
-- [ ] 2.6 Add a `resolve_pairs` unit test that two `[[pair]]` tables may set the key to different
+- [x] 2.6 Add a `resolve_pairs` unit test that two `[[pair]]` tables may set the key to different
       values — it must run at that layer, because `refuse_unsupported_pair_count` rejects any
       two-pair config before the daemon ever sees one
 

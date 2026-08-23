@@ -28,6 +28,7 @@ use crate::proton::{
 };
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
+use crate::trash::{LocalDeleteMode, dispose};
 use crate::sync::{
     ConflictNaming, DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction,
     TransferDirection, UnsyncableItem, UnsyncableOrigin, directory_move_descendant_path_pairs,
@@ -185,6 +186,12 @@ pub struct DaemonConfig {
     /// As `delete_approval_remote`, but for a deletion propagating to the local disk
     /// (`LocalDelete`) — the remote-trash-deletes-your-local-file direction.
     pub delete_approval_local: bool,
+    /// What a local deletion does to the entity: [`LocalDeleteMode::Trash`] (the default) moves it
+    /// to the desktop trash, [`LocalDeleteMode::Permanent`] removes it from disk. A **different
+    /// question** from `delete_approval_local`, which decides only whether the deletion waits for a
+    /// person: this one decides what happens once it goes ahead, and is what the wire's
+    /// [`crate::ipc::LocalDisposal`] and every warning attached to a deletion are derived from.
+    pub local_delete_mode: LocalDeleteMode,
     /// Startup-reconcile tuning (warm start; see [`WarmStartConfig`]).
     pub warm_start: WarmStartConfig,
     /// How conflict sidecars are named (`conflict_suffix`, default `proton-cloud`). One value for
@@ -239,6 +246,7 @@ impl DaemonConfig {
             events_full_scan_every,
             delete_approval_remote,
             delete_approval_local,
+            local_delete_mode,
             warm_start,
             conflict_naming,
             log_filter: _,
@@ -261,6 +269,7 @@ impl DaemonConfig {
                 events_full_scan_every,
                 delete_approval_remote,
                 delete_approval_local,
+                local_delete_mode,
                 warm_start,
                 conflict_naming,
             },
@@ -297,6 +306,7 @@ struct PairConfig {
     events_full_scan_every: u64,
     delete_approval_remote: bool,
     delete_approval_local: bool,
+    local_delete_mode: LocalDeleteMode,
     warm_start: WarmStartConfig,
     conflict_naming: ConflictNaming,
 }
@@ -8642,6 +8652,7 @@ mod tests {
             events_full_scan_every: 20,
             delete_approval_remote: false,
             delete_approval_local: false,
+            local_delete_mode: LocalDeleteMode::default(),
             warm_start: WarmStartConfig::default(),
             conflict_naming: ConflictNaming::default(),
             log_filter: "info".to_owned(),
@@ -14465,6 +14476,13 @@ mod tests {
             // config with the guard on explicitly.
             delete_approval_remote: false,
             delete_approval_local: false,
+            // PERMANENT IN THE SHARED FIXTURE, where production defaults to `Trash`. Every
+            // pre-existing daemon test that deletes locally was written against the unlink, and a
+            // fixture-wide flip would silently change what each of them exercises. Tests about the
+            // disposal itself set the mode explicitly and install `trash::test_hook`; `dispose`
+            // panics on an un-hooked `Trash` in the lib test binary, so this cannot be got wrong by
+            // forgetting rather than by deciding.
+            local_delete_mode: LocalDeleteMode::Permanent,
             // Warm start disabled in the shared fixtures: existing event tests drive the first
             // reconcile as a steady-state incremental/bootstrap pass. Dedicated warm-start tests
             // enable it explicitly. (`test_config` sets `events_driven: false`, so warm start would

@@ -108,8 +108,20 @@ impl FromStr for LocalDeleteMode {
 /// short-circuits it, and a deletion that has nothing left to delete has succeeded.
 pub fn dispose(mode: LocalDeleteMode, path: &Path, kind: EntityKind) -> AppResult<()> {
     #[cfg(test)]
-    if let Some(result) = test_hook::intercept(mode, path, kind) {
-        return result;
+    match test_hook::intercept(mode, path, kind) {
+        Some(result) => return result,
+        // NOT A LINT — a guardrail that cannot be forgotten. Without it a lib test that flips a
+        // pair to `Trash` and omits the hook would move its temp files into the developer's real
+        // `~/.local/share/Trash`, silently and on every `cargo test`. Integration tests link the
+        // library compiled WITHOUT `cfg(test)`, so `tests/trash_disposal.rs` still exercises the
+        // real crate; this arm binds the lib test binary only.
+        None if mode == LocalDeleteMode::Trash => panic!(
+            "a lib test disposed of {} in Trash mode with no hook installed: call \
+             `trash::test_hook::install_fake_trash(...)` first, or the real desktop trash is \
+             what the test would write into",
+            path.display()
+        ),
+        None => {}
     }
     match mode {
         LocalDeleteMode::Permanent => {

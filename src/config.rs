@@ -3,6 +3,7 @@ use crate::daemon::{
     WarmStartConfig,
 };
 use crate::index::ScanOptions;
+use crate::trash::LocalDeleteMode;
 use crate::paths::{
     default_global_lock_path, default_lockfile_path, default_socket_path, default_state_db_path,
 };
@@ -186,6 +187,7 @@ pub enum ConfigKey {
     WarmStartMaxCursorAgeSecs,
     DeleteApproval,
     DeletionPolicyKey,
+    LocalDeleteMode,
     LogLevel,
     ConflictSuffix,
 }
@@ -195,7 +197,7 @@ impl ConfigKey {
     /// which compares these spellings against the keys [`FileConfig`] actually has: a variant
     /// missing from here whose field exists shows up as an unclassified key, and a variant listed
     /// here with no field shows up as a key the parser does not know.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::LocalRoot,
         Self::RemoteRoot,
         Self::DbPath,
@@ -216,6 +218,7 @@ impl ConfigKey {
         Self::WarmStartMaxCursorAgeSecs,
         Self::DeleteApproval,
         Self::DeletionPolicyKey,
+        Self::LocalDeleteMode,
         Self::LogLevel,
         Self::ConflictSuffix,
     ];
@@ -245,6 +248,7 @@ impl ConfigKey {
             Self::WarmStartMaxCursorAgeSecs => "warm_start_max_cursor_age_secs",
             Self::DeleteApproval => "delete_approval",
             Self::DeletionPolicyKey => "deletion_policy",
+            Self::LocalDeleteMode => "local_delete_mode",
             Self::LogLevel => "log_level",
             Self::ConflictSuffix => "conflict_suffix",
         }
@@ -273,6 +277,7 @@ impl ConfigKey {
             | Self::WarmStartMaxCursorAgeSecs
             | Self::DeleteApproval
             | Self::DeletionPolicyKey
+            | Self::LocalDeleteMode
             | Self::ConflictSuffix => KeyScope::Pair,
             // Describes the process.
             Self::SocketPath | Self::LogLevel => KeyScope::Daemon,
@@ -327,6 +332,8 @@ pub struct DaemonConfigInput {
     /// `--deletion-policy`: the guard as one named setting. Beaten by `no_delete_approval`, beats
     /// anything the file says (including its `[delete_approval]` table).
     pub deletion_policy: Option<DeletionPolicy>,
+    /// `--local-delete-mode`: what a local deletion does to the entity. Beats the file.
+    pub local_delete_mode: Option<LocalDeleteMode>,
     /// `--log-level`: a `tracing` filter directive (`info`, `debug`, `crate::module=warn`, …).
     pub log_level: Option<String>,
     /// The process's `RUST_LOG`, passed in rather than read here so resolution stays pure and
@@ -388,6 +395,11 @@ pub struct FileConfig {
     /// see [`DeletionPolicy`] and [`resolve_file_delete_approval`].
     #[serde(default, alias = "deletion-policy")]
     deletion_policy: Option<DeletionPolicy>,
+    /// What a local deletion does to the entity: `trash` (the default) moves it to the desktop
+    /// trash, `permanent` removes it from disk. A different question from the guard above, which
+    /// decides only whether a deletion waits for a person — see [`LocalDeleteMode`].
+    #[serde(default, alias = "local-delete-mode")]
+    local_delete_mode: Option<LocalDeleteMode>,
     /// Daemon log verbosity as a `tracing` filter directive. Outranked by the process's
     /// `RUST_LOG`, which outranks nothing else — see [`resolve_log_filter`].
     #[serde(default, alias = "log-level")]
@@ -439,6 +451,7 @@ impl FileConfig {
             ConfigKey::WarmStartMaxCursorAgeSecs => self.warm_start_max_cursor_age_secs.is_some(),
             ConfigKey::DeleteApproval => self.delete_approval.is_some(),
             ConfigKey::DeletionPolicyKey => self.deletion_policy.is_some(),
+            ConfigKey::LocalDeleteMode => self.local_delete_mode.is_some(),
             ConfigKey::LogLevel => self.log_level.is_some(),
             ConfigKey::ConflictSuffix => self.conflict_suffix.is_some(),
         }
@@ -498,6 +511,8 @@ struct FilePair {
     delete_approval: Option<FileDeleteApproval>,
     #[serde(default, alias = "deletion-policy")]
     deletion_policy: Option<DeletionPolicy>,
+    #[serde(default, alias = "local-delete-mode")]
+    local_delete_mode: Option<LocalDeleteMode>,
     #[serde(default, alias = "conflict-suffix")]
     conflict_suffix: Option<String>,
 }
@@ -546,6 +561,7 @@ struct PairFileConfig {
     warm_start_max_cursor_age_secs: Option<u64>,
     delete_approval: Option<FileDeleteApproval>,
     deletion_policy: Option<DeletionPolicy>,
+    local_delete_mode: Option<LocalDeleteMode>,
     conflict_suffix: Option<String>,
 }
 
@@ -571,6 +587,7 @@ impl PairFileConfig {
             warm_start_max_cursor_age_secs: config.warm_start_max_cursor_age_secs,
             delete_approval: config.delete_approval.clone(),
             deletion_policy: config.deletion_policy,
+            local_delete_mode: config.local_delete_mode,
             conflict_suffix: config.conflict_suffix.clone(),
         }
     }
@@ -595,6 +612,7 @@ impl PairFileConfig {
             warm_start_max_cursor_age_secs: pair.warm_start_max_cursor_age_secs,
             delete_approval: pair.delete_approval.clone(),
             deletion_policy: pair.deletion_policy,
+            local_delete_mode: pair.local_delete_mode,
             conflict_suffix: pair.conflict_suffix.clone(),
         }
     }
@@ -1332,6 +1350,12 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
             input.rust_log.as_deref(),
             file_config.log_level.as_deref(),
         )?,
+        // Flag > file > default, and the default is `Trash`: a config that says nothing must not
+        // unlink. Read off `pair` rather than `file_config` because the key describes one tree.
+        local_delete_mode: input
+            .local_delete_mode
+            .or(pair.local_delete_mode)
+            .unwrap_or_default(),
         conflict_naming: match input.conflict_suffix.or(pair.conflict_suffix) {
             Some(suffix) => ConflictNaming::new(&suffix)?,
             None => ConflictNaming::default(),
@@ -3045,6 +3069,7 @@ download_batch_size = 5
                 local: Some(true),
             }),
             deletion_policy: Some(DeletionPolicy::AskEveryTime),
+            local_delete_mode: Some(LocalDeleteMode::Permanent),
             log_level: Some("info".to_owned()),
             conflict_suffix: Some(DEFAULT_CONFLICT_SUFFIX.to_owned()),
             pair: Some(vec![file_pair_with_every_key_set()]),
@@ -3074,6 +3099,7 @@ download_batch_size = 5
                 local: Some(true),
             }),
             deletion_policy: Some(DeletionPolicy::AskEveryTime),
+            local_delete_mode: Some(LocalDeleteMode::Permanent),
             conflict_suffix: Some(DEFAULT_CONFLICT_SUFFIX.to_owned()),
         }
     }
@@ -3142,6 +3168,121 @@ download_batch_size = 5
         expected.push("name".to_owned());
         expected.sort();
         assert_eq!(top_level_keys(&file_pair_with_every_key_set()), expected);
+    }
+
+    #[test]
+    fn a_config_that_says_nothing_about_deletions_trashes_rather_than_unlinks() {
+        // THE WHOLE CHANGE, at the layer a user's existing file goes through. Every config written
+        // before this key existed says nothing, so the default is what those installs get — and it
+        // must be the recoverable one, or nothing about the removed warnings is safe.
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            "local_root = \"sync-root\"\nremote_root = \"/Drive/RemoteFolder\"\n",
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+        assert_eq!(config.local_delete_mode, LocalDeleteMode::Trash);
+    }
+
+    #[test]
+    fn the_local_delete_mode_flag_beats_the_file_which_beats_the_default() {
+        let directory = tempdir().expect("tempdir");
+        let config_path = directory.path().join("proton-sync.toml");
+        fs::write(
+            &config_path,
+            "local_root = \"sync-root\"\nremote_root = \"/Drive/RemoteFolder\"\n\
+             local_delete_mode = \"permanent\"\n",
+        )
+        .expect("write config");
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path.clone()),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+        assert_eq!(
+            config.local_delete_mode,
+            LocalDeleteMode::Permanent,
+            "the file beats the default"
+        );
+
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            config: Some(config_path),
+            local_delete_mode: Some(LocalDeleteMode::Trash),
+            ..DaemonConfigInput::default()
+        })
+        .expect("runtime config");
+        assert_eq!(
+            config.local_delete_mode,
+            LocalDeleteMode::Trash,
+            "an explicit flag beats the file"
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_local_delete_mode_is_refused_naming_the_key_and_both_choices() {
+        // The daemon must not start on an assumed default. Nothing in the repo pinned this wording
+        // for `deletion_policy` either — it comes from the serde derive, and this is what says the
+        // derive's message actually answers the user's question rather than merely failing.
+        let error = validate_file_config_text(
+            "local_root = \"/tmp/x\"\nremote_root = \"/Drive/X\"\nlocal_delete_mode = \"bin\"\n",
+        )
+        .expect_err("an unknown mode must be refused")
+        .to_string();
+        assert!(error.contains("local_delete_mode"), "{error}");
+        assert!(error.contains("bin"), "{error}");
+        for mode in LocalDeleteMode::ALL {
+            assert!(error.contains(mode.as_str()), "{error} must name {mode}");
+        }
+    }
+
+    #[test]
+    fn two_pair_tables_may_choose_different_local_delete_modes() {
+        // The key is `KeyScope::Pair`, and this is the layer that has to prove it: two folder pairs
+        // may reasonably disagree about whether deletions are recoverable. It has to run here
+        // rather than through `resolve_runtime_config`, because `refuse_unsupported_pair_count`
+        // rejects any two-pair config before the daemon ever sees one.
+        let config = parse_file_config(
+            "[[pair]]\nname = \"docs\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+             local_delete_mode = \"trash\"\n\
+             [[pair]]\nname = \"scratch\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n\
+             local_delete_mode = \"permanent\"\n",
+        )
+        .expect("parse");
+        let pairs = resolve_pairs(&config).expect("resolve pairs");
+        assert_eq!(
+            pairs
+                .iter()
+                .map(|pair| (pair.name.as_str(), pair.local_delete_mode))
+                .collect::<Vec<_>>(),
+            vec![
+                ("docs", Some(LocalDeleteMode::Trash)),
+                ("scratch", Some(LocalDeleteMode::Permanent)),
+            ]
+        );
+    }
+
+    #[test]
+    fn setting_the_mode_at_the_top_level_beside_a_pair_table_is_refused_as_two_spellings() {
+        // Rule 1 (ADR 0005 §2) reaches the new key for free BECAUSE it reads the classification
+        // rather than a list — but only if `ConfigKey::LocalDeleteMode` is classified `Pair` and
+        // `key_present` answers for it. This is what proves both, from the outside.
+        let config = parse_file_config(
+            "local_delete_mode = \"permanent\"\n\
+             [[pair]]\nname = \"docs\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n",
+        )
+        .expect("parse");
+        let error = resolve_pairs(&config)
+            .expect_err("a per-pair key at the top level beside [[pair]] must be refused")
+            .to_string();
+        assert!(error.contains("local_delete_mode"), "{error}");
     }
 
     #[test]
@@ -3237,6 +3378,7 @@ download_batch_size = 5
              exclude = [\"**/*.tmp\"]\ndry_run = true\nevents_driven = false\n\
              events_full_scan_every = 9\nwarm_start = false\nwarm_start_full_walk_every = 11\n\
              warm_start_max_cursor_age_secs = 13\ndeletion_policy = \"only_permanent\"\n\
+             local_delete_mode = \"permanent\"\n\
              conflict_suffix = \"cloud-copy\"\n";
 
         for (body, input) in [
