@@ -77,29 +77,29 @@
 
 ## 6. GUI severity and screens
 
-- [ ] 6.1 Change `severityOf(direction)` → `severityOf(direction, disposal)` in
+- [x] 6.1 Change `severityOf(direction)` → `severityOf(direction, disposal)` in
       `gui/src/js/ui/rows.js:381`: recoverable iff `direction === "remote"` **or**
       `disposal === "recoverable"` (the **wire** value — `"trash"` is the config spelling and never
       crosses the wire), everything else permanent. Rewrite the doc comment's fail-closed
       paragraph to cover both inputs — it currently argues about one
-- [ ] 6.2 Update all six call sites to pass the item: `screens/deletions.js` (the column split at
+- [x] 6.2 Update all six call sites to pass the item: `screens/deletions.js` (the column split at
       :93, the gate at :128/:225/:307, the recoverable branch at :158), `screens/main.js:510`,
       `notifier.js:82`, `app.js:1725` and `app.js:3722`
-- [ ] 6.3 `screens/deletions.js`: the column eyebrow and its sub-line become a function of the card's
+- [x] 6.3 `screens/deletions.js`: the column eyebrow and its sub-line become a function of the card's
       side, not a constant — a recoverable *local* card says `Recoverable · this computer`, a
       recoverable *remote* one keeps `Recoverable · Proton Drive`
-- [ ] 6.4 Verify the empty-permanent-column state renders: in trash mode with only local deletions
+- [x] 6.4 Verify the empty-permanent-column state renders: in trash mode with only local deletions
       queued, one column is empty and the screen must not draw a headerless or half-width layout
-- [ ] 6.5 `notifier.js`: confirm the deletion trigger goes silent when every queued deletion is
+- [x] 6.5 `notifier.js`: confirm the deletion trigger goes silent when every queued deletion is
       recoverable, and that `only_permanent_deletions` policy still lets a genuine permanent one
       through
 
 ## 7. GUI copy
 
-- [ ] 7.1 Add to `ui/copy.js` `DELETIONS`: `recoverableLocal`, `recoverableLocalSub`
+- [x] 7.1 Add to `ui/copy.js` `DELETIONS`: `recoverableLocal`, `recoverableLocalSub`
       (`Moved to this computer's Trash. You can restore it from your file manager.`), a local
       counterpart to `travelExplainer`, and a `toTrashLocal` button label
-- [ ] 7.2 Leave `permanent`, `permanentSub`, `fileConsequence`, `folderConsequence*` and
+- [x] 7.2 Leave `permanent`, `permanentSub`, `fileConsequence`, `folderConsequence*` and
       `typeToDelete` in place — permanent mode still draws every one of them (design D7)
 - [ ] 7.3 Add the two settings cards' copy: titles, bodies, and the disk-space trade named plainly in
       the trash card's body (see Risks)

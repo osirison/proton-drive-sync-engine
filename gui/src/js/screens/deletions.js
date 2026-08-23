@@ -156,7 +156,12 @@ export function itemKey(item) {
  */
 export function consequenceOf(item) {
   if (severityOfItem(item) === "recoverable") {
-    return { sentence: DELETIONS.travelExplainer, emphasis: "Proton Drive's Trash" };
+    // WHICH trash. A recoverable deletion used to have one destination because only a remote
+    // deletion was recoverable; naming the wrong one is worse than naming none, because a person
+    // who goes looking for the file will not find it there.
+    return item?.direction === "remote"
+      ? { sentence: DELETIONS.travelExplainer, emphasis: "Proton Drive's Trash" }
+      : { sentence: DELETIONS.travelExplainerLocal, emphasis: "this computer's Trash" };
   }
   if (item.entity_kind === "directory") {
     const loss = subtreeLoss(item);
@@ -248,6 +253,29 @@ export function kindNoteOf(item, status) {
 
 // ------------------------------------------------------------------------------ the queue ----
 
+/**
+ * A column's eyebrow and the sentence under it — asked of the ITEMS in it, not of the column.
+ *
+ * The permanent column can only hold local deletions (a remote one is always recoverable), so it
+ * keeps one constant pair. The recoverable column cannot: a file leaving for Proton Drive's Trash
+ * and a file leaving for this computer's are both recoverable and now share it. A queue holding
+ * both gets the mixed pair, which names no destination at all — the two cards under it have
+ * different ones, and each card says which.
+ */
+export function columnCopy(severity, items) {
+  if (severity === "permanent") {
+    return { eyebrowText: DELETIONS.permanent, note: DELETIONS.permanentSub };
+  }
+  const remote = items.some((item) => item?.direction === "remote");
+  const local = items.some((item) => item?.direction !== "remote");
+  if (remote && local) {
+    return { eyebrowText: DELETIONS.recoverableMixed, note: DELETIONS.recoverableMixedSub };
+  }
+  return local
+    ? { eyebrowText: DELETIONS.recoverableLocal, note: DELETIONS.recoverableLocalSub }
+    : { eyebrowText: DELETIONS.recoverable, note: DELETIONS.recoverableSub };
+}
+
 function queueBody({ columns, statuses, busy, handlers, actions, gates, ages }) {
   const body = fid(el("div", { class: "dl-body" }), "body");
   body.append(fid(renderSeam({ site: "deletionsList" }), "seam"));
@@ -262,8 +290,7 @@ function queueBody({ columns, statuses, busy, handlers, actions, gates, ages }) 
     const column = fid(
       deletionColumn({
         severity,
-        eyebrowText: severity === "permanent" ? DELETIONS.permanent : DELETIONS.recoverable,
-        note: severity === "permanent" ? DELETIONS.permanentSub : DELETIONS.recoverableSub,
+        ...columnCopy(severity, items),
         cards: items.map((item, i) =>
           itemCard({
             item,
@@ -305,6 +332,14 @@ function queueBody({ columns, statuses, busy, handlers, actions, gates, ages }) 
  */
 function itemCard({ item, status, c, i, busy, handlers, actions, gates, ages }) {
   const permanent = severityOfItem(item) === "permanent";
+  // TWO QUESTIONS, AND THEY STOPPED HAVING ONE ANSWER. Severity decides the FRICTION — whether the
+  // typed gate exists at all — because that is about whether the entity comes back. Direction
+  // decides where every one of these labels POINTS, because that is about which copy is going and
+  // which one survives. While permanent ⟺ local the two agreed and one boolean served both; a
+  // recoverable LOCAL deletion is what pulls them apart, and reading `permanent` for the labels
+  // would offer to move a file to Proton's Trash while trashing it here, and offer to bring it
+  // "back to this computer" when it never left.
+  const local = item?.direction !== "remote";
   const { sentence, emphasis } = consequenceOf(item);
   const facts = factsOf(item, status);
   const key = itemKey(item);
@@ -318,9 +353,16 @@ function itemCard({ item, status, c, i, busy, handlers, actions, gates, ages }) 
   // disappearing is the feedback.
   const trash = permanent
     ? null
-    : trashButton({ label: DELETIONS.toTrash, disabled, onClick: () => handlers.onTrash(item) });
+    : trashButton({
+        label: local ? DELETIONS.toTrashLocal : DELETIONS.toTrash,
+        disabled,
+        onClick: () => handlers.onTrash(item),
+      });
+  // Keeping a LOCAL deletion puts the file back on Proton (it is already here, and Proton is where
+  // it went); keeping a REMOTE one brings it back to this computer. That was always the rule — it
+  // merely used to be spelled `permanent`, which happened to mean the same thing.
   const keep = keepButton({
-    label: permanent ? DELETIONS.keepRemote : DELETIONS.keepLocal,
+    label: local ? DELETIONS.keepRemote : DELETIONS.keepLocal,
     disabled,
     onClick: () => handlers.onKeep(item),
   });

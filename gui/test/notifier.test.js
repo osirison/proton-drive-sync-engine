@@ -77,6 +77,36 @@ test("a direction nobody anticipated warns rather than stays silent", () => {
   );
 });
 
+test("a local deletion the daemon will trash does not interrupt either", () => {
+  // AN INTERRUPTION IS FOR IRREVERSIBLE LOSS. A banner over a file that is sitting in the trash,
+  // one restore away, is the notification nobody reads — and reading past this one costs the next
+  // one its attention. The trigger goes silent by itself: `candidates` filters the queue through
+  // the same `severityOf` the screen sorts by, so there is no second rule to keep in step.
+  assert.equal(
+    tick({ response: { pending_deletions: [deletion({ disposal: "recoverable" })] } }).event,
+    null,
+  );
+  // And it still fires for the one that cannot be undone, which is the point of keeping the mode.
+  assert.equal(
+    tick({ response: { pending_deletions: [deletion({ disposal: "permanent" })] } }).event?.kind,
+    "deletion",
+  );
+  // A queue holding both is not silent: the permanent one is still worth interrupting for, and the
+  // count must be of THAT one alone — a banner naming two files when one is in the trash overstates
+  // what is at stake.
+  const mixed = tick({
+    response: {
+      pending_deletions: [
+        deletion({ disposal: "recoverable", entity_kind: "file", subtree_files: null }),
+        deletion({ path: "b.txt", fingerprint: "b", disposal: "permanent", entity_kind: "file", subtree_files: null }),
+      ],
+    },
+  });
+  assert.equal(mixed.event?.kind, "deletion");
+  assert.deepEqual(mixed.event.paths, ["b.txt"]);
+  assert.equal(mixed.event.files, 1);
+});
+
 test("the same queue does not say the same thing twice", () => {
   const first = tick({ response: { pending_deletions: [deletion()] } });
   assert.equal(first.event.kind, "deletion");

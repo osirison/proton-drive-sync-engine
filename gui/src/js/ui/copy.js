@@ -425,6 +425,25 @@ export const DELETIONS = {
   recoverableSub: "Moved to Proton Drive's Trash. You can restore it there until the trash is emptied.",
 
   /**
+   * The recoverable column's OTHER pair, and why there are two.
+   *
+   * Recoverable used to mean one thing — the file goes to Proton Drive's Trash — because the only
+   * recoverable deletion was a remote one. A local deletion under `local_delete_mode = "trash"` is
+   * recoverable too, and it goes somewhere else entirely: this computer's trash, restored from the
+   * file manager rather than from Proton. Naming the wrong trash is worse than naming none, because
+   * a person who goes looking will not find it.
+   *
+   * The mixed pair is what a queue holding both looks like. It names no destination, because the
+   * two cards under it have different ones — and the cards say which.
+   */
+  recoverableLocal: "Recoverable · this computer",
+  recoverableLocalSub:
+    "Moved to this computer's Trash. You can restore it from your file manager.",
+  recoverableMixed: "Recoverable",
+  recoverableMixedSub:
+    "Each of these can be brought back — from Proton Drive's Trash, or from this computer's.",
+
+  /**
    * The permanent card's consequence, in two forms — and they are two SENTENCES, not one sentence
    * with a hole in it.
    *
@@ -445,6 +464,13 @@ export const DELETIONS = {
   fileConsequence: "Deleting this removes it from this computer for good.",
   travelExplainer:
     "You deleted this on this computer. Deleting it on Proton moves it to Proton Drive's Trash, where you can still get it back.",
+  /**
+   * The same sentence for the other side: deleted on Proton, and the local copy is about to be
+   * trashed rather than unlinked. Structurally a mirror of `travelExplainer` — where it went first,
+   * then where this copy is going, then the reassurance — so the two read as one voice.
+   */
+  travelExplainerLocal:
+    "You deleted this on Proton Drive. Deleting it here moves it to this computer's Trash, where you can still get it back.",
 
   /**
    * The facts strip, in mono, under the divider. Templates because two of the four are relative
@@ -463,6 +489,8 @@ export const DELETIONS = {
   typeToDelete: "To delete it, type DELETE below.",
   delete: "Delete",
   toTrash: "Move to Proton's Trash",
+  /** The same one-click action for a local deletion the daemon will trash rather than unlink. */
+  toTrashLocal: "Move to this computer's Trash",
   keepRemote: "Keep it — put it back on Proton Drive",
   keepLocal: "Keep it — bring it back to this computer",
   noExpiry: "Deletions stay here until you decide. Nothing expires.",

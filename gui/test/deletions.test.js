@@ -19,6 +19,7 @@ import {
   GATE_WORD,
   armedItem,
   bodyOf,
+  columnCopy,
   consequenceOf,
   factsOf,
   gateSatisfied,
@@ -27,7 +28,7 @@ import {
   splitQueue,
 } from "../src/js/screens/deletions.js";
 import { DELETIONS } from "../src/js/ui/copy.js";
-import { severityOf, splitEmphasis } from "../src/js/ui/rows.js";
+import { severityOf, severityOfItem, splitEmphasis } from "../src/js/ui/rows.js";
 import { monthYear, since } from "../src/js/ui/format.js";
 
 const folder = {
@@ -79,6 +80,96 @@ test("an unrecognised direction is treated as permanent, not as recoverable", ()
   const [permanent, recoverable] = splitQueue([stray]);
   assert.equal(permanent.length, 1);
   assert.deepEqual(recoverable, []);
+});
+
+// ---- the disposal, which is what direction stopped answering -----------------------------------
+
+/** The same local deletion as a trash-mode daemon reports it. */
+const trashedFile = { ...folder, path: "photos/2019", disposal: "recoverable" };
+
+test("a local deletion the daemon will trash is recoverable, not permanent", () => {
+  // The whole GUI half of the change. `direction` still says `local`; the daemon says it can be
+  // brought back, and that is what decides.
+  assert.equal(severityOfItem(trashedFile), "recoverable");
+  const [permanent, recoverable] = splitQueue([trashedFile]);
+  assert.deepEqual(permanent, []);
+  assert.equal(recoverable.length, 1);
+});
+
+test("an absent or unrecognised disposal keeps the gate, in both arguments", () => {
+  // FAIL CLOSED ON BOTH. An older daemon sends no `disposal` and really did unlink; a newer one
+  // could send a word this build has never heard. Neither may reach the one-click button.
+  for (const disposal of [undefined, null, "", "trash", "Recoverable", "shredded", "permanent"]) {
+    assert.equal(
+      severityOfItem({ ...folder, disposal }),
+      "permanent",
+      `disposal "${disposal}" must not skip the gate`,
+    );
+  }
+  // `"trash"` in particular: that is the CONFIG spelling and never crosses the wire. Accepting it
+  // would mean this function had two ideas about where its input comes from.
+  assert.equal(severityOf("local", "trash"), "permanent");
+  assert.equal(severityOf("local", "recoverable"), "recoverable");
+});
+
+test("a recoverable deletion names the trash it is actually going to", () => {
+  // Naming the wrong trash is worse than naming none: a person who goes looking will not find it.
+  const remote = consequenceOf(file);
+  assert.equal(remote.sentence, DELETIONS.travelExplainer);
+  assert.equal(remote.emphasis, "Proton Drive's Trash");
+
+  const local = consequenceOf(trashedFile);
+  assert.equal(local.sentence, DELETIONS.travelExplainerLocal);
+  assert.equal(local.emphasis, "this computer's Trash");
+  assert.ok(
+    local.sentence.includes(local.emphasis),
+    "the emphasis must be a slice of its own sentence",
+  );
+});
+
+test("a permanent deletion keeps every word it had", () => {
+  // The opt-out draws exactly what it drew before. Nothing about the warnings was deleted — they
+  // are conditional now, and this is the condition.
+  assert.equal(
+    consequenceOf(folder).sentence,
+    DELETIONS.folderConsequence("1,204 files, 8.4 GB"),
+  );
+  assert.equal(consequenceOf({ ...file, direction: "local" }).sentence, DELETIONS.fileConsequence);
+  assert.equal(severityOfItem({ ...folder, disposal: "permanent" }), "permanent");
+});
+
+test("a column's header names what is in it, not which column it is", () => {
+  // The recoverable column used to have one destination because only a remote deletion was
+  // recoverable. It can now hold both, and a header keyed on the COLUMN would tell half the cards
+  // under it to look in the wrong trash.
+  assert.deepEqual(columnCopy("permanent", [folder]), {
+    eyebrowText: DELETIONS.permanent,
+    note: DELETIONS.permanentSub,
+  });
+  assert.deepEqual(columnCopy("recoverable", [file]), {
+    eyebrowText: DELETIONS.recoverable,
+    note: DELETIONS.recoverableSub,
+  });
+  assert.deepEqual(columnCopy("recoverable", [trashedFile]), {
+    eyebrowText: DELETIONS.recoverableLocal,
+    note: DELETIONS.recoverableLocalSub,
+  });
+  // Both under one header: it names no destination, because the two cards have different ones.
+  assert.deepEqual(columnCopy("recoverable", [file, trashedFile]), {
+    eyebrowText: DELETIONS.recoverableMixed,
+    note: DELETIONS.recoverableMixedSub,
+  });
+});
+
+test("a trash-mode queue empties the permanent column rather than mislabelling it", () => {
+  // The commonest shape of the whole feature: a default daemon, only local deletions waiting. The
+  // permanent column has nothing in it and is not drawn — the same rule that already hides the
+  // recoverable column under `only ask about permanent ones`, not a second one keyed off a config
+  // value the screen would have to keep in step with.
+  const [permanent, recoverable] = splitQueue([trashedFile, { ...trashedFile, path: "a.txt" }]);
+  assert.deepEqual(permanent, []);
+  assert.equal(recoverable.length, 2);
+  assert.equal(columnCopy("recoverable", recoverable).eyebrowText, DELETIONS.recoverableLocal);
 });
 
 test("the queue splits into the drawn order — permanent first, recoverable second", () => {
