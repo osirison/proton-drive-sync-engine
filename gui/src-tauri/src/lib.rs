@@ -45,6 +45,32 @@ fn adopt_launcher_identity(identifier: &str) {
     }
 }
 
+/// Take tao's titlebar off a window that wants the compositor's own.
+///
+/// tao 0.35 hangs a `GtkHeaderBar` inside a `GtkEventBox` on **every** Wayland window
+/// (`platform_impl/linux/wayland/header.rs`), which forces GTK client-side decorations. KWin then
+/// draws nothing, and that header's buttons are inert: the event box is `above_child` with no
+/// handler, so per `GtkEventBox`'s contract every click inside it goes to the box and dies there
+/// instead of reaching minimize or close. tao 0.37 deleted the module and keeps an empty titlebar
+/// for *undecorated* windows only; this is that change applied from outside, and it self-disables
+/// on the upgrade, when `titlebar()` is already `None`.
+///
+/// Only for a window that wants decorations. The tray panel is undecorated and must keep its
+/// titlebar, or the compositor decorates the popover.
+///
+/// Must precede realize: measured, a 500x300 window done afterwards warns and comes out 590x466.
+#[cfg(target_os = "linux")]
+fn drop_toolkit_titlebar(window: &tauri::WebviewWindow) {
+    use gtk::prelude::GtkWindowExt;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+    if gtk_window.titlebar().is_some() {
+        gtk_window.set_titlebar(None::<&gtk::Widget>);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Not a literal: this is `tauri.conf.json`'s `identifier`, and a second spelling here is a
@@ -119,6 +145,21 @@ pub fn run() {
                     None,
                 )));
             }
+            // `main` is configured `"visible": false` so this lands before the window is realized,
+            // and is shown here. Nothing else reads its start-up visibility — `tray::show_window`
+            // already calls `show`/`unminimize` on every path that opens it.
+            //
+            // That flag carries a second effect, measured by replaying tao's construction order:
+            // created visible, its `resize(1040, 764)` is the CSD-inclusive size, so the header came
+            // out of the middle and the webview got 1040x716 — against frames drawn at 764 and a
+            // gate that renders at 764 (`gui/tools/fidelity/assert.mjs`). Created hidden it is
+            // 1040x764, with or without the header. The tao 0.37 upgrade ends the coupling: no
+            // header is installed, so a window built visible measures 764 too.
+            if let Some(main) = app.get_webview_window("main") {
+                #[cfg(target_os = "linux")]
+                drop_toolkit_titlebar(&main);
+                let _ = main.show();
+            }
             tray::setup(app.handle())?;
             Ok(())
         })
@@ -179,14 +220,42 @@ mod tests {
             .join(relative)
     }
 
-    fn identifier() -> String {
-        let config = std::fs::read_to_string(repo_path("gui/src-tauri/tauri.conf.json"))
+    fn tauri_config() -> serde_json::Value {
+        let text = std::fs::read_to_string(repo_path("gui/src-tauri/tauri.conf.json"))
             .expect("tauri.conf.json");
-        let config: serde_json::Value = serde_json::from_str(&config).expect("valid JSON");
-        config["identifier"]
+        serde_json::from_str(&text).expect("valid JSON")
+    }
+
+    fn identifier() -> String {
+        tauri_config()["identifier"]
             .as_str()
             .expect("identifier is a string")
             .to_owned()
+    }
+
+    /// `drop_toolkit_titlebar` has to land before the window is realized, and the only thing
+    /// delaying realize is this flag — which JSON gives no room to explain, in a file no other gate
+    /// reads. Measured by replaying tao 0.35's construction order: dropped after realize, the
+    /// window comes out 90px over on each axis and GTK warns to the journal, not to a terminal. The
+    /// flag also decides the webview's height (1040x716 visible, 1040x764 hidden). The label is the
+    /// other half — `lib.rs`, `tray.rs` and `commands.rs` all reach this window by that literal, and
+    /// nothing else shows it, so a relabel now costs the window rather than a tray row.
+    #[test]
+    fn the_main_window_starts_hidden_so_its_titlebar_is_dropped_before_realize() {
+        let config = tauri_config();
+        let main = config["app"]["windows"]
+            .as_array()
+            .expect("app.windows")
+            .iter()
+            .find(|w| w["label"] == "main")
+            .expect("a window labelled `main`");
+
+        assert_eq!(
+            main["visible"],
+            serde_json::json!(false),
+            "`main` must start hidden: `drop_toolkit_titlebar` runs in `setup`, and Tauri realizes \
+             every window configured visible before that hook"
+        );
     }
 
     /// `adopt_launcher_identity` makes the runtime app_id the config's `identifier`, which only
