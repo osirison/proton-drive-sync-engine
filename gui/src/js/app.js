@@ -20,6 +20,7 @@ import {
   isDialog,
   nextOnboardingLatch,
   releasesOnboarding,
+  entersOnboardingTakeover,
 } from "./routes.js";
 import { el } from "./ui/el.js";
 import {
@@ -796,18 +797,25 @@ function render() {
             configLoaded,
             statusPolled,
           );
-  // ENTERING the takeover discards both layers. Hiding them is not enough: the latch releases when
-  // the daemon comes up, and anything still held would be restored on the way out — so finishing a
-  // first-run setup would land you on the Conflicts screen with a Details dialog over it, from
-  // before the daemon was wiped. Reproduced, not theorised; DEVIATIONS §57c.
+  // ENTERING the takeover discards three things left behind by whatever ran before it. Hiding them
+  // is not enough: the latch releases when the daemon comes up, and anything still held would be
+  // restored on the way out — so finishing a first-run setup would land you on the Conflicts screen
+  // with a Details dialog over it, from before the daemon was wiped. Reproduced, not theorised;
+  // DEVIATIONS §57c. `onboardingDetour` joined the other two for the same reason, the other
+  // direction (#337): it is the flow's OWN leftover, not the main app's, and `resetOnboardingFlow`
+  // only clears it when the flow ends by completing — a session that instead ends by the latch
+  // releasing out from under an open detour (the daemon syncs before `Start the first sync` is ever
+  // clicked) leaves it set, and a later re-entry must not open back inside it.
   //
-  // Edge-triggered on purpose. Clearing on every render while the latch is true would be the same
-  // thing here, but it would also quietly forbid onboarding from ever opening a layer of its own,
-  // which is S7's call to make and not this line's.
-  if (onboardingLatch && !wasOnboarding) {
+  // Edge-triggered on purpose (`entersOnboardingTakeover`, not "while latched"). Clearing on every
+  // render while the latch is true would quietly forbid onboarding from ever opening a layer of its
+  // own — a detour is opened from INSIDE an already-armed takeover, so that would null it the
+  // render right after `onDetour` sets it.
+  if (entersOnboardingTakeover(wasOnboarding, onboardingLatch)) {
     screenStack = [];
     dialogOverlay = null;
     dialogReturn = null;
+    onboardingDetour = null;
   }
   // The CLI check runs before the flow has a config, so it is asked as soon as the takeover opens
   // (and once per app run). The merge's own progress is what advances the flow past it.
@@ -3110,6 +3118,11 @@ let onboardingStep = "folders";
  * the step never moves while one is open — so "return to the point in setup you left" needs nothing
  * remembered and cannot restore the wrong one. It is also why the header still reads `step 1 of 2`
  * inside a detour: the step it belongs to is the step you are on.
+ *
+ * CLEARED IN TWO PLACES, not one, and neither is optional (#337): `resetOnboardingFlow` when the
+ * flow ends by completing, `render`'s `entersOnboardingTakeover` edge when it instead ends by the
+ * latch releasing out from under an open detour — see that function for why the flow can end either
+ * way and why only the latch's edge (not "while latched") may touch this.
  */
 let onboardingDetour = null;
 /**
