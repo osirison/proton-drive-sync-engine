@@ -48,8 +48,8 @@ pub mod wire {
     pub use proton_drive_sync_engine::index::{EntityKind, FileEvent, FileRecord};
     pub use proton_drive_sync_engine::ipc::{
         ApplyOutcome, AuthState, ControlCommand, ControlRequest, ControlResponse,
-        LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PLAN_ACTIONS_MAX_LIMIT, PLAN_PASS_KIND,
-        PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo,
+        LIST_ENTRIES_MAX_LIMIT, ListingOutcome, LocalDisposal, PLAN_ACTIONS_MAX_LIMIT,
+        PLAN_PASS_KIND, PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo,
         StatusHistoryEntry,
     };
     pub use proton_drive_sync_engine::sync::{

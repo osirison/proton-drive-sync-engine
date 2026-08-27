@@ -124,7 +124,11 @@ function isSafeBody(model) {
 
 /** The model for a `DryRunPayload`, from the one call every path here makes. */
 function modelFor(dryRun) {
-  return summarise(dryRun?.report?.plan ?? [], dryRun?.report?.summary ?? null);
+  return summarise(
+    dryRun?.report?.plan ?? [],
+    dryRun?.report?.summary ?? null,
+    dryRun?.report?.local_disposal,
+  );
 }
 
 /**
@@ -161,7 +165,7 @@ export function gateSatisfied(value) {
  * because each names the side it happens on and `sideNote` draws four different sentences from
  * them; `PlanSummary` splits them the same way, so this is its shape and not a second one.
  */
-export function summarise(plan = [], summary = null) {
+export function summarise(plan = [], summary = null, localDisposal = "permanent") {
   const rows = sortedForDisplay(plan);
   const countOf = (...actions) => rows.filter((row) => actions.includes(row.action)).length;
   // The daemon's field when it sent one, the window's count when it did not. Asked per field rather
@@ -193,6 +197,10 @@ export function summarise(plan = [], summary = null) {
     // `daemon::StoredPlan::outcome` builds the window destructive-first — which is what lets the
     // typed-`DELETE` gate and the band be drawn from rows at all.
     gated: rows.filter((row) => isGated(row.action)),
+    // WHAT A `local_delete` IN THIS PLAN WOULD DO, from the daemon's `local_disposal`. Defaulted to
+    // `permanent` rather than to the product default: an older daemon sends no field, and this is
+    // the sentence under a typed-`DELETE` gate, so an unknown reply must over-warn.
+    localDisposal: localDisposal === "recoverable" ? "recoverable" : "permanent",
     leaving: rows.filter((row) => sideOf(row.action) === "leaving"),
     arriving: rows.filter((row) => sideOf(row.action) === "arriving"),
   };
@@ -494,7 +502,7 @@ function destructiveBand(model) {
       tone: "destructive",
       mark,
       title: PLAN.destructiveTitle(gated.length, kind),
-      note: one ? consequence(one) : [PLAN.destructiveMany(gated.length, kind)],
+      note: one ? consequence(one, model.localDisposal) : [PLAN.destructiveMany(gated.length, kind)],
     }),
     "band",
   );
@@ -515,8 +523,13 @@ function destructiveBand(model) {
  * written as an escape because a literal control character in a source file is its own bug
  * (tools/check-sources.mjs).
  */
-function consequence(row) {
-  const template = row.action === "local_delete" ? PLAN.destructiveLocal : PLAN.destructiveRemote;
+function consequence(row, localDisposal = "permanent") {
+  const template =
+    row.action === "local_delete"
+      ? localDisposal === "recoverable"
+        ? PLAN.destructiveLocalTrash
+        : PLAN.destructiveLocal
+      : PLAN.destructiveRemote;
   const inside = row.entity_kind === "directory";
   const sentence = template(row.path, inside);
   const MARKER = "\u0001";

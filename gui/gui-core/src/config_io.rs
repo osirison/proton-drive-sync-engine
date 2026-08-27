@@ -72,6 +72,22 @@ impl std::error::Error for ConfigError {}
 /// silently rewrite a setting the user never touched.
 pub use proton_drive_sync_engine::config::DeletionPolicy;
 
+/// What Settings → Deletions calls `local_delete_mode` — **the engine's own enum**, re-exported for
+/// the same reason [`DeletionPolicy`] is: the one that decides what the daemon *does* is the
+/// engine's, and a copy here would be two enums whose serde spellings stay in step by hand.
+///
+/// | card                            | key value     |
+/// | ------------------------------- | ------------- |
+/// | Move them to the trash *(rec.)* | `"trash"`     |
+/// | Delete them permanently         | `"permanent"` |
+///
+/// A DIFFERENT SETTING FROM [`DeletionPolicy`], drawn beside it on the same tab. That one decides
+/// whether a deletion waits for you; this one decides what happens once it goes ahead. Two spellings
+/// of one setting is what `deletion_policy` and `[delete_approval]` are — this is not that, and the
+/// key has exactly one spelling, so [`ConfigDoc::set_local_delete_mode`] needs none of
+/// [`ConfigDoc::set_deletion_policy`]'s round-trip care.
+pub use proton_drive_sync_engine::trash::LocalDeleteMode;
+
 /// How conflict sidecars are named (`conflict_suffix`), re-exported so the Tauri shell can resolve
 /// one from the config file without depending on the engine crate directly — and so there is only
 /// ever the engine's definition of what a sidecar looks like.
@@ -230,6 +246,28 @@ impl ConfigDoc {
                 self.get_delete_approval("local").unwrap_or(true),
             )
         })
+    }
+
+    /// What a local deletion will do to the entity — `trash` when the file says nothing, which is
+    /// the daemon's own default and therefore what an untouched config means.
+    ///
+    /// An UNRECOGNISED value reads as `None` and so as the default here, where the daemon refuses
+    /// to start on it. That asymmetry is deliberate: this getter feeds a settings screen that must
+    /// render *something*, and the file's own error is reported by [`Self::validate`], which is the
+    /// one place that decides whether a config is loadable.
+    pub fn get_local_delete_mode_key(&self) -> Option<LocalDeleteMode> {
+        self.get_str("local_delete_mode")
+            .and_then(|value| value.parse().ok())
+    }
+
+    /// [`Self::get_local_delete_mode_key`], with the daemon's default filled in.
+    pub fn get_local_delete_mode(&self) -> LocalDeleteMode {
+        self.get_local_delete_mode_key().unwrap_or_default()
+    }
+
+    /// Write the mode back. One key, one spelling — nothing to repair.
+    pub fn set_local_delete_mode(&mut self, mode: LocalDeleteMode) {
+        self.set_str("local_delete_mode", mode.as_str());
     }
 
     /// Write a deletion policy back **in the spelling the file already uses**.
@@ -524,6 +562,58 @@ exclude = ["*.tmp"]
         assert_eq!(doc.get_delete_approval("local"), Some(true));
         doc.validate()
             .expect("nested delete_approval must satisfy the daemon parser");
+    }
+
+    #[test]
+    fn the_local_delete_mode_round_trips_and_the_daemon_accepts_what_the_screen_writes() {
+        let mut doc = ConfigDoc::from_toml_str("local_root = \"/x\"\n").unwrap();
+        // An untouched config: no key, and `trash` is what the daemon does — so it is what the tab
+        // must draw. EVERY install that predates this key is in exactly this state.
+        assert_eq!(doc.get_local_delete_mode_key(), None);
+        assert_eq!(doc.get_local_delete_mode(), LocalDeleteMode::Trash);
+
+        for mode in LocalDeleteMode::ALL {
+            doc.set_local_delete_mode(mode);
+            assert_eq!(doc.get_local_delete_mode_key(), Some(mode));
+            assert_eq!(doc.get_local_delete_mode(), mode);
+            // THE HALF THAT MATTERS: `save` validates through the daemon's own parser, so a value
+            // this screen can write and the daemon cannot start on is a config the GUI bricks.
+            doc.validate()
+                .expect("the daemon must accept what the Deletions tab writes");
+        }
+        assert!(
+            doc.to_toml_string()
+                .contains("local_delete_mode = \"permanent\"")
+        );
+    }
+
+    #[test]
+    fn the_kebab_spelling_of_the_mode_is_read_and_rewritten_in_place() {
+        // `key_in_use` resolves either spelling, and a file written the kebab way must not gain a
+        // second snake-cased key beside it — that is one setting written twice.
+        let mut doc = ConfigDoc::from_toml_str("local-delete-mode = \"permanent\"\n").unwrap();
+        assert_eq!(doc.get_local_delete_mode(), LocalDeleteMode::Permanent);
+        doc.set_local_delete_mode(LocalDeleteMode::Trash);
+        let text = doc.to_toml_string();
+        assert!(text.contains("local-delete-mode = \"trash\""), "{text}");
+        assert!(!text.contains("local_delete_mode"), "{text}");
+    }
+
+    #[test]
+    fn an_unreadable_mode_draws_the_default_but_still_fails_validation() {
+        // The asymmetry is deliberate. The getter feeds a screen that must render SOMETHING; the
+        // file's own error belongs to `validate`, which is the one place that decides whether a
+        // config is loadable — and the daemon refuses to start on this file.
+        let doc = ConfigDoc::from_toml_str(
+            "local_root = \"/x\"\nremote_root = \"/Drive/X\"\nlocal_delete_mode = \"bin\"\n",
+        )
+        .unwrap();
+        assert_eq!(doc.get_local_delete_mode_key(), None);
+        assert_eq!(doc.get_local_delete_mode(), LocalDeleteMode::Trash);
+        let error = doc
+            .validate()
+            .expect_err("the daemon parser must refuse it");
+        assert!(error.to_string().contains("local_delete_mode"), "{error}");
     }
 
     #[test]

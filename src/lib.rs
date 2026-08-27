@@ -17,6 +17,7 @@ pub mod proton;
 pub mod reconstruct;
 pub mod session;
 pub mod sync;
+pub mod trash;
 
 /// Filename prefix for the private per-download staging directory that
 /// `ProtonDriveClient::download` creates next to each download destination (so the final

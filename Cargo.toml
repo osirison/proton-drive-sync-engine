@@ -22,6 +22,11 @@ serde_json = "1.0.150"
 sha1 = "0.11.0"
 tokio = { version = "1.53.0", features = ["full"] }
 toml = "1.1"
+# Local deletions go to the desktop trash by default (`src/trash.rs`). Taken with
+# `default-features = false` to drop the Windows-only `coinit_*` defaults, and `chrono` taken
+# back explicitly because it is what writes `DeletionDate` into the `.trashinfo` file — without
+# it the entry lands with no timestamp and a file manager cannot sort or age it.
+trash = { version = "5.2.6", default-features = false, features = ["chrono"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wait-timeout = "0.2"

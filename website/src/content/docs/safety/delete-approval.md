@@ -15,7 +15,7 @@ The guard is **directional** — you control each direction independently:
 | Direction | Gates | Meaning |
 | --- | --- | --- |
 | `remote` | `remote_delete` | Approval to delete a file **on Proton Drive** because you removed it locally. Proton moves it to Trash (recoverable). |
-| `local` | `local_delete` | Approval to delete a file **on your local disk** because it was removed/trashed on Proton Drive. This is the **permanent** local delete. |
+| `local` | `local_delete` | Approval to delete a file **on this computer** because it was removed/trashed on Proton Drive. By default it goes to your desktop's Trash; under `local_delete_mode = "permanent"` it is removed from disk. |
 
 Index-only cleanup (`purge`, when both sides are already gone) destroys no data and is
 **never** gated.

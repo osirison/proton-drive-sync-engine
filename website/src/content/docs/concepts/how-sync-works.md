@@ -80,7 +80,7 @@ A plan is a list of typed actions. These are the `action` values you'll see in a
 | `conflict` | Both sides changed differently; write a `.proton-cloud` sidecar and keep both. |
 | `type_conflict` | A path is a file on one side and a directory on the other. Usually left untouched; the one exception — a local directory vs. a same-named remote file — preserves the remote file's content into a `.proton-cloud` sidecar. |
 | `remote_delete` | Propagate a local deletion by trashing the file on Proton Drive. |
-| `local_delete` | Propagate a remote deletion by permanently removing the local file. |
+| `local_delete` | Propagate a remote deletion by moving the local file to your desktop's Trash — or removing it from disk, under `local_delete_mode = "permanent"`. |
 | `purge` | Drop a stale index row when both sides are already gone. No data is lost. |
 | `skip_unsupported` | Something that cannot be synced at all: a Proton Docs/Sheets file the CLI can't download as a file, or a local name that is not valid UTF-8 (the remote listing speaks JSON and could never name it back). The row carries a `skip_reason`, and `proton-sync status` lists every such item under `can't sync`. (A symlink, socket, named pipe or device node is dropped by the *scanner* and so never becomes an action at all — but it is still listed under `can't sync`, from a separate report the local walk makes.) |
 

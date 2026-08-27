@@ -193,6 +193,13 @@ export const MAIN = {
    * `deletionSub` DROPS A ZERO CLAUSE rather than printing it. A queue of two permanent deletions
    * saying `2 remove from this computer permanently · 0 go to Proton's Trash` names a thing that is
    * not happening, in the sentence whose whole job is telling you what you are about to lose.
+   *
+   * IT HAS THREE CLAUSES, NOT TWO, BECAUSE THERE ARE THREE DESTINATIONS. Once a local deletion can
+   * go to this computer's Trash (`local_delete_mode`), folding it into the Proton clause names the
+   * WRONG TRASH — `2 go to Proton's Trash` for a queue where one of them is on this disk. Same bug
+   * `columnCopy` exists to prevent on the Deletions screen, one screen earlier. `localTrash`
+   * defaults to `0` so the drawn call `deletionSub(1, 1)` renders byte-identically and stays
+   * asserted verbatim against `2a Needs you` in the `DRAWN` table.
    */
   band: {
     conflictTitle: (n) =>
@@ -201,10 +208,13 @@ export const MAIN = {
     conflictAction: "Compare",
     deletionTitle: (n) =>
       n === 1 ? "One deletion is waiting on you" : `${cardinal(n)} deletions are waiting on you`,
-    deletionSub: (permanent, trash) =>
+    deletionSub: (permanent, trash, localTrash = 0) =>
       [
         permanent > 0
           ? `${count(permanent)} ${permanent === 1 ? "removes" : "remove"} from this computer permanently`
+          : null,
+        localTrash > 0
+          ? `${count(localTrash)} ${localTrash === 1 ? "goes" : "go"} to this computer's Trash`
           : null,
         trash > 0 ? `${count(trash)} ${trash === 1 ? "goes" : "go"} to Proton's Trash` : null,
       ]
@@ -425,6 +435,24 @@ export const DELETIONS = {
   recoverableSub: "Moved to Proton Drive's Trash. You can restore it there until the trash is emptied.",
 
   /**
+   * The recoverable column's OTHER pair, and why there are two.
+   *
+   * Recoverable used to mean one thing — the file goes to Proton Drive's Trash — because the only
+   * recoverable deletion was a remote one. A local deletion under `local_delete_mode = "trash"` is
+   * recoverable too, and it goes somewhere else entirely: this computer's trash, restored from the
+   * file manager rather than from Proton. Naming the wrong trash is worse than naming none, because
+   * a person who goes looking will not find it.
+   *
+   * The mixed pair is what a queue holding both looks like. It names no destination, because the
+   * two cards under it have different ones — and the cards say which.
+   */
+  recoverableLocal: "Recoverable · this computer",
+  recoverableLocalSub: "Moved to this computer's Trash. You can restore it from your file manager.",
+  recoverableMixed: "Recoverable",
+  recoverableMixedSub:
+    "Each of these can be brought back — from Proton Drive's Trash, or from this computer's.",
+
+  /**
    * The permanent card's consequence, in two forms — and they are two SENTENCES, not one sentence
    * with a hole in it.
    *
@@ -445,6 +473,13 @@ export const DELETIONS = {
   fileConsequence: "Deleting this removes it from this computer for good.",
   travelExplainer:
     "You deleted this on this computer. Deleting it on Proton moves it to Proton Drive's Trash, where you can still get it back.",
+  /**
+   * The same sentence for the other side: deleted on Proton, and the local copy is about to be
+   * trashed rather than unlinked. Structurally a mirror of `travelExplainer` — where it went first,
+   * then where this copy is going, then the reassurance — so the two read as one voice.
+   */
+  travelExplainerLocal:
+    "You deleted this on Proton Drive. Deleting it here moves it to this computer's Trash, where you can still get it back.",
 
   /**
    * The facts strip, in mono, under the divider. Templates because two of the four are relative
@@ -463,6 +498,8 @@ export const DELETIONS = {
   typeToDelete: "To delete it, type DELETE below.",
   delete: "Delete",
   toTrash: "Move to Proton's Trash",
+  /** The same one-click action for a local deletion the daemon will trash rather than unlink. */
+  toTrashLocal: "Move to this computer's Trash",
   keepRemote: "Keep it — put it back on Proton Drive",
   keepLocal: "Keep it — bring it back to this computer",
   noExpiry: "Deletions stay here until you decide. Nothing expires.",
@@ -558,6 +595,13 @@ export const PLAN = {
     `${path}${inside ? " and everything inside it" : ""} is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.`,
   destructiveLocal: (path, inside = false) =>
     `${path}${inside ? " and everything inside it" : ""} is removed from this computer. It's already gone from Proton Drive, so nothing will bring it back.`,
+  // The same row under `local_delete_mode = "trash"`. `destructiveLocal` above says "nothing will
+  // bring it back", which the default daemon makes false — and this is the app's OTHER typed-DELETE
+  // gate (#227), so it is the last sentence a user reads before authorising a deletion. Chosen from
+  // the plan's own `local_disposal`, never from the row: disposal is decided at execution time, so
+  // one plan runs under one mode. No frame draws it.
+  destructiveLocalTrash: (path, inside = false) =>
+    `${path}${inside ? " and everything inside it" : ""} moves to this computer's Trash. It's already gone from Proton Drive, so your file manager is where it comes back from.`,
   // More than one: no path, because naming them all would run past the band. The tinted rows below
   // carry the paths.
   destructiveMany: (n, kind = "file") =>
@@ -916,6 +960,51 @@ export const SETTINGS = {
   askNever: "Never ask",
   askNeverSub:
     "Deleting a file on either side deletes it on the other immediately, including permanently from this computer.",
+  /*
+   * THE SAME TWO CARDS, SAID TRUTHFULLY UNDER THE OTHER DISPOSAL MODE.
+   *
+   * `deletion_policy`'s vocabulary was written on an identity this product no longer has: a local
+   * deletion was ALWAYS the permanent one, so "permanent" and "on this computer" named one thing.
+   * With `local_delete_mode = "trash"` the default, the two sub-lines above assert things that are
+   * simply not true of the running daemon — `askPermanentSub` promises that anything removed for
+   * good still waits for you when nothing is removed for good, and `askNeverSub` says deletions go
+   * "permanently from this computer" when they go to its Trash.
+   *
+   * Both originals stay: they are drawn in `8a Deletions tab`, they are still exactly right under
+   * permanent mode, and this is the same conditional-warning rule the Deletions screen follows.
+   * The pair below is chosen by `policyCopyFor`, and no frame draws them.
+   *
+   * NOT FIXED HERE, and it needs a design decision rather than a sentence: the card TITLE
+   * `Only ask about permanent ones` is itself keyed on the old identity. Under trash mode nothing
+   * is permanent, yet the setting still guards every deletion applied on this computer — so the
+   * title reads like "never ask" and behaves like "ask about local ones". Renaming a drawn radio
+   * card is a design change, and `deletion_policy`'s semantics were deliberately left alone.
+   */
+  askPermanentTrashSub:
+    "Deletions that go to Proton's Trash happen automatically. Anything that would leave this computer still waits for you.",
+  askNeverTrashSub:
+    "Deleting a file on either side deletes it on the other immediately. Your copy goes to this computer's Trash.",
+
+  /**
+   * The tab's SECOND section, and a second setting rather than a fourth card.
+   *
+   * The cards above decide whether a deletion waits for you. These decide what happens once one
+   * goes ahead, which is a different question — and folding them together would give four
+   * combinations with no spelling anybody could read.
+   *
+   * THE TRADE IS NAMED IN THE CARD, not left for the user to discover from a full disk. A trashed
+   * file still occupies its bytes; that is the honest cost of being able to get it back, and this
+   * screen is the one place a person is weighing exactly that.
+   */
+  disposalTitle: "What deleting does to your copy",
+  disposalSub:
+    "This is about files on this computer. Anything deleted on Proton Drive always goes to Proton's Trash.",
+  disposalTrash: "Move them to the trash",
+  disposalTrashSub:
+    "Deleted files go to this computer's Trash, where you can restore them from your file manager. They keep taking up space until you empty it.",
+  disposalPermanent: "Delete them permanently",
+  disposalPermanentSub:
+    "Deleted files are removed from the disk straight away, freeing the space. There is no trash to get them back from.",
 
   saveNote:
     "Saving writes only what you changed. Your comments and anything the app doesn't understand are left alone.",

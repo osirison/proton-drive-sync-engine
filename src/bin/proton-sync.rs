@@ -3,7 +3,8 @@ use proton_drive_sync_engine::config::resolve_control_socket_path;
 use proton_drive_sync_engine::index::{EntityKind, PassRecord};
 use proton_drive_sync_engine::ipc::{
     ApplyOutcome, AuthState, ControlCommand, ControlRequest, ControlResponse, ListingOutcome,
-    PendingDeletion, PlanOutcome, ReviewedPlan, SyncActivity, send_request, wire_path,
+    LocalDisposal, PendingDeletion, PlanOutcome, ReviewedPlan, SyncActivity, send_request,
+    wire_path,
 };
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, SyncAction, UnsyncableItem};
 use std::collections::BTreeMap;
@@ -1837,12 +1838,20 @@ fn print_pending(pending: &[PendingDeletion]) {
     }
     println!("{} deletion(s) awaiting approval:", pending.len());
     for item in pending {
-        let (label, effect) = match item.direction {
-            DeleteDirection::Local => (
+        // THE EFFECT IS THE DISPOSAL'S, NOT THE DIRECTION'S. `local` stopped meaning "gone for
+        // good" when `local_delete_mode` arrived, and this line is the whole reason a person reads
+        // the command — so it is asked of the daemon's own `disposal`, which says what THIS daemon
+        // will do, rather than re-derived from the side the deletion applies to.
+        let (label, effect) = match (item.direction, item.disposal) {
+            (DeleteDirection::Local, LocalDisposal::Recoverable) => (
                 "LOCAL DELETE ",
-                "was deleted on Proton Drive; approving removes your local copy",
+                "was deleted on Proton Drive; approving moves your copy to this computer's trash",
             ),
-            DeleteDirection::Remote => (
+            (DeleteDirection::Local, LocalDisposal::Permanent) => (
+                "LOCAL DELETE ",
+                "was deleted on Proton Drive; approving removes your local copy for good",
+            ),
+            (DeleteDirection::Remote, _) => (
                 "REMOTE DELETE",
                 "was deleted locally; approving removes it on Proton Drive",
             ),
@@ -2428,6 +2437,7 @@ mod tests {
             total: 0,
             truncated: false,
             cannot_sync: Vec::new(),
+            local_disposal: LocalDisposal::Permanent,
         }))
     }
 

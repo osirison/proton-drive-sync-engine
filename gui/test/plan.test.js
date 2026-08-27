@@ -587,3 +587,24 @@ test("a plan nobody is holding cannot be run without its deletions", () => {
   assert.equal(filterableFor({ dryRun: { ...plan, token: 42 } }), false);
   assert.equal(filterableFor({ dryRun: { ...plan, token: "1:abc" } }), true);
 });
+
+test("the plan's delete gate says what the daemon will actually do", () => {
+  // THE APP'S OTHER TYPED-`DELETE` GATE (#227). `destructiveLocal` asserts "nothing will bring it
+  // back", which the default daemon makes false — and this is the last sentence read before
+  // authorising a deletion. The mode comes from the plan (`ReviewedPlan.local_disposal`), never
+  // from the row: disposal is decided at execution time, so one plan runs under one mode.
+  const rows = [row("photos/2019", "local_delete")];
+  assert.equal(summarise(rows, null, "recoverable").localDisposal, "recoverable");
+  assert.equal(summarise(rows, null, "permanent").localDisposal, "permanent");
+
+  // Unknown, absent, or an older daemon that sends no field at all: OVER-warn, never under-warn.
+  for (const unknown of [undefined, null, "", "trash", "shredded"]) {
+    assert.equal(
+      summarise(rows, null, unknown).localDisposal,
+      "permanent",
+      `"${unknown}" must not read as recoverable`,
+    );
+  }
+  // `"trash"` in particular is the CONFIG spelling and never crosses the wire, exactly as
+  // `severityOf` refuses it.
+});

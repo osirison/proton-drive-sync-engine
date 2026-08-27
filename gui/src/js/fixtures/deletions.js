@@ -78,6 +78,13 @@ const PENDING = [
     // that, and stated here rather than left as a magic number: the frame's own value is what this
     // fixture exists to reproduce.
     subtree_bytes: 8_400_000_000,
+    // EXPLICIT, AND IT SAYS WHICH DAEMON THIS FRAME DEPICTS. `4a Deletions` draws a permanent left
+    // column, so its local deletion belongs to a daemon running `local_delete_mode = "permanent"` —
+    // which is no longer the default. Written out rather than left to the absent-field default,
+    // because a fixture that only draws correctly by accident stops drawing correctly the day the
+    // default is read differently. The trash-mode arrangement has no frame; `test/deletions.test.js`
+    // is where it is covered.
+    disposal: "permanent",
   },
   {
     path: "archive/old-notes.md",
@@ -88,6 +95,8 @@ const PENDING = [
     first_seen_epoch_secs: ago(6 * 60),
     subtree_files: null,
     subtree_bytes: null,
+    // A remote deletion is recoverable whatever the local mode says — it lands in Proton's Trash.
+    disposal: "recoverable",
   },
 ];
 

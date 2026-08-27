@@ -117,6 +117,15 @@ It auto-detects whether the desktop app is installed and upgrades it too; scope 
 `--no-restart`. It refuses to run on a machine with nothing installed (use `setup.sh` for a first
 install).
 
+> **Behaviour change on this upgrade — local deletions now go to your desktop's Trash.**
+> When Proton Drive says a file was deleted, the engine used to remove your local copy from
+> disk with no way back. It now moves it to the **system Trash** (`~/.local/share/Trash`,
+> the FreeDesktop location), so any file manager can restore it to its original path. Your
+> approval settings are untouched: `deletion_policy` still decides whether a deletion waits
+> for you, and this only changes what happens once it goes ahead. Add
+> `local_delete_mode = "permanent"` to your config — or pick *Delete them permanently* on
+> the app's Settings → Deletions tab — to restore the previous behaviour exactly.
+
 **Uninstall** — remove the service, binaries, config, desktop app files, and all engine state,
 leaving the machine clean. Preview first; it prompts once before deleting:
 
@@ -167,6 +176,7 @@ mkdir -p ~/.config/proton-sync ~/ProtonDrive
 cat > ~/.config/proton-sync/proton-sync.toml <<TOML
 local_root  = "$HOME/ProtonDrive"
 remote_root = "/Drive/RemoteFolder"
+# local_delete_mode = "trash"      # default. "permanent" deletes from disk instead.
 TOML
 # The sample unit's ExecStart is %h/.cargo/bin/proton-syncd — correct if step 2 installed to the
 # default ~/.cargo/bin; edit it if your CARGO_HOME/CARGO_INSTALL_ROOT differs.
@@ -252,10 +262,12 @@ destructive row has to be armed by typing `DELETE` before it can run.</sub>
 Two-way sync means deletions and overwrites really happen. The engine is built to make
 that safe and predictable.
 
-- **Deletions propagate — asymmetrically.** Deleting a file locally moves the Proton Drive
-  copy to Proton's **Trash** (recoverable). Deleting a file or folder **on Proton Drive**
-  removes it from your local disk **permanently** — a direct filesystem delete, recursive
-  for folders. There is no local-side undo.
+- **Deletions propagate, and both sides are recoverable by default.** Deleting a file
+  locally moves the Proton Drive copy to Proton's **Trash**. Deleting a file or folder **on
+  Proton Drive** moves your local copy to **your desktop's Trash** — restorable from Files,
+  Dolphin or any file manager, to its original path. Set `local_delete_mode = "permanent"`
+  to get the old behaviour back: a direct filesystem delete, recursive for folders, with no
+  local-side undo.
 - **The delete/edit safeguard.** A deletion only propagates if the *other* side hasn't
   changed since the last sync. If you delete a file locally but it was edited on Proton
   Drive, the edit is restored instead — the surviving edit always beats the delete.

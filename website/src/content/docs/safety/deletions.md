@@ -1,6 +1,6 @@
 ---
 title: Deletions & the safeguard
-description: How deletions propagate across sides, why a remote delete removes your local file permanently, and the delete/edit safeguard.
+description: How deletions propagate across sides, where each side's copy goes, and the delete/edit safeguard.
 sidebar:
   order: 1
 ---
@@ -16,24 +16,52 @@ is a real action the engine will carry out for you, in both directions:
 
 - **Delete a file locally** → the engine removes it from Proton Drive by moving it to
   Proton's **Trash**, where it stays recoverable until you empty the trash.
-- **Delete a file (or folder) on Proton Drive** → the engine removes it from your local
-  disk **permanently**. This is a direct filesystem delete, **not** a move to your OS
-  trash. Folder deletions are **recursive** and remove the entire subtree.
+- **Delete a file (or folder) on Proton Drive** → the engine moves your local copy to
+  **your desktop's Trash** (`~/.local/share/Trash`), where your file manager can restore it
+  to its original path. Folder deletions are **recursive**: the whole subtree travels
+  together, and it is restored together.
+
+Both directions are recoverable by default. If you would rather local deletions free the
+disk space immediately, set `local_delete_mode = "permanent"` — see
+[Permanent deletion](#permanent-deletion-opt-in) below.
 
 ![The deletions screen showing two withheld deletions side by side: a folder removed straight from disk on this computer, labelled permanent and requiring the word DELETE to be typed, and a file moved to Proton's Trash, labelled recoverable with a Move to Proton's Trash button.](../../../assets/screenshots/deletions.png)
 
 *The two directions are never presented as the same action. The permanent one is the only
 one that asks you to type the word.*
 
-:::danger[A remote delete is a permanent local delete]
-Deleting a folder on Proton Drive deletes the matching local folder and everything inside
-it, straight from disk, with no undo. There is no OS-trash safety net on the local side.
-Always [preview with `--dry-run`](/safety/dry-run/) and check `destructive_actions` before
-running unattended.
+:::note[A deletion is still a real action]
+Deleting a folder on Proton Drive removes the matching local folder from where it is, and
+a folder deletion is recursive. Your files go to your desktop's Trash rather than
+disappearing — but they do leave your sync folder, and they stay in the Trash only until
+you empty it. [Preview with `--dry-run`](/safety/dry-run/) and check `destructive_actions`
+before running unattended.
 :::
 
-The two directions are asymmetric on purpose: Proton Drive has a trash and your local
-filesystem, in general, does not.
+The two directions land in two different trashes — Proton's for the remote copy, your
+desktop's for the local one — because that is where each side's own restore lives.
+
+## Permanent deletion (opt-in)
+
+`local_delete_mode` decides what happens to your local copy once a deletion goes ahead:
+
+| Value | What a local deletion does |
+| --- | --- |
+| `"trash"` *(default)* | Moves the file to `~/.local/share/Trash`, with the `.trashinfo` record your file manager's **Restore** uses to put it back where it was. |
+| `"permanent"` | Removes it from disk immediately, recursive for folders. Frees the space at once; there is no undo. |
+
+```toml
+local_delete_mode = "permanent"
+```
+
+Or pick **Delete them permanently** on the desktop app's *Settings → Deletions* tab. In
+permanent mode the Deletions screen restores its full warning treatment: the card is
+labelled `Permanent · this computer`, tinted destructively, and approving it requires you
+to type the word `DELETE`.
+
+**This is a separate question from whether a deletion waits for you.** `deletion_policy`
+decides that, and neither setting changes the other's meaning — see
+[Delete approval](/safety/delete-approval/).
 
 ## The delete/edit safeguard
 

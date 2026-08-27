@@ -3,6 +3,7 @@ use proton_drive_sync_engine::config::{
     DEFAULT_LOG_LEVEL, DaemonConfigInput, DeletionPolicy, resolve_runtime_config,
 };
 use proton_drive_sync_engine::daemon::{Daemon, GlobalLockProbe, preview_plan, probe_daemon_lock};
+use proton_drive_sync_engine::trash::LocalDeleteMode;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tracing::{debug, error, info, warn};
@@ -92,6 +93,11 @@ struct Cli {
     /// this.
     #[arg(long = "deletion-policy", value_name = "POLICY")]
     deletion_policy: Option<DeletionPolicy>,
+    /// What a local deletion does to the file: trash (default — moves it to this computer's trash,
+    /// where the file manager can restore it) or permanent (removes it from disk). A different
+    /// question from the guard above, which decides only whether the deletion waits for you.
+    #[arg(long = "local-delete-mode", value_name = "MODE")]
+    local_delete_mode: Option<LocalDeleteMode>,
     /// Log verbosity as a `tracing` filter directive (`info`, `debug`, `crate::module=warn`, …).
     /// Overrides `RUST_LOG`, which overrides the config file's `log_level`.
     #[arg(long = "log-level", value_name = "DIRECTIVE")]
@@ -192,6 +198,7 @@ impl From<Cli> for DaemonConfigInput {
             force_full_walk: cli.full_walk,
             no_delete_approval: cli.no_delete_approval,
             deletion_policy: cli.deletion_policy,
+            local_delete_mode: cli.local_delete_mode,
             log_level: cli.log_level,
             // Read here, at the process edge, so `resolve_runtime_config` stays a pure function of
             // its input and parallel tests cannot race on the environment.
@@ -266,6 +273,8 @@ mod tests {
             "/Drive/Config",
             "--deletion-policy",
             "only_permanent",
+            "--local-delete-mode",
+            "permanent",
             "--log-level",
             "debug",
             "--conflict-suffix",
@@ -274,8 +283,27 @@ mod tests {
         .expect("the advanced flags must parse");
         let input: DaemonConfigInput = cli.into();
         assert_eq!(input.deletion_policy, Some(DeletionPolicy::OnlyPermanent));
+        // The guard and the disposal are two settings, and a flag for one must not move the other.
+        assert_eq!(input.local_delete_mode, Some(LocalDeleteMode::Permanent));
         assert_eq!(input.log_level.as_deref(), Some("debug"));
         assert_eq!(input.conflict_suffix.as_deref(), Some("from-cloud"));
+
+        let error = Cli::try_parse_from([
+            "proton-syncd",
+            "--local-root",
+            "sync-root",
+            "--remote-root",
+            "/Drive/Config",
+            "--local-delete-mode",
+            "bin",
+        ])
+        .expect_err("an unknown mode must be rejected, not silently defaulted")
+        .to_string();
+        assert!(error.contains("bin"), "{error}");
+        assert!(
+            error.contains("trash") && error.contains("permanent"),
+            "{error}"
+        );
 
         let error = Cli::try_parse_from([
             "proton-syncd",

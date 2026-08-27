@@ -352,8 +352,7 @@ impl ScanOptions {
     /// such as `**/*.md`) are still discovered during the walk.
     fn allows_directory_traversal(&self, relative_path: &Path) -> bool {
         relative_path.as_os_str().is_empty()
-            || (!is_download_scratch_path(relative_path)
-                && !is_sync_state_path(relative_path)
+            || (!is_never_synced_directory(relative_path)
                 && !self.is_configured_ignored(relative_path)
                 && !self.matches(&self.exclude_patterns, relative_path))
     }
@@ -1915,10 +1914,7 @@ pub fn should_ignore_path(path: &Path, naming: &ConflictNaming) -> bool {
 }
 
 fn should_ignore_relative_path(relative_path: &Path, naming: &ConflictNaming) -> bool {
-    if naming.is_conflict_copy(relative_path)
-        || is_download_scratch_path(relative_path)
-        || is_sync_state_path(relative_path)
-    {
+    if naming.is_conflict_copy(relative_path) || is_never_synced_directory(relative_path) {
         return true;
     }
     // The per-directory settings file is machine-local policy: ignore it at any depth (like the
@@ -1930,6 +1926,25 @@ fn should_ignore_relative_path(relative_path: &Path, naming: &ConflictNaming) ->
         || file_name == Some("sync_index.db-wal")
         || file_name == Some("sync_index.db-shm")
         || file_name == Some(crate::dirconfig::DIRECTORY_CONFIG_FILE_NAME)
+}
+
+/// The directories that are **never** a user's content, whoever created them: the engine's own
+/// `.sync` state directory, a leftover download-staging directory, and a FreeDesktop trash.
+///
+/// ONE DEFINITION BECAUSE THERE ARE TWO READERS, and they used to disagree. A file is filtered by
+/// [`should_ignore_relative_path`], but a *directory* is filtered by
+/// [`ScanOptions::allows_directory_traversal`], which kept its own copy of this list — so adding the
+/// trash rule to the first one alone excluded every trashed file while still scanning, planning and
+/// watching the trash directories themselves. Both call this now; a fourth rule added here reaches
+/// both by construction.
+///
+/// The name-based rules in [`should_ignore_relative_path`] are deliberately NOT here: a conflict
+/// sidecar, `sync_index.db` and `.proton-sync.toml` name files, and folding them in would newly stop
+/// traversal into a *directory* that happens to share one of those names.
+fn is_never_synced_directory(relative_path: &Path) -> bool {
+    is_download_scratch_path(relative_path)
+        || is_sync_state_path(relative_path)
+        || is_trash_dir_path(relative_path)
 }
 
 /// True when `relative_path` is the per-root `.sync` state directory or anything inside it (the
@@ -1960,6 +1975,36 @@ fn is_download_scratch_path(relative_path: &Path) -> bool {
             .as_os_str()
             .as_bytes()
             .starts_with(crate::DOWNLOAD_SCRATCH_PREFIX.as_bytes())
+    })
+}
+
+/// True when any component of `relative_path` is a FreeDesktop trash directory, or lives inside
+/// one — `.Trash` (whose per-user subdirectories are `.Trash/$uid`) or `.Trash-$uid`.
+///
+/// WHY THIS EXISTS AT ALL. Local deletions go to the desktop trash by default
+/// ([`crate::trash`]). When a pair's `local_root` is itself a mount point, the spec puts that
+/// filesystem's trash *inside* the synced root — so without this the next pass would scan every
+/// file the user just deleted and upload it back to Proton, turning a deletion into a round trip.
+///
+/// AT ANY DEPTH, unlike [`is_sync_state_path`], because a nested mount point inside the root is a
+/// real arrangement and its trash lands at *its* top directory rather than at the root's.
+///
+/// ANY UID, not this process's. A trash directory is not the user's content under any uid, and
+/// matching only one would leave a root shared between two accounts syncing the other's deleted
+/// files. `$uid` is required to be digits, so a user's own `.Trash-notes` or `.Trashcan` is
+/// ordinary data and still syncs.
+///
+/// Matched byte-exactly so a component is compared regardless of UTF-8 validity, like
+/// [`is_download_scratch_path`].
+fn is_trash_dir_path(relative_path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    relative_path.components().any(|component| {
+        let bytes = component.as_os_str().as_bytes();
+        bytes == b".Trash"
+            || bytes
+                .strip_prefix(b".Trash-".as_slice())
+                .is_some_and(|uid| !uid.is_empty() && uid.iter().all(u8::is_ascii_digit))
     })
 }
 
@@ -2410,6 +2455,88 @@ mod tests {
             entities.keys().all(|path| !is_download_scratch_path(path)),
             "no scratch directory or its contents may be scanned: {entities:?}"
         );
+    }
+
+    #[test]
+    fn scanner_ignores_a_freedesktop_trash_directory_inside_the_root() {
+        // A pair whose `local_root` is itself a mount point gets that filesystem's trash created
+        // INSIDE the synced root the first time a local deletion applies. Without the exclusion the
+        // next pass scans everything the user just deleted and uploads it straight back to Proton.
+        // Both spellings the spec defines, and a nested mount point's trash as well as the root's.
+        let directory = tempdir().expect("tempdir");
+        let uid_trash = directory.path().join(".Trash-1000/files");
+        let shared_trash = directory.path().join(".Trash/1000/files");
+        let nested_mount_trash = directory.path().join("media/disk/.Trash-1000/files");
+        fs::create_dir_all(&uid_trash).expect("uid trash");
+        fs::create_dir_all(&shared_trash).expect("shared trash");
+        fs::create_dir_all(&nested_mount_trash).expect("nested trash");
+        fs::write(uid_trash.join("doomed.txt"), b"deleted").expect("trashed file");
+        fs::write(shared_trash.join("also-doomed.txt"), b"deleted").expect("trashed file");
+        fs::write(nested_mount_trash.join("deep.txt"), b"deleted").expect("trashed file");
+        fs::write(directory.path().join("keep.txt"), b"keep").expect("keep file");
+
+        let entities = scan_local_entities(directory.path()).expect("scan entities");
+
+        assert!(entities.contains_key(Path::new("keep.txt")));
+        assert!(
+            entities.keys().all(|path| !is_trash_dir_path(path)),
+            "no trash directory or its contents may be scanned: {entities:?}"
+        );
+    }
+
+    #[test]
+    fn scan_options_reject_trash_paths_for_the_watcher_and_the_base_index_filter() {
+        // The same three readers the scratch exclusion has: the scanner above, plus these two.
+        let options = ScanOptions::new(
+            Path::new("/root"),
+            &[],
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
+        assert!(!options.allows_relative_file(Path::new(".Trash-1000/files/doomed.txt")));
+        assert!(!options.allows_relative_directory(Path::new(".Trash-1000")));
+        assert!(!options.allows_relative_file(Path::new(".Trash/1000/files/doomed.txt")));
+        assert!(!options.allows_relative_directory(Path::new(".Trash")));
+        // A nested mount point's trash, which `is_sync_state_path`'s first-component rule misses.
+        assert!(!options.allows_relative_directory(Path::new("media/disk/.Trash-1000")));
+        assert!(!options.allows_relative_file(Path::new("media/disk/.Trash-1000/files/x.txt")));
+    }
+
+    #[test]
+    fn a_users_own_directory_that_merely_looks_like_a_trash_still_syncs() {
+        // The predicate must not over-match: `$uid` is digits, so everything here is ordinary user
+        // data. Getting this wrong silently stops syncing a folder and reports nothing.
+        let options = ScanOptions::new(
+            Path::new("/root"),
+            &[],
+            &[],
+            &[],
+            &ConflictNaming::default(),
+        )
+        .expect("scan options");
+        for path in [
+            "Trash/notes.txt",
+            ".Trashcan/notes.txt",
+            ".Trash-notes/notes.txt",
+            ".Trash-/notes.txt",
+            ".Trash-1000a/notes.txt",
+            "photos/.Trashy/notes.txt",
+            "Trash.txt",
+            ".Trash.txt",
+        ] {
+            assert!(
+                options.allows_relative_file(Path::new(path)),
+                "{path} is the user's own data and must still sync"
+            );
+        }
+        for path in ["Trash", ".Trashcan", ".Trash-notes", "photos/.Trashy"] {
+            assert!(
+                options.allows_relative_directory(Path::new(path)),
+                "{path} is the user's own folder and must still sync"
+            );
+        }
     }
 
     #[test]

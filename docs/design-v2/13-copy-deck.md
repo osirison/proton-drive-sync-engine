@@ -34,6 +34,7 @@ Footer doors: `Activity` · `Plan a sync` · `Settings` · `Details`
 - Attention band:
   `One file changed on both sides` / `notes/todo.txt · both copies kept, nothing lost` / `Compare`
   `Two deletions are waiting on you` / `1 removes from this computer permanently · 1 goes to Proton's Trash` / `Review`
+  - Third clause, **drawn by no frame**: a local deletion in trash mode reads `1 goes to this computer's Trash`, between the permanent clause and Proton's. A clause with a count of zero is dropped, never printed — so the drawn sentence above is the queue that has one of each of the other two.
 - Compact: `Up to date` / `2 minutes ago` / `12,480 files` · `3 things need you` /
   `One file changed on both sides.` `Two deletions are waiting.` / `Review them` /
   `syncing continues` / `Later` / `Open`
@@ -71,6 +72,11 @@ Footer doors: `Activity` · `Plan a sync` · `Settings` · `Details`
   / `Delete permanently` / `Press Esc to cancel.`
 - Empty: `Nothing waiting to be deleted` / `When a file disappears from one side, it waits here for you instead of vanishing from the other.`
 - Compact: `2 files waiting to be deleted` / `1,204 photos gone from this computer, permanently` / `to Proton's Trash — recoverable` / `Review them`
+- Trash mode — **no frame draws any of these** (DEVIATIONS §100). A local deletion goes to this computer's Trash by default, so the local card moves into the recoverable column and the typed-`DELETE` gate does not arm for it. Everything above stays exactly as drawn and is what the screen says once permanent deletion is turned back on.
+  - `Recoverable · this computer` / `Moved to this computer's Trash. You can restore it from your file manager.`
+  - Both kinds under one header: `Recoverable` / `Each of these can be brought back — from Proton Drive's Trash, or from this computer's.`
+  - `You deleted this on Proton Drive. Deleting it here moves it to this computer's Trash, where you can still get it back.`
+  - `Move to this computer's Trash`
 
 ## Plan a sync
 
@@ -125,6 +131,10 @@ Footer doors: `Activity` · `Plan a sync` · `Settings` · `Details`
 - `Ask me every time` / `recommended` / `Deletions wait in a queue until you approve them. Nothing disappears behind your back.`
 - `Only ask about permanent ones` / `Deletions that go to Proton's Trash happen automatically. Anything removed from this computer for good still waits for you.`
 - `Never ask` / `Deleting a file on either side deletes it on the other immediately, including permanently from this computer.`
+- Disposal panel — **no frame draws it** (DEVIATIONS §100a). A second panel on the same Deletions tab, beneath the one above: that one decides whether a deletion waits for you, this one decides what a local deletion does when it goes ahead.
+  - `What deleting does to your copy` / `This is about files on this computer. Anything deleted on Proton Drive always goes to Proton's Trash.`
+  - `Move them to the trash` / `Deleted files go to this computer's Trash, where you can restore them from your file manager. They keep taking up space until you empty it.`
+  - `Delete them permanently` / `Deleted files are removed from the disk straight away, freeing the space. There is no trash to get them back from.`
 - `Saving writes only what you changed. Your comments and anything the app doesn't understand are left alone.` / `Discard changes` / `Save` / `One rule removed — 2 files, 3.1 GB will start syncing.`
 - Refused: `That folder doesn't exist on Proton Drive` / `Nothing was saved — your old settings are still running. Create the folder on Proton Drive first, or pick a different one.` / `remote_root: /Drive/Archive2026 — not found` / `Go back and fix it` / `Create it on Proton Drive`
 

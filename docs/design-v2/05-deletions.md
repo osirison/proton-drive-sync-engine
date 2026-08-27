@@ -78,6 +78,40 @@ color:#E8EBF0; font-weight:600`, full width, `margin-top:9px`.
 `Deletions stay here until you decide. Nothing expires.` 12px `#6D7783`, then `Keep both files`
 (`#101216` / `#2E323A` / `#E8EBF0` / 600). The only bulk action, and it is the safe one.
 
+## Two disposal modes
+
+**Everything above describes permanent mode, and permanent mode is no longer the default.** A local
+deletion now moves the file to this computer's Trash (`local_delete_mode = "trash"`); permanent
+deletion is a setting the user turns back on (08-settings.md, Tab 3). The drawings were made before
+that setting existed, so **no frame draws the default** — recorded in DEVIATIONS §100, and the
+prose here is the only description of it.
+
+Disposal is a **separate question from gating**. `deletion_policy` decides whether a deletion waits
+for approval; `local_delete_mode` decides what happens when it goes ahead. Neither changes the
+other's semantics, and an existing config behaves exactly as it did.
+
+What changes on this screen when a local deletion is recoverable:
+
+- The card moves to the **recoverable** column. Severity is `direction === "remote" || disposal ===
+  "recoverable"`, so it is derived per card rather than per column.
+- The header names what is in the column, not which column it is. A column holding only local
+  deletions reads `Recoverable · this computer` /
+  `Moved to this computer's Trash. You can restore it from your file manager.`; a column holding
+  both reads `Recoverable` / `Each of these can be brought back — from Proton Drive's Trash, or from
+  this computer's.` and names no single destination, because its cards have different ones.
+- The action is a button, not a gate: `Move to this computer's Trash`. **The typed-`DELETE` gate
+  does not arm for a recoverable card** — there is nothing irreversible to confirm.
+- The consequence sentence says where the file goes rather than what is lost:
+  `You deleted this on Proton Drive. Deleting it here moves it to this computer's Trash, where you
+  can still get it back.`
+- The permanent column is simply absent when nothing in the queue is permanent — the same rule that
+  already hides the recoverable column, not a second one keyed off the config value.
+
+**The severity rule fails closed.** A missing, empty or unrecognised `disposal` — an older daemon,
+or a word this build has never heard — reads as `permanent`, so an unknown value keeps the gate
+rather than skipping it. The config spelling `"trash"` never crosses the wire and is rejected here
+for the same reason: the wire word is `recoverable`.
+
 ## Armed confirmation
 
 Full-window takeover. Centred, `padding:0 40px 30px`:
