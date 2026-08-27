@@ -502,7 +502,7 @@ function action(label, kind, onClick, disabled = false) {
  */
 export function deletionCountsOf(deletions) {
   const permanent = deletions.filter((d) => severityOfItem(d) === "permanent").length;
-  const protonTrash = deletions.filter((d) => d.direction === "remote").length;
+  const protonTrash = deletions.filter((d) => d?.direction === "remote").length;
   return { permanent, protonTrash, localTrash: deletions.length - permanent - protonTrash };
 }
 

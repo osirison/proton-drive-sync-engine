@@ -36,7 +36,7 @@ use gui_core::conflicts::{self, Conflict, Resolution};
 use gui_core::state::derive_state;
 use gui_core::wire::{
     ApplyOutcome, ControlCommand, ControlRequest, ControlResponse, DeleteDirection, DryRunReport,
-    PendingDeletion, PlanOutcome, PLAN_ACTIONS_MAX_LIMIT,
+    LocalDisposal, PendingDeletion, PlanOutcome, PLAN_ACTIONS_MAX_LIMIT,
 };
 use gui_core::{config_io, index_read, ipc, plan};
 use std::process::Command;
@@ -487,6 +487,17 @@ pub struct DryRunPayload {
     /// naming it, and the screen falls back to the approve-then-syncnow route.
     #[serde(skip_serializing_if = "Option::is_none")]
     token: Option<String>,
+    /// What a `local_delete` in this plan would DO — the daemon's `ReviewedPlan.local_disposal`.
+    ///
+    /// The Plan screen's typed-`DELETE` gate is the last sentence read before authorising a
+    /// deletion, and `PLAN.destructiveLocal` asserts "nothing will bring it back" — false under
+    /// `local_delete_mode = "trash"`. Carried on the payload rather than on `DryRunReport` because
+    /// `sync.rs` is the pure planner and disposal is an execution-time decision; making the planner
+    /// depend on `ipc` to say it would be the wrong layering for one string.
+    ///
+    /// `Permanent` from the **child** `--dry-run` path, which has no daemon to ask: unknown must
+    /// over-warn, never under-warn.
+    local_disposal: LocalDisposal,
 }
 
 /// How long a plan poll waits between `plan_result` requests. The same cadence
@@ -657,10 +668,16 @@ fn run_dry_run_impl(
     let report = plan::parse_dry_run(&String::from_utf8_lossy(&output.stdout))?;
     // No token: nothing holds this plan, so nothing can apply it by name. The screen falls back to
     // the approve-then-syncnow route, which is what it did before #100.
-    Ok(payload_from_report(report, None))
+    // No daemon answered, so nothing said which mode a local delete would run under. `Permanent`
+    // is the over-warning answer and the only safe default under a typed-`DELETE` gate.
+    Ok(payload_from_report(report, None, LocalDisposal::Permanent))
 }
 
-fn payload_from_report(report: DryRunReport, token: Option<String>) -> DryRunPayload {
+fn payload_from_report(
+    report: DryRunReport,
+    token: Option<String>,
+    local_disposal: LocalDisposal,
+) -> DryRunPayload {
     let files_at_risk = plan::files_at_risk(&report)
         .iter()
         .map(|p| p.display().to_string())
@@ -669,6 +686,7 @@ fn payload_from_report(report: DryRunReport, token: Option<String>) -> DryRunPay
         requires_delete_gate: plan::requires_delete_gate(&report),
         files_at_risk,
         token,
+        local_disposal,
         report,
     }
 }
@@ -759,6 +777,7 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
                 // `PLAN_ACTIONS_*`). The screen counts from the summary for exactly that reason,
                 // so a windowed reply cannot make it claim a shorter plan than the one the token
                 // applies.
+                let local_disposal = plan.local_disposal;
                 return Ok(payload_from_report(
                     DryRunReport {
                         summary: plan.summary,
@@ -766,6 +785,7 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
                         cannot_sync: plan.cannot_sync,
                     },
                     Some(token),
+                    local_disposal,
                 ));
             }
             Some(PlanOutcome::Failed { plan_seq, error }) if plan_seq >= target => {

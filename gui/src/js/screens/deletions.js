@@ -224,10 +224,13 @@ export function factsOf(item, status) {
   const facts = [];
   if (item.first_seen_epoch_secs) {
     const ago = since(item.first_seen_epoch_secs, "short");
-    // The column and the direction name the same side from opposite ends: `local` means the delete
-    // would apply HERE, because it went first on Proton.
-    const text =
-      severityOfItem(item) === "permanent" ? DELETIONS.deletedOnProton(ago) : DELETIONS.deletedHere(ago);
+    // KEYED ON DIRECTION, NOT SEVERITY. `local` means the delete would apply HERE, because it went
+    // first on Proton — so the fact names Proton. Those two used to be the same question (a local
+    // delete was always the permanent one) and this line was the fourth label still asking the old
+    // one: a default-mode card read `deleted here 22m ago` above `You deleted this on Proton
+    // Drive`, two sentences on one card contradicting each other. Severity is where it GOES,
+    // direction is where it CAME FROM, and this fact is about where it came from.
+    const text = item?.direction === "remote" ? DELETIONS.deletedHere(ago) : DELETIONS.deletedOnProton(ago);
     facts.push({ at: 0, text });
   }
   if (item.entity_kind !== "directory" && status?.mtime != null) {

@@ -132,11 +132,23 @@ pub fn dispose(mode: LocalDeleteMode, path: &Path, kind: EntityKind) -> AppResul
             }
             Ok(())
         }
-        // NAMES THE PATH. `trash::Error`'s own `Display` is its `Debug` form and mentions no
-        // target, which would reach a user as a `failed_items` row that does not say what failed.
+        // NAMES THE PATH, AND NAMES THE WAY OUT. `trash::Error`'s own `Display` is its `Debug` form
+        // and mentions no target, which would reach a user as a `failed_items` row that does not
+        // say what failed.
+        //
+        // WHY THE OPT-OUT IS IN THE MESSAGE. This mode can fail for a reason the old `remove_file`
+        // never had: when `local_root` is on a different filesystem from the home trash, the spec
+        // sends the file to `.Trash-$uid` at *its own mount point*, and the crate CREATES that
+        // directory — so a mount root the user does not own (a NAS or removable volume where you
+        // own your subdirectory and not the top) fails every local deletion with EACCES. There is
+        // deliberately no fallback to unlinking: silently deleting for good, because the safe
+        // option was unavailable, is the one outcome this whole feature exists to prevent. So the
+        // failure is permanent and self-repeating (#136 re-plans it every pass), and the only exit
+        // is a setting — which the message therefore has to name, because nothing else will.
         LocalDeleteMode::Trash => ::trash::delete(path).map_err(|error| {
             boxed_error(format!(
-                "could not move {} to the trash: {error}",
+                "could not move {} to the trash: {error} \
+                 (set local_delete_mode = \"permanent\" to delete from disk instead)",
                 path.display()
             ))
         }),

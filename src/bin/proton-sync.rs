@@ -2437,6 +2437,7 @@ mod tests {
             total: 0,
             truncated: false,
             cannot_sync: Vec::new(),
+            local_disposal: LocalDisposal::Permanent,
         }))
     }
 

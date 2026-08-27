@@ -595,6 +595,13 @@ export const PLAN = {
     `${path}${inside ? " and everything inside it" : ""} is removed from Proton Drive. It's already gone from this computer, so nothing will bring it back.`,
   destructiveLocal: (path, inside = false) =>
     `${path}${inside ? " and everything inside it" : ""} is removed from this computer. It's already gone from Proton Drive, so nothing will bring it back.`,
+  // The same row under `local_delete_mode = "trash"`. `destructiveLocal` above says "nothing will
+  // bring it back", which the default daemon makes false — and this is the app's OTHER typed-DELETE
+  // gate (#227), so it is the last sentence a user reads before authorising a deletion. Chosen from
+  // the plan's own `local_disposal`, never from the row: disposal is decided at execution time, so
+  // one plan runs under one mode. No frame draws it.
+  destructiveLocalTrash: (path, inside = false) =>
+    `${path}${inside ? " and everything inside it" : ""} moves to this computer's Trash. It's already gone from Proton Drive, so your file manager is where it comes back from.`,
   // More than one: no path, because naming them all would run past the band. The tinted rows below
   // carry the paths.
   destructiveMany: (n, kind = "file") =>
@@ -953,6 +960,30 @@ export const SETTINGS = {
   askNever: "Never ask",
   askNeverSub:
     "Deleting a file on either side deletes it on the other immediately, including permanently from this computer.",
+  /*
+   * THE SAME TWO CARDS, SAID TRUTHFULLY UNDER THE OTHER DISPOSAL MODE.
+   *
+   * `deletion_policy`'s vocabulary was written on an identity this product no longer has: a local
+   * deletion was ALWAYS the permanent one, so "permanent" and "on this computer" named one thing.
+   * With `local_delete_mode = "trash"` the default, the two sub-lines above assert things that are
+   * simply not true of the running daemon — `askPermanentSub` promises that anything removed for
+   * good still waits for you when nothing is removed for good, and `askNeverSub` says deletions go
+   * "permanently from this computer" when they go to its Trash.
+   *
+   * Both originals stay: they are drawn in `8a Deletions tab`, they are still exactly right under
+   * permanent mode, and this is the same conditional-warning rule the Deletions screen follows.
+   * The pair below is chosen by `policyCopyFor`, and no frame draws them.
+   *
+   * NOT FIXED HERE, and it needs a design decision rather than a sentence: the card TITLE
+   * `Only ask about permanent ones` is itself keyed on the old identity. Under trash mode nothing
+   * is permanent, yet the setting still guards every deletion applied on this computer — so the
+   * title reads like "never ask" and behaves like "ask about local ones". Renaming a drawn radio
+   * card is a design change, and `deletion_policy`'s semantics were deliberately left alone.
+   */
+  askPermanentTrashSub:
+    "Deletions that go to Proton's Trash happen automatically. Anything that would leave this computer still waits for you.",
+  askNeverTrashSub:
+    "Deleting a file on either side deletes it on the other immediately. Your copy goes to this computer's Trash.",
 
   /**
    * The tab's SECOND section, and a second setting rather than a fourth card.

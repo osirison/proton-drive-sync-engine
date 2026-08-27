@@ -5110,3 +5110,35 @@ from silently re-pointing these frames at a mode they do not draw.
 
 `fixtures/settings.js` states `local_delete_mode: "trash"` for the opposite reason: it is the
 product default, and the panel it drives is compared against nothing (§100a).
+
+### 100d. Three more sentences were keyed on an identity this change removed
+
+An adversarial review refuted two claims made above, and both corrections are here rather than
+edited invisibly into the text that was wrong.
+
+**The claim "every permanent-mode sentence is still drawn, still gated, and still what the screen
+says once the user opts back in" was false when written.** It audited the `4a` Deletions frames and
+never looked at the Settings tab. `SETTINGS.askPermanentSub` and `askNeverSub` rendered
+**unconditionally** — the first promising that "anything removed from this computer for good still
+waits for you" when nothing is removed for good, the second saying deletions go "permanently from
+this computer" when they go to its Trash. Both sat directly above the new disposal panel saying the
+opposite. They are now chosen by `policyCopyFor(disposal)`: the drawn pair under permanent mode,
+a truthful pair under trash mode, and the **permanent** pair whenever the mode is unknown or the
+config has not been read, because that is the over-warning one.
+
+**Still open, and it needs a design decision rather than a sentence.** The card *title*
+`Only ask about permanent ones` is keyed on the same dead identity. Under trash mode nothing is
+permanent, yet the setting still guards every deletion applied on this computer — so it reads like
+*never ask* and behaves like *ask about local ones*. Renaming a drawn radio card is design work, and
+`deletion_policy`'s semantics were deliberately left untouched by this change.
+
+**Two more labels had the same shape.** `factsOf` was the fourth label still asking severity rather
+than direction, so the commonest card in the product read `deleted here 22m ago` above
+`You deleted this on Proton Drive` — two sentences on one card, contradicting. And the Plan screen's
+typed-`DELETE` gate (#227) asserted `nothing will bring it back` for a deletion that goes to the
+trash; the plan wire now carries `ReviewedPlan.local_disposal`, on the plan rather than per row,
+because `PlannedAction` is the pure planner's type and disposal is decided at execution time.
+
+**The other refuted claim: "five published pages".** There were six. `safety/delete-approval.md` —
+the page the rewritten `safety/deletions.md` links to for exactly this question — still read
+*"This is the **permanent** local delete."*

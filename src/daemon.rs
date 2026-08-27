@@ -684,6 +684,8 @@ struct StoredPlan {
     summary: PlanSummary,
     actions: Vec<PlannedAction>,
     cannot_sync: Vec<UnsyncableEntry>,
+    /// The pair's disposal mode when this plan was computed — what its `LocalDelete` rows would do.
+    local_disposal: LocalDisposal,
 }
 
 impl StoredPlan {
@@ -720,6 +722,7 @@ impl StoredPlan {
             total,
             actions,
             cannot_sync: self.cannot_sync.clone(),
+            local_disposal: self.local_disposal,
         }))
     }
 }
@@ -2296,6 +2299,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
             summary: report.summary,
             actions: report.plan,
             cannot_sync: report.cannot_sync,
+            local_disposal: LocalDisposal::of(
+                DeleteDirection::Local,
+                self.pair.config.local_delete_mode,
+            ),
         })
     }
 
@@ -3425,6 +3432,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
                         summary,
                         actions: plan,
                         cannot_sync: local_scan.unsyncable.clone(),
+                        local_disposal: LocalDisposal::of(
+                            DeleteDirection::Local,
+                            self.pair.config.local_delete_mode,
+                        ),
                     });
                     self.pair.apply_report = Some(ApplyOutcome::Diverged { apply_seq });
                     // An `Err`, not a clean pass that happened to do nothing: `PassOutcome::Clean`
@@ -18972,6 +18983,7 @@ mod tests {
             token: "1:abc".to_owned(),
             computed_epoch_secs: 1,
             summary: PlanSummary::default(),
+            local_disposal: LocalDisposal::Permanent,
             actions: (0..10)
                 .map(|index| {
                     PlannedAction::new(
@@ -19016,6 +19028,7 @@ mod tests {
             token: "1:abc".to_owned(),
             computed_epoch_secs: 1,
             summary: PlanSummary::default(),
+            local_disposal: LocalDisposal::Permanent,
             actions: (0..40)
                 .map(|index| {
                     PlannedAction::new(

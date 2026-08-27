@@ -368,6 +368,17 @@ pub struct ReviewedPlan {
     /// is one observation, with no age and nothing merged into it.
     #[serde(default)]
     pub cannot_sync: Vec<crate::index::UnsyncableEntry>,
+    /// What a `LocalDelete` in this plan would DO — the pair's `local_delete_mode`, said on the
+    /// wire so the Plan screen's typed-`DELETE` gate stops asserting permanence it cannot know.
+    ///
+    /// On the plan rather than on each row **because it is not a per-row fact**: `PlannedAction` is
+    /// the pure planner's type and disposal is decided at execution time, like the delete gate.
+    /// One plan executes under one mode.
+    ///
+    /// `#[serde(default)]` → [`LocalDisposal::Permanent`], so an older daemon's reply reads as the
+    /// unrecoverable one and the screen over-warns rather than under-warns.
+    #[serde(default)]
+    pub local_disposal: LocalDisposal,
 }
 
 /// The answer to a [`ControlCommand::Apply`] request — the ack states, then the verdict the pass
@@ -1485,6 +1496,7 @@ mod tests {
             total: 0,
             truncated: false,
             cannot_sync: Vec::new(),
+            local_disposal: LocalDisposal::Permanent,
         }));
         let json = serde_json::to_string(&computed).expect("serialize");
         assert!(json.contains(r#""state":"computed""#), "{json}");
@@ -1938,6 +1950,7 @@ mod tests {
                 token: "1:abc".to_owned(),
                 computed_epoch_secs: 5,
                 summary: PlanSummary::default(),
+                local_disposal: LocalDisposal::Permanent,
                 actions: vec![crate::sync::PlannedAction {
                     path: non_utf8_path(b"-planned.txt"),
                     destination_path: Some(non_utf8_path(b"-moved-to.txt")),

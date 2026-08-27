@@ -344,11 +344,27 @@ test("the age is the FIRST-SEEN time and never the pass's own", () => {
   assert.deepEqual(factsOf(stale, undefined), factsOf(folder, undefined));
 });
 
-test("the wording follows the column, so each side names the other one", () => {
-  // Permanent = it went on Proton first; recoverable = it went here first. Reading this backwards
-  // tells the user the deletion happened on the side that still has the file.
+test("the wording follows the DIRECTION, so each side names the other one", () => {
+  // `local` = it went on Proton first; `remote` = it went here first. Reading this backwards tells
+  // the user the deletion happened on the side that still has the file.
   assert.match(factsOf(folder, undefined)[0].text, /^deleted on Proton /);
   assert.match(factsOf(file, undefined)[0].text, /^deleted here /);
+});
+
+test("the fact keys on direction, not on which column the card landed in", () => {
+  // THE COMBINATION THE TWO ABOVE CANNOT REACH. `folder` is local+permanent and `file` is
+  // remote+recoverable, so while those were the same question either key passed. Under the default
+  // a card is local+RECOVERABLE, and keying on severity put `deleted here` over a consequence
+  // reading `You deleted this on Proton Drive` — two sentences on one card, contradicting.
+  const trashedLocal = { ...folder, disposal: "recoverable" };
+  assert.equal(severityOfItem(trashedLocal), "recoverable", "it does sit in the other column");
+  assert.match(factsOf(trashedLocal, undefined)[0].text, /^deleted on Proton /);
+  assert.ok(
+    consequenceOf(trashedLocal).sentence.startsWith("You deleted this on Proton Drive"),
+    "the fact and the consequence must name the same side",
+  );
+  // And the mirror: a remote-direction card is recoverable either way and still names here.
+  assert.match(factsOf({ ...file, disposal: "permanent" }, undefined)[0].text, /^deleted here /);
 });
 
 // ---- the kind note --------------------------------------------------------------------------

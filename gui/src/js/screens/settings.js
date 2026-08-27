@@ -815,6 +815,27 @@ const POLICY_COPY = {
   never: { title: SETTINGS.askNever, body: SETTINGS.askNeverSub, tone: "destructive" },
 };
 
+/**
+ * The policy cards' copy for the disposal mode actually in force.
+ *
+ * Two of the three sub-lines say "permanently from this computer", which stopped being true of the
+ * default daemon: `deletion_policy` was written when a local deletion was always the permanent one.
+ * The guard's SEMANTICS are unchanged — this only stops the card describing an outcome the daemon
+ * will not produce.
+ *
+ * `null` (config not read yet, or a mode this build does not recognise) takes the PERMANENT
+ * wording, which is the over-warning one. The screen's rule for this tab is that it does not guess;
+ * where it must render something before it knows, it renders the more cautious sentence.
+ */
+export function policyCopyFor(disposal) {
+  if (disposal !== "trash") return POLICY_COPY;
+  return {
+    ...POLICY_COPY,
+    only_permanent: { ...POLICY_COPY.only_permanent, body: SETTINGS.askPermanentTrashSub },
+    never: { ...POLICY_COPY.never, body: SETTINGS.askNeverTrashSub },
+  };
+}
+
 function deletionsTab(props) {
   const { config, handlers, loaded } = props;
   // NO CARD UNTIL THE FILE HAS BEEN READ. `policyOf({})` answers `ask_every_time`, which is the
@@ -831,7 +852,7 @@ function deletionsTab(props) {
         "div",
         { class: "settings-cards", role: "radiogroup", "aria-label": SETTINGS.deletionsTitle },
         POLICIES.map((policy, i) => {
-          const copy = POLICY_COPY[policy.id];
+          const copy = policyCopyFor(selectedDisposal)[policy.id];
           const card = fid(
             radioCard({
               selected: selected === policy.id,

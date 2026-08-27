@@ -138,8 +138,11 @@ Two radio cards, the same pattern as the panel above:
    *Ask me every time* above (`SETTINGS.recommended`, already drawn in `8a Deletions tab`).
    `Deleted files go to this computer's Trash, where you can restore them from your file manager.
    They keep taking up space until you empty it.`
-2. **Delete them permanently** — takes the destructive treatment, matching card 3 above
-   (`border:1px solid rgba(255,59,59,.3); background:rgba(255,59,59,.04)`, title `#FF9C9C`):
+2. **Delete them permanently** — plain card, **no destructive tint**, unlike *Never ask* above.
+   The difference is what each one costs: *Never ask* takes a person out of the loop for every
+   future deletion, while this is a considered choice about disk space whose consequence its own
+   body states. A red card here would be the same overstatement this change removes from the
+   Deletions screen.
    `Deleted files are removed from the disk straight away, freeing the space. There is no trash to
    get them back from.`
 

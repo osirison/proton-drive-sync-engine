@@ -235,6 +235,11 @@ const NOT_DRAWN = new Map([
   // beneath it deciding what a local deletion DOES rather than whether it waits. Two settings, one
   // tab, and no frame drawn with both. The guard panel's own six strings stay gated against that
   // frame. See DEVIATIONS §100.
+  // The two policy sub-lines said truthfully under trash mode. `8a Deletions tab` draws the
+  // PERMANENT-mode pair (still in the deck, still gated against that frame); these are the same two
+  // cards under the other mode, chosen by `policyCopyFor`, and no frame draws that tab in it.
+  ["SETTINGS.askPermanentTrashSub", 'no frame draws the policy cards under `local_delete_mode = "trash"`'],
+  ["SETTINGS.askNeverTrashSub", 'no frame draws the policy cards under `local_delete_mode = "trash"`'],
   ["SETTINGS.disposalTitle", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
   ["SETTINGS.disposalSub", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
   ["SETTINGS.disposalTrash", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
