@@ -15,7 +15,10 @@
       **The crate reads the environment internally**, `std::env::set_var` is `unsafe` under edition
       2024 and cargo runs tests threaded — so every test that redirects `XDG_DATA_HOME` must
       serialize that mutation or run the disposal in a child process. Settle this in 1.4; tasks 3.2
-      and 3.3 inherit whichever mechanism it establishes
+      and 3.3 inherit whichever mechanism it establishes.
+      **Settled, and ratified by the user on 2026-08-27**: neither named mechanism is sound in the
+      lib test binary, so it is a thread-local hook there (an un-hooked `Trash` disposal panics) and
+      a separate-process integration test for the real crate
 - [x] 1.5 Declare the module in `src/lib.rs` and re-export `LocalDeleteMode`
 
 ## 2. The config key
@@ -103,7 +106,9 @@
       `typeToDelete` in place — permanent mode still draws every one of them (design D7)
 - [x] 7.3 Add the two settings cards' copy: titles, bodies, and the disk-space trade named plainly in
       the trash card's body (see Risks)
-- [ ] 7.4 Update `docs/design-v2/13-copy-deck.md` with every string added or repurposed
+- [x] 7.4 Update `docs/design-v2/13-copy-deck.md` with every string added or repurposed — the five
+      deletions strings, the six disposal-panel strings, and `band.deletionSub`'s third clause, each
+      marked as drawn by no frame
 
 ## 8. Settings round trip
 
@@ -133,11 +138,17 @@
       green; `fidelity:assert` 51/51 frames, 96793 assertions, 0 failures; `fidelity:copy` needed 11
       exemptions (5 deletions-copy, 6 disposal-panel), now 342/342 matched, 86 exempt, 0 missing;
       `fidelity:contrast` 0 failures. Ledger entry is DEVIATIONS §100 (a/b/c)
-- [ ] 9.3 Update `docs/design-v2/05-deletions.md` and `08-settings.md` to describe the two modes
-- [ ] 9.4 Update `CLAUDE.md`: the `src/trash.rs` module line, the `local_delete_mode` key in the
+- [x] 9.3 Update `docs/design-v2/05-deletions.md` and `08-settings.md` to describe the two modes —
+      *Two disposal modes* and *Second panel — what a deletion does*, both anchored to DEVIATIONS
+      §100 so the prose says which parts no frame draws
+- [x] 9.4 Update `CLAUDE.md`: the `src/trash.rs` module line, the `local_delete_mode` key in the
       `src/config.rs` paragraph, the trash-directory rule in the `src/index.rs` paragraph, and the
-      delete-approval invariant's note that disposal is a separate question from gating
-- [ ] 9.5 Update `README.md`'s config reference and add the upgrade note: local deletions now go to
-      the trash; `local_delete_mode = "permanent"` restores the old behaviour
+      delete-approval invariant's note that disposal is a separate question from gating — all four,
+      nothing else
+- [x] 9.5 Update `README.md`'s config reference and add the upgrade note: local deletions now go to
+      the trash; `local_delete_mode = "permanent"` restores the old behaviour — and **five docs-site
+      pages the change made false**, which this list did not name: `safety/deletions.md` (including
+      the `:::danger` callout the original request asked to remove), `reference/faq.md`,
+      `concepts/how-sync-works.md`, `index.mdx`, `desktop/screens.md`
 - [ ] 9.6 Manual check on a real desktop: delete a synced file on Proton, approve it, then confirm
       the file appears in the file manager's Trash and restores to its original path

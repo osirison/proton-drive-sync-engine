@@ -8,7 +8,8 @@ sidebar:
 ## Is it safe to use on important files?
 
 It's an **early prototype**. Sync is bidirectional and deletions propagate — a remote delete
-removes the local file **permanently**. Use disposable folders and keep backups until you
+moves your local copy to your desktop's Trash (or removes it outright, if you have opted into
+`local_delete_mode = "permanent"`). Use disposable folders and keep backups until you
 trust it, always [dry-run](/safety/dry-run/) first, and leave the
 [delete-approval guard](/safety/delete-approval/) on. Read [Deletions](/safety/deletions/)
 before your first real run.
@@ -29,9 +30,11 @@ download, matching files are linked, and files that differ are kept as **both** 
 
 ## What does a remote delete do to my local files?
 
-It deletes them **permanently** from disk — a direct filesystem removal, not a move to your
-OS trash — and folder deletions are recursive. A *local* delete, by contrast, moves the
-Proton Drive copy to Proton's **Trash**, where it's recoverable. See
+By default it moves them to **your desktop's Trash** (`~/.local/share/Trash`), so your file
+manager can restore them to their original path; folder deletions are recursive and the
+subtree travels together. A *local* delete does the mirror thing: it moves the Proton Drive
+copy to Proton's **Trash**. Set `local_delete_mode = "permanent"` if you want a local
+deletion to free the disk space immediately instead, with no undo. See
 [Deletions](/safety/deletions/).
 
 ## Why was my deletion "withheld"?

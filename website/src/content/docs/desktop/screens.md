@@ -51,8 +51,11 @@ stays `proton-drive login` in a terminal.
 When something needs a decision, an **attention band** appears above the footer with one row
 **per category** — not per item. Conflicts read *"One file changed on both sides"* over
 *"notes/todo.txt · both copies kept, nothing lost"* — the note always names the file — with a
-**Compare** button; deletions read *"Two deletions are waiting on you"* over *"1 removes from
-this computer permanently · 1 goes to Proton's Trash"* with a **Review** button. Both buttons only navigate; neither acts.
+**Compare** button; deletions read *"Two deletions are waiting on you"* over a sub-line naming
+where each one ends up — the screenshot's queue is *"1 removes from this computer permanently ·
+1 goes to Proton's Trash"*, and under the default `local_delete_mode = "trash"` that first clause
+reads *"1 goes to this computer's Trash"* instead. A clause with nothing in it is dropped rather
+than printed as a zero. Both buttons only navigate; neither acts.
 
 ## Details
 
@@ -119,9 +122,13 @@ The [delete-approval](/safety/delete-approval/) queue. A withheld deletion lands
 of running, and the two directions are drawn as **two columns that never look alike**, because
 they are not the same action:
 
-- **Permanent · this computer** — already deleted on Proton Drive. Approving removes the local
-  file straight from disk, with no trash and no undo; for a folder the card names how many
-  files and how many bytes go with it. This is the only card that makes you **type `DELETE`**.
+- **Recoverable · this computer** *(the default)* — already deleted on Proton Drive. Approving
+  moves your local copy to your desktop's **Trash**, where your file manager can restore it.
+  One button, no typing.
+- **Permanent · this computer** — the same card under `local_delete_mode = "permanent"`.
+  Approving removes the local file straight from disk, with no trash and no undo; for a folder
+  the card names how many files and how many bytes go with it. This is the only card that makes
+  you **type `DELETE`**.
 - **Recoverable · Proton Drive** — already deleted locally. Approving moves the Proton Drive
   copy to Proton's **Trash**, where it stays until the trash is emptied. One button:
   **Move to Proton's Trash**.

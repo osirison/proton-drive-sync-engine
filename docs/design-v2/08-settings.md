@@ -122,6 +122,34 @@ Three radio cards, `border-radius:12px; padding:14px 16px`. Selected:
 
 Key line: `deletion_policy · applies to both directions`. New setting — needs daemon support.
 
+### Second panel — what a deletion does
+
+**Not drawn in any frame** (DEVIATIONS §100a): `8a Deletions tab` has one panel and the tab now
+carries two. The panel above decides whether a deletion **waits**; this one decides what a local
+deletion **does** when it goes ahead. Same tab because they are the same subject; separate panels
+because they are separate questions, and neither changes the other's meaning.
+
+`What deleting does to your copy` 18px/600 /
+`This is about files on this computer. Anything deleted on Proton Drive always goes to Proton's Trash.`
+
+Two radio cards, the same pattern as the panel above:
+
+1. **Move them to the trash** — the default, and it carries the same `recommended` badge as
+   *Ask me every time* above (`SETTINGS.recommended`, already drawn in `8a Deletions tab`).
+   `Deleted files go to this computer's Trash, where you can restore them from your file manager.
+   They keep taking up space until you empty it.`
+2. **Delete them permanently** — takes the destructive treatment, matching card 3 above
+   (`border:1px solid rgba(255,59,59,.3); background:rgba(255,59,59,.04)`, title `#FF9C9C`):
+   `Deleted files are removed from the disk straight away, freeing the space. There is no trash to
+   get them back from.`
+
+Key line: `local_delete_mode · applies to this computer only`.
+
+Turning this to **permanent** is what restores every warning on the Deletions screen — the
+`Permanent · this computer` header, the destructive card tint, and the typed-`DELETE` gate. Those
+were not removed; they are conditional, and this is the condition (05-deletions.md, *Two disposal
+modes*).
+
 ## Tab 4 — Advanced
 
 Not drawn. It holds: include globs, the socket path, the CLI binary path, log level, conflict
