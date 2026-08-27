@@ -21,6 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   clearsStartError,
+  deletionCountsOf,
   headlineOf,
   hiddenTransfers,
   heroActionsOf,
@@ -118,6 +119,60 @@ test("a category with nothing in it gets no clause, and both halves agree on num
   assert.equal(MAIN.band.deletionSub(0, 0), "");
   assert.equal(MAIN.band.deletionTitle(1), "One deletion is waiting on you");
   assert.equal(MAIN.band.conflictTitle(4), "Four files changed on both sides");
+});
+
+test("the band names the trash a deletion is actually going to", () => {
+  // REPRODUCED BEFORE IT WAS FIXED. With `local_delete_mode = "trash"` the default, a queue of two
+  // recoverable local deletions rendered `2 go to Proton's Trash` — the two-clause template folded
+  // every non-permanent row into the Proton clause, and both of those files are on this disk.
+  // `columnCopy` refuses the same mistake one screen later; this is the band's version of it.
+  assert.equal(MAIN.band.deletionSub(0, 0, 2), "2 go to this computer's Trash");
+  assert.equal(MAIN.band.deletionSub(0, 1, 1), "1 goes to this computer's Trash · 1 goes to Proton's Trash");
+  assert.equal(
+    MAIN.band.deletionSub(1, 1, 1),
+    "1 removes from this computer permanently · 1 goes to this computer's Trash · 1 goes to Proton's Trash",
+  );
+  // The third count defaults to 0, which is what keeps the DRAWN assertion above byte-identical.
+  assert.equal(MAIN.band.deletionSub(1, 1), MAIN.band.deletionSub(1, 1, 0));
+});
+
+test("the screen splits its own queue into those three counts", () => {
+  // The split is the caller's, not the template's. `remote` acts on Proton, `local` acts here, and
+  // `severityOfItem` is the one thing asked whether acting here is permanent.
+  const sentence = (deletions) => {
+    const { permanent, protonTrash, localTrash } = deletionCountsOf(deletions);
+    return MAIN.band.deletionSub(permanent, protonTrash, localTrash);
+  };
+  assert.deepEqual(
+    deletionCountsOf([
+      { path: "a", direction: "remote", disposal: "recoverable" },
+      { path: "b", direction: "local", disposal: "recoverable" },
+      { path: "c", direction: "local", disposal: "permanent" },
+    ]),
+    { permanent: 1, protonTrash: 1, localTrash: 1 },
+  );
+  assert.equal(
+    sentence([
+      { path: "a", direction: "remote", disposal: "recoverable" },
+      { path: "b", direction: "local", disposal: "recoverable" },
+      { path: "c", direction: "local", disposal: "permanent" },
+    ]),
+    "1 removes from this computer permanently · 1 goes to this computer's Trash · 1 goes to Proton's Trash",
+  );
+  // Fail closed: an older daemon sends no `disposal`, and that row really is a permanent delete.
+  assert.deepEqual(deletionCountsOf([{ path: "a", direction: "local" }]), {
+    permanent: 1,
+    protonTrash: 0,
+    localTrash: 0,
+  });
+  // The default queue: every row recoverable, and none of them Proton's.
+  assert.equal(
+    sentence([
+      { path: "a", direction: "local", disposal: "recoverable" },
+      { path: "b", direction: "local", disposal: "recoverable" },
+    ]),
+    "2 go to this computer's Trash",
+  );
 });
 
 test("queued-but-not-started work is not settled", () => {

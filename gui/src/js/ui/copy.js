@@ -193,6 +193,13 @@ export const MAIN = {
    * `deletionSub` DROPS A ZERO CLAUSE rather than printing it. A queue of two permanent deletions
    * saying `2 remove from this computer permanently · 0 go to Proton's Trash` names a thing that is
    * not happening, in the sentence whose whole job is telling you what you are about to lose.
+   *
+   * IT HAS THREE CLAUSES, NOT TWO, BECAUSE THERE ARE THREE DESTINATIONS. Once a local deletion can
+   * go to this computer's Trash (`local_delete_mode`), folding it into the Proton clause names the
+   * WRONG TRASH — `2 go to Proton's Trash` for a queue where one of them is on this disk. Same bug
+   * `columnCopy` exists to prevent on the Deletions screen, one screen earlier. `localTrash`
+   * defaults to `0` so the drawn call `deletionSub(1, 1)` renders byte-identically and stays
+   * asserted verbatim against `2a Needs you` in the `DRAWN` table.
    */
   band: {
     conflictTitle: (n) =>
@@ -201,10 +208,13 @@ export const MAIN = {
     conflictAction: "Compare",
     deletionTitle: (n) =>
       n === 1 ? "One deletion is waiting on you" : `${cardinal(n)} deletions are waiting on you`,
-    deletionSub: (permanent, trash) =>
+    deletionSub: (permanent, trash, localTrash = 0) =>
       [
         permanent > 0
           ? `${count(permanent)} ${permanent === 1 ? "removes" : "remove"} from this computer permanently`
+          : null,
+        localTrash > 0
+          ? `${count(localTrash)} ${localTrash === 1 ? "goes" : "go"} to this computer's Trash`
           : null,
         trash > 0 ? `${count(trash)} ${trash === 1 ? "goes" : "go"} to Proton's Trash` : null,
       ]

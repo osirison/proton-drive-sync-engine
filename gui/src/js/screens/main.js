@@ -488,6 +488,24 @@ function action(label, kind, onClick, disabled = false) {
  * A band routes and never acts: both buttons open the screen that owns the decision. `bands.js`
  * enforces that by only offering the `decision` kind, and it is the reason there is no `Approve` here.
  */
+/**
+ * The band's deletion queue split by WHERE EACH ROW ENDS UP — three destinations, not two.
+ *
+ * `remote` acts on Proton Drive, so that copy goes to Proton's Trash. `local` acts on this
+ * computer, and what that means is `local_delete_mode`'s answer, asked through `severityOfItem` so
+ * this is not a second copy of the rule the Deletions screen sorts its columns by.
+ *
+ * WHY IT IS ITS OWN FUNCTION. Folding both recoverable kinds into one count made the band say
+ * `2 go to Proton's Trash` about files sitting on this disk — the wrong trash, in the sentence
+ * whose whole job is telling you what you are about to lose. `columnCopy` refuses exactly this one
+ * screen later. Exported because the decision is here and the sentence is only its rendering.
+ */
+export function deletionCountsOf(deletions) {
+  const permanent = deletions.filter((d) => severityOfItem(d) === "permanent").length;
+  const protonTrash = deletions.filter((d) => d.direction === "remote").length;
+  return { permanent, protonTrash, localTrash: deletions.length - permanent - protonTrash };
+}
+
 function bandItems(v, handlers) {
   const items = [];
   if (v.conflicts.length) {
@@ -507,11 +525,11 @@ function bandItems(v, handlers) {
     // This line used to test `d.direction === "local"` itself, which is a second copy of the rule
     // the Deletions screen sorts its two columns by: the band's `N remove permanently` and the
     // screen's left column would then be free to disagree about the same list.
-    const permanent = v.deletions.filter((d) => severityOfItem(d) === "permanent").length;
+    const { permanent, protonTrash, localTrash } = deletionCountsOf(v.deletions);
     items.push({
       tone: "destructive",
       title: MAIN.band.deletionTitle(v.deletions.length),
-      note: MAIN.band.deletionSub(permanent, v.deletions.length - permanent),
+      note: MAIN.band.deletionSub(permanent, protonTrash, localTrash),
       action: bandButton({ label: MAIN.band.deletionAction, onClick: handlers.onDeletions }),
     });
   }

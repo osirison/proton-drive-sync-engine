@@ -275,6 +275,10 @@ export const MAIN_FIXTURES = {
           {
             path: "photos/2019/IMG_0421.jpg",
             direction: "local",
+            // Stated, not defaulted. The frame draws `1 removes from this computer permanently`,
+            // which is the PERMANENT mode and no longer the product default; an absent `disposal`
+            // renders it only because `severityOfItem` fails closed. See DEVIATIONS §100c.
+            disposal: "permanent",
             entity_kind: "file",
             fingerprint: "9f2c4a1b7e0d3856c9a2f4b18d7e0c3a5b6f9d21",
             detected_epoch_secs: ago(9 * 60),
@@ -282,6 +286,7 @@ export const MAIN_FIXTURES = {
           {
             path: "archive/old-notes.md",
             direction: "remote",
+            disposal: "recoverable",
             entity_kind: "file",
             fingerprint: "0b4f1e7a2c9d6e35a8f0c1b2d3e4f5a6b7c8d9e0",
             detected_epoch_secs: ago(6 * 60),
