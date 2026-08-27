@@ -3,7 +3,8 @@ use proton_drive_sync_engine::config::resolve_control_socket_path;
 use proton_drive_sync_engine::index::{EntityKind, PassRecord};
 use proton_drive_sync_engine::ipc::{
     ApplyOutcome, AuthState, ControlCommand, ControlRequest, ControlResponse, ListingOutcome,
-    LocalDisposal, PendingDeletion, PlanOutcome, ReviewedPlan, SyncActivity, send_request, wire_path,
+    LocalDisposal, PendingDeletion, PlanOutcome, ReviewedPlan, SyncActivity, send_request,
+    wire_path,
 };
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary, SyncAction, UnsyncableItem};
 use std::collections::BTreeMap;

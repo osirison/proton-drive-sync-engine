@@ -284,14 +284,19 @@ mod tests {
                 serde_json::from_str::<LocalDeleteMode>(&json).expect("deserialize"),
                 mode
             );
-            assert_eq!(mode.as_str().parse::<LocalDeleteMode>().expect("parse"), mode);
+            assert_eq!(
+                mode.as_str().parse::<LocalDeleteMode>().expect("parse"),
+                mode
+            );
             assert_eq!(mode.to_string(), mode.as_str());
         }
     }
 
     #[test]
     fn an_unknown_spelling_names_every_accepted_value() {
-        let error = "bin".parse::<LocalDeleteMode>().expect_err("must not parse");
+        let error = "bin"
+            .parse::<LocalDeleteMode>()
+            .expect_err("must not parse");
         // The message is what a user sees on a typo'd config, so it has to carry the answer.
         assert!(error.contains("bin"), "{error}");
         for mode in LocalDeleteMode::ALL {

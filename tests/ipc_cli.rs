@@ -583,7 +583,11 @@ mod unix_tests {
         let pending = withheld["pending_deletions"]
             .as_array()
             .expect("pending_deletions array");
-        assert_eq!(pending.len(), 1, "the local delete must be withheld: {withheld}");
+        assert_eq!(
+            pending.len(),
+            1,
+            "the local delete must be withheld: {withheld}"
+        );
         assert_eq!(pending[0]["direction"], "local");
         assert_eq!(pending[0]["path"], "keep.txt");
         let listed = run_control_raw(&socket_path, &["pending"]);
@@ -591,7 +595,10 @@ mod unix_tests {
         let approved = run_control_raw(&socket_path, &["approve", "keep.txt"]);
         assert!(approved.contains("approved 1"), "approve: {approved}");
         let applied = run_control(&socket_path, "syncnow");
-        assert!(applied["last_error"].is_null(), "pass should succeed: {applied}");
+        assert!(
+            applied["last_error"].is_null(),
+            "pass should succeed: {applied}"
+        );
         assert!(
             !local_root.join("keep.txt").exists(),
             "the approved local delete must remove the file from the sync root: {applied}"

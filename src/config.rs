@@ -3,12 +3,12 @@ use crate::daemon::{
     WarmStartConfig,
 };
 use crate::index::ScanOptions;
-use crate::trash::LocalDeleteMode;
 use crate::paths::{
     default_global_lock_path, default_lockfile_path, default_socket_path, default_state_db_path,
 };
 use crate::proton::CommandPolicy;
 use crate::sync::{ConflictNaming, validate_conflict_suffix};
+use crate::trash::LocalDeleteMode;
 use crate::{AppResult, boxed_error};
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};

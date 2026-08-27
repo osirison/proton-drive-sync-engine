@@ -300,7 +300,10 @@ mod tests {
         .expect_err("an unknown mode must be rejected, not silently defaulted")
         .to_string();
         assert!(error.contains("bin"), "{error}");
-        assert!(error.contains("trash") && error.contains("permanent"), "{error}");
+        assert!(
+            error.contains("trash") && error.contains("permanent"),
+            "{error}"
+        );
 
         let error = Cli::try_parse_from([
             "proton-syncd",

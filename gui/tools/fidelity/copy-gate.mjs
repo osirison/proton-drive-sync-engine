@@ -88,6 +88,27 @@ const NOT_DRAWN = new Map([
     "the drawn sentence needs the subtree aggregate (#208) — this is what Phase 1 says instead",
   ],
   ["DELETIONS.fileConsequence", "no frame draws a permanent deletion of a single file"],
+  // TRASH MODE (`openspec/changes/trash-local-deletes`). A local deletion now goes to this
+  // computer's Trash by default, and the whole `4a` set was drawn against the mode that is no
+  // longer the default: every deletions frame draws the local card as `Permanent · this computer` /
+  // `Removed straight from disk`, `4a Armed` draws the typed-DELETE gate over it, and `4a Compact`
+  // says `gone from this computer, permanently`. Those five sentences are still drawn, still gated,
+  // and still correct — they are what the screen says once the user turns permanent deletion back
+  // on. The five below are the other mode, which no frame has. See DEVIATIONS §100.
+  ["DELETIONS.recoverableLocal", "no frame draws a local deletion in the recoverable column"],
+  ["DELETIONS.recoverableLocalSub", "no frame draws a local deletion in the recoverable column"],
+  [
+    "DELETIONS.recoverableMixedSub",
+    "no frame draws a recoverable column holding a Proton-side and a local deletion at once",
+  ],
+  [
+    "DELETIONS.travelExplainerLocal",
+    "no frame draws the travel explainer for a local deletion that is recoverable",
+  ],
+  [
+    "DELETIONS.toTrashLocal",
+    "no frame draws the local card's button under trash mode — `4a Deletions` draws the permanent form",
+  ],
   // S4's failed rehearsal: `14-behaviour-and-state.md`'s empty-and-error table specifies it in prose
   // ("dry run failed → show the daemon string, offer `Check again`") and no frame draws it. The
   // daemon's own message is not copy and never passes through here — it is quoted exactly, in mono
@@ -208,6 +229,18 @@ const NOT_DRAWN = new Map([
   ["SETTINGS.restarting", "no frame draws a restart in flight"],
   ["SETTINGS.saving", "no frame draws a save in flight"],
   ["SETTINGS.sweeping", "no frame draws a sweep being asked for"],
+  // The second panel on the Deletions tab (`openspec/changes/trash-local-deletes`).
+  // `8a Deletions tab` draws one panel — the `deletion_policy` guard, `When a file is deleted` down
+  // to `deletion_policy · applies to both directions` — and the tab now carries a second one
+  // beneath it deciding what a local deletion DOES rather than whether it waits. Two settings, one
+  // tab, and no frame drawn with both. The guard panel's own six strings stay gated against that
+  // frame. See DEVIATIONS §100.
+  ["SETTINGS.disposalTitle", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
+  ["SETTINGS.disposalSub", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
+  ["SETTINGS.disposalTrash", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
+  ["SETTINGS.disposalTrashSub", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
+  ["SETTINGS.disposalPermanent", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
+  ["SETTINGS.disposalPermanentSub", "no frame draws the disposal panel — `8a Deletions tab` predates it"],
   // 4. The Advanced tab, which `08-settings.md` specifies in prose and draws nowhere.
   ["SETTINGS.includeTitle", "the Advanced tab is not drawn in any frame"],
   ["SETTINGS.includeSub", "the Advanced tab is not drawn in any frame"],

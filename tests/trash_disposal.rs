@@ -35,7 +35,8 @@ use proton_drive_sync_engine::trash::{LocalDeleteMode, dispose};
 fn trash_home() -> &'static Path {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
-        let root = std::env::temp_dir().join(format!("proton-sync-trash-test-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("proton-sync-trash-test-{}", std::process::id()));
         let data_home = root.join("data-home");
         fs::create_dir_all(&data_home).expect("create the redirected XDG_DATA_HOME");
         // SAFETY: `OnceLock::get_or_init` runs this closure exactly once and blocks every other
@@ -142,7 +143,11 @@ fn the_trash_records_the_original_path_and_the_deletion_time() {
         .find_map(|line| line.strip_prefix("DeletionDate="))
         .unwrap_or_else(|| panic!("no DeletionDate in:\n{info}"));
     // `%Y-%m-%dT%H:%M:%S` — a shape, not a value, since the clock is the machine's.
-    assert_eq!(deletion_date.len(), 19, "unexpected DeletionDate {deletion_date:?}");
+    assert_eq!(
+        deletion_date.len(),
+        19,
+        "unexpected DeletionDate {deletion_date:?}"
+    );
     assert!(
         deletion_date.contains('T') && deletion_date.starts_with("20"),
         "unexpected DeletionDate {deletion_date:?}"
@@ -164,7 +169,11 @@ fn a_trashed_directory_moves_whole_with_its_contents_inside_it() {
         .into_iter()
         .filter(|name| name.starts_with("photos"))
         .collect();
-    assert_eq!(landed.len(), 1, "expected one trashed folder, got {landed:?}");
+    assert_eq!(
+        landed.len(),
+        1,
+        "expected one trashed folder, got {landed:?}"
+    );
     let trashed = trashed_files_dir().join(&landed[0]);
     assert_eq!(
         fs::read(trashed.join("2019/one.jpg")).expect("read a nested file"),

@@ -581,15 +581,17 @@ exclude = ["*.tmp"]
             doc.validate()
                 .expect("the daemon must accept what the Deletions tab writes");
         }
-        assert!(doc.to_toml_string().contains("local_delete_mode = \"permanent\""));
+        assert!(
+            doc.to_toml_string()
+                .contains("local_delete_mode = \"permanent\"")
+        );
     }
 
     #[test]
     fn the_kebab_spelling_of_the_mode_is_read_and_rewritten_in_place() {
         // `key_in_use` resolves either spelling, and a file written the kebab way must not gain a
         // second snake-cased key beside it — that is one setting written twice.
-        let mut doc =
-            ConfigDoc::from_toml_str("local-delete-mode = \"permanent\"\n").unwrap();
+        let mut doc = ConfigDoc::from_toml_str("local-delete-mode = \"permanent\"\n").unwrap();
         assert_eq!(doc.get_local_delete_mode(), LocalDeleteMode::Permanent);
         doc.set_local_delete_mode(LocalDeleteMode::Trash);
         let text = doc.to_toml_string();
@@ -608,7 +610,9 @@ exclude = ["*.tmp"]
         .unwrap();
         assert_eq!(doc.get_local_delete_mode_key(), None);
         assert_eq!(doc.get_local_delete_mode(), LocalDeleteMode::Trash);
-        let error = doc.validate().expect_err("the daemon parser must refuse it");
+        let error = doc
+            .validate()
+            .expect_err("the daemon parser must refuse it");
         assert!(error.to_string().contains("local_delete_mode"), "{error}");
     }
 

@@ -5045,3 +5045,68 @@ Nothing dangerous is understated — destructive rows are never truncated out, s
 and `files_at_risk` are unaffected — and the honest fix has two different answers (head counts can
 read `summary.*` today; the safe body's side *lists* cannot, being lists of rows nobody sent). Two
 answers for one function is why it is its own issue rather than the tail of this one.
+
+## Local deletions go to the trash (2026-08-27)
+
+## 100. Every deletions frame draws the mode that stopped being the default
+
+`openspec/changes/trash-local-deletes`. A local deletion now goes to this computer's Trash by
+default and permanent deletion is a setting. The whole `4a` set — and `12a Deletions light`, and
+`8a Deletions tab` — was drawn against a build where a local deletion was *always* an unlink, so the
+drawings and the product now disagree on the default. Nothing in the deck was deleted to achieve
+this: every permanent-mode sentence is still drawn, still gated, and still what the screen says once
+the user opts back in. What has no drawing is the other mode.
+
+**The frames say permanent, and here is where they say it.** `4a Deletions` and `12a Deletions
+light` draw the local card as `Permanent · this computer` over `Removed straight from disk. Not
+moved to any trash, and not recoverable from Proton.`; `4a Armed` draws the typed-`DELETE` gate over
+`Delete permanently`; `4a Compact` says `1,204 photos gone from this computer, permanently`. All
+four are unchanged and still compared.
+
+**Eleven strings are exempt in `copy-gate.mjs`, in two groups.** Five are the recoverable-mode
+deletions copy (`recoverableLocal`, `recoverableLocalSub`, `recoverableMixedSub`,
+`travelExplainerLocal`, `toTrashLocal`) — no frame draws a local deletion in the recoverable column.
+Six are the disposal panel (`disposalTitle`/`Sub`, `disposalTrash`/`Sub`, `disposalPermanent`/`Sub`)
+— `8a Deletions tab` draws one panel, the `deletion_policy` guard, and the tab now carries a second
+beneath it. The gate reads 342/342 drawn strings matched, 86 exempt, 0 missing; it was 75 exempt
+before this change. `recoverableMixed` is *not* exempt: it is the bare word `Recoverable`, which
+`4a Deletions` contains inside `Recoverable · Proton Drive`, so the gate finds it.
+
+### 100a. The second panel is drawn by no frame, and no gate can see that
+
+`assert.mjs` compares a node only when the app stamps it *and* a frame declares the same key —
+"an unstamped node is simply not compared" (assert.mjs:327). The disposal panel is stamped by
+nothing, because `8a Deletions tab` has no slot for it. So adding a whole panel to a drawn tab
+changed the gate's reading by nothing at all: 51/51 frames, 96793 assertions, 0 failures, before and
+after.
+
+This is **#250's gap**, not a new one — a drawn node claimed by no slot has no rule saying whether
+it is deliberate, and this panel is now one of them. It is deliberate, and this section is the only
+record of that. Coverage is `settings.test.js`'s *"the disposal cards are their own setting,
+defaulting to the recoverable one"*, which is where an undrawn state belongs.
+
+### 100b. The mixed queue has no fixture, and could not have one
+
+The change's own task list asked for a fixture whose queue holds a trashed local deletion beside a
+Proton-side one — the arrangement that makes the recoverable column's header drop its destination.
+**`check-fixtures.mjs` compares the fixture registry against `frames/index.json` in both
+directions**, so a fixture label the prototype does not draw is a build failure, not an extra test.
+Writing one would have meant inventing an index entry for a frame nobody designed.
+
+It is covered by `deletions.test.js`'s *"a column's header names what is in it, not which column it
+is"*, which asserts all four combinations against `columnCopy` directly, including
+`columnCopy("recoverable", [file, trashedFile])` → `recoverableMixed`/`recoverableMixedSub`. What is
+**not** covered is any rendered check of that arrangement: no pixel gate sees the mixed column. The
+honest close for both this and §100a is a designed frame for trash mode, which is design work and
+not this change's.
+
+### 100c. `4a`'s fixtures now name the mode they were always assuming
+
+`fixtures/deletions.js` states `disposal: "permanent"` on the local card and `"recoverable"` on the
+Proton-side one, rather than letting the field default. The field is absent-tolerant and fails
+closed — `severityOfItem` reads a missing, empty or unrecognised `disposal` as `permanent`, so the
+frames would have kept matching either way. Stating it is what stops a later change to that default
+from silently re-pointing these frames at a mode they do not draw.
+
+`fixtures/settings.js` states `local_delete_mode: "trash"` for the opposite reason: it is the
+product default, and the panel it drives is compared against nothing (§100a).

@@ -116,15 +116,23 @@
       "no card until the file has been read" rule the policy cards use
 - [x] 8.4 Wire the handler through `app.js` to `api.js`'s config write, and confirm the
       restart-required prompt fires as it does for the other keys
-- [ ] 8.5 Extend `gui/src/js/fixtures/settings.js` and `fixtures/deletions.js` with both modes, and
-      add a fixture whose queue mixes a trashed local deletion with a remote one
+- [x] 8.5 Extend `gui/src/js/fixtures/settings.js` and `fixtures/deletions.js` with both modes, and
+      add a fixture whose queue mixes a trashed local deletion with a remote one — **narrowed**: the
+      fixture clause cannot be met. `check-fixtures.mjs` compares the registry against
+      `frames/index.json` in both directions, so a label the prototype does not draw fails the
+      build. Covered by `deletions.test.js`'s "a column's header names what is in it, not which
+      column it is" instead, and recorded in DEVIATIONS §100b
 
 ## 9. Gates, docs and the ledger
 
-- [ ] 9.1 `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D
-      warnings`, `cargo test --workspace --all-targets --all-features`
-- [ ] 9.2 `(cd gui && npm run check)` and the fidelity/copy gates; record every intentional frame
-      divergence in `docs/design-v2/DEVIATIONS.md` with its reason (design D7)
+- [x] 9.1 `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D
+      warnings`, `cargo test --workspace --all-targets --all-features` — clippy clean; 911 tests
+      passed, 0 failed; `fmt` reflowed eight files (import order in `daemon.rs`, wrapping elsewhere)
+- [x] 9.2 `(cd gui && npm run check)` and the fidelity/copy gates; record every intentional frame
+      divergence in `docs/design-v2/DEVIATIONS.md` with its reason (design D7) — `check` 379 tests
+      green; `fidelity:assert` 51/51 frames, 96793 assertions, 0 failures; `fidelity:copy` needed 11
+      exemptions (5 deletions-copy, 6 disposal-panel), now 342/342 matched, 86 exempt, 0 missing;
+      `fidelity:contrast` 0 failures. Ledger entry is DEVIATIONS §100 (a/b/c)
 - [ ] 9.3 Update `docs/design-v2/05-deletions.md` and `08-settings.md` to describe the two modes
 - [ ] 9.4 Update `CLAUDE.md`: the `src/trash.rs` module line, the `local_delete_mode` key in the
       `src/config.rs` paragraph, the trash-directory rule in the `src/index.rs` paragraph, and the

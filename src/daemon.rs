@@ -15,11 +15,11 @@ use crate::index::{
 use crate::ipc::{
     ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ApplyOutcome, AuthState,
     ControlCommand, ControlResponse, FAILED_ITEM_ERROR_LIMIT, FailedItem,
-    LIST_ENTRIES_DEFAULT_LIMIT, LIST_ENTRIES_MAX_LIMIT, ListingOutcome, PASS_HISTORY_REPORTED,
-    PLAN_ACTIONS_DEFAULT_LIMIT, PLAN_ACTIONS_MAX_LIMIT, PLAN_PASS_KIND, PassHistory, PassProgress,
-    LocalDisposal, PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo,
-    SELECTOR_DISPLAY_LIMIT, StatusHistoryEntry, SyncActivity, TRANSFERS_REPORTED, TransferActivity,
-    bind_listener, read_request, write_response,
+    LIST_ENTRIES_DEFAULT_LIMIT, LIST_ENTRIES_MAX_LIMIT, ListingOutcome, LocalDisposal,
+    PASS_HISTORY_REPORTED, PLAN_ACTIONS_DEFAULT_LIMIT, PLAN_ACTIONS_MAX_LIMIT, PLAN_PASS_KIND,
+    PassHistory, PassProgress, PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan,
+    RunningConfigInfo, SELECTOR_DISPLAY_LIMIT, StatusHistoryEntry, SyncActivity,
+    TRANSFERS_REPORTED, TransferActivity, bind_listener, read_request, write_response,
 };
 use crate::proton::{
     AuthFailure, CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient,
@@ -28,12 +28,12 @@ use crate::proton::{
 };
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::session::{CliKeyringSession, CurlHttpTransport};
-use crate::trash::{LocalDeleteMode, dispose};
 use crate::sync::{
     ConflictNaming, DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction,
     TransferDirection, UnsyncableItem, UnsyncableOrigin, directory_move_descendant_path_pairs,
     is_strict_descendant, plan_sync_entities_with_stats, plan_token, unsyncable_items,
 };
+use crate::trash::{LocalDeleteMode, dispose};
 use crate::{AppResult, boxed_error};
 use fs2::FileExt;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -11638,7 +11638,11 @@ mod tests {
         .expect("daemon");
         upsert_record(
             &daemon.pair().connection,
-            &base_record("removed-remotely.txt", Some("remote-id"), base_hash.as_str()),
+            &base_record(
+                "removed-remotely.txt",
+                Some("remote-id"),
+                base_hash.as_str(),
+            ),
         )
         .expect("base record");
 
@@ -11737,7 +11741,11 @@ mod tests {
                 entity_kind: crate::index::EntityKind::Directory,
                 ..base_record("photos/2019", Some("remote-2019"), "")
             },
-            base_record("photos/2019/one.jpg", Some("remote-one"), inner_hash.as_str()),
+            base_record(
+                "photos/2019/one.jpg",
+                Some("remote-one"),
+                inner_hash.as_str(),
+            ),
         ] {
             upsert_record(&daemon.pair().connection, &record).expect("base record");
         }
@@ -11745,7 +11753,10 @@ mod tests {
         let _hook = crate::trash::test_hook::install_fake_trash(trash.clone());
         daemon.reconcile_blocking().expect_clean("reconcile");
 
-        assert!(!local_root.join("photos").exists(), "the tree leaves the root");
+        assert!(
+            !local_root.join("photos").exists(),
+            "the tree leaves the root"
+        );
         assert_eq!(
             fs::read(trash.join("photos/2019/one.jpg")).expect("read the nested trashed file"),
             b"one",
@@ -11791,11 +11802,15 @@ mod tests {
         .expect("base record");
 
         let _hook = crate::trash::test_hook::install_failing_trash();
-        daemon
-            .reconcile_blocking()
-            .expect_partial(1, "a trash that refuses is one failed item, not a failed pass");
+        daemon.reconcile_blocking().expect_partial(
+            1,
+            "a trash that refuses is one failed item, not a failed pass",
+        );
 
-        assert!(doomed.exists(), "the entity must survive a failed trash move");
+        assert!(
+            doomed.exists(),
+            "the entity must survive a failed trash move"
+        );
         assert_eq!(fs::read(&doomed).expect("read"), b"must survive");
         assert!(
             get_record(&daemon.pair().connection, Path::new("doomed.txt"))
@@ -11884,7 +11899,10 @@ mod tests {
             .expect_partial(1, "the refused trash move is one failed item");
 
         assert_eq!(full_walks.load(Ordering::SeqCst), 0, "stayed incremental");
-        assert!(doomed.exists(), "the entity survives a trash that refused it");
+        assert!(
+            doomed.exists(),
+            "the entity survives a trash that refused it"
+        );
         let cursor = load_event_cursor(&daemon.pair().connection, "vol")
             .expect("load cursor")
             .expect("cursor present");
