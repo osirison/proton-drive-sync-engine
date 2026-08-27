@@ -509,6 +509,34 @@ exclude = ["*.tmp"]
             .expect("an absent local_root is the daemon's default, not a refusal");
     }
 
+    /// #341's sibling to the test above: `db_path`/`lockfile_path` have no root of their own, but a
+    /// blank override joins onto `local_root` and silently becomes the sync root itself, which the
+    /// GUI would then happily save. For these two keys `ConfigDoc::validate` is
+    /// `validate_file_config_text` and nothing else — the one GUI-side rule it adds is about
+    /// `proton_cli` — so this proves the refusal the engine added there is inherited rather than
+    /// needing a second copy over here.
+    #[test]
+    fn an_empty_state_path_is_refused_before_it_reaches_the_daemon() {
+        for key in ["db_path", "lockfile_path"] {
+            let doc = ConfigDoc::from_toml_str(&format!(
+                "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n{key} = \"   \"\n"
+            ))
+            .unwrap();
+            let err = doc.validate().unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("{key} must not be empty")),
+                "got {err:?}"
+            );
+        }
+        // ABSENT is not empty: the daemon fills an absent db_path/lockfile_path from the per-root
+        // `.sync` default.
+        ConfigDoc::from_toml_str("local_root = \"/a\"\nremote_root = \"/Drive/a\"\n")
+            .unwrap()
+            .validate()
+            .expect("absent db_path/lockfile_path are the daemon's default, not a refusal");
+    }
+
     #[test]
     fn an_unparseable_file_refuses_the_write_before_a_byte_is_touched() {
         // THIS IS WHAT MAKES A STALE BASE HARMLESS, and it is the reason the Settings screen keeps

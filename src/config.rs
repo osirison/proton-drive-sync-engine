@@ -1047,13 +1047,20 @@ fn state_path_from(
 }
 
 /// The `db_path` / `lockfile_path` a pair will really use, from values that are already the merged
-/// ones. Refuses a `~` it cannot expand, because this *is* the value the daemon will open.
+/// ones (a CLI flag over a file value). Refuses a `~` it cannot expand, because this *is* the value
+/// the daemon will open — and refuses a **blank** override for the same reason, and at the same
+/// point, before it is a value at all: `state_path_from` cannot tell a blank override from "no
+/// override" once `resolve_path` has joined it onto `local_root`, so the pair's index or lockfile
+/// silently becomes the sync root directory itself (#341). Checked here rather than on the
+/// resolved result so a legitimately-configured `db_path` that happens to equal `local_root` is
+/// never rejected — this is a property of the *override*, not of the resolved path.
 fn effective_state_path(
     local_root: &Path,
     override_value: Option<PathBuf>,
     field_name: &str,
     default_for: impl Fn(&Path) -> PathBuf,
 ) -> AppResult<PathBuf> {
+    require_non_blank_value(override_value.as_deref(), field_name)?;
     let override_value = override_value
         .map(|path| expand_tilde(path, field_name))
         .transpose()?;
@@ -1560,8 +1567,14 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
     if let Some(suffix) = &pair.conflict_suffix {
         validate_conflict_suffix(suffix)?;
     }
-    require_non_blank_root(pair.local_root.as_deref(), "local_root")?;
-    require_non_blank_root(pair.remote_root.as_deref(), "remote_root")?;
+    require_non_blank_value(pair.local_root.as_deref(), "local_root")?;
+    require_non_blank_value(pair.remote_root.as_deref(), "remote_root")?;
+    // `db_path`/`lockfile_path` have no root of their own — they resolve to a file *under*
+    // `local_root` — but the same value class shows up the same way: `effective_state_path` joins
+    // an empty override onto `local_root` and gets the root back, indistinguishable from "no
+    // override" (#341).
+    require_non_blank_value(pair.db_path.as_deref(), "db_path")?;
+    require_non_blank_value(pair.lockfile_path.as_deref(), "lockfile_path")?;
     // `~` is refused HERE rather than in the structural layer (#339). The daemon refuses it on the
     // merged value — the one it will really open — and a flag can replace this one; but a file
     // reader has no flags, so `ConfigDoc::save` must still refuse a `~user` path the flagless daemon
@@ -1607,16 +1620,28 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
     Ok(())
 }
 
-/// A root that is *present but blank* is always a mistake — a cleared settings field, not a default.
-/// **Absent is not blank**: the daemon fills an absent `local_root` from a flag, and refusing one
-/// here would reject a config that starts.
+/// A value that is *present but blank* is always a mistake — a cleared settings field, not a
+/// default. **Absent is not blank**: the daemon fills an absent `local_root` from a flag (and
+/// `db_path`/`lockfile_path` from a computed default), and refusing one here would reject a config
+/// that starts.
 ///
 /// Blank means empty **or whitespace-only**, which is what a cleared form field actually produces;
 /// a path whose bytes are not valid UTF-8 is never blank (nothing there is whitespace).
 ///
-/// One definition for both the file check ([`validate_pair_file_values`], where the value is one a
-/// flag may still override) and the merged runtime check ([`validate_runtime_config`], where it is
-/// the value the daemon will actually use). The message is load-bearing: `gui-core`'s
+/// Named for the *value class*, not for roots: it started as the root-only rule (hence every
+/// example below talking about `local_root`), then #341 reused it verbatim for
+/// `db_path`/`lockfile_path` rather than writing a second spelling of "blank" — the same class of
+/// mistake reaches `effective_state_path`'s empty-override case exactly the way it used to reach
+/// an empty root, and `resolve_path` joining `""` onto `local_root` is indistinguishable from "no
+/// override" once it has happened.
+///
+/// One definition for the file check ([`validate_pair_file_values`], where the value is one a flag
+/// may still override), the merged runtime check for the roots ([`validate_runtime_config`], where
+/// it is the value the daemon will actually use), and the merged check for `db_path`/`lockfile_path`
+/// ([`effective_state_path`]) — the latter runs *before* `resolve_path` folds a blank override onto
+/// `local_root`, because by the time `validate_runtime_config` sees either path it has already been
+/// resolved to an absolute one and blank is no longer distinguishable from a legitimately-configured
+/// path that happens to equal the root. The message is load-bearing: `gui-core`'s
 /// `an_empty_root_is_refused_before_it_reaches_the_daemon` matches on it, and the same rule used to
 /// live over there reading top-level keys — which a `[[pair]]` file does not have.
 ///
@@ -1624,8 +1649,10 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
 /// pre-#332 `validate_runtime_config` tested `as_os_str().is_empty()`, so a daemon whose merged
 /// `local_root` was `"   "` started, and now does not. A directory named `"   "` is legal on Unix,
 /// so this is a real behaviour change — a negligible one, since the value it refuses is what a
-/// cleared settings field produces and not what anyone types on purpose.
-fn require_non_blank_root(value: Option<&Path>, field_name: &str) -> AppResult<()> {
+/// cleared settings field produces and not what anyone types on purpose. The same is true of a
+/// `db_path`/`lockfile_path` of `"   "`: it resolves to a file literally named three spaces under
+/// `local_root`, which is legal and used to work — refusing it is the same negligible change (#341).
+fn require_non_blank_value(value: Option<&Path>, field_name: &str) -> AppResult<()> {
     if value.is_some_and(|path| path.to_str().is_some_and(|text| text.trim().is_empty())) {
         return Err(boxed_error(format!("{field_name} must not be empty")));
     }
@@ -1764,8 +1791,8 @@ fn require_absolute_socket_path(socket_path: &Path) -> AppResult<()> {
 }
 
 fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
-    require_non_blank_root(Some(&config.local_root), "local_root")?;
-    require_non_blank_root(Some(&config.remote_root), "remote_root")?;
+    require_non_blank_value(Some(&config.local_root), "local_root")?;
+    require_non_blank_value(Some(&config.remote_root), "remote_root")?;
     require_absolute_socket_path(&config.socket_path)?;
     // On the values the daemon will really open, so a flag that creates the collision is caught and
     // a flag that fixes one written in the file is honoured (#339).
@@ -2976,6 +3003,70 @@ dry_run = true
         assert_eq!(error.to_string(), "remote_root must not be empty");
     }
 
+    /// #341: `db_path = ""` used to pass both readers and resolve to the sync root itself, since
+    /// `effective_state_path`'s empty-override case was indistinguishable from "no override" once
+    /// `resolve_path` had joined it onto `local_root`. The daemon then failed later at
+    /// `index::open_database` — after the config layer had already said yes.
+    #[test]
+    fn empty_db_path_returns_targeted_config_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            db_path: Some(PathBuf::new()),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("empty db_path should fail");
+
+        assert_eq!(error.to_string(), "db_path must not be empty");
+    }
+
+    /// The sibling of the above: an empty `lockfile_path` resolves to the sync root directory
+    /// itself and reaches `LockGuard::acquire`, which opens it read/write — a worse failure mode
+    /// than `open_database`'s, since a directory is not a file at all (#341).
+    #[test]
+    fn empty_lockfile_path_returns_targeted_config_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            lockfile_path: Some(PathBuf::new()),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("empty lockfile_path should fail");
+
+        assert_eq!(error.to_string(), "lockfile_path must not be empty");
+    }
+
+    /// The blank rule, not an is-empty check: `"   "` carries no visible bytes but is not the empty
+    /// string, and `require_non_blank_value` must still catch it via `trim().is_empty()` (#341,
+    /// mirroring the same distinction #340 already drew for `local_root`/`remote_root`).
+    #[test]
+    fn whitespace_only_db_path_is_refused_the_same_as_an_empty_one() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            db_path: Some(PathBuf::from("   ")),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("whitespace-only db_path should be refused, same as an empty one");
+
+        assert_eq!(error.to_string(), "db_path must not be empty");
+    }
+
+    /// The negative case: a legitimate non-blank relative `db_path` still resolves exactly as
+    /// before this change — the new check must not touch any value that is not blank.
+    #[test]
+    fn a_non_blank_relative_db_path_still_resolves_under_local_root() {
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            db_path: Some(PathBuf::from("state/index.db")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("a legitimate relative db_path must still resolve");
+
+        assert_eq!(config.db_path, PathBuf::from("sync-root/state/index.db"));
+    }
+
     #[test]
     fn download_batch_size_resolves_flag_over_file_over_default() {
         let directory = tempdir().expect("tempdir");
@@ -3745,6 +3836,19 @@ download_batch_size = 5
                 "remote_root must not be empty",
             ),
             (
+                // #341: an empty db_path used to pass this reader and resolve to the sync root
+                // itself, since it has no equivalent of the roots' blank check.
+                "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \"\"",
+                "db_path must not be empty",
+            ),
+            (
+                // #341's sibling: a whitespace-only lockfile_path is the blank rule, not an
+                // is-empty check — it carries no visible bytes but is not the empty string.
+                "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+                 lockfile_path = \"   \"",
+                "lockfile_path must not be empty",
+            ),
+            (
                 "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
                  deletion_policy = \"never\"\n\n[pair.delete_approval]\nremote = false",
                 "two spellings of one setting",
@@ -3925,6 +4029,28 @@ download_batch_size = 5
                 );
             }
         }
+    }
+
+    /// The same flag-maskability, for `db_path` (#341): `effective_state_path`'s new blank check
+    /// runs on the value *after* `input.db_path.or(pair.db_path)`, so a `--db-path` flag masks a
+    /// file's blank value exactly the way `--local-root` already does — `Option::or` never
+    /// evaluates the file side once the flag has answered.
+    #[test]
+    fn a_blank_file_db_path_is_masked_by_a_db_path_flag_the_same_as_local_root() {
+        let text = "local_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \"\"\n";
+        let flagged = DaemonConfigInput {
+            db_path: Some(PathBuf::from("/from-flag/index.db")),
+            ..DaemonConfigInput::default()
+        };
+        assert!(
+            resolve_spelling(text, &flagged).starts_with("Ok("),
+            "a db_path flag still rescues a file value the daemon will never use"
+        );
+        assert_eq!(
+            resolve_spelling(text, &DaemonConfigInput::default()),
+            "Err(db_path must not be empty)".to_owned(),
+            "with no flag the merged blank db_path is refused"
+        );
     }
 
     #[test]
