@@ -63,11 +63,26 @@ SHALL be attempted again on a later pass.
 
 #### Scenario: The trash cannot accept the entity
 
-- **WHEN** a local deletion applies in trash mode and the move to the trash fails for any reason
+- **WHEN** a local deletion applies in trash mode and the move to the trash fails, and the move was
+  one the filesystem could perform atomically
 - **THEN** the entity is still at its original path with its contents intact
 - **AND** the pass reports it as a failed item naming that path
 - **AND** the remaining actions in the pass still execute
 - **AND** the entity's baseline record is not purged, so the deletion is planned again next pass
+
+#### Scenario: A move that cannot be atomic fails partway through a folder
+
+A trash location on a different filesystem cannot be reached by a rename, so the move becomes a
+complete copy followed by a removal of the source. The copy finishes before the removal begins, and
+the removal is the half that can leave a folder in two places at once.
+
+- **WHEN** an entity's trash location is on a different filesystem from the entity, and the removal
+  of the source fails partway through a folder
+- **THEN** no content is lost, because the complete copy is already in the trash
+- **AND** whatever still remains at the original path is reported as a failed item and planned again
+  on a later pass
+- **AND** the engine SHALL NOT attempt to undo the move: copying back out of the trash can fail the
+  same way, and would overwrite anything the user had already restored by hand
 
 #### Scenario: The trash is unavailable for the whole pass
 
@@ -86,7 +101,7 @@ files that the running daemon may not have loaded.
 - **AND** the daemon is running in trash mode
 - **THEN** each pending local deletion is reported as recoverable
 
-#### Scenario: A client older than this capability
+#### Scenario: A daemon older than this capability
 
 - **WHEN** a reply carries no disposal for a pending deletion, because the daemon predates this
   capability or the field is otherwise absent
