@@ -103,9 +103,19 @@ files that the running daemon may not have loaded.
 
 #### Scenario: A daemon older than this capability
 
+An absent field here is a different question from an absent configuration key, and they resolve
+opposite ways for the same underlying reason. A missing key is the daemon choosing what to **do**,
+and it chooses the recoverable action. A missing wire field is a client choosing what to **say**
+about an action already decided elsewhere — and it says the irreversible thing, because an older
+daemon really does remove the file from disk, and because a client cannot change what the daemon
+will do, only how plainly it warns before the user authorises it.
+
 - **WHEN** a reply carries no disposal for a pending deletion, because the daemon predates this
   capability or the field is otherwise absent
-- **THEN** the deletion is treated as permanent, which is the more cautious of the two readings
+- **THEN** the deletion is presented as permanent, which both preserves the older daemon's real
+  behaviour and is the reading that warns the most
+- **AND** it SHALL NOT be offered as a one-click approval, that being the outcome from which there
+  is no way back
 
 ### Requirement: Warnings follow the consequence, not the direction
 
