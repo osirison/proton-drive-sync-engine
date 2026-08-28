@@ -1297,12 +1297,39 @@ pub(crate) fn start_service_impl(config_path: &std::path::Path) -> Result<String
 
 /// Async so the `systemctl --user start` round trip (it blocks until the unit reports started)
 /// never runs on the GTK main loop. Mirrors `restart_service`.
+///
+/// #359: unlike `restart_service`, this had NO re-resolve gate at all — a manual
+/// `systemctl --user restart proton-syncd` (the very thing `RestartOutcome::NeverStopped`'s own
+/// reason text tells someone to run) brings the daemon up on a NEW address while this command's own
+/// `start_service_impl` no-ops on the now-active unit and reports success, leaving the session
+/// pointed at an address nothing is bound to any more. The probe of the OLD address has to happen
+/// BEFORE `start_service_impl` runs (see `start_and_maybe_adopt_socket`), both closures kept inside
+/// the one `spawn_blocking` so neither the probe's socket I/O nor the subprocess ever runs on the
+/// async runtime thread.
 #[tauri::command]
 pub async fn start_service(state: Paths<'_>) -> Result<String, String> {
-    let config_path = state.lock().unwrap().config_path.clone();
-    tauri::async_runtime::spawn_blocking(move || start_service_impl(&config_path))
-        .await
-        .map_err(|error| format!("start-service task failed: {error}"))?
+    let (config_path, socket_path) = {
+        let paths = state.lock().unwrap();
+        (paths.config_path.clone(), paths.socket_path.clone())
+    };
+    let (outcome, may_adopt) = tauri::async_runtime::spawn_blocking(move || {
+        start_and_maybe_adopt_socket(
+            || {
+                socket_path.as_deref().ok().map(|path| {
+                    probe_from(&ipc::command(
+                        path,
+                        ControlCommand::Status,
+                        ipc::DEFAULT_TIMEOUT,
+                    ))
+                })
+            },
+            || start_service_impl(&config_path),
+        )
+    })
+    .await
+    .map_err(|error| format!("start-service task failed: {error}"))?;
+    apply_socket_adoption(&state, may_adopt);
+    outcome
 }
 
 /// What a restart request did — **the ending, typed, on the `Ok` payload** (#320/#335).
@@ -1610,6 +1637,75 @@ fn old_socket_is_settled(outcome: &RestartOutcome) -> bool {
             | RestartOutcome::NotRunning
             | RestartOutcome::NotStarted { .. }
     )
+}
+
+/// #359's version of the same question for `start_service`, which has no `RestartOutcome` to read:
+/// `start_service_impl` neither stops anything nor probes anything itself — it is "ask systemd to
+/// start it, and here is what happened" — and `systemctl --user start` on an ALREADY-active unit is
+/// a no-op that reports success without moving anything, so that string alone cannot tell "the unit
+/// was down and just came up" from "the unit was already up and nothing changed". The evidence has
+/// to be a probe the caller takes itself, of the OLD address, before it ever asks systemd to touch
+/// anything — which is why `start_and_maybe_adopt_socket` takes it as `Option<DaemonProbe>` rather
+/// than reading it off whatever `start_service_impl` returns.
+///
+/// `None` is the #74 fail-closed case: no dialable address existed to probe, so — the same rule
+/// `write_config`'s own `is_ok()` gate uses — there is no live daemon this could lose track of, and
+/// letting a fresh resolve through immediately is what recovers the session rather than leaving it
+/// stuck at `Err` for ever.
+///
+/// `Some(DaemonProbe::NotRunning)` is the only LIVE reading that is safe to move off: nothing
+/// answered at the old address the instant before this call, so whatever `start_service_impl` does
+/// next — wake a stopped unit, or fall to the direct-spawn fallback — binds wherever the CURRENT
+/// config points, and the session has to follow it there. That holds even if the start then FAILS:
+/// nothing was running before and nothing is running after, which the fresh resolve still describes
+/// correctly for whenever a later start does work — the same inclusion `old_socket_is_settled` gives
+/// `RestartOutcome::NotStarted`.
+///
+/// `Some(DaemonProbe::Running)` is the opposite, and the reason this cannot just be "always
+/// re-resolve after a call that reports success": something answered the old address a moment
+/// before this call, so a `systemctl start` that no-ops on it leaves the daemon exactly where the
+/// probe found it — re-resolving would draw "unreachable" over a daemon that is not, #336's own
+/// hazard, reached this time through `start_service` rather than a save.
+/// `Some(DaemonProbe::Unknown)` is evidence of neither, and takes the same conservative answer
+/// `NeverStopped`/`Undetermined` do: keep dialling the address there is a positive or prior history
+/// with.
+fn old_socket_was_idle_before_start(pre_call: Option<DaemonProbe>) -> bool {
+    matches!(pre_call, None | Some(DaemonProbe::NotRunning))
+}
+
+/// #359's whole decision, generic over how the probe and the start are actually done — the
+/// `Daemon<C: ProtonClient>` shape this repo already tests reconciliation with, injected fakes and
+/// all. Needed here because `start_service_impl` unconditionally shells
+/// `systemctl --user start proton-syncd` with no branch that returns before it — unlike
+/// `restart_service_impl`'s `only_if_running`, which can decline to touch anything at all — so NO
+/// test may call the real `start_service_impl` on this machine
+/// (docs/agent-notes/gui-tests-that-shell-systemctl.md): every call reaches its `systemctl --user
+/// start proton-syncd`, and that is the real, live unit on any machine this project is developed on
+/// — "the daemon comes up" the moment it is called, whatever the config happens to point at.
+///
+/// A pure truth table over an already-computed `DaemonProbe` cannot prove that the probe runs
+/// BEFORE the start rather than after — "a pure predicate cannot prove a lifetime" — so this
+/// function exists to be driven directly with fakes that assert on their own call order, without
+/// either fake ever touching a real socket or a real subprocess. `start_service` wires it to the
+/// real IPC probe and the real `start_service_impl`.
+fn start_and_maybe_adopt_socket(
+    probe_old: impl FnOnce() -> Option<DaemonProbe>,
+    start: impl FnOnce() -> Result<String, String>,
+) -> (Result<String, String>, bool) {
+    // THE OLD ADDRESS FIRST. `start` may be exactly what changes what is bound there, so evidence
+    // taken after it would already be evidence about the NEW state, not the old one.
+    let pre_call = probe_old();
+    let outcome = start();
+    (outcome, old_socket_was_idle_before_start(pre_call))
+}
+
+/// The other half of `start_service`: whether `socket_path` actually follows once the gate above
+/// says it may. Split out so a test can drive it against the REAL `RuntimePaths`/`Mutex` plumbing
+/// (`mock_app`) rather than a hand-rolled stand-in, without the probe or the start running at all.
+fn apply_socket_adoption(state: &Mutex<RuntimePaths>, may_adopt: bool) {
+    if may_adopt {
+        state.lock().unwrap().socket_path = RuntimePaths::resolve().socket_path;
+    }
 }
 
 /// Async so the up-to-~10s stop/start sequence never runs on the UI thread; the blocking work
@@ -3568,6 +3664,117 @@ mod socket_tests {
         assert_eq!(
             after_socket.as_deref().ok(),
             RuntimePaths::resolve().socket_path.ok().as_deref()
+        );
+    }
+
+    // ---- #359: `start_service` gets the same re-resolve gate, on evidence of its own -------------
+    //
+    // `start_service_impl` unconditionally shells `systemctl --user start proton-syncd` with no
+    // branch that returns before it, so — unlike `restart_service_impl`, which the tests above reach
+    // safely via its `only_if_running` bypass — NO test here may call `start_service_impl` or
+    // `start_service` itself: every call reaches the real, live systemd unit on this machine
+    // (docs/agent-notes/gui-tests-that-shell-systemctl.md). The three tests below drive the seam
+    // `start_service` is built from instead, exercising the actual production functions
+    // (`old_socket_was_idle_before_start`, `start_and_maybe_adopt_socket`, `apply_socket_adoption`)
+    // with fakes only at the two true I/O boundaries — a probe and a "systemd" call — never touching
+    // a real socket or a real subprocess.
+
+    /// The pure gate, exhaustively — the poison target, for the same reason
+    /// `old_socket_is_settled_only_when_the_old_process_cannot_still_be_running_there` is: a test of
+    /// the DECISION must not be a test that can reach a subprocess.
+    #[test]
+    fn old_socket_was_idle_before_start_only_when_nothing_answered_it_or_there_was_no_address() {
+        // Safe to move off: authoritatively absent, or no dialable address to begin with (#74's
+        // fail-closed `Err`, treated the same way `write_config`'s own `is_ok()` gate treats it).
+        assert!(old_socket_was_idle_before_start(Some(
+            DaemonProbe::NotRunning
+        )));
+        assert!(old_socket_was_idle_before_start(None));
+        // Something answered there a moment before the call: `systemctl --user start` on an
+        // already-active unit is a no-op, so the daemon is still exactly there. Moving off it draws
+        // "unreachable" over a daemon that is not — #336's own hazard, through the other door.
+        assert!(!old_socket_was_idle_before_start(Some(
+            DaemonProbe::Running
+        )));
+        // Evidence of neither: the conservative answer matches `NeverStopped`'s.
+        assert!(!old_socket_was_idle_before_start(Some(
+            DaemonProbe::Unknown
+        )));
+    }
+
+    /// "A pure predicate cannot prove a lifetime": the gate above being right says nothing about
+    /// whether production actually probes the OLD address BEFORE asking systemd to touch anything —
+    /// evidence taken afterwards would already be evidence about the new state. Driven with a fake
+    /// that asserts on its own call order, so a caller that swapped the two lines would fail here
+    /// without ever reaching a real socket or a real subprocess.
+    #[test]
+    fn the_old_address_is_probed_before_the_start_is_asked_for_not_after() {
+        let started = std::cell::Cell::new(false);
+        let (outcome, may_adopt) = start_and_maybe_adopt_socket(
+            || {
+                assert!(
+                    !started.get(),
+                    "the probe ran after the start, not before it"
+                );
+                Some(DaemonProbe::NotRunning)
+            },
+            || {
+                started.set(true);
+                Ok("stub started".to_string())
+            },
+        );
+        assert_eq!(outcome, Ok("stub started".to_string()));
+        assert!(
+            may_adopt,
+            "nothing answered the old address before the call, so the fresh one may be adopted"
+        );
+    }
+
+    /// The `Running` reading, driven through the REAL probe path (`probe_from`/`ipc::command`)
+    /// against a fake daemon this test owns (`spawn_one_shot_daemon` — a Unix socket in a tempdir,
+    /// never the real one) rather than a canned `DaemonProbe::Running`: something answering the old
+    /// address before the call must hold the gate shut, whatever the (fake) start reports.
+    #[test]
+    fn a_start_against_an_address_that_already_answers_does_not_move_off_it() {
+        let (socket, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
+        let (outcome, may_adopt) = start_and_maybe_adopt_socket(
+            || {
+                Some(probe_from(&ipc::command(
+                    &socket,
+                    ControlCommand::Status,
+                    ipc::DEFAULT_TIMEOUT,
+                )))
+            },
+            || Ok("systemd no-op on an already-active unit".to_string()),
+        );
+        assert!(outcome.is_ok());
+        assert!(
+            !may_adopt,
+            "the old address answered before the call — it must not be abandoned"
+        );
+    }
+
+    /// The other half of `start_service`: whether `socket_path` actually follows the gate's answer,
+    /// against the REAL `RuntimePaths`/`Mutex` plumbing `mock_app` builds — so a regression in that
+    /// wiring, not just in the gate's own logic, would surface here.
+    #[test]
+    fn socket_path_follows_the_gate_and_only_the_gate() {
+        let old_socket = std::path::PathBuf::from("/nonexistent/old.sock");
+        let app = mock_app(old_socket.clone());
+        let state = app.state::<Mutex<RuntimePaths>>();
+
+        apply_socket_adoption(&state, false);
+        assert_eq!(
+            state.lock().unwrap().socket_path.as_deref().ok(),
+            Some(old_socket.as_path()),
+            "a shut gate must leave the old address untouched"
+        );
+
+        apply_socket_adoption(&state, true);
+        assert_eq!(
+            state.lock().unwrap().socket_path.as_deref().ok(),
+            RuntimePaths::resolve().socket_path.ok().as_deref(),
+            "an open gate must move to exactly what a fresh resolve computes now"
         );
     }
 
