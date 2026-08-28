@@ -1032,11 +1032,11 @@ export function renderConsent(props = {}) {
 /**
  * `9a CLI missing` — the precondition that only appears when it fails.
  *
- * The command box goes: every command in `CLI_INSTALL_COMMANDS` names a package that is in no
- * distribution's repository, by this project's own documentation, so there is nothing true to put in
- * it (#218). `Installation help` goes with it, and #231 closing does NOT bring it back: the command
- * surface can open a URL now (`open_remote` proves it), but there is still no true URL to send it to
- * — the same #218 that empties the box — and a takeover has nowhere to come back from (#244).
+ * The command box stays gone, permanently now (#218, DEVIATIONS §102): no distribution packages
+ * `proton-drive`, so there was never a true command to put in one. `cliMissingBody` carries the
+ * manual path instead. `Installation help` stays undrawn too, and #231 closing did NOT change that:
+ * the command surface can open a URL now (`open_remote` proves it), but this project names no
+ * install page to send it to — inventing one would be worse than the takeover this has (#244).
  */
 export function renderCliMissing(props = {}) {
   const distro = props.cli?.distro ?? null;

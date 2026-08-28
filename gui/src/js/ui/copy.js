@@ -1120,31 +1120,6 @@ export const SETTINGS = {
 
 // --------------------------------------------------------------------------- onboarding ----
 
-/**
- * One install command per package family `gui_core::distro` can return.
- *
- * ⚠ **THE COMMANDS DO NOT WORK, AND THAT IS NOT A BUG IN THIS TABLE.** `9a CLI missing` draws
- * `sudo apt install proton-drive`, and this project's own documentation contradicts it twice —
- * "`proton-drive` is not available in Linux distribution repositories, so it can't be a package
- * dependency", and "The native packages deliberately do **not** declare `proton-drive` as a
- * dependency (it isn't in any distro repo)". There is no distribution where a package manager
- * installs it, so every command here is the drawn artefact rather than an instruction that
- * succeeds.
- *
- * The Debian row is kept verbatim because the deck's job is to hold what the design draws, and
- * dropping it would quietly remove the string from the copy gate. **S7 must not ship a copyable
- * command box from this table** until the design settles what the real instruction is — the
- * `Detected …` sentence is the part of C5 that works today, and the tarball branch is correct for
- * everyone. DEVIATIONS.md §72 carries this, and #218 tracks it.
- */
-const CLI_INSTALL_COMMANDS = {
-  debian: "sudo apt install proton-drive",
-  fedora: "sudo dnf install proton-drive",
-  arch: "sudo pacman -S proton-drive",
-  suse: "sudo zypper install proton-drive",
-  alpine: "sudo apk add proton-drive",
-};
-
 export const ONBOARDING = {
   foldersTitle: "Which two folders should match?",
   foldersSub: "One on this computer, one on Proton Drive. From then on they stay identical.",
@@ -1248,22 +1223,22 @@ export const ONBOARDING = {
   cliMissingTitle: "Proton Drive's command line tool isn't installed",
 
   /**
-   * The install instructions, for the distribution `gui_core::distro` detected — or for none.
+   * MAINTAINER DECISION, 2026-08-17 (#218): no distribution packages `proton-drive` — this
+   * project's own `installation.md` says so twice — so the per-distro command this used to draw
+   * (`CLI_INSTALL_COMMANDS`, retired with this decision) was never true for anyone, Debian included.
+   * The manual path replaces it, for every distribution alike; `Detected X` stays, because it still
+   * tells someone the app knows their system, even though the instruction after it no longer
+   * depends on the answer.
    *
-   * Both halves take the detection result because the frame hard-codes one distribution in each,
-   * and a detected distribution had nowhere to go until they did: `Detected Debian` sits inside the
-   * body sentence, and the command box says `sudo apt install proton-drive`.
-   *
-   * `null` is not a failure to handle politely — it is the documented answer. `09-onboarding.md`
-   * and `14-behaviour-and-state.md` both say to show the tarball instructions rather than guess a
-   * package manager, so an unrecognised machine gets a download and no `$` command that would fail.
+   * No URL: #231 can open one, but nothing this project publishes names an install page for
+   * `proton-drive` itself (DEVIATIONS §102) — it is Proton's own tool, installed "following its own
+   * documentation" per `installation.md`. Inventing a link would be less honest than naming none.
    */
   cliMissingBody: (distro) =>
-    "This app drives the official tool rather than talking to Proton directly. Install it once and setup will carry on. " +
+    "This app drives the official proton-drive tool rather than talking to Proton directly, and no Linux distribution packages it — install it yourself, following its own instructions, then sign in and check again. " +
     (distro
-      ? `Detected ${distro.name} — other distributions are in the help.`
-      : "We couldn't tell which distribution this is — the download and instructions are in the help."),
-  cliInstallCommand: (distro) => CLI_INSTALL_COMMANDS[distro?.id] ?? null,
+      ? `Detected ${distro.name} — that doesn’t change what to do here.`
+      : "We couldn’t tell which distribution this is — that doesn’t change what to do here either."),
   copy: "Copy",
   checkAgain: "Check again",
   installHelp: "Installation help",

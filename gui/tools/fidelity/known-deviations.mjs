@@ -876,21 +876,36 @@ export const KNOWN_DEVIATIONS = [
     issue: "#207",
     why: "the head block, one wrapped line shorter for the same reason",
   },
+  // MAINTAINER DECISION, 2026-08-17 (#218): the drawn command box (`sudo apt install proton-drive`)
+  // never worked on any distribution, so it is dropped rather than made conditional — the frame
+  // itself is unchanged and still draws it (DEVIATIONS §102). `cliMissingBody` grew a manual-path
+  // sentence in its place, which is taller than the two sentences it replaced but still far short
+  // of a command box plus its own Copy/Installation-help buttons, so the gap moved (60px → 40px)
+  // rather than closing. All three rows are `decision`, not `issue`: #218 closes on this PR and
+  // nothing further will shrink the gap.
   {
     frame: "9a CLI missing",
     key: "div/div",
     props: ["box.h"],
-    detail: "176 vs 116",
-    issue: "#218",
-    why: "the text column without the command box: every command in `CLI_INSTALL_COMMANDS` names a package that is in no distribution's repository, so there is nothing true to put in it",
+    detail: "176 vs 136",
+    decision: true,
+    why: "the text column without the command box, 40px taller than before the manual-path sentence — still short of the frame's command box and its buttons",
   },
   {
     frame: "9a CLI missing",
     key: "div",
     props: ["box.h"],
-    detail: "176 vs 116",
-    issue: "#218",
-    why: "the row around it, the same 60px",
+    detail: "176 vs 136",
+    decision: true,
+    why: "the row around it, the same 40px",
+  },
+  {
+    frame: "9a CLI missing",
+    key: "div/div/div[1]",
+    props: ["box.h"],
+    detail: "40 vs 60",
+    decision: true,
+    why: "the body paragraph itself: the manual-path sentence wraps to more lines than the two it replaced, which happened to fit the frame's 40px within tolerance. Not previously a separate row because it was not previously a mismatch",
   },
 
   // ---- S10 · the light theme. FIVE ROWS, AND EVERY ONE IS A DARK ROW SEEN TWICE.
