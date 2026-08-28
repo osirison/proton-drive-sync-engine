@@ -308,6 +308,80 @@ mod tests {
             "notify.rs's `desktop-entry` hint has drifted from tauri.conf.json's identifier"
         );
     }
+
+    /// DEVIATIONS §103 (#221): a decision to shrink the main window for `3a Conflicts cleared`
+    /// (and grow it back) was taken, then reversed four minutes later in the same issue thread —
+    /// the shell never resizes itself, for that state or the two others that ask the same question
+    /// (`4a Empty`, `5a Checking`). Pinned against a regression the way `known-deviations.mjs`
+    /// alone cannot: that file records what the fidelity gate compares, which is a headless page at
+    /// a fixed 1040×764 viewport regardless of what `tauri.conf.json` says, so a real resize there
+    /// would be invisible to it. This reads the config the running app actually uses.
+    #[test]
+    fn the_main_window_stays_a_fixed_1040x764_and_is_not_user_resizable() {
+        let config = tauri_config();
+        let main = config["app"]["windows"]
+            .as_array()
+            .expect("app.windows")
+            .iter()
+            .find(|w| w["label"] == "main")
+            .expect("a window labelled `main`");
+
+        assert_eq!(
+            main["width"],
+            serde_json::json!(1040),
+            "§103: nothing app-driven may shrink the main window's declared width for any screen state"
+        );
+        assert_eq!(
+            main["height"],
+            serde_json::json!(764),
+            "§103: nothing app-driven may shrink the main window's declared height for any screen state"
+        );
+        assert_eq!(
+            main["resizable"],
+            serde_json::json!(false),
+            "§103 settles that the shell does not resize itself — it does not also make the window \
+             user-resizable, which stays a separate, still-open question (#273)"
+        );
+    }
+
+    /// The operative sentence of §103's corrected decision: "`tauri::Window::set_size` is not
+    /// called on this state." `panel::resize` is the one existing caller — the tray panel, an
+    /// always-on-top surface with no fixed size of its own, unrelated to the main window this
+    /// decision is about. A second call site anywhere in this crate is exactly the resize the
+    /// correction rejects, most likely reintroduced against the main window for the cleared-
+    /// conflicts state the reversed first decision proposed.
+    #[test]
+    fn set_size_is_called_only_by_the_tray_panel() {
+        // Split so this test's own source does not contain the needle it searches for — a plain
+        // literal would match `lib.rs` itself (this test) as a false "caller".
+        let needle = ["set_", "size("].concat();
+        let src_dir = repo_path("gui/src-tauri/src");
+        let mut callers: Vec<String> = std::fs::read_dir(&src_dir)
+            .expect("gui/src-tauri/src")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("rs"))
+            .filter(|path| {
+                std::fs::read_to_string(path)
+                    .unwrap_or_default()
+                    .contains(&needle)
+            })
+            .map(|path| {
+                path.file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        callers.sort();
+
+        assert_eq!(
+            callers,
+            vec!["panel.rs".to_string()],
+            "`set_size` must stay confined to the tray panel — §103 pins the main window as never \
+             resized by the app"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

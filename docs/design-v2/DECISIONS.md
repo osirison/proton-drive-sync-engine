@@ -13,13 +13,13 @@ not a decision, it is a preference.
 measurements and are cross-referenced below: **§94** (navigation, 2026-08-13) and **§95**
 (`unreachable` was the socket, not Proton, 2026-08-14).
 
-| # | Decision | Embodied at |
-| --- | --- | --- |
-| 1 | Quiet tier stays `#6D7783` | `gui/src/styles/tokens.css` — `--text-5` |
-| 2 | Window fixed at 1040×764 | `gui/src-tauri/tauri.conf.json` — `"resizable": false` |
-| 3 | Doc-vs-frame precedence | `DEVIATIONS.md` header + every numbered section |
-| 4 | Home is a door (supersedes the plan's assumption) | `gui/src/js/routes.js` — `FOOTER_ORDER`; `gui/src/js/fixtures/fids.js` — `doorKeys` |
-| 5 | Ship the Unicode glyphs as drawn | `gui/src/js/ui/` — `bands.js`, `rows.js`, `controls.js`, `dialog.js` |
+| #   | Decision                                          | Embodied at                                                                         |
+| --- | ------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 1   | Quiet tier stays `#6D7783`                        | `gui/src/styles/tokens.css` — `--text-5`                                            |
+| 2   | Window fixed at 1040×764                          | `gui/src-tauri/tauri.conf.json` — `"resizable": false`                              |
+| 3   | Doc-vs-frame precedence                           | `DEVIATIONS.md` header + every numbered section                                     |
+| 4   | Home is a door (supersedes the plan's assumption) | `gui/src/js/routes.js` — `FOOTER_ORDER`; `gui/src/js/fixtures/fids.js` — `doorKeys` |
+| 5   | Ship the Unicode glyphs as drawn                  | `gui/src/js/ui/` — `bands.js`, `rows.js`, `controls.js`, `dialog.js`                |
 
 ---
 
@@ -69,9 +69,14 @@ second width, so a stacked layout has nothing to be compared against; **only** a
 frames (with `frames/*.json` regenerated from them) would give them a gate. Deferred, and tracked:
 **#273**.
 
-**What it costs, measurably.** #221 — `3a Conflicts cleared` is drawn 522×766, so S2 centres a 520px
-column inside the fixed window and the footer stays wide; 15 assertions carried in
-`gui/tools/fidelity/known-deviations.mjs`, `DEVIATIONS.md` §74.
+**What it costs, measurably.** #221 asked whether this decision should carve a per-state exception —
+three frames (`3a Conflicts cleared`, `4a Empty`, `5a Checking`) are each drawn at their own narrower
+window, so each centres a 520px column inside the fixed 1040 and their footers stay wide. **Settled
+2026-08-17: no exception**, after a first answer (shrink for the state, grow back on the way out) was
+taken and reversed within the same thread — decision 2 above holds unconditionally. 26 assertions
+across the three frames (15 + 3 + 8) are carried as `decision: true` in
+`gui/tools/fidelity/known-deviations.mjs`, not waiting on an issue. `DEVIATIONS.md` §74/§75/§76–§77,
+§103.
 
 ## 3. Precedence, when the spec disagrees with itself
 

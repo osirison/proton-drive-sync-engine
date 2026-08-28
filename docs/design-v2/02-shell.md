@@ -2,30 +2,36 @@
 
 Every window shares this skeleton. Build it once.
 
+The main window is a fixed `1040×764`, never moved and never resized by the app itself — including
+for a frame drawn at its own narrower size (`3a Conflicts cleared`, `4a Empty`, `5a Checking`;
+DEVIATIONS §103). Not user-resizable either (`resizable: false`); that is a separate, still-open
+question (#273).
+
 ## Header — 52px, `flex:none`
 
 `padding:0 20px`, `display:flex; align-items:center; gap:12px`. **No bottom border** — the
 header floats on the surface. (The old build had a `1px` rule and a filled `#101a2c` bar; both
 are gone.)
 
-| Slot | Spec |
-| --- | --- |
-| App mark | `icon.svg` at `20×20`. `opacity:.65–.75` on settled/secondary screens, `1` when something is happening. |
+| Slot         | Spec                                                                                                                 |
+| ------------ | -------------------------------------------------------------------------------------------------------------------- |
+| App mark     | `icon.svg` at `20×20`. `opacity:.65–.75` on settled/secondary screens, `1` when something is happening.              |
 | Product name | `Proton Drive Sync` — 13px / 600 / `-0.01em`. `#14161A`…`#F2F4F7` when active, `#99A2AE` when the screen is settled. |
-| Spacer | `flex:1` |
-| Status chip | See below. Omitted on onboarding (replaced by `step 1 of 2` in mono 11px `#6D7783`). |
-| Menu button | `30×30`, `border-radius:8px`, `border:none`, `background:transparent`, glyph `⋯` 15px `#626B78` |
+| Spacer       | `flex:1`                                                                                                             |
+| Status chip  | See below. Omitted on onboarding (replaced by `step 1 of 2` in mono 11px `#6D7783`).                                 |
+| Menu button  | `30×30`, `border-radius:8px`, `border:none`, `background:transparent`, glyph `⋯` 15px `#626B78`                      |
 
 ### Status chip
+
 `padding:5px 12px; border-radius:99px`, mono 11px, with a `6px` dot at `gap:7px`.
 
-| State | Border | Text | Dot |
-| --- | --- | --- | --- |
-| idle | none | `#626B78` | `#2E323A` |
-| syncing | `1px #23262D` | `#99A2AE` | `#FFB84D` + `blip 1.6s` |
-| n waiting (decisions) | `1px rgba(255,107,107,.35)` | `#FF9C9C` | `2px` ring `#FF6B6B` |
-| n waiting (deletions) | `1px rgba(255,107,107,.35)` | `#FF9C9C` | filled `#FF3B3B` |
-| rehearsal | `1px #23262D` | `#99A2AE` | none — text only: `rehearsal · nothing has changed` |
+| State                 | Border                      | Text      | Dot                                                 |
+| --------------------- | --------------------------- | --------- | --------------------------------------------------- |
+| idle                  | none                        | `#626B78` | `#2E323A`                                           |
+| syncing               | `1px #23262D`               | `#99A2AE` | `#FFB84D` + `blip 1.6s`                             |
+| n waiting (decisions) | `1px rgba(255,107,107,.35)` | `#FF9C9C` | `2px` ring `#FF6B6B`                                |
+| n waiting (deletions) | `1px rgba(255,107,107,.35)` | `#FF9C9C` | filled `#FF3B3B`                                    |
+| rehearsal             | `1px #23262D`               | `#99A2AE` | none — text only: `rehearsal · nothing has changed` |
 
 The old titlebar also carried the folder pair as a mono string and a `◐ Theme` button. The folder
 pair moves to the footer or the seam labels; the theme toggle moves into the `⋯` menu.
@@ -73,6 +79,7 @@ Used as the tray panel and the quick check-in. `width:360px`, `border:1px solid 
 `border-radius:14px`, `overflow:hidden`, shadow `0 22px 54px rgba(0,0,0,.62)`.
 
 Structure, top to bottom:
+
 1. **Hero** — `padding:22–30px 20–22px 14–24px`, `flex-direction:column; align-items:center`.
    Seam labels (9.5px/600/`.14em` uppercase, `This computer` left, `Proton` right, space-between)
    only when syncing. Hexagon `72px`. Headline 15–17px/600 with the seam mask if the seam is drawn.
