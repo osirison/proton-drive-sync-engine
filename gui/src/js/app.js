@@ -829,22 +829,32 @@ function render() {
     //
     // A genuine re-arm never carries a STALE `onboardingFailure` — NOT because reaching `firstRun`
     // "requires passing through reachable first" (it does not: a poll samples every ~2s, and
-    // unreachable→firstRun needs no intervening reachable tick at all), but because the ternary
-    // above pins the latch to `true`, unconditionally, on every render where `onboardingFailure` is
-    // set — so as long as it stays set, the latch cannot go false and this edge (which needs a FALSE
-    // `wasOnboarding`) cannot fire again. The only way to reach this edge WITH `onboardingFailure`
-    // truthy is for it to have just become truthy: `onboardingStage = null` has exactly two writers,
+    // unreachable→firstRun needs no intervening reachable tick at all). The ternary above pins the
+    // latch to `true` only on a render where `onboardingFailure` is set AND `onboardingStage` is
+    // null — the STAGE arm outranks the failure arm, so this is NOT a standing pin: clicking
+    // `Start the first sync` again after a failure sets `onboardingStage = "firstSync"` without
+    // touching `onboardingFailure`, and THAT render computes the latch false with a failure still
+    // standing. Pinning alone proves nothing about staleness; the argument is about what CANNOT have
+    // been true the render before.
+    //
+    // If THIS render's latch is true via the failure arm, `onboardingStage` is null this render (the
+    // stage arm would have forced `false` otherwise). Had `onboardingStage` ALSO been null with
+    // `onboardingFailure` ALSO truthy the render BEFORE, that render's latch would have been true by
+    // the same arm, making `wasOnboarding` true and this render a HELD session, not an arm. So an
+    // arm edge with `onboardingFailure` truthy forces `onboardingStage` to have just TRANSITIONED to
+    // null. `onboardingStage = null` has two assigning writers, plus its `let` declaration:
     // `failOnboardingMerge` (sets a fresh reason in the same call) and `resetOnboardingFlow` (clears
-    // it in the same call) — so every render where `onboardingStage` drops to `null` while
-    // `onboardingFailure` is truthy is one `failOnboardingMerge` just ran on. A THIRD writer of
-    // `onboardingStage = null` that does not keep that same pairing would break this partition —
-    // grep for `onboardingStage = null` before adding one.
+    // it in the same call) — only the first leaves `onboardingFailure` truthy. So the failure this
+    // edge carries was fresh the instant `onboardingStage` dropped to `null`, never a leftover from
+    // an earlier session. A THIRD assigning writer of `onboardingStage = null` that does not keep
+    // that same pairing would break this argument — grep for `onboardingStage = null` before adding
+    // one.
     //
     // Only reachable from the two UNREACHABLE-daemon failure paths — `onStart`'s catch (no systemd
     // unit, no `proton-syncd` on PATH) and the 8-poll no-answer timeout in `advanceOnboardingStage`.
     // A failure against a daemon that answered derives to the `failed` state instead, which IS in
-    // `releasesOnboarding`'s set, so the daemon-reachable clear below runs before the ternary and
-    // the arm never fires with a failure attached at all.
+    // `releasesOnboarding`'s set, so the daemon-reachable clear ABOVE (line ~760) runs before the
+    // ternary and the arm never fires with a failure attached at all.
     if (onboardingFailure) {
       onboardingDetour = null;
     } else {
