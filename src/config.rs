@@ -1542,6 +1542,13 @@ pub fn validate_file_config_text(text: &str) -> AppResult<()> {
     // will not start, which is exactly the contract the per-pair `~` checks above exist for. A
     // bare command name (`proton-drive`, resolved through `PATH`) has no `~` component and passes
     // through untouched.
+    // `proton_cli` is daemon-wide **by force** (#356): it constructs the one shared
+    // `ProtonDriveClient`, and is used directly rather than joined onto a root, so — unlike
+    // `db_path`/`lockfile_path` — the merged value in `validate_runtime_config` is still the literal
+    // value here and never needs the `effective_state_path` treatment. A blank value used to pass
+    // both readers and start a daemon that ENOENT-loops every pass (#158); this was previously
+    // caught only by `gui-core`'s own copy of the rule, which is now inherited from here instead.
+    require_non_blank_value(config.proton_cli.as_deref(), "proton_cli")?;
     if let Some(proton_cli) = config.proton_cli {
         expand_tilde(proton_cli, "proton_cli")?;
     }
@@ -1622,8 +1629,8 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
 
 /// A value that is *present but blank* is always a mistake — a cleared settings field, not a
 /// default. **Absent is not blank**: the daemon fills an absent `local_root` from a flag (and
-/// `db_path`/`lockfile_path` from a computed default), and refusing one here would reject a config
-/// that starts.
+/// `db_path`/`lockfile_path` from a computed default, and `proton_cli` from `"proton-drive"`), and
+/// refusing one here would reject a config that starts.
 ///
 /// Blank means empty **or whitespace-only**, which is what a cleared form field actually produces;
 /// a path whose bytes are not valid UTF-8 is never blank (nothing there is whitespace).
@@ -1633,17 +1640,25 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
 /// `db_path`/`lockfile_path` rather than writing a second spelling of "blank" — the same class of
 /// mistake reaches `effective_state_path`'s empty-override case exactly the way it used to reach
 /// an empty root, and `resolve_path` joining `""` onto `local_root` is indistinguishable from "no
-/// override" once it has happened.
+/// override" once it has happened. #356 reused it again for `proton_cli`, which reaches no join at
+/// all: it is used directly, so the merged value in `validate_runtime_config` is still the literal
+/// blank a file wrote, and the fix is applying an existing rule at a seam #341 did not need to touch
+/// rather than inventing a fourth spelling of "blank".
 ///
-/// One definition for the file check ([`validate_pair_file_values`], where the value is one a flag
-/// may still override), the merged runtime check for the roots ([`validate_runtime_config`], where
-/// it is the value the daemon will actually use), and the merged check for `db_path`/`lockfile_path`
-/// ([`effective_state_path`]) — the latter runs *before* `resolve_path` folds a blank override onto
-/// `local_root`, because by the time `validate_runtime_config` sees either path it has already been
-/// resolved to an absolute one and blank is no longer distinguishable from a legitimately-configured
-/// path that happens to equal the root. The message is load-bearing: `gui-core`'s
-/// `an_empty_root_is_refused_before_it_reaches_the_daemon` matches on it, and the same rule used to
-/// live over there reading top-level keys — which a `[[pair]]` file does not have.
+/// One definition for the file check ([`validate_pair_file_values`] for the per-pair keys,
+/// [`validate_file_config_text`] for daemon-wide `proton_cli` — where either value is one a flag may
+/// still override), the merged runtime check for the roots and `proton_cli`
+/// ([`validate_runtime_config`], where it is the value the daemon will actually use), and the merged
+/// check for `db_path`/`lockfile_path` ([`effective_state_path`]) — the latter runs *before*
+/// `resolve_path` folds a blank override onto `local_root`, because by the time
+/// `validate_runtime_config` sees either path it has already been resolved to an absolute one and
+/// blank is no longer distinguishable from a legitimately-configured path that happens to equal the
+/// root. `proton_cli` has no such join, so its merged check lives in `validate_runtime_config`
+/// alongside the roots rather than needing `effective_state_path`'s earlier seam. The message is
+/// load-bearing: `gui-core`'s `an_empty_root_is_refused_before_it_reaches_the_daemon` matches on it,
+/// and the same rule used to live over there reading top-level keys — which a `[[pair]]` file does
+/// not have, and which is also where the GUI's own `proton_cli` copy of this rule used to live
+/// before #356 deleted it in favour of inheriting this one through `validate_file_config_text`.
 ///
 /// **Sharing it changed the daemon's answer in one case, and that is deliberate** (#339 §6): the
 /// pre-#332 `validate_runtime_config` tested `as_os_str().is_empty()`, so a daemon whose merged
@@ -1652,6 +1667,9 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
 /// cleared settings field produces and not what anyone types on purpose. The same is true of a
 /// `db_path`/`lockfile_path` of `"   "`: it resolves to a file literally named three spaces under
 /// `local_root`, which is legal and used to work — refusing it is the same negligible change (#341).
+/// A `proton_cli` of `"   "` used to resolve to a command name of three spaces, looked up on `PATH`
+/// and never found — refusing it up front is the same change again, and the ENOENT loop it used to
+/// produce (#158) is a worse failure mode than a config the daemon refuses to start on (#356).
 fn require_non_blank_value(value: Option<&Path>, field_name: &str) -> AppResult<()> {
     if value.is_some_and(|path| path.to_str().is_some_and(|text| text.trim().is_empty())) {
         return Err(boxed_error(format!("{field_name} must not be empty")));
@@ -1793,6 +1811,10 @@ fn require_absolute_socket_path(socket_path: &Path) -> AppResult<()> {
 fn validate_runtime_config(config: &DaemonConfig) -> AppResult<()> {
     require_non_blank_value(Some(&config.local_root), "local_root")?;
     require_non_blank_value(Some(&config.remote_root), "remote_root")?;
+    // `proton_cli` is used directly, never joined onto a root (#356), so — unlike `db_path` and
+    // `lockfile_path` — the merged value here is still the literal one a blank override produced,
+    // and this check does not need to run any earlier than `validate_runtime_config` does the roots.
+    require_non_blank_value(Some(&config.proton_cli), "proton_cli")?;
     require_absolute_socket_path(&config.socket_path)?;
     // On the values the daemon will really open, so a flag that creates the collision is caught and
     // a flag that fixes one written in the file is honoured (#339).
@@ -2888,6 +2910,11 @@ conflict_suffix = "from-file"
                 "two spellings of one setting",
             ),
             ("frobnicate = 1\n", "failed to parse config"),
+            // #356: an empty `proton_cli` used to pass this reader and start a daemon that
+            // ENOENT-loops every pass; only `gui-core`'s own copy of the rule caught it.
+            ("proton_cli = \"\"\n", "proton_cli must not be empty"),
+            // The blank rule, not an is-empty check, same as every other field it covers.
+            ("proton_cli = \"   \"\n", "proton_cli must not be empty"),
         ] {
             let error = validate_file_config_text(text)
                 .expect_err("must be refused")
@@ -3065,6 +3092,57 @@ dry_run = true
         .expect("a legitimate relative db_path must still resolve");
 
         assert_eq!(config.db_path, PathBuf::from("sync-root/state/index.db"));
+    }
+
+    /// #356: `proton_cli` is daemon-wide **by force**, not per-pair, and it is used directly rather
+    /// than joined onto `local_root` — so unlike `db_path`/`lockfile_path` its merged value in
+    /// `validate_runtime_config` is still the literal blank a file (or, here, a flag) supplied,
+    /// and the fix does not need `effective_state_path`'s earlier seam. An empty `proton_cli` used
+    /// to pass both readers and start a daemon that then ENOENT-loops every pass (#158).
+    #[test]
+    fn empty_proton_cli_returns_targeted_config_error() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            proton_cli: Some(PathBuf::new()),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("empty proton_cli should fail");
+
+        assert_eq!(error.to_string(), "proton_cli must not be empty");
+    }
+
+    /// The blank rule, not an is-empty check: `"   "` carries no visible bytes but is not the empty
+    /// string, and `require_non_blank_value` must still catch it via `trim().is_empty()` (#356,
+    /// mirroring the same distinction #341 already drew for `db_path`/`lockfile_path`).
+    #[test]
+    fn whitespace_only_proton_cli_is_refused_the_same_as_an_empty_one() {
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            proton_cli: Some(PathBuf::from("   ")),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("whitespace-only proton_cli should be refused, same as an empty one");
+
+        assert_eq!(error.to_string(), "proton_cli must not be empty");
+    }
+
+    /// The negative case: a legitimate non-blank `proton_cli` still resolves to exactly its literal
+    /// value — no join onto any root — which is the property that lets the merged check sit beside
+    /// the roots in `validate_runtime_config` rather than needing `effective_state_path`'s earlier
+    /// seam.
+    #[test]
+    fn a_non_blank_proton_cli_still_resolves_to_its_literal_value() {
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            proton_cli: Some(PathBuf::from("/usr/bin/proton-drive")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("a legitimate proton_cli must still resolve");
+
+        assert_eq!(config.proton_cli, PathBuf::from("/usr/bin/proton-drive"));
     }
 
     #[test]
@@ -4050,6 +4128,27 @@ download_batch_size = 5
             resolve_spelling(text, &DaemonConfigInput::default()),
             "Err(db_path must not be empty)".to_owned(),
             "with no flag the merged blank db_path is refused"
+        );
+    }
+
+    /// The same flag-maskability, for `proton_cli` (#356): `validate_runtime_config`'s new check
+    /// runs on the merged value after `input.proton_cli.or(file_config.proton_cli)`, so a
+    /// `--proton-cli` flag masks a file's blank value exactly the way `--db-path` already does.
+    #[test]
+    fn a_blank_file_proton_cli_is_masked_by_a_proton_cli_flag_the_same_as_db_path() {
+        let text = "local_root = \"/a\"\nremote_root = \"/Drive/a\"\nproton_cli = \"\"\n";
+        let flagged = DaemonConfigInput {
+            proton_cli: Some(PathBuf::from("/from-flag/proton-drive")),
+            ..DaemonConfigInput::default()
+        };
+        assert!(
+            resolve_spelling(text, &flagged).starts_with("Ok("),
+            "a proton_cli flag still rescues a file value the daemon will never use"
+        );
+        assert_eq!(
+            resolve_spelling(text, &DaemonConfigInput::default()),
+            "Err(proton_cli must not be empty)".to_owned(),
+            "with no flag the merged blank proton_cli is refused"
         );
     }
 
