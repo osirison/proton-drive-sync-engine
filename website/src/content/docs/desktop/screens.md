@@ -13,7 +13,7 @@ menu whose single item switches the theme. A footer carries five **doors** — *
 folder pair. Conflicts and Deletions have no door: they open over whatever you were looking at,
 from the attention band on Home, or from a notification.
 
-The status chip is the one place the [daemon state](/desktop/overview/#the-six-daemon-states)
+The status chip is the one place the [daemon state](/desktop/overview/#the-seven-daemon-states)
 is always visible. It reads `idle`, `syncing`, `paused`, `unreachable`, `sign-in expired`,
 `sync failed`, `first run`, `{n} waiting`, `rehearsal · nothing has changed` while a plan is
 open, or `step 1 of 2` during first-run setup. When it reads `idle` the header mark and name
