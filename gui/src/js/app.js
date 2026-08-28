@@ -815,7 +815,25 @@ function render() {
     screenStack = [];
     dialogOverlay = null;
     dialogReturn = null;
-    onboardingDetour = null;
+    // resetOnboardingFlow(), NOT an enumerated subset — #360. Its own comment says a (re-)armed
+    // takeover opens at step 1 with no plan and an unticked box, and `onboardingStep`/`onboardingDryRun`/
+    // `onboardingAgreed`/`onboardingSkipRules`/`onboardingRoots` were left to carry whatever a PRIOR
+    // session (before the latch released) had reached — a stale rehearsal, agreed to, on step 2.
+    //
+    // EXCEPT when `onboardingFailure` is why this is an arm at all. `failOnboardingMerge` writes
+    // `onboardingStep = "review"` and the error text ONE RENDER before this fires (it forces the
+    // latch back to true via the ternary above, false→true, which IS this edge) — that write is for
+    // THIS re-entry to show, not leftover from an earlier one. Resetting here would erase the
+    // failure before it is ever painted, which is the same trap #246 was filed for: a fresh cause
+    // becomes indistinguishable from an old one because the same wipe runs over both. A genuine
+    // re-arm (`reset-index` back to `firstRun`, or a fresh app start) never carries `onboardingFailure`
+    // — line ~760 clears it the moment the daemon is reachable again, and reaching `firstRun` requires
+    // passing through reachable first.
+    if (onboardingFailure) {
+      onboardingDetour = null;
+    } else {
+      resetOnboardingFlow();
+    }
   }
   // The CLI check runs before the flow has a config, so it is asked as soon as the takeover opens
   // (and once per app run). The merge's own progress is what advances the flow past it.
@@ -3122,7 +3140,11 @@ let onboardingStep = "folders";
  * CLEARED IN TWO PLACES, not one, and neither is optional (#337): `resetOnboardingFlow` when the
  * flow ends by completing, `render`'s `entersOnboardingTakeover` edge when it instead ends by the
  * latch releasing out from under an open detour — see that function for why the flow can end either
- * way and why only the latch's edge (not "while latched") may touch this.
+ * way and why only the latch's edge (not "while latched") may touch this. Since #360 the edge reaches
+ * this field via `resetOnboardingFlow()` itself (alongside the four other fields that comment names),
+ * except on the one arm that carries a FRESH `onboardingFailure` rather than a stale prior session —
+ * that branch clears this field directly, because the rest of what `resetOnboardingFlow` would wipe
+ * is exactly what the failure needs kept.
  */
 let onboardingDetour = null;
 /**
@@ -3520,6 +3542,14 @@ function onboardingDialogContent(id) {
  * The flow is over. Everything it holds is per-run, and a later re-entry — a config wiped from under
  * a machine whose daemon is gone — must open at step 1 with no plan and an unticked box, not at
  * step 2 with yesterday's rehearsal already agreed to.
+ *
+ * Called from two kinds of place, not one (#360): here, where the flow completes on its own terms
+ * (agreeing to the consent, or resuming past it), AND from `render`'s arm edge, for the re-entry the
+ * comment above is actually about — a session that ended some OTHER way (the latch released out from
+ * under it) and is now starting over. `onboardingRoots` is reset here too rather than kept as a
+ * convenience: `onboardingRootsNow()` falls back to the live/saved pair when this is null, so nothing
+ * typed and WRITTEN is lost, and keeping a stale draft would let it silently outrank a pair that
+ * changed since (Settings, a direct edit) — the opposite of "a configured pair beats the proposal".
  */
 function resetOnboardingFlow() {
   onboardingStage = null;
