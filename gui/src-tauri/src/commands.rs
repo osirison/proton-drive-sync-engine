@@ -43,7 +43,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
-type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
+pub(crate) type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
 
 /// A status round trip, with the derived UI state folded in so the frontend never re-derives it.
 /// On a socket failure the `state` is `unreachable`/etc. and `error` is set — never zeroed counters.
@@ -1295,41 +1295,66 @@ pub(crate) fn start_service_impl(config_path: &std::path::Path) -> Result<String
     Ok("no systemd unit found — started proton-syncd directly".to_string())
 }
 
-/// Async so the `systemctl --user start` round trip (it blocks until the unit reports started)
-/// never runs on the GTK main loop. Mirrors `restart_service`.
+/// The probe #359's gate reads, taking `socket_path` in the SAME `Result<PathBuf, String>` shape
+/// `RuntimePaths` stores it in — so the `Err → None` mapping (#74's fail-closed case) is itself
+/// production code a test can drive directly, rather than an assumption buried inside a closure
+/// literal at each call site (which is exactly how it went untested the first time: a mutation
+/// changing this arm to `Some(DaemonProbe::Unknown)` left the whole suite green, because nothing
+/// outside this function's own body exercised it). `pub(crate)` so `tray.rs`'s native-menu fallback
+/// shares this definition rather than re-deriving it — a second copy of the mapping is exactly the
+/// bug class this codebase's `entersOnboardingTakeover` note names.
+pub(crate) fn probe_old_socket(
+    socket_path: &Result<std::path::PathBuf, String>,
+) -> Option<DaemonProbe> {
+    socket_path.as_deref().ok().map(|path| {
+        probe_from(&ipc::command(
+            path,
+            ControlCommand::Status,
+            ipc::DEFAULT_TIMEOUT,
+        ))
+    })
+}
+
+/// #359's whole sequence — probe, start, gate, adopt — as ONE function, shared by every Start entry
+/// point: the window button (`start_service` below), the tray panel row (`tray_action`), and, via
+/// `tauri::async_runtime::block_on`, the native-menu fallback (`tray.rs::start_service_in_background`).
+/// Three call sites answering this one question independently is exactly the risk `start_service`'s
+/// own review found — the tray panel and the native menu both called `start_service_impl` directly
+/// and gated nothing — so there is now one definition and three callers, not three definitions.
 ///
-/// #359: unlike `restart_service`, this had NO re-resolve gate at all — a manual
-/// `systemctl --user restart proton-syncd` (the very thing `RestartOutcome::NeverStopped`'s own
-/// reason text tells someone to run) brings the daemon up on a NEW address while this command's own
-/// `start_service_impl` no-ops on the now-active unit and reports success, leaving the session
-/// pointed at an address nothing is bound to any more. The probe of the OLD address has to happen
-/// BEFORE `start_service_impl` runs (see `start_and_maybe_adopt_socket`), both closures kept inside
-/// the one `spawn_blocking` so neither the probe's socket I/O nor the subprocess ever runs on the
-/// async runtime thread.
-#[tauri::command]
-pub async fn start_service(state: Paths<'_>) -> Result<String, String> {
+/// `state` is a reference so a caller that only has a `State<'_, Mutex<RuntimePaths>>>` (every
+/// caller here does — `Paths<'_>` is that type by alias) need not construct or clone anything extra.
+///
+/// A manual `systemctl --user restart proton-syncd` (the very thing `RestartOutcome::NeverStopped`'s
+/// own reason text tells someone to run) brings the daemon up on a NEW address while
+/// `start_service_impl` no-ops on the now-active unit and reports success — this is what leaves a
+/// session pointed at an address nothing is bound to any more, on WHICHEVER of the three doors is
+/// used. The probe of the OLD address has to happen BEFORE `start_service_impl` runs (see
+/// `start_and_maybe_adopt_socket`), both closures kept inside the one `spawn_blocking` so neither the
+/// probe's socket I/O nor the subprocess ever runs on the async runtime thread.
+pub(crate) async fn start_service_and_adopt(state: &Paths<'_>) -> Result<String, String> {
     let (config_path, socket_path) = {
         let paths = state.lock().unwrap();
         (paths.config_path.clone(), paths.socket_path.clone())
     };
     let (outcome, may_adopt) = tauri::async_runtime::spawn_blocking(move || {
         start_and_maybe_adopt_socket(
-            || {
-                socket_path.as_deref().ok().map(|path| {
-                    probe_from(&ipc::command(
-                        path,
-                        ControlCommand::Status,
-                        ipc::DEFAULT_TIMEOUT,
-                    ))
-                })
-            },
+            || probe_old_socket(&socket_path),
             || start_service_impl(&config_path),
         )
     })
     .await
     .map_err(|error| format!("start-service task failed: {error}"))?;
-    apply_socket_adoption(&state, may_adopt);
+    apply_socket_adoption(state, may_adopt);
     outcome
+}
+
+/// Async so the `systemctl --user start` round trip (it blocks until the unit reports started)
+/// never runs on the GTK main loop. Mirrors `restart_service`. The window's own Start button; see
+/// `start_service_and_adopt` for the sequence this shares with the tray's two Start rows.
+#[tauri::command]
+pub async fn start_service(state: Paths<'_>) -> Result<String, String> {
+    start_service_and_adopt(&state).await
 }
 
 /// What a restart request did — **the ending, typed, on the `Ok` payload** (#320/#335).
@@ -1412,7 +1437,7 @@ pub enum RestartOutcome {
 /// The shape is the engine's own: `daemon::probe_daemon_lock` answers a three-state `GlobalLockProbe`
 /// whose `Unknown` is evidence of neither, for the same reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DaemonProbe {
+pub(crate) enum DaemonProbe {
     /// It answered — decodably or not. Something is bound to that socket and talking.
     Running,
     /// Nothing is listening on the socket. Authoritative absence.
@@ -1686,8 +1711,8 @@ fn old_socket_was_idle_before_start(pre_call: Option<DaemonProbe>) -> bool {
 /// A pure truth table over an already-computed `DaemonProbe` cannot prove that the probe runs
 /// BEFORE the start rather than after — "a pure predicate cannot prove a lifetime" — so this
 /// function exists to be driven directly with fakes that assert on their own call order, without
-/// either fake ever touching a real socket or a real subprocess. `start_service` wires it to the
-/// real IPC probe and the real `start_service_impl`.
+/// either fake ever touching a real socket or a real subprocess. `start_service_and_adopt` wires it
+/// to the real probe (`probe_old_socket`) and the real `start_service_impl`.
 fn start_and_maybe_adopt_socket(
     probe_old: impl FnOnce() -> Option<DaemonProbe>,
     start: impl FnOnce() -> Result<String, String>,
@@ -1699,9 +1724,10 @@ fn start_and_maybe_adopt_socket(
     (outcome, old_socket_was_idle_before_start(pre_call))
 }
 
-/// The other half of `start_service`: whether `socket_path` actually follows once the gate above
-/// says it may. Split out so a test can drive it against the REAL `RuntimePaths`/`Mutex` plumbing
-/// (`mock_app`) rather than a hand-rolled stand-in, without the probe or the start running at all.
+/// The other half of `start_service_and_adopt`: whether `socket_path` actually follows once the
+/// gate above says it may. Split out so a test can drive it against the REAL `RuntimePaths`/`Mutex`
+/// plumbing (`mock_app`) rather than a hand-rolled stand-in, without the probe or the start running
+/// at all.
 fn apply_socket_adoption(state: &Mutex<RuntimePaths>, may_adopt: bool) {
     if may_adopt {
         state.lock().unwrap().socket_path = RuntimePaths::resolve().socket_path;
@@ -2597,26 +2623,22 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
         Some(TrayRow::Pause) => ControlCommand::Pause,
         Some(TrayRow::Resume) => ControlCommand::Resume,
         Some(TrayRow::Start) => {
-            // `spawn_blocking`, like every other subprocess on this surface: `systemctl --user
-            // start` blocks until the unit reports started, and a stalled GTK main loop aborts
-            // WebKitGTK outright (#142/#143). The guard is cloned out and dropped before the await —
-            // a `MutexGuard` is not `Send` and cannot cross one.
-            let config_path = {
-                let paths: Paths = app.state();
-                let path = paths.lock().unwrap().config_path.clone();
-                path
-            };
-            match tauri::async_runtime::spawn_blocking(move || start_service_impl(&config_path))
-                .await
-            {
-                Ok(Ok(detail)) => eprintln!("tray: {detail}"),
+            // `start_service_and_adopt`, NOT `start_service_impl` directly (#359 review) — this row
+            // used to call the impl on its own and gate nothing, so a manual `systemctl --user
+            // restart proton-syncd` (the very thing a stuck `NeverStopped` tells someone to run)
+            // left THIS panel's own Start button unable to recover the session either. The shared
+            // sequence still runs inside `spawn_blocking` internally, so the `systemctl --user
+            // start` round trip — it blocks until the unit reports started — never stalls the GTK
+            // main loop and never risks the WebKitGTK abort (#142/#143).
+            let paths: Paths = app.state();
+            match start_service_and_adopt(&paths).await {
+                Ok(detail) => eprintln!("tray: {detail}"),
                 // STDERR IS THE WHOLE REPORT HERE, and that is a limit of the surface rather than a
                 // choice: the panel is hidden by the time this runs (every row dismisses it), so
                 // there is nothing left on screen to render a reason into. The window's own button
                 // quotes the same message — `mainProps`' `startError` — which is why the failure
                 // path people can act on is the one in `app.js` and not this one.
-                Ok(Err(error)) => eprintln!("tray: could not start the daemon: {error}"),
-                Err(join_error) => eprintln!("tray: start-service task failed: {join_error}"),
+                Err(error) => eprintln!("tray: could not start the daemon: {error}"),
             }
             // The reply to a `Status` sent THIS instant will usually still say unreachable — the
             // daemon binds its socket after we return. Correct, and not worth special-casing: the
@@ -3671,13 +3693,48 @@ mod socket_tests {
     //
     // `start_service_impl` unconditionally shells `systemctl --user start proton-syncd` with no
     // branch that returns before it, so — unlike `restart_service_impl`, which the tests above reach
-    // safely via its `only_if_running` bypass — NO test here may call `start_service_impl` or
-    // `start_service` itself: every call reaches the real, live systemd unit on this machine
-    // (docs/agent-notes/gui-tests-that-shell-systemctl.md). The three tests below drive the seam
-    // `start_service` is built from instead, exercising the actual production functions
-    // (`old_socket_was_idle_before_start`, `start_and_maybe_adopt_socket`, `apply_socket_adoption`)
-    // with fakes only at the two true I/O boundaries — a probe and a "systemd" call — never touching
-    // a real socket or a real subprocess.
+    // safely via its `only_if_running` bypass — NO test here may call `start_service_impl`,
+    // `start_service`, or `start_service_and_adopt` itself: every call reaches the real, live
+    // systemd unit on this machine (docs/agent-notes/gui-tests-that-shell-systemctl.md). The tests
+    // below drive the actual production functions the sequence is built from instead
+    // (`probe_old_socket`, `old_socket_was_idle_before_start`, `start_and_maybe_adopt_socket`,
+    // `apply_socket_adoption`) with fakes only where a real one would need a real subprocess.
+    //
+    // `probe_old_socket` earns its own test rather than living only inside a closure literal:
+    // an earlier version of this gate inlined its `Err → None` mapping at the `start_service` call
+    // site, and a mutation changing that ONE arm to `Some(DaemonProbe::Unknown)` left the whole
+    // suite green — 87 passed — because nothing outside the closure's own text exercised it. Pulling
+    // the mapping into a named function is what lets a test reach it directly.
+
+    /// The `Err → None` mapping (#74's fail-closed case) needs no I/O and is the arm the review
+    /// found untested; the two `Ok` arms are real `probe_from`/`ipc::command` round trips against
+    /// sockets this test owns — a dead tempdir path for `NotRunning`, a fake in-process daemon
+    /// (`spawn_one_shot_daemon`) for `Running` — never the real one.
+    #[test]
+    fn probe_old_socket_reads_the_stored_result_the_way_the_gate_expects() {
+        assert_eq!(
+            probe_old_socket(&Err(
+                "fallback runtime directory is owned by uid 1234".to_string()
+            )),
+            None,
+            "#74's fail-closed Err names no address to probe"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let dead = dir.path().join("nothing-here.sock");
+        assert_eq!(
+            probe_old_socket(&Ok(dead)),
+            Some(DaemonProbe::NotRunning),
+            "nothing is listening there"
+        );
+
+        let (socket, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
+        assert_eq!(
+            probe_old_socket(&Ok(socket)),
+            Some(DaemonProbe::Running),
+            "the fake daemon answered"
+        );
+    }
 
     /// The pure gate, exhaustively — the poison target, for the same reason
     /// `old_socket_is_settled_only_when_the_old_process_cannot_still_be_running_there` is: a test of
