@@ -43,7 +43,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
-pub(crate) type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
+type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
 
 /// A status round trip, with the derived UI state folded in so the frontend never re-derives it.
 /// On a socket failure the `state` is `unreachable`/etc. and `error` is set — never zeroed counters.
@@ -1300,12 +1300,10 @@ pub(crate) fn start_service_impl(config_path: &std::path::Path) -> Result<String
 /// production code a test can drive directly, rather than an assumption buried inside a closure
 /// literal at each call site (which is exactly how it went untested the first time: a mutation
 /// changing this arm to `Some(DaemonProbe::Unknown)` left the whole suite green, because nothing
-/// outside this function's own body exercised it). `pub(crate)` so `tray.rs`'s native-menu fallback
-/// shares this definition rather than re-deriving it — a second copy of the mapping is exactly the
-/// bug class this codebase's `entersOnboardingTakeover` note names.
-pub(crate) fn probe_old_socket(
-    socket_path: &Result<std::path::PathBuf, String>,
-) -> Option<DaemonProbe> {
+/// outside this function's own body exercised it). Module-private: every caller — the window, the
+/// tray panel row, the native-menu fallback — reaches this through `start_service_and_adopt` alone,
+/// so nothing outside this file needs to name it.
+fn probe_old_socket(socket_path: &Result<std::path::PathBuf, String>) -> Option<DaemonProbe> {
     socket_path.as_deref().ok().map(|path| {
         probe_from(&ipc::command(
             path,
@@ -1345,6 +1343,14 @@ pub(crate) async fn start_service_and_adopt(state: &Paths<'_>) -> Result<String,
     })
     .await
     .map_err(|error| format!("start-service task failed: {error}"))?;
+    // THE ONE LINE NOTHING TESTS, AND CANNOT: dropping this call passes every test in this file,
+    // because reaching it at all requires reaching `start_service_impl` above it in this same
+    // function — the real `systemctl --user start proton-syncd` — which no test here may do on this
+    // machine (docs/agent-notes/gui-tests-that-shell-systemctl.md). `probe_old_socket`,
+    // `start_and_maybe_adopt_socket` and `apply_socket_adoption` are each tested directly in
+    // `socket_tests`; this call is what actually wires the third one to the outcome of the other
+    // two, and only an end-to-end run of this whole function would prove that wiring — which is
+    // exactly the run nothing may make. Do not "simplify" this away without opening a way to test it.
     apply_socket_adoption(state, may_adopt);
     outcome
 }
@@ -1437,7 +1443,7 @@ pub enum RestartOutcome {
 /// The shape is the engine's own: `daemon::probe_daemon_lock` answers a three-state `GlobalLockProbe`
 /// whose `Unknown` is evidence of neither, for the same reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonProbe {
+enum DaemonProbe {
     /// It answered — decodably or not. Something is bound to that socket and talking.
     Running,
     /// Nothing is listening on the socket. Authoritative absence.
