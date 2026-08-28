@@ -44,8 +44,12 @@ selective-sync glob evaluation) and **paused** (would need live daemon state) â€
 recorded in the index, so those overlays are a follow-up.
 
 Because it finds the root by walking up to the nearest `.sync/sync_index.db`, the extension
-works with a non-default `--db-path`/`--config` and with several sync roots at once. File
-paths are matched as both text and raw bytes, so non-UTF-8 filenames still resolve.
+works with a non-default `--config` and with several sync roots at once â€” it never reads the
+daemon's config, so any `local_root` it finds gets checked. **It does not work with a
+non-default `--db-path`**: the walk looks only for the default `.sync/sync_index.db` beneath
+each candidate directory, so a daemon started with `--db-path` pointing anywhere else has an
+index this extension will never find, and no emblem ever shows for that root. File paths are
+matched as both text and raw bytes, so non-UTF-8 filenames still resolve.
 
 ## Installing and refreshing
 
