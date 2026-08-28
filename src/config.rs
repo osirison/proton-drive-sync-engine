@@ -847,10 +847,13 @@ struct ComparablePath<'a> {
 /// [`validate_pair_file_values`] and [`validate_runtime_config`]).
 ///
 /// The comparison is **lexical**, because a config file must be checkable without touching the
-/// filesystem (the GUI validates documents for paths that may not exist yet). It therefore does not
-/// see two roots that reach one directory through a symlink, a `..`, or a relative path resolved
-/// against the daemon's working directory; catching those would need `canonicalize` on live paths,
-/// which belongs to the daemon's own startup rather than to a file check. `~` is expanded
+/// filesystem (the GUI validates documents for paths that may not exist yet). `.` and `..` are
+/// collapsed on the way in ([`local_comparison_key`], #365) — that much *is* lexical, and leaving
+/// `..` alone gave one file two keys and let a config walk around every rule here. What stays
+/// invisible is what no lexical rule can see: two roots reaching one directory through a **symlink**,
+/// and a relative path resolved against the daemon's working directory; catching those would need
+/// `canonicalize` on live paths, which belongs to the daemon's own startup rather than to a file
+/// check. `~` is expanded
 /// **best-effort** ([`expand_tilde_for_comparison`]) — reading `$HOME` is not touching the
 /// filesystem, and it is what keeps `~/Sync` and `/home/me/Sync` from reading as two roots — but a
 /// value it cannot expand is compared verbatim rather than refused, because refusing here would
@@ -997,22 +1000,53 @@ fn check_no_overlap(paths: &[ComparablePath<'_>], consequence: &str) -> AppResul
 /// can never overlap (#339 round 2). Only the *leading* one matters — `Path::components` already
 /// drops a non-leading `.`, and `Path`'s own equality and `starts_with` compare component-wise.
 ///
+/// `..` is **collapsed against the component it undoes** (#365), which `.` never needed: dropping a
+/// `..` would move the path, and keeping it verbatim gave one file two comparison keys. Every rule
+/// built on this one is a rule about two paths being the same file or one containing the other, and
+/// `state/../state/index.db` is `state/index.db` on any POSIX filesystem — so comparing the
+/// unresolved spellings let a config walk straight through the check written to refuse it.
+///
 /// The leading `/` is deliberately **not** dropped, which is where this differs from
 /// [`remote_root_comparison_key`]: for a local path absolute and relative are two different
-/// locations, while `/Drive/X` and `Drive/X` are one Drive location.
+/// locations, while `/Drive/X` and `Drive/X` are one Drive location. `remote_root_comparison_key`
+/// keeps `..` verbatim for its own reason and is deliberately left alone — a remote path is not a
+/// filesystem path and `proton.rs` never resolves one.
 ///
-/// A path that is *nothing but* `.` keeps its literal form. Reducing it to the empty path would
-/// make it a prefix of every path there is, and an absolute root would then be refused as "inside"
-/// a relative one.
+/// **The residual, stated rather than papered over: this is lexical, so it is not symlink-aware.**
+/// Two paths that reach one inode only through a symlink still compare unequal. Closing that needs
+/// `canonicalize`, which touches the filesystem and fails on a path that does not exist yet — the
+/// normal case for a lockfile on first run — and a config file must be checkable without either.
+/// The residual also runs in the safe direction: a missed pair is the refusal these rules already
+/// could not make, while a false match would refuse a working config.
+///
+/// A path that reduces to nothing — `.`, or `a/..` — keeps its literal form. Reducing it to the
+/// empty path would make it a prefix of every path there is, and an absolute root would then be
+/// refused as "inside" a relative one.
 fn local_comparison_key(path: &Path) -> PathBuf {
-    let stripped: PathBuf = path
-        .components()
-        .filter(|component| !matches!(component, Component::CurDir))
-        .collect();
-    if stripped.as_os_str().is_empty() {
+    let mut addressed: Vec<Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match addressed.last() {
+                // The ordinary case: `a/..` addresses neither, so both go.
+                Some(Component::Normal(_)) => {
+                    addressed.pop();
+                }
+                // A root has no parent — `/..` is `/` — so the component addresses nothing.
+                Some(Component::RootDir) => {}
+                // A leading `..`, or one after another (`../..`), has nothing to cancel: it is
+                // part of what the path addresses and is kept. Same for a `Prefix`, which is not
+                // a directory a `..` can climb out of.
+                _ => addressed.push(component),
+            },
+            other => addressed.push(other),
+        }
+    }
+    let key: PathBuf = addressed.iter().collect();
+    if key.as_os_str().is_empty() {
         path.to_path_buf()
     } else {
-        stripped
+        key
     }
 }
 
@@ -1087,7 +1121,7 @@ fn comparison_state_path(
     override_value: Option<&Path>,
     default_for: impl Fn(&Path) -> PathBuf,
 ) -> Option<PathBuf> {
-    match override_value {
+    let placed = match override_value {
         Some(value) => {
             let value = expand_tilde_for_comparison(value);
             if value.is_absolute() {
@@ -1097,7 +1131,11 @@ fn comparison_state_path(
             }
         }
         None => local_root.map(default_for),
-    }
+    };
+    // Keyed on the way out, never on the way in: `state_path_from` joins the override onto the
+    // root, so a `..` inside the override only becomes collapsible once the join has happened
+    // (#365). Idempotent for a root that was already keyed by the caller.
+    placed.map(|path| local_comparison_key(&path))
 }
 
 /// `~` expanded when it can be, kept **verbatim** when it cannot — for comparison only.
@@ -1130,7 +1168,13 @@ fn require_distinct_state_paths(
     db_path: &Path,
     lockfile_path: &Path,
 ) -> AppResult<()> {
-    if db_path == lockfile_path {
+    // Compared as what they address, not as they are written (#365). The merge-path caller hands
+    // this raw resolved values — `resolve_path` is `local_root.join(value)`, which never collapses
+    // a `..` — so two spellings of one inode reached the equality test as two different `PathBuf`s
+    // and the daemon proceeded into exactly the state this refuses.
+    let db_key = local_comparison_key(db_path);
+    let lockfile_key = local_comparison_key(lockfile_path);
+    if db_key == lockfile_key {
         // Named when the reader knows which table it is reading (the file half is per pair), and
         // nameless on the merge path, where `DaemonConfig` is one pair and has no name to give.
         // The base rule this replaced named its pair, so dropping it would be a downgrade the
@@ -1145,7 +1189,7 @@ fn require_distinct_state_paths(
              daemon and the index is a database SQLite opens and writes, so naming one file for \
              both makes the single-instance check depend on the database and gives the database a \
              whole-file advisory lock",
-            db_path.display()
+            db_key.display()
         )));
     }
     Ok(())
@@ -4720,6 +4764,150 @@ download_batch_size = 5
                 );
             }
         }
+    }
+
+    #[test]
+    fn two_names_for_one_state_file_are_one_file_however_the_path_is_spelled() {
+        // #365. `require_distinct_state_paths` compared raw, unresolved `PathBuf`s, and
+        // `resolve_path` is `local_root.join(value)`, which never collapses a `..`. So
+        // `state/index.db` and `state/../state/index.db` were two different `PathBuf`s naming one
+        // inode on any POSIX filesystem: both readers said `Ok`, and the daemon proceeded into
+        // exactly the state the rule exists to prevent — the index holding a whole-file advisory
+        // lock, and the single-instance check depending on the database.
+        //
+        // Measured before the fix through both real readers: the file reader returned `Ok(())` and
+        // `resolve_runtime_config` returned `db_path = "/x/a/state/index.db"` beside
+        // `lockfile_path = "/x/a/state/../state/index.db"`.
+        let body = "local_root = \"/x/a\"\nremote_root = \"/Drive/a\"\n\
+                    db_path = \"state/index.db\"\nlockfile_path = \"state/../state/index.db\"\n";
+        for text in [body.to_owned(), format!("[[pair]]\nname = \"a\"\n{body}")] {
+            let error = validate_file_config_text(&text)
+                .expect_err("two spellings of one file are one file");
+            let message = error.to_string();
+            assert!(
+                message.contains("lockfile_path"),
+                "in {text:?}: got {message}"
+            );
+            // The message says "both resolve to X", so X is the path they resolve TO — the
+            // collapsed one. Printing either written spelling would name a path the other half of
+            // the sentence contradicts.
+            assert!(
+                message.contains("`/x/a/state/index.db`"),
+                "the refusal must name the file both paths address, got {message}"
+            );
+            assert!(
+                !message.contains(".."),
+                "and must not quote a spelling it just collapsed, got {message}"
+            );
+        }
+
+        // The merge path is the other reader, and the one that matters most: it sees the values the
+        // daemon will really open. A flag can create this collision as easily as a file can.
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("/x/a")),
+            remote_root: Some(PathBuf::from("/Drive/a")),
+            db_path: Some(PathBuf::from("state/index.db")),
+            lockfile_path: Some(PathBuf::from("state/../state/index.db")),
+            socket_path: Some(PathBuf::from("/run/user/1000/proton-sync.sock")),
+            ..Default::default()
+        })
+        .expect_err("the merged values name one file");
+        assert!(error.to_string().contains("lockfile_path"), "got {error}");
+
+        // And the resolved value itself is untouched: normalization is a property of the comparison
+        // key, never of the path the daemon opens. A config that is legal keeps its literal paths.
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("/x/a")),
+            remote_root: Some(PathBuf::from("/Drive/a")),
+            db_path: Some(PathBuf::from("state/../state/index.db")),
+            lockfile_path: Some(PathBuf::from("other.lock")),
+            socket_path: Some(PathBuf::from("/run/user/1000/proton-sync.sock")),
+            ..Default::default()
+        })
+        .expect("two different files stay legal however they are spelled");
+        assert_eq!(
+            config.db_path,
+            PathBuf::from("/x/a/state/../state/index.db"),
+            "the daemon opens the value it was given, not the comparison key"
+        );
+    }
+
+    #[test]
+    fn a_state_path_escaping_into_another_pairs_root_is_refused_however_it_is_spelled() {
+        // The cross-pair half of the same lexical gap (#365), latent only because
+        // `refuse_unsupported_pair_count` runs after the structure rules and masks it today.
+        // Measured before the fix: the `..` spelling fell through to "more than one folder pair",
+        // while the identical collision written absolutely was named correctly. That masking ends
+        // when phase 4 lifts the cap, so the rule has to be right before then, not after.
+        let escaping = "[[pair]]\nname = \"a\"\nlocal_root = \"/x/a\"\nremote_root = \"/Drive/a\"\n\
+                        \n[[pair]]\nname = \"b\"\nlocal_root = \"/x/b\"\nremote_root = \"/Drive/b\"\n\
+                        db_path = \"../a/index.db\"\n";
+        let error =
+            validate_file_config_text(escaping).expect_err("a state path inside another root");
+        let message = error.to_string();
+        assert!(message.contains("db_path"), "got {message}");
+        assert!(message.contains("local_root"), "got {message}");
+        assert!(
+            !message.contains("not yet supported"),
+            "a genuinely broken multi-pair file must say what is wrong with it rather than be \
+             masked by the count gate, got {message}"
+        );
+        // The overlap message renders what the user WROTE (#339), which the collapsing must not
+        // quietly change: they are told about the path in their file.
+        assert!(message.contains("`../a/index.db`"), "got {message}");
+
+        // The root rules themselves too: `/x/a` and `/x/b/../a` are one directory.
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"a\"\nlocal_root = \"/x/a\"\nremote_root = \"/Drive/a\"\n\
+             \n[[pair]]\nname = \"b\"\nlocal_root = \"/x/b/../a\"\nremote_root = \"/Drive/b\"\n",
+        )
+        .expect_err("two spellings of one root are one root");
+        assert!(
+            error.to_string().contains("the same path as"),
+            "got {error}"
+        );
+    }
+
+    #[test]
+    fn a_comparison_key_collapses_what_it_can_and_keeps_what_it_cannot() {
+        // A direct truth table over the primitive, because every rule above is one comparison of
+        // two of its outputs and the arms that keep a `..` are the ones no config test reaches.
+        for (path, expected) in [
+            // The ordinary collapse, and repeated.
+            ("/x/a/state/../state/index.db", "/x/a/state/index.db"),
+            ("a/b/../../c", "c"),
+            // `.` as before (#339 round 2), leading and interior.
+            ("./A", "A"),
+            ("/x/./a", "/x/a"),
+            // A root has no parent, so `/..` is `/` rather than an escape above it.
+            ("/..", "/"),
+            ("/../x", "/x"),
+            // A leading `..` cancels nothing, so it is part of what the path addresses and must
+            // survive: dropping it would move the path up one level and make `../a` compare equal
+            // to `a`, which is a false match — the direction that refuses a working config.
+            ("../a", "../a"),
+            ("../../a", "../../a"),
+            ("a/../../b", "../b"),
+            // Reducing to nothing keeps the literal: an empty key is a prefix of every path there
+            // is, so an absolute root would be refused as "inside" this one.
+            (".", "."),
+            ("..", ".."),
+            ("a/..", "a/.."),
+        ] {
+            assert_eq!(
+                local_comparison_key(Path::new(path)),
+                PathBuf::from(expected),
+                "key for {path:?}"
+            );
+        }
+
+        // A remote root is a different question and is deliberately untouched: `proton.rs` never
+        // resolves a `..` in a Drive path, so collapsing one here would claim two locations are one
+        // when nothing downstream agrees.
+        assert_eq!(
+            remote_root_comparison_key(Path::new("/Drive/a/../b")),
+            PathBuf::from("Drive/a/../b")
+        );
     }
 
     #[test]
