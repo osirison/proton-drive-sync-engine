@@ -825,10 +825,26 @@ function render() {
     // latch back to true via the ternary above, false→true, which IS this edge) — that write is for
     // THIS re-entry to show, not leftover from an earlier one. Resetting here would erase the
     // failure before it is ever painted, which is the same trap #246 was filed for: a fresh cause
-    // becomes indistinguishable from an old one because the same wipe runs over both. A genuine
-    // re-arm (`reset-index` back to `firstRun`, or a fresh app start) never carries `onboardingFailure`
-    // — line ~760 clears it the moment the daemon is reachable again, and reaching `firstRun` requires
-    // passing through reachable first.
+    // becomes indistinguishable from an old one because the same wipe runs over both.
+    //
+    // A genuine re-arm never carries a STALE `onboardingFailure` — NOT because reaching `firstRun`
+    // "requires passing through reachable first" (it does not: a poll samples every ~2s, and
+    // unreachable→firstRun needs no intervening reachable tick at all), but because the ternary
+    // above pins the latch to `true`, unconditionally, on every render where `onboardingFailure` is
+    // set — so as long as it stays set, the latch cannot go false and this edge (which needs a FALSE
+    // `wasOnboarding`) cannot fire again. The only way to reach this edge WITH `onboardingFailure`
+    // truthy is for it to have just become truthy: `onboardingStage = null` has exactly two writers,
+    // `failOnboardingMerge` (sets a fresh reason in the same call) and `resetOnboardingFlow` (clears
+    // it in the same call) — so every render where `onboardingStage` drops to `null` while
+    // `onboardingFailure` is truthy is one `failOnboardingMerge` just ran on. A THIRD writer of
+    // `onboardingStage = null` that does not keep that same pairing would break this partition —
+    // grep for `onboardingStage = null` before adding one.
+    //
+    // Only reachable from the two UNREACHABLE-daemon failure paths — `onStart`'s catch (no systemd
+    // unit, no `proton-syncd` on PATH) and the 8-poll no-answer timeout in `advanceOnboardingStage`.
+    // A failure against a daemon that answered derives to the `failed` state instead, which IS in
+    // `releasesOnboarding`'s set, so the daemon-reachable clear below runs before the ternary and
+    // the arm never fires with a failure attached at all.
     if (onboardingFailure) {
       onboardingDetour = null;
     } else {
