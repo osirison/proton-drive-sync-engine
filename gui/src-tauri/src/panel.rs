@@ -176,9 +176,40 @@ fn build(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     .inner_size(WIDTH, HEIGHT)
     .resizable(false)
     .decorations(false)
+    // BOTH OF THE NEXT TWO ARE X11 HINTS, AND ON WAYLAND THEY ARE SILENTLY DISCARDED (#351).
+    // Kept because they are correct where they apply and cost nothing where they do not — but the
+    // comment has to say what the platform does, or the next reader takes the panel's behaviour as
+    // designed rather than as whatever the compositor happens to do.
+    //
+    // Measured on Plasma 6 / Wayland, two plain GTK3 windows differing only in `GDK_BACKEND` and
+    // issuing the exact pair tao sends, read back through KWin's scripting API:
+    //
+    //   GDK_BACKEND=x11      skipTaskbar=true   skipPager=true   keepAbove=true   skipSwitcher=false
+    //   GDK_BACKEND=wayland  skipTaskbar=false  skipPager=false  keepAbove=false  skipSwitcher=false
+    //
+    // `always_on_top` reaches GTK as `gtk_window_set_keep_above`
+    // (tao `platform_impl/linux/event_loop.rs`, `WindowRequest::AlwaysOnTop`). xdg-shell has no
+    // stacking hint, so on Wayland the panel is an ordinary toplevel and stays visible only because
+    // `focus::present` gives it the focus — which is also what `lib.rs` hides it on losing, so the
+    // popover contract holds by a different mechanism than this line names.
     .always_on_top(true)
-    // Out of the taskbar and the window switcher: it is a popover, and one that answers Alt-Tab
-    // is a window the user has to dismiss twice.
+    // `skip_taskbar` reaches GTK as `gtk_window_set_skip_taskbar_hint` plus
+    // `gtk_window_set_skip_pager_hint` (same tao dispatch, `WindowRequest::SetSkipTaskbar`), both
+    // X11-only. So on Wayland the popover takes a taskbar button, which is wrong for a window that
+    // hides on blur, on Esc, and on a second click — the user is offered an entry for something
+    // they cannot meaningfully switch to.
+    //
+    // TWO CORRECTIONS TO WHAT THIS COMMENT USED TO CLAIM. It said "out of the taskbar AND the
+    // window switcher": the measurement above reports `skipSwitcher=false` on **both** backends, so
+    // the Alt-Tab half is not something this call delivers anywhere, and the justification it was
+    // given ("one that answers Alt-Tab is a window the user has to dismiss twice") never described
+    // shipped behaviour. And the taskbar half is delivered on X11 only.
+    //
+    // Neither real fix is absorbable, which is why #351 stays open rather than being closed here:
+    // gtk-layer-shell makes the panel a layer surface that never reaches the taskbar, but it is a
+    // new system build dependency across three packaging trees and must run before the window is
+    // realized; `org_kde_plasma_surface.set_skip_taskbar` is exactly the right knob and is KDE-only,
+    // needing raw Wayland FFI for one call. Both are decisions, not cleanups.
     .skip_taskbar(true)
     .shadow(false)
     // Built hidden and shown by the caller once it is positioned. Building it visible paints it
