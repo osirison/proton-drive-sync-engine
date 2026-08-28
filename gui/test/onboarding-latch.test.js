@@ -185,3 +185,88 @@ test("`render` clears the detour on the SAME edge it clears the main app's own l
   const occurrences = app.split("if (entersOnboardingTakeover(").length - 1;
   assert.equal(occurrences, 1, "entersOnboardingTakeover must be asked once, not re-derived");
 });
+
+// ---- a re-armed takeover carries no leftover flow state (#360) ---------------------------------
+//
+// `onboardingDetour` was the only piece #337 fixed. Five more pieces of the flow's own state —
+// `onboardingStep`, `onboardingDryRun`, `onboardingAgreed`, `onboardingSkipRules`, `onboardingRoots`
+// — were left for `resetOnboardingFlow` alone to clear, and that only runs when the flow ends by
+// completing. A session that instead ends by the latch RELEASING (the daemon becomes reachable and
+// syncs, `Start the first sync` never clicked) and later re-arms (`reset-index` back to `firstRun`)
+// reopened at whatever step/rehearsal/tick that earlier session had reached — exactly what
+// `resetOnboardingFlow`'s own comment forbids.
+//
+// The fix calls `resetOnboardingFlow()` itself on the arm edge, so the next field added to the flow
+// is covered for free — EXCEPT on the one arm that carries a FRESH `onboardingFailure`: a failed
+// `Start the first sync` forces this SAME false→true edge one render after `failOnboardingMerge`
+// writes the failure text (`onboardingStep = "review"`, an error message) THIS re-entry exists to
+// show. Resetting there would erase it before it is ever painted.
+
+/**
+ * A top-level `function <name>() { ... }` body, by brace depth — NOT `indexOf("\n}")`
+ * (`settings.test.js`'s `functionBody`), because `resetOnboardingFlow` has no nested block to stop
+ * at early, but a helper this literal would silently mis-scope the day it does.
+ */
+function onboardingFunctionBody(source, name) {
+  const start = source.search(new RegExp(`^function ${name}\\(\\) \\{`, "m"));
+  assert.notEqual(start, -1, `app.js no longer has ${name} — if it moved, move this test with it`);
+  let depth = 0;
+  for (let i = start; i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  throw new Error(`${name} has no closing brace`);
+}
+
+test("driving the sequence: arm, advance to step 2, rehearse and tick, release, re-arm", () => {
+  // The narrative #360 describes, run through the real exported edge rather than restated as a
+  // separate claim: a fresh takeover arms, the session advances and accumulates state a render
+  // cannot see from here (step 2, a fetched plan, a ticked box), the daemon comes up and releases
+  // it, and later something (`reset-index`) sends the daemon back to `firstRun` — arming again.
+  assert.equal(entersOnboardingTakeover(false, true), true, "ARM: a fresh machine enters");
+  // Step 2, a fetched rehearsal and a ticked box happen here, in the module state this suite cannot
+  // reach directly — which is exactly why the callee's effect is pinned by source below instead.
+  assert.equal(entersOnboardingTakeover(true, true), false, "HELD: still the same session");
+  assert.equal(entersOnboardingTakeover(true, false), false, "RELEASE: not an arm, nothing resets");
+  // Released: the main screen took over while the rehearsal and tick sat in memory. Later,
+  // `reset-index` sends the daemon back to `firstRun`.
+  assert.equal(entersOnboardingTakeover(false, true), true, "RE-ARM: firstRun again, later");
+
+  // The re-arm found above is precisely the edge `render()` guards with a reset — proven against the
+  // actual source, not restated, so a regression in EITHER the gate or its callee's effect is caught.
+  const app = readFileSync(fileURLToPath(new URL("../src/js/app.js", import.meta.url)), "utf8");
+  const start = app.indexOf("if (entersOnboardingTakeover(");
+  const end = app.indexOf("\n  }", start);
+  const block = app.slice(start, end);
+
+  assert.match(block, /resetOnboardingFlow\(\);/, "a re-arm must reset the whole flow, per #360");
+  assert.match(
+    block,
+    /if \(onboardingFailure\) \{[^}]*\} else \{[^}]*resetOnboardingFlow\(\);/,
+    "the reset must be SKIPPED on the one arm carrying a fresh failure, not run unconditionally " +
+      "(a mutation dropping the guard would still pass the assertion above)",
+  );
+  const failureBranch = block.slice(block.indexOf("if (onboardingFailure)"), block.indexOf("} else {"));
+  assert.doesNotMatch(
+    failureBranch,
+    /onboardingStep\s*=|onboardingError\s*=|onboardingFailure\s*=/,
+    "the failure arm must not wipe the review step or reason it exists to show",
+  );
+
+  // The callee itself: "resets the flow" is only "step 1, no plan, unticked box" if
+  // `resetOnboardingFlow` actually sets these five, which a change to the call site alone cannot
+  // prove — this is the part "a function was called" (the #337 test's own standard) does not reach.
+  const reset = onboardingFunctionBody(app, "resetOnboardingFlow");
+  assert.match(reset, /onboardingStep = "folders";/, "a re-armed takeover must open at step 1");
+  assert.match(reset, /onboardingDryRun = null;/, "…with no plan");
+  assert.match(reset, /onboardingAgreed = false;/, "…and an unticked box");
+  assert.match(reset, /onboardingSkipRules = null;/, "staged skip rules are the ended session's, not kept");
+  // #360's judgement call: reset rather than kept as a convenience. `onboardingRootsNow()` falls back
+  // to the live/saved pair when this is null, so a typed-but-unwritten draft is all this can lose —
+  // and keeping it would let a stale draft silently outrank a pair that changed since (Settings, a
+  // direct edit), the opposite of "a configured pair beats the proposal" (see `onboardingRootsNow`).
+  assert.match(reset, /onboardingRoots = null;/, "a stale draft must not outrank the saved pair");
+});

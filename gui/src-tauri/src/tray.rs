@@ -403,18 +403,22 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
 /// started. Doing that inline freezes the desktop's tray for seconds and, on the window side of the
 /// same loop, is what aborts WebKitGTK (#142/#143).
 ///
+/// `crate::commands::start_service_and_adopt`, NOT `start_service_impl` directly (#359 review) —
+/// this row used to call the impl on its own and gate nothing, the same gap the tray PANEL's row
+/// had, so a manual `systemctl --user restart proton-syncd` left this door unable to recover the
+/// session either. `tauri::async_runtime::block_on` is safe here: this closure already runs on its
+/// own dedicated OS thread (never the GTK main thread, never a tokio worker), and the shared
+/// function's own internal `spawn_blocking` still keeps the actual `systemctl`/socket I/O off
+/// whichever thread ends up polling it.
+///
 /// Nothing polls the result: the tray's own ~2s status poll is what notices the daemon came up. The
 /// failure goes to stderr because a native menu row has no surface to report into — the window's
 /// button is the path that shows a reason.
 fn start_service_in_background(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
-        let config_path = {
-            let state = app.state::<Mutex<RuntimePaths>>();
-            let guard = state.lock().unwrap();
-            guard.config_path.clone()
-        };
-        match crate::commands::start_service_impl(&config_path) {
+        let state = app.state::<Mutex<RuntimePaths>>();
+        match tauri::async_runtime::block_on(crate::commands::start_service_and_adopt(&state)) {
             Ok(detail) => eprintln!("tray: {detail}"),
             Err(error) => eprintln!("tray: could not start the daemon: {error}"),
         }
