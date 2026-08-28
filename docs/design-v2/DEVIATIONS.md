@@ -1362,6 +1362,8 @@ this panel lives in, and if the edge really does disappear against a light wallp
 is the intended answer and this is where the disagreement is written down. The `is-tray` class exists
 already so there is a hook and no one has to reach for a `[data-state]` guess.
 
+**Settled by §101** (#261, 2026-08-17): the doc's edge won. `is-tray` now styles it.
+
 ---
 
 ## 59. The gradient a syncing mark points at is now compared (#204)
@@ -2001,6 +2003,10 @@ quietly remove the string from the copy gate — but `CLI_INSTALL_COMMANDS` carr
 **S7 must not ship a copyable command box from that table** until the design settles what the real
 instruction is. Filed as **#218**; it needs a product call, not a code change.
 
+**Settled by §102** (#218, 2026-08-17): the command box is dropped, not made conditional. `Detected
+Debian` stays; `CLI_INSTALL_COMMANDS` and the copy gate row that checked it against this frame's text
+are both gone.
+
 Three smaller notes:
 
 - **`/usr/lib/os-release` is read too.** Issue #178 names only `/etc/os-release`; the freedesktop
@@ -2099,7 +2105,7 @@ Phase 2. Each Phase-1 fallback gets a row here as its screen lands — G1–G5 c
 | S1     | `2a Syncing`     | `386 MB sent · 1.1 GB received today`  | the folder pair (the shell's line)  | G2 #191   |
 | S7     | `9a Review`      | `Needs 38.4 GB free. You have 214 GB.` | the free-space half only (§71)      | G6 #206   |
 | S2     | `3a Conflict`    | `You added a line, 5 minutes ago`      | the relative time (§70)             | G12 #217  |
-| S7     | `9a CLI missing` | `sudo apt install proton-drive`        | the tarball path for everyone (§72) | #218      |
+| S7     | `9a CLI missing` | `sudo apt install proton-drive`        | the manual path for everyone (§102) | (decided) |
 
 ### 74. S2 · the conflicts screen
 
@@ -5142,3 +5148,94 @@ because `PlannedAction` is the pure planner's type and disposal is decided at ex
 **The other refuted claim: "five published pages".** There were six. `safety/delete-approval.md` —
 the page the rewritten `safety/deletions.md` links to for exactly this question — still read
 *"This is the **permanent** local delete."*
+
+---
+
+## 101. §58d's tie is broken: the tray takes the desktop-facing edge
+
+**Maintainer decision, 2026-08-17 (#261):** `10-tray.md` wins over the four standalone frames.
+`.compact-panel.is-tray` now takes `border:1px solid rgba(255,255,255,.1)` (`--compact-tray-border`)
+instead of the app's `--border-chrome`, because a panel floating over an arbitrary wallpaper has no
+surface behind it to be flush with — the reasoning §58d recorded but did not yet act on, and the one
+`10a In situ` supplies since it is the only frame drawn where the panel actually lives. `.is-attention`
+keeps overriding it (unchanged from §58d): the crimson edge is the panel saying something is waiting
+on you, which stayed the more load-bearing value throughout.
+
+**The bookkeeping does not net to fewer rows, and should not.** Four `10a In situ` border rows
+existed under §58d; the code change does not retire them. `10a In situ` is drawn `needsYou`, so
+`.is-attention` applies to it precisely as it does in the built app — meaning the frame's frozen
+capture (the desktop edge, `rgba(255,255,255,.1)`) and the app's live output (the attention edge,
+`rgba(255,107,107,.3)`) are now compared for a **different reason** than before but still disagree,
+because the decision's own second clause forbids the one change that would make them match. The row
+stays in `known-deviations.mjs`, reworded to say so. What the decision does move is the other four:
+`10a Settled`/`Syncing`/`Offline`/`Paused` draw no `needsYou` state, took the tray edge cleanly, and
+now disagree with their own (unredrawn) frames, which still show `#23262D`. Four new rows, one per
+frame. Net count: five rows citing this decision where one cited §58d — **up**, and that is correct:
+a recorded disagreement naming a decision is not a gap the way an unexplained one is.
+
+**Ideally the four standalone frames are redrawn instead**, deleting their new rows in favour of a
+prototype that shows the edge the build now draws — raised with whoever holds the design file
+alongside the #272/#273 briefs, per the decision. Not done here: `docs/design-v2/Drive Sync.dc.html`
+has had exactly one commit since it was added (the import itself), and every other row in this file
+resolves a mismatch by changing the app or by recording it — never by hand-editing the frozen
+capture to agree with the app after the fact, which is what a same-PR redraw would be.
+
+---
+
+## 102. §72's three options resolve to the first: the command box is dropped, not fixed
+
+**Maintainer decision, 2026-08-17 (#218):** drop the package-manager command; show the manual install
+path for every distribution; keep the `Detected …` clause. Of §72's three options — drop the box,
+swap its contents for a real command, or ship packages to the repos it implies — the third was ruled
+out by its own size and the second by there being no real per-distro command to put in: this
+project's own `installation.md` gives one instruction for every distribution, "install it separately,
+following its own documentation." A per-distro variant would only have restated the same wrong
+promise in five spellings.
+
+**What changed, in `gui/src/js/ui/copy.js`:**
+
+- `CLI_INSTALL_COMMANDS` and `ONBOARDING.cliInstallCommand` are deleted. There is no replacement
+  table — nothing this project publishes names a real command for any distribution, so a table with
+  fewer wrong entries is still a table of wrong entries.
+- `ONBOARDING.cliMissingBody` now reads: _"This app drives the official proton-drive tool rather
+  than talking to Proton directly, and no Linux distribution packages it — install it yourself,
+  following its own instructions, then sign in and check again."_, followed by `Detected Debian —
+  that doesn't change what to do here.` (or the undetected form). `Detected …` is unchanged in kind —
+  it still says the app recognises the machine — but no longer implies a different instruction
+  follows for a different distribution, because none does.
+- No URL. #231 (`open_remote`) can point the surface at one, but `installation.md` has been checked
+  and names none for `proton-drive` itself — only for this project's own binaries and packages. The
+  honest sentence is the one above: go and find Proton's own instructions, not a link this project
+  cannot stand behind.
+
+**What did not change:** `renderCliMissing` (`gui/src/js/screens/onboarding.js`) already shipped no
+copyable command box and no `Installation help` control — C5 built the `Detected …` half and left the
+rest for this decision, so #218's "S7 must not ship one" was never violated and there is nothing to
+un-ship. `ONBOARDING.copy` (`"Copy"`) and `.installHelp` (`"Installation help"`) are untouched: the
+frozen `9a CLI missing` frame still draws both, on a command box and a help button neither exists in
+the build, and the deck's job — same as `cliInstallCommand`'s until this decision — is to say so
+truthfully, not to render them.
+
+**The bookkeeping, in `gui/tools/fidelity/`:**
+
+- `copy-gate.mjs`'s `DRAWN` rows for `ONBOARDING.cliInstallCommand` and `.cliMissingBody` are both
+  removed. The first because the function is gone; the second because its new sentence is not a
+  substring of the frozen frame's text the way the old one was (the frame still says "other
+  distributions are in the help", which is no longer true and is not repeated). Confirmed by running
+  the gate rather than reasoning about it: `fidelity:copy` reads 340/340 after the change, down from
+  342/342 by exactly the two retired checks, 0 missing.
+- `known-deviations.mjs`'s two existing `9a CLI missing · box.h` rows (`div`, `div/div`) moved from
+  `176 vs 116` to `176 vs 136` — the manual-path sentence is longer than the two it replaced, so the
+  20px gap it used to leave narrowed rather than closed. A third row is new: `div/div/div[1]` (the
+  body paragraph itself) now reads `40 vs 60`, where before the change its height matched the frame's
+  within the gate's 0.5px tolerance and needed no row at all. All three numbers are read off a real
+  `npm run fidelity` run, not computed by hand, per this file's own rule.
+- All three `9a CLI missing` rows, and all five tray-border rows in §101, changed from `issue` to
+  `decision`.
+  `known-deviations.mjs`'s own schema is explicit that `issue` means "the issue that closes it" —
+  #218 closes on this same PR, so a row still citing it would name an issue that can never close it
+  again. `decision: true` is the tag written for exactly this: the product chose against
+  the drawing, permanently, and DEVIATIONS carries the decision and its date instead.
+
+**Confirmed, not assumed:** `npm run fidelity` reads 51/51 frames mapped, 96793 assertions, 0
+failures, no stale deviations, after every change above.

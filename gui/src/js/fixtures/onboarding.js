@@ -397,16 +397,15 @@ export const ONBOARDING_FIXTURES = {
   /**
    * The precondition that only ever appears when it fails.
    *
-   * C5 (#178) supplies `distro` from `/etc/os-release`, and with it the right install command. Both
-   * deck entries now take the detection result — they hard-coded Debian, so a detected distribution
-   * had nowhere to go — and `distro` is the object `check_cli` returns: `id` is the package family
-   * (a closed set the deck has a command for), `name` is the short brand name the `Detected …`
-   * clause writes. The fixture pins the detection result; the strings stay the deck's.
+   * C5 (#178) supplies `distro` from `/etc/os-release`. `cliMissingBody` takes the detection result
+   * — `id` is the package family, unused now that there is no per-distro command; `name` is the
+   * short brand name the `Detected …` clause writes. The fixture pins the detection result; the
+   * string stays the deck's.
    *
-   * ⚠ The install command in that box does not work on any distribution — `proton-drive` is in no
-   * distro repository, by this project's own documentation. See the warning on
-   * `CLI_INSTALL_COMMANDS` in `ui/copy.js`, DEVIATIONS §72, and #218. The `Detected …` sentence is
-   * the half of this screen that C5 makes true.
+   * There was a per-distro install command here through C5; #218 retired it (DEVIATIONS §102) —
+   * `proton-drive` is in no distro repository, by this project's own documentation, so Debian's row
+   * was exactly as untrue as the other four. `cliMissingBody` now names the manual path for
+   * everyone, and `Detected …` stays as the half of this screen that was always true.
    *
    * There is no daemon and no config here: the CLI check runs before either exists, which is why
    * this dialog can precede step 1.

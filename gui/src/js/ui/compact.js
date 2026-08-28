@@ -473,12 +473,9 @@ export function renderCompactPanel(opts = {}) {
     {
       class:
         "compact-panel" +
-        // `is-tray` styles nothing today, and is here rather than in S8 because it is the panel's
-        // own class to give. 10-tray.md asks the tray form for `border:1px solid rgba(255,255,255,.1)`
-        // — it floats over the desktop, not over the app surface — and all four drawn `10a` panels
-        // use `#23262D` like every other compact panel, so the frame wins and there is nothing to
-        // apply (DEVIATIONS.md §58d). S8 owns a borderless always-on-top window and will want the
-        // hook; giving it now means the tray form is never selected by a `[data-state]` guess.
+        // `is-tray` gives the floating form its own desktop-facing edge (compact.css, #261) rather
+        // than the app-facing `--border-chrome` every other panel draws. Set here, not sniffed from
+        // window size, because it is the panel's own class to give.
         (family === "tray" ? " is-tray" : "") +
         // The panel's own edge goes crimson when something is waiting on you — measured on
         // `2a Compact needs you`, `4a Compact` and `12a Compact needs light`, all three at .3 alpha.

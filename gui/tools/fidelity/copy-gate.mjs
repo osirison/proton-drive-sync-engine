@@ -372,8 +372,12 @@ const DRAWN = [
   // line Proton's does not, and no frame draws it; it is checked by `diff.test.js` instead.
   ["CONFLICTS.absentLine", ["mine"], "3a Conflict diff"],
   ["CONFLICTS.clearedSub", [{ total: 3, keptBoth: 2, tookProton: 1 }], "3a Conflicts cleared"],
-  ["ONBOARDING.cliMissingBody", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
-  ["ONBOARDING.cliInstallCommand", [{ id: "debian", name: "Debian" }], "9a CLI missing"],
+  // `ONBOARDING.cliMissingBody` and `.cliInstallCommand` WERE HERE, checking the deck against the
+  // frame's own `sudo apt install proton-drive` text. Retired with it (#218, DEVIATIONS §102): the
+  // decision this closes settles the drawn command as permanently wrong, so the deck no longer
+  // holds a string that matches it — `cliInstallCommand` is deleted outright, and `cliMissingBody`
+  // now names the manual install path instead of the frame's "other distributions are in the
+  // help", which is nowhere in the frozen `9a CLI missing` capture to match against.
   // Was a template with ONE argument and a hard-coded tail — `${n} files can't be synced — a socket
   // and two shortcuts` — so it rendered the frame's kinds whatever the machine held, and the app
   // drew a different, shorter sentence (`cannotSyncPlain`) because it could not produce them. #315

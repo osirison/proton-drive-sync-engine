@@ -149,8 +149,47 @@ export const KNOWN_DEVIATIONS = [
     key: "div[1]",
     props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
     detail: "rgba(255, 255, 255, 0.1) vs rgba(255, 107, 107, 0.3)",
-    issue: "#261",
-    why: "FOUR FRAMES AGAINST ONE, and DEVIATIONS §58d already ruled on it with only the four in view. `10-tray.md` asks the tray form for `border:1px solid rgba(255,255,255,.1)` because it floats over the desktop rather than over the app surface — and this is the one frame drawn that way, so it is the one that shows it. The four standalone `10a` panels all draw `#23262D` like every other compact panel, and they are gated. The app cannot be both. Keeping the four means the attention edge (`rgba(255,107,107,.3)`, measured on three needs-you frames) survives here, which is also the more useful of the two: it is the panel saying something is waiting on you. Recorded rather than resolved — the tie is the design's to break",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form now takes `10-tray.md`'s desktop-facing edge (`.compact-panel.is-tray`, compact.css), and `.compact-panel.is-attention` still overrides it — the same reasoning DEVIATIONS §58d used to keep it, restated rather than reversed. This ONE frame is drawn in the needsYou state, so is-attention applies here too, and the built panel therefore still shows the attention edge (`rgba(255,107,107,.3)`) against the frozen capture's desktop edge (`rgba(255,255,255,.1)`) — the decision was explicit that the attention edge must not be disturbed, so this row is not something the code change could retire. The four standalone `10a` panels are none of them needsYou; they took the tray edge cleanly and are recorded as new rows of their own instead. DEVIATIONS §101",
+  },
+
+  // The other side of the same decision: none of these four is drawn needsYou, so `.is-attention`
+  // never enters it and each now cleanly takes the tray's desktop edge, disagreeing with its own
+  // frame — which still draws `#23262D` like every other compact panel, since #261 settled the
+  // BUILD's edge and not a redraw of these four (the decision's own "ideally redrawn instead" is
+  // future design work, not this commit's). `key: ""` is the frame's own root node — these four
+  // fixtures draw the panel bare, with no desktop-mock wrapper the way `10a In situ` has one.
+  {
+    frame: "10a Settled",
+    key: "",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(35, 38, 45) vs rgba(255, 255, 255, 0.1)",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form takes `10-tray.md`'s desktop-facing edge instead of `--border-chrome`. This frame is not drawn needsYou, so nothing overrides it, and the frame itself is unchanged — recorded rather than redrawn, per the decision. DEVIATIONS §101",
+  },
+  {
+    frame: "10a Syncing",
+    key: "",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(35, 38, 45) vs rgba(255, 255, 255, 0.1)",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form takes `10-tray.md`'s desktop-facing edge instead of `--border-chrome`. This frame is not drawn needsYou, so nothing overrides it, and the frame itself is unchanged — recorded rather than redrawn, per the decision. DEVIATIONS §101",
+  },
+  {
+    frame: "10a Offline",
+    key: "",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(35, 38, 45) vs rgba(255, 255, 255, 0.1)",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form takes `10-tray.md`'s desktop-facing edge instead of `--border-chrome`. This frame is not drawn needsYou, so nothing overrides it, and the frame itself is unchanged — recorded rather than redrawn, per the decision. DEVIATIONS §101",
+  },
+  {
+    frame: "10a Paused",
+    key: "",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(35, 38, 45) vs rgba(255, 255, 255, 0.1)",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form takes `10-tray.md`'s desktop-facing edge instead of `--border-chrome`. This frame is not drawn needsYou, so nothing overrides it, and the frame itself is unchanged — recorded rather than redrawn, per the decision. DEVIATIONS §101",
   },
 
   {
@@ -837,21 +876,36 @@ export const KNOWN_DEVIATIONS = [
     issue: "#207",
     why: "the head block, one wrapped line shorter for the same reason",
   },
+  // MAINTAINER DECISION, 2026-08-17 (#218): the drawn command box (`sudo apt install proton-drive`)
+  // never worked on any distribution, so it is dropped rather than made conditional — the frame
+  // itself is unchanged and still draws it (DEVIATIONS §102). `cliMissingBody` grew a manual-path
+  // sentence in its place, which is taller than the two sentences it replaced but still far short
+  // of a command box plus its own Copy/Installation-help buttons, so the gap moved (60px → 40px)
+  // rather than closing. All three rows are `decision`, not `issue`: #218 closes on this PR and
+  // nothing further will shrink the gap.
   {
     frame: "9a CLI missing",
     key: "div/div",
     props: ["box.h"],
-    detail: "176 vs 116",
-    issue: "#218",
-    why: "the text column without the command box: every command in `CLI_INSTALL_COMMANDS` names a package that is in no distribution's repository, so there is nothing true to put in it",
+    detail: "176 vs 136",
+    decision: true,
+    why: "the text column without the command box, 40px taller than before the manual-path sentence — still short of the frame's command box and its buttons",
   },
   {
     frame: "9a CLI missing",
     key: "div",
     props: ["box.h"],
-    detail: "176 vs 116",
-    issue: "#218",
-    why: "the row around it, the same 60px",
+    detail: "176 vs 136",
+    decision: true,
+    why: "the row around it, the same 40px",
+  },
+  {
+    frame: "9a CLI missing",
+    key: "div/div/div[1]",
+    props: ["box.h"],
+    detail: "40 vs 60",
+    decision: true,
+    why: "the body paragraph itself: the manual-path sentence wraps to more lines than the two it replaced, which happened to fit the frame's 40px within tolerance. Not previously a separate row because it was not previously a mismatch",
   },
 
   // ---- S10 · the light theme. FIVE ROWS, AND EVERY ONE IS A DARK ROW SEEN TWICE.
