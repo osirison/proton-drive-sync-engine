@@ -33,6 +33,12 @@ pub fn absolute_dir(value: Option<OsString>) -> Option<PathBuf> {
 }
 
 /// Paths the command layer needs, resolved once at startup and re-resolved after a config write.
+///
+/// **`socket_path` is re-resolved LATER than the rest** (#336): `commands::write_config` refreshes
+/// every other field the moment a save lands, but leaves this one exactly where it was, because the
+/// restart that follows a save has to dial the OLD value to shut the still-live old daemon down.
+/// `commands::restart_service` moves it, once the restart's own outcome confirms nothing needs that
+/// address any more (`commands::old_socket_is_settled`).
 pub struct RuntimePaths {
     pub config_path: PathBuf,
     /// `Err` only when the GUI config sets no `socket_path` **and** the engine's default fails
