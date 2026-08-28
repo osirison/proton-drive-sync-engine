@@ -171,6 +171,54 @@ pub fn validate_relative_path_non_empty(path: &std::path::Path) -> Option<std::p
 /// relative form — a browser's landing page. Anything that ever turns an absolute remote path into
 /// a **side effect** (a delete, an upload target) needs its own non-root form, exactly as
 /// [`validate_relative_path_non_empty`] is to [`validate_relative_path`] (#72).
+/// Resolve `.` and `..` **without touching the filesystem** — the one definition of what a path
+/// addresses when it cannot be canonicalized.
+///
+/// Two callers need exactly this and for the same reason, which is why it lives here rather than
+/// twice: [`index`]'s `canonicalize_best_effort`, whose prefix matching must work for an ignored
+/// path that does not exist yet, and [`config`]'s `local_comparison_key`, whose collision rules
+/// must be checkable on a config file for paths that do not exist yet either. A second copy is
+/// how the two silently drift apart, and they had already drifted on the `Prefix` arm.
+///
+/// The arms that **keep** a `..` carry as much of the meaning as the one that cancels it:
+///
+/// - `a/..` cancels: neither component is addressed, so both go.
+/// - `/..` is `/`, and likewise for a platform prefix: a root has no parent, so the `..`
+///   addresses nothing. (Unreachable on this Unix-only crate for `Prefix`; the arm exists so the
+///   match is total and so the two callers cannot disagree about it.)
+/// - A **leading** `..`, or one after another (`../..`), cancels nothing and is preserved, so the
+///   result never claims a location the input did not name. Dropping it would make `../a` and `a`
+///   the same path.
+///
+/// The result is empty for a path that addresses the current directory (`.`, `a/..`). That is
+/// correct for a value about to be joined onto something and wrong for a comparison key, where an
+/// empty path is a prefix of every path there is — so the caller that needs a key supplies its own
+/// non-empty form rather than this function guessing which caller it has.
+///
+/// **This is lexical, so it is not symlink-aware, and that cuts both ways.** If `a` is a symlink,
+/// `a/..` is the parent of the symlink's *target*, not of `a`'s literal location, so collapsing it
+/// can name a directory the path does not reach. Callers that compare the result must say which
+/// error they are choosing; closing the gap needs `canonicalize`, which touches the filesystem and
+/// fails on a path that does not exist yet — the case both callers exist to serve.
+pub fn lexically_normalized(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut addressed: Vec<Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match addressed.last() {
+                Some(Component::Normal(_)) => {
+                    addressed.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => addressed.push(component),
+            },
+            other => addressed.push(other),
+        }
+    }
+    addressed.iter().collect()
+}
+
 pub fn validate_absolute_remote_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
     use std::path::Component;
     let mut components = path.components();
