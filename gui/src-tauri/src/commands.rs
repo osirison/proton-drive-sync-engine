@@ -335,7 +335,7 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
 
 /// Partial config update: only `Some` fields are written; everything else (comments, daemon-only
 /// keys) is preserved by the edit-in-place writer. Rejected if the daemon parser would refuse it.
-#[derive(serde::Deserialize)]
+#[derive(Default, serde::Deserialize)]
 pub struct ConfigUpdate {
     local_root: Option<String>,
     remote_root: Option<String>,
@@ -418,11 +418,32 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
         doc.set_local_delete_mode(v);
     }
     doc.save(&path).map_err(|e| e.to_string())?;
-    // Re-resolve in case local_root / socket / db changed, but keep the daemon-reported live
-    // config — the daemon is still running with it until restarted. (Saving still requires a
-    // daemon restart to take effect — the frontend prompts for that.)
+    // Re-resolve in case local_root / db changed, but keep the daemon-reported live config — the
+    // daemon is still running with it until restarted. (Saving still requires a daemon restart to
+    // take effect — the frontend prompts for that.)
+    //
+    // A DIALABLE `socket_path` is the one field this must NOT move to the new value (#336). The
+    // save's caller — `saveSettings` — restarts the daemon right after this returns, and that
+    // restart has to dial the OLD socket: the daemon is still bound there until its own probe
+    // confirms it has gone quiet. Overwriting it here points that dial at an address nothing is
+    // listening on yet, so the probe reads `NotRunning`, the save's `only_if_running` gate leaves
+    // the still-live old daemon untouched, and the app is left pointed at a socket that will never
+    // be bound to it — the exact "reads as unreachable while a daemon is running" #336 describes,
+    // arrived at one step earlier than the issue's own account. `restart_service` re-resolves it
+    // once it no longer needs this value, gated on the restart's outcome actually confirming the
+    // old address is settled.
+    //
+    // `is_ok()` gates it, not "always preserve": an `Err` (#74's fail-closed state) names no
+    // address a restart could dial, so there is no live daemon this could lose track of, and
+    // preserving it would strand the session on `Err` for ever — `restart_service`'s own
+    // re-resolve is UNREACHABLE while `socket_path` is `Err`, since its first line's `?` returns
+    // before reaching it. Letting the fresh value through here is what lets typing a working
+    // `socket_path` over a failed-closed one actually take, the moment it is saved.
     let mut paths = state.lock().unwrap();
     let mut resolved = RuntimePaths::resolve();
+    if paths.socket_path.is_ok() {
+        resolved.socket_path = paths.socket_path.clone();
+    }
     resolved.daemon_local_root = paths.daemon_local_root.take();
     resolved.daemon_remote_root = paths.daemon_remote_root.take();
     resolved.daemon_db_path = paths.daemon_db_path.take();
@@ -1568,6 +1589,29 @@ pub(crate) fn restart_service_impl(
     })
 }
 
+/// Whether `outcome` confirms the OLD `socket_path` no longer needs dialling — the gate for #336's
+/// re-resolve, beside the branch it guards for the same reason `restart_plan` and
+/// `stop_timeout_outcome` are: a poison test of this decision must not be a test that starts a
+/// service or waits out `STOP_TIMEOUT`.
+///
+/// [`RestartOutcome::Restarted`], [`RestartOutcome::NotRunning`] and [`RestartOutcome::NotStarted`]
+/// all confirm it: a fresh process bound somewhere else, nothing was ever there, or the stop was
+/// *confirmed* and only the start after it failed. [`RestartOutcome::NeverStopped`] is the opposite
+/// on purpose — reachable, per its own doc, **only from an observation of life**, so the old daemon
+/// is still answering at the old address, and moving `socket_path` off it here would draw
+/// "unreachable" over a daemon that is not — the very shape #336 exists to remove, self-inflicted by
+/// this fix. [`RestartOutcome::Undetermined`] and [`RestartOutcome::Unknown`] are evidence of
+/// neither, and the conservative answer matches `NeverStopped`'s: keep dialling the one address
+/// there is a positive history with rather than move to one there is none for.
+fn old_socket_is_settled(outcome: &RestartOutcome) -> bool {
+    matches!(
+        outcome,
+        RestartOutcome::Restarted { .. }
+            | RestartOutcome::NotRunning
+            | RestartOutcome::NotStarted { .. }
+    )
+}
+
 /// Async so the up-to-~10s stop/start sequence never runs on the UI thread; the blocking work
 /// itself happens on a runtime blocking thread.
 #[tauri::command]
@@ -1579,11 +1623,21 @@ pub async fn restart_service(
         let paths = state.lock().unwrap();
         (paths.config_path.clone(), paths.socket_path.clone()?)
     };
-    tauri::async_runtime::spawn_blocking(move || {
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
         restart_service_impl(&config_path, &socket_path, only_if_running)
     })
     .await
-    .map_err(|error| format!("restart task failed: {error}"))?
+    .map_err(|error| format!("restart task failed: {error}"))??;
+    // NOW it is safe to move `socket_path` to whatever the file on disk says (#336): the shutdown
+    // and probe above already ran against the value captured before this line, and the write that
+    // could have changed it — `write_config`, which deliberately left `socket_path` untouched —
+    // always runs before this command, never concurrently with it. Gated on `old_socket_is_settled`
+    // rather than unconditional: `NeverStopped`/`Undetermined` must keep dialling the address they
+    // have positive (or at least prior) history with, not one nothing has confirmed yet.
+    if old_socket_is_settled(&outcome) {
+        state.lock().unwrap().socket_path = RuntimePaths::resolve().socket_path;
+    }
+    Ok(outcome)
 }
 
 // ------------------------------------------------------------------ notifications (S9) ----
@@ -3333,6 +3387,188 @@ mod socket_tests {
             serde_json::from_str(r#"{"ending":"reloaded_in_place","detail":"x"}"#)
                 .expect("an unknown ending must parse, not fail the whole reply");
         assert_eq!(newer, RestartOutcome::Unknown);
+    }
+
+    /// #336's own gate, exhaustively: pure, so poisoning it can never start the developer's daemon
+    /// or spend `STOP_TIMEOUT`'s 8s, the same reason `a_save_never_starts_a_service_that_was_not_
+    /// running` tests `restart_plan` rather than `restart_service_impl`.
+    #[test]
+    fn old_socket_is_settled_only_when_the_old_process_cannot_still_be_running_there() {
+        // Confirmed no longer bound to the old address: a fresh process bound elsewhere, nothing
+        // was ever there, or the stop was CONFIRMED and only the start after it failed.
+        assert!(old_socket_is_settled(&RestartOutcome::Restarted {
+            detail: "systemd".into()
+        }));
+        assert!(old_socket_is_settled(&RestartOutcome::NotRunning));
+        assert!(old_socket_is_settled(&RestartOutcome::NotStarted {
+            reason: "ENOENT".into()
+        }));
+        // Reachable ONLY from an observation of life (`stop_timeout_outcome`'s own doc): the old
+        // daemon is still answering there, so moving off it would draw "unreachable" over a daemon
+        // that plainly is not — #336's own symptom, self-inflicted by this fix.
+        assert!(!old_socket_is_settled(&RestartOutcome::NeverStopped {
+            reason: "still answering".into()
+        }));
+        // Evidence of neither. The conservative answer matches `NeverStopped`'s: keep dialling the
+        // address there is a positive history with rather than one there is none for.
+        assert!(!old_socket_is_settled(&RestartOutcome::Undetermined {
+            reason: "no answer".into()
+        }));
+        assert!(!old_socket_is_settled(&RestartOutcome::Unknown));
+    }
+
+    /// A `ConfigUpdate` naming nothing but `socket_path` — every other field `None`, matching what a
+    /// screen that only touched the Advanced tab's socket field would send.
+    fn socket_path_update(value: &std::path::Path) -> ConfigUpdate {
+        ConfigUpdate {
+            socket_path: Some(value.display().to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// #336. `write_config` must leave `socket_path` exactly where it was, however different the
+    /// value it just wrote to disk is: `restart_service` runs next (see `saveSettings` in app.js)
+    /// and has to dial THIS value to shut the still-live old daemon down. Moving it here points that
+    /// dial at an address nothing has bound yet.
+    ///
+    /// `config_path` is redirected to a tempfile — never the real GUI config `RuntimePaths::resolve`
+    /// would otherwise read and write on whatever machine runs this test.
+    #[test]
+    fn a_save_leaves_socket_path_alone_for_the_restart_that_reads_it_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_socket = dir.path().join("old.sock");
+        let new_socket = dir.path().join("new.sock");
+
+        let mut paths = RuntimePaths::resolve();
+        paths.config_path = dir.path().join("proton-sync.toml");
+        paths.socket_path = Ok(old_socket.clone());
+        let app = tauri::test::mock_builder()
+            .manage(Mutex::new(paths))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+
+        write_config(
+            app.state::<Mutex<RuntimePaths>>(),
+            socket_path_update(&new_socket),
+        )
+        .expect("an absolute socket_path saves");
+
+        let after = app.state::<Mutex<RuntimePaths>>();
+        let after = after.lock().unwrap();
+        assert_eq!(
+            after.socket_path.as_deref().ok(),
+            Some(old_socket.as_path()),
+            "write_config moved socket_path off the value the restart still has to dial (#336)"
+        );
+    }
+
+    /// The corner the preservation above must not create: an `Err` `socket_path` (#74's fail-closed
+    /// state) names no address a restart could dial, so there is nothing to preserve, and NOT
+    /// re-resolving here would strand the session on `Err` for ever — `restart_service`'s own
+    /// re-resolve is unreachable while `socket_path` is `Err`, since its first line's `?` returns
+    /// before reaching it. Typing a working `socket_path` over a failed-closed one must take on
+    /// this save, not on the next relaunch.
+    #[test]
+    fn a_save_recovers_a_failed_closed_socket_path_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let new_socket = dir.path().join("new.sock");
+
+        let mut paths = RuntimePaths::resolve();
+        paths.config_path = dir.path().join("proton-sync.toml");
+        paths.socket_path = Err("fallback runtime directory is owned by uid 1234".to_owned());
+        let app = tauri::test::mock_builder()
+            .manage(Mutex::new(paths))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+
+        write_config(
+            app.state::<Mutex<RuntimePaths>>(),
+            socket_path_update(&new_socket),
+        )
+        .expect("an absolute socket_path saves");
+
+        // Equality with a FRESH resolve, not `.is_ok()`: on a machine where the engine's own
+        // fallback also fails closed, the honest post-save value is another `Err`, and the test
+        // must not read that as a regression — it must read the SAME value a resolve computes now,
+        // whichever it is (the same env-robust pattern the sequence test below uses).
+        let after = app.state::<Mutex<RuntimePaths>>();
+        let after_socket = after.lock().unwrap().socket_path.clone();
+        assert_eq!(
+            after_socket.as_deref().ok(),
+            RuntimePaths::resolve().socket_path.ok().as_deref(),
+            "a save must not leave a previously-Err socket_path stuck at Err (#336)"
+        );
+    }
+
+    /// #336, end to end: the SEQUENCE `saveSettings` drives — `write_config` then `restart_service`
+    /// — not either function alone. Proves both orderings at once: reverting the `write_config` hunk
+    /// above fails this at the first assertion below (before `restart_service` even runs); reverting
+    /// `restart_service`'s re-resolve fails the second.
+    ///
+    /// SAFE BY CONSTRUCTION: nothing listens on `old_socket`, so the probe reads `NotRunning` and
+    /// `only_if_running`'s `RestartPlan::LeaveStopped` returns before any `Command` runs — the same
+    /// green path `a_save_restart_against_a_dead_socket_reports_that_nothing_was_restarted` uses, so
+    /// this can never start the developer's real daemon
+    /// (`docs/agent-notes/gui-tests-that-shell-systemctl.md`).
+    #[test]
+    fn restart_moves_socket_path_only_after_it_has_dialled_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_socket = dir.path().join("old.sock");
+        let new_socket = dir.path().join("new.sock");
+
+        let mut paths = RuntimePaths::resolve();
+        paths.config_path = dir.path().join("proton-sync.toml");
+        paths.socket_path = Ok(old_socket.clone());
+        let app = tauri::test::mock_builder()
+            .manage(Mutex::new(paths))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+
+        // The save. Must not move `socket_path` — pinned directly above, re-checked here because
+        // it is the premise the rest of this test depends on.
+        write_config(
+            app.state::<Mutex<RuntimePaths>>(),
+            socket_path_update(&new_socket),
+        )
+        .expect("an absolute socket_path saves");
+        assert_eq!(
+            app.state::<Mutex<RuntimePaths>>()
+                .lock()
+                .unwrap()
+                .socket_path
+                .as_deref()
+                .ok(),
+            Some(old_socket.as_path()),
+            "premise: the save must still be pointed at the old socket"
+        );
+
+        // The restart. Nothing listens on `old_socket`, so this is the green `NotRunning` path.
+        let outcome = tauri::async_runtime::block_on(restart_service(
+            app.state::<Mutex<RuntimePaths>>(),
+            true,
+        ))
+        .expect("a dead socket is not a failed restart");
+        assert_eq!(outcome, RestartOutcome::NotRunning);
+
+        // `NotRunning` is one of `old_socket_is_settled`'s outcomes, so the re-resolve must have
+        // fired and moved `socket_path` OFF `old_socket` — otherwise every later request (status,
+        // activity, the tray) keeps dialling an address the save already abandoned.
+        let after = app.state::<Mutex<RuntimePaths>>();
+        let after_socket = after.lock().unwrap().socket_path.clone();
+        assert_ne!(
+            after_socket.as_deref().ok(),
+            Some(old_socket.as_path()),
+            "a settled outcome must move the app off the address it just confirmed is unneeded"
+        );
+        // And it must move to exactly what a fresh resolve computes NOW — not the literal string
+        // this test wrote (`RuntimePaths::resolve`'s own `config_path` is the fixed, env-resolved
+        // one — see `config_path.rs` — not `state`'s, so it cannot see `new_socket` either) and not
+        // a guess: a later request reads this same field, so proving it equals a fresh resolve IS
+        // proving a later request reaches wherever that resolve currently points.
+        assert_eq!(
+            after_socket.as_deref().ok(),
+            RuntimePaths::resolve().socket_path.ok().as_deref()
+        );
     }
 
     /// A mock app whose managed paths name `root` as the sync folder. The socket is deliberately a

@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { nextOnboardingLatch, releasesOnboarding } from "../src/js/routes.js";
+import { nextOnboardingLatch, releasesOnboarding, entersOnboardingTakeover } from "../src/js/routes.js";
 
 // (prev, daemonState, hasConfigPair, configLoaded, statusPolled)
 const latch = nextOnboardingLatch;
@@ -115,4 +115,73 @@ test("the latch is a pure function of its arguments", () => {
   const first = latch(...args);
   assert.equal(latch(...args), first);
   assert.equal(latch(...args), first);
+});
+
+// ---- entering the takeover (#337) --------------------------------------------------------------
+//
+// `onboardingDetour` (#244) is cleared in two places: `resetOnboardingFlow`, when the flow ends by
+// completing, and `render`'s arm edge, when it instead ends by the latch releasing out from under
+// an open detour — the daemon becomes reachable and synced (`releasesOnboarding`) while the user is
+// still on step 1 or step 2, `Start the first sync` never clicked. Without the second place, a later
+// re-entry (e.g. `reset-index` returning the daemon to `firstRun`) opens the takeover back inside
+// whichever sub-screen was left open, which is exactly the state `resetOnboardingFlow`'s own comment
+// forbids.
+//
+// `entersOnboardingTakeover(prev, next)` is that edge, and it has to be the false→true one — not
+// "released" (`true, false`) and not "latched at all" (`next` alone) — or one of two things breaks:
+// clearing on release fires the instant `Start the first sync` is clicked (`onboardingStage`
+// forcing the latch false while the merge dialog floats over the main screen), which is harmless
+// there only by coincidence (a detour cannot be open once step 2's footer offers that button); and
+// clearing on "latched" fires on every render of a session already running, which would forbid a
+// detour from ever staying open — `onDetour` sets it from INSIDE an armed takeover, and the very
+// next render would null it back out.
+
+test("arming the takeover is what clears a detour left over from an earlier session", () => {
+  assert.equal(entersOnboardingTakeover(false, true), true);
+});
+
+test("a detour opened during a single continuous takeover session must survive", () => {
+  // The latch was already true and stays true — nothing about this render is an entry.
+  assert.equal(entersOnboardingTakeover(true, true), false);
+});
+
+test("releasing is not the edge this clears on", () => {
+  // The alternative fix: clearing when the latch goes true→false instead. Pinned false on purpose —
+  // `render` must not call this on release, only on arm (see the source-pin test below).
+  assert.equal(entersOnboardingTakeover(true, false), false);
+});
+
+test("never having been onboarding at all is not an entry either", () => {
+  assert.equal(entersOnboardingTakeover(false, false), false);
+});
+
+test("`render` clears the detour on the SAME edge it clears the main app's own leftovers on", () => {
+  // A source-text pin, like the release-set test above: `entersOnboardingTakeover` being correct in
+  // isolation proves nothing about app.js if the call site clears the detour on a different edge, on
+  // no edge, or not at all. This anchors the whole sequence — arm fires, and the detour is one of
+  // the things it discards — the way `onboarding.test.js` cannot, since it only ever sees `bodyOf`'s
+  // already-resolved `detour` prop and not the module state that feeds it.
+  const app = readFileSync(fileURLToPath(new URL("../src/js/app.js", import.meta.url)), "utf8");
+
+  assert.match(
+    app,
+    /entersOnboardingTakeover,\s*\n\} from "\.\/routes\.js";/,
+    "app.js must import the shared edge rather than re-deriving it",
+  );
+
+  const start = app.indexOf("if (entersOnboardingTakeover(");
+  assert.notEqual(start, -1, "the arm edge is no longer where render() checks it");
+  const end = app.indexOf("\n  }", start);
+  assert.notEqual(end, -1, "the arm block has no end");
+  const block = app.slice(start, end);
+
+  assert.match(block, /onboardingDetour = null;/, "arming must clear the detour, per #337");
+  // The two pre-existing layers, so a future edit cannot "fix" #337 by deleting these instead.
+  assert.match(block, /screenStack = \[\];/);
+  assert.match(block, /dialogOverlay = null;/);
+  assert.match(block, /dialogReturn = null;/);
+
+  // And exactly one such block — a second copy of the edge is this codebase's most-repeated bug.
+  const occurrences = app.split("if (entersOnboardingTakeover(").length - 1;
+  assert.equal(occurrences, 1, "entersOnboardingTakeover must be asked once, not re-derived");
 });

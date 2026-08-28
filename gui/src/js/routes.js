@@ -250,3 +250,26 @@ export function nextOnboardingLatch(prev, daemonState, hasConfigPair, configLoad
   // poll): hold whatever we were doing so the flow isn't interrupted.
   return prev;
 }
+
+/**
+ * Whether THIS render is the moment the takeover is (re-)entered — the latch's false→true edge,
+ * not "latched right now" (#337).
+ *
+ * `app.js` already used this edge to discard `screenStack`/`dialogOverlay` on entry (stale MAIN-app
+ * navigation from before onboarding took over); #337 adds `onboardingDetour` to that same discard.
+ * A detour is a place INSIDE one of the flow's own two steps (#244), and `resetOnboardingFlow` only
+ * clears it when the flow ENDS by completing — so a session that instead ends by the latch
+ * RELEASING out from under it (the daemon becomes reachable and syncs while a detour is open,
+ * `Start the first sync` never clicked) leaves it set. A later re-entry — the latch arming again,
+ * e.g. `reset-index` returning the daemon to `firstRun` — must not open back inside that stale
+ * sub-screen, which is exactly the state `resetOnboardingFlow`'s own comment forbids.
+ *
+ * MUST compare `prev` to `next` rather than read `next` alone: a detour is opened from INSIDE an
+ * already-armed takeover, so a check that fires on every render where the latch is simply true
+ * would null it the render right after `onDetour` sets it — no detour could ever stay open. Held
+ * true (`prev === next === true`, a session still running) has to answer false, which is what makes
+ * this the arm edge and not "while latched".
+ */
+export function entersOnboardingTakeover(prev, next) {
+  return next && !prev;
+}
