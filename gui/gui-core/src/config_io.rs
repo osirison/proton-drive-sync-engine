@@ -320,29 +320,21 @@ impl ConfigDoc {
         // from here rather than re-implemented. A second copy is how the daemon and the GUI ended
         // up disagreeing about what `~` means (#135), and this file would need the daemon's own
         // `tracing` filter parser to have the same opinion about `log_level`.
-        proton_drive_sync_engine::config::validate_file_config_text(&self.to_toml_string())
-            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
-        // AND ONE RULE THAT IS STRICTER THAN THE DAEMON, deliberately. An ABSENT key is not this:
-        // the daemon fills it from its own default. An EMPTY one is, and it is what a settings form
-        // produces when someone clears a field. `validate_runtime_config` does not check
-        // `proton_cli`, so an empty value starts a daemon that then fails every single pass with
-        // `os error 2` — the ENOENT loop #158 traced, arriving from a settings field someone
-        // cleared rather than from a PATH race. There is no config in which an empty CLI works.
         //
         // `local_root` / `remote_root` used to be checked here too and no longer are: the engine's
         // `validate_pair_file_values` now refuses an empty root, **per pair**. That matters rather
         // than being tidy-up — this loop reads TOP-LEVEL keys, and a `[[pair]]` file (#102) keeps
         // its roots inside the table, so the check went blind exactly where a second copy is worst.
-        // `proton_cli` stays because it is daemon-wide: it is a top-level key by classification
-        // (`ConfigKey::scope`), so reading it at the top level is correct for every config shape.
-        if self
-            .get_str("proton_cli")
-            .is_some_and(|v| v.trim().is_empty())
-        {
-            return Err(ConfigError::Invalid(
-                "proton_cli must not be empty".to_owned(),
-            ));
-        }
+        // `proton_cli` used to get the same treatment here, for the same "top-level keys only" gap:
+        // `validate_runtime_config` used to leave it unchecked, so an empty value started a daemon
+        // that then failed every single pass with `os error 2` — the ENOENT loop #158 traced,
+        // arriving from a settings form someone cleared rather than a PATH race. #356 closed that
+        // gap in the engine itself (`validate_file_config_text`, which is daemon-wide and reads
+        // `proton_cli` at the top level regardless of pair shape, plus the merged check in
+        // `validate_runtime_config`), so the one call below now refuses it and this file needs no
+        // second copy of the rule.
+        proton_drive_sync_engine::config::validate_file_config_text(&self.to_toml_string())
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
         Ok(())
     }
 
@@ -493,6 +485,14 @@ exclude = ["*.tmp"]
         // A settings form produces this the moment someone clears a field. It parses as valid TOML
         // and the daemon exits on it at `validate_runtime_config` — after the GUI has said "Saved"
         // and the process running the old settings is already gone.
+        //
+        // `proton_cli` used to be caught here by a second, GUI-only copy of this exact rule
+        // (`ConfigDoc::validate` read the top-level key itself and refused it directly). #356 moved
+        // that refusal into the engine (`validate_file_config_text` daemon-wide, plus the merged
+        // check in `validate_runtime_config`) and deleted the copy, so `proton_cli` now reaches this
+        // assertion the same way `local_root`/`remote_root` always have: through the one call to
+        // `validate_file_config_text` below. The message is unchanged either way, which is the point
+        // — this test passing proves deleting the GUI-side copy changed nothing a caller can see.
         for key in ["local_root", "remote_root", "proton_cli"] {
             let doc = ConfigDoc::from_toml_str(&format!("{key} = \"\"\n")).unwrap();
             let err = doc.validate().unwrap_err();
@@ -509,12 +509,28 @@ exclude = ["*.tmp"]
             .expect("an absent local_root is the daemon's default, not a refusal");
     }
 
+    /// The blank rule, not an is-empty check: `"   "` carries no visible bytes but is not the empty
+    /// string. `local_root`/`remote_root`/`proton_cli` above are only exercised with `""`; this pins
+    /// the whitespace-only form specifically for `proton_cli` now that #356 routes it through the
+    /// same engine call as the other two, rather than through the deleted GUI-only copy.
+    #[test]
+    fn a_whitespace_only_proton_cli_is_refused_the_same_as_an_empty_one() {
+        let err = ConfigDoc::from_toml_str("proton_cli = \"   \"\n")
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("proton_cli must not be empty"),
+            "got {err:?}"
+        );
+    }
+
     /// #341's sibling to the test above: `db_path`/`lockfile_path` have no root of their own, but a
     /// blank override joins onto `local_root` and silently becomes the sync root itself, which the
     /// GUI would then happily save. For these two keys `ConfigDoc::validate` is
-    /// `validate_file_config_text` and nothing else — the one GUI-side rule it adds is about
-    /// `proton_cli` — so this proves the refusal the engine added there is inherited rather than
-    /// needing a second copy over here.
+    /// `validate_file_config_text` and nothing else, and since #356 that is true of `proton_cli` too
+    /// — so this proves the refusal the engine added there is inherited rather than needing a second
+    /// copy over here.
     #[test]
     fn an_empty_state_path_is_refused_before_it_reaches_the_daemon() {
         for key in ["db_path", "lockfile_path"] {
@@ -535,6 +551,36 @@ exclude = ["*.tmp"]
             .unwrap()
             .validate()
             .expect("absent db_path/lockfile_path are the daemon's default, not a refusal");
+    }
+
+    /// #357's sibling to the test above, same reasoning: `.`/`..`/`foo/..` are not blank but reach
+    /// the same directory-not-a-file failure, and this GUI-side call has no copy of that rule either
+    /// — it is inherited from `validate_file_config_text` exactly the way the blank check is.
+    #[test]
+    fn a_degenerate_state_path_is_refused_before_it_reaches_the_daemon() {
+        for key in ["db_path", "lockfile_path"] {
+            for degenerate in [".", "..", "foo/..", "state/.", "state/", "~", "~/"] {
+                let doc = ConfigDoc::from_toml_str(&format!(
+                    "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n{key} = \"{degenerate}\"\n"
+                ))
+                .unwrap();
+                let err = doc.validate().unwrap_err();
+                assert!(
+                    err.to_string().contains(&format!("{key} must name a file")),
+                    "{key} = {degenerate:?}: got {err:?}"
+                );
+            }
+            // Every one of these lexically resembles a degenerate spelling somewhere in it, but
+            // still names a real file, and must still save.
+            for benign in ["foo/../bar.db", "./index.db", ".hidden.db", "~/x.db"] {
+                ConfigDoc::from_toml_str(&format!(
+                    "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n{key} = \"{benign}\"\n"
+                ))
+                .unwrap()
+                .validate()
+                .unwrap_or_else(|e| panic!("{key} = {benign:?} names a real file: {e:?}"));
+            }
+        }
     }
 
     #[test]
