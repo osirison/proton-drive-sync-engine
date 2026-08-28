@@ -629,7 +629,7 @@ function armedSentence(item) {
  *
  * FLAT, with no inner wrapper, and drawn 522px wide where the shell is a fixed 1040 — the same two
  * facts as `3a Conflicts cleared`, and the same answer: a centred 520 column, which is the closest
- * the window can get, with the difference recorded rather than faked (#221, §75).
+ * the window can get, with the difference recorded rather than faked (#221, §75, settled §103).
  */
 function emptyBody() {
   const body = fid(el("div", { class: "dl-empty" }), "empty");

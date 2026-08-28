@@ -1434,11 +1434,11 @@ shape is invisible until someone tries to fill the reply in, which is what F9 is
 
 Four, none of them among the ten capabilities in `IMPLEMENTATION-PLAN.md` §4 and none among G1–G4:
 
-| #   | what is missing                                                                                        | frames                                                                                                                 | issue                                                                   |
-| --- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| G6  | a **size on a planned action** — `PlannedAction` has no size field at any level of the dry-run surface | `5a Plan` (`3 files, 4.1 MB`), `5a Plan safe` (a size per row), `9a Review` (`1.4 GB` / `38.4 GB`)                     | [#206](https://github.com/osirison/proton-drive-sync-engine/issues/206) |
-| G7  | **index-wide totals** — how many files, how many bytes                                                 | `2a Settled`, `2a Compact settled`, `10a Settled`, `7a Activity quiet`, `8a Settings`, `5a Checking`                   | [#207](https://github.com/osirison/proton-drive-sync-engine/issues/207) |
-| G8  | a **subtree aggregate** for a directory about to be deleted, and an atime                              | `4a Deletions` (`1,204 photos, 8.4 GB`, `last opened Mar 2024`), `4a Armed` (the same count in the confirmation title) | [#208](https://github.com/osirison/proton-drive-sync-engine/issues/208) |
+| #   | what is missing                                                                                                             | frames                                                                                                                 | issue                                                                   |
+| --- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| G6  | a **size on a planned action** — `PlannedAction` has no size field at any level of the dry-run surface                      | `5a Plan` (`3 files, 4.1 MB`), `5a Plan safe` (a size per row), `9a Review` (`1.4 GB` / `38.4 GB`)                     | [#206](https://github.com/osirison/proton-drive-sync-engine/issues/206) |
+| G7  | **index-wide totals** — how many files, how many bytes                                                                      | `2a Settled`, `2a Compact settled`, `10a Settled`, `7a Activity quiet`, `8a Settings`, `5a Checking`                   | [#207](https://github.com/osirison/proton-drive-sync-engine/issues/207) |
+| G8  | a **subtree aggregate** for a directory about to be deleted, and an atime                                                   | `4a Deletions` (`1,204 photos, 8.4 GB`, `last opened Mar 2024`), `4a Armed` (the same count in the confirmation title) | [#208](https://github.com/osirison/proton-drive-sync-engine/issues/208) |
 | G9  | ~~**dry-run progress**~~ — **CLOSED.** The rehearsal is a daemon-side pass now, so the existing `SyncActivity` describes it | `5a Checking` (`8,431 of 12,480 files`) — **drawn**                                                                    | [#209](https://github.com/osirison/proton-drive-sync-engine/issues/209) |
 
 **G6 is not G2.** #191 is byte totals _per direction, per time window_ — what a pass moved. G6 is the
@@ -1516,17 +1516,17 @@ The first screen to be built is also the first to meet the daemon's reply shape 
 hand. Four things `2a Syncing` and `2a Settled` draw have no data behind them, and the fallback in
 every case is `14-behaviour-and-state.md`'s: **omit the clause, never fake it.**
 
-| drawn                                                    | frame        | what exists                                                    | issue                                                                       |
-| -------------------------------------------------------- | ------------ | -------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `· 12,480 files · 41.2 GB` on the settled sub-line       | `2a Settled` | `last_sync_epoch_secs` and nothing else — no index-wide totals | G7 [#207](https://github.com/osirison/proton-drive-sync-engine/issues/207)  |
-| a 2px progress bar at the real percentage                | `2a Syncing` | see below — no percentage is computable at all                 | E1 [#98](https://github.com/osirison/proton-drive-sync-engine/issues/98)    |
-| `386 MB sent · 1.1 GB received today` in the footer line | `2a Syncing` | nothing; the shell draws the folder pair instead               | G2 [#191](https://github.com/osirison/proton-drive-sync-engine/issues/191)  |
+| drawn                                                    | frame        | what exists                                                    | issue                                                                      |
+| -------------------------------------------------------- | ------------ | -------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `· 12,480 files · 41.2 GB` on the settled sub-line       | `2a Settled` | `last_sync_epoch_secs` and nothing else — no index-wide totals | G7 [#207](https://github.com/osirison/proton-drive-sync-engine/issues/207) |
+| a 2px progress bar at the real percentage                | `2a Syncing` | see below — no percentage is computable at all                 | E1 [#98](https://github.com/osirison/proton-drive-sync-engine/issues/98)   |
+| `386 MB sent · 1.1 GB received today` in the footer line | `2a Syncing` | nothing; the shell draws the folder pair instead               | G2 [#191](https://github.com/osirison/proton-drive-sync-engine/issues/191) |
 
 **The transfer LIST is no longer one of them (#211, 2026-08-16).** `SyncActivity.transfers` carries a
 bounded window — every row in flight, then the next planned transfers as `queued` rows, capped at
 `TRANSFERS_REPORTED` (6, the design's own "~6 visible with `+n more`") — and
 `transfers_remaining` is the untruncated count `+n more` is sized from. What did **not** become
-drawable is a second row *in flight*: see §63c.
+drawable is a second row _in flight_: see §63c.
 
 **The progress bar is unreachable by construction, not merely unimplemented**, and that is sharper
 than #98 states it. `TransferActivity` carries `bytes_total` and `bytes_done` and **never both on the
@@ -1553,12 +1553,12 @@ and `downloaded_files / action_total`, 9.3% and 24.4%, summing to the 33.8% the 
 agrees with. Reproducing 48:88 would mean drawing a split that contradicts the numbers beside it.
 **Decided 2026-08-16**; two `decision` rows in `known-deviations.mjs` carry the exact widths.
 
-### 63c. The second transfer row is *queued*, because the engine transfers one file at a time
+### 63c. The second transfer row is _queued_, because the engine transfers one file at a time
 
 `2a Syncing` draws an upload and a download **both in flight**, and `2a Needs you` and the compact
 frames draw the same pair. The daemon cannot report that and it is not a gap in the payload:
 `execute_plan_and_commit` is a sequential loop, so at any instant exactly one transfer is running —
-or one *batch*, which is one `download_many` invocation over a chunk of files in one folder and is
+or one _batch_, which is one `download_many` invocation over a chunk of files in one folder and is
 reported as one row carrying `files`.
 
 What #211 makes drawable is the rest of the picture: the queue. So the app draws the in-flight row
@@ -1569,7 +1569,7 @@ properties, the same call §79 makes for the remote folder card's `<input>`, and
 comparing two differently-built nodes property by property is not a missing capability. The queued
 row's construction is measured, on the left column of the same frame, which draws one too.
 
-**Decided 2026-08-16.** A second *active* row needs concurrent transfers in the executor, which is a
+**Decided 2026-08-16.** A second _active_ row needs concurrent transfers in the executor, which is a
 sync-engine change and not a reporting one.
 
 ### 63a. The style gate had no way to hold a recorded deviation
@@ -2164,6 +2164,8 @@ failure a verbatim gate exists to prevent.
 issue carries the table. The body renders as a centred 520px column, which is the closest the shell
 can get; the footer is a child of the window rather than of the body, so it stays 1040 wide.
 
+**Settled by §103** (#221, 2026-08-17): the shell does not resize. Rows recorded, not deleted.
+
 **A fixture may now name its own route.** Until S2 nothing needed to: every mapped frame was either
 the main screen (the default) or a compact panel (intercepted earlier). So `?frame=3a Conflict` drew
 the MAIN screen against the conflicts fixture — worse than a blank screen, because `fid()` keys by
@@ -2181,7 +2183,7 @@ on every overlay screen since F4; S2 is simply the first mapped one.
 | ------ | ---------------------- | --------------------------------- | ------------------------------- | -------- |
 | S2     | `3a Conflict`          | `· last agreed 3 hours ago`       | the file kind alone             | G12 #217 |
 | S2     | `3a Conflict diff`     | `Open both in an editor` opens it | a button that does nothing      | #220     |
-| S2     | `3a Conflicts cleared` | a 522px window                    | a 520px column in a 1040 window | #221     |
+| S2     | `3a Conflicts cleared` | a 522px window                    | a 520px column in a 1040 window | decision |
 
 ### 75. S3 · the deletions screen
 
@@ -2200,7 +2202,7 @@ fiction.
 It also latches a **full walk**, and that is the half a unit test against a full-snapshot fake would
 have missed: an incremental pass builds its remote map as `reconstruct_remote(base ⊕ delta)`, so the
 baseline IS the remote view. Purge the record and a `direction: remote` survivor is in no
-reconstructed map, and no event re-derives it — the deletion happened *here*, so the volume stream
+reconstructed map, and no event re-derives it — the deletion happened _here_, so the volume stream
 never mentioned it. `bring it back to this computer` would have downloaded nothing, ever, with the
 periodic resync off by default and every restart warm-starting from the cursor.
 
@@ -2274,7 +2276,7 @@ happened three days ago reported an age of seconds, refreshed every ~30s. That w
 missing capability: the field was already on the wire and already wrong. `first_seen_epoch_secs` is
 the fact, carried across passes and restarts in the daemon's own `withheld_deletions` table and
 re-stamped only when the fingerprint changes (a different deletion at the same path). `0` on the wire
-means *an older daemon cannot say*, and the clause is omitted rather than aged from 1970.
+means _an older daemon cannot say_, and the clause is omitted rather than aged from 1970.
 
 It gives the folder card a strip again — one fact, since its other is the atime — and puts the file
 card's two facts in the drawn order. `factsOf` still returns each fact with its DRAWN slot, because
@@ -2301,6 +2303,9 @@ same template around a marker asks the deck where its own hole is.
 #221. `4a Empty` draws neither the header nor the doors, so its fixture declares no shell slots at
 all; the body renders as a centred 520px column inside the 1040 window and is `flex: 1` tall rather
 than 420.
+
+**Settled by §103** (#221, 2026-08-17): the same decision — the shell does not resize — settles this
+frame too, on the precedent the decision itself names. Rows recorded, not deleted.
 
 **`primarySoft` was three wrong tokens in light — §66, one screen later.** F5 built `Keep it` from
 `--panel-raised` / `--border-strong` / `--text-bright`, exact on every dark frame and wrong on all
@@ -2413,12 +2418,12 @@ panel never builds that body and the string is reachable only from the fixture. 
 panel renders a live queue it needs what the card and the banner got here: `subtree_files`, and the
 same null-propagation rule when one row cannot be counted.
 
-| screen | frame          | drawn                                     | shipped                                   | gap      |
-| ------ | -------------- | ----------------------------------------- | ----------------------------------------- | -------- |
-| S3     | `4a Deletions` | `1,204 photos, 8.4 GB`                    | `1,204 files, 8.4 GB`                     | decision |
-| S3     | `4a Deletions` | `last opened Mar 2024`                    | the clause omitted                        | G8 #208  |
-| S3     | `4a Armed`     | `Delete 1,204 photos from this computer?` | `Delete 1,204 files from this computer?`  | decision |
-| S3     | `4a Empty`     | a 522px window                            | a 520px column in a 1040 window           | #221     |
+| screen | frame          | drawn                                     | shipped                                  | gap      |
+| ------ | -------------- | ----------------------------------------- | ---------------------------------------- | -------- |
+| S3     | `4a Deletions` | `1,204 photos, 8.4 GB`                    | `1,204 files, 8.4 GB`                    | decision |
+| S3     | `4a Deletions` | `last opened Mar 2024`                    | the clause omitted                       | G8 #208  |
+| S3     | `4a Armed`     | `Delete 1,204 photos from this computer?` | `Delete 1,204 files from this computer?` | decision |
+| S3     | `4a Empty`     | a 522px window                            | a 520px column in a 1040 window          | decision |
 
 ### 76. S4 · the plan screen
 
@@ -2506,7 +2511,7 @@ every one of those rows sits inside a subtree containing an unbundled glyph, so 
 compare their boxes. `new folder` and `moved` are drawable and are drawn.
 
 **`8,431 of 12,480 files` is drawn, and its two halves still come from two different places.** The
-rehearsal moved onto the daemon's main loop (#209), so `activity.files_scanned` describes *this*
+rehearsal moved onto the daemon's main loop (#209), so `activity.files_scanned` describes _this_
 walk — `activity.pass.kind === "plan"` is what makes it this rehearsal's number rather than a sync
 that happened to start while the screen was open — and `index_totals.files` is the corpus size
 (#207). One clause the design's fixed fraction cannot express is kept: on a **first run** the index
@@ -2576,12 +2581,12 @@ S1 wrote down after three sentences left the gate silently by becoming templates
 than one gated deletion) are templates no frame renders, and `NOT_DRAWN` only reaches constants.
 `gui/test/plan.test.js` pins both.
 
-| screen | frame          | drawn                                   | Phase 1                                 | gap              |
-| ------ | -------------- | --------------------------------------- | --------------------------------------- | ---------------- |
-| S4     | `5a Plan`      | `3` `files, 4.1 MB`                     | `3` `files`                             | G2 #191          |
-| S4     | `5a Plan safe` | a size on every row                     | the row without its size                | G2 #191          |
-| S4     | `5a Plan`      | `Leave it alone`                        | hidden                                  | #224             |
-| S4     | `5a Checking`  | a 522px window                          | a 520px column in a 1040 window         | #221             |
+| screen | frame          | drawn               | Phase 1                         | gap      |
+| ------ | -------------- | ------------------- | ------------------------------- | -------- |
+| S4     | `5a Plan`      | `3` `files, 4.1 MB` | `3` `files`                     | G2 #191  |
+| S4     | `5a Plan safe` | a size on every row | the row without its size        | G2 #191  |
+| S4     | `5a Plan`      | `Leave it alone`    | hidden                          | #224     |
+| S4     | `5a Checking`  | a 522px window      | a 520px column in a 1040 window | decision |
 
 ### 77. S5 · the activity screen
 
@@ -2639,7 +2644,8 @@ are overlays, whose frames correctly light nothing. The app follows the prose an
 undeclared in `planFids`. Deliberately NOT a `known-deviations` row: that file's bar is a missing
 capability with an open issue, and this is a drawing mistake. Eight `#221` rows that rode on those
 door nodes were removed with them; `#221` is still recorded on the same frame through `div[1]` and
-`div[1]/div`.
+`div[1]/div` — **settled by §103** (2026-08-17), which moves those eight rows to `decision: true`
+alongside `3a Conflicts cleared`'s and `4a Empty`'s: the shell does not resize for any of the three.
 
 **Every dialog fid slot is prefixed, because a slot name is resolved by NAME.** A dialog floats over
 a body, so both screens render and both call `fid()`. A `hexagon` declared for `7a File pending`'s
@@ -2689,21 +2695,21 @@ rule you wrote; two can't be synced at all."_ — so it needs both forms in one 
 argument rather than a caller-side `.toLowerCase()`, since above ten `cardinal` already hands back to
 `count()` and the register only ever touches the spelled forms.
 
-| screen | frame                | drawn                                    | Phase 1                                 | gap          |
-| ------ | -------------------- | ---------------------------------------- | --------------------------------------- | ------------ |
-| S5     | `6a Activity passes` | a twenty-bar duration chart              | the whole card omitted                  | G16 #229     |
-| S5     | `7a Activity quiet`  | `12,480` `files · 41.2 GB`, both sides   | both numeral rows omitted               | G7 #207      |
-| S5     | `7a Activity quiet`  | `next full check in 4m`                  | the sub-line omitted                    | G4 #193      |
-| S5     | `7a Activity quiet`  | `Last things to move`, head + three rows | the block's footer row alone            | G17 #230     |
-| S5     | `7a Activity quiet`  | `4 files are never synced`               | ~~the rule-matched count alone~~ both groups (§98) | G19 #232 ✔ |
-| S5     | `7a File lookup`     | `This file's history`, four rows         | the `linked · id` line alone            | G1 #190      |
-| S5     | `7a File lookup`     | the query `spec.md` → `docs/spec.md`     | ~~an exact relative path~~ a search (§94) | G21 #234 ✔   |
-| S5     | `7a File lookup`     | `received 14:32` on the Proton card      | ~~the clause omitted~~ drawn on an upload (§98) | G20 #233 ✔ |
-| S5     | `7a File pending`    | a 3px bar at 41%                         | no track at all (§63)                   | G2 #191, #98 |
-| S5     | `7a Never synced`    | `Can't be synced`, two rows              | ~~the group omitted~~ drawn; the link's target is not (§98) | G19 #232 ✔ |
-| S5     | `6a Details`         | `Open the system log`                    | ~~omitted~~ drawn; a journal snapshot (§97) | G18 #231 ✔   |
-| S5     | all three            | `Open folder`, `Open on Proton Drive`    | ~~omitted~~ drawn; the Drive app, not the file (§97) | G18 #231 ✔   |
-| S5     | `5a Checking`        | four unlit doors on the plan screen      | `Plan a sync` lit, per `02-shell.md:42` | —            |
+| screen | frame                | drawn                                    | Phase 1                                                     | gap          |
+| ------ | -------------------- | ---------------------------------------- | ----------------------------------------------------------- | ------------ |
+| S5     | `6a Activity passes` | a twenty-bar duration chart              | the whole card omitted                                      | G16 #229     |
+| S5     | `7a Activity quiet`  | `12,480` `files · 41.2 GB`, both sides   | both numeral rows omitted                                   | G7 #207      |
+| S5     | `7a Activity quiet`  | `next full check in 4m`                  | the sub-line omitted                                        | G4 #193      |
+| S5     | `7a Activity quiet`  | `Last things to move`, head + three rows | the block's footer row alone                                | G17 #230     |
+| S5     | `7a Activity quiet`  | `4 files are never synced`               | ~~the rule-matched count alone~~ both groups (§98)          | G19 #232 ✔   |
+| S5     | `7a File lookup`     | `This file's history`, four rows         | the `linked · id` line alone                                | G1 #190      |
+| S5     | `7a File lookup`     | the query `spec.md` → `docs/spec.md`     | ~~an exact relative path~~ a search (§94)                   | G21 #234 ✔   |
+| S5     | `7a File lookup`     | `received 14:32` on the Proton card      | ~~the clause omitted~~ drawn on an upload (§98)             | G20 #233 ✔   |
+| S5     | `7a File pending`    | a 3px bar at 41%                         | no track at all (§63)                                       | G2 #191, #98 |
+| S5     | `7a Never synced`    | `Can't be synced`, two rows              | ~~the group omitted~~ drawn; the link's target is not (§98) | G19 #232 ✔   |
+| S5     | `6a Details`         | `Open the system log`                    | ~~omitted~~ drawn; a journal snapshot (§97)                 | G18 #231 ✔   |
+| S5     | all three            | `Open folder`, `Open on Proton Drive`    | ~~omitted~~ drawn; the Drive app, not the file (§97)        | G18 #231 ✔   |
+| S5     | `5a Checking`        | four unlit doors on the plan screen      | `Plan a sync` lit, per `02-shell.md:42`                     | —            |
 
 **`ACTIVITY.nothingRecent` stays undrawn, and it looks like it should not.**
 `14-behaviour-and-state.md:129` gives it as the empty state for `Activity › files` — _"Nothing has
@@ -2930,7 +2936,7 @@ Three consequences, all of them drawn nowhere:
 
 - **The interruption is announced before the click.** While a **daemon-config** change is staged and
   a **counted** pass is running, the bar reads `Saving restarts the sync service, which stops the
-  sync that is running now.` — above the cost line, which is the only ordering this decision
+sync that is running now.` — above the cost line, which is the only ordering this decision
   settles. Both adjectives are load-bearing and neither was there at first
   ([#335](https://github.com/osirison/proton-drive-sync-engine/issues/335)): a staged notification
   policy writes `gui.toml` and restarts nothing, and a plan-only rehearsal claims `syncing` without
@@ -2938,7 +2944,7 @@ Three consequences, all of them drawn nowhere:
 - **A save never STARTS a service that was not running.** `restart_service` takes `only_if_running`
   for the save path: a stopped daemon has nothing to interrupt and nothing stale to correct, it
   reads the file when it next starts, and a save is not a request to begin syncing. Only an
-  *observed* absence counts — a probe that could not tell does nothing and says so, rather than
+  _observed_ absence counts — a probe that could not tell does nothing and says so, rather than
   asserting the daemon is down (#335).
 - **Every ending is loud, and there are five of them** (#335). `RestartOutcome` is a typed,
   internally-tagged answer on the command's Ok payload, one sentence each: it restarted; it was not
@@ -3010,19 +3016,19 @@ against the base .06/.38 — the per-site alpha step §52a measured across the b
 `--destructive-ring`, the one place the design tints an inert hairline, drawn opaque because a 1px
 ring at .3 over a .04 fill would be invisible.
 
-| screen | frame                 | drawn                                                          | Phase 1                                   | gap      |
-| ------ | --------------------- | -------------------------------------------------------------- | ----------------------------------------- | -------- |
-| S6     | `8a Settings`         | the Weekly/Monthly control, day chips, time stepper            | the panel shell over `scan_interval_secs` | G4 #193  |
-| S6     | `8a Settings`         | `12,480 files, 41.2 GB in here today`                          | the merge warning alone                   | G7 #207  |
-| S6     | `8a Settings`         | `A full check of all 12,480 files as a safety net`             | a sentence about the timer                | G7 #207  |
-| S6     | `8a Settings`         | `Takes about 4 minutes … Last one 2 days ago`                  | what is true every time                   | G24 #238 |
-| S6     | `8a Settings`         | `event_driven_reconcile`                                       | `events_driven`, the key that exists      | —        |
-| S6     | `8a Skip rules`       | `added 14 Jul` on a rule                                       | the folder clause alone                   | —        |
+| screen | frame                 | drawn                                                          | Phase 1                                        | gap        |
+| ------ | --------------------- | -------------------------------------------------------------- | ---------------------------------------------- | ---------- |
+| S6     | `8a Settings`         | the Weekly/Monthly control, day chips, time stepper            | the panel shell over `scan_interval_secs`      | G4 #193    |
+| S6     | `8a Settings`         | `12,480 files, 41.2 GB in here today`                          | the merge warning alone                        | G7 #207    |
+| S6     | `8a Settings`         | `A full check of all 12,480 files as a safety net`             | a sentence about the timer                     | G7 #207    |
+| S6     | `8a Settings`         | `Takes about 4 minutes … Last one 2 days ago`                  | what is true every time                        | G24 #238   |
+| S6     | `8a Settings`         | `event_driven_reconcile`                                       | `events_driven`, the key that exists           | —          |
+| S6     | `8a Skip rules`       | `added 14 Jul` on a rule                                       | the folder clause alone                        | —          |
 | S6     | `8a Skip rules`       | the unsyncable panel and `See them`                            | ~~omitted~~ drawn from the standing list (§98) | G19 #232 ✔ |
-| S6     | `8a Schedule monthly` | the whole monthly variant                                      | the panel head alone                      | G4 #193  |
-| S6     | `8a Save refused`     | `That folder doesn't exist on Proton Drive`                    | a generic refusal title                   | G22 #236 |
-| S6     | `8a Save refused`     | `Create it on Proton Drive`                                    | omitted; `Go back and fix it` stays       | G22 #236 |
-| S6     | _(not drawn)_         | Advanced: socket path, log level, conflict suffix, index reset | named as not writable yet                 | G23 #237 |
+| S6     | `8a Schedule monthly` | the whole monthly variant                                      | the panel head alone                           | G4 #193    |
+| S6     | `8a Save refused`     | `That folder doesn't exist on Proton Drive`                    | a generic refusal title                        | G22 #236   |
+| S6     | `8a Save refused`     | `Create it on Proton Drive`                                    | omitted; `Go back and fix it` stays            | G22 #236   |
+| S6     | _(not drawn)_         | Advanced: socket path, log level, conflict suffix, index reset | named as not writable yet                      | G23 #237   |
 
 ### 78j. What the review found, and the shape it was
 
@@ -3148,18 +3154,18 @@ the fact row answers.)
 Every row here is a clause or a node the flow cannot source. All are in `known-deviations.mjs` with
 the exact measurement, so the day the capability lands the build fails until the row is deleted.
 
-| Drawn | Phase 1 | Why | Issue |
-| --- | --- | --- | --- |
-| `341 files / 2.1 GB` per card | no stats row | nothing counts files or bytes under a *candidate* folder — the pair is not indexed yet, because this is the screen that chooses it | #240 |
-| `Signed in as you@proton.me · 39.1 GB of 500 GB used` | omitted | the daemon reuses the CLI's keyring session and never sees an address or a quota | #241 |
-| `files · 1.4 GB` / `files · 38.4 GB` | `files` | no level of the dry-run surface carries a size | #191 |
-| `Needs 38.4 GB free. You have 214 GB.` | `You have 214 GB.` | C4 answers the free space; the *needed* half is a byte total of a download plan, which nothing carries | #206 |
-| `11,798 files already match on both sides` | row omitted | a count of files the plan does **not** act on, absent from `PlanSummary` by construction | #242 |
-| `worked out 40 seconds ago · about 25 minutes to finish` | the first clause | `run_dry_run` reports what would happen, never how long it would take | #229 |
-| `159 of 471 done · about 17 minutes left` | the first clause | same estimate | #229 |
-| `nothing deleted · 2 conflicts kept as copies` | drawn from the approved plan; omitted with none in hand | no reply carries a per-pass summary *while the pass runs* | #213 |
-| `12,480 files, 41.2 GB.` | dropped from the consent sub-line | no command reports index-wide totals | #207 |
-| the install command box | omitted | see 79d | #218 |
+| Drawn                                                    | Phase 1                                                 | Why                                                                                                                                | Issue |
+| -------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `341 files / 2.1 GB` per card                            | no stats row                                            | nothing counts files or bytes under a _candidate_ folder — the pair is not indexed yet, because this is the screen that chooses it | #240  |
+| `Signed in as you@proton.me · 39.1 GB of 500 GB used`    | omitted                                                 | the daemon reuses the CLI's keyring session and never sees an address or a quota                                                   | #241  |
+| `files · 1.4 GB` / `files · 38.4 GB`                     | `files`                                                 | no level of the dry-run surface carries a size                                                                                     | #191  |
+| `Needs 38.4 GB free. You have 214 GB.`                   | `You have 214 GB.`                                      | C4 answers the free space; the _needed_ half is a byte total of a download plan, which nothing carries                             | #206  |
+| `11,798 files already match on both sides`               | row omitted                                             | a count of files the plan does **not** act on, absent from `PlanSummary` by construction                                           | #242  |
+| `worked out 40 seconds ago · about 25 minutes to finish` | the first clause                                        | `run_dry_run` reports what would happen, never how long it would take                                                              | #229  |
+| `159 of 471 done · about 17 minutes left`                | the first clause                                        | same estimate                                                                                                                      | #229  |
+| `nothing deleted · 2 conflicts kept as copies`           | drawn from the approved plan; omitted with none in hand | no reply carries a per-pass summary _while the pass runs_                                                                          | #213  |
+| `12,480 files, 41.2 GB.`                                 | dropped from the consent sub-line                       | no command reports index-wide totals                                                                                               | #207  |
+| the install command box                                  | omitted                                                 | see 79d                                                                                                                            | #218  |
 
 **`Nothing will be deleted · on either side` is conditional**, and that is not an omission. It is the
 row `09-onboarding.md` calls the whole point of the step — "zero destructive actions stated as an
@@ -3253,6 +3259,7 @@ Same pattern as §78h: F1–F6 wrote these against frames nothing had rendered y
   say `static`, and `position` is asserted. So it lives on the CHECKED rule, which is exact in the
   drawn state and correct in the one no frame draws. Found by review; the two states are measured
   (`static`/no tick, then `relative` with the tick at `left:5px top:1px` inside the box).
+
 - **`.dot` had no directional fill.** `9a Folders`' two 8px side markers are `--up-label` /
   `--down-label`; the tone table had inert, destructive and decision only.
 - **`bytes()` wrote a trailing `.0`.** `214.0 GB` where `9a Review` draws `214 GB`, and `500.0 GB`
@@ -3385,9 +3392,9 @@ The report named twelve slots across seven frames — one printed line per frame
 every run, without anyone having to do anything about them. **Sorted against the frames themselves,
 they were two entirely different things:**
 
-| Slots                                                          | The frame draws the node? | Verdict                    |
-| -------------------------------------------------------------- | ------------------------- | -------------------------- |
-| `meta` / `action` on five compact frames                        | **no**                    | inert — not a finding      |
+| Slots                                                            | The frame draws the node? | Verdict                      |
+| ---------------------------------------------------------------- | ------------------------- | ---------------------------- |
+| `meta` / `action` on five compact frames                         | **no**                    | inert — not a finding        |
 | `transferTrack` / `transferFill` on `2a Syncing`, `2a Needs you` | **yes**                   | a block that renders nothing |
 
 **The eight were noise, and worse than noise.** `compactFids` is a factory over four tree shapes and
@@ -3472,11 +3479,11 @@ not, and every fid factory takes at most three arguments and is keyed by positio
 Not missing capabilities — nodes the app renders correctly and the gate was blind to, so 1,390
 assertions were not being made:
 
-| Frame                                                     | Slots                                                   | What was unstamped                                       |
-| --------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------- |
-| `3a Conflicts cleared`, `7a Activity quiet`, `7a File lookup` | `hexPath` ×2 each                                       | the hexagon's two paths — S1 and S3 stamp theirs, these three stamped only the `<svg>`, leaving the ring and the tick uncompared |
-| `7a File lookup`                                          | `card`, `cardLabel`, `cardBox`, `cardMeta`, `cardSize`, `cardPath` ×2 | `lookupCard` built the whole two-card block with no `fid` call in it at all |
-| `7a Never synced`                                         | `rulePattern`, `ruleRowPath` ×2, `ruleRowNote` ×2       | the rule's pattern span, and both children of each sample row (the row itself was stamped) |
+| Frame                                                         | Slots                                                                 | What was unstamped                                                                                                               |
+| ------------------------------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `3a Conflicts cleared`, `7a Activity quiet`, `7a File lookup` | `hexPath` ×2 each                                                     | the hexagon's two paths — S1 and S3 stamp theirs, these three stamped only the `<svg>`, leaving the ring and the tick uncompared |
+| `7a File lookup`                                              | `card`, `cardLabel`, `cardBox`, `cardMeta`, `cardSize`, `cardPath` ×2 | `lookupCard` built the whole two-card block with no `fid` call in it at all                                                      |
+| `7a Never synced`                                             | `rulePattern`, `ruleRowPath` ×2, `ruleRowNote` ×2                     | the rule's pattern span, and both children of each sample row (the row itself was stamped)                                       |
 
 Stamping them found two real CSS differences that no gate could previously see:
 
@@ -3490,12 +3497,12 @@ Stamping them found two real CSS differences that no gate could previously see:
 
 Fifteen became `KNOWN_UNSTAMPED` rows, each pinned to the node it explains:
 
-| Frame          | Slots                                   | Why Phase 1 draws nothing                                                             | Issue      |
-| -------------- | --------------------------------------- | -------------------------------------------------------------------------------------- | ---------- |
-| `4a Deletions` | `cardFacts`, `cardFact` ×3              | the folder card's strip is absent entirely (`factsOf` builds no fact for a directory); the file card's first span is `deleted here 6m ago`, a re-stamped field | #208, #225 |
-| `5a Plan safe` | `sideRowNote` ×5                        | a size beside every file the rehearsal will move, and the report carries no per-file size | #191       |
-| `9a Folders`   | `cardButton`, `sideNote`                | `Browse Proton Drive…` has nowhere to go, and no command sees the account or its quota    | #99, #241  |
-| `9a Review`    | `fact`, `factDot`, `factLabel`, `factNote` | `11,798 files already match on both sides` — the summary counts what the plan will DO   | #242       |
+| Frame          | Slots                                      | Why Phase 1 draws nothing                                                                                                                                      | Issue      |
+| -------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `4a Deletions` | `cardFacts`, `cardFact` ×3                 | the folder card's strip is absent entirely (`factsOf` builds no fact for a directory); the file card's first span is `deleted here 6m ago`, a re-stamped field | #208, #225 |
+| `5a Plan safe` | `sideRowNote` ×5                           | a size beside every file the rehearsal will move, and the report carries no per-file size                                                                      | #191       |
+| `9a Folders`   | `cardButton`, `sideNote`                   | `Browse Proton Drive…` has nowhere to go, and no command sees the account or its quota                                                                         | #99, #241  |
+| `9a Review`    | `fact`, `factDot`, `factLabel`, `factNote` | `11,798 files already match on both sides` — the summary counts what the plan will DO                                                                          | #242       |
 
 The last of the sixteen was neither a gap nor an omission. `9a Folders`' remote `cardPath` **is** drawn — as an
 `<input>`, because the remote root is the editable one — and §79 records why an `<input>` and a drawn
@@ -3519,8 +3526,8 @@ unexplained — instead of being absorbed by a mapping nobody re-checked.
 Review found the weak point, and it is worth stating rather than leaving to be discovered. Every
 suppression in this subsystem self-invalidates: `KNOWN_DEVIATIONS` fails when an entry stops failing,
 `KNOWN_UNSTAMPED` fails when a row stops being observed, `SETTLED_FRAMES` is cross-checked against
-`index.json` — and that gate's own comment states the rule, *"a hardcoded label list that nothing
-cross-checks is a gate that can switch itself off"*.
+`index.json` — and that gate's own comment states the rule, _"a hardcoded label list that nothing
+cross-checks is a gate that can switch itself off"_.
 
 Leaving a node **undeclared** has no such rule. `cardPath` returning `null` at `s === 1` is the only
 honest answer available for that node, and nothing targets the null itself. The comparison to
@@ -3532,7 +3539,7 @@ The first version of this section then went one claim too far — it said no gat
 suppression expired. **Two do, and review measured both.** Stamp the slot and `fid()` null-checks the
 factory rather than its result, so it writes `data-fid="9a Folders:null"`; `assert.mjs` finds no such
 key and reports a `(mapping)` failure, exit 1. Let #99 land and replace the `<input>` with an
-unstamped `<div>` and the **parent** card's exact-pixel `box.h "147 vs 58"` deviation goes stale *and*
+unstamped `<div>` and the **parent** card's exact-pixel `box.h "147 vs 58"` deviation goes stale _and_
 fails, exit 1 — an exact-detail pin on a parent covers a child's construction changing under it.
 
 **Both covers are incidental, and that is the part worth keeping.** Nothing decided this node would
@@ -3557,7 +3564,7 @@ was the one #247 shipped untested, because it was the argument for doing the wor
 
 ## 82. The tray protocol could not deliver the tray, and five other things the frames do not say
 
-`10-tray.md`'s whole interaction is *left click opens the compact panel*. `IMPLEMENTATION-PLAN.md` §6
+`10-tray.md`'s whole interaction is _left click opens the compact panel_. `IMPLEMENTATION-PLAN.md` §6
 flagged the rendering half of that as the architectural risk ("libayatana-appindicator cannot render
 a hexagon and a seam") and told S8 to prototype before estimating. The prototype found something
 worse than a rendering limit: **there is no click**.
@@ -3581,7 +3588,7 @@ queryable: `rect()` returns `None`).
 **a. `--hex-glyph-fg` is a new token, and the tray glyph is the first thing to need it.** F2 wrote
 the `family: "tray"` branch of `renderHexagon` in anticipation and nothing had ever passed the flag.
 Drawn for the first time, settled and paused stroked `--hex-settled-track` / `--hex-paused-track` —
-the dark ring the in-window mark draws a check or a pair of bars *inside*. At 20px the outline IS the
+the dark ring the in-window mark draws a check or a pair of bars _inside_. At 20px the outline IS the
 mark, so the glyph came out a near-invisible grey on a dark panel. All ten marks on `10a Glyph
 states` stroke at the foreground colour or at their tone; not one is a track. `10-tray.md` supplies
 the light value itself ("the glyph inverts to `#14161A` with the same five forms").
@@ -3603,7 +3610,7 @@ own claim about why those two forms are shaped the way they are, confirmed by a 
 exactly one colour, so the track's `#3E454E` cannot survive as a literal: it would either clash with
 whatever the panel chose or be recoloured to match the segment and vanish. 0.18 is the alpha that
 reproduces `#3E454E` over the `#191C21` the sheet draws on, computed per channel (0.16 / 0.19 / 0.20
-— the two colours are not the same hue) and averaged. The icon keeps the drawing's *ratio* between
+— the two colours are not the same hue) and averaged. The icon keeps the drawing's _ratio_ between
 track and segment whatever colour the desktop picks.
 
 **e. The tray's syncing glyph does not move.** `renderHexagon` puts `animation:hexup 2.4s linear
@@ -3632,7 +3639,7 @@ exists — the v1 tray shipped `Nothing synced yet` as a disabled menu item.
 outage and an expired session behind one icon) but **not its menu**. `Try again now` retries a sync,
 which is not what an expired session needs, and `10-tray.md` asks exactly one thing of these rows —
 that the label says what it does. So the panel is keyed by FORM and the menu by CAUSE, and
-`deferToWindow` is a sixth *row set* rather than a sixth *form*. There is no sixth form.
+`deferToWindow` is a sixth _row set_ rather than a sixth _form_. There is no sixth form.
 
 **h. `retrying in 40s · last reached 13:58` is omitted.** Nothing in the reply says when the next
 attempt is, and an unreachable daemon is not answering to be asked. Omitted rather than filled, per
@@ -3697,8 +3704,8 @@ to be decided rather than read. Four pieces of evidence, all pointing one way:
 
 - the prototype's own caption above the frame reads **"the settings tab — three choices, not twelve
   switches"**;
-- `14-behaviour-and-state.md`'s fallback table names the section **Notifications** (*"Hide the
-  section; default to the four events"*);
+- `14-behaviour-and-state.md`'s fallback table names the section **Notifications** (_"Hide the
+  section; default to the four events"_);
 - the first card's body is `The four events on the left`, which is a claim about a layout with the
   rules sheet beside it;
 - and `11a Settings` is drawn with the **identical chrome** `8a Deletions tab` puts around its crop
@@ -3743,14 +3750,14 @@ requires are unreachable through it, and both are in its source rather than in a
 
 - **Action buttons.** `desktop.rs` builds a `notify_rust::Notification` from a title, a body and an
   icon and never calls `.action()`. `Keep them` / `Review`, `Compare` / `Later` and the outage pair
-  are the spec; *"the absence of a Delete button is a deliberate safety property, not an omission"*
+  are the spec; _"the absence of a Delete button is a deliberate safety property, not an omission"_
   (IMPLEMENTATION-PLAN §6) is the rest of it.
 - **`replaces_id`.** "Never stack more than one Drive Sync banner" is that argument on the wire, and
   the plugin does not expose it.
 
 So `src/notify.rs` speaks `org.freedesktop.Notifications` over the zbus connection S8 already added,
 and the plugin (with its `notification:default` capability grant) is removed. The risk §6 flags —
-*"the notification server may not support actions"* — was **measured before any of it was written**:
+_"the notification server may not support actions"_ — was **measured before any of it was written**:
 `GetCapabilities` on this project's session answers `actions`, `persistence`, `inline-reply` and
 more, against `GetServerInformation` `("Plasma", "KDE", "6.7.4", "1.2")`. A server that does not
 advertise `actions` still gets the banner and is logged once, at connect; the sentence is the part
@@ -3758,8 +3765,8 @@ that matters and both actions are reachable in the window anyway.
 
 ### 84a. The banner we draw is not shown anywhere yet
 
-`11-notifications.md`: *"Use the desktop's own notification chrome where the platform provides it —
-these values are for when it doesn't."* `ui/notification.js` builds both halves — `renderBanner`
+`11-notifications.md`: _"Use the desktop's own notification chrome where the platform provides it —
+these values are for when it doesn't."_ `ui/notification.js` builds both halves — `renderBanner`
 draws the 372/520px banner the frames specify, `payloadFor` flattens the same spec for the wire — so
 the sentence a desktop shows and the one we would draw come from one builder rather than two that
 agree today.
@@ -3789,7 +3796,7 @@ without that, clicking `Discard` in another application's banner would fire one 
 
 `10-tray.md`'s poll is in Rust and this is not, which is worth stating because the reverse looks
 safer. The four triggers produce SENTENCES, and IMPLEMENTATION-PLAN §3.4 puts every sentence in one
-module *"so a string can't drift between the screen, the tray and the notification"* — `copy-gate.mjs`
+module _"so a string can't drift between the screen, the tray and the notification"_ — `copy-gate.mjs`
 checks that module against the frames, and a second copy in Rust would be outside every gate in the
 build. `notifier.js` is pure and `ui/notification.js` builds the banner; `notify.rs` carries no
 user-visible text at all, not even the app name.
@@ -3809,7 +3816,7 @@ in `tray.rs`, which runs regardless, and the copy has to move or be gated across
 
 ### 85a. Two rules the design states and one it does not
 
-- **Coalescing is a rate, not a delay.** *"Coalesce within a 30-second window"* read as "hold the
+- **Coalescing is a rate, not a delay.** _"Coalesce within a 30-second window"_ read as "hold the
   first event for 30 seconds" would hold the permanent-deletion warning for half a minute, and that
   banner's whole justification is that silence costs files. So the first is immediate, anything
   behind it inside the window **replaces** it rather than adding one, and the replacement is
@@ -3817,7 +3824,7 @@ in `tray.rs`, which runs regardless, and the copy has to move or be gated across
 - **A more serious event jumps the window.** Waiting 25 seconds to say that files are about to be
   deleted, because a conflict banner went up five seconds ago, is the wrong way round. Severity is
   deletion > outage > conflict > first sync, and only a strictly higher one preempts.
-- **The first-sync banner needs a witness.** `last_sync_epoch_secs` is set on *every* successful pass
+- **The first-sync banner needs a witness.** `last_sync_epoch_secs` is set on _every_ successful pass
   and says nothing about which one was the first, so installing the GUI on a machine that has been
   syncing for a year would announce `Both sides now match` as though the wait had just ended. It
   fires only where this install actually watched the transition — and an unreachable daemon is not a
@@ -3826,7 +3833,7 @@ in `tray.rs`, which runs regardless, and the copy has to move or be gated across
 ### 85b. The outage banner does not blame the session when the session is not the cause
 
 `11a Outage`'s body is `Proton Drive is asking you to sign in again. 61 changes are waiting — nothing
-is lost.` and the doc gives the trigger three causes: *"an outage, expired session, or full disk"*.
+is lost.` and the doc gives the trigger three causes: _"an outage, expired session, or full disk"_.
 Saying the first about the third would be a false statement in the banner whose whole job is to be
 believed, so the other two causes take the deck's own unreachable sentence
 (`TRAY.unreachableBody`) — already drawn in `10a Offline`, already gated, and it opens with the
@@ -3842,27 +3849,27 @@ do is true: a withheld deletion is not applied, so the files stay.
 
 ## 86. `notify_policy` is GUI-local, and that is what makes "Never" safe
 
-The daemon parses its config with `#[serde(deny_unknown_fields)]` on `FileConfig` *and* its nested
+The daemon parses its config with `#[serde(deny_unknown_fields)]` on `FileConfig` _and_ its nested
 tables, so one key it does not know makes it **fail to start**. `notify_policy` therefore lives in
 the GUI's own `gui.toml` beside `proton-sync.toml`, never inside it.
 
-That is not only a storage decision. `11-notifications.md`: *"'Never' must not change engine
-behaviour — deletions still wait for approval. Turning off notifications is not consent."* With the
+That is not only a storage decision. `11-notifications.md`: _"'Never' must not change engine
+behaviour — deletions still wait for approval. Turning off notifications is not consent."_ With the
 key in a file the daemon never reads, the property holds by construction rather than by care.
 
 A missing, unreadable, unparseable or unknown value reads back as `only_when_needed` — **fail loud,
 not quiet**: the failure that matters is a broken file silently meaning `never`, which would drop the
-one banner that can save someone's files. A *write* refuses an unknown token instead, because a write
+one banner that can save someone's files. A _write_ refuses an unknown token instead, because a write
 is a person choosing and storing something else would be the screen answering a question nobody
 asked.
 
 ## 87. What the frames draw that Phase 1 cannot
 
-| frame           | drawn                                       | Phase 1 draws                | closed by |
-| --------------- | ------------------------------------------- | ---------------------------- | --------- |
-| `11a In situ` 1 | `1,204 photos would be deleted…`            | the queue's own length + noun | G8 #208   |
+| frame           | drawn                                         | Phase 1 draws                   | closed by |
+| --------------- | --------------------------------------------- | ------------------------------- | --------- |
+| `11a In situ` 1 | `1,204 photos would be deleted…`              | the queue's own length + noun   | G8 #208   |
 | `11a In situ` 3 | `First sync finished — 12,480 files, 41.2 GB` | the sentence without the clause | G7 #207   |
-| `11a Outage`    | `Sign in`                                   | `Try again now` (§67a)       | E6 #103   |
+| `11a Outage`    | `Sign in`                                     | `Try again now` (§67a)          | E6 #103   |
 
 Eight `known-deviations.mjs` rows, four nodes per cause: each sentence wraps to one line where the
 frame draws two, and the banner, its head, its text column and the sentence itself all measure it.
@@ -3894,7 +3901,7 @@ of them is visible in a rendering and every gate in this repo was green with all
    the last banner now outlive its closing — only `replaces_id` is cleared.
 2. **`First sync finished` announced itself on an established install.** The witness rule read a
    live `last_sync_epoch_secs == null` as "nothing has ever synced". `ControlShared::new` starts
-   that field at `None`, so it is null after *every* daemon restart — and Settings ships a
+   that field at `None`, so it is null after _every_ daemon restart — and Settings ships a
    `Restart it now` button. It counts only where nothing has ever been seen either.
 3. **The delivered banner had no icon.** `icons.rs` writes the five symbolic SVGs to
    `$XDG_RUNTIME_DIR/proton-sync-tray` and hands that path to the STATUS-NOTIFIER HOST as
@@ -3923,7 +3930,7 @@ reading the freedesktop specification for what a server emits and in what order,
 
 **Copilot took five passes over this branch, and its last three findings were all in code written to
 answer the pass before** — the pattern this project has recorded twice already, and every one of
-them arrived *suppressed*, which is the half of a Copilot review that has to be expanded by hand.
+them arrived _suppressed_, which is the half of a Copilot review that has to be expanded by hand.
 
 - **Pass 2.** The markup escaping added above defaulted to "the server does not parse markup" and
   only turned on when `GetCapabilities` said otherwise. That call is a round trip and can fail, so a
@@ -4004,14 +4011,14 @@ entire job is to promise that it will not — and settled→syncing happens on e
 The id travels with the row instead, so a stale menu performs what its label promised or nothing at
 all, and `Event` resolves against every row set rather than the one currently published.
 
-*The first draft of this section named a different pair — a stale `Pause syncing` click landing on
+_The first draft of this section named a different pair — a stale `Pause syncing` click landing on
 `Quit` — and it was wrong: the paused set's third row is the separator, so that click would have hit
 nothing. The claim is now a test that walks all five sets and computes the collisions
 (`positions_collide_and_the_worst_pair_is_the_one_10_tray_md_names`), and it fails with an
 instruction to fix the prose if the pair it names ever stops colliding. A rationale nobody can check
-is a rationale that rots.*
+is a rationale that rots._
 
-**c. `AboutToShow` always answers `true`.** The return means *you need to refresh before drawing*.
+**c. `AboutToShow` always answers `true`.** The return means _you need to refresh before drawing_.
 libdbusmenuqt honours it by re-reading the layout; answering `false` draws the cached copy, which for
 a menu whose rows are a function of daemon state is how `Pause syncing` appears on a paused daemon.
 It costs one round trip per right click. `LayoutUpdated` is emitted on the poll as well, for a host
@@ -4037,7 +4044,7 @@ have given a left click and a right click two different menus for one daemon wit
 languages green. `the_panel_and_the_native_menus_draw_the_same_rows_in_the_same_order` parses
 `TRAY_MENU` and compares all six of its sets, separators included, against `rows_for` — including
 `needsYou`, which has no Rust counterpart because S1's derivation folds it into the idle state, and
-whose being *identical to settled* is itself the invariant §82g rests on.
+whose being _identical to settled_ is itself the invariant §82g rests on.
 
 **f. The fallback menu never followed the daemon.** Found while giving it the shared table:
 `install_fallback` returned early whenever the tray already existed, so its rows were whatever the
@@ -4055,19 +4062,19 @@ parts, so the fold itself is not written down twice.
 **h. Four defects an adversarial review found — two of them S8's, two of them this branch's.** Every
 gate was green with all four present, which is the fifth time this project has recorded that
 sentence. (The first draft of this line said "three of them S8's" and contradicted its own list one
-paragraph later: `EventGroup` was written here, and the fourth is a *regression* — S8's behaviour was
+paragraph later: `EventGroup` was written here, and the fourth is a _regression_ — S8's behaviour was
 right until a `Menu` path took the click away from it. A count is a claim like any other.)
 
 1. **(this branch) `EventGroup`'s out-arg is `idErrors` — the ids that could NOT be handled** — and this returned
    every id it was sent, with a doc comment stating the inverted meaning as its justification. A host
    that batches (libdbusmenu-glib's client prefers `EventGroup` for a server advertising `Version >=
-   3`, which this does) would have been told every working click failed. The name is in the XML
+3`, which this does) would have been told every working click failed. The name is in the XML
    libdbusmenu-glib compiles in, read on this machine rather than from the specification:
    `<arg type="ai" name="idErrors" direction="out">`.
 2. **(S8) `live` gated the state, not just the signals** (`sni.rs`). While a status-notifier host was
    away — plasmashell restarts on any panel-settings change — `update` returned early without
    writing the icon, the title or the rows, while the poll recorded the tick as shown. The host came
-   back, read the item on registration, and got the state from *before* it left, with nothing to
+   back, read the item on registration, and got the state from _before_ it left, with nothing to
    correct it until the daemon changed state again. The signals are the only part worth skipping when
    nothing is listening; the state is what a returning host reads.
 3. **The indicator was never retried** (`tray.rs`, S8). `Sni::start` ran only from `update`, and
@@ -4085,13 +4092,13 @@ right until a `Menu` path took the click away from it. A count is a claim like a
 plasmashell called `GetLayout(0, 1, [])` on the menu path **unprompted**, seconds after the item
 registered — the importer exists, which is the whole question. `AboutToShow` answered, a synthetic
 `Event(id, "clicked", …)` hid and showed the window through the same handler the fallback menu uses,
-an unknown id was reported rather than silently swallowed, and pausing the daemon *from the menu*
+an unknown id was reported rather than silently swallowed, and pausing the daemon _from the menu_
 moved the published rows to the paused set at the next revision with `LayoutUpdated` emitted and
 honoured within a millisecond.
 
 What is NOT proven is the pointer. A synthetic `Activate` still opens the panel with `Menu`
 published, but that exercises an unchanged handler and would pass whatever a host decided to send —
-so *that a real left click still reaches `Activate`* rests on Plasma's `StatusNotifierItem.qml`, and
+so _that a real left click still reaches `Activate`_ rests on Plasma's `StatusNotifierItem.qml`, and
 that Plasma renders these rows on a right click rests on its importer's source. Reading a host's
 code is better evidence than reading a specification and it is not the same as watching it happen.
 Two clicks close both gaps, and neither has been made.
@@ -4116,7 +4123,7 @@ and on that desktop it is three.
 
 `derive_state` checked `paused`, then an auth-shaped `last_error`, then `syncing`, then never-synced,
 then `pending_changes > 0` — and fell through to `Idle`. Every one of those is a state the daemon is
-*in*; a daemon whose last pass failed for any non-auth reason is in none of them. So a remote list
+_in_; a daemon whose last pass failed for any non-auth reason is in none of them. So a remote list
 that timed out, a `proton-drive` binary that was not on the `PATH`, a transfer that errored — all of
 them drew **`Everything is up to date`**, which is the app's strongest all-clear and the one state
 where it can be false.
@@ -4244,8 +4251,8 @@ trapping somebody in the wizard. It was necessary and it was not sufficient, and
 merged change found out why.
 
 `render()` kept its **own** copy of that list — `const reachable = st === "idle" || st === "running"
-|| st === "paused" || st === "authExpired"`, under a comment reading *"EXACTLY
-`nextOnboardingLatch`'s RELEASE SET"* — and it gates the sticky `onboardingFailure` that
+|| st === "paused" || st === "authExpired"`, under a comment reading _"EXACTLY
+`nextOnboardingLatch`'s RELEASE SET"_ — and it gates the sticky `onboardingFailure` that
 `failOnboardingMerge` sets when a first sync fails. The latch expression is
 
 ```js
@@ -4260,7 +4267,7 @@ and worse than the `Everything is up to date` it replaced.
 
 The S1 failed screen this whole section is about draws for one poll and then the wizard returns over
 it. Three texts asserted the opposite while it did: the comment above `reachable`,
-`failOnboardingMerge`'s *"a reachable daemon that failed a pass is the main screen's business"*, and
+`failOnboardingMerge`'s _"a reachable daemon that failed a pass is the main screen's business"_, and
 §90b.
 
 **The fix is not to make the copies agree.** `releasesOnboarding` is exported from `routes.js` and
@@ -4281,7 +4288,7 @@ codebase treats as defects rather than tidying, because a comment that states a 
 evidence:
 
 - **`chipFor`'s justification named the wrong screen.** `sync failed` is the daemon's message and
-  the chip is right; the clause claiming it is *"what S5's passes list draws"* was not — `passRowFor`
+  the chip is right; the clause claiming it is _"what S5's passes list draws"_ was not — `passRowFor`
   labels every failed row `Couldn't reach Proton Drive`. Which is the sentence §90d rules out for
   this exact state, on the exact same `last_error` field, so S5 says the thing S1 refuses to. That
   is pre-existing S5 wording and is #258 rather than something to absorb here.
@@ -4290,7 +4297,7 @@ evidence:
   hexagon-does-not-move rule, so it pointed at nothing from exactly the place that most needed it.
 - **§90d said both new strings were exempted in the copy gate.** Only `MAIN.failed` is;
   `MAIN.failedSub` is a template, and §90e — four paragraphs later, in the same section — is the
-  note explaining that a template needs no exemption and that the new check now *rejects* one. And
+  note explaining that a template needs no exemption and that the new check now _rejects_ one. And
   §90e's own figure counted the exemption this change added as pre-existing: 44 were already there,
   not 45. Both corrected above. The same slip as §88's, one section on: a change invalidates the
   numbers quoting it, including the ones written in the same commit.
@@ -4357,7 +4364,7 @@ header warns about at length, found for the first time by a frame that could see
   anyone having looked.
 - **The deletion card's kind had no token of its own.** `a folder` and `4 KB` were `--text-4`, which
   is `#828B98` in dark — correct — and `#4B5563` in light, where both drawn cards put the node at
-  `#6B7280`. The facts strip *inside the same card* does map to `#4B5563`, which is what
+  `#6B7280`. The facts strip _inside the same card_ does map to `#4B5563`, which is what
   `12-light-theme.md`'s text-on-tint rule asks for, so this is not a card-versus-not-card
   distinction: it is one dark hex doing two jobs. Now `--deletion-kind`.
 
@@ -4446,8 +4453,8 @@ undrawn screens that have only this one.
 
 ## 92. Three of them only a hand could find, and one of them cut the tray's two most important words off the bottom
 
-`10-tray.md`'s definition of done ends with a clause no gate can execute: *"verified on GNOME
-(AppIndicator extension) and KDE Plasma."* §89i said so in as many words — "two clicks close both
+`10-tray.md`'s definition of done ends with a clause no gate can execute: _"verified on GNOME
+(AppIndicator extension) and KDE Plasma."_ §89i said so in as many words — "two clicks close both
 gaps, and neither has been made" — and left them owed. This is the section that makes them, on a live
 Plasma 6.7/X11 session, with `xdotool` driving XTEST so the pointer is the X server's own and not a
 D-Bus call standing in for one.
@@ -4472,7 +4479,7 @@ could never grow again**, in any state, for the life of the window.
 
 Which is what shipped: on a cold webview profile the settled panel came up **302px tall where it
 draws 365**, and the two rows past the cut were `Close window — keeps syncing` and `Quit — stops
-syncing` — the pair `10-tray.md` calls *the single worst misunderstanding a tray app can cause* and
+syncing` — the pair `10-tray.md` calls _the single worst misunderstanding a tray app can cause_ and
 requires the build to keep. Switching the daemon to a state whose panel is 440px tall changed
 nothing: still 302, on every poll, for as long as it was watched. The latch is the finding; which
 transient measurement arms it (an early frame before the window settles at its built size) is not
@@ -4496,7 +4503,7 @@ would leave the gate green and the app broken.
 The click that opens anything in this app goes to **plasmashell**, not to us. So when we ask for the
 focus, the timestamp the request carries is whatever GTK last saw an event with in this process —
 older than the click, which is precisely the shape focus-stealing prevention refuses. The panel came
-up carrying `_NET_WM_STATE_DEMANDS_ATTENTION`, the WM's marker for *this window asked and I said no*.
+up carrying `_NET_WM_STATE_DEMANDS_ATTENTION`, the WM's marker for _this window asked and I said no_.
 
 Two failures, one seam:
 
@@ -4504,7 +4511,7 @@ Two failures, one seam:
   compositor that refuses focus cannot make it flash and vanish (§82, bug 4). Refused focus means no
   focus, so no blur ever counted: an always-on-top borderless popover stayed over the user's work
   until they clicked the indicator again. IMPLEMENTATION-PLAN §6's second sub-risk, and not on an
-  edge case — on the ordinary path, since *another app holds the focus* is the normal state of a
+  edge case — on the ordinary path, since _another app holds the focus_ is the normal state of a
   desktop. That file's own consolation ("Esc, any menu row, and a second click all still dismiss it")
   was two-thirds true: **Esc could not reach a window that had no keyboard focus.**
 - **`Open Drive Sync` did nothing.** With the window already open behind others, the row raised
@@ -4522,7 +4529,7 @@ window and a server that returns no time all behave exactly as before.
 
 Measured after, on the same three tests that failed before: the panel takes the focus, clicking away
 hides it, Esc hides it, a second click on the indicator hides it, and `Open Drive Sync` moves the
-main window above the one that was covering it. `gtk` and `gdkx11` are new *direct* dependencies and
+main window above the one that was covering it. `gtk` and `gdkx11` are new _direct_ dependencies and
 no new build — Tauri already compiles both, and `WebviewWindow::gtk_window()` hands back a
 `gtk::ApplicationWindow`, so the versions must be the ones Tauri resolved.
 
@@ -4598,7 +4605,7 @@ exempt in the copy gate for the reason that made the bug possible: no frame draw
 other kind.
 
 **Not `looks_like_auth_error`, which is what the issue proposed.** It is the wrong split for this
-label twice over. An expired session means Proton was *reached* and refused you, so the auth-shaped
+label twice over. An expired session means Proton was _reached_ and refused you, so the auth-shaped
 subset is exactly the one that must not say `Couldn't reach Proton Drive`; and the frame's own error
 does not match it, so following the suggestion literally would have flipped the drawn row to the
 neutral label and failed the gate on the frame it was meant to be faithful to. An issue naming a
@@ -4648,7 +4655,7 @@ it, so the toggle discarded a half-typed lookup and an in-flight rehearsal. So `
 affordance as well (a second route home is redundant, not wrong). The frames draw four doors and none
 of them lit on the main screen; the app draws five and lights Home there.
 
-The fid mapping is where that stays honest. `doorKeys` maps the app's door *i* to the frame's
+The fid mapping is where that stays honest. `doorKeys` maps the app's door _i_ to the frame's
 `span[i-1]` and answers `null` for door 0, so every drawn door keeps its identity in the gate and the
 one the frames do not draw is not compared against a node that does not exist.
 
@@ -4678,7 +4685,7 @@ never reads as though it matched 50.
 
 ## 95. `unreachable` was two states wearing one name, and only one of them was Proton's
 
-The design has one struck state and calls it *Proton unreachable*: `14-behaviour-and-state.md` puts
+The design has one struck state and calls it _Proton unreachable_: `14-behaviour-and-state.md` puts
 it "after a failed pass and retry", `10a Offline` draws `Can't reach Proton Drive` over `Try again
 now`, and `11-notifications.md` groups it with an expired session and a full disk behind one icon.
 Every one of those is about the far end of a sync.
@@ -4729,7 +4736,7 @@ No frame draws any of this, and none could — the design has no state for a sto
 `startService`: set on rejection, cleared only by the NEXT click. Nothing retired it when the daemon
 came up — and the routes that bring a daemon up mostly do not go through that function. The tray row
 this same change adds starts the service entirely in Rust; Settings' restart has its own path; a
-terminal has none. So the string survived into a later, unrelated outage and was drawn as *that*
+terminal has none. So the string survived into a later, unrelated outage and was drawn as _that_
 outage's reason, in the block whose stated job is to be the account of why. `clearsStartError` is the
 rule `app.js` already applied to `onboardingFailure` twenty lines above `mainProps` — "a merge that
 failed against a daemon that then came up is not onboarding's problem any more" — applied to this.
@@ -4738,7 +4745,7 @@ answering at all, by any route.
 
 **Two of the new tests would have survived a revert.** Reverting all three window-side branches —
 `headlineOf`'s and `subOf`'s `unreachable` arms and `quotedError`'s — left 322/322 green and the copy
-gate at 0 missing. The tests named after those branches asserted properties of the *constants*
+gate at 0 missing. The tests named after those branches asserted properties of the _constants_
 (`MAIN.notRunning` is not `TRAY.unreachableTitle`, says nothing about Proton), which no edit to the
 screen can falsify, and a prop round trip through `mainView` for the other. They pinned the deck, and
 the deck was never what changed.
@@ -4757,13 +4764,13 @@ the feature.
 row per file under each side count, then a `flex: 1` spacer — and the spacer is the only slack there
 is. Measured at 1040×764, with the app's own fixture and the doors §94 put under the action bar:
 
-| rows on the taller side | document height | the four doors | `Run this sync` |
-| --- | --- | --- | --- |
-| 4 (the frame's own plan) | 764 | on screen | bottom edge at 699 |
-| 6 | 764 | on screen, and the spacer is gone | 699 |
-| 7 | 797 | 33px below the fold | 732 — the last row that keeps it |
-| 8 | 830 | 66px below | 765, 1px below the fold |
-| 44 | 2018 | 1254px below | 1953, 1189px below |
+| rows on the taller side  | document height | the four doors                    | `Run this sync`                  |
+| ------------------------ | --------------- | --------------------------------- | -------------------------------- |
+| 4 (the frame's own plan) | 764             | on screen                         | bottom edge at 699               |
+| 6                        | 764             | on screen, and the spacer is gone | 699                              |
+| 7                        | 797             | 33px below the fold               | 732 — the last row that keeps it |
+| 8                        | 830             | 66px below                        | 765, 1px below the fold          |
+| 44                       | 2018            | 1254px below                      | 1953, 1189px below               |
 
 The window is a fixed, non-resizable 1040×764 with no scrollbar of its own, so past six files the
 whole window scrolled: the four doors go first and the screen's primary action follows one row later.
@@ -4955,7 +4962,7 @@ never what stopped this row. The number on it was `PlanSummary::skipped_unsuppor
 the **dry-run plan**, which counts remote nodes the CLI cannot fetch as bytes. The local kinds are
 deliberately kept out of a plan (a socket that replaced a synced file would put two rows for one
 path in one plan), and `DryRunReport` deliberately carried no `unsyncable` list: that list is a
-*persistent merged* store, and a one-shot report has no store to merge into, so the same field name
+_persistent merged_ store, and a one-shot report has no store to merge into, so the same field name
 on it would mean something else. Two different sets, unsummable, and on a first run the standing
 list is empty anyway because no pass has run.
 
@@ -4971,7 +4978,7 @@ actions`.
 
 The general lesson stands and is why this is kept: a row whose stated reason has quietly become
 false is how "nothing enumerates the kinds" gets believed twice. The corrected reason then said the
-two facts could not be sourced from one place *today* — which was true, and was a statement about a
+two facts could not be sourced from one place _today_ — which was true, and was a statement about a
 missing producer rather than an impossibility. Naming the producer it lacked is what let the next
 change build it.
 
@@ -5022,9 +5029,9 @@ selector now also accepts an **absolute** one, so the probe walks over the socke
 directory, every child spawned by the daemon behind its one `CliGate`.
 
 The walk stayed on the client, which is the decision worth recording: `list` may run on the daemon's
-IPC task only because it is *one* invocation under a bounded gate wait, and the other daemon-side
+IPC task only because it is _one_ invocation under a bounded gate wait, and the other daemon-side
 shape (`Plan`'s ack-plus-latch on the main loop) queues behind whatever pass is running — up to half
-an hour for a number a user is waiting on. One request per directory answers in the *gaps* of a live
+an hour for a number a user is waiting on. One request per directory answers in the _gaps_ of a live
 pass instead, because the gate is held for one child and not one pass.
 
 `probe_remote_via_cli` remains for the case with no daemon to ask — onboarding, where four of the
@@ -5034,8 +5041,8 @@ socket at all, decided by a follow-up `status` rather than by the failed request
 **Correction to the issue's premise, recorded because it changes what "unbuilt" means here.** #323
 says the probe is called where `list_remote` was not — "`9a Folders` is a drawn screen". The screen
 is drawn; the call is not made. `probe_folder` has no `gui/src/js` caller, and `onboarding.js` says
-so at the site: *"The stats row and the account line are omitted, not blanked: nothing counts the
-files or bytes under a candidate folder on either side (#240)"*. So the hazard was latent rather than
+so at the site: _"The stats row and the account line are omitted, not blanked: nothing counts the
+files or bytes under a candidate folder on either side (#240)"_. So the hazard was latent rather than
 live. It was fixed rather than deleted anyway — unlike `list_remote`, #240 is closed with this
 capability as its answer, and the command is registered and invokable.
 
@@ -5049,7 +5056,7 @@ carried out of 12,480 renders exactly that.
 
 Nothing dangerous is understated — destructive rows are never truncated out, so the band, the gate
 and `files_at_risk` are unaffected — and the honest fix has two different answers (head counts can
-read `summary.*` today; the safe body's side *lists* cannot, being lists of rows nobody sent). Two
+read `summary.*` today; the safe body's side _lists_ cannot, being lists of rows nobody sent). Two
 answers for one function is why it is its own issue rather than the tail of this one.
 
 ## Local deletions go to the trash (2026-08-27)
@@ -5058,7 +5065,7 @@ answers for one function is why it is its own issue rather than the tail of this
 
 `openspec/changes/trash-local-deletes`. A local deletion now goes to this computer's Trash by
 default and permanent deletion is a setting. The whole `4a` set — and `12a Deletions light`, and
-`8a Deletions tab` — was drawn against a build where a local deletion was *always* an unlink, so the
+`8a Deletions tab` — was drawn against a build where a local deletion was _always_ an unlink, so the
 drawings and the product now disagree on the default. Nothing in the deck was deleted to achieve
 this: every permanent-mode sentence is still drawn, still gated, and still what the screen says once
 the user opts back in. What has no drawing is the other mode.
@@ -5075,12 +5082,12 @@ deletions copy (`recoverableLocal`, `recoverableLocalSub`, `recoverableMixedSub`
 Six are the disposal panel (`disposalTitle`/`Sub`, `disposalTrash`/`Sub`, `disposalPermanent`/`Sub`)
 — `8a Deletions tab` draws one panel, the `deletion_policy` guard, and the tab now carries a second
 beneath it. The gate reads 342/342 drawn strings matched, 86 exempt, 0 missing; it was 75 exempt
-before this change. `recoverableMixed` is *not* exempt: it is the bare word `Recoverable`, which
+before this change. `recoverableMixed` is _not_ exempt: it is the bare word `Recoverable`, which
 `4a Deletions` contains inside `Recoverable · Proton Drive`, so the gate finds it.
 
 ### 100a. The second panel is drawn by no frame, and no gate can see that
 
-`assert.mjs` compares a node only when the app stamps it *and* a frame declares the same key —
+`assert.mjs` compares a node only when the app stamps it _and_ a frame declares the same key —
 "an unstamped node is simply not compared" (assert.mjs:327). The disposal panel is stamped by
 nothing, because `8a Deletions tab` has no slot for it. So adding a whole panel to a drawn tab
 changed the gate's reading by nothing at all: 51/51 frames, 96793 assertions, 0 failures, before and
@@ -5088,8 +5095,8 @@ after.
 
 This is **#250's gap**, not a new one — a drawn node claimed by no slot has no rule saying whether
 it is deliberate, and this panel is now one of them. It is deliberate, and this section is the only
-record of that. Coverage is `settings.test.js`'s *"the disposal cards are their own setting,
-defaulting to the recoverable one"*, which is where an undrawn state belongs.
+record of that. Coverage is `settings.test.js`'s _"the disposal cards are their own setting,
+defaulting to the recoverable one"_, which is where an undrawn state belongs.
 
 ### 100b. The mixed queue has no fixture, and could not have one
 
@@ -5099,8 +5106,8 @@ Proton-side one — the arrangement that makes the recoverable column's header d
 directions**, so a fixture label the prototype does not draw is a build failure, not an extra test.
 Writing one would have meant inventing an index entry for a frame nobody designed.
 
-It is covered by `deletions.test.js`'s *"a column's header names what is in it, not which column it
-is"*, which asserts all four combinations against `columnCopy` directly, including
+It is covered by `deletions.test.js`'s _"a column's header names what is in it, not which column it
+is"_, which asserts all four combinations against `columnCopy` directly, including
 `columnCopy("recoverable", [file, trashedFile])` → `recoverableMixed`/`recoverableMixedSub`. What is
 **not** covered is any rendered check of that arrangement: no pixel gate sees the mixed column. The
 honest close for both this and §100a is a designed frame for trash mode, which is design work and
@@ -5132,10 +5139,10 @@ opposite. They are now chosen by `policyCopyFor(disposal)`: the drawn pair under
 a truthful pair under trash mode, and the **permanent** pair whenever the mode is unknown or the
 config has not been read, because that is the over-warning one.
 
-**Still open, and it needs a design decision rather than a sentence.** The card *title*
+**Still open, and it needs a design decision rather than a sentence.** The card _title_
 `Only ask about permanent ones` is keyed on the same dead identity. Under trash mode nothing is
 permanent, yet the setting still guards every deletion applied on this computer — so it reads like
-*never ask* and behaves like *ask about local ones*. Renaming a drawn radio card is design work, and
+_never ask_ and behaves like _ask about local ones_. Renaming a drawn radio card is design work, and
 `deletion_policy`'s semantics were deliberately left untouched by this change.
 
 **Two more labels had the same shape.** `factsOf` was the fourth label still asking severity rather
@@ -5147,7 +5154,7 @@ because `PlannedAction` is the pure planner's type and disposal is decided at ex
 
 **The other refuted claim: "five published pages".** There were six. `safety/delete-approval.md` —
 the page the rewritten `safety/deletions.md` links to for exactly this question — still read
-*"This is the **permanent** local delete."*
+_"This is the **permanent** local delete."_
 
 ---
 
@@ -5200,7 +5207,7 @@ promise in five spellings.
 - `ONBOARDING.cliMissingBody` now reads: _"This app drives the official proton-drive tool rather
   than talking to Proton directly, and no Linux distribution packages it — install it yourself,
   following its own instructions, then sign in and check again."_, followed by `Detected Debian —
-  that doesn't change what to do here.` (or the undetected form). `Detected …` is unchanged in kind —
+that doesn't change what to do here.` (or the undetected form). `Detected …` is unchanged in kind —
   it still says the app recognises the machine — but no longer implies a different instruction
   follows for a different distribution, because none does.
 - No URL. #231 (`open_remote`) can point the surface at one, but `installation.md` has been checked
@@ -5239,3 +5246,97 @@ truthfully, not to render them.
 
 **Confirmed, not assumed:** `npm run fidelity` reads 51/51 frames mapped, 96793 assertions, 0
 failures, no stale deviations, after every change above.
+
+---
+
+## 103. The shell does not resize for the cleared state — a decision taken, reversed, and then the bookkeeping for the reversal
+
+**Maintainer decision, 2026-08-17 (#221), in two parts 3m10s apart (00:19:57Z → 00:23:07Z).** The first comment chose
+option 1 — shrink the window to 522 for `3a Conflicts cleared` and grow it back on the way out — and
+recorded it as the opposite of the reviewer's own recommendation. The second, headed **"Correction —
+superseding the previous comment"**, reverses it: **do not resize; keep the shell as it is.** Nothing
+had been implemented against the first comment, so there was no code to unwind — only the record of a
+decision taken and then changed. This section documents the second, settled answer. A reader reaching
+this file from the issue thread and stopping at the first decision comment would build the wrong
+thing; the correction is what governs.
+
+**What this makes true.** `tauri::Window::set_size` is not called on this state, and `02-shell.md`
+gains a property it did not previously state: the window is never resized by the app itself, joining
+`DECISIONS.md` #2's existing "fixed at 1040×764" as something the shell doc says in its own words
+rather than something a reader has to reconstruct from an issue thread. **Note the premise this
+corrects, since the record is the point:** the issue body and both decision comments assert that
+`02-shell.md` already says the window "never moves" — checked against the file, it does not; nothing
+there speaks to window position or size at all (only to the hexagon and the four doors, which never
+move on their own axis). That claim was invented once and repeated twice without being checked. The
+522px drawing is read as a frame made in isolation, not as an instruction that the app changes its own
+geometry mid-session — the cleared body renders as a centred 520px column inside the fixed 1040×764
+shell, and the footer stays window-width, exactly as it already did. **This does not touch
+`resizable: false`.**
+User-driven resizing (#273) stays deferred behind re-drawn frames; app-driven sizing for one state and
+user-driven sizing for every state are two different capabilities, and this decision was the one
+place they could have been conflated by accident. They do not interact: nothing here grants the user
+a drag handle, and #273 is neither closed nor advanced by it.
+
+**S3's empty state (`4a Empty`) has its precedent now, and it costs nothing.** The triage blocker that
+held this issue back explicitly named it — "whichever answer is given must also cover `4a Empty`" —
+and the correction answers it in one clause: _"settle at the shell's size, do not shrink."_ `4a Empty`
+already does, because nothing has ever resized the shell for it either; there is no S3 code to change.
+
+**The bookkeeping goes one frame further than the decision's own paragraph names, and that is flagged
+here rather than done silently.** The decision's own "The bookkeeping, which is the only work left"
+paragraph — not its "what this makes true" section, which is three bullets about `set_size`, #273 and
+the S3 precedent and never mentions the rows at all — names the 15 `3a Conflicts cleared` rows in
+`known-deviations.mjs`. Grepping the file for `#221` at the
+time this section was written found **26**: the same 15, plus 3 on `4a Empty` (§75) and 8 on
+`5a Checking` (§76/§77) — the plan screen's own narrow-window state, which no comment in the issue
+thread ever mentions. All three frames cite `#221` for the identical cause (the shell's fixed 1040
+against a frame drawn as its own 522/520 window), and this PR closes #221. `known-deviations.mjs`'s
+own schema is explicit that `issue` means "the issue that closes it" — a row still citing #221 after
+this PR would name an issue that can never close it again, which is precisely the self-invalidation
+the decision's closing lines warn against. So **all 26** rows move from `issue: "#221"` to
+`decision: true`, not just the 15 the paragraph enumerates; §75 and §76/§77 are amended below to match.
+If the maintainer meant to leave `4a Empty` or `5a Checking` open pending a redraw rather than settled
+by the same reasoning, that is the one point in this section to veto — nothing about the code changed
+either way, only the citation.
+
+**§74's `3a Conflicts cleared` paragraph, §75's `4a Empty` paragraph, and §76/§77's `5a Checking`
+mentions are pointed here.** Their summary-table `gap` cells (§74's `3a Conflicts cleared` row, §75's
+`4a Empty` row, §76's `5a Checking` row) change from `#221` to `decision`, matching the existing
+`4a Deletions`/`4a Armed` rows in §75's own table.
+
+**`02-shell.md` gains one line** stating the window never resizes itself, alongside the existing
+never-moves property, so the next screen that asks this question finds the answer written down rather
+than re-litigating it from an issue thread.
+
+**The harness could not have told the two options apart, and that is worth recording for whoever next
+reaches for `tauri::Window::set_size`.** `gui/tools/fidelity/assert.mjs` renders every frame in
+headless Chromium at a fixed **width** of 1040 (`page.setViewport({ width: 1040, height: 764 })`,
+line 85) — there is no real Tauri window anywhere in this harness. (The height alone varies once,
+dropping to 200 for the unrelated squeeze gate at line 549, which re-renders the compact tray frames
+in less room than the panel wants; the width this decision turns on never does, for any frame.) Had
+option 1 shipped, the gate would have gone on rendering the cleared body inside a 1040-wide page
+exactly as it does today; nothing would have moved. The rows still resolving under `decision: true`
+rather than
+disappearing is what keeps the frame _compared_ either way (assert.mjs's `unmetDeviations` still fails
+the build the day one of these 26 stops mismatching) — the requirement the decision's closing
+paragraph names, satisfied by the same mechanism §101 and §102 used, not by deleting rows the gate
+still needs.
+
+**The bookkeeping, in `gui/tools/fidelity/known-deviations.mjs`:**
+
+- All 15 `3a Conflicts cleared` rows, all 3 `4a Empty` rows, and all 8 `5a Checking` rows — 26 in
+  total — changed from `issue: "#221"` to `decision: true`, each `why` rewritten to the
+  `MAINTAINER DECISION, 2026-08-17 (#221): … DEVIATIONS §103` template §101 and §102 established.
+  `detail` is untouched on every row: the schema requires it verbatim as `assert.mjs` formats it, and
+  nothing about the drawn output changed.
+- The S4 section header comment, which had read "sixteen" for the `5a Checking` rows since before the
+  eight door-node rows were retired with the doors themselves (§77), is corrected to "eight" in the
+  same edit — a pre-existing staleness this pass could not leave untouched while rewriting the section
+  it sits in.
+
+**Confirmed, not assumed:** `npm run fidelity` on the unmodified branch reads 51/51 frames mapped,
+96793 assertions, 0 failures, 67 Phase-1 deviations, 5 structural, 45 decided. After the 26-row
+conversion above: 51/51 frames mapped, 96793 assertions, 0 failures, 41 Phase-1 deviations, 5
+structural, **71 decided** — the assertion count unchanged (nothing rendered differently), the
+Phase-1/decided split moved by exactly 26 in opposite directions, and no stale-deviation error either
+run.

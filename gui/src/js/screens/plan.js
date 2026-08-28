@@ -669,7 +669,8 @@ function safeBody(model) {
  * State C — working it out.
  *
  * Drawn 520px wide where the shell is a fixed 1040: `3a Conflicts cleared` and `4a Empty` take the
- * same answer, a centred 520 column, with the difference recorded rather than faked (#221, §76).
+ * same answer, a centred 520 column, with the difference recorded rather than faked
+ * (#221, §76/§77, settled §103).
  *
  * No numeral — the mark is reading, not moving. F2's `dryRun` flag carries the thinner, faster dash
  * the frame draws (`40 260` at 2.4s/3.2s against the syncing mark's `62 238` at 3.2s/4.4s).

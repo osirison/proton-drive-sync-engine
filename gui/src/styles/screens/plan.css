@@ -281,7 +281,8 @@
 
 /* The 520px centred column `4a Empty` and `3a Conflicts cleared` established: the frame is a 522px
    window and the shell's is a fixed, non-resizable 1040, so this is the closest it gets and the
-   difference is recorded (#221) rather than faked. */
+   difference is recorded (#221) rather than faked. Settled, not awaiting a fix: the shell does not
+   resize for this state either, DEVIATIONS §103. */
 .pl-checking,
 .pl-failed {
   display: flex;

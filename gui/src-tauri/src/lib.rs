@@ -308,6 +308,122 @@ mod tests {
             "notify.rs's `desktop-entry` hint has drifted from tauri.conf.json's identifier"
         );
     }
+
+    /// DEVIATIONS §103 (#221): a decision to shrink the main window for `3a Conflicts cleared`
+    /// (and grow it back) was taken, then reversed 3m10s later (00:19:57Z → 00:23:07Z) in the same issue thread —
+    /// the shell never resizes itself, for that state or the two others that ask the same question
+    /// (`4a Empty`, `5a Checking`). Pinned against a regression the way `known-deviations.mjs`
+    /// alone cannot: that file records what the fidelity gate compares, which is a headless page at
+    /// a fixed 1040×764 viewport regardless of what `tauri.conf.json` says, so a real resize there
+    /// would be invisible to it. This reads the config the running app actually uses.
+    #[test]
+    fn the_main_window_stays_a_fixed_1040x764_and_is_not_user_resizable() {
+        let config = tauri_config();
+        let main = config["app"]["windows"]
+            .as_array()
+            .expect("app.windows")
+            .iter()
+            .find(|w| w["label"] == "main")
+            .expect("a window labelled `main`");
+
+        assert_eq!(
+            main["width"],
+            serde_json::json!(1040),
+            "§103: nothing app-driven may shrink the main window's declared width for any screen state"
+        );
+        assert_eq!(
+            main["height"],
+            serde_json::json!(764),
+            "§103: nothing app-driven may shrink the main window's declared height for any screen state"
+        );
+        assert_eq!(
+            main["resizable"],
+            serde_json::json!(false),
+            "§103 settles that the shell does not resize itself — it does not also make the window \
+             user-resizable, which stays a separate, still-open question (#273)"
+        );
+    }
+
+    /// The operative sentence of §103's corrected decision: "`tauri::Window::set_size` is not
+    /// called on [the main window] for this state." Adversarial review found two escapes in an
+    /// earlier version of this guard that only checked "which file calls `set_size`": (a) a
+    /// non-recursive `read_dir` never visited a new subdirectory, and (b) the file-only check
+    /// could not tell `panel::resize`'s existing, legitimate call (the tray panel, an always-on-top
+    /// surface with no fixed size of its own) apart from a NEW call added inside that same file but
+    /// targeting the main window instead — the exact shape the reversed first decision proposed,
+    /// and the file someone reaching for "add a resize" would most plausibly reach for, since it
+    /// already imports the right types.
+    ///
+    /// This closes (a) by walking `src/` recursively. It closes (b) by proxy rather than real
+    /// data-flow analysis, because that is what source text can support: every existing call site
+    /// that resizes or otherwise touches the main window names it by its literal quoted label,
+    /// `"main"` (`lib.rs`, `tray.rs`, `commands.rs`) — `panel.rs` contains that literal NOWHERE
+    /// today, its window coming only from `panel::LABEL`. So a file gaining BOTH a `set_size` call
+    /// AND the `"main"` literal is what "resize main from wherever" looks like in source, and is
+    /// flagged independently of whether that file was already an allowed caller.
+    ///
+    /// WHAT THIS DOES NOT CATCH — a guard whose comment overstates it is worse than a weak guard
+    /// that says so: renaming the label so `"main"` is never spelled at the call site; reaching
+    /// main through an alias, a struct field, or a closure capture rather than a fresh
+    /// `get_webview_window("main")` in the same file; a `WebviewWindowBuilder::inner_size` override
+    /// that never calls `set_size` at all (the `tauri.conf.json` test above only pins the
+    /// *configured* size, not a builder call that ignores it); and a webview-driven resize through
+    /// Tauri's JS `core:window` capability — closed today (`capabilities/default.json` grants only
+    /// `core:default`/`core:event:default`, no `allow-set-size`), but nothing here or in the JS
+    /// tests asserts that it stays closed.
+    #[test]
+    fn set_size_never_reaches_the_main_window() {
+        fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("readable src dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    rust_files(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        // Split so this test's own source contains neither needle contiguously — a plain literal
+        // would match `lib.rs` itself, both as a false "caller" and a false "names main".
+        let set_size_needle = ["set_", "size("].concat();
+        let main_needle = ["\"", "main", "\""].concat();
+
+        let src_dir = repo_path("gui/src-tauri/src");
+        let mut files = Vec::new();
+        rust_files(&src_dir, &mut files);
+
+        let mut callers: Vec<String> = Vec::new();
+        let mut names_main_too: Vec<String> = Vec::new();
+        for path in &files {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            let relative = path
+                .strip_prefix(&src_dir)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned();
+            if text.contains(&set_size_needle) {
+                callers.push(relative.clone());
+                if text.contains(&main_needle) {
+                    names_main_too.push(relative);
+                }
+            }
+        }
+        callers.sort();
+
+        assert_eq!(
+            callers,
+            vec!["panel.rs".to_string()],
+            "`set_size` must stay confined to the tray panel, wherever in the tree it is called \
+             from — §103 pins the main window as never resized by the app"
+        );
+        assert!(
+            names_main_too.is_empty(),
+            "{names_main_too:?} calls `set_size` in a file that also names the main window by its \
+             `\"main\"` label — §103 forbids resizing main, and this is what that looks like in \
+             source text even inside a file already licensed to resize the tray panel"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
