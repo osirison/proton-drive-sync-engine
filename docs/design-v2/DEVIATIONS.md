@@ -1362,6 +1362,8 @@ this panel lives in, and if the edge really does disappear against a light wallp
 is the intended answer and this is where the disagreement is written down. The `is-tray` class exists
 already so there is a hook and no one has to reach for a `[data-state]` guess.
 
+**Settled by §101** (#261, 2026-08-17): the doc's edge won. `is-tray` now styles it.
+
 ---
 
 ## 59. The gradient a syncing mark points at is now compared (#204)
@@ -5142,3 +5144,34 @@ because `PlannedAction` is the pure planner's type and disposal is decided at ex
 **The other refuted claim: "five published pages".** There were six. `safety/delete-approval.md` —
 the page the rewritten `safety/deletions.md` links to for exactly this question — still read
 *"This is the **permanent** local delete."*
+
+---
+
+## 101. §58d's tie is broken: the tray takes the desktop-facing edge
+
+**Maintainer decision, 2026-08-17 (#261):** `10-tray.md` wins over the four standalone frames.
+`.compact-panel.is-tray` now takes `border:1px solid rgba(255,255,255,.1)` (`--compact-tray-border`)
+instead of the app's `--border-chrome`, because a panel floating over an arbitrary wallpaper has no
+surface behind it to be flush with — the reasoning §58d recorded but did not yet act on, and the one
+`10a In situ` supplies since it is the only frame drawn where the panel actually lives. `.is-attention`
+keeps overriding it (unchanged from §58d): the crimson edge is the panel saying something is waiting
+on you, which stayed the more load-bearing value throughout.
+
+**The bookkeeping does not net to fewer rows, and should not.** Four `10a In situ` border rows
+existed under §58d; the code change does not retire them. `10a In situ` is drawn `needsYou`, so
+`.is-attention` applies to it precisely as it does in the built app — meaning the frame's frozen
+capture (the desktop edge, `rgba(255,255,255,.1)`) and the app's live output (the attention edge,
+`rgba(255,107,107,.3)`) are now compared for a **different reason** than before but still disagree,
+because the decision's own second clause forbids the one change that would make them match. The row
+stays in `known-deviations.mjs`, reworded to say so. What the decision does move is the other four:
+`10a Settled`/`Syncing`/`Offline`/`Paused` draw no `needsYou` state, took the tray edge cleanly, and
+now disagree with their own (unredrawn) frames, which still show `#23262D`. Four new rows, one per
+frame. Net count: five rows citing this decision where one cited §58d — **up**, and that is correct:
+a recorded disagreement naming a decision is not a gap the way an unexplained one is.
+
+**Ideally the four standalone frames are redrawn instead**, deleting their new rows in favour of a
+prototype that shows the edge the build now draws — raised with whoever holds the design file
+alongside the #272/#273 briefs, per the decision. Not done here: `docs/design-v2/Drive Sync.dc.html`
+has had exactly one commit since it was added (the import itself), and every other row in this file
+resolves a mismatch by changing the app or by recording it — never by hand-editing the frozen
+capture to agree with the app after the fact, which is what a same-PR redraw would be.

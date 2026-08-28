@@ -25,8 +25,19 @@
   box-shadow: var(--shadow-tray-panel);
 }
 
+/* Tray-only: `10-tray.md` asks the floating form for a DESKTOP-facing edge, not the app-facing
+   `--border-chrome` above — a panel over an arbitrary wallpaper has no surface behind it to be
+   flush with. `is-tray` is set by `ui/compact.js` (`family === "tray"`) and previously styled
+   nothing; the in-app panel is untouched. Maintainer decision, #261 — declared before
+   `.is-attention` below so the attention edge still wins where both classes land on one panel. */
+.compact-panel.is-tray {
+  border-color: var(--compact-tray-border);
+}
+
 /* The edge answers the state. Measured at .3 alpha on `2a Compact needs you`, `4a Compact` AND
-   `12a Compact needs light` — the one attention value that is drawn in both themes. */
+   `12a Compact needs light` — the one attention value that is drawn in both themes. Wins over
+   `.is-tray` too (#261): the panel saying something is waiting on you outranks which surface it
+   floats over. */
 .compact-panel.is-attention {
   border-color: var(--compact-attention-border);
 }

@@ -266,6 +266,9 @@
      STILL CHOSEN. `12a Compact needs light` is the only light compact that could have drawn one and
      it draws no rows at all — thirteen nodes, no queue — which is also what corrects the claim on
      --destructive-row-bg above. DEVIATIONS.md §58a, §91b. */
+  /* The tray form's OWN edge (`10-tray.md`): it floats over the desktop, not over `--surface`, so
+     it takes a white hairline rather than --border-chrome. #261 — see compact.css `.is-tray`. */
+  --compact-tray-border: rgba(255, 255, 255, 0.1);
   --compact-attention-border: rgba(255, 107, 107, 0.3);
   --compact-permanent-bg: rgba(255, 59, 59, 0.05);
   --compact-permanent-border: rgba(255, 59, 59, 0.32);
@@ -490,6 +493,9 @@
     --destructive-input-bg: #ffffff;
     --destructive-armed-border: rgba(220, 38, 38, 0.5);
 
+    /* CHOSEN, not drawn — no light frame carries the tray panel. See the dark block: the edge
+       answers the desktop behind it, not the app's theme, so it is unchanged here. */
+    --compact-tray-border: rgba(255, 255, 255, 0.1);
     --compact-attention-border: rgba(190, 18, 60, 0.3);
     --compact-permanent-bg: rgba(220, 38, 38, 0.03);
     --compact-permanent-border: rgba(220, 38, 38, 0.34);
@@ -640,6 +646,9 @@
   --destructive-input-bg: #ffffff;
   --destructive-armed-border: rgba(220, 38, 38, 0.5);
 
+  /* CHOSEN, not drawn — no light frame carries the tray panel. See the dark block: the edge
+     answers the desktop behind it, not the app's theme, so it is unchanged here. */
+  --compact-tray-border: rgba(255, 255, 255, 0.1);
   --compact-attention-border: rgba(190, 18, 60, 0.3);
   --compact-permanent-bg: rgba(220, 38, 38, 0.03);
   --compact-permanent-border: rgba(220, 38, 38, 0.34);

@@ -149,8 +149,47 @@ export const KNOWN_DEVIATIONS = [
     key: "div[1]",
     props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
     detail: "rgba(255, 255, 255, 0.1) vs rgba(255, 107, 107, 0.3)",
-    issue: "#261",
-    why: "FOUR FRAMES AGAINST ONE, and DEVIATIONS §58d already ruled on it with only the four in view. `10-tray.md` asks the tray form for `border:1px solid rgba(255,255,255,.1)` because it floats over the desktop rather than over the app surface — and this is the one frame drawn that way, so it is the one that shows it. The four standalone `10a` panels all draw `#23262D` like every other compact panel, and they are gated. The app cannot be both. Keeping the four means the attention edge (`rgba(255,107,107,.3)`, measured on three needs-you frames) survives here, which is also the more useful of the two: it is the panel saying something is waiting on you. Recorded rather than resolved — the tie is the design's to break",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form now takes `10-tray.md`'s desktop-facing edge (`.compact-panel.is-tray`, compact.css), and `.compact-panel.is-attention` still overrides it — the same reasoning DEVIATIONS §58d used to keep it, restated rather than reversed. This ONE frame is drawn in the needsYou state, so is-attention applies here too, and the built panel therefore still shows the attention edge (`rgba(255,107,107,.3)`) against the frozen capture's desktop edge (`rgba(255,255,255,.1)`) — the decision was explicit that the attention edge must not be disturbed, so this row is not something the code change could retire. The four standalone `10a` panels are none of them needsYou; they took the tray edge cleanly and are recorded as new rows of their own instead. DEVIATIONS §101",
+  },
+
+  // The other side of the same decision: none of these four is drawn needsYou, so `.is-attention`
+  // never enters it and each now cleanly takes the tray's desktop edge, disagreeing with its own
+  // frame — which still draws `#23262D` like every other compact panel, since #261 settled the
+  // BUILD's edge and not a redraw of these four (the decision's own "ideally redrawn instead" is
+  // future design work, not this commit's). `key: ""` is the frame's own root node — these four
+  // fixtures draw the panel bare, with no desktop-mock wrapper the way `10a In situ` has one.
+  {
+    frame: "10a Settled",
+    key: "",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(35, 38, 45) vs rgba(255, 255, 255, 0.1)",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form takes `10-tray.md`'s desktop-facing edge instead of `--border-chrome`. This frame is not drawn needsYou, so nothing overrides it, and the frame itself is unchanged — recorded rather than redrawn, per the decision. DEVIATIONS §101",
+  },
+  {
+    frame: "10a Syncing",
+    key: "",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(35, 38, 45) vs rgba(255, 255, 255, 0.1)",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form takes `10-tray.md`'s desktop-facing edge instead of `--border-chrome`. This frame is not drawn needsYou, so nothing overrides it, and the frame itself is unchanged — recorded rather than redrawn, per the decision. DEVIATIONS §101",
+  },
+  {
+    frame: "10a Offline",
+    key: "",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(35, 38, 45) vs rgba(255, 255, 255, 0.1)",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form takes `10-tray.md`'s desktop-facing edge instead of `--border-chrome`. This frame is not drawn needsYou, so nothing overrides it, and the frame itself is unchanged — recorded rather than redrawn, per the decision. DEVIATIONS §101",
+  },
+  {
+    frame: "10a Paused",
+    key: "",
+    props: ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"],
+    detail: "rgb(35, 38, 45) vs rgba(255, 255, 255, 0.1)",
+    decision: true,
+    why: "MAINTAINER DECISION, 2026-08-17: the tray form takes `10-tray.md`'s desktop-facing edge instead of `--border-chrome`. This frame is not drawn needsYou, so nothing overrides it, and the frame itself is unchanged — recorded rather than redrawn, per the decision. DEVIATIONS §101",
   },
 
   {
