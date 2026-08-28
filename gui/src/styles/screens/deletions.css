@@ -184,7 +184,8 @@
 /* DRAWN AS A 522px WINDOW, AND THE SHELL'S IS A FIXED 1040. `4a Empty` is a standalone surface with
    no header and no doors; the app routes deletions as a full-window screen, so this renders as a
    centred 520 column — the closest the window can get. The difference is recorded rather than
-   faked: #221, DEVIATIONS §75, and the same answer S2 gave `3a Conflicts cleared`.
+   faked: #221, DEVIATIONS §75, and the same answer S2 gave `3a Conflicts cleared`. Settled, not
+   awaiting a fix: the shell does not resize for this state either, DEVIATIONS §103.
    Flat, with no inner wrapper, because the frame's body is one block and the mapping is positional. */
 .dl-empty {
   display: flex;

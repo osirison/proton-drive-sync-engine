@@ -5251,7 +5251,7 @@ failures, no stale deviations, after every change above.
 
 ## 103. The shell does not resize for the cleared state — a decision taken, reversed, and then the bookkeeping for the reversal
 
-**Maintainer decision, 2026-08-17 (#221), in two parts four minutes apart.** The first comment chose
+**Maintainer decision, 2026-08-17 (#221), in two parts 3m10s apart (00:19:57Z → 00:23:07Z).** The first comment chose
 option 1 — shrink the window to 522 for `3a Conflicts cleared` and grow it back on the way out — and
 recorded it as the opposite of the reviewer's own recommendation. The second, headed **"Correction —
 superseding the previous comment"**, reverses it: **do not resize; keep the shell as it is.** Nothing
@@ -5260,11 +5260,18 @@ decision taken and then changed. This section documents the second, settled answ
 this file from the issue thread and stopping at the first decision comment would build the wrong
 thing; the correction is what governs.
 
-**What this makes true.** `tauri::Window::set_size` is not called on this state, and `02-shell.md`'s
-window-never-moves property is joined by a second: it never resizes itself either. The 522px drawing
-is read as a frame made in isolation, not as an instruction that the app changes its own geometry
-mid-session — the cleared body renders as a centred 520px column inside the fixed 1040×764 shell, and
-the footer stays window-width, exactly as it already did. **This does not touch `resizable: false`.**
+**What this makes true.** `tauri::Window::set_size` is not called on this state, and `02-shell.md`
+gains a property it did not previously state: the window is never resized by the app itself, joining
+`DECISIONS.md` #2's existing "fixed at 1040×764" as something the shell doc says in its own words
+rather than something a reader has to reconstruct from an issue thread. **Note the premise this
+corrects, since the record is the point:** the issue body and both decision comments assert that
+`02-shell.md` already says the window "never moves" — checked against the file, it does not; nothing
+there speaks to window position or size at all (only to the hexagon and the four doors, which never
+move on their own axis). That claim was invented once and repeated twice without being checked. The
+522px drawing is read as a frame made in isolation, not as an instruction that the app changes its own
+geometry mid-session — the cleared body renders as a centred 520px column inside the fixed 1040×764
+shell, and the footer stays window-width, exactly as it already did. **This does not touch
+`resizable: false`.**
 User-driven resizing (#273) stays deferred behind re-drawn frames; app-driven sizing for one state and
 user-driven sizing for every state are two different capabilities, and this decision was the one
 place they could have been conflated by accident. They do not interact: nothing here grants the user
@@ -5276,8 +5283,10 @@ and the correction answers it in one clause: _"settle at the shell's size, do no
 already does, because nothing has ever resized the shell for it either; there is no S3 code to change.
 
 **The bookkeeping goes one frame further than the decision's own paragraph names, and that is flagged
-here rather than done silently.** The decision's "what this makes true" section talks about the 15
-`3a Conflicts cleared` rows in `known-deviations.mjs` by name. Grepping the file for `#221` at the
+here rather than done silently.** The decision's own "The bookkeeping, which is the only work left"
+paragraph — not its "what this makes true" section, which is three bullets about `set_size`, #273 and
+the S3 precedent and never mentions the rows at all — names the 15 `3a Conflicts cleared` rows in
+`known-deviations.mjs`. Grepping the file for `#221` at the
 time this section was written found **26**: the same 15, plus 3 on `4a Empty` (§75) and 8 on
 `5a Checking` (§76/§77) — the plan screen's own narrow-window state, which no comment in the issue
 thread ever mentions. All three frames cite `#221` for the identical cause (the shell's fixed 1040
@@ -5301,10 +5310,13 @@ than re-litigating it from an issue thread.
 
 **The harness could not have told the two options apart, and that is worth recording for whoever next
 reaches for `tauri::Window::set_size`.** `gui/tools/fidelity/assert.mjs` renders every frame in
-headless Chromium at one fixed `page.setViewport({ width: 1040, height: 764 })` (line 85) — there is
-no real Tauri window anywhere in this harness, and the viewport never varies per frame. Had option 1
-shipped, the gate would have gone on rendering the cleared body inside a 1040-wide page exactly as it
-does today; nothing would have moved. The rows still resolving under `decision: true` rather than
+headless Chromium at a fixed **width** of 1040 (`page.setViewport({ width: 1040, height: 764 })`,
+line 85) — there is no real Tauri window anywhere in this harness. (The height alone varies once,
+dropping to 200 for the unrelated squeeze gate at line 549, which re-renders the compact tray frames
+in less room than the panel wants; the width this decision turns on never does, for any frame.) Had
+option 1 shipped, the gate would have gone on rendering the cleared body inside a 1040-wide page
+exactly as it does today; nothing would have moved. The rows still resolving under `decision: true`
+rather than
 disappearing is what keeps the frame _compared_ either way (assert.mjs's `unmetDeviations` still fails
 the build the day one of these 26 stops mismatching) — the requirement the decision's closing
 paragraph names, satisfied by the same mechanism §101 and §102 used, not by deleting rows the gate

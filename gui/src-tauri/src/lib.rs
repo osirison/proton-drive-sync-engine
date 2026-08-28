@@ -310,7 +310,7 @@ mod tests {
     }
 
     /// DEVIATIONS §103 (#221): a decision to shrink the main window for `3a Conflicts cleared`
-    /// (and grow it back) was taken, then reversed four minutes later in the same issue thread —
+    /// (and grow it back) was taken, then reversed 3m10s later (00:19:57Z → 00:23:07Z) in the same issue thread —
     /// the shell never resizes itself, for that state or the two others that ask the same question
     /// (`4a Empty`, `5a Checking`). Pinned against a regression the way `known-deviations.mjs`
     /// alone cannot: that file records what the fidelity gate compares, which is a headless page at
@@ -345,41 +345,83 @@ mod tests {
     }
 
     /// The operative sentence of §103's corrected decision: "`tauri::Window::set_size` is not
-    /// called on this state." `panel::resize` is the one existing caller — the tray panel, an
-    /// always-on-top surface with no fixed size of its own, unrelated to the main window this
-    /// decision is about. A second call site anywhere in this crate is exactly the resize the
-    /// correction rejects, most likely reintroduced against the main window for the cleared-
-    /// conflicts state the reversed first decision proposed.
+    /// called on [the main window] for this state." Adversarial review found two escapes in an
+    /// earlier version of this guard that only checked "which file calls `set_size`": (a) a
+    /// non-recursive `read_dir` never visited a new subdirectory, and (b) the file-only check
+    /// could not tell `panel::resize`'s existing, legitimate call (the tray panel, an always-on-top
+    /// surface with no fixed size of its own) apart from a NEW call added inside that same file but
+    /// targeting the main window instead — the exact shape the reversed first decision proposed,
+    /// and the file someone reaching for "add a resize" would most plausibly reach for, since it
+    /// already imports the right types.
+    ///
+    /// This closes (a) by walking `src/` recursively. It closes (b) by proxy rather than real
+    /// data-flow analysis, because that is what source text can support: every existing call site
+    /// that resizes or otherwise touches the main window names it by its literal quoted label,
+    /// `"main"` (`lib.rs`, `tray.rs`, `commands.rs`) — `panel.rs` contains that literal NOWHERE
+    /// today, its window coming only from `panel::LABEL`. So a file gaining BOTH a `set_size` call
+    /// AND the `"main"` literal is what "resize main from wherever" looks like in source, and is
+    /// flagged independently of whether that file was already an allowed caller.
+    ///
+    /// WHAT THIS DOES NOT CATCH — a guard whose comment overstates it is worse than a weak guard
+    /// that says so: renaming the label so `"main"` is never spelled at the call site; reaching
+    /// main through an alias, a struct field, or a closure capture rather than a fresh
+    /// `get_webview_window("main")` in the same file; a `WebviewWindowBuilder::inner_size` override
+    /// that never calls `set_size` at all (the `tauri.conf.json` test above only pins the
+    /// *configured* size, not a builder call that ignores it); and a webview-driven resize through
+    /// Tauri's JS `core:window` capability — closed today (`capabilities/default.json` grants only
+    /// `core:default`/`core:event:default`, no `allow-set-size`), but nothing here or in the JS
+    /// tests asserts that it stays closed.
     #[test]
-    fn set_size_is_called_only_by_the_tray_panel() {
-        // Split so this test's own source does not contain the needle it searches for — a plain
-        // literal would match `lib.rs` itself (this test) as a false "caller".
-        let needle = ["set_", "size("].concat();
+    fn set_size_never_reaches_the_main_window() {
+        fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("readable src dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    rust_files(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        // Split so this test's own source contains neither needle contiguously — a plain literal
+        // would match `lib.rs` itself, both as a false "caller" and a false "names main".
+        let set_size_needle = ["set_", "size("].concat();
+        let main_needle = ["\"", "main", "\""].concat();
+
         let src_dir = repo_path("gui/src-tauri/src");
-        let mut callers: Vec<String> = std::fs::read_dir(&src_dir)
-            .expect("gui/src-tauri/src")
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("rs"))
-            .filter(|path| {
-                std::fs::read_to_string(path)
-                    .unwrap_or_default()
-                    .contains(&needle)
-            })
-            .map(|path| {
-                path.file_name()
-                    .expect("file name")
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
+        let mut files = Vec::new();
+        rust_files(&src_dir, &mut files);
+
+        let mut callers: Vec<String> = Vec::new();
+        let mut names_main_too: Vec<String> = Vec::new();
+        for path in &files {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            let relative = path
+                .strip_prefix(&src_dir)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned();
+            if text.contains(&set_size_needle) {
+                callers.push(relative.clone());
+                if text.contains(&main_needle) {
+                    names_main_too.push(relative);
+                }
+            }
+        }
         callers.sort();
 
         assert_eq!(
             callers,
             vec!["panel.rs".to_string()],
-            "`set_size` must stay confined to the tray panel — §103 pins the main window as never \
-             resized by the app"
+            "`set_size` must stay confined to the tray panel, wherever in the tree it is called \
+             from — §103 pins the main window as never resized by the app"
+        );
+        assert!(
+            names_main_too.is_empty(),
+            "{names_main_too:?} calls `set_size` in a file that also names the main window by its \
+             `\"main\"` label — §103 forbids resizing main, and this is what that looks like in \
+             source text even inside a file already licensed to resize the tray panel"
         );
     }
 }

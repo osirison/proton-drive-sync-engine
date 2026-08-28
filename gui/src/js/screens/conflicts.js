@@ -558,11 +558,11 @@ function queueList(queue, index) {
  * Nothing left to decide.
  *
  * DRAWN 522px WIDE, AND THE APP DELIBERATELY STAYS 1040. A decision to shrink the window for this
- * state (and grow it back on the way out) was taken and reversed four minutes later — the shell
- * never resizes itself, not for this state or for the two others that ask the same question
- * (`4a Empty`, `5a Checking`). `conflicts` is routed as a full-window screen against the fixed,
- * non-resizable 1040×764 Tauri window, so this renders as a centred 522 column rather than as a
- * narrow window on its own — still the closest the shell can produce, and now the settled answer
+ * state (and grow it back on the way out) was taken and reversed 3m10s later (00:19:57Z →
+ * 00:23:07Z) — the shell never resizes itself, not for this state or for the two others that ask
+ * the same question (`4a Empty`, `5a Checking`). `conflicts` is routed as a full-window screen
+ * against the fixed, non-resizable 1040×764 Tauri window, so this renders as a centred 520 column
+ * (`.cf-cleared`'s own width) rather than as a narrow window on its own — still the closest the shell can produce, and now the settled answer
  * rather than a gap awaiting one. No gate
  * can tell either way: the frame's root box is un-comparable (its `⋯` characters are outside the
  * bundled unicode ranges, which taints the root and every ancestor chain through it). The 15
