@@ -7,10 +7,11 @@
 // module is what stops a sentence drifting between the screen, the tray and the notification that
 // all quote it. Three surfaces quote "Nothing is lost. 4 changes are waiting…" today.
 //
-// PUNCTUATION IS PART OF THE STRING. The deck uses a typographic apostrophe (’) in "It's already
-// gone", "Proton's Trash", "aren't copied", an en dash in ranges and an em dash in "Quiet is normal
-// — most days". A straight quote is a copy-gate failure, not a typo, and it is exactly what the gate
-// exists to catch.
+// PUNCTUATION IS PART OF THE STRING. The frames use a STRAIGHT apostrophe (') throughout — "It's
+// already gone", "Proton's Trash", "aren't copied" — plus an en dash in ranges and an em dash in
+// "Quiet is normal — most days". A curly quote (’) diverges from the frame text; the copy gate does
+// an exact substring match with no normalization, so it only catches the divergence on a string a
+// DRAWN row still checks.
 //
 // Voice rules, from the deck, for anything added later:
 //   1. Say what happens to files, not what the daemon does.
@@ -1237,8 +1238,8 @@ export const ONBOARDING = {
   cliMissingBody: (distro) =>
     "This app drives the official proton-drive tool rather than talking to Proton directly, and no Linux distribution packages it — install it yourself, following its own instructions, then sign in and check again. " +
     (distro
-      ? `Detected ${distro.name} — that doesn’t change what to do here.`
-      : "We couldn’t tell which distribution this is — that doesn’t change what to do here either."),
+      ? `Detected ${distro.name} — that doesn't change what to do here.`
+      : "We couldn't tell which distribution this is — that doesn't change what to do here either."),
   copy: "Copy",
   checkAgain: "Check again",
   installHelp: "Installation help",
