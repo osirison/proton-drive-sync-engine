@@ -117,5 +117,10 @@ consent later.
 + a command box: mono 11.5px, `$` prompt in `#6D7783`, `sudo apt install proton-drive`,
 and a `Copy` button. Then `Check again` (strong) / `Installation help` (quiet).
 
-Detect the distribution and show the right command. If detection fails, show the tarball
-instructions rather than guessing a package manager.
+**The command box is dropped, not made conditional (DEVIATIONS §102, #218).** No distribution
+packages `proton-drive`, so the frame above is drawn ground truth kept for the record, not what
+ships — `Detected …` stays, but the body it shipped with is the manual path for every distribution
+(§102). The instruction below is superseded by that decision and no longer applies:
+
+~~Detect the distribution and show the right command. If detection fails, show the tarball
+instructions rather than guessing a package manager.~~
