@@ -553,6 +553,36 @@ exclude = ["*.tmp"]
             .expect("absent db_path/lockfile_path are the daemon's default, not a refusal");
     }
 
+    /// #357's sibling to the test above, same reasoning: `.`/`..`/`foo/..` are not blank but reach
+    /// the same directory-not-a-file failure, and this GUI-side call has no copy of that rule either
+    /// — it is inherited from `validate_file_config_text` exactly the way the blank check is.
+    #[test]
+    fn a_degenerate_state_path_is_refused_before_it_reaches_the_daemon() {
+        for key in ["db_path", "lockfile_path"] {
+            for degenerate in [".", "..", "foo/..", "state/.", "state/", "~", "~/"] {
+                let doc = ConfigDoc::from_toml_str(&format!(
+                    "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n{key} = \"{degenerate}\"\n"
+                ))
+                .unwrap();
+                let err = doc.validate().unwrap_err();
+                assert!(
+                    err.to_string().contains(&format!("{key} must name a file")),
+                    "{key} = {degenerate:?}: got {err:?}"
+                );
+            }
+            // Every one of these lexically resembles a degenerate spelling somewhere in it, but
+            // still names a real file, and must still save.
+            for benign in ["foo/../bar.db", "./index.db", ".hidden.db", "~/x.db"] {
+                ConfigDoc::from_toml_str(&format!(
+                    "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n{key} = \"{benign}\"\n"
+                ))
+                .unwrap()
+                .validate()
+                .unwrap_or_else(|e| panic!("{key} = {benign:?} names a real file: {e:?}"));
+            }
+        }
+    }
+
     #[test]
     fn an_unparseable_file_refuses_the_write_before_a_byte_is_touched() {
         // THIS IS WHAT MAKES A STALE BASE HARMLESS, and it is the reason the Settings screen keeps

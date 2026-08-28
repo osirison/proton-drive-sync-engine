@@ -1054,6 +1054,11 @@ fn state_path_from(
 /// silently becomes the sync root directory itself (#341). Checked here rather than on the
 /// resolved result so a legitimately-configured `db_path` that happens to equal `local_root` is
 /// never rejected — this is a property of the *override*, not of the resolved path.
+///
+/// The same reasoning extends to a **non-blank** override that still names no file (#357): `.`,
+/// `..`, or a path lexically ending in `..` (`foo/..`) reach the identical failure through a
+/// one-character value `require_non_blank_value` cannot see. Checked here for the same reason as
+/// the blank case — before the join, on the override, never on the resolved result.
 fn effective_state_path(
     local_root: &Path,
     override_value: Option<PathBuf>,
@@ -1061,6 +1066,7 @@ fn effective_state_path(
     default_for: impl Fn(&Path) -> PathBuf,
 ) -> AppResult<PathBuf> {
     require_non_blank_value(override_value.as_deref(), field_name)?;
+    require_state_path_names_a_file(override_value.as_deref(), field_name)?;
     let override_value = override_value
         .map(|path| expand_tilde(path, field_name))
         .transpose()?;
@@ -1582,6 +1588,10 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
     // override" (#341).
     require_non_blank_value(pair.db_path.as_deref(), "db_path")?;
     require_non_blank_value(pair.lockfile_path.as_deref(), "lockfile_path")?;
+    // A second, non-blank value class reaching the same failure (#357): `.`/`..`/`foo/..` are not
+    // blank but still name no file once `resolve_path` joins them onto `local_root`.
+    require_state_path_names_a_file(pair.db_path.as_deref(), "db_path")?;
+    require_state_path_names_a_file(pair.lockfile_path.as_deref(), "lockfile_path")?;
     // `~` is refused HERE rather than in the structural layer (#339). The daemon refuses it on the
     // merged value — the one it will really open — and a flag can replace this one; but a file
     // reader has no flags, so `ConfigDoc::save` must still refuse a `~user` path the flagless daemon
@@ -1673,6 +1683,89 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
 fn require_non_blank_value(value: Option<&Path>, field_name: &str) -> AppResult<()> {
     if value.is_some_and(|path| path.to_str().is_some_and(|text| text.trim().is_empty())) {
         return Err(boxed_error(format!("{field_name} must not be empty")));
+    }
+    Ok(())
+}
+
+/// A `db_path` / `lockfile_path` override that **lexically names a directory, not a file** — the
+/// full #357 value class. Joined onto `local_root` by `resolve_path` (or kept verbatim when already
+/// absolute), any of these hands `index::open_database` / `LockGuard::acquire` a directory to open
+/// read/write, exactly the failure mode #341 already fixed for a *blank* override, reached here
+/// through a non-blank one instead.
+///
+/// Four arms, each with a spelling only it catches — proved by [`a_direct_truth_table_pins_every_arm_of_require_state_path_names_a_file`],
+/// which calls this function directly rather than only through the two readers that wrap it:
+///
+/// 1. `file_name()` is `None`: witnessed alone by `""` (called directly — in production this is
+///    caught earlier, by [`require_non_blank_value`], and ordering — that check runs first at both
+///    call sites — is what keeps its message the one a caller sees for a blank value).
+/// 2. The raw value **ends with a path separator**: witnessed alone by `state/`. POSIX gives a
+///    trailing slash exactly this meaning — "this names a directory" — independent of what a
+///    lexical `Path` component walk sees (`Path::new("state/").file_name()` is `Some("state")`).
+/// 3. The raw value **ends with `/.`**: witnessed alone by `state/.`. `std::path::Components`
+///    silently drops an *interior* `CurDir` when it is not the whole path, so
+///    `Path::new("state/.").file_name()` is `Some("state")` — a components- or `file_name()`-based
+///    test structurally cannot see this spelling. Only the raw bytes can, which is why this whole
+///    function works on them rather than on `Path`'s parsed view.
+/// 4. The raw value is exactly `~`: witnessed alone by `~` itself. The bare home directory, not a
+///    file inside it, checked before `expand_tilde` runs at either seam — expanding first does not
+///    help, because `Path::new("/home/qp").file_name()` is `Some("qp")`, a normal-looking file name;
+///    the override has to be read as *itself naming the home directory* before expansion turns it
+///    into an ordinary-looking absolute path. `~/x.db` is unaffected: it is not equal to `~`.
+///
+/// A first version of this rule also carried `.`, `..`, `bytes.ends_with(b"/..")`, and `bytes ==
+/// b"~/"` as explicit arms, reasoning that stating the rule completely mattered more than the
+/// overlap. Mutation testing against the direct truth table proved that reasoning wrong: **the
+/// shadowing is mutual and total, not a one-directional restatement.** `.` and `..` can only ever
+/// equal themselves, and for that exact input `file_name()` is unconditionally `None` — arm 1
+/// already covers every input arm-3-as-written could match, with no possible counterexample. The
+/// same holds for `ends_with(b"/..")`: ending in `/..` makes the last path component exactly `..`,
+/// which every `Path` on this platform parses as `ParentDir`, so `file_name()` is `None` for that
+/// input too, unconditionally — not "usually", not "in the cases tested". And `bytes == b"~/"`
+/// trivially implies `ends_with(b"/")` (arm 2), since `"~/"` ends with `/` by construction. None of
+/// those four could ever be the deciding arm for any input, so a truth table covering every
+/// spelling anyone could type still could not make them fail if removed — which is the sign to
+/// delete rather than to keep documenting as "redundant but harmless". They are gone; do not restore
+/// them for symmetry without a fifth, real spelling that needs them.
+///
+/// This is a **second value class from blank, not a widening of it**: `require_non_blank_value` is
+/// `trim().is_empty()`, and none of the four remaining forms are blank — every one had to be typed.
+///
+/// **Must NOT catch `foo/../bar.db`, `./index.db`, `a/./b.db`, `.hidden.db`, `..hidden.db`, `...`,
+/// `~/x.db`, `state/~`, `./~`, or `/home/me/~`.** Each names a real file — `foo/../bar.db`'s last
+/// component is a name despite the `..` in the middle, `.hidden.db`/`..hidden.db`/`...` are ordinary
+/// filenames that merely start with dots without being exactly `.` or `..`, `~/x.db` is a file under
+/// the home directory rather than the directory itself, and `state/~`/`./~`/`/home/me/~` are files
+/// **literally named** `~` — `expand_tilde` only ever touches a *leading* `~` component, so a `~`
+/// anywhere else in the path is just a character in a file name, and arm 4 does not fire because the
+/// raw value is not *exactly* `~`. Checked on the **override itself**, before `resolve_path` joins
+/// it onto `local_root` — never as a comparison of the resolved path against `local_root`, which
+/// #355 (the discussion that produced this fix) records as the wrong form: it would reject a
+/// legitimately-configured `db_path` that happens to equal the root by coincidence rather than by
+/// degeneracy. `~user` and `~x` are also unaffected for the same structural reason (not equal to
+/// `~`), and still surface `expand_tilde`'s own `~user`-rejection error rather than this one, at
+/// both seams — this rule must never steal that diagnosis from its actual cause.
+///
+/// Works on raw bytes (`OsStrExt::as_bytes`), not `str`: this crate is Unix-only (see the
+/// `compile_error!` in `src/lib.rs`), and a non-UTF-8 override must be judged the same way a valid
+/// one is rather than panicking or silently passing — `Path::file_name()` itself is already
+/// byte-based and needs no UTF-8, and arms 2–4 read the same bytes directly.
+fn require_state_path_names_a_file(value: Option<&Path>, field_name: &str) -> AppResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let Some(path) = value else {
+        return Ok(());
+    };
+    let bytes = path.as_os_str().as_bytes();
+    let names_no_file = path.file_name().is_none()
+        || bytes.ends_with(b"/")
+        || bytes.ends_with(b"/.")
+        || bytes == b"~";
+    if names_no_file {
+        return Err(boxed_error(format!(
+            "{field_name} must name a file, not a directory (got `{}`)",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -3063,6 +3156,130 @@ dry_run = true
         assert_eq!(error.to_string(), "lockfile_path must not be empty");
     }
 
+    /// #357: the full value class, not just the `Path::file_name()`-visible corner of it. All of
+    /// `.`, `..`, `foo/..` (already `file_name() == None`), `state/` (a trailing separator — POSIX's
+    /// own "this names a directory"), `state/.` (an *interior* `CurDir` — `Components` drops it
+    /// silently, so `Path::new("state/.").file_name()` is `Some("state")`, and only the raw bytes
+    /// can see this spelling), and bare `~`/`~/` (the home directory itself, checked before
+    /// `expand_tilde` runs) reach the identical failure: `resolve_path` joins them onto `local_root`
+    /// (or, for `..`, walks up out of it; `~` skips the join entirely) and hands
+    /// `index::open_database` a directory. Covers both readers' merged output via
+    /// `resolve_runtime_config`.
+    #[test]
+    fn a_db_path_that_normalizes_to_no_file_name_is_refused() {
+        for degenerate in [".", "..", "foo/..", "state/.", "state/", "~", "~/"] {
+            let error = resolve_runtime_config(DaemonConfigInput {
+                local_root: Some(PathBuf::from("sync-root")),
+                remote_root: Some(PathBuf::from("/Drive/Config")),
+                db_path: Some(PathBuf::from(degenerate)),
+                ..DaemonConfigInput::default()
+            })
+            .expect_err(&format!("db_path = {degenerate:?} should be refused"));
+
+            assert!(
+                error.to_string().contains("db_path must name a file"),
+                "db_path = {degenerate:?}: got {error}"
+            );
+        }
+    }
+
+    /// The near-miss set the widened rule must NOT touch: every one of these lexically resembles a
+    /// degenerate spelling somewhere in it, but the *last* real component (or, for `~/x.db`, the
+    /// whole value) still names a real file. `Path::file_name()` alone gets `foo/../bar.db` right;
+    /// the byte-level checks added for #357 must not regress it or the others.
+    #[test]
+    fn db_path_near_miss_spellings_that_look_degenerate_but_are_not_are_still_accepted() {
+        for benign in [
+            "foo/../bar.db",
+            "./index.db",
+            "a/./b.db",
+            ".hidden.db",
+            "..hidden.db",
+            "...",
+            "~/x.db",
+            "state/index.db",
+        ] {
+            let (config, _) = resolve_runtime_config(DaemonConfigInput {
+                local_root: Some(PathBuf::from("sync-root")),
+                remote_root: Some(PathBuf::from("/Drive/Config")),
+                db_path: Some(PathBuf::from(benign)),
+                ..DaemonConfigInput::default()
+            })
+            .unwrap_or_else(|e| panic!("db_path = {benign:?} must still resolve: {e}"));
+            assert!(
+                !config.db_path.as_os_str().is_empty(),
+                "db_path = {benign:?} resolved to nothing"
+            );
+        }
+
+        // An absolute override outside `local_root` entirely is explicitly legal (`resolve_path`
+        // returns it as-is) and must not be caught by a rule that is about naming a file, not about
+        // location.
+        let (config, _) = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            db_path: Some(PathBuf::from("/elsewhere/index.db")),
+            ..DaemonConfigInput::default()
+        })
+        .expect("an absolute db_path outside local_root is legal and must not be refused");
+        assert_eq!(config.db_path, PathBuf::from("/elsewhere/index.db"));
+    }
+
+    /// A non-UTF-8 override must be judged by the same rule as a valid one, never panicking and
+    /// never silently waved through: `require_state_path_names_a_file` works on raw
+    /// `OsStrExt::as_bytes`, so `\xff.db` (a real, if unusual, file name) is accepted and `\xff/..`
+    /// (lexically ending in `..`, exactly like a valid-UTF-8 equivalent) is refused, with a lossy
+    /// `Path::display()` in the message either way.
+    #[test]
+    fn a_non_utf8_db_path_is_judged_by_the_same_rule_as_a_valid_one() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let accepted = PathBuf::from(OsStr::from_bytes(b"\xff.db"));
+        resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            db_path: Some(accepted),
+            ..DaemonConfigInput::default()
+        })
+        .expect("a non-UTF-8 file name must still be accepted");
+
+        let refused = PathBuf::from(OsStr::from_bytes(b"\xff/.."));
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(PathBuf::from("sync-root")),
+            remote_root: Some(PathBuf::from("/Drive/Config")),
+            db_path: Some(refused),
+            ..DaemonConfigInput::default()
+        })
+        .expect_err("a non-UTF-8 path lexically ending in .. must still be refused");
+        assert!(
+            error.to_string().contains("db_path must name a file"),
+            "got {error}"
+        );
+    }
+
+    /// The sibling of the above, for `lockfile_path`: `LockGuard::acquire` opens whatever this
+    /// resolves to read/write, so a directory — including the bare home directory a `~` or `~/`
+    /// names — is a worse failure than `open_database`'s (#357, mirroring #341's own
+    /// db_path/lockfile_path pairing).
+    #[test]
+    fn a_lockfile_path_that_normalizes_to_no_file_name_is_refused() {
+        for degenerate in [".", "..", "foo/..", "state/.", "state/", "~", "~/"] {
+            let error = resolve_runtime_config(DaemonConfigInput {
+                local_root: Some(PathBuf::from("sync-root")),
+                remote_root: Some(PathBuf::from("/Drive/Config")),
+                lockfile_path: Some(PathBuf::from(degenerate)),
+                ..DaemonConfigInput::default()
+            })
+            .expect_err(&format!("lockfile_path = {degenerate:?} should be refused"));
+
+            assert!(
+                error.to_string().contains("lockfile_path must name a file"),
+                "lockfile_path = {degenerate:?}: got {error}"
+            );
+        }
+    }
+
     /// The blank rule, not an is-empty check: `"   "` carries no visible bytes but is not the empty
     /// string, and `require_non_blank_value` must still catch it via `trim().is_empty()` (#341,
     /// mirroring the same distinction #340 already drew for `local_root`/`remote_root`).
@@ -3080,7 +3297,11 @@ dry_run = true
     }
 
     /// The negative case: a legitimate non-blank relative `db_path` still resolves exactly as
-    /// before this change — the new check must not touch any value that is not blank.
+    /// before this change — the new check must not touch any value that is not blank. It is also
+    /// the #357 negative case restated: `"state/index.db"` is an ordinary relative path with no
+    /// `.`/`..` degeneracy at all, so this one assertion proves both value classes (blank and
+    /// degenerate) leave it alone, rather than keeping a second, byte-identical test under a #357
+    /// name.
     #[test]
     fn a_non_blank_relative_db_path_still_resolves_under_local_root() {
         let (config, _) = resolve_runtime_config(DaemonConfigInput {
@@ -3927,6 +4148,45 @@ download_batch_size = 5
                 "lockfile_path must not be empty",
             ),
             (
+                // #357: `.` is not blank, but `require_state_path_names_a_file` must still catch
+                // it — the second, non-blank value class that reaches the same failure.
+                "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \".\"",
+                "db_path must name a file",
+            ),
+            (
+                // #357's `..` case: worse than `.` because it escapes the pair's own root entirely.
+                "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+                 lockfile_path = \"..\"",
+                "lockfile_path must name a file",
+            ),
+            (
+                // #357: `foo/..` lexically ends in `..` and names no file, exactly like a bare `..`.
+                "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \"foo/..\"",
+                "db_path must name a file",
+            ),
+            (
+                // #357 widened: a trailing separator is POSIX's own "this names a directory",
+                // independent of any `.`/`..` component — `Path::file_name()` alone cannot see it
+                // (it still returns `Some("state")`), only the raw bytes can.
+                "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \"state/\"",
+                "db_path must name a file",
+            ),
+            (
+                // #357 widened: `state/.` is an INTERIOR `CurDir`, which `Components` drops
+                // silently — `Path::new("state/.").file_name()` is `Some("state")`, so this
+                // spelling is invisible to a `file_name()`-only rule and needs the raw-byte check.
+                "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+                 lockfile_path = \"state/.\"",
+                "lockfile_path must name a file",
+            ),
+            (
+                // #357 widened: bare `~` names the home directory itself, not a file inside it —
+                // checked before `expand_tilde` runs, since post-expansion `/home/x` looks like an
+                // ordinary file name to `file_name()`.
+                "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\ndb_path = \"~\"",
+                "db_path must name a file",
+            ),
+            (
                 "name = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
                  deletion_policy = \"never\"\n\n[pair.delete_approval]\nremote = false",
                 "two spellings of one setting",
@@ -3940,6 +4200,131 @@ download_batch_size = 5
                 "expected {needle:?} for {table:?}, got {error}"
             );
         }
+    }
+
+    /// #357, at the file reader, in the top-level (implicit `default` pair) spelling the array test
+    /// above does not exercise: the full widened value class — `.`, `..`, `foo/..`, a trailing
+    /// separator (`state/`), an interior `CurDir` (`state/.`, invisible to `Path::file_name()`), and
+    /// bare `~`/`~/` — are refused for both `db_path` and `lockfile_path`, while every near-miss
+    /// spelling and an ordinary relative path are untouched.
+    #[test]
+    fn a_state_path_that_normalizes_to_no_file_name_is_refused_by_the_file_reader() {
+        let roots = "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n";
+        for key in ["db_path", "lockfile_path"] {
+            for degenerate in [".", "..", "foo/..", "state/.", "state/", "~", "~/"] {
+                let text = format!("{roots}{key} = \"{degenerate}\"\n");
+                let error = validate_file_config_text(&text)
+                    .expect_err(&format!("{key} = {degenerate:?} must be refused"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("{key} must name a file")),
+                    "{key} = {degenerate:?}: got {error}"
+                );
+            }
+            // Negative: every one of these lexically resembles a degenerate spelling somewhere in
+            // it, but the last real component (or the whole value, for `~/x.db`) still names a
+            // file, and a plain relative path is of course untouched.
+            for benign in [
+                "foo/../bar.db",
+                "./index.db",
+                "a/./b.db",
+                ".hidden.db",
+                "..hidden.db",
+                "...",
+                "~/x.db",
+                "state/index.db",
+            ] {
+                let text = format!("{roots}{key} = \"{benign}\"\n");
+                validate_file_config_text(&text)
+                    .unwrap_or_else(|e| panic!("{key} = {benign:?} must still pass: {e}"));
+            }
+        }
+    }
+
+    /// **Pins `require_state_path_names_a_file` directly**, calling the function itself rather than
+    /// only through the two readers that wrap it — the shape `src/index.rs`'s
+    /// `pruning_an_empty_history_deletes_nothing_and_does_not_error` uses to pin the `IS NOT`
+    /// retention predicate at `src/index.rs:1273` directly, not only through `prune_history`'s
+    /// callers. Without this, `""` — the row that proves arm 1 (`file_name().is_none()`) is
+    /// load-bearing at all — is untestable through either real seam: `require_non_blank_value`
+    /// catches it first at both, so no reader-level test can ever exercise this function with a
+    /// blank value. Every row here is one this function must answer the same way regardless of who
+    /// calls it, so a future edit to any arm has something that fails immediately, at the unit that
+    /// owns the rule, rather than three call sites away.
+    #[test]
+    fn a_direct_truth_table_pins_every_arm_of_require_state_path_names_a_file() {
+        let refused = [
+            ".",
+            "..",
+            "foo/..",
+            "state/.",
+            "state/..",
+            "state/",
+            "~",
+            "~/",
+            "./",
+            "../",
+            "./..",
+            "../.",
+            "state/./",
+            "state/../",
+            "a/b/..",
+            "~/.",
+            "//",
+            "state//",
+            "/",
+            "",
+        ];
+        for value in refused {
+            let error = require_state_path_names_a_file(Some(Path::new(value)), "db_path")
+                .expect_err(&format!("{value:?} must be refused"));
+            assert!(
+                error.to_string().contains("db_path must name a file"),
+                "{value:?}: got {error}"
+            );
+        }
+
+        let accepted = [
+            "foo/../bar.db",
+            "./index.db",
+            "a/./b.db",
+            ".hidden.db",
+            "..hidden.db",
+            "...",
+            "~/x.db",
+            "state/index.db",
+            "/elsewhere/index.db",
+            // Files literally NAMED `~`, wherever they sit: `expand_tilde` only ever touches a
+            // LEADING `~` component, so a `~` anywhere else is just a character in a file name.
+            "state/~",
+            "./~",
+            "/home/me/~",
+            "~/sub/x.db",
+        ];
+        for value in accepted {
+            require_state_path_names_a_file(Some(Path::new(value)), "db_path")
+                .unwrap_or_else(|e| panic!("{value:?} must be accepted: {e}"));
+        }
+
+        // Non-UTF-8: judged the same way a valid path is, never panicking and never silently waved
+        // through.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        require_state_path_names_a_file(Some(Path::new(OsStr::from_bytes(b"\xff.db"))), "db_path")
+            .expect("a non-UTF-8 file name must be accepted");
+        let error = require_state_path_names_a_file(
+            Some(Path::new(OsStr::from_bytes(b"\xff/.."))),
+            "db_path",
+        )
+        .expect_err("a non-UTF-8 path lexically ending in .. must be refused");
+        assert!(
+            error.to_string().contains("db_path must name a file"),
+            "got {error}"
+        );
+
+        // Absent is not a value to judge: no override at all, nothing is refused.
+        require_state_path_names_a_file(None, "db_path").expect("absent is not a refusal");
     }
 
     #[test]
