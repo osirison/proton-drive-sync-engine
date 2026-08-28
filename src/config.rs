@@ -995,56 +995,55 @@ fn check_no_overlap(paths: &[ComparablePath<'_>], consequence: &str) -> AppResul
     Ok(())
 }
 
-/// A **local** path reduced to what it *addresses*, for comparison only: a leading `./` is
-/// dropped, so `local_root = "A"` and `local_root = "./A"` are one directory rather than two that
-/// can never overlap (#339 round 2). Only the *leading* one matters — `Path::components` already
-/// drops a non-leading `.`, and `Path`'s own equality and `starts_with` compare component-wise.
+/// A **local** path reduced to what it *addresses*, for comparison only: `.` is dropped and `..`
+/// is collapsed against the component it undoes, so `local_root = "A"`, `"./A"` and `"B/../A"` are
+/// one directory rather than three that can never overlap (#339 round 2, #365).
 ///
-/// `..` is **collapsed against the component it undoes** (#365), which `.` never needed: dropping a
-/// `..` would move the path, and keeping it verbatim gave one file two comparison keys. Every rule
-/// built on this one is a rule about two paths being the same file or one containing the other, and
-/// `state/../state/index.db` is `state/index.db` on any POSIX filesystem — so comparing the
-/// unresolved spellings let a config walk straight through the check written to refuse it.
+/// The `..` half is [`crate::lexically_normalized`], shared with `index`'s
+/// `canonicalize_best_effort` rather than written twice. It matters here because every rule built
+/// on this key asks whether two paths are the same file or one contains the other, and
+/// `state/../state/index.db` is `state/index.db` on any POSIX filesystem — comparing the written
+/// spellings gave one inode two keys and let a config walk straight through
+/// [`require_distinct_state_paths`] into the state it refuses.
 ///
 /// The leading `/` is deliberately **not** dropped, which is where this differs from
 /// [`remote_root_comparison_key`]: for a local path absolute and relative are two different
-/// locations, while `/Drive/X` and `Drive/X` are one Drive location. `remote_root_comparison_key`
-/// keeps `..` verbatim for its own reason and is deliberately left alone — a remote path is not a
-/// filesystem path and `proton.rs` never resolves one.
+/// locations, while `/Drive/X` and `Drive/X` are one Drive location.
 ///
-/// **The residual, stated rather than papered over: this is lexical, so it is not symlink-aware.**
-/// Two paths that reach one inode only through a symlink still compare unequal. Closing that needs
-/// `canonicalize`, which touches the filesystem and fails on a path that does not exist yet — the
-/// normal case for a lockfile on first run — and a config file must be checkable without either.
-/// The residual also runs in the safe direction: a missed pair is the refusal these rules already
-/// could not make, while a false match would refuse a working config.
+/// A path that addresses the **current directory** — `.`, `./`, `a/..` — keys as `.` rather than
+/// as the empty path the shared primitive returns. Empty is a prefix of every path there is, so
+/// an absolute root would be refused as "inside" it; `.` is a prefix of nothing but itself, since
+/// every other key here has had its `CurDir` components removed. Keying them all alike is also the
+/// point: returning each one's literal form gave `./a/..` and `a/..` two keys for one directory,
+/// which is the same defect this function exists to close.
 ///
-/// A path that reduces to nothing — `.`, or `a/..` — keeps its literal form. Reducing it to the
-/// empty path would make it a prefix of every path there is, and an absolute root would then be
-/// refused as "inside" a relative one.
+/// # The residual, and it cuts both ways
+///
+/// This is lexical, so it is **not symlink-aware**, and that is not only a missed refusal:
+///
+/// - **Missed:** two paths reaching one inode through a symlink still compare unequal, which is
+///   what the rules could never do anyway.
+/// - **Wrong, and this one is new:** if `current` is a symlink, `current/../index.db` is resolved
+///   by the kernel against the symlink's *target*, so collapsing it names a file the path does not
+///   reach — and two genuinely different files can be refused as one.
+///
+/// The trade is taken deliberately. The missed refusal it closes is silent and its consequence is
+/// the daemon holding a whole-file advisory lock on its own database; the false match it opens is
+/// loud, arrives at startup or at a config save, and is undone by spelling the path without the
+/// `..`. Closing the residual needs `canonicalize`, which touches the filesystem and errors on a
+/// path that does not exist yet — the normal case for a lockfile on first run — and a config file
+/// must be checkable without either. **The refusal message is the part to keep honest**: it says
+/// "both resolve to X", and under a symlinked `..` X is the lexical answer rather than the
+/// kernel's.
+///
+/// One more thing it walks through: [`expand_tilde_for_comparison`] deliberately declines to say
+/// where an unexpandable `~user` points, and the collapse then treats it as an ordinary component,
+/// so `~alice/../x` keys as `x`. Bounded rather than fixed — `expand_tilde` refuses such a value in
+/// both readers, so the only effect is which refusal speaks first.
 fn local_comparison_key(path: &Path) -> PathBuf {
-    let mut addressed: Vec<Component<'_>> = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => match addressed.last() {
-                // The ordinary case: `a/..` addresses neither, so both go.
-                Some(Component::Normal(_)) => {
-                    addressed.pop();
-                }
-                // A root has no parent — `/..` is `/` — so the component addresses nothing.
-                Some(Component::RootDir) => {}
-                // A leading `..`, or one after another (`../..`), has nothing to cancel: it is
-                // part of what the path addresses and is kept. Same for a `Prefix`, which is not
-                // a directory a `..` can climb out of.
-                _ => addressed.push(component),
-            },
-            other => addressed.push(other),
-        }
-    }
-    let key: PathBuf = addressed.iter().collect();
+    let key = crate::lexically_normalized(path);
     if key.as_os_str().is_empty() {
-        path.to_path_buf()
+        PathBuf::from(".")
     } else {
         key
     }
@@ -1054,8 +1053,14 @@ fn local_comparison_key(path: &Path) -> PathBuf {
 ///
 /// `/Drive/Photos` and `Drive/Photos` name one Drive location — `proton.rs`'s
 /// `normalize_remote_path` strips the root either way — so the leading separator and any `.` are
-/// dropped before comparing. `..` is kept verbatim rather than resolved: resolving it lexically
-/// would make `/Drive/a/../b` compare equal to `/Drive/a/b`, which it is not.
+/// dropped before comparing.
+///
+/// `..` is kept verbatim rather than resolved, which is where this parts company with
+/// [`local_comparison_key`] (#365). The reason is not the arithmetic — lexically `/Drive/a/../b`
+/// is `/Drive/b` — but that **no such remote root ever reaches the daemon**:
+/// `proton::clean_remote_root_path` answers `None` for any path carrying a `..`, so resolving one
+/// here would be this layer alone deciding that two Drive locations are one while nothing
+/// downstream agrees, for a value that is refused either way.
 fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
     remote_root
         .components()
@@ -4803,16 +4808,28 @@ download_batch_size = 5
 
         // The merge path is the other reader, and the one that matters most: it sees the values the
         // daemon will really open. A flag can create this collision as easily as a file can.
-        let error = resolve_runtime_config(DaemonConfigInput {
-            local_root: Some(PathBuf::from("/x/a")),
-            remote_root: Some(PathBuf::from("/Drive/a")),
-            db_path: Some(PathBuf::from("state/index.db")),
-            lockfile_path: Some(PathBuf::from("state/../state/index.db")),
-            socket_path: Some(PathBuf::from("/run/user/1000/proton-sync.sock")),
-            ..Default::default()
-        })
-        .expect_err("the merged values name one file");
-        assert!(error.to_string().contains("lockfile_path"), "got {error}");
+        //
+        // BOTH spellings orders, because the rule keys two sides and a test that only ever puts the
+        // `..` on the lockfile leaves the db side of that keying unasserted — under which the two
+        // readers disagree about the reverse spelling and nothing says so.
+        for (db, lockfile) in [
+            ("state/index.db", "state/../state/index.db"),
+            ("state/../state/index.db", "state/index.db"),
+        ] {
+            let error = resolve_runtime_config(DaemonConfigInput {
+                local_root: Some(PathBuf::from("/x/a")),
+                remote_root: Some(PathBuf::from("/Drive/a")),
+                db_path: Some(PathBuf::from(db)),
+                lockfile_path: Some(PathBuf::from(lockfile)),
+                socket_path: Some(PathBuf::from("/run/user/1000/proton-sync.sock")),
+                ..Default::default()
+            })
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("lockfile_path"),
+                "for db={db:?} lockfile={lockfile:?}: got {error}"
+            );
+        }
 
         // And the resolved value itself is untouched: normalization is a property of the comparison
         // key, never of the path the daemon opens. A config that is legal keeps its literal paths.
@@ -4888,11 +4905,16 @@ download_batch_size = 5
             ("../a", "../a"),
             ("../../a", "../../a"),
             ("a/../../b", "../b"),
-            // Reducing to nothing keeps the literal: an empty key is a prefix of every path there
-            // is, so an absolute root would be refused as "inside" this one.
+            // A path that addresses the current directory keys as `.` — never as the empty path,
+            // which is a prefix of every path there is, and never as its own literal, which gave
+            // `./a/..` and `a/..` two keys for one directory.
             (".", "."),
+            ("./", "."),
+            ("a/..", "."),
+            ("./a/..", "."),
+            ("a/b/../..", "."),
+            // `..` itself addresses the parent, not the current directory, so it is untouched.
             ("..", ".."),
-            ("a/..", "a/.."),
         ] {
             assert_eq!(
                 local_comparison_key(Path::new(path)),
@@ -4901,12 +4923,83 @@ download_batch_size = 5
             );
         }
 
-        // A remote root is a different question and is deliberately untouched: `proton.rs` never
-        // resolves a `..` in a Drive path, so collapsing one here would claim two locations are one
-        // when nothing downstream agrees.
+        // `.` is a prefix of nothing but itself, which is the property that makes it a usable key:
+        // every other key has had its `CurDir` components removed, so an absolute root is never
+        // read as sitting "inside" a pair whose root is the working directory.
+        assert!(!Path::new("/x/a").starts_with("."));
+        assert!(!Path::new("a/b").starts_with("."));
+        assert!(Path::new(".").starts_with("."));
+
+        // Two spellings of one directory are one root. This is the case the empty-key fallback was
+        // masking: both reduce to nothing, and returning each literal gave them two keys — so the
+        // collision fell through to the generic pair-count refusal, which is the exact masking this
+        // change exists to remove.
+        let error = validate_file_config_text(
+            "[[pair]]\nname = \"a\"\nlocal_root = \"./a/..\"\nremote_root = \"/Drive/a\"\n\
+             db_path = \"/state/a/i.db\"\nlockfile_path = \"/state/a/d.lock\"\n\
+             \n[[pair]]\nname = \"b\"\nlocal_root = \"a/..\"\nremote_root = \"/Drive/b\"\n\
+             db_path = \"/state/b/i.db\"\nlockfile_path = \"/state/b/d.lock\"\n",
+        )
+        .expect_err("two spellings of the working directory are one root");
+        assert!(
+            !error.to_string().contains("not yet supported"),
+            "got {error}"
+        );
+
+        // A remote root is a different question and is deliberately untouched — not because the
+        // arithmetic differs (lexically `/Drive/a/../b` IS `/Drive/b`) but because
+        // `proton::clean_remote_root_path` answers `None` for any remote path carrying a `..`, so
+        // no such root reaches the daemon and this layer must not be the one deciding it means
+        // something.
         assert_eq!(
             remote_root_comparison_key(Path::new("/Drive/a/../b")),
             PathBuf::from("Drive/a/../b")
+        );
+    }
+
+    #[test]
+    fn a_dotdot_through_a_symlink_is_refused_lexically_and_the_message_says_what_it_compared() {
+        // The residual, pinned in the direction the doc comment used to deny. Lexical collapsing is
+        // only sound when the component a `..` cancels is a real directory: `current` a symlink
+        // means `current/..` is the parent of the symlink's TARGET, so the two paths below are two
+        // different files that this refuses as one.
+        //
+        // The trade is deliberate — the missed refusal it closes is silent and ends with the daemon
+        // holding a whole-file advisory lock on its own database, while this one is loud, arrives
+        // before anything runs, and is undone by spelling the path without the `..`. The test
+        // exists so the choice is recorded rather than rediscovered.
+        let root = tempfile::tempdir().expect("temp root");
+        let elsewhere = tempfile::tempdir().expect("temp elsewhere");
+        std::os::unix::fs::symlink(elsewhere.path(), root.path().join("current"))
+            .expect("symlink current -> elsewhere");
+
+        // Ground truth: the two paths are different files.
+        let through_link = root.path().join("current/../index.db");
+        let literal = root.path().join("index.db");
+        std::fs::write(&through_link, b"one").expect("write through the link");
+        std::fs::write(&literal, b"two").expect("write the literal");
+        assert_ne!(
+            std::fs::read(&through_link).expect("read one"),
+            std::fs::read(&literal).expect("read two"),
+            "the two paths must really be two files, or this test proves nothing"
+        );
+
+        let error = resolve_runtime_config(DaemonConfigInput {
+            local_root: Some(root.path().to_path_buf()),
+            remote_root: Some(PathBuf::from("/Drive/a")),
+            db_path: Some(PathBuf::from("current/../index.db")),
+            lockfile_path: Some(PathBuf::from("index.db")),
+            socket_path: Some(PathBuf::from("/run/user/1000/proton-sync.sock")),
+            ..Default::default()
+        })
+        .expect_err("lexical collapsing cannot see the symlink");
+        // And the message names the path it actually compared, so the refusal can be understood
+        // rather than merely obeyed: it says "both resolve to X" and X is the lexical answer.
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{}", literal.display())),
+            "got {error}"
         );
     }
 

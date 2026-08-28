@@ -2063,30 +2063,7 @@ fn canonicalize_best_effort(path: &Path) -> PathBuf {
     } else {
         path.to_path_buf()
     };
-    lexically_normalized(&absolute)
-}
-
-/// Resolves `.` and `..` components without touching the filesystem. `..` above the root is
-/// clamped (POSIX: `/..` is `/`); a leading `..` on a relative path is preserved so the
-/// result never claims a location the input did not name.
-fn lexically_normalized(path: &Path) -> PathBuf {
-    use std::path::Component;
-
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => match normalized.components().next_back() {
-                Some(Component::Normal(_)) => {
-                    normalized.pop();
-                }
-                Some(Component::RootDir) | Some(Component::Prefix(_)) => {}
-                _ => normalized.push(Component::ParentDir.as_os_str()),
-            },
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
+    crate::lexically_normalized(&absolute)
 }
 
 fn build_glob_set(patterns: &[String]) -> AppResult<GlobSet> {
