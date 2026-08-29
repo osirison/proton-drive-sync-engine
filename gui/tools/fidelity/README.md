@@ -27,7 +27,7 @@ npm run fidelity:contrast   # the contrast gate on its own; `--report` writes th
 The first eight need a browser and run in the `fidelity` CI job. The last does not, and runs in
 `frontend` alongside the linters — a gate that can run in the fifteen-second job should.
 
-## The squeeze gate, and the condition the other seven cannot be in (S8)
+## The squeeze gate, and the condition the other eight cannot be in (S8)
 
 Every gate above opens its frame at **1040×764**, which is the window — and a 362×365 compact panel
 has 399px of slack there, so nothing can compress it. The tray window has no slack at all: it is
@@ -156,6 +156,38 @@ yields nothing for it and the four Settings pills are outside the unstamped chec
 alone; measuring through the unclaimed census instead hides the second, because that census counts a
 **stamped** node as claimed — a verification sharing a component with the thing it verifies is not
 independent. See `assert.mjs`'s `probeSlot`, which carries the same correction.
+
+## The drawn nodes nothing was saying anything about (#250)
+
+The mirror of the section above, and the reason it needed one: every other suppression here
+self-invalidates. `KNOWN_DEVIATIONS` fails when a row stops mismatching, `KNOWN_UNSTAMPED` when a
+slot starts being stamped, `SETTLED_FRAMES` when a label leaves `index.json`. **Leaving a drawn node
+undeclared had no such rule**, and it removed that node from every gate at once — the style gate
+never compares it, the unstamped gate never reports it, and `check-fixtures.mjs`'s "alive somewhere"
+rule keeps a factory alive on index 0 without ever examining index 1.
+
+`KNOWN_UNCLAIMED` closes it. A node is **claimed** when a declared slot names its key or the app
+stamped it; anything else is a failure unless an entry records why. Entries carry exact `keys`,
+never a prefix, so a re-extracted frame that adds a node underneath one is not auto-excused. The
+staleness rule is the same as everywhere else: a declared key that stops being unclaimed fails.
+
+Five classes, each naming an authority rather than an opinion — `scenery` (`frame-classes.mjs`'s
+`SPECIMEN_ARTEFACT` says which part of a specimen frame is product), `issue` (an open number),
+`mapping` (the app renders it and nobody declared a slot — the bugs the census exists to find),
+`unmappable` (the two sides disagree in a way no mapping fixes), `decision` (a recorded decision).
+Four schema faults fail the build: an unknown class, a key repeated inside one entry, two entries
+claiming one key, and a `mapping`/`issue` entry with no issue number.
+
+**Sort by rendering, never by reading `frames/*.json`.** The first version of this list reasoned
+about what the app probably does and got roughly half the reasons wrong; the second round, which
+rendered every frame, still got six entries wrong on the boundaries between two entries of one
+frame. The method: serve `gui/src`, open `?frame=<label>`, dump every element with tag, class, box
+and own text, and match it against the frame's node. Distinctive text settles most keys; a spacer or
+an `svg` path settles on tag plus box. One browser run per frame. DEVIATIONS §106a.
+
+One trap worth naming: **the app rendering different text is not the app rendering nothing.**
+`8a Settings`' key line was filed as an unbuilt block because a text match for the frame's
+`event_driven_reconcile` found nothing — the app draws that line as `events_driven`.
 
 ## The node key, and why it is a path
 

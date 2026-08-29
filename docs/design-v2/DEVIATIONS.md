@@ -3225,9 +3225,10 @@ answer: the button goes, and the path itself becomes editable so the step can st
 
 **That node is deliberately unmapped.** A UA rule pins an `<input>`'s `overflow` to `clip` and its
 `display` to `inline-block`, and the frame draws a `<div>`; the two can never agree on either. That
-is a construction difference, not a missing capability, so it does not belong in
-`known-deviations.mjs` — whose own bar says a node that was never mapped is not what that file is
-for. The local path stays a `<div>` and is mapped.
+is a construction difference, not a missing capability, so it does not belong in the DEVIATIONS
+list, whose bar is a missing capability. §106 gave it the list it does belong in: it is one
+`unmappable` entry in `KNOWN_UNCLAIMED`, so the node is recorded rather than merely absent. The
+local path stays a `<div>` and is mapped.
 
 The asymmetry has one visible consequence: a path longer than the card wraps on the local side
 (`word-break: break-all`, as drawn) and scrolls on the remote one. Measured at 1042×766 with a
@@ -3551,16 +3552,19 @@ unstamped `<div>` and the **parent** card's exact-pixel `box.h "147 vs 58"` devi
 fails, exit 1 — an exact-detail pin on a parent covers a child's construction changing under it.
 
 **Both covers are incidental, and that is the part worth keeping.** Nothing decided this node would
-be caught; it is caught because a neighbour happens to be pinned to the pixel. No rule says which
-undeclared nodes are deliberate, so the next one may have no such neighbour. That is the convention's
-blind spot rather than this slot's, and it is bigger than this section:
+be caught; it is caught because a neighbour happens to be pinned to the pixel — and at the time this
+was written, no rule said which undeclared nodes were deliberate, so the next one might have no such
+neighbour. That was the convention's blind spot rather than this slot's, and it was bigger than this
+section:
 **268 of the 1,452 drawn nodes on mapped frames are claimed by no slot at all — 18%.** (Re-measured
 as **270 of 1,948 across 25 frames** once every frame carried a map; §106 carries the corrected
 census and the gate that now enforces it.) Most are
 correct (S4 leaves `5a Checking`'s progress line undeclared, S5 the four history rows, S6 the
-twenty-bar chart), and almost none of those reasons was written where a gate could read it — until §106. Sorting 268
-nodes is the same unit of work the twelve and the thirty-nine were, so it is **#250** with the
-measurement attached rather than a clause bolted on here.
+twenty-bar chart), and almost none of those reasons was written where a gate could read it. **§106
+closed it**: `KNOWN_UNCLAIMED` is the rule, and this node is one `unmappable` entry in it, so the
+incidental cover is no longer the only thing standing between it and silence. Sorting 268 nodes was
+the same unit of work the twelve and the thirty-nine were, so it was **#250** with the measurement
+attached rather than a clause bolted on here.
 
 ### The check that says it worked
 
@@ -5678,25 +5682,39 @@ the first:
 
 | class | nodes | what it means |
 | --- | --- | --- |
-| `scenery` | 65 | the frame draws something that is **not product**. `frame-classes.mjs`'s `SPECIMEN_ARTEFACT` is the authority — a swatch sheet's card, a mock desktop's wallpaper and clock. Note this is **not** "the app cannot draw it": `preview.js` renders most of it deliberately, to place the artefact |
-| `issue` | 90 | a capability gap with an **open** number |
-| `mapping` | 48 | the app renders it and nobody declared a slot — the bugs the census exists to find (#377) |
-| `drawing` | 40 | **the prototype is wrong, or two frames of one thing disagree**, so mapping the node would assert the mistake |
-| `decision` | 27 | a recorded decision that the app renders nothing there, or that a differently shaped node is measured elsewhere |
+| `scenery` | 70 | the frame draws something that is **not product**. `frame-classes.mjs`'s `SPECIMEN_ARTEFACT` is the authority — a swatch sheet's card, a mock desktop's wallpaper and clock. Note this is **not** "the app cannot draw it": `preview.js` renders most of it deliberately, to place the artefact |
+| `issue` | 79 | a capability gap with an **open** number |
+| `mapping` | 51 | the app renders it and nobody declared a slot — the bugs the census exists to find (#377) |
+| `unmappable` | 41 | **the two sides disagree in a way no mapping fixes** — the prototype is wrong (§77), two frames of one panel disagree (§104b), or the app builds an `<input>` where the frame draws a `<div>` (§79e) |
+| `decision` | 29 | a recorded decision that the app renders nothing there, or that a differently shaped node is measured elsewhere |
 
-`drawing` is the class the first version did not have, and two clusters needed it. `5a Checking`'s
-four doors: `02-shell.md:42` says the active door is `#F2F4F7`, this frame is the plan screen, and it
-paints all four unlit — the app follows the prose and renders five doors, so mapping them would
-assert the drawn mistake (§77, and `fids.js`'s `planShell` already said so). `8a Schedule monthly`:
-that crop and `8a Settings` disagree about the same panel's own numbers, so a mapped node fails
-whichever it is not (§104b).
+`unmappable` is the class the first version did not have, and **three** clusters needed it:
 
-### §106d · Three frames hold more than one entry, and that is the point
+- `5a Checking`'s four doors. `02-shell.md:42` says the active door is `#F2F4F7`, this frame is the
+  plan screen, and it paints all four unlit — the app follows the prose and renders five doors, so
+  mapping them would assert the drawn mistake (§77, and `fids.js`'s `PLAN_CHECKING_FIDS` already
+  said so).
+- `8a Schedule monthly`'s 36 nodes. That crop and `8a Settings` disagree about the same panel's own
+  numbers, so a mapped node fails whichever it is not (§104b). This is the cluster the first version
+  filed as *"the app draws nothing there"* over nodes the app draws in full.
+- `9a Folders`' remote path field. The app builds an `<input>` where the frame draws a `<div>`, and
+  a UA rule pins an `<input>`'s `overflow` to `clip` and its `display` to `inline-block`, so the two
+  can never agree on either (§79e). It is one key, split out of that frame's other entry, because
+  the rest of `9a Folders` is a different question.
 
-`6a Activity passes`, `7a Activity quiet`, `7a File lookup` and `7a File pending` each split, because
-their nodes have different causes. In each, part of the frame is a block the app does not build and
-part is a block it renders unstamped — one class for both would be false for half the keys, and the
-gate would then enforce that.
+### §106d · Six frames hold more than one entry, and that is the point
+
+`6a Activity passes`, `7a Activity quiet`, `7a File lookup`, `7a File pending`, `11a In situ` and
+`9a Folders` each split, because their nodes have different causes. In each, part of the frame is
+something the app does not build and part is something it renders unstamped — one class for both
+would be false for half the keys, and the gate would then enforce that.
+
+**Round 2 of the review found three of those split lines wrong, per key**, in both directions: eight
+`6a Activity passes` pass-row spans the app renders were filed as the unbuilt chart, one
+`7a Activity quiet` header row that has no app node was filed as a rendered spacer while a spacer
+that IS rendered was filed as unbuilt, and one `7a File lookup` history dot was filed as rendered
+when the app renders no history row at all. A split is per-key work and cannot be inferred from the
+frame; each boundary key has to be looked at.
 
 ### §106e · Three "capability gaps" whose capability had landed
 
@@ -5708,7 +5726,12 @@ documents itself as what that chart draws, `PASS_HISTORY_REPORTED = 20` matches 
 
 They now cite **#380**, which records the real state: the capability landed and the block was never
 built. A census entry pointing at a closed issue is a dead end, and nothing here self-invalidates on
-issue state.
+issue state — the schema test requires an issue *field*, not an open issue.
+
+**A fourth survived that correction**, which is the same defect one round later: `7a File pending`'s
+progress track cited the closed **#98**. It is not a gap at all — a per-file percentage is
+unreachable *by construction*, which `ipc.rs` states at `TransferActivity` — so it is a `decision`
+now, with no issue to go stale.
 
 ### §106f · One entry hid a live bug
 
@@ -5738,23 +5761,38 @@ A new gate that does not fire is a failure this project has shipped before (#247
 check below an early `continue`):
 
 ```
-unknown class value                → 2 malformed KNOWN_UNCLAIMED entries   exit 1
-duplicate key inside one entry     → 2 malformed KNOWN_UNCLAIMED entries   exit 1
-mapping entry with no issue        → 1 malformed KNOWN_UNCLAIMED entry     exit 1
-two entries claiming one key       → malformed                             exit 1
-a key removed from an entry        → 1 unclaimed drawn node(s)             exit 1
-a key that is not unclaimed        → 1 stale KNOWN_UNCLAIMED entry         exit 1
-restored                           →                                       exit 0
+unknown class value                → 1 malformed KNOWN_UNCLAIMED entry (1 fault)   exit 1
+duplicate key inside one entry     → 1 malformed KNOWN_UNCLAIMED entry (1 fault)   exit 1
+mapping entry with no issue        → 1 malformed KNOWN_UNCLAIMED entry (1 fault)   exit 1
+two entries claiming one key       → 1 malformed KNOWN_UNCLAIMED entry (1 fault)   exit 1
+a key removed from an entry        → 1 unclaimed drawn node(s)                     exit 1
+a key nothing draws                → 1 stale KNOWN_UNCLAIMED entry                 exit 1
+restored                           →                                               exit 0
 ```
 
 Plus #250's own scenario — a fixture stops naming a node it renders — which fails as an unclaimed
 node.
 
-Two poisons taught something on the way. One produced **no output at all**, because the edit had
-broken the module: `KNOWN_UNCLAIMED` was `undefined` and `assert.mjs` failed to import. A poison that
-breaks the thing it poisons proves nothing, and reads exactly like a gate that does not fire. Another
-was applied to the wrong classifier — `classifyUnstamped` and `classifyUnclaimed` end in the same
-line, and a first-match replace found the wrong one.
+**Every row reads "1 fault" because the first three used to read "2".** A typo'd class produced both
+"not one of" and "needs an issue number" — one cause, two diagnoses, and the summary line then said
+*2 malformed entries* about one entry. Each arm now yields at most one fault per cause, and the
+count is taken over the entries' **indices** rather than their frame labels, since six frames hold
+two entries each.
+
+Three poisons taught something on the way, and the third is the same lesson as the first:
+
+- One produced **no output at all**, because the edit had broken the module: `KNOWN_UNCLAIMED` was
+  `undefined` and `assert.mjs` failed to import. A poison that breaks the thing it poisons proves
+  nothing, and reads exactly like a gate that does not fire.
+- Another was applied to the wrong classifier — `classifyUnstamped` and `classifyUnclaimed` end in
+  the same line, and a first-match replace found the wrong one.
+- The **two-entries-claiming-one-key** poison hit the first shape again, on a second run, and the
+  tell was that its summary-line grep matched nothing while the exit code was still 1. Its target
+  (`7a File pending`) has short, **single-line** `keys` arrays, so inserting after the `keys: [` line
+  lands *outside* the array and produces a `SyntaxError`. Retargeted at `6a Activity passes`, whose
+  two entries hold 28 and 27 keys across many lines, it fires correctly. **A poison must be checked
+  for having poisoned rather than broken** — the run above imports the module and prints its entry
+  count before it runs the gate.
 
 ### §106i · The verification that shared a component with the thing it verified
 

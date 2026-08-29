@@ -135,8 +135,12 @@ const unstamped = [];
 const unclaimed = [];
 
 /**
- * How far each index axis is probed below. Measured, not chosen: raising it to 30 reaches not one
- * drawn key that 10 does not, across every factory slot of every mapped frame.
+ * How far each index axis is probed below.
+ *
+ * ITS OWN "MEASURED, NOT CHOSEN" CLAIM WAS WRONG and is corrected at `probeSlot`: raising this to 30
+ * reaches exactly two drawn keys 10 does not — `11a Rules`' `silentChip(10)` and `(11)`, where twelve
+ * chips are drawn and the grid reaches ten. Left at 10 rather than raised, because both are stamped
+ * and the cost of the gap is bounded and recorded; raising it multiplies a 10³ grid by 27.
  */
 const PROBE_DEPTH = 10;
 
@@ -419,7 +423,8 @@ for (const entry of index) {
   // Leaving a drawn node undeclared removed it from EVERY gate that targets it — the style gate
   // never compares it, the unstamped gate never reports it, `check-fixtures.mjs`'s "alive somewhere"
   // rule keeps a factory alive on index 0 and never examines index 1. Every other suppression in
-  // this subsystem self-invalidates; this absence did not, and 280 nodes sat behind it.
+  // this subsystem self-invalidates; this absence did not, and 270 nodes sat behind it. (Not 280:
+  // ten more read as unclaimed while the app stamps them, and the rule below is what removes them.)
   // CLAIMED MEANS "some slot named it", and a node the app STAMPED was named by a slot — whatever
   // `probeSlot` could reach. Both sets are needed, and the second is not belt and braces: it is
   // what makes this census exact. `probeSlot` walks a numeric grid, and `settingsShell.tab` is
@@ -660,11 +665,15 @@ const {
   stale: staleUnclaimed,
   malformed: malformedUnclaimed,
 } = classifyUnclaimed(unclaimed);
+const malformedEntries = new Set(malformedUnclaimed.map((m) => m.entry)).size;
 if (malformedUnclaimed.length) {
   console.error("\nKNOWN_UNCLAIMED entries that are malformed:\n");
-  for (const m of malformedUnclaimed) console.error(`  ${m}`);
+  for (const m of malformedUnclaimed) console.error(`  ${m.text}`);
   console.error(
-    `\nfidelity:assert: ${malformedUnclaimed.length} malformed KNOWN_UNCLAIMED entr${malformedUnclaimed.length === 1 ? "y" : "ies"}.`,
+    // COUNTED IN ENTRIES, because that is the noun the sentence uses: one typo'd class produced two
+    // messages and the line then said "2 malformed entries" about one entry. Counted by the entry's
+    // INDEX, not its frame label — six frames hold two entries each.
+    `\nfidelity:assert: ${malformedEntries} malformed KNOWN_UNCLAIMED entr${malformedEntries === 1 ? "y" : "ies"} (${malformedUnclaimed.length} fault${malformedUnclaimed.length === 1 ? "" : "s"}).`,
   );
 }
 if (recordedUnclaimed.length) {
