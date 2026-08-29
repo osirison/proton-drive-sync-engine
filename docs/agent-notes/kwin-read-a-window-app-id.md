@@ -1,7 +1,7 @@
 ---
-trigger: qdbus org.kde.KWin, loadScript, kwin script, app_id, resourceClass, WM_CLASS, StartupWMClass, kiconfinder6, taskbar icon
-depends_on: gui/src-tauri/src/lib.rs, gui/src-tauri/tauri.conf.json, packaging/freedesktop/app.protondrivesync.engine.desktop
-recorded: 2026-08-23
+trigger: qdbus org.kde.KWin, loadScript, kwin script, app_id, resourceClass, WM_CLASS, StartupWMClass, kiconfinder6, taskbar icon, skip_taskbar, always_on_top, keep_above, GDK_BACKEND, wayland hint discarded
+depends_on: gui/src-tauri/src/lib.rs, gui/src-tauri/src/panel.rs, gui/src-tauri/tauri.conf.json, packaging/freedesktop/app.protondrivesync.engine.desktop
+recorded: 2026-08-23 (two-backend control added 2026-08-29)
 ---
 
 # Reading a GUI window's Wayland `app_id` on KDE — the KWin script's `print` goes nowhere
@@ -50,6 +50,76 @@ way. Resolve it the way Qt does instead:
 ```bash
 kiconfinder6 app.protondrivesync.engine   # exit 1 + no output = KWin will use its fallback
 ```
+
+## The same reading proves a toolkit call inert, if you run a control
+
+A GTK call that Wayland has no protocol for does not error — it does nothing, and the code reads as
+if it worked. One reading cannot tell that apart from a call that worked; **two windows differing
+only in `GDK_BACKEND` can**, because the X11 one is the control that shows the call is issued
+correctly.
+
+```python
+# probe.py — no Tauri, no app, no account: plain GTK3 issuing the calls under test.
+import sys, gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, GLib
+w = Gtk.Window(title="SKIPPROBE-" + sys.argv[1])
+w.set_skip_taskbar_hint(True); w.set_skip_pager_hint(True); w.set_keep_above(True)
+w.show_all()
+GLib.timeout_add_seconds(25, Gtk.main_quit)
+Gtk.main()
+```
+
+```bash
+GDK_BACKEND=wayland python3 probe.py wayland &
+GDK_BACKEND=x11     python3 probe.py x11 &
+sleep 4   # both must be mapped before KWin is asked
+```
+
+Then the `loadScript`/`run`/`journalctl` sequence above, with this dump — the earlier one prints
+`skipTaskbar` alone, which is not enough to see the "false on both rows" case below:
+
+```js
+var out = [];
+var ws = workspace.windowList();
+for (var i = 0; i < ws.length; i++) {
+  var w = ws[i];
+  if (String(w.caption).indexOf("SKIPPROBE") === -1) continue;
+  var g = w.frameGeometry;                      // for a positioning probe
+  out.push(w.caption
+    + " skipTaskbar=" + w.skipTaskbar + " skipPager=" + w.skipPager
+    + " skipSwitcher=" + w.skipSwitcher + " keepAbove=" + w.keepAbove
+    + " at=" + g.x + "," + g.y);
+}
+throw new Error("DUMP >>> " + (out.length ? out.join(" || ") : "no probe window found"));
+```
+
+Result on Plasma 6 (#351):
+
+| `GDK_BACKEND` | `skipTaskbar` | `skipPager` | `keepAbove` | `skipSwitcher` |
+| --- | --- | --- | --- | --- |
+| `x11` | `true` | `true` | `true` | `false` |
+| `wayland` | `false` | `false` | `false` | `false` |
+
+Two things only the control gives you. **The Wayland row alone is not evidence** — it is equally
+consistent with the probe never issuing the call. And a property that is `false` on *both* rows
+(`skipSwitcher` here) is not a Wayland gap at all: it is a call that sets something else, which is
+how a comment ends up claiming an effect the code never had on any platform.
+
+**Positioning is the same probe with `w.move(x, y)`** and `frameGeometry` read back. Asking for
+`400,300`: X11 gives `400,300`, Wayland gives whatever KWin's placement policy chose (`840,443` and
+`860,389` on two runs), because a Wayland client cannot position its own toplevel.
+
+Map the toolkit call to the Tauri builder method through tao, and **check which of tao's two paths
+the builder takes** — `platform_impl/linux/window.rs` applies most `attributes.*` directly at
+construction, while `event_loop.rs`'s `WindowRequest::*` arms are the runtime setters. They usually
+call the same GTK function, so the outcome is right either way and the citation is not: `.always_on_top`
+is applied at `window.rs`'s `attributes.always_on_top`, never through `WindowRequest::AlwaysOnTop`.
+
+A third outcome exists and the control is what exposes it: a Tauri builder option with **no Linux
+arm at all** (`.shadow` is `#[cfg(windows)]`/`#[cfg(target_os = "macos")]` only in
+`tauri-runtime-wry`). That is not a Wayland gap — it is a call that never did anything on this
+platform — and it looks identical to one from the Wayland row alone.
 
 ## Why it matters here
 
