@@ -270,7 +270,17 @@ export function mainFids({
       },
     });
   } else {
-    map.spacer = "div[1]";
+    // `tailSpacer`, not `spacer`, for the reason `planShell` gives at its own.
+    // `SHELL_FIDS["2a Settled"]` already declares `spacer` for the header's flex gap, and the
+    // FIXTURE spreads it before this table (`fixtures/main.js`:
+    // `{ ...SHELL_FIDS["2a Settled"], ...mainFids(...) }`), so a second
+    // `spacer` here WINS — and `renderHeader` stamped the header's 0-height gap with this 1040×229
+    // block's key on `2a Settled` and `12a Settled light`. #379. It passed green because the two
+    // drawn nodes carry byte-identical style records AND the `⋯` glyph taints the root's children
+    // out of `boxComparability`, so the boxes were never compared; strip that taint and the
+    // comparison fails. `assert.mjs` now fails on two elements sharing one `data-fid`, which is
+    // what makes this rename stay done.
+    map.tailSpacer = "div[1]";
   }
 
   if (band > 0) {
@@ -1470,7 +1480,7 @@ const ONBOARDING_FOLDERS_FIDS = {
   // than assumed: stamp this slot and `fid()` writes `data-fid="9a Folders:null"`, which assert.mjs
   // reports as a `(mapping)` failure — exit 1; let #99 land and replace the `<input>` with an
   // unstamped `<div>` and the PARENT card's exact-pixel `box.h "147 vs 58"` row goes stale AND fails
-  // — exit 1. That the cover is incidental is the point: 270 of 1,948 drawn nodes are claimed by no
+  // — exit 1. That the cover is incidental is the point: 268 of 1,948 drawn nodes are claimed by no
   // slot at all, and until #250 no rule said which of them were deliberate. `KNOWN_UNCLAIMED` is
   // that rule now, and this node is one `unmappable` entry in it.
   cardPath: (s) => (s === 0 ? `div[1]/div[1]/div[${s}]/div[1]/div[0]` : null),

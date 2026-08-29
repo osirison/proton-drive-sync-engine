@@ -133,6 +133,59 @@ const blankFrames = [];
 const unstamped = [];
 /** Drawn nodes no fid slot claims (#250) — see the loop that fills it. */
 const unclaimed = [];
+/**
+ * TWO ELEMENTS CARRYING ONE `data-fid` (#379).
+ *
+ * A fixture's map is built by spreading several tables into one object — `SHELL_FIDS[label]` then
+ * `mainFids(...)`, in the fixture literal — so a later table declaring a name an earlier one used
+ * wins silently, and two different nodes are then stamped with one key. Not hypothetical:
+ * `mainFids`' tail `spacer` beat `SHELL_FIDS`', so the header's 0-height flex gap was stamped with
+ * the 1040×229 tail block's key on `2a Settled` and `12a Settled light`.
+ *
+ * THE COMPARISON DOES LOOK AT IT AND STILL PASSED, which is a weaker claim than the first version
+ * of this comment made and is the one the measurement supports. Both elements are looked up
+ * against the same drawn node, so the mis-stamped one is compared against something it has no
+ * reason to match — and passes when the properties happen to agree AND the boxes are not compared.
+ * Both held here: the two drawn nodes carry byte-identical style records, and the `⋯` glyph taints
+ * the root's children out of `boxComparability`. Remove that taint from the frame and the box
+ * comparison fails exactly where the mis-stamp is (measured: `box.w 1040 vs 731.08`). So the style
+ * gate is not structurally blind — it was blind *on these frames*, for two contingent reasons.
+ *
+ * THE CENSUS IS NOT BLIND EITHER, AND THE FIRST VERSION OF THIS COMMENT SAID IT WAS. It claimed
+ * that had the collision resolved the other way the real `div[1]` would have read *claimed* with
+ * nothing naming it, silently and for ever. That is false, and the mirror was built to check it:
+ * with the tail assigning nothing and the app stamping `spacer`, `div[1]` is in neither
+ * `declaredKeys` nor `stampedKeys` and the census reports it. **Whichever way the spread resolves,
+ * the losing key reads unclaimed and is reported.** What is invisible in both directions is that
+ * the WINNING key has two claimants.
+ *
+ * SO THE REASON THIS IS ITS OWN GATE IS NARROWER, AND TRUE. The census reports the loser under the
+ * wrong name — `mapping`, "the app renders it and nobody declared a slot" — when the mechanism is a
+ * mis-stamp; and an entry recording it under that name turns the build green, which is exactly what
+ * `main` at 25bf773 was — two `mapping #379` entries over a live mis-stamp, 0 failures, exit 0.
+ * (Named by commit, not as `HEAD~n`: the first version of this sentence said `HEAD~1`, which was
+ * already the wrong tree when written and would have decayed on the next commit anyway.) This gate
+ * names the mechanism instead, and cannot be recorded away.
+ *
+ * WHAT IT STILL CANNOT SEE: one ELEMENT stamped by two slots. The second `setAttribute` overwrites,
+ * leaving one element and one key, so nothing here counts two. The losing key is caught by the
+ * unstamped gate only when that frame draws it (`expected.has(key)` below), so a double-stamp whose
+ * losing key THAT frame does not draw is silent here.
+ *
+ * HOW FAR THAT SILENCE REACHES DEPENDS ON THE SLOT'S SHAPE, and two earlier attempts at this
+ * sentence got it wrong in both directions — first stated as an absolute, then "corrected" to a
+ * one-frame bound that is *less* true. For a **string** slot the backstop holds: a key no frame
+ * draws trips `check-fixtures.mjs`'s dead-slot rule. For a **factory** it does not. That rule keys
+ * one site per slot and marks it alive if ANY probed index resolves (`site.alive ||=
+ * produced.some(...)`), so a losing key at index ≥ 1 is never examined; and a factory whose
+ * numeric probes all answer `null` — `settingsShell.tab`, keyed by a tab id — is never registered
+ * at all, its `probes` array being empty. The census loop below already says the first half of
+ * this ("keeps a factory alive on index 0 and never examines index 1"), which is where the
+ * one-frame claim should have been checked before it was written.
+ *
+ * Stated rather than solved, the way `probeSlot` states its two.
+ */
+const collisions = [];
 
 /**
  * How far each index axis is probed below.
@@ -399,6 +452,16 @@ for (const entry of index) {
   // declare nothing and produce no observations", and it stops being the reassurance it was — every
   // frame now declares slots, so every frame can now report one unstamped.
   const stampedKeys = new Set(seen.map((s) => s.key));
+  // `seen` is one entry per stamped ELEMENT and `stampedKeys` is a Set, so the duplicate has to be
+  // read here, before the collapse — see `collisions` above.
+  const byKey = new Map();
+  for (const node of seen) {
+    if (!byKey.has(node.key)) byKey.set(node.key, []);
+    byKey.get(node.key).push(node);
+  }
+  for (const [key, nodes] of byKey) {
+    if (nodes.length > 1) collisions.push({ frame: frame.label, key, nodes });
+  }
   // RESOLVED, not the raw registry entry. A light twin's mapping is its dark twin's (S10), so
   // reading `FIXTURES[label].fids` here found `undefined` on all seven `12a` frames and iterated
   // nothing — which is this gate's own failure mode, one level up: the frames were mapped, compared
@@ -423,7 +486,8 @@ for (const entry of index) {
   // Leaving a drawn node undeclared removed it from EVERY gate that targets it — the style gate
   // never compares it, the unstamped gate never reports it, `check-fixtures.mjs`'s "alive somewhere"
   // rule keeps a factory alive on index 0 and never examines index 1. Every other suppression in
-  // this subsystem self-invalidates; this absence did not, and 270 nodes sat behind it. (Not 280:
+  // this subsystem self-invalidates; this absence did not, and 270 nodes sat behind it when #250
+  // measured it — 268 since #379. (Not 280:
   // ten more read as unclaimed while the app stamps them, and the rule below is what removes them.)
   // CLAIMED MEANS "some slot named it", and a node the app STAMPED was named by a slot — whatever
   // `probeSlot` could reach. Both sets are needed, and the second is not belt and braces: it is
@@ -676,6 +740,17 @@ if (malformedUnclaimed.length) {
     `\nfidelity:assert: ${malformedEntries} malformed KNOWN_UNCLAIMED entr${malformedEntries === 1 ? "y" : "ies"} (${malformedUnclaimed.length} fault${malformedUnclaimed.length === 1 ? "" : "s"}).`,
   );
 }
+if (collisions.length) {
+  console.error("\nTwo elements carrying one data-fid:\n");
+  for (const c of collisions) {
+    const shapes = c.nodes.map((n) => `${n.tag} ${n.box.w}x${n.box.h}`).join("  |  ");
+    console.error(`  ${c.frame} · ${c.key} ×${c.nodes.length}   ${shapes}`);
+  }
+  console.error(
+    `\nfidelity:assert: ${collisions.length} data-fid collision(s). Two slots share a name — rename the ` +
+      `later one, as \`planShell\` does with \`tailSpacer\`.`,
+  );
+}
 if (recordedUnclaimed.length) {
   const byClass = new Map();
   for (const u of recordedUnclaimed) byClass.set(u.class, (byClass.get(u.class) ?? 0) + 1);
@@ -861,6 +936,7 @@ if (
   blankFrames.length ||
   unexplainedUnclaimed.length ||
   staleUnclaimed.length ||
-  malformedUnclaimed.length
+  malformedUnclaimed.length ||
+  collisions.length
 )
   process.exit(1);

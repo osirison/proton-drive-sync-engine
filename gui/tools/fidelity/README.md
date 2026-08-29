@@ -1,33 +1,36 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Nine gates over the 51 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Ten gates over the 51 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
 npm run fidelity:extract    # regenerate frames/*.json from the prototype
-npm run fidelity            # style, unstamped, unclaimed, fit, hue, squeeze, copy, then contrast
+npm run fidelity            # style, unstamped, unclaimed, collision, fit, hue, squeeze, copy, contrast
 npm run fidelity:fixtures   # the fixture registry gate                           (Node only)
 npm run fidelity:contrast   # the contrast gate on its own; `--report` writes the distribution
 ```
 
-## The nine gates
+## The ten gates
 
 | Gate                              | Compares                                                                        | Runs today?                        |
 | --------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
 | **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`   |
 | **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot           |
-| **unclaimed** `assert.mjs`        | every drawn node against the slots that name it — the mirror of the row above   | yes, 270 declared in 31 entries    |
+| **unclaimed** `assert.mjs`        | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries    |
+| **collision** `assert.mjs`        | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node            |
 | **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                |
 | **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames          |
 | **squeeze** `assert.mjs`          | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames         |
-| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 71 templates |
+| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 74 templates |
 | **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes   | yes, 1233 nodes across 51 frames   |
 | **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                        |
 
-The first eight need a browser and run in the `fidelity` CI job. The last does not, and runs in
-`frontend` alongside the linters — a gate that can run in the fifteen-second job should.
+Seven of the ten are `assert.mjs` and need a browser. **contrast** needs one too. **copy** does
+not — it reads `ui/copy.js` and the frame JSON — but rides the `fidelity` CI job anyway because
+`npm run fidelity` chains it. **fixtures** needs no browser either and runs in `frontend` alongside
+the linters, which is where a gate that can finish in the fifteen-second job belongs.
 
-## The squeeze gate, and the condition the other eight cannot be in (S8)
+## The squeeze gate, and the condition the other nine cannot be in (S8)
 
 Every gate above opens its frame at **1040×764**, which is the window — and a 362×365 compact panel
 has 399px of slack there, so nothing can compress it. The tray window has no slack at all: it is
@@ -188,6 +191,53 @@ an `svg` path settles on tag plus box. One browser run per frame. DEVIATIONS §1
 One trap worth naming: **the app rendering different text is not the app rendering nothing.**
 `8a Settings`' key line was filed as an unbuilt block because a text match for the frame's
 `event_driven_reconcile` found nothing — the app draws that line as `events_driven`.
+
+## Two elements carrying one data-fid (#379)
+
+The narrowest gate here, and the only one whose subject is a **duplication** rather than a node. It
+reads the `data-fid` the app stamped, not the mapping — but that is not a distinction from the other
+gates, several of which read the mapping too (`unstamped` and `unclaimed` both resolve
+`resolveFixture(label)?.fids`, and `check-fixtures.mjs` reads it in three of its rules). An earlier
+version of this line claimed it was the only gate reading the mapping, then the only one _not_
+reading it; both were exclusivity claims nobody had measured.
+
+A fixture's map is built by spreading several tables into one object — `SHELL_FIDS[label]` and then
+`mainFids(...)`, in the fixture literal — so a later table declaring a name an earlier one used
+**wins silently**, and two different nodes then carry one key. `mainFids`' tail `spacer` beat
+`SHELL_FIDS["2a Settled"].spacer`, so the header's 0-height flex gap was stamped with the 1040×229
+tail block's key on `2a Settled` and `12a Settled light`.
+
+**The style gate looked at it and passed anyway** — a weaker claim than the first version of this
+section made, and the one the measurement supports. Both elements are looked up against the same
+drawn node, so the mis-stamped one is compared against something it has no reason to match, and
+passes when the properties agree **and** the boxes are not compared. Both held here: the two drawn
+nodes carry byte-identical style records, and the `⋯` glyph taints the root's children out of
+`boxComparability`. Strip that taint from the frame and the box comparison fails exactly where the
+mis-stamp is — `box.w 1040 vs 731.08`. The blindness was contingent, not structural.
+
+**The census is not blind either, and this section used to say it was.** It claimed that had the
+collision resolved the other way, the real `div[1]` would have read _claimed_ with nothing naming
+it, silently and permanently. The mirror was built to check that, and it is false: with the tail
+assigning nothing and the app stamping `spacer`, `div[1]` is in neither `declaredKeys` nor
+`stampedKeys`, and the census reports it. **Whichever way the spread resolves, the losing key reads
+unclaimed and is reported.** What no other gate sees is that the _winning_ key has two claimants.
+
+**So the reason for a separate gate is narrower, and true.** The census reports the loser under the
+wrong name — `mapping`, "the app renders it and nobody declared a slot" — when the mechanism is a
+mis-stamp. An entry recording it under that name turns the build green, which is exactly what the
+tree was before #379. This gate names the mechanism, and cannot be recorded away.
+
+It reads the duplicate before `stampedKeys` collapses it, and the fix is the one `planShell` already
+documents: rename the later slot (`tailSpacer`). This was the second occurrence; the gate is what
+stops there being a third.
+
+**What it still cannot see**: one _element_ stamped by two slots. The second `setAttribute`
+overwrites, leaving one element and one key, so nothing counts two. The losing key is caught by the
+unstamped gate only when that frame draws it — and how far the silence reaches depends on the slot's
+shape. For a **string** slot, a key no frame draws trips `check-fixtures.mjs`'s dead-slot rule. For a
+**factory** it does not: that rule keys one site per slot and marks it alive if any probed index
+resolves, so a losing key at index ≥ 1 is never examined, and a factory whose numeric probes all
+answer `null` (`settingsShell.tab`) is never registered at all.
 
 ## The node key, and why it is a path
 

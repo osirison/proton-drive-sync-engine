@@ -982,7 +982,9 @@ function stampFids(v) {
     }
   } else {
     fid(view.glow, "glow");
-    fid(view.spacer, "spacer");
+    // `tailSpacer`: the header's gap owns `spacer` (`chrome.js`), and stamping this one with the
+    // same name gave two elements one `data-fid`. #379.
+    fid(view.spacer, "tailSpacer");
   }
 
   if (bandShowing(v)) {
