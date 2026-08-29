@@ -270,9 +270,10 @@ export function mainFids({
       },
     });
   } else {
-    // `tailSpacer`, not `spacer`, for the reason `planShell` gives at its own. `SHELL_FIDS[label]`
-    // already declares `spacer` for the header's flex gap, and the FIXTURE spreads it before this
-    // table (`fixtures/main.js`: `{ ...SHELL_FIDS["2a Settled"], ...mainFids(...) }`), so a second
+    // `tailSpacer`, not `spacer`, for the reason `planShell` gives at its own.
+    // `SHELL_FIDS["2a Settled"]` already declares `spacer` for the header's flex gap, and the
+    // FIXTURE spreads it before this table (`fixtures/main.js`:
+    // `{ ...SHELL_FIDS["2a Settled"], ...mainFids(...) }`), so a second
     // `spacer` here WINS — and `renderHeader` stamped the header's 0-height gap with this 1040×229
     // block's key on `2a Settled` and `12a Settled light`. #379. It passed green because the two
     // drawn nodes carry byte-identical style records AND the `⋯` glyph taints the root's children

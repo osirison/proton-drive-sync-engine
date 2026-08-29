@@ -12,18 +12,18 @@ npm run fidelity:contrast   # the contrast gate on its own; `--report` writes th
 
 ## The ten gates
 
-| Gate                              | Compares                                                                               | Runs today?                        |
-| --------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------- |
-| **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                         | on whatever carries a `data-fid`   |
-| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                          | yes, every declared slot           |
-| **unclaimed** `assert.mjs`        | every drawn node against the slots that name it — the mirror of the row above          | yes, 268 declared in 29 entries    |
-| **collision** `assert.mjs`        | two elements carrying one `data-fid` — the case the comparison structurally cannot see | yes, every stamped node            |
-| **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer        | yes                                |
-| **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                                | yes, all 5 settled frames          |
-| **squeeze** `assert.mjs`          | a compact panel keeps its drawn height in a window too short for it                    | yes, all 11 compact frames         |
-| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames                      | yes, every string and 74 templates |
-| **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes          | yes, 1233 nodes across 51 frames   |
-| **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies                     | yes, all 51                        |
+| Gate                              | Compares                                                                        | Runs today?                        |
+| --------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
+| **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`   |
+| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot           |
+| **unclaimed** `assert.mjs`        | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries    |
+| **collision** `assert.mjs`        | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node            |
+| **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                |
+| **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames          |
+| **squeeze** `assert.mjs`          | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames         |
+| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 74 templates |
+| **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes   | yes, 1233 nodes across 51 frames   |
+| **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                        |
 
 Seven of the ten are `assert.mjs` and need a browser. **contrast** needs one too. **copy** does
 not — it reads `ui/copy.js` and the frame JSON — but rides the `fidelity` CI job anyway because
@@ -194,7 +194,9 @@ One trap worth naming: **the app rendering different text is not the app renderi
 
 ## Two elements carrying one data-fid (#379)
 
-The narrowest gate here, and the only one that looks at the mapping itself rather than at a node.
+The narrowest gate here: the only one whose subject is a **duplication** rather than a node. (It
+does not read the mapping — it reads the `data-fid` the app stamped. Reading the mapping itself is
+`check-fixtures.mjs`'s dead-slot rule.)
 
 A fixture's map is built by spreading several tables into one object — `SHELL_FIDS[label]` and then
 `mainFids(...)`, in the fixture literal — so a later table declaring a name an earlier one used

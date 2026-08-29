@@ -5758,8 +5758,8 @@ this repository was before #379. A gate that names the mechanism cannot be recor
 
 **Fixed, and the census invalidated its own entries doing it.** #379 renamed the tail slot
 `tailSpacer` (`planShell`'s fix, applied to the screen that lacked it) and gave `assert.mjs` a gate
-for two elements carrying one `data-fid` — because the comparison structurally cannot catch it, both
-nodes being looked up against the same drawn node. With the rename, `header/span[1]` is stamped
+for two elements carrying one `data-fid` — because no per-node gate counts a duplication, both nodes
+being looked up against the same drawn node and neither reported as two. With the rename, `header/span[1]` is stamped
 correctly, becomes claimed, and the two `KNOWN_UNCLAIMED` entries recording it went **stale and
 failed the build** the next run. That is the rule this whole section exists for, working one day
 after it shipped: 270 across 25 frames became **268 across 23**, and nobody had to remember.

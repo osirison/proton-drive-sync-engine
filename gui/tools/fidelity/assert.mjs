@@ -161,13 +161,18 @@ const unclaimed = [];
  *
  * SO THE REASON THIS IS ITS OWN GATE IS NARROWER, AND TRUE. The census reports the loser under the
  * wrong name — `mapping`, "the app renders it and nobody declared a slot" — when the mechanism is a
- * mis-stamp; and an entry recording it under that name turns the build green, which is exactly
- * what HEAD~1 was. This gate names the mechanism instead, and cannot be recorded away.
+ * mis-stamp; and an entry recording it under that name turns the build green, which is exactly what
+ * `main` at 25bf773 was — two `mapping #379` entries over a live mis-stamp, 0 failures, exit 0.
+ * (Named by commit, not as `HEAD~n`: the first version of this sentence said `HEAD~1`, which was
+ * already the wrong tree when written and would have decayed on the next commit anyway.) This gate
+ * names the mechanism instead, and cannot be recorded away.
  *
  * WHAT IT STILL CANNOT SEE: one ELEMENT stamped by two slots. The second `setAttribute` overwrites,
  * leaving one element and one key, so nothing here counts two. The losing key is caught by the
- * unstamped gate only when that frame draws it (`expected.has(key)` below); a double-stamp whose
- * losing key is undrawn is silent. Stated rather than solved, the way `probeSlot` states its two.
+ * unstamped gate only when that frame draws it (`expected.has(key)` below), so a double-stamp whose
+ * losing key THAT frame does not draw is silent here. The gap is one frame wide rather than
+ * unbounded: a slot no frame at all draws still trips `check-fixtures.mjs`'s dead-slot rule. Stated
+ * rather than solved, the way `probeSlot` states its two.
  */
 const collisions = [];
 
