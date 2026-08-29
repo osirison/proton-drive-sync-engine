@@ -133,6 +133,27 @@ const blankFrames = [];
 const unstamped = [];
 /** Drawn nodes no fid slot claims (#250) — see the loop that fills it. */
 const unclaimed = [];
+/**
+ * TWO ELEMENTS CARRYING ONE `data-fid` (#379).
+ *
+ * A fid map is built by spreading several tables into one object, so a second table declaring a
+ * name the first already used wins silently — and then two different nodes are stamped with one
+ * key. It is not hypothetical: `mainFids` did exactly this to the header's flex gap, which was
+ * stamped with the 1040×229 tail block's key on `2a Settled` and `12a Settled light`.
+ *
+ * IT CANNOT BE CAUGHT BY THE COMPARISON. Both nodes are looked up against the same drawn node, so
+ * the mis-stamped one is compared against something it has no reason to match — and passes
+ * whenever the properties happen to agree or the box comparison is skipped, which is what happened
+ * here (both set only `flex-grow: 1; flex-basis: 0%`, and the `⋯` glyph taints the root's
+ * children out of `boxComparability`).
+ *
+ * AND IT IS INVISIBLE TO THE CENSUS BY CONSTRUCTION. `stampedKeys` is a Set of strings, so two
+ * elements stamping one key are indistinguishable from one. Here the collision resolved toward the
+ * tail block and the header spacer read *unclaimed*, which is how it was found. Had it resolved
+ * the other way, the real `div[1]` would have read *claimed* with nothing naming it — silently,
+ * and for ever. That asymmetry is the reason this is its own gate rather than a note.
+ */
+const collisions = [];
 
 /**
  * How far each index axis is probed below.
@@ -399,6 +420,16 @@ for (const entry of index) {
   // declare nothing and produce no observations", and it stops being the reassurance it was — every
   // frame now declares slots, so every frame can now report one unstamped.
   const stampedKeys = new Set(seen.map((s) => s.key));
+  // `seen` is one entry per stamped ELEMENT and `stampedKeys` is a Set, so the duplicate has to be
+  // read here, before the collapse — see `collisions` above.
+  const byKey = new Map();
+  for (const node of seen) {
+    if (!byKey.has(node.key)) byKey.set(node.key, []);
+    byKey.get(node.key).push(node);
+  }
+  for (const [key, nodes] of byKey) {
+    if (nodes.length > 1) collisions.push({ frame: frame.label, key, nodes });
+  }
   // RESOLVED, not the raw registry entry. A light twin's mapping is its dark twin's (S10), so
   // reading `FIXTURES[label].fids` here found `undefined` on all seven `12a` frames and iterated
   // nothing — which is this gate's own failure mode, one level up: the frames were mapped, compared
@@ -676,6 +707,17 @@ if (malformedUnclaimed.length) {
     `\nfidelity:assert: ${malformedEntries} malformed KNOWN_UNCLAIMED entr${malformedEntries === 1 ? "y" : "ies"} (${malformedUnclaimed.length} fault${malformedUnclaimed.length === 1 ? "" : "s"}).`,
   );
 }
+if (collisions.length) {
+  console.error("\nTwo elements carrying one data-fid:\n");
+  for (const c of collisions) {
+    const shapes = c.nodes.map((n) => `${n.tag} ${n.box.w}x${n.box.h}`).join("  |  ");
+    console.error(`  ${c.frame} · ${c.key} ×${c.nodes.length}   ${shapes}`);
+  }
+  console.error(
+    `\nfidelity:assert: ${collisions.length} data-fid collision(s). Two slots share a name — rename the ` +
+      `later one, as \`planShell\` does with \`tailSpacer\`.`,
+  );
+}
 if (recordedUnclaimed.length) {
   const byClass = new Map();
   for (const u of recordedUnclaimed) byClass.set(u.class, (byClass.get(u.class) ?? 0) + 1);
@@ -861,6 +903,7 @@ if (
   blankFrames.length ||
   unexplainedUnclaimed.length ||
   staleUnclaimed.length ||
-  malformedUnclaimed.length
+  malformedUnclaimed.length ||
+  collisions.length
 )
   process.exit(1);

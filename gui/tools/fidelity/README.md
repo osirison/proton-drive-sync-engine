@@ -1,33 +1,34 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Nine gates over the 51 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Ten gates over the 51 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
 npm run fidelity:extract    # regenerate frames/*.json from the prototype
-npm run fidelity            # style, unstamped, unclaimed, fit, hue, squeeze, copy, then contrast
+npm run fidelity            # style, unstamped, unclaimed, collision, fit, hue, squeeze, copy, contrast
 npm run fidelity:fixtures   # the fixture registry gate                           (Node only)
 npm run fidelity:contrast   # the contrast gate on its own; `--report` writes the distribution
 ```
 
-## The nine gates
+## The ten gates
 
-| Gate                              | Compares                                                                        | Runs today?                        |
-| --------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
-| **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`   |
-| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot           |
-| **unclaimed** `assert.mjs`        | every drawn node against the slots that name it — the mirror of the row above   | yes, 270 declared in 31 entries    |
-| **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                |
-| **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames          |
-| **squeeze** `assert.mjs`          | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames         |
-| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 71 templates |
-| **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes   | yes, 1233 nodes across 51 frames   |
-| **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                        |
+| Gate                              | Compares                                                                               | Runs today?                        |
+| --------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------- |
+| **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                         | on whatever carries a `data-fid`   |
+| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                          | yes, every declared slot           |
+| **unclaimed** `assert.mjs`        | every drawn node against the slots that name it — the mirror of the row above          | yes, 268 declared in 29 entries    |
+| **collision** `assert.mjs`        | two elements carrying one `data-fid` — the case the comparison structurally cannot see | yes, every stamped node            |
+| **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer        | yes                                |
+| **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                                | yes, all 5 settled frames          |
+| **squeeze** `assert.mjs`          | a compact panel keeps its drawn height in a window too short for it                    | yes, all 11 compact frames         |
+| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames                      | yes, every string and 74 templates |
+| **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes          | yes, 1233 nodes across 51 frames   |
+| **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies                     | yes, all 51                        |
 
-The first eight need a browser and run in the `fidelity` CI job. The last does not, and runs in
+The first nine need a browser and run in the `fidelity` CI job. The last does not, and runs in
 `frontend` alongside the linters — a gate that can run in the fifteen-second job should.
 
-## The squeeze gate, and the condition the other eight cannot be in (S8)
+## The squeeze gate, and the condition the other nine cannot be in (S8)
 
 Every gate above opens its frame at **1040×764**, which is the window — and a 362×365 compact panel
 has 399px of slack there, so nothing can compress it. The tray window has no slack at all: it is
@@ -188,6 +189,32 @@ an `svg` path settles on tag plus box. One browser run per frame. DEVIATIONS §1
 One trap worth naming: **the app rendering different text is not the app rendering nothing.**
 `8a Settings`' key line was filed as an unbuilt block because a text match for the frame's
 `event_driven_reconcile` found nothing — the app draws that line as `events_driven`.
+
+## Two elements carrying one data-fid (#379)
+
+The narrowest gate here, and the one the others structurally cannot do.
+
+A fid map is built by spreading several tables into one object, so a second table declaring a name
+the first already used **wins silently** — and two different nodes then carry one key. `mainFids`
+did exactly that: `map.spacer = "div[1]"` overwrote `mainShell.spacer = "header/span[1]"`, so the
+header's 0-height flex gap was stamped with the 1040×229 tail block's key on `2a Settled` and
+`12a Settled light`.
+
+**The style gate cannot see it.** Both elements are looked up against the same drawn node, so the
+mis-stamped one is compared against something it has no reason to match — and passes whenever the
+properties happen to agree or the box comparison is skipped. Here both were true: the two nodes set
+only `flex-grow: 1; flex-basis: 0%`, and the `⋯` glyph taints the root's children out of
+`boxComparability`.
+
+**The unclaimed census cannot see it either, and that is worse.** `stampedKeys` is a Set of
+strings, so two elements stamping one key are indistinguishable from one. This collision happened
+to resolve toward the tail block, so the header spacer read _unclaimed_ and got reported — which is
+how it was found. Had it resolved the other way, the frame's real `div[1]` would have read
+_claimed_ with nothing naming it, silently and permanently.
+
+So the check reads the duplicate before `stampedKeys` collapses it, and the fix is the one
+`planShell` already documents: rename the later slot (`tailSpacer`). This is the second occurrence;
+the gate is what stops there being a third.
 
 ## The node key, and why it is a path
 

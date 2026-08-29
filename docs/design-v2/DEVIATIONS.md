@@ -3557,7 +3557,8 @@ was written, no rule said which undeclared nodes were deliberate, so the next on
 neighbour. That was the convention's blind spot rather than this slot's, and it was bigger than this
 section:
 **268 of the 1,452 drawn nodes on mapped frames are claimed by no slot at all — 18%.** (Re-measured
-as **270 of 1,948 across 25 frames** once every frame carried a map; §106 carries the corrected
+as **270 of 1,948 across 25 frames** once every frame carried a map, and 268 across 23 once #379
+was fixed; §106 carries the corrected
 census and the gate that now enforces it.) Most are
 correct (S4 leaves `5a Checking`'s progress line undeclared, S5 the four history rows, S6 the
 twenty-bar chart), and almost none of those reasons was written where a gate could read it. **§106
@@ -5667,7 +5668,7 @@ frame.
 | --- | --- | --- |
 | frames carrying a `fids` map | 36 | **51** (all of them, since S10) |
 | drawn nodes | 1,452 | **1,948** |
-| unclaimed | 268 (18%) | **270 across 25 frames (13.9%)** |
+| unclaimed | 268 (18%) | **270 across 25 frames (13.9%)**, then **268 across 23 (13.8%)** once #379 was fixed |
 
 Ten nodes read as unclaimed while the app stamps them on every render, and counting a **stamped**
 node as claimed removes them exactly. Two causes, not one — the first version attributed all ten to
@@ -5684,7 +5685,7 @@ the first:
 | --- | --- | --- |
 | `scenery` | 70 | the frame draws something that is **not product**. `frame-classes.mjs`'s `SPECIMEN_ARTEFACT` is the authority — a swatch sheet's card, a mock desktop's wallpaper and clock. Note this is **not** "the app cannot draw it": `preview.js` renders most of it deliberately, to place the artefact |
 | `issue` | 79 | a capability gap with an **open** number |
-| `mapping` | 51 | the app renders it and nobody declared a slot — the bugs the census exists to find (#377) |
+| `mapping` | 49 | the app renders it and nobody declared a slot — the bugs the census exists to find (#377) |
 | `unmappable` | 41 | **the two sides disagree in a way no mapping fixes** — the prototype is wrong (§77), two frames of one panel disagree (§104b), or the app builds an `<input>` where the frame draws a `<div>` (§79e) |
 | `decision` | 29 | a recorded decision that the app renders nothing there, or that a differently shaped node is measured elsewhere |
 
@@ -5741,9 +5742,17 @@ with the 1040×229 tail block's key. That is `planShell`'s documented collision 
 `tailSpacer`), unfixed on the main screen. Filed as **#379**.
 
 It is also the live instance of a hazard in this census: `stampedKeys` is keyed by string, so two
-elements stamping one key are indistinguishable from one. Here the collision resolves toward the
-tail block, so the header spacer reads unclaimed and gets reported. Had it resolved the other way,
+elements stamping one key are indistinguishable from one. Here the collision resolved toward the
+tail block, so the header spacer read unclaimed and got reported. Had it resolved the other way,
 the frame's real `div[1]` would have read *claimed* with nothing naming it, silently.
+
+**Fixed, and the census invalidated its own entries doing it.** #379 renamed the tail slot
+`tailSpacer` (`planShell`'s fix, applied to the screen that lacked it) and gave `assert.mjs` a gate
+for two elements carrying one `data-fid` — because the comparison structurally cannot catch it, both
+nodes being looked up against the same drawn node. With the rename, `header/span[1]` is stamped
+correctly, becomes claimed, and the two `KNOWN_UNCLAIMED` entries recording it went **stale and
+failed the build** the next run. That is the rule this whole section exists for, working one day
+after it shipped: 270 across 25 frames became **268 across 23**, and nobody had to remember.
 
 ### §106g · Membership is pinned, and the schema is checked
 

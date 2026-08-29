@@ -1275,9 +1275,10 @@ export function classifyUnstamped(observed) {
  *   test only requires the field to be present, and the first version of this list cited three closed
  *   issues and a fourth that survived that correction (§106e both times). Check it by hand.
  * * `mapping` — the app renders it and nobody declared a slot. These are the bugs the census exists
- *   to find (#377; two of them are #379's collision rather than a missing declaration), recorded
- *   rather than fixed here because declaring a slot makes the node *compared*, which can surface
- *   unrelated failures on frames a change does not otherwise touch.
+ *   to find (#377), recorded rather than fixed here because declaring a slot makes the node
+ *   *compared*, which can surface unrelated failures on frames a change does not otherwise touch.
+ *   Two more were #379's `data-fid` collision rather than a missing declaration; that is fixed and
+ *   both entries went stale, which is what this list is for.
  *
  * # Membership is pinned, deliberately
  *
@@ -1289,7 +1290,8 @@ export function classifyUnstamped(observed) {
  * # The census that produced it
  *
  * #250 measured 268 unclaimed over the 36 frames that then carried a `fids` map. All 51 do now, and
- * the figure is **270 across 25 frames** (13.9% of 1,948 drawn). It is not 280: ten nodes read as
+ * the figure was **270 across 25 frames** (13.9% of 1,948 drawn), and is **268 across 23** (13.8%)
+ * since #379's collision was fixed and its two entries went stale. It is not 280: ten nodes read as
  * unclaimed while the app stamps them on every render — eight Settings pills, whose slot is keyed by
  * a tab **id** the numeric `probeSlot` grid cannot reach, and two `11a Rules` chips at
  * `silentChip(10)`/`(11)`, past `PROBE_DEPTH`. Counting a **stamped** node as claimed removes both
@@ -1833,28 +1835,6 @@ export const KNOWN_UNCLAIMED = [
       "first version of this entry had the two descriptions transposed and filed the key line as an " +
       "unbuilt block against an issue that does not cover this screen.",
     keys: ["div[2]/div[4]/div[0]/div[2]", "div[2]/div[5]/div[1]/span[2]"],
-  },
-  {
-    frame: "12a Settled light",
-    class: "mapping",
-    issue: "#379",
-    why:
-      'the header\'s flex spacer. The main-screen map DOES declare it \u2014 and `map.spacer = "div[1]"` ' +
-      "then OVERWRITES `mainShell.spacer`, so `renderHeader` stamps the header's 0-height gap with " +
-      "the 1040x229 tail block's key. That is `planShell`'s documented collision (fixed there with " +
-      "`tailSpacer`), unfixed on this screen. Filed as #379.",
-    keys: ["header/span[1]"],
-  },
-  {
-    frame: "2a Settled",
-    class: "mapping",
-    issue: "#379",
-    why:
-      'the header\'s flex spacer. The main-screen map DOES declare it \u2014 and `map.spacer = "div[1]"` ' +
-      "then OVERWRITES `mainShell.spacer`, so `renderHeader` stamps the header's 0-height gap with " +
-      "the 1040x229 tail block's key. That is `planShell`'s documented collision (fixed there with " +
-      "`tailSpacer`), unfixed on this screen. Filed as #379.",
-    keys: ["header/span[1]"],
   },
   {
     frame: "5a Plan",
