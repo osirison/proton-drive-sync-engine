@@ -1233,3 +1233,553 @@ export function classifyUnstamped(observed) {
   }
   return { recorded, unexplained, stale };
 }
+/**
+ * Drawn nodes that **no fid slot claims** (#250), declared so their absence self-invalidates.
+ *
+ * # Why this list exists
+ *
+ * Every other suppression in this subsystem fails the build when it stops being true —
+ * `KNOWN_DEVIATIONS` when a row stops mismatching, `KNOWN_UNSTAMPED` when a slot starts being
+ * stamped, `SETTLED_FRAMES` when a label leaves `index.json`. **Leaving a drawn node undeclared had
+ * no such rule**, and it removed that node from every gate at once: the style gate never compares
+ * it, the unstamped gate never reports it, and `check-fixtures.mjs`'s "alive somewhere" rule keeps
+ * a factory alive on index 0 without ever examining index 1.
+ *
+ * 270 nodes across 25 frames sat behind that absence. Each is declared below with a reason and a
+ * class, and the classifier fails the build in **both** directions: an unclaimed node with no entry,
+ * and an entry whose nodes are all claimed now.
+ *
+ * # The three classes, and what each one means
+ *
+ * * `decision` — the frame draws something this app deliberately does not, and there is nothing to
+ *   build. A mock host desktop, a specimen sheet's own documentation table, a button whose absence
+ *   is a recorded decision.
+ * * `issue` — a capability gap with a number. The block would be built if the data existed.
+ * * `mapping` — the app DRAWS the node and nobody declared a slot for it. These are the bugs this
+ *   census exists to find, and they are recorded rather than fixed here on purpose: declaring a slot
+ *   makes the node *compared*, which can surface unrelated failures, and #250's own instruction is
+ *   that rushing the sort is how a plausible-looking reason ends up on file (§60).
+ *
+ * # Membership is pinned, deliberately
+ *
+ * Entries carry exact `keys`, never a prefix. A prefix rule would auto-excuse whatever a
+ * re-extracted frame added underneath it — a suppression that widens itself, which is the shape
+ * this list exists to remove.
+ *
+ * # The census that produced it
+ *
+ * #250 measured 268 unclaimed over the 36 frames that then carried a `fids` map. At the time of
+ * writing all 51 do, and the true figure is **270 across 25 frames** (13.9% of 1,948 drawn). It is
+ * not 280: `settingsShell.tab` is keyed by a tab **id**, `probeSlot` walks a numeric grid, and the
+ * Settings pills therefore read as unclaimed while the app stamps them on every render. Counting a
+ * stamped node as claimed removes those ten. See the loop in `assert.mjs`.
+ */
+export const KNOWN_UNCLAIMED = [
+  {
+    frame: "6a Activity passes",
+    class: "issue",
+    issue: "#229",
+    why:
+      "the twenty-bar duration chart and the per-pass row spans. The chart is drawn and NOT BUILT \u2014 " +
+      "nothing in the app matches it, and `StatusHistoryEntry` records every attempt at a 20-entry " +
+      "cap rather than the last twenty *passes*, so #250 names it a deliberate S6 call. The row " +
+      "spans are a different thing wearing the same number: `sync_passes` landed with #229/#238 and " +
+      "the app draws those rows, but the fixture declares each ROW and not the four spans inside " +
+      "it, so they are a mapping gap rather than a capability one",
+    keys: [
+      "div[0]",
+      "div[2]",
+      "div[2]/div",
+      "div[2]/div/div[0]",
+      "div[2]/div/div[1]",
+      "div[2]/div/div[1]/div[0]",
+      "div[2]/div/div[1]/div[1]",
+      "div[2]/div/div[1]/div[2]",
+      "div[2]/div/div[1]/div[3]",
+      "div[2]/div/div[1]/div[4]",
+      "div[2]/div/div[1]/div[5]",
+      "div[2]/div/div[1]/div[6]",
+      "div[2]/div/div[1]/div[7]",
+      "div[2]/div/div[1]/div[8]",
+      "div[2]/div/div[1]/div[9]",
+      "div[2]/div/div[1]/div[10]",
+      "div[2]/div/div[1]/div[11]",
+      "div[2]/div/div[1]/div[12]",
+      "div[2]/div/div[1]/div[13]",
+      "div[2]/div/div[1]/div[14]",
+      "div[2]/div/div[1]/div[15]",
+      "div[2]/div/div[1]/div[16]",
+      "div[2]/div/div[1]/div[17]",
+      "div[2]/div/div[1]/div[18]",
+      "div[2]/div/div[1]/div[19]",
+      "div[2]/div/div[2]",
+      "div[2]/div/div[2]/span[0]",
+      "div[2]/div/div[2]/span[1]",
+      "div[3]/div[0]/span[0]",
+      "div[3]/div[0]/span[1]",
+      "div[3]/div[0]/span[2]",
+      "div[3]/div[0]/span[3]",
+      "div[3]/div[1]/span[0]",
+      "div[3]/div[1]/span[1]",
+      "div[3]/div[1]/span[2]",
+      "div[3]/div[1]/span[3]",
+      "div[3]/div[2]/div[0]",
+      "div[3]/div[2]/div[0]/span[0]",
+      "div[3]/div[2]/div[0]/span[1]",
+      "div[3]/div[2]/div[0]/span[2]",
+      "div[3]/div[2]/div[0]/span[3]",
+      "div[3]/div[2]/div[1]",
+      "div[3]/div[3]/span[0]",
+      "div[3]/div[3]/span[1]",
+      "div[3]/div[3]/span[2]",
+      "div[3]/div[3]/span[3]",
+      "div[3]/div[4]/span[0]",
+      "div[3]/div[4]/span[1]",
+      "div[3]/div[4]/span[2]",
+      "div[3]/div[4]/span[3]",
+      "div[3]/div[5]/span[0]",
+      "div[3]/div[5]/span[1]",
+      "div[3]/div[5]/span[2]",
+      "div[3]/div[5]/span[3]",
+      "div[3]/div[6]/span[1]",
+    ],
+  },
+  {
+    frame: "8a Schedule monthly",
+    class: "decision",
+    why:
+      "the monthly schedule crop maps only its header, and cannot map more: this frame and `8a " +
+      "Settings` disagree about the same panel's own numbers \u2014 the head row's gap (18px against " +
+      "20px) and the sub-line's line-height (18.75px against 18.125px) \u2014 so a mapped node would " +
+      "make the app fail whichever of the two it is not. The variant IS built and rendered (#193); " +
+      "it is compared against the window frame instead. DEVIATIONS \u00a7104b",
+    keys: [
+      "div[0]",
+      "div[0]/div[0]/div[1]",
+      "div[0]/div[1]",
+      "div[0]/div[1]/button[0]",
+      "div[0]/div[1]/button[1]",
+      "div[1]",
+      "div[1]/div[0]",
+      "div[1]/div[0]/span",
+      "div[1]/div[0]/div",
+      "div[1]/div[0]/div/button[0]",
+      "div[1]/div[0]/div/button[1]",
+      "div[1]/div[0]/div/button[2]",
+      "div[1]/div[0]/div/button[3]",
+      "div[1]/div[0]/div/button[4]",
+      "div[1]/div[0]/div/button[5]",
+      "div[1]/div[0]/div/button[6]",
+      "div[1]/div[0]/div/button[7]",
+      "div[1]/div[0]/div/button[8]",
+      "div[1]/div[0]/div/button[9]",
+      "div[1]/div[0]/div/button[10]",
+      "div[1]/div[0]/div/button[11]",
+      "div[1]/div[0]/div/button[12]",
+      "div[1]/div[0]/div/button[13]",
+      "div[1]/div[0]/div/button[14]",
+      "div[1]/div[0]/div/button[15]",
+      "div[1]/div[0]/div/button[16]",
+      "div[1]/div[0]/div/button[17]",
+      "div[1]/div[0]/div/button[18]",
+      "div[1]/div[0]/div/button[19]",
+      "div[1]/div[1]",
+      "div[1]/div[1]/span",
+      "div[1]/div[1]/div",
+      "div[1]/div[1]/div/button[0]",
+      "div[1]/div[1]/div/span",
+      "div[1]/div[1]/div/button[1]",
+      "div[1]/div[2]",
+    ],
+  },
+  {
+    frame: "10a Glyph states",
+    class: "decision",
+    why:
+      "the specimen sheet's own documentation table \u2014 the column headers `mono` / `colour` / `what " +
+      "it means`, and a prose description under each state. The app renders the glyph MARKS this " +
+      "sheet is about (that is what the tray loads them from); the table explaining them is the " +
+      "prototype's writing, and there is no screen it belongs to",
+    keys: [
+      "div[0]",
+      "div[0]/div[0]",
+      "div[0]/div[1]",
+      "div[0]/div[2]",
+      "div[0]/div[3]",
+      "div[0]/div[4]",
+      "div[0]/div[5]",
+      "div[0]/div[6]",
+      "div[0]/div[6]/div[0]",
+      "div[0]/div[6]/div[1]",
+      "div[0]/div[7]",
+      "div[0]/div[8]",
+      "div[0]/div[9]",
+      "div[0]/div[10]",
+      "div[0]/div[10]/div[0]",
+      "div[0]/div[10]/div[1]",
+      "div[0]/div[11]",
+      "div[0]/div[12]",
+      "div[0]/div[13]",
+      "div[0]/div[14]",
+      "div[0]/div[14]/div[0]",
+      "div[0]/div[14]/div[1]",
+      "div[0]/div[15]",
+      "div[0]/div[16]",
+      "div[0]/div[17]",
+      "div[0]/div[18]",
+      "div[0]/div[18]/div[0]",
+      "div[0]/div[18]/div[1]",
+      "div[0]/div[19]",
+      "div[0]/div[20]",
+      "div[0]/div[21]",
+      "div[0]/div[22]",
+      "div[0]/div[22]/div[0]",
+      "div[0]/div[22]/div[1]",
+      "div[1]",
+    ],
+  },
+  {
+    frame: "7a Activity quiet",
+    class: "issue",
+    issue: "#207",
+    why:
+      "the two side-count blocks (`12,480 files \u00b7 41.2 GB` on each side \u2014 G7, no command reports " +
+      "index-wide totals), `next full check in 4m` (a countdown to a moment no reply carries, even " +
+      "since #193 gave the daemon a schedule), and the `Last things to move` list beneath them",
+    keys: [
+      "div[0]",
+      "div[2]/div[2]/div[0]/div[0]",
+      "div[2]/div[2]/div[0]/div[1]",
+      "div[2]/div[2]/div[0]/div[1]/span[0]",
+      "div[2]/div[2]/div[0]/div[1]/span[1]",
+      "div[2]/div[2]/div[0]/div[2]",
+      "div[2]/div[2]/div[1]/div[0]",
+      "div[2]/div[2]/div[1]/div[1]",
+      "div[2]/div[2]/div[1]/div[1]/span[0]",
+      "div[2]/div[2]/div[1]/div[1]/span[1]",
+      "div[2]/div[2]/div[1]/div[2]",
+      "div[3]/div[1]/div[0]",
+      "div[3]/div[1]/div[0]/span[0]",
+      "div[3]/div[1]/div[0]/span[1]",
+      "div[3]/div[1]/div[0]/span[2]",
+      "div[3]/div[1]/div[1]",
+      "div[3]/div[1]/div[1]/span[0]",
+      "div[3]/div[1]/div[1]/span[1]",
+      "div[3]/div[1]/div[1]/span[2]",
+      "div[3]/div[1]/div[1]/span[3]",
+      "div[3]/div[1]/div[2]",
+      "div[3]/div[1]/div[2]/span[0]",
+      "div[3]/div[1]/div[2]/span[1]",
+      "div[3]/div[1]/div[2]/span[2]",
+      "div[3]/div[1]/div[2]/span[3]",
+      "div[3]/div[1]/div[3]",
+      "div[3]/div[1]/div[3]/span[0]",
+      "div[3]/div[1]/div[3]/span[1]",
+      "div[3]/div[1]/div[3]/span[2]",
+      "div[3]/div[1]/div[3]/span[3]",
+      "div[3]/div[1]/div[4]/span[1]",
+      "div[3]/div[1]/div[4]/button[0]",
+    ],
+  },
+  {
+    frame: "7a File lookup",
+    class: "issue",
+    issue: "#190",
+    why:
+      "the four `This file's history` rows, which #250 names as a deliberate S5 omission. " +
+      "`ControlCommand::Activity` has since landed the query behind them; the block itself is still " +
+      "not built, so this stays recorded rather than becoming a mapping gap",
+    keys: [
+      "div[1]/div[2]/div[0]/div[1]/div[0]/span[1]",
+      "div[1]/div[2]/div[1]/div[1]/div[0]/span[1]",
+      "div[2]/div[0]",
+      "div[2]/div[1]",
+      "div[2]/div[1]/span[0]",
+      "div[2]/div[1]/span[1]",
+      "div[2]/div[1]/span[2]",
+      "div[2]/div[2]",
+      "div[2]/div[2]/span[0]",
+      "div[2]/div[2]/span[1]",
+      "div[2]/div[2]/span[2]",
+      "div[2]/div[3]",
+      "div[2]/div[3]/span[0]",
+      "div[2]/div[3]/span[1]",
+      "div[2]/div[3]/span[2]",
+      "div[2]/div[4]",
+      "div[2]/div[4]/span[0]",
+      "div[2]/div[4]/span[1]",
+      "div[2]/div[4]/span[2]",
+      "div[2]/div[5]/span[0]",
+    ],
+  },
+  {
+    frame: "11a In situ",
+    class: "decision",
+    why:
+      "the mock HOST DESKTOP this banner is drawn inside \u2014 a GNOME-style top bar (`Activities`, " +
+      "`Tue 14:41`) and a tray strip of other applications' glyphs. The app cannot draw the desktop " +
+      "it sits in, and the frame draws it to show the banner in place",
+    keys: [
+      "div[0]",
+      "div[0]/span[0]",
+      "div[0]/span[1]",
+      "div[0]/span[2]",
+      "div[0]/span[3]",
+      "div[0]/span[3]/svg",
+      "div[0]/span[3]/svg/path",
+      "div[0]/span[3]/svg/circle",
+      "div[0]/span[3]/span[0]",
+      "div[0]/span[3]/span[1]",
+      "div[0]/span[3]/span[2]",
+      "div[0]/span[3]/span[3]",
+      "div[1]",
+      "div[1]/div",
+      "div[1]/div/div[0]/div[0]/div/div[0]/span[0]",
+      "div[1]/div/div[0]/div[0]/div/div[0]/span[1]",
+    ],
+  },
+  {
+    frame: "10a In situ",
+    class: "decision",
+    why: "the same mock host desktop as `11a In situ`, around the tray glyph rather than the banner",
+    keys: [
+      "div[0]",
+      "div[0]/span[0]",
+      "div[0]/span[1]",
+      "div[0]/span[2]",
+      "div[0]/span[3]",
+      "div[0]/span[3]/span[0]",
+      "div[0]/span[3]/span[0]/svg",
+      "div[0]/span[3]/span[0]/svg/path",
+      "div[0]/span[3]/span[0]/svg/circle",
+      "div[0]/span[3]/span[1]",
+      "div[0]/span[3]/span[2]",
+      "div[0]/span[3]/span[3]",
+      "div[0]/span[3]/span[4]",
+    ],
+  },
+  {
+    frame: "12a Tray light",
+    class: "decision",
+    why:
+      "the same mock host desktop again, in light, plus the sheet's own caption about how the glyph " +
+      "inverts",
+    keys: [
+      "div[0]",
+      "div[0]/span[0]",
+      "div[0]/span[1]",
+      "div[0]/span[2]",
+      "div[0]/span[3]",
+      "div[0]/span[4]",
+      "div[0]/span[5]",
+      "div[1]",
+    ],
+  },
+  {
+    frame: "9a Folders",
+    class: "issue",
+    issue: "#241",
+    why:
+      "the two folder-count lines (`341 files \u00b7 2.1 GB`, `12,139 files \u00b7 39.1 GB` \u2014 G7's index-wide " +
+      "totals again) and `you@proton.me`, which is G26: the daemon reuses the CLI's session for a " +
+      "token and never sees an address",
+    keys: [
+      "div[1]/div[1]/div[0]/div[1]/div[1]",
+      "div[1]/div[1]/div[0]/div[1]/div[1]/span[0]",
+      "div[1]/div[1]/div[0]/div[1]/div[1]/span[1]",
+      "div[1]/div[1]/div[1]/div[1]/div[0]",
+      "div[1]/div[1]/div[1]/div[1]/div[1]",
+      "div[1]/div[1]/div[1]/div[1]/div[1]/span[0]",
+      "div[1]/div[1]/div[1]/div[1]/div[1]/span[1]",
+      "div[1]/div[1]/div[1]/div[2]/span",
+    ],
+  },
+  {
+    frame: "12a Syncing light",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the seam's SECOND column's transfer row. The app renders one transfer list and stamps it " +
+      "under the first column; the frame splits sent and received across the two seam columns, so " +
+      "the incoming row is drawn at a key no slot names",
+    keys: [
+      "div[1]/div[1]/div",
+      "div[1]/div[1]/div/div[0]",
+      "div[1]/div[1]/div/div[0]/span[0]",
+      "div[1]/div[1]/div/div[0]/span[1]",
+      "div[1]/div[1]/div/div[0]/span[2]",
+      "div[1]/div[1]/div/div[1]",
+      "div[1]/div[1]/div/div[1]/div",
+    ],
+  },
+  {
+    frame: "2a Needs you",
+    class: "mapping",
+    issue: "#377",
+    why: "the same second-column transfer row as `12a Syncing light`",
+    keys: [
+      "div[1]/div[1]/div",
+      "div[1]/div[1]/div/div[0]",
+      "div[1]/div[1]/div/div[0]/span[0]",
+      "div[1]/div[1]/div/div[0]/span[1]",
+      "div[1]/div[1]/div/div[0]/span[2]",
+      "div[1]/div[1]/div/div[1]",
+      "div[1]/div[1]/div/div[1]/div",
+    ],
+  },
+  {
+    frame: "2a Syncing",
+    class: "mapping",
+    issue: "#377",
+    why: "the same second-column transfer row as `12a Syncing light`",
+    keys: [
+      "div[1]/div[1]/div",
+      "div[1]/div[1]/div/div[0]",
+      "div[1]/div[1]/div/div[0]/span[0]",
+      "div[1]/div[1]/div/div[0]/span[1]",
+      "div[1]/div[1]/div/div[0]/span[2]",
+      "div[1]/div[1]/div/div[1]",
+      "div[1]/div[1]/div/div[1]/div",
+    ],
+  },
+  {
+    frame: "9a CLI missing",
+    class: "decision",
+    why:
+      "the copyable `sudo apt install proton-drive` box and the `Installation help` button. Both " +
+      "are deliberately NOT built: the frozen frame draws a command this project cannot stand " +
+      "behind for every distribution, and DEVIATIONS \u00a7102 records the decision to send people to " +
+      "Proton's own instructions instead",
+    keys: [
+      "div/div/div[2]",
+      "div/div/div[2]/span[0]",
+      "div/div/div[2]/span[1]",
+      "div/div/div[2]/button",
+      "div/div/div[3]/button[1]",
+    ],
+  },
+  {
+    frame: "5a Checking",
+    class: "decision",
+    why:
+      "the four footer doors, which #250 itself names as an S4 deliberate call \u2014 the checking state " +
+      "draws them and the screen does not map them",
+    keys: ["div[1]/div/span[0]", "div[1]/div/span[1]", "div[1]/div/span[2]", "div[1]/div/span[3]"],
+  },
+  {
+    frame: "7a File pending",
+    class: "mapping",
+    issue: "#377",
+    why: "a 3px progress bar and two flex spacers",
+    keys: ["div[1]", "div[1]/div", "div[2]/span[1]"],
+  },
+  {
+    frame: "12a Conflict light",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the conflict hexagon's inner `path` and its count `text`. `renderHexagon` draws both; the " +
+      "fixture declares the `svg` and stops there",
+    keys: ["div[1]/div[1]/svg/path", "div[1]/div[1]/svg/text"],
+  },
+  {
+    frame: "3a Conflict",
+    class: "mapping",
+    issue: "#377",
+    why: "the same hexagon internals as `12a Conflict light`",
+    keys: ["div[1]/div[1]/svg/path", "div[1]/div[1]/svg/text"],
+  },
+  {
+    frame: "3a Conflict diff",
+    class: "mapping",
+    issue: "#377",
+    why: "the same hexagon internals, on the disclosure frame",
+    keys: ["div[0]/svg/path", "div[0]/svg/text"],
+  },
+  {
+    frame: "8a Settings",
+    class: "mapping",
+    issue: "#377",
+    why: "the live panel's `event_driven_reconcile` key line and one flex spacer",
+    keys: ["div[2]/div[4]/div[0]/div[2]", "div[2]/div[5]/div[1]/span[2]"],
+  },
+  {
+    frame: "12a Settled light",
+    class: "mapping",
+    issue: "#377",
+    why: "the header's flex spacer, which `settingsShell` declares and the main-screen map does not",
+    keys: ["header/span[1]"],
+  },
+  {
+    frame: "2a Settled",
+    class: "mapping",
+    issue: "#377",
+    why: "the same header spacer as `12a Settled light`",
+    keys: ["header/span[1]"],
+  },
+  {
+    frame: "5a Plan",
+    class: "decision",
+    why: "`Leave it alone`, one of the two G3 buttons #250 names as an S4 deliberate call",
+    keys: ["div[2]/div/button"],
+  },
+  {
+    frame: "7a Never synced",
+    class: "mapping",
+    issue: "#377",
+    why: "a flex spacer",
+    keys: ["div[2]/span[1]"],
+  },
+  {
+    frame: "8a Deletions tab",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the `deletion_policy \u00b7 applies to both directions` key line, which the app draws and this " +
+      "crop does not declare",
+    keys: ["div[3]"],
+  },
+  {
+    frame: "8a Save refused",
+    class: "issue",
+    issue: "#236",
+    why:
+      "`Create it on Proton Drive`. No command creates a remote folder, and a live-looking button " +
+      "that does nothing is the trap #224 and #227 already record \u2014 so S6 omits it",
+    keys: ["div/div/div[3]/button[1]"],
+  },
+];
+
+/**
+ * Sort observed unclaimed nodes against [`KNOWN_UNCLAIMED`], both directions.
+ *
+ * Mirrors [`classifyUnstamped`] on purpose — same shape, same three buckets — because the two
+ * answer opposite halves of one question and a reader who has understood one should not have to
+ * learn a second vocabulary for the other.
+ */
+export function classifyUnclaimed(observed) {
+  const id = (frame, key) => `${frame}|${key}`;
+  const rows = new Map();
+  for (const row of KNOWN_UNCLAIMED) {
+    for (const key of row.keys) rows.set(id(row.frame, key), row);
+  }
+  const recorded = [];
+  const unexplained = [];
+  for (const o of observed) {
+    const row = rows.get(id(o.frame, o.key));
+    if (row) recorded.push({ ...o, class: row.class, issue: row.issue, why: row.why });
+    else unexplained.push(o);
+  }
+
+  // The other direction: a declared node that is claimed now. Reported PER ENTRY rather than per
+  // key, because an entry names a cluster and losing one of its members is the interesting event —
+  // "these three of thirty-five" is what a reader needs to act on, and thirty-five separate lines
+  // of which three matter is not.
+  const seen = new Set(observed.map((o) => id(o.frame, o.key)));
+  const stale = [];
+  for (const row of KNOWN_UNCLAIMED) {
+    const gone = row.keys.filter((key) => !seen.has(id(row.frame, key)));
+    if (gone.length) stale.push({ ...row, gone });
+  }
+  return { recorded, unexplained, stale };
+}

@@ -37,7 +37,13 @@ import {
 } from "./props.mjs";
 import { resolveFixture } from "../../src/js/fixtures/frames.js";
 import { OWES_BOX, OWES_FIT } from "./frame-classes.mjs";
-import { isKnown, unmetDeviations, classifyUnstamped, KNOWN_DEVIATIONS } from "./known-deviations.mjs";
+import {
+  isKnown,
+  unmetDeviations,
+  classifyUnstamped,
+  classifyUnclaimed,
+  KNOWN_DEVIATIONS,
+} from "./known-deviations.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FRAMES = join(HERE, "frames");
@@ -125,6 +131,8 @@ const blankFrames = [];
  * stamps nothing at all lands here rather than in the non-failing "screen not built" list.
  */
 const unstamped = [];
+/** Drawn nodes no fid slot claims (#250) — see the loop that fills it. */
+const unclaimed = [];
 
 /**
  * How far each index axis is probed below. Measured, not chosen: raising it to 30 reaches not one
@@ -144,9 +152,20 @@ const PROBE_DEPTH = 10;
  * column, then card, then fact; arguments a shorter factory ignores cost nothing.
  *
  * TWO THINGS IT STILL CANNOT REACH, stated rather than solved, the way #247 stated the static-only
- * limit: an index past `PROBE_DEPTH`, and a factory wanting a non-numeric argument (none exist —
- * every fid factory is keyed by position). Both fail SAFE: the key is never produced, so the slot
- * is never reported, and this gate only ever accuses.
+ * limit: an index past `PROBE_DEPTH`, and a factory wanting a **non-numeric** argument.
+ *
+ * THE SECOND USED TO SAY "none exist — every fid factory is keyed by position", AND THAT IS FALSE
+ * (#250): `settingsShell.tab` is keyed by a tab **id** (`(id) => [...].indexOf(id)`), which S9
+ * introduced so a fifth pill no frame draws could answer `undefined` rather than being compared
+ * against `Advanced`. The probe passes numbers, `indexOf(0)` is `-1`, and the slot therefore
+ * produces no keys at all — so the four Settings pills are invisible to the UNSTAMPED direction of
+ * this gate, and read as unclaimed in the other until a stamped node is counted as claimed.
+ *
+ * The first half still holds and was re-measured: raising `PROBE_DEPTH` to 30 reaches not one drawn
+ * key that 10 does not, across every factory slot of every mapped frame.
+ *
+ * Both still fail SAFE — the key is never produced, so the slot is never reported, and this gate
+ * only ever accuses. What changed is that one of them is now a real gap rather than a hypothetical.
  *
  * @returns {string[]} deduplicated, and an array in BOTH branches — the guard used to answer `[]`
  *   where the body answered a `Set`, which iterates the same and would have surprised the first
@@ -375,10 +394,38 @@ for (const entry of index) {
   // and green, and the blocks they render nothing for were invisible. Caught by asking why
   // `12a Syncing light` reported none of the two #98 slots its twin reports.
   const declaredFids = resolveFixture(frame.label)?.fids ?? {};
+  const declaredKeys = new Set();
   for (const [slot, value] of Object.entries(declaredFids)) {
     for (const key of typeof value === "string" ? [value] : probeSlot(value)) {
+      declaredKeys.add(key);
       if (!stampedKeys.has(key) && expected.has(key)) unstamped.push({ frame: frame.label, slot, key });
     }
+  }
+
+  // THE OTHER HALF OF THE SAME QUESTION (#250), and the one that had no rule at all.
+  //
+  // `unstamped` above asks: a slot is DECLARED — does the app stamp it? This asks: a node is DRAWN
+  // — does any slot claim it? The two are disjoint by construction (one iterates declarations, the
+  // other iterates the frame) and they fail for opposite reasons: an unstamped slot is a block the
+  // app does not render, an unclaimed node is a block nobody said anything about.
+  //
+  // Leaving a drawn node undeclared removed it from EVERY gate that targets it — the style gate
+  // never compares it, the unstamped gate never reports it, `check-fixtures.mjs`'s "alive somewhere"
+  // rule keeps a factory alive on index 0 and never examines index 1. Every other suppression in
+  // this subsystem self-invalidates; this absence did not, and 280 nodes sat behind it.
+  // CLAIMED MEANS "some slot named it", and a node the app STAMPED was named by a slot — whatever
+  // `probeSlot` could reach. Both sets are needed, and the second is not belt and braces: it is
+  // what makes this census exact. `probeSlot` walks a numeric grid, and `settingsShell.tab` is
+  // keyed by a tab **id** (`(id) => …indexOf(id)`), so the probe answers `undefined` for it and the
+  // Settings pills read as unclaimed while the app stamps them on every render.
+  //
+  // (`probeSlot`'s own doc said "a factory wanting a non-numeric argument (none exist — every fid
+  // factory is keyed by position)". That stopped being true when S9 keyed the tabs by id, and the
+  // sentence is corrected there. The UNSTAMPED direction still cannot see such a slot at all, which
+  // is a narrower gap recorded at `probeSlot` rather than papered over here.)
+  for (const node of frame.nodes) {
+    if (node.key === "" || declaredKeys.has(node.key) || stampedKeys.has(node.key)) continue;
+    unclaimed.push({ frame: frame.label, key: node.key, tag: node.tag });
   }
 
   if (!seen.length) {
@@ -599,6 +646,32 @@ if (unmappedFrames.length) {
 
 // A block the app cannot draw yet, named and waiting on an issue. Printed like the deviations
 // below and for the same reason: the reader has to be able to see what the gate is NOT comparing.
+// #250's two directions, reported beside the unstamped ones they are the mirror of.
+const {
+  recorded: recordedUnclaimed,
+  unexplained: unexplainedUnclaimed,
+  stale: staleUnclaimed,
+} = classifyUnclaimed(unclaimed);
+if (recordedUnclaimed.length) {
+  const byClass = new Map();
+  for (const u of recordedUnclaimed) byClass.set(u.class, (byClass.get(u.class) ?? 0) + 1);
+  console.log(
+    `  ${recordedUnclaimed.length} recorded unclaimed node(s) — drawn, and no slot names them: ` +
+      [...byClass].map(([c, n]) => `${n} ${c}`).join(", "),
+  );
+}
+if (process.env.FIDELITY_DUMP_UNCLAIMED) {
+  const byFrame = new Map();
+  for (const u of unclaimed) {
+    if (!byFrame.has(u.frame)) byFrame.set(u.frame, []);
+    byFrame.get(u.frame).push(u.key);
+  }
+  console.error(`\nUNCLAIMED CENSUS — ${unclaimed.length} node(s) across ${byFrame.size} frame(s)`);
+  for (const [f, keys] of [...byFrame].sort((a, b) => b[1].length - a[1].length)) {
+    console.error(`  // ${f} — ${keys.length}`);
+    console.error(`  ${JSON.stringify(keys)},`);
+  }
+}
 const { recorded: recordedUnstamped, unexplained, stale } = classifyUnstamped(unstamped);
 if (recordedUnstamped.length) {
   console.log(
@@ -712,6 +785,35 @@ if (unexplained.length) {
   );
 }
 
+// #250'S TEETH, and they point the opposite way to the ones above. That check asks whether a
+// declared slot renders; this one asks whether a drawn node was ever spoken for. Undeclared, a node
+// is invisible to every gate at once — the style gate does not compare it, the unstamped gate does
+// not report it, and `check-fixtures.mjs` keeps its factory alive on index 0 without examining
+// index 1.
+if (unexplainedUnclaimed.length) {
+  console.error("\nDrawn nodes no slot claims, with no reason on file:\n");
+  for (const u of unexplainedUnclaimed) {
+    console.error(`  ${u.frame} · ${u.key} <${u.tag}>`);
+  }
+  console.error(
+    `\nfidelity:assert: ${unexplainedUnclaimed.length} unclaimed drawn node(s). Declare the slot, or add a KNOWN_UNCLAIMED entry.`,
+  );
+}
+
+// And the self-invalidating half, which is the whole reason this list exists rather than a comment:
+// an entry that stops being true has to fail, or it becomes the silent absence it replaced.
+if (staleUnclaimed.length) {
+  console.error("\nRecorded unclaimed nodes that ARE claimed now — delete them, or re-pin the keys:\n");
+  for (const row of staleUnclaimed) {
+    console.error(
+      `  ${row.frame} — ${row.gone.length} of ${row.keys.length} now claimed${row.issue ? ` (${row.issue})` : ""}\n      ${row.gone.slice(0, 6).join(", ")}${row.gone.length > 6 ? ", …" : ""}`,
+    );
+  }
+  console.error(
+    `\nfidelity:assert: ${staleUnclaimed.length} stale KNOWN_UNCLAIMED entr${staleUnclaimed.length === 1 ? "y" : "ies"}.`,
+  );
+}
+
 if (failures.length) {
   console.error("");
   // 40 by default so a broken build prints a page rather than a screenful of scrollback.
@@ -727,5 +829,13 @@ if (failures.length) {
   console.error(`\nfidelity:assert: ${failures.length} failure(s).`);
 }
 
-if (failures.length || unmet.length || stale.length || unexplained.length || blankFrames.length)
+if (
+  failures.length ||
+  unmet.length ||
+  stale.length ||
+  unexplained.length ||
+  blankFrames.length ||
+  unexplainedUnclaimed.length ||
+  staleUnclaimed.length
+)
   process.exit(1);

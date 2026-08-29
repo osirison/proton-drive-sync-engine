@@ -5619,3 +5619,89 @@ One further state the frames do not draw: two files that differ as bytes but not
 says so in words (*"Your lines are unchanged — only the file's ending differs"*) rather than drawing
 nothing, for the reason `ui/diff.js` already gives about `invisibleDifference` — a conflict exists,
 so "no difference" is the one answer that is certainly wrong.
+
+## 106. The 270 drawn nodes nothing was saying anything about (#250)
+
+Every suppression in this subsystem self-invalidates — `KNOWN_DEVIATIONS` fails when a row stops
+mismatching, `KNOWN_UNSTAMPED` when a slot starts being stamped, `SETTLED_FRAMES` when a label
+leaves `index.json`. **Leaving a drawn node undeclared had no such rule**, and it removed that node
+from every gate at once: the style gate never compares it, the unstamped gate never reports it, and
+`check-fixtures.mjs`'s "alive somewhere" rule keeps a factory alive on index 0 without ever
+examining index 1.
+
+`KNOWN_UNCLAIMED` closes it, in both directions: an unclaimed node with no entry fails the build,
+and an entry whose nodes are claimed now fails too.
+
+### §106a · The census, re-measured — and #250's own number was wrong in two ways
+
+| | #250 (as filed) | now |
+| --- | --- | --- |
+| frames carrying a `fids` map | 36 | **51** (all of them, since S10) |
+| drawn nodes | 1,452 | **1,948** |
+| unclaimed | 268 (18%) | **270 across 25 frames (13.9%)** |
+
+The first difference is capability: fifteen more frames gained mappings. The second is a **defect in
+the gate's own probe**, found while building this.
+
+`probeSlot` walks a numeric grid, and its doc claimed *"a factory wanting a non-numeric argument
+(none exist — every fid factory is keyed by position)"*. That stopped being true when S9 keyed the
+Settings tabs by **id** (`tab: (id) => [...].indexOf(id)`), so the probe passes `0`, `indexOf(0)` is
+`-1`, and the slot produces no keys at all. Ten nodes read as unclaimed while the app stamps them on
+every render. Counting a **stamped** node as claimed removes them exactly, with no guessing.
+
+The narrower half of that gap is left open and recorded rather than papered over: the *unstamped*
+direction still cannot enumerate a string-keyed slot, so `settingsShell.tab` has been outside it
+since S9.
+
+The other half of the probe's doc was re-measured and **holds**: raising `PROBE_DEPTH` from 10 to 30
+reaches not one drawn key that 10 does not.
+
+### §106b · Three classes, and the honest split
+
+| class | nodes | what it means |
+| --- | --- | --- |
+| `decision` | 118 | the frame draws something this app deliberately does not — a mock host desktop, a specimen sheet's own documentation table, a button whose absence is a recorded decision |
+| `issue` | 116 | a capability gap with a number (#207, #190, #229, #236, #241) |
+| `mapping` | 36 | **the app draws it and nobody declared a slot** — the bugs this census exists to find |
+
+The `mapping` 36 are recorded rather than fixed here, and filed as **#377**. Declaring a slot makes
+the node *compared*, which can surface unrelated style failures on frames this change does not
+otherwise touch — and one of them is not a missing declaration at all but a structural question
+(the frame splits transfers across the seam's two columns; the app renders one list), which needs
+answering before its keys are declared rather than by declaring them.
+
+### §106c · Membership is pinned, never prefixed
+
+Entries carry exact `keys`. A prefix rule (`everything under div[2]`) would auto-excuse whatever a
+re-extracted frame added underneath it — a suppression that widens itself, which is precisely the
+shape this list exists to remove.
+
+### §106d · Verified against itself
+
+A new gate that does not fire is the failure this project has shipped before (#247 landed with its
+check below an early `continue`), so all three directions were run:
+
+```
+a KEY removed from an entry        → 1 unclaimed drawn node(s)      exit 1
+a key added that is not unclaimed  → 1 stale KNOWN_UNCLAIMED entry  exit 1
+#250's own scenario: a fixture stops naming a node it renders
+                                   → 1 unclaimed drawn node(s)      exit 1
+restored                           → exit 0
+```
+
+The first attempt at those poisons produced **no output at all** — the edit had broken the module,
+`KNOWN_UNCLAIMED` was `undefined`, and `assert.mjs` failed to import. A poison that breaks the thing
+it is poisoning proves nothing, and reads exactly like a gate that does not fire.
+
+### §106e · The adjacent item in #250 is already closed
+
+#250's "Adjacent, and smaller" section says `fid()` null-checks the factory rather than its result,
+so a factory returning `null` stamps `data-fid="<frame>:null"`. At HEAD it reads:
+
+```js
+const key = typeof declared === "function" ? declared(...args) : declared;
+if (key == null) return node;
+```
+
+It checks the result. S9 fixed it — the comment above those lines records why — so that half of the
+issue was closed before this pass and needs nothing.
