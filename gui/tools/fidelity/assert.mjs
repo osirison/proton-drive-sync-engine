@@ -136,22 +136,38 @@ const unclaimed = [];
 /**
  * TWO ELEMENTS CARRYING ONE `data-fid` (#379).
  *
- * A fid map is built by spreading several tables into one object, so a second table declaring a
- * name the first already used wins silently — and then two different nodes are stamped with one
- * key. It is not hypothetical: `mainFids` did exactly this to the header's flex gap, which was
- * stamped with the 1040×229 tail block's key on `2a Settled` and `12a Settled light`.
+ * A fixture's map is built by spreading several tables into one object — `SHELL_FIDS[label]` then
+ * `mainFids(...)`, in the fixture literal — so a later table declaring a name an earlier one used
+ * wins silently, and two different nodes are then stamped with one key. Not hypothetical:
+ * `mainFids`' tail `spacer` beat `SHELL_FIDS`', so the header's 0-height flex gap was stamped with
+ * the 1040×229 tail block's key on `2a Settled` and `12a Settled light`.
  *
- * IT CANNOT BE CAUGHT BY THE COMPARISON. Both nodes are looked up against the same drawn node, so
- * the mis-stamped one is compared against something it has no reason to match — and passes
- * whenever the properties happen to agree or the box comparison is skipped, which is what happened
- * here (both set only `flex-grow: 1; flex-basis: 0%`, and the `⋯` glyph taints the root's
- * children out of `boxComparability`).
+ * THE COMPARISON DOES LOOK AT IT AND STILL PASSED, which is a weaker claim than the first version
+ * of this comment made and is the one the measurement supports. Both elements are looked up
+ * against the same drawn node, so the mis-stamped one is compared against something it has no
+ * reason to match — and passes when the properties happen to agree AND the boxes are not compared.
+ * Both held here: the two drawn nodes carry byte-identical style records, and the `⋯` glyph taints
+ * the root's children out of `boxComparability`. Remove that taint from the frame and the box
+ * comparison fails exactly where the mis-stamp is (measured: `box.w 1040 vs 731.08`). So the style
+ * gate is not structurally blind — it was blind *on these frames*, for two contingent reasons.
  *
- * AND IT IS INVISIBLE TO THE CENSUS BY CONSTRUCTION. `stampedKeys` is a Set of strings, so two
- * elements stamping one key are indistinguishable from one. Here the collision resolved toward the
- * tail block and the header spacer read *unclaimed*, which is how it was found. Had it resolved
- * the other way, the real `div[1]` would have read *claimed* with nothing naming it — silently,
- * and for ever. That asymmetry is the reason this is its own gate rather than a note.
+ * THE CENSUS IS NOT BLIND EITHER, AND THE FIRST VERSION OF THIS COMMENT SAID IT WAS. It claimed
+ * that had the collision resolved the other way the real `div[1]` would have read *claimed* with
+ * nothing naming it, silently and for ever. That is false, and the mirror was built to check it:
+ * with the tail assigning nothing and the app stamping `spacer`, `div[1]` is in neither
+ * `declaredKeys` nor `stampedKeys` and the census reports it. **Whichever way the spread resolves,
+ * the losing key reads unclaimed and is reported.** What is invisible in both directions is that
+ * the WINNING key has two claimants.
+ *
+ * SO THE REASON THIS IS ITS OWN GATE IS NARROWER, AND TRUE. The census reports the loser under the
+ * wrong name — `mapping`, "the app renders it and nobody declared a slot" — when the mechanism is a
+ * mis-stamp; and an entry recording it under that name turns the build green, which is exactly
+ * what HEAD~1 was. This gate names the mechanism instead, and cannot be recorded away.
+ *
+ * WHAT IT STILL CANNOT SEE: one ELEMENT stamped by two slots. The second `setAttribute` overwrites,
+ * leaving one element and one key, so nothing here counts two. The losing key is caught by the
+ * unstamped gate only when that frame draws it (`expected.has(key)` below); a double-stamp whose
+ * losing key is undrawn is silent. Stated rather than solved, the way `probeSlot` states its two.
  */
 const collisions = [];
 
@@ -454,7 +470,8 @@ for (const entry of index) {
   // Leaving a drawn node undeclared removed it from EVERY gate that targets it — the style gate
   // never compares it, the unstamped gate never reports it, `check-fixtures.mjs`'s "alive somewhere"
   // rule keeps a factory alive on index 0 and never examines index 1. Every other suppression in
-  // this subsystem self-invalidates; this absence did not, and 270 nodes sat behind it. (Not 280:
+  // this subsystem self-invalidates; this absence did not, and 270 nodes sat behind it when #250
+  // measured it — 268 since #379. (Not 280:
   // ten more read as unclaimed while the app stamps them, and the rule below is what removes them.)
   // CLAIMED MEANS "some slot named it", and a node the app STAMPED was named by a slot — whatever
   // `probeSlot` could reach. Both sets are needed, and the second is not belt and braces: it is

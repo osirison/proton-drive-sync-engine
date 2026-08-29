@@ -5736,15 +5736,25 @@ now, with no issue to go stale.
 
 ### §106f · One entry hid a live bug
 
-`2a Settled`'s header spacer was filed as *"the main-screen map does not declare it"*. It does — and
-`map.spacer = "div[1]"` **overwrites** `mainShell.spacer`, so the header's 0-height gap is stamped
-with the 1040×229 tail block's key. That is `planShell`'s documented collision (fixed there with
-`tailSpacer`), unfixed on the main screen. Filed as **#379**.
+`2a Settled`'s header spacer was filed as *"the main-screen map does not declare it"*. It does —
+`SHELL_FIDS["2a Settled"].spacer` is `header/span[1]` — and the fixture spreads that table **before**
+`mainFids(...)` (`fixtures/main.js`), whose tail `spacer` therefore wins, so the header's 0-height
+gap was stamped with the 1040×229 tail block's key. That is `planShell`'s documented collision
+(fixed there with `tailSpacer`), unfixed on the main screen. Filed as **#379**.
 
-It is also the live instance of a hazard in this census: `stampedKeys` is keyed by string, so two
-elements stamping one key are indistinguishable from one. Here the collision resolved toward the
-tail block, so the header spacer read unclaimed and got reported. Had it resolved the other way,
-the frame's real `div[1]` would have read *claimed* with nothing naming it, silently.
+**The hazard it was first said to prove is not real, and the correction is worth more than the
+claim was.** §106f originally read: `stampedKeys` is keyed by string, so two elements stamping one
+key are indistinguishable from one; the collision happened to resolve toward the tail block, so the
+header spacer read unclaimed and got reported, and had it resolved the other way the real `div[1]`
+would have read *claimed* with nothing naming it, silently. Adversarial review on #381 built the
+mirror — tail assigning nothing, app stamping `spacer` — and measured the opposite: `div[1]` is
+then in neither `declaredKeys` nor `stampedKeys`, and the census reports it. **Whichever way the
+spread resolves, the losing key reads unclaimed.** The asymmetry was invented, not observed.
+
+What is true is narrower and still worth a gate: the census reports the loser under the **wrong
+name** — `mapping`, *"the app renders it and nobody declared a slot"* — when the mechanism is a
+mis-stamp, and an entry recording it under that name turns the build green, which is exactly what
+this repository was before #379. A gate that names the mechanism cannot be recorded away.
 
 **Fixed, and the census invalidated its own entries doing it.** #379 renamed the tail slot
 `tailSpacer` (`planShell`'s fix, applied to the screen that lacked it) and gave `assert.mjs` a gate

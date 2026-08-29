@@ -25,8 +25,10 @@ npm run fidelity:contrast   # the contrast gate on its own; `--report` writes th
 | **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes          | yes, 1233 nodes across 51 frames   |
 | **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies                     | yes, all 51                        |
 
-The first nine need a browser and run in the `fidelity` CI job. The last does not, and runs in
-`frontend` alongside the linters — a gate that can run in the fifteen-second job should.
+Seven of the ten are `assert.mjs` and need a browser. **contrast** needs one too. **copy** does
+not — it reads `ui/copy.js` and the frame JSON — but rides the `fidelity` CI job anyway because
+`npm run fidelity` chains it. **fixtures** needs no browser either and runs in `frontend` alongside
+the linters, which is where a gate that can finish in the fifteen-second job belongs.
 
 ## The squeeze gate, and the condition the other nine cannot be in (S8)
 
@@ -192,29 +194,41 @@ One trap worth naming: **the app rendering different text is not the app renderi
 
 ## Two elements carrying one data-fid (#379)
 
-The narrowest gate here, and the one the others structurally cannot do.
+The narrowest gate here, and the only one that looks at the mapping itself rather than at a node.
 
-A fid map is built by spreading several tables into one object, so a second table declaring a name
-the first already used **wins silently** — and two different nodes then carry one key. `mainFids`
-did exactly that: `map.spacer = "div[1]"` overwrote `mainShell.spacer = "header/span[1]"`, so the
-header's 0-height flex gap was stamped with the 1040×229 tail block's key on `2a Settled` and
-`12a Settled light`.
+A fixture's map is built by spreading several tables into one object — `SHELL_FIDS[label]` and then
+`mainFids(...)`, in the fixture literal — so a later table declaring a name an earlier one used
+**wins silently**, and two different nodes then carry one key. `mainFids`' tail `spacer` beat
+`SHELL_FIDS["2a Settled"].spacer`, so the header's 0-height flex gap was stamped with the 1040×229
+tail block's key on `2a Settled` and `12a Settled light`.
 
-**The style gate cannot see it.** Both elements are looked up against the same drawn node, so the
-mis-stamped one is compared against something it has no reason to match — and passes whenever the
-properties happen to agree or the box comparison is skipped. Here both were true: the two nodes set
-only `flex-grow: 1; flex-basis: 0%`, and the `⋯` glyph taints the root's children out of
-`boxComparability`.
+**The style gate looked at it and passed anyway** — a weaker claim than the first version of this
+section made, and the one the measurement supports. Both elements are looked up against the same
+drawn node, so the mis-stamped one is compared against something it has no reason to match, and
+passes when the properties agree **and** the boxes are not compared. Both held here: the two drawn
+nodes carry byte-identical style records, and the `⋯` glyph taints the root's children out of
+`boxComparability`. Strip that taint from the frame and the box comparison fails exactly where the
+mis-stamp is — `box.w 1040 vs 731.08`. The blindness was contingent, not structural.
 
-**The unclaimed census cannot see it either, and that is worse.** `stampedKeys` is a Set of
-strings, so two elements stamping one key are indistinguishable from one. This collision happened
-to resolve toward the tail block, so the header spacer read _unclaimed_ and got reported — which is
-how it was found. Had it resolved the other way, the frame's real `div[1]` would have read
-_claimed_ with nothing naming it, silently and permanently.
+**The census is not blind either, and this section used to say it was.** It claimed that had the
+collision resolved the other way, the real `div[1]` would have read _claimed_ with nothing naming
+it, silently and permanently. The mirror was built to check that, and it is false: with the tail
+assigning nothing and the app stamping `spacer`, `div[1]` is in neither `declaredKeys` nor
+`stampedKeys`, and the census reports it. **Whichever way the spread resolves, the losing key reads
+unclaimed and is reported.** What no other gate sees is that the _winning_ key has two claimants.
 
-So the check reads the duplicate before `stampedKeys` collapses it, and the fix is the one
-`planShell` already documents: rename the later slot (`tailSpacer`). This is the second occurrence;
-the gate is what stops there being a third.
+**So the reason for a separate gate is narrower, and true.** The census reports the loser under the
+wrong name — `mapping`, "the app renders it and nobody declared a slot" — when the mechanism is a
+mis-stamp. An entry recording it under that name turns the build green, which is exactly what the
+tree was before #379. This gate names the mechanism, and cannot be recorded away.
+
+It reads the duplicate before `stampedKeys` collapses it, and the fix is the one `planShell` already
+documents: rename the later slot (`tailSpacer`). This was the second occurrence; the gate is what
+stops there being a third.
+
+**What it still cannot see**: one _element_ stamped by two slots. The second `setAttribute`
+overwrites, leaving one element and one key, so nothing counts two. The losing key is caught by the
+unstamped gate only when that frame draws it; a double-stamp whose losing key is undrawn is silent.
 
 ## The node key, and why it is a path
 
