@@ -1233,3 +1233,733 @@ export function classifyUnstamped(observed) {
   }
   return { recorded, unexplained, stale };
 }
+/**
+ * Drawn nodes that **no fid slot claims** (#250), declared so their absence self-invalidates.
+ *
+ * # Why this list exists
+ *
+ * Every other suppression in this subsystem fails the build when it stops being true —
+ * `KNOWN_DEVIATIONS` when a row stops mismatching, `KNOWN_UNSTAMPED` when a slot starts being
+ * stamped, `SETTLED_FRAMES` when a label leaves `index.json`. **Leaving a drawn node undeclared had
+ * no such rule**, and it removed that node from every gate at once: the style gate never compares
+ * it, the unstamped gate never reports it, and `check-fixtures.mjs`'s "alive somewhere" rule keeps
+ * a factory alive on index 0 without ever examining index 1.
+ *
+ * # Every entry was verified by RENDERING the frame
+ *
+ * Not by reading `frames/*.json` and reasoning about what the app probably does. The first version
+ * of this list was sorted that way and adversarial review found reasons covering roughly half the
+ * keys were false — entries claiming the app draws nothing where it visibly does, and capability
+ * gaps filed against issues that had already closed. #250's own text warns about exactly that
+ * ("rushing that is how a plausible-looking reason ends up on file", DEVIATIONS §60).
+ *
+ * The method, for whoever edits this next: serve `gui/src`, open `?frame=<label>`, dump every
+ * element with its tag, class, box and own text, and match it against the frame's node. Distinctive
+ * text settles most keys outright; a spacer or an `svg` path settles on tag plus box. It costs one
+ * browser run per frame.
+ *
+ * # Five classes, and each names an authority rather than an opinion
+ *
+ * * `scenery` — the frame draws something that is **not product**. `frame-classes.mjs`'s
+ *   `SPECIMEN_ARTEFACT` is the authority on which part of a specimen frame is: a swatch sheet's
+ *   card, a mock desktop's wallpaper and clock. Note this is NOT "the app cannot draw it" —
+ *   `preview.js` renders most of it deliberately, to place the artefact.
+ * * `unmappable` — **the two sides disagree in a way no mapping fixes**, so mapping the node would
+ *   assert the mistake or fail whichever frame it is not. `5a Checking`'s unlit doors (§77, and the
+ *   comment lives in `PLAN_CHECKING_FIDS`), `8a Schedule monthly`'s numbers (§104b), and
+ *   `9a Folders`' remote path field, which the app builds as an `<input>` where the frame draws a
+ *   `<div>` (§79e).
+ * * `decision` — a recorded decision that the app renders nothing there, or that a differently
+ *   shaped node is measured elsewhere. §102, §63c.
+ * * `issue` — a capability gap with an **open** number. Openness is NOT machine-checked: the schema
+ *   test only requires the field to be present, and the first version of this list cited three closed
+ *   issues and a fourth that survived that correction (§106e both times). Check it by hand.
+ * * `mapping` — the app renders it and nobody declared a slot. These are the bugs the census exists
+ *   to find (#377; two of them are #379's collision rather than a missing declaration), recorded
+ *   rather than fixed here because declaring a slot makes the node *compared*, which can surface
+ *   unrelated failures on frames a change does not otherwise touch.
+ *
+ * # Membership is pinned, deliberately
+ *
+ * Entries carry exact `keys`, never a prefix. A prefix rule would auto-excuse whatever a
+ * re-extracted frame added underneath it — a suppression that widens itself, which is the shape
+ * this list exists to remove. A frame may hold SEVERAL entries when its nodes have different
+ * causes; six do, and splitting them is the point rather than a tidiness preference.
+ *
+ * # The census that produced it
+ *
+ * #250 measured 268 unclaimed over the 36 frames that then carried a `fids` map. All 51 do now, and
+ * the figure is **270 across 25 frames** (13.9% of 1,948 drawn). It is not 280: ten nodes read as
+ * unclaimed while the app stamps them on every render — eight Settings pills, whose slot is keyed by
+ * a tab **id** the numeric `probeSlot` grid cannot reach, and two `11a Rules` chips at
+ * `silentChip(10)`/`(11)`, past `PROBE_DEPTH`. Counting a **stamped** node as claimed removes both
+ * causes exactly. See the loop in `assert.mjs`.
+ */
+export const KNOWN_UNCLAIMED = [
+  {
+    frame: "6a Activity passes",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the screen's title block, and inside the pass list: the four spans of each of six rows, one " +
+      "row's nested head with its own four spans and its error line, and one span of a seventh " +
+      "row. The app renders every one of them and no slot names them.",
+    keys: [
+      "div[3]/div[0]/span[3]",
+      "div[3]/div[1]/span[3]",
+      "div[3]/div[2]/div[0]/span[2]",
+      "div[3]/div[2]/div[0]/span[3]",
+      "div[3]/div[3]/span[2]",
+      "div[3]/div[3]/span[3]",
+      "div[3]/div[4]/span[3]",
+      "div[3]/div[5]/span[3]",
+      "div[0]",
+      "div[3]/div[0]/span[0]",
+      "div[3]/div[0]/span[1]",
+      "div[3]/div[0]/span[2]",
+      "div[3]/div[1]/span[0]",
+      "div[3]/div[1]/span[1]",
+      "div[3]/div[1]/span[2]",
+      "div[3]/div[2]/div[0]",
+      "div[3]/div[2]/div[0]/span[0]",
+      "div[3]/div[2]/div[0]/span[1]",
+      "div[3]/div[2]/div[1]",
+      "div[3]/div[3]/span[0]",
+      "div[3]/div[3]/span[1]",
+      "div[3]/div[4]/span[0]",
+      "div[3]/div[4]/span[1]",
+      "div[3]/div[4]/span[2]",
+      "div[3]/div[5]/span[0]",
+      "div[3]/div[5]/span[1]",
+      "div[3]/div[5]/span[2]",
+      "div[3]/div[6]/span[1]",
+    ],
+  },
+  {
+    frame: "6a Activity passes",
+    class: "issue",
+    issue: "#380",
+    why:
+      "the twenty-bar duration chart and its two axis labels, which the app does not build. Filed " +
+      "against #380 rather than #229: that issue is CLOSED and the data landed \u2014 " +
+      "`PassRecord.duration_ms` documents itself as what this chart draws, and " +
+      "`PASS_HISTORY_REPORTED = 20` matches its twenty bars. The block was never built.",
+    keys: [
+      "div[2]",
+      "div[2]/div",
+      "div[2]/div/div[0]",
+      "div[2]/div/div[1]",
+      "div[2]/div/div[1]/div[0]",
+      "div[2]/div/div[1]/div[1]",
+      "div[2]/div/div[1]/div[2]",
+      "div[2]/div/div[1]/div[3]",
+      "div[2]/div/div[1]/div[4]",
+      "div[2]/div/div[1]/div[5]",
+      "div[2]/div/div[1]/div[6]",
+      "div[2]/div/div[1]/div[7]",
+      "div[2]/div/div[1]/div[8]",
+      "div[2]/div/div[1]/div[9]",
+      "div[2]/div/div[1]/div[10]",
+      "div[2]/div/div[1]/div[11]",
+      "div[2]/div/div[1]/div[12]",
+      "div[2]/div/div[1]/div[13]",
+      "div[2]/div/div[1]/div[14]",
+      "div[2]/div/div[1]/div[15]",
+      "div[2]/div/div[1]/div[16]",
+      "div[2]/div/div[1]/div[17]",
+      "div[2]/div/div[1]/div[18]",
+      "div[2]/div/div[1]/div[19]",
+      "div[2]/div/div[2]",
+      "div[2]/div/div[2]/span[0]",
+      "div[2]/div/div[2]/span[1]",
+    ],
+  },
+  {
+    frame: "8a Schedule monthly",
+    class: "unmappable",
+    why:
+      "the monthly schedule panel, which #193 built and renders in full. `8a Schedule monthly` maps " +
+      "ONLY its header, by §104b's decision, and these are the nodes that decision leaves unclaimed — " +
+      "one reason for all of them rather than one each. The decision: this crop and `8a Settings` " +
+      "disagree about the same panel's own numbers, so mapping against either asserts a contradiction " +
+      "with the other, and the panel is asserted node by node against the window frame instead. Two " +
+      "consequences of it are worth naming because they are NOT the disagreement: the day grid is " +
+      "drawn at 20 chips and built at 31 (§104b), and the month-edge note is drawn always and shown " +
+      "only for 29, 30 and 31 (§104b) — neither has a counterpart in `8a Settings` to disagree with.",
+    keys: [
+      "div[0]",
+      "div[0]/div[0]/div[1]",
+      "div[0]/div[1]",
+      "div[0]/div[1]/button[0]",
+      "div[0]/div[1]/button[1]",
+      "div[1]",
+      "div[1]/div[0]",
+      "div[1]/div[0]/span",
+      "div[1]/div[0]/div",
+      "div[1]/div[0]/div/button[0]",
+      "div[1]/div[0]/div/button[1]",
+      "div[1]/div[0]/div/button[2]",
+      "div[1]/div[0]/div/button[3]",
+      "div[1]/div[0]/div/button[4]",
+      "div[1]/div[0]/div/button[5]",
+      "div[1]/div[0]/div/button[6]",
+      "div[1]/div[0]/div/button[7]",
+      "div[1]/div[0]/div/button[8]",
+      "div[1]/div[0]/div/button[9]",
+      "div[1]/div[0]/div/button[10]",
+      "div[1]/div[0]/div/button[11]",
+      "div[1]/div[0]/div/button[12]",
+      "div[1]/div[0]/div/button[13]",
+      "div[1]/div[0]/div/button[14]",
+      "div[1]/div[0]/div/button[15]",
+      "div[1]/div[0]/div/button[16]",
+      "div[1]/div[0]/div/button[17]",
+      "div[1]/div[0]/div/button[18]",
+      "div[1]/div[0]/div/button[19]",
+      "div[1]/div[1]",
+      "div[1]/div[1]/span",
+      "div[1]/div[1]/div",
+      "div[1]/div[1]/div/button[0]",
+      "div[1]/div[1]/div/span",
+      "div[1]/div[1]/div/button[1]",
+      "div[1]/div[2]",
+    ],
+  },
+  {
+    frame: "10a Glyph states",
+    class: "scenery",
+    why:
+      "the swatch sheet the tray glyphs are shown ON \u2014 its column headers, the rules between rows " +
+      "and the prose caption under each state. `frame-classes.mjs`'s `SPECIMEN_ARTEFACT` names what " +
+      "is product on each specimen frame and what is not; these are the not. Here it is `the tray " +
+      "glyphs themselves; the card behind them is a swatch sheet`. `preview.js` DOES render all of " +
+      "it (that is how the sheet exists at all), so the reason is not that the app cannot draw it \u2014 " +
+      "it is that a swatch sheet is not product and must not be asserted.",
+    keys: [
+      "div[0]",
+      "div[0]/div[0]",
+      "div[0]/div[1]",
+      "div[0]/div[2]",
+      "div[0]/div[3]",
+      "div[0]/div[4]",
+      "div[0]/div[5]",
+      "div[0]/div[6]",
+      "div[0]/div[6]/div[0]",
+      "div[0]/div[6]/div[1]",
+      "div[0]/div[7]",
+      "div[0]/div[8]",
+      "div[0]/div[9]",
+      "div[0]/div[10]",
+      "div[0]/div[10]/div[0]",
+      "div[0]/div[10]/div[1]",
+      "div[0]/div[11]",
+      "div[0]/div[12]",
+      "div[0]/div[13]",
+      "div[0]/div[14]",
+      "div[0]/div[14]/div[0]",
+      "div[0]/div[14]/div[1]",
+      "div[0]/div[15]",
+      "div[0]/div[16]",
+      "div[0]/div[17]",
+      "div[0]/div[18]",
+      "div[0]/div[18]/div[0]",
+      "div[0]/div[18]/div[1]",
+      "div[0]/div[19]",
+      "div[0]/div[20]",
+      "div[0]/div[21]",
+      "div[0]/div[22]",
+      "div[0]/div[22]/div[0]",
+      "div[0]/div[22]/div[1]",
+      "div[1]",
+    ],
+  },
+  {
+    frame: "7a Activity quiet",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the screen's title block, both side eyebrows, the local side's `watched continuously \u00b7 " +
+      "checked 2m ago` sub-line and a spacer. The app renders them and no slot names them.",
+    keys: [
+      "div[3]/div[1]/div[4]/span[1]",
+      "div[0]",
+      "div[2]/div[2]/div[0]/div[0]",
+      "div[2]/div[2]/div[0]/div[2]",
+      "div[2]/div[2]/div[1]/div[0]",
+    ],
+  },
+  {
+    frame: "7a Activity quiet",
+    class: "issue",
+    issue: "#380",
+    why:
+      "TWO unbuilt blocks with two causes, one issue. (a) Both side count blocks, filed against " +
+      "#380 rather than #207: that issue is CLOSED and `ControlResponse.index_totals` reports " +
+      "index-wide files and bytes at HEAD, so `no command reports index-wide totals` is false. " +
+      "(b) `Last things to move` \u2014 its head, its three file rows and the `All 7 files` button, " +
+      "20 of these keys. `screens/activity.js` drops them saying they `need per-file recent " +
+      "activity, which nothing returns`, and that sentence is STALE the same way #207 was: #230 " +
+      "closed, and `ControlCommand::Activity` with no selector reaches `index::file_events` with " +
+      "`path: None`, which is the newest events across every path. So it is #380's shape again " +
+      "and is recorded there as a fourth block, not a fourth issue. The countdown " +
+      "(`next full check in 4m`) is the one genuine gap in this frame \u2014 #193 gave the daemon a " +
+      "schedule and no reply carries the next-due moment.",
+    keys: [
+      "div[3]/div[1]/div[0]",
+      "div[2]/div[2]/div[0]/div[1]",
+      "div[2]/div[2]/div[0]/div[1]/span[0]",
+      "div[2]/div[2]/div[0]/div[1]/span[1]",
+      "div[2]/div[2]/div[1]/div[1]",
+      "div[2]/div[2]/div[1]/div[1]/span[0]",
+      "div[2]/div[2]/div[1]/div[1]/span[1]",
+      "div[2]/div[2]/div[1]/div[2]",
+      "div[3]/div[1]/div[0]/span[0]",
+      "div[3]/div[1]/div[0]/span[1]",
+      "div[3]/div[1]/div[0]/span[2]",
+      "div[3]/div[1]/div[1]",
+      "div[3]/div[1]/div[1]/span[0]",
+      "div[3]/div[1]/div[1]/span[1]",
+      "div[3]/div[1]/div[1]/span[2]",
+      "div[3]/div[1]/div[1]/span[3]",
+      "div[3]/div[1]/div[2]",
+      "div[3]/div[1]/div[2]/span[0]",
+      "div[3]/div[1]/div[2]/span[1]",
+      "div[3]/div[1]/div[2]/span[2]",
+      "div[3]/div[1]/div[2]/span[3]",
+      "div[3]/div[1]/div[3]",
+      "div[3]/div[1]/div[3]/span[0]",
+      "div[3]/div[1]/div[3]/span[1]",
+      "div[3]/div[1]/div[3]/span[2]",
+      "div[3]/div[1]/div[3]/span[3]",
+      "div[3]/div[1]/div[4]/button[0]",
+    ],
+  },
+  {
+    frame: "7a File lookup",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the two card meta-row siblings (`edited 14:31`, `received 14:32`) and a spacer, all rendered " +
+      "and unnamed.",
+    keys: [
+      "div[1]/div[2]/div[0]/div[1]/div[0]/span[1]",
+      "div[1]/div[2]/div[1]/div[1]/div[0]/span[1]",
+      "div[2]/div[5]/span[0]",
+    ],
+  },
+  {
+    frame: "7a File lookup",
+    class: "issue",
+    issue: "#380",
+    why:
+      "the four `This file's history` rows, which the app does not build. Filed against #380 rather " +
+      "than #190: that issue is CLOSED and `ControlCommand::Activity` landed the query behind it.",
+    keys: [
+      "div[2]/div[3]/span[0]",
+      "div[2]/div[0]",
+      "div[2]/div[1]",
+      "div[2]/div[1]/span[0]",
+      "div[2]/div[1]/span[1]",
+      "div[2]/div[1]/span[2]",
+      "div[2]/div[2]",
+      "div[2]/div[2]/span[0]",
+      "div[2]/div[2]/span[1]",
+      "div[2]/div[2]/span[2]",
+      "div[2]/div[3]",
+      "div[2]/div[3]/span[1]",
+      "div[2]/div[3]/span[2]",
+      "div[2]/div[4]",
+      "div[2]/div[4]/span[0]",
+      "div[2]/div[4]/span[1]",
+      "div[2]/div[4]/span[2]",
+    ],
+  },
+  {
+    frame: "11a In situ",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the FIRST of the three stacked banners' own `notify-app` and `notify-spacer`. The app renders " +
+      "all three banners and stamps the second and third; these two are inside the product artefact, " +
+      "which is why they are `mapping` while the desktop around them is `scenery`. The first version " +
+      "of this entry also held the mock desktop's bar, its label and its clock — the very nodes its " +
+      "own sibling entry calls scenery, and which `SPECIMEN_ARTEFACT` names as not product.",
+    keys: ["div[1]/div/div[0]/div[0]/div/div[0]/span[0]", "div[1]/div/div[0]/div[0]/div/div[0]/span[1]"],
+  },
+  {
+    frame: "11a In situ",
+    class: "scenery",
+    why:
+      "the mock host desktop the notification banners are shown on. `frame-classes.mjs`'s " +
+      "`SPECIMEN_ARTEFACT` names what is product on each specimen frame and what is not; these are " +
+      "the not. Here: `the notification banner over a desktop mock`. `preview.js` renders the bar " +
+      "and clock deliberately, to place the banner; they are scenery either way.",
+    keys: [
+      "div[0]",
+      "div[0]/span[0]",
+      "div[0]/span[1]",
+      "div[1]",
+      "div[1]/div",
+      "div[0]/span[2]",
+      "div[0]/span[3]",
+      "div[0]/span[3]/svg",
+      "div[0]/span[3]/svg/path",
+      "div[0]/span[3]/svg/circle",
+      "div[0]/span[3]/span[0]",
+      "div[0]/span[3]/span[1]",
+      "div[0]/span[3]/span[2]",
+      "div[0]/span[3]/span[3]",
+    ],
+  },
+  {
+    frame: "10a In situ",
+    class: "scenery",
+    why:
+      "the mock host desktop the compact panel is shown on \u2014 a GNOME-style bar, its clock, and a " +
+      "strip of other applications' tray glyphs. `frame-classes.mjs`'s `SPECIMEN_ARTEFACT` names " +
+      "what is product on each specimen frame and what is not; these are the not. Here: `assert the " +
+      "panel, not the wallpaper`. Verified by render: the app draws the panel and none of the " +
+      "mock desktop around it.",
+    keys: [
+      "div[0]",
+      "div[0]/span[0]",
+      "div[0]/span[1]",
+      "div[0]/span[2]",
+      "div[0]/span[3]",
+      "div[0]/span[3]/span[0]",
+      "div[0]/span[3]/span[0]/svg",
+      "div[0]/span[3]/span[0]/svg/path",
+      "div[0]/span[3]/span[0]/svg/circle",
+      "div[0]/span[3]/span[1]",
+      "div[0]/span[3]/span[2]",
+      "div[0]/span[3]/span[3]",
+      "div[0]/span[3]/span[4]",
+    ],
+  },
+  {
+    frame: "12a Tray light",
+    class: "scenery",
+    why:
+      "the light-theme tray strip the glyph is shown in, and the sheet's own caption. `frame- " +
+      "classes.mjs`'s `SPECIMEN_ARTEFACT` names what is product on each specimen frame and what is " +
+      "not; these are the not. Here: `only the 14px glyph is product \u2014 its own card is drawn dark " +
+      "(DEVIATIONS \u00a71.2)`.",
+    keys: [
+      "div[0]",
+      "div[0]/span[0]",
+      "div[0]/span[1]",
+      "div[0]/span[2]",
+      "div[0]/span[3]",
+      "div[0]/span[4]",
+      "div[0]/span[5]",
+      "div[1]",
+    ],
+  },
+  {
+    frame: "9a Folders",
+    class: "unmappable",
+    why:
+      "the remote path field, and this is #250's OWN headline example. The app renders it as an " +
+      "`<input>` where the frame draws a `<div>`, and a UA rule pins an `<input>`'s `overflow` to " +
+      "`clip` — so it can never agree with the drawn node on that property and NEITHER list can hold " +
+      "it: not this one as a capability gap, and not `KNOWN_DEVIATIONS`, whose bar is a missing " +
+      "capability. DEVIATIONS §79e calls it a construction difference rather than a missing " +
+      "capability, which is exactly the distinction the first version of this entry lost by filing it " +
+      "under the account-line issue.",
+    keys: ["div[1]/div[1]/div[1]/div[1]/div[0]"],
+  },
+  {
+    frame: "9a Folders",
+    class: "issue",
+    issue: "#241",
+    why:
+      "the two folder-count lines and `you@proton.me`, none of which the app renders. G26: the " +
+      "daemon reuses the CLI's session for a token and never sees an address; the counts are the " +
+      "same index-wide totals G7 covers.",
+    keys: [
+      "div[1]/div[1]/div[0]/div[1]/div[1]",
+      "div[1]/div[1]/div[0]/div[1]/div[1]/span[0]",
+      "div[1]/div[1]/div[0]/div[1]/div[1]/span[1]",
+      "div[1]/div[1]/div[1]/div[1]/div[1]",
+      "div[1]/div[1]/div[1]/div[1]/div[1]/span[0]",
+      "div[1]/div[1]/div[1]/div[1]/div[1]/span[1]",
+      "div[1]/div[1]/div[1]/div[2]/span",
+    ],
+  },
+  {
+    frame: "12a Syncing light",
+    class: "decision",
+    why:
+      "the seam's right-hand transfer row, unmapped by the FIXTURE and not by omission: " +
+      "`fixtures/main.js` sets `right: [{ state: 'queued', mapped: false }]` because the frame " +
+      "draws an ACTIVE download there and the app draws the queue's next \u2014 a differently-shaped " +
+      "row, measured on the left column where `2a Syncing` draws a queued row too. \u00a763c. Verified " +
+      "by render: the app draws the row (unstamped, `transfer-queued transfer-down`) and none of " +
+      "the active shape's body, track or fill.",
+    keys: [
+      "div[1]/div[1]/div",
+      "div[1]/div[1]/div/div[0]",
+      "div[1]/div[1]/div/div[0]/span[0]",
+      "div[1]/div[1]/div/div[0]/span[1]",
+      "div[1]/div[1]/div/div[0]/span[2]",
+      "div[1]/div[1]/div/div[1]",
+      "div[1]/div[1]/div/div[1]/div",
+    ],
+  },
+  {
+    frame: "2a Needs you",
+    class: "decision",
+    why:
+      "the seam's right-hand transfer row, unmapped by the FIXTURE and not by omission: " +
+      "`fixtures/main.js` sets `right: [{ state: 'queued', mapped: false }]` because the frame " +
+      "draws an ACTIVE download there and the app draws the queue's next \u2014 a differently-shaped " +
+      "row, measured on the left column where `2a Syncing` draws a queued row too. \u00a763c. Verified " +
+      "by render: the app draws the row (unstamped, `transfer-queued transfer-down`) and none of " +
+      "the active shape's body, track or fill.",
+    keys: [
+      "div[1]/div[1]/div",
+      "div[1]/div[1]/div/div[0]",
+      "div[1]/div[1]/div/div[0]/span[0]",
+      "div[1]/div[1]/div/div[0]/span[1]",
+      "div[1]/div[1]/div/div[0]/span[2]",
+      "div[1]/div[1]/div/div[1]",
+      "div[1]/div[1]/div/div[1]/div",
+    ],
+  },
+  {
+    frame: "2a Syncing",
+    class: "decision",
+    why:
+      "the seam's right-hand transfer row, unmapped by the FIXTURE and not by omission: " +
+      "`fixtures/main.js` sets `right: [{ state: 'queued', mapped: false }]` because the frame " +
+      "draws an ACTIVE download there and the app draws the queue's next \u2014 a differently-shaped " +
+      "row, measured on the left column where `2a Syncing` draws a queued row too. \u00a763c. Verified " +
+      "by render: the app draws the row (unstamped, `transfer-queued transfer-down`) and none of " +
+      "the active shape's body, track or fill.",
+    keys: [
+      "div[1]/div[1]/div",
+      "div[1]/div[1]/div/div[0]",
+      "div[1]/div[1]/div/div[0]/span[0]",
+      "div[1]/div[1]/div/div[0]/span[1]",
+      "div[1]/div[1]/div/div[0]/span[2]",
+      "div[1]/div[1]/div/div[1]",
+      "div[1]/div[1]/div/div[1]/div",
+    ],
+  },
+  {
+    frame: "9a CLI missing",
+    class: "decision",
+    why:
+      "the copyable `sudo apt install proton-drive` box and the `Installation help` button, neither " +
+      "of which the app renders. The frozen frame draws a command this project cannot stand behind " +
+      "for every distribution, and DEVIATIONS \u00a7102 records the decision to send people to Proton's " +
+      "own instructions instead.",
+    keys: [
+      "div/div/div[2]",
+      "div/div/div[2]/span[0]",
+      "div/div/div[2]/span[1]",
+      "div/div/div[2]/button",
+      "div/div/div[3]/button[1]",
+    ],
+  },
+  {
+    frame: "5a Checking",
+    class: "unmappable",
+    why:
+      "the four footer doors, and the reason is already at `fids.js`'s `PLAN_CHECKING_FIDS`: `door` IS " +
+      "UNDECLARED HERE, and it is the one slot in that file dropped because the PROTOTYPE is wrong " +
+      "rather than because the app cannot draw it. `02-shell.md:42` says the active door is " +
+      "`#F2F4F7`; `5a Checking` is the plan screen, so `Plan a sync` should be lit and the frame " +
+      "paints all four unlit. The app follows the prose and renders five doors. Mapping them would " +
+      "assert the drawn mistake. DEVIATIONS \u00a777.",
+    keys: ["div[1]/div/span[0]", "div[1]/div/span[1]", "div[1]/div/span[2]", "div[1]/div/span[3]"],
+  },
+  {
+    frame: "7a File pending",
+    class: "mapping",
+    issue: "#377",
+    why: "one flex spacer the app renders and no slot names.",
+    keys: ["div[2]/span[1]"],
+  },
+  {
+    frame: "7a File pending",
+    class: "decision",
+    why:
+      "the per-file progress track and its fill, which the app does not render because a per-file " +
+      "percentage is unreachable BY CONSTRUCTION rather than pending: an upload has a total and no " +
+      "progress, a download has progress and no total, and `totalStorageSize` is not a file size " +
+      "(0 on 873 of 5424 healthy files). `ipc.rs` says so at `TransferActivity`. The first version " +
+      "of this list filed it as `mapping #377` — claiming the app renders it, which it does not; " +
+      "the SECOND filed it as `issue #98`, which is the defect §106e records arriving one round " +
+      "later, #98 being CLOSED and a class defined as `a capability gap with an open number` may " +
+      "not cite it. It is neither: the app renders nothing there, on purpose.",
+    keys: ["div[1]", "div[1]/div"],
+  },
+  {
+    frame: "12a Conflict light",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the conflict hexagon's inner `path` and its count `text`. `renderHexagon` draws both; the " +
+      "fixture declares the `svg` and stops there.",
+    keys: ["div[1]/div[1]/svg/path", "div[1]/div[1]/svg/text"],
+  },
+  {
+    frame: "3a Conflict",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the conflict hexagon's inner `path` and its count `text`. `renderHexagon` draws both; the " +
+      "fixture declares the `svg` and stops there.",
+    keys: ["div[1]/div[1]/svg/path", "div[1]/div[1]/svg/text"],
+  },
+  {
+    frame: "3a Conflict diff",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the conflict hexagon's inner `path` and its count `text`. `renderHexagon` draws both; the " +
+      "fixture declares the `svg` and stops there.",
+    keys: ["div[0]/svg/path", "div[0]/svg/text"],
+  },
+  {
+    frame: "8a Settings",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the live panel's `event_driven_reconcile` key line and the schedule row's trailing spacer. " +
+      "The app renders BOTH — the key line as `settings-key` (drawing `events_driven`, which is why " +
+      "a text match missed it) and the spacer as `settings-spacer` — and no slot names either. The " +
+      "first version of this entry had the two descriptions transposed and filed the key line as an " +
+      "unbuilt block against an issue that does not cover this screen.",
+    keys: ["div[2]/div[4]/div[0]/div[2]", "div[2]/div[5]/div[1]/span[2]"],
+  },
+  {
+    frame: "12a Settled light",
+    class: "mapping",
+    issue: "#379",
+    why:
+      'the header\'s flex spacer. The main-screen map DOES declare it \u2014 and `map.spacer = "div[1]"` ' +
+      "then OVERWRITES `mainShell.spacer`, so `renderHeader` stamps the header's 0-height gap with " +
+      "the 1040x229 tail block's key. That is `planShell`'s documented collision (fixed there with " +
+      "`tailSpacer`), unfixed on this screen. Filed as #379.",
+    keys: ["header/span[1]"],
+  },
+  {
+    frame: "2a Settled",
+    class: "mapping",
+    issue: "#379",
+    why:
+      'the header\'s flex spacer. The main-screen map DOES declare it \u2014 and `map.spacer = "div[1]"` ' +
+      "then OVERWRITES `mainShell.spacer`, so `renderHeader` stamps the header's 0-height gap with " +
+      "the 1040x229 tail block's key. That is `planShell`'s documented collision (fixed there with " +
+      "`tailSpacer`), unfixed on this screen. Filed as #379.",
+    keys: ["header/span[1]"],
+  },
+  {
+    frame: "5a Plan",
+    class: "decision",
+    why:
+      "`Leave it alone`, which the app does not render \u2014 one of the two G3 buttons #250 names as an " +
+      "S4 deliberate call.",
+    keys: ["div[2]/div/button"],
+  },
+  {
+    frame: "7a Never synced",
+    class: "mapping",
+    issue: "#377",
+    why: "a flex spacer the app renders and no slot names.",
+    keys: ["div[2]/span[1]"],
+  },
+  {
+    frame: "8a Deletions tab",
+    class: "mapping",
+    issue: "#377",
+    why:
+      "the `deletion_policy \u00b7 applies to both directions` key line, which the app draws and this " +
+      "crop does not declare.",
+    keys: ["div[3]"],
+  },
+  {
+    frame: "8a Save refused",
+    class: "issue",
+    issue: "#236",
+    why:
+      "`Create it on Proton Drive`, which the app does not render. No command creates a remote " +
+      "folder, and a live-looking button that does nothing is the trap #224 and #227 already " +
+      "record.",
+    keys: ["div/div/div[3]/button[1]"],
+  },
+];
+
+/**
+ * Sort observed unclaimed nodes against [`KNOWN_UNCLAIMED`], both directions.
+ *
+ * Mirrors [`classifyUnstamped`] on purpose — same shape, same three buckets — because the two
+ * answer opposite halves of one question and a reader who has understood one should not have to
+ * learn a second vocabulary for the other.
+ */
+const UNCLAIMED_CLASSES = new Set(["scenery", "unmappable", "decision", "issue", "mapping"]);
+
+export function classifyUnclaimed(observed) {
+  const id = (frame, key) => `${frame}|${key}`;
+  const rows = new Map();
+  // SCHEMA FAULTS FAIL LOUDLY RATHER THAN SILENTLY, because every one of these passed the first
+  // version of this classifier: a typo'd class printed as a fourth class and was counted, a key
+  // repeated inside an entry was counted twice, and two entries claiming one key silently shadowed
+  // each other — a `decision` entry could hide a `mapping` one and neither would go stale.
+  // Each fault carries the INDEX of the entry it is about, never just the frame label: six frames
+  // hold two entries, so counting distinct labels would report two broken entries as one.
+  const malformed = [];
+  const fault = (index, text) => malformed.push({ entry: index, text });
+  const claimed = new Map();
+  for (const [index, row] of KNOWN_UNCLAIMED.entries()) {
+    if (!UNCLAIMED_CLASSES.has(row.class)) {
+      fault(index, `${row.frame}: class "${row.class}" is not one of ${[...UNCLAIMED_CLASSES].join(", ")}`);
+    }
+    // Only for a class that is real: an unknown class is one fault, and telling it that it also
+    // needs an issue number is a second, false diagnosis of the same typo.
+    if (
+      UNCLAIMED_CLASSES.has(row.class) &&
+      (row.class === "issue" || row.class === "mapping") &&
+      !row.issue
+    ) {
+      fault(index, `${row.frame}: class "${row.class}" needs an issue number`);
+    }
+    const seenHere = new Set();
+    for (const key of row.keys) {
+      // ONE FAULT PER CAUSE. A key repeated inside one entry is a duplicate, and reporting it ALSO
+      // as a collision named a second entry that does not exist.
+      if (seenHere.has(key)) {
+        fault(index, `${row.frame}: key ${key} appears twice in one entry`);
+        continue;
+      }
+      seenHere.add(key);
+      const owner = claimed.get(id(row.frame, key));
+      if (owner) {
+        fault(index, `${row.frame}: key ${key} is claimed by two entries (${owner.class} and ${row.class})`);
+      }
+      claimed.set(id(row.frame, key), row);
+      rows.set(id(row.frame, key), row);
+    }
+  }
+  const recorded = [];
+  const unexplained = [];
+  for (const o of observed) {
+    const row = rows.get(id(o.frame, o.key));
+    if (row) recorded.push({ ...o, class: row.class, issue: row.issue, why: row.why });
+    else unexplained.push(o);
+  }
+
+  // The other direction: a declared node that is claimed now. Reported PER ENTRY rather than per
+  // key, because an entry names a cluster and losing one of its members is the interesting event —
+  // "these three of thirty-five" is what a reader needs to act on, and thirty-five separate lines
+  // of which three matter is not.
+  const seen = new Set(observed.map((o) => id(o.frame, o.key)));
+  const stale = [];
+  for (const row of KNOWN_UNCLAIMED) {
+    const gone = row.keys.filter((key) => !seen.has(id(row.frame, key)));
+    if (gone.length) stale.push({ ...row, gone });
+  }
+  return { recorded, unexplained, stale, malformed };
+}

@@ -1470,8 +1470,9 @@ const ONBOARDING_FOLDERS_FIDS = {
   // than assumed: stamp this slot and `fid()` writes `data-fid="9a Folders:null"`, which assert.mjs
   // reports as a `(mapping)` failure — exit 1; let #99 land and replace the `<input>` with an
   // unstamped `<div>` and the PARENT card's exact-pixel `box.h "147 vs 58"` row goes stale AND fails
-  // — exit 1. That the cover is incidental is the point: 268 of 1,452 drawn nodes on mapped frames
-  // are claimed by no slot, and no rule says which of them are deliberate. #250.
+  // — exit 1. That the cover is incidental is the point: 270 of 1,948 drawn nodes are claimed by no
+  // slot at all, and until #250 no rule said which of them were deliberate. `KNOWN_UNCLAIMED` is
+  // that rule now, and this node is one `unmappable` entry in it.
   cardPath: (s) => (s === 0 ? `div[1]/div[1]/div[${s}]/div[1]/div[0]` : null),
   cardButton: (s) => `div[1]/div[1]/div[${s}]/div[1]/button`,
   sideNote: (s) => `div[1]/div[1]/div[${s}]/div[2]`,
