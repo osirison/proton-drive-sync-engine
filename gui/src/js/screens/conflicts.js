@@ -30,7 +30,7 @@
 
 import { el } from "../ui/el.js";
 import { CONFLICTS } from "../ui/copy.js";
-import { fileSize } from "../ui/format.js";
+import { fileSize, since } from "../ui/format.js";
 import { renderHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button } from "../ui/controls.js";
@@ -127,10 +127,16 @@ function pager({ index, total, onPrev, onNext, padBottom = false }) {
  * `side` is `"mine"` or `"theirs"` — the same two words `ui/diff.js` uses, so the sentence and the
  * card can never be built for different halves of the same file.
  *
- * THE FIRST LINE IS A CONSTANT AND IT IS THE ONE PART THAT IS NOT LIVE. `You added a line` is a
- * claim against the last agreed version, whose content exists nowhere on the machine (#217). It is
- * rendered from the deck so the frame matches; a live app draws a sentence it cannot have computed,
- * which is why §74 records it rather than the screen quietly omitting it.
+ * THE FIRST LINE IS COMPUTED SINCE #217, and it is omitted when it cannot be. `You added a line` is
+ * a claim against the last agreed version; the engine now captures a line summary of that version at
+ * the moment it is agreed, and `read_conflict_pair` returns how far each side moved from it. Until
+ * #347 the two sentences were CONSTANTS appended unconditionally — a 4 GB video's card read `You
+ * added a line, 5 minutes ago`, with a timestamp that was not its file's — which is the one thing a
+ * conflict-resolution screen may not do.
+ *
+ * `happened` is `null` for every reason the ancestor is unavailable (a binary file, one past the
+ * engine's caps, a summary that aged out, a diff too far apart). The card then draws one line fewer
+ * and keeps everything that is live: the size, the line count, the edit time and the diff.
  */
 function versionCard({ side, pair, facts }) {
   const source = side === "mine" ? pair?.original : pair?.sidecar;
@@ -146,17 +152,16 @@ function versionCard({ side, pair, facts }) {
   const at = side === "mine" ? 0 : 1;
 
   const card = fid(el("div", { class: "cf-card" }), "card", at);
-  card.append(
-    fid(
-      el(
-        "div",
-        { class: "cf-card-happened" },
-        side === "mine" ? CONFLICTS.mineChange : CONFLICTS.theirsChange,
-      ),
-      "cardHappened",
-      at,
-    ),
+  const change = side === "mine" ? pair?.happened?.mine : pair?.happened?.theirs;
+  const happened = CONFLICTS.happenedAt(
+    CONFLICTS.happened(side, change),
+    source?.mtime_epoch_secs == null ? null : since(source.mtime_epoch_secs),
   );
+  // APPENDED ONLY WHEN THERE IS ONE. `append(null)` inserts the literal word `null` — this project
+  // has shipped that twice — so the absent case is a branch rather than a falsy argument.
+  if (happened) {
+    card.append(fid(el("div", { class: "cf-card-happened" }, happened), "cardHappened", at));
+  }
 
   // What differs, in words — and silence rather than a hedge when the grammar does not cover it.
   // `04-conflicts.md`: fall back to the metadata row alone, and never to the raw diff, which is

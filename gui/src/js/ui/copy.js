@@ -314,16 +314,59 @@ export const CONFLICTS = {
   },
 
   /**
-   * The first line — "what happened" — which no version of this app can currently generate.
+   * The first line — "what happened" — **computed** since #217, from the last agreed version.
    *
-   * `You added a line` is a claim about your version against the LAST AGREED one, and the last
-   * agreed version's content exists nowhere: the sidecar is Proton's copy as it is now, and the
-   * index keeps the baseline's SHA-1 without its bytes. Against Proton's copy alone the very same
-   * edit reads as a removal. Kept as the drawn constants, unused until something records a common
-   * ancestor; `ui/diff.js` says the same thing at more length.
+   * It is a claim about one side against the version both sides last agreed on, and against the
+   * other live copy alone the very same edit reads as a *removal*. The engine now captures a line
+   * summary of the agreed version at the moment it is agreed (`src/ancestor.rs`), and
+   * `read_conflict_pair` returns the three counts each side moved by.
+   *
+   * **`null` when there is nothing to say, and that is the ordinary case**, not a failure: no
+   * summary (a binary file, one past the caps, one that aged out), a side that cannot be read, or a
+   * diff too far apart. The card then draws one line fewer. Until #347 these were two CONSTANTS
+   * drawn unconditionally — a 4 GB video's card read `You added a line, 5 minutes ago` — which is
+   * the fabrication this replaces, and saying less is what it is replaced with.
+   *
+   * The subject differs by side because the reader is one of the two parties: *you* did this, and
+   * *Proton's copy* had that done to it somewhere else.
    */
-  mineChange: "You added a line, 5 minutes ago",
-  theirsChange: "Changed a line and added one, 2 minutes ago",
+  happened: (side, change) => {
+    if (!change) return null;
+    // ONLY THE FIRST CLAUSE CARRIES THE NOUN, which is what the drawn sentence does: `Changed a
+    // line and added one`. So the verbs are assembled with their counts and the noun is attached
+    // once, to whichever clause comes first.
+    const counted = [
+      ["changed", change.changed],
+      ["added", change.added],
+      ["removed", change.removed],
+    ].filter(([, n]) => n > 0);
+    const clauses = counted.map(([verb, n], i) =>
+      i === 0
+        ? `${verb} ${n === 1 ? "a line" : `${cardinal(n, "mid")} lines`}`
+        : `${verb} ${cardinal(n, "mid")}`,
+    );
+    if (clauses.length === 0) {
+      // Both files exist and differ — the daemon wrote a sidecar — yet this side's LINES match the
+      // agreed version exactly. Real, and it has to be said: the difference is a trailing newline
+      // or a line ending, and "nothing" would read as "you can discard this side safely".
+      return side === "mine"
+        ? "Your lines are unchanged — only the file's ending differs"
+        : "Proton's lines are unchanged — only the file's ending differs";
+    }
+    const list =
+      clauses.length === 1 ? clauses[0] : `${clauses.slice(0, -1).join(", ")} and ${clauses.at(-1)}`;
+    // `You changed a line` against `Changed a line`: the reader is one of the two parties, so their
+    // own side takes a subject and Proton's copy takes the bare verb — exactly as both frames draw
+    // it. Capitalising the verb is the whole difference on the other side.
+    return side === "mine" ? `You ${list}` : list.charAt(0).toUpperCase() + list.slice(1);
+  },
+  /**
+   * The same sentence with its relative time, which both frames draw — `You added a line, 5 minutes
+   * ago`. The time comes from that side's own mtime and always could; it is the verb that needed an
+   * ancestor. `null` when there is no sentence, and bare when there is no mtime, rather than a
+   * sentence with a dangling comma.
+   */
+  happenedAt: (sentence, ago) => (sentence == null ? null : ago ? `${sentence}, ${ago}` : sentence),
 
   showDiff: "See the exact differences",
   hideDiff: "Hide differences",

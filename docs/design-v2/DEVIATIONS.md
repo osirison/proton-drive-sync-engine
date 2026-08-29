@@ -5525,3 +5525,89 @@ values a second machine will reproduce.
 Worth stating plainly: this was a **pre-existing** hole that a slower run would have tripped on any
 commit. It surfaced here because the monthly schedule variant (§104f) renders 23 more text nodes,
 which pushed the run past the boundary.
+
+## 105. The conflict card's "what happened" line is computed now, and the two frames disagree about what it should say
+
+`CONFLICTS.mineChange` / `theirsChange` were constants appended to every version card unconditionally
+(#347). A user resolving a conflict in a 4 GB video read *You added a line, 5 minutes ago*, with a
+timestamp that was not their file's — on the one screen where someone is deciding which version to
+destroy. #217's decision was to record enough of the last agreed version to answer it properly.
+
+The sentence is computed from that ancestor now, and is **omitted** when there is none.
+
+### §105a · The capture point in the decision could not yield the ancestor
+
+Recorded because it changes a decided mechanism, and the analysis is on #217 rather than only here.
+
+The decision placed the capture *"before the engine overwrites the local file or writes the
+sidecar"*. Verified against `SyncAction::Conflict`'s own arm: it downloads the remote revision into
+the sidecar and **never touches the local file**, then upserts `FileRecord::from_local` — which
+replaces the baseline digest with the *current* one. So at conflict time the agreed version is on
+neither side and in no index row, and capturing there captures the diverged local file. Diffing that
+against itself says nothing changed; comparing it against Proton's copy reproduces the *"the same
+edit reads as a removal"* trap the issue itself warns about.
+
+The only moment the agreed version exists is the sync that agreed it. Capture is therefore at
+commit, in the same transaction as the record upsert, whenever a `Synced` file record lands — a
+standing per-file fact rather than a conflict-lifetime one. The decision's substance survives
+intact: a summary and not the bytes, and an absence that is ordinary.
+
+### §105b · The two conflict frames cannot both be right, and the diff frame is the sound one
+
+`3a Conflict diff` draws:
+
+```
+Yours     (4)  # Todo | - buy milk     | - call Alice | - ship v1
+Proton's  (5)  # Todo | - buy oat milk | - call Alice | - ship v1 | - relax
+footer         2 lines differ · 3 lines identical
+```
+
+Self-consistent: line 2 differs, line 5 is unmatched, three lines are identical.
+
+`3a Conflict` draws `You added a line` and `Changed a line and added one` beside it. Solve those for
+an ancestor and you get **`ancestor == Yours`** — under which the local file never moved, the planner
+reaches `(Unchanged, Changed)`, and it plans a plain `Download`. **The drawn card sentences describe
+a state this engine cannot produce.**
+
+There is exactly one ancestor that makes the drawn diff true *and* is a genuine two-sided conflict:
+
+```
+# Todo | - buy oat milk | - call Alice | - ship v1
+```
+
+— you changed line 2 back, Proton added line 5. The app therefore draws **`You changed a line,
+5 minutes ago`** and **`Added a line, 2 minutes ago`** where the frame draws its two constants.
+`src/ancestor.rs`'s `the_drawn_conflict_frames_are_reconciled_by_exactly_one_ancestor` pins the
+arithmetic; the fixture carries that ancestor and says why.
+
+**Decision class, not a Phase-1 gap.** Nothing is missing: the app computes a true sentence where the
+frame drew an untrue one. Bending the fixture to the drawn cards instead would mean shipping a
+dataset the planner cannot reach, on the screen whose whole subject is which version to keep.
+
+### §105c · The copy gate's count, and how it was kept honest
+
+The two constants were **checked strings** in `copy-gate.mjs`'s comparison. Replacing them with a
+template drops them out of the gate silently — `walk` collects strings only — and the drawn-string
+total went **340 → 337** with the build still green. That is #372's shape, one day after filing it.
+
+Handled deliberately rather than absorbed: three `DRAWN` rows render `CONFLICTS.happened` and
+`.happenedAt` at the arguments that reproduce the frame's own sentences, so the gate reads
+**340/340 with 74 template renderings** (was 71). The rows assert *the deck can still say what the
+frame draws* — the same claim `DELETIONS.folderConsequence` makes while the app draws its fallback —
+and the app's deviation from them is §105b.
+
+### §105d · What "say less" covers, and why it is the first-class path
+
+`happened` is `null`, and the card draws one line fewer, whenever: the file was never summarised (not
+UTF-8, over 256 KiB, or more than 4096 lines), the summary aged out of its bounded table, a side
+cannot be read, or the diff is past its cutoff. **Both sides or neither** — one side's verb beside
+the other's silence reads as *"and Proton did nothing"*, which is a claim about Proton's copy that
+nothing checked.
+
+Everything else on the card stays live: size, line count, edit time, and the diff. That fallback is
+also the whole of #347's fix on its own, which is why it was built first.
+
+One further state the frames do not draw: two files that differ as bytes but not as lines. The card
+says so in words (*"Your lines are unchanged — only the file's ending differs"*) rather than drawing
+nothing, for the reason `ui/diff.js` already gives about `invisibleDifference` — a conflict exists,
+so "no difference" is the one answer that is certainly wrong.

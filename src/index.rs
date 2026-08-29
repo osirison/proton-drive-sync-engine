@@ -943,6 +943,31 @@ pub fn load_agreed_summary(
     }
 }
 
+/// The **most recent** agreed summary for `path`, whatever digest it was agreed at.
+///
+/// This is the read the conflict card needs, and it cannot key on the index row's digest: by the
+/// time a conflict exists, `SyncAction::Conflict` has already upserted `FileRecord::from_local`, so
+/// the row carries the *diverged local* file's hash. The newest row for a path is the last version
+/// the two sides agreed on, because [`store_agreed_summary`] is only ever called for a `Synced`
+/// record — the digest key is there to supersede, not to look up by.
+pub fn newest_agreed_summary(
+    connection: &Connection,
+    path: &Path,
+) -> AppResult<Option<crate::ancestor::LineSummary>> {
+    let mut statement = connection.prepare(
+        "SELECT line_digests FROM agreed_line_summaries WHERE path = ?1 \
+         ORDER BY recorded_at DESC, rowid DESC LIMIT 1",
+    )?;
+    let mut rows = statement.query(params![index_key(path)])?;
+    match rows.next()? {
+        Some(row) => {
+            let stored: String = row.get(0)?;
+            Ok(Some(crate::ancestor::LineSummary::decode(&stored)))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Drop the oldest summaries past [`MAX_AGREED_SUMMARIES`].
 ///
 /// Called from the same place the history prune is, so a pass that wrote nothing pays nothing.

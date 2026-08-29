@@ -101,6 +101,27 @@ const TODO_PAIR = {
     text: "# Todo\n- buy oat milk\n- call Alice\n- ship v1\n- relax\n",
     binary_or_large: false,
   },
+  /**
+   * How each side moved from the version they last agreed on (#217) — and this is a COMPUTED reply
+   * field, so it is derived from the frames rather than chosen.
+   *
+   * `3a Conflict diff` draws yours at four lines against Proton's five, line 2 differing and line 5
+   * unmatched, under `2 lines differ · 3 lines identical`. That is self-consistent. Solving it for
+   * an ancestor gives exactly one answer that is also a genuine two-sided conflict:
+   *
+   *     # Todo | - buy oat milk | - call Alice | - ship v1
+   *
+   * — you changed line 2 back, Proton added line 5. Taking the drawn CARDS at their word instead
+   * (`You added a line` / `Changed a line and added one`) forces the ancestor to equal your copy,
+   * under which the local file never moved and the planner reaches `(Unchanged, Changed)` and plans
+   * a plain download. The drawn card sentences describe a state this engine cannot produce, so the
+   * diff frame is the half this fixture follows. `src/ancestor.rs` pins the arithmetic; DEVIATIONS
+   * §105 records the difference.
+   */
+  happened: {
+    mine: { added: 0, changed: 1, removed: 0 },
+    theirs: { added: 1, changed: 0, removed: 0 },
+  },
 };
 
 /**

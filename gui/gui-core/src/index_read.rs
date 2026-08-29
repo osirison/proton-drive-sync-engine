@@ -50,6 +50,19 @@ pub fn last_transfer(
 }
 
 /// The local path for a stored remote node id (composed `volumeId~nodeId`), or `None`.
+/// The last version both sides agreed on, as one digest per line (#217).
+///
+/// `None` is ordinary and means the card says less: never summarised (binary, or past the engine's
+/// caps), evicted by the table's bound, or a path this daemon has never synced. Read through the
+/// engine so the storage format has exactly one reader.
+pub fn agreed_summary(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Option<crate::conflicts::LineSummary>, String> {
+    proton_drive_sync_engine::index::newest_agreed_summary(connection, path)
+        .map_err(|error| error.to_string())
+}
+
 pub fn path_for_id(connection: &Connection, proton_id: &str) -> Result<Option<PathBuf>, String> {
     proton_drive_sync_engine::index::path_for_proton_id(connection, proton_id)
         .map_err(|e| e.to_string())
